@@ -18,8 +18,8 @@ mod ledger_tests;
 
 pub use contract::{ContractArtifacts, ContractPin, VerifiedContract};
 pub use http::{
-    BootstrapPlatform, FixedCredentials, HttpAccountService, HttpConfigError, InstallationBootstrap, Secret, Transport, TransportFailure,
-    WireConnection, WireCredentials, WireRequest, WireResponse,
+    BootstrapPlatform, CredentialHandoff, FixedCredentials, HttpAccountService, HttpConfigError, InstallationBootstrap, Secret, Transport,
+    TransportFailure, WireConnection, WireCredentials, WireRequest, WireResponse,
 };
 pub use ledger::{FileOperationStore, InMemoryOperationStore};
 pub use solidcraft_engine::entitlement::{

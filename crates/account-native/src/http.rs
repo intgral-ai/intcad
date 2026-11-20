@@ -63,6 +63,20 @@ impl fmt::Display for Secret {
     }
 }
 
+/// Native sink for credentials the server issues. Task 4 implements OS-protected storage.
+///
+/// This trait is the explicit native handoff: implementations must never log, serialize, put
+/// credentials in a JSON ledger, or store them in plaintext. A handoff failure must fail the
+/// exchange closed; execution or settlement must not continue without the credential.
+pub trait CredentialHandoff {
+    /// Initial authorization proof, or the execution grant proof for one operation.
+    fn execution_session_proof(&mut self, capability: Capability, operation: Option<&OperationId>, proof: Secret) -> Result<(), Refusal>;
+    /// A newly issued or reissued settlement credential, scoped to one operation.
+    fn settlement_credential(&mut self, operation: &OperationId, credential: Secret) -> Result<(), Refusal>;
+    /// The one-time installation credential.
+    fn installation_credential(&mut self, installation_id: &str, credential: Secret) -> Result<(), Refusal>;
+}
+
 /// The host-owned credentials for one account session.
 pub trait WireCredentials {
     fn product_session(&self) -> Option<Secret>;
@@ -410,6 +424,7 @@ pub struct HttpAccountService<T: Transport> {
     transport: T,
     connection: WireConnection,
     credentials: Box<dyn WireCredentials>,
+    handoff: Box<dyn CredentialHandoff>,
     clock: Box<dyn MonotonicClock>,
 }
 
@@ -420,19 +435,31 @@ impl<T: Transport> fmt::Debug for HttpAccountService<T> {
             .field("base_url", &self.connection.base_url())
             .field("client_version", &self.connection.client_version())
             .field("credentials", &"<redacted>")
+            .field("handoff", &"<redacted>")
             .finish()
     }
 }
 
 impl HttpAccountService<UreqTransport> {
-    pub fn new(connection: WireConnection, credentials: Box<dyn WireCredentials>, clock: Box<dyn MonotonicClock>) -> Self {
-        Self::with_transport(UreqTransport::new(), connection, credentials, clock)
+    pub fn new(
+        connection: WireConnection,
+        credentials: Box<dyn WireCredentials>,
+        handoff: Box<dyn CredentialHandoff>,
+        clock: Box<dyn MonotonicClock>,
+    ) -> Self {
+        Self::with_transport(UreqTransport::new(), connection, credentials, handoff, clock)
     }
 }
 
 impl<T: Transport> HttpAccountService<T> {
-    pub fn with_transport(transport: T, connection: WireConnection, credentials: Box<dyn WireCredentials>, clock: Box<dyn MonotonicClock>) -> Self {
-        Self { transport, connection, credentials, clock }
+    pub fn with_transport(
+        transport: T,
+        connection: WireConnection,
+        credentials: Box<dyn WireCredentials>,
+        handoff: Box<dyn CredentialHandoff>,
+        clock: Box<dyn MonotonicClock>,
+    ) -> Self {
+        Self { transport, connection, credentials, handoff, clock }
     }
 
     #[cfg(test)]
@@ -486,9 +513,14 @@ impl<T: Transport> HttpAccountService<T> {
         wall_sent: SystemTime,
         id: &str,
         capability: Capability,
-        expires_at: &str,
+        authorization_expires_at: &str,
+        grant_expires_at: &str,
     ) -> Result<Grant, Refusal> {
-        let expires_ms = parse_rfc3339_utc_millis(expires_at).ok_or_else(unavailable)?;
+        // Numeric comparison, not lexical: both timestamps are parsed to Unix milliseconds first,
+        // and either malformed value fails closed.
+        let authorization_ms = parse_rfc3339_utc_millis(authorization_expires_at).ok_or_else(unavailable)?;
+        let grant_ms = parse_rfc3339_utc_millis(grant_expires_at).ok_or_else(unavailable)?;
+        let expires_ms = authorization_ms.min(grant_ms);
         let wall_ms = wall_sent.duration_since(UNIX_EPOCH).map_err(|_| unavailable())?.as_millis();
         let wall_ms = u64::try_from(wall_ms).map_err(|_| unavailable())?;
         let remaining = expires_ms.saturating_sub(wall_ms);
@@ -496,10 +528,11 @@ impl<T: Transport> HttpAccountService<T> {
         Ok(Grant::from_server(GrantId::new(id), capability, sent_at.saturating_add(remaining)))
     }
 
-    /// POST `/v1/installations`: one-time installation proof bootstrap. The caller stores the raw
-    /// credential in the OS-protected store (Task 4); this adapter never persists it.
+    /// POST `/v1/installations`: one-time installation proof bootstrap. The raw credential is
+    /// handed to the native [`CredentialHandoff`] (Task 4 stores it in the OS-protected store) and
+    /// also returned once; this adapter never logs or persists it.
     pub fn bootstrap_installation(
-        &self,
+        &mut self,
         scope: &AuthenticatedHostScope,
         platform: BootstrapPlatform,
         label: Option<&str>,
@@ -508,7 +541,11 @@ impl<T: Transport> HttpAccountService<T> {
         if label.is_some_and(|value| value.len() > 128 || value.contains(['\r', '\n'])) {
             return Err(refusal(RefusalCode::AuthRequired));
         }
-        let mut request = self.request("POST", "/v1/installations", Some(json!({"platform": platform.wire(), "label": label})));
+        let mut body = json!({"platform": platform.wire()});
+        if let Some(label) = label {
+            body["label"] = Value::String(label.to_owned());
+        }
+        let mut request = self.request("POST", "/v1/installations", Some(body));
         self.push_auth(
             &mut request,
             "Authorization",
@@ -519,9 +556,13 @@ impl<T: Transport> HttpAccountService<T> {
             return Err(error_refusal(status, &value));
         }
         let installation_id = required_str(&value, "/installation_id")?;
-        let credential = required_str(&value, "/installation_credential")?;
+        let credential = Secret::new(required_str(&value, "/installation_credential")?);
         let created_at = required_str(&value, "/created_at")?;
-        Ok(InstallationBootstrap { installation_id, created_at, credential: Secret::new(credential) })
+        if installation_id.is_empty() || created_at.is_empty() || credential.is_empty() {
+            return Err(unavailable());
+        }
+        self.handoff.installation_credential(&installation_id, credential.clone()).map_err(|_| unavailable())?;
+        Ok(InstallationBootstrap { installation_id, created_at, credential })
     }
 
     /// POST `/v1/authorizations` for an initial lease. Renewal uses [`Self::renew`].
@@ -564,6 +605,111 @@ impl<T: Transport> HttpAccountService<T> {
         let remaining = value.get("remaining_seconds").and_then(Value::as_u64).ok_or_else(unavailable)?;
         let id = value.get("authorization_id").and_then(Value::as_str).ok_or_else(unavailable)?;
         Ok(self.grant(sent_at, id, capability, remaining))
+    }
+
+    /// Start with an optional trusted authorization lease.
+    ///
+    /// The frozen trait has no lease argument, so [`AccountService::begin`] passes `None`. A host
+    /// that already holds a trusted lease may pass it here: the optional `authorization_id` is then
+    /// forwarded exactly. Full lease plumbing belongs to Tasks 6/9 and is deliberately not invented
+    /// from untrusted caller data.
+    pub fn begin_with_authorization(
+        &mut self,
+        scope: &AuthenticatedHostScope,
+        operation: &OperationId,
+        capability: Capability,
+        entry: EntryCategory,
+        authorization_id: Option<&GrantId>,
+    ) -> Result<Admission, Refusal> {
+        require_provable(scope)?;
+        let Some(entry_category) = entry.wire_entry_category() else {
+            return Ok(Admission::Refused(refusal(RefusalCode::UnsafeToStart)));
+        };
+        let sent_at = self.clock.now();
+        let wall_sent = self.clock.wall_now();
+        let mut body = json!({
+            "operation_id": operation.as_str(),
+            "capability": capability.wire(),
+            "entry_category": entry_category.wire(),
+        });
+        if let Some(authorization_id) = authorization_id {
+            body["authorization_id"] = Value::String(authorization_id.as_str().to_owned());
+        }
+        let mut request = self.request("POST", "/v1/operations", Some(body));
+        self.push_auth(
+            &mut request,
+            "Authorization",
+            self.credentials.product_session().map(|secret| Secret::new(format!("Bearer {}", secret.expose_secret()))),
+        )?;
+        self.push_auth(&mut request, "X-Installation-Credential", self.credentials.installation_credential())?;
+        let (status, value) = self.exchange(request)?;
+        if status != 200 {
+            return Ok(Admission::Refused(error_refusal(status, &value)));
+        }
+        match value.get("outcome").and_then(Value::as_str).ok_or_else(unavailable)? {
+            "NEWLY_ADMITTED" => {
+                if value.get("operation_id").and_then(Value::as_str) != Some(operation.as_str())
+                    || value.get("installation_id").and_then(Value::as_str) != Some(scope.installation().as_str())
+                    || value.get("state").and_then(Value::as_str) != Some("HELD")
+                    || value.get("settlement_deadline") != Some(&Value::Null)
+                    || value.pointer("/execution_grant/capability").and_then(Value::as_str) != Some(capability.wire())
+                {
+                    return Err(unavailable());
+                }
+                let grant_id = value.pointer("/execution_grant/grant_id").and_then(Value::as_str).ok_or_else(unavailable)?;
+                let grant_expires_at = value.pointer("/execution_grant/expires_at").and_then(Value::as_str).ok_or_else(unavailable)?;
+                let authorization_expires_at = value.get("authorization_expires_at").and_then(Value::as_str).ok_or_else(unavailable)?;
+                let proof = value
+                    .pointer("/execution_grant/session_proof")
+                    .and_then(Value::as_str)
+                    .filter(|proof| !proof.is_empty())
+                    .ok_or_else(unavailable)?;
+                let settlement =
+                    value.get("settlement_credential").and_then(Value::as_str).filter(|credential| !credential.is_empty()).ok_or_else(unavailable)?;
+                let grant = self.grant_from_absolute(sent_at, wall_sent, grant_id, capability, authorization_expires_at, grant_expires_at)?;
+                self.handoff.execution_session_proof(capability, Some(operation), Secret::new(proof)).map_err(|_| unavailable())?;
+                self.handoff.settlement_credential(operation, Secret::new(settlement)).map_err(|_| unavailable())?;
+                Ok(Admission::NewlyAdmitted { operation: operation.clone(), grant })
+            }
+            "ALREADY_EXISTS" => {
+                if value.get("operation_id").and_then(Value::as_str) != Some(operation.as_str())
+                    || value.get("installation_id").and_then(Value::as_str) != Some(scope.installation().as_str())
+                {
+                    return Err(unavailable());
+                }
+                let state = parse_operation_status(value.get("state").and_then(Value::as_str).ok_or_else(unavailable)?)?;
+                let terminal = value.get("terminal").and_then(Value::as_bool).ok_or_else(unavailable)?;
+                if terminal != state.is_terminal() || value.get("execution_grant").is_some() {
+                    return Err(unavailable());
+                }
+                // ALREADY_EXISTS is authoritative status only. It may hand off settlement authority
+                // for a nonterminal operation, but it never carries or mints execution authority.
+                match value.get("settlement_credential") {
+                    Some(Value::Null) => {}
+                    Some(Value::String(credential)) if !credential.is_empty() => {
+                        if terminal {
+                            return Err(unavailable());
+                        }
+                        self.handoff.settlement_credential(operation, Secret::new(credential.clone())).map_err(|_| unavailable())?;
+                    }
+                    _ => return Err(unavailable()),
+                }
+                Ok(Admission::AlreadyExists { status: state })
+            }
+            "OPERATION_OWNED_ELSEWHERE" | "OPERATION_CONFLICT" => {
+                let code = value.pointer("/error/code").and_then(Value::as_str).ok_or_else(unavailable)?;
+                let expected = if value.get("outcome") == Some(&Value::String("OPERATION_OWNED_ELSEWHERE".into())) {
+                    "OPERATION_OWNED_ELSEWHERE"
+                } else {
+                    "OPERATION_CONFLICT"
+                };
+                if code != expected {
+                    return Err(unavailable());
+                }
+                Ok(Admission::Refused(error_refusal(status, &value)))
+            }
+            _ => Err(unavailable()),
+        }
     }
 }
 
@@ -633,13 +779,16 @@ impl<T: Transport> AccountService for HttpAccountService<T> {
         if value.get("capability").and_then(Value::as_str) != Some(capability.wire())
             || value.get("renewed") != Some(&Value::Bool(false))
             || value.get("operation_id") != Some(&Value::Null)
-            || value.get("execution_session_proof").is_none_or(Value::is_null)
         {
             return Err(unavailable());
         }
+        // Initial issuance must carry a non-empty proof; renewal is the only branch without one.
+        let proof = value.get("execution_session_proof").and_then(Value::as_str).filter(|proof| !proof.is_empty()).ok_or_else(unavailable)?;
         let remaining = value.get("remaining_seconds").and_then(Value::as_u64).ok_or_else(unavailable)?;
         let id = value.get("authorization_id").and_then(Value::as_str).ok_or_else(unavailable)?;
-        Ok(self.grant(sent_at, id, capability, remaining))
+        let grant = self.grant(sent_at, id, capability, remaining);
+        self.handoff.execution_session_proof(capability, None, Secret::new(proof)).map_err(|_| unavailable())?;
+        Ok(grant)
     }
 
     fn begin(
@@ -649,74 +798,7 @@ impl<T: Transport> AccountService for HttpAccountService<T> {
         capability: Capability,
         entry: EntryCategory,
     ) -> Result<Admission, Refusal> {
-        require_provable(scope)?;
-        let Some(entry_category) = entry.wire_entry_category() else {
-            return Ok(Admission::Refused(refusal(RefusalCode::UnsafeToStart)));
-        };
-        let sent_at = self.clock.now();
-        let wall_sent = self.clock.wall_now();
-        let mut request = self.request(
-            "POST",
-            "/v1/operations",
-            Some(json!({
-                "operation_id": operation.as_str(),
-                "capability": capability.wire(),
-                "entry_category": entry_category.wire(),
-            })),
-        );
-        self.push_auth(
-            &mut request,
-            "Authorization",
-            self.credentials.product_session().map(|secret| Secret::new(format!("Bearer {}", secret.expose_secret()))),
-        )?;
-        self.push_auth(&mut request, "X-Installation-Credential", self.credentials.installation_credential())?;
-        let (status, value) = self.exchange(request)?;
-        if status != 200 {
-            return Ok(Admission::Refused(error_refusal(status, &value)));
-        }
-        match value.get("outcome").and_then(Value::as_str).ok_or_else(unavailable)? {
-            "NEWLY_ADMITTED" => {
-                if value.get("operation_id").and_then(Value::as_str) != Some(operation.as_str())
-                    || value.get("state").and_then(Value::as_str) != Some("HELD")
-                    || value.get("settlement_deadline") != Some(&Value::Null)
-                    || value.pointer("/execution_grant/capability").and_then(Value::as_str) != Some(capability.wire())
-                {
-                    return Err(unavailable());
-                }
-                let grant_id = value.pointer("/execution_grant/grant_id").and_then(Value::as_str).ok_or_else(unavailable)?;
-                let expires_at = value.pointer("/execution_grant/expires_at").and_then(Value::as_str).ok_or_else(unavailable)?;
-                let authorization_expires_at = value.get("authorization_expires_at").and_then(Value::as_str).ok_or_else(unavailable)?;
-                let grant = self.grant_from_absolute(sent_at, wall_sent, grant_id, capability, earliest(expires_at, authorization_expires_at))?;
-                Ok(Admission::NewlyAdmitted { operation: operation.clone(), grant })
-            }
-            "ALREADY_EXISTS" => {
-                if value.get("operation_id").and_then(Value::as_str) != Some(operation.as_str()) {
-                    return Err(unavailable());
-                }
-                let state = parse_operation_status(value.get("state").and_then(Value::as_str).ok_or_else(unavailable)?)?;
-                let terminal = value.get("terminal").and_then(Value::as_bool).ok_or_else(unavailable)?;
-                if terminal != state.is_terminal() {
-                    return Err(unavailable());
-                }
-                if terminal && !value.get("settlement_credential").is_none_or(Value::is_null) {
-                    return Err(unavailable());
-                }
-                Ok(Admission::AlreadyExists { status: state })
-            }
-            "OPERATION_OWNED_ELSEWHERE" | "OPERATION_CONFLICT" => {
-                let code = value.pointer("/error/code").and_then(Value::as_str).ok_or_else(unavailable)?;
-                let expected = if value.get("outcome") == Some(&Value::String("OPERATION_OWNED_ELSEWHERE".into())) {
-                    "OPERATION_OWNED_ELSEWHERE"
-                } else {
-                    "OPERATION_CONFLICT"
-                };
-                if code != expected {
-                    return Err(unavailable());
-                }
-                Ok(Admission::Refused(error_refusal(status, &value)))
-            }
-            _ => Err(unavailable()),
-        }
+        self.begin_with_authorization(scope, operation, capability, entry, None)
     }
 
     fn finalize(&mut self, _scope: &AuthenticatedHostScope, operation: &OperationId, result: BillingResult) -> Result<OperationStatus, Refusal> {
@@ -732,15 +814,10 @@ impl<T: Transport> AccountService for HttpAccountService<T> {
         let state = parse_operation_status(value.get("state").and_then(Value::as_str).ok_or_else(unavailable)?)?;
         let terminal = value.get("terminal").and_then(Value::as_bool).ok_or_else(unavailable)?;
         let reported = value.get("result").and_then(Value::as_str).map(parse_billing_result).transpose()?.ok_or_else(unavailable)?;
-        if reported != result || terminal != state.is_terminal() {
+        if reported != result {
             return Err(unavailable());
         }
-        if state == OperationStatus::Released && result != BillingResult::FailedNoEffect {
-            return Err(unavailable());
-        }
-        if state == OperationStatus::Pending && result != BillingResult::Unknown {
-            return Err(unavailable());
-        }
+        validate_finalize_receipt(state, result, terminal, &value)?;
         Ok(state)
     }
 
@@ -756,9 +833,14 @@ impl<T: Transport> AccountService for HttpAccountService<T> {
         }
         let state = parse_operation_status(value.get("state").and_then(Value::as_str).ok_or_else(unavailable)?)?;
         let terminal = value.get("terminal").and_then(Value::as_bool).ok_or_else(unavailable)?;
-        if terminal != state.is_terminal() {
-            return Err(unavailable());
-        }
+        let result = match value.get("result").ok_or_else(unavailable)? {
+            Value::Null => None,
+            Value::String(raw) => Some(parse_billing_result(raw)?),
+            _ => return Err(unavailable()),
+        };
+        validate_operation_status(state, result, terminal)?;
+        validate_optional_timestamp(&value, "authorization_expires_at")?;
+        validate_optional_timestamp(&value, "settlement_deadline")?;
         Ok(state)
     }
 }
@@ -793,32 +875,57 @@ fn unavailable() -> Refusal {
     refusal(RefusalCode::AuthUnavailable)
 }
 
-fn error_refusal(status: u16, value: &Value) -> Refusal {
-    let Some(code) = value.pointer("/error/code").and_then(Value::as_str) else {
-        return status_refusal(status);
-    };
-    let Some(code) = parse_error_code(code) else {
-        return unavailable();
-    };
-    match Refusal::from_wire(code) {
-        Ok(code) => refusal(code),
-        Err(_) => match status {
-            401 => refusal(RefusalCode::AuthRequired),
-            403 => refusal(RefusalCode::CapabilityDenied),
-            409 => refusal(RefusalCode::OperationConflict),
-            _ => unavailable(),
-        },
+fn validate_finalize_receipt(state: OperationStatus, result: BillingResult, terminal: bool, value: &Value) -> Result<(), Refusal> {
+    let finalized_at = value.get("finalized_at").ok_or_else(unavailable)?;
+    value.get("settlement_deadline").and_then(Value::as_str).filter(|value| !value.is_empty()).ok_or_else(unavailable)?;
+    match (state, result, terminal) {
+        (OperationStatus::Charged, BillingResult::Succeeded | BillingResult::PartialRetained, true)
+        | (OperationStatus::Released, BillingResult::FailedNoEffect, true) => require_timestamp(finalized_at),
+        (OperationStatus::Pending, BillingResult::Unknown, false) if finalized_at.is_null() => Ok(()),
+        _ => Err(unavailable()),
     }
 }
 
-fn status_refusal(status: u16) -> Refusal {
-    match status {
-        401 => refusal(RefusalCode::AuthRequired),
-        402 => refusal(RefusalCode::CreditsExhausted),
-        403 => refusal(RefusalCode::CapabilityDenied),
-        409 => refusal(RefusalCode::OperationConflict),
-        _ => unavailable(),
+fn validate_operation_status(state: OperationStatus, result: Option<BillingResult>, terminal: bool) -> Result<(), Refusal> {
+    let valid = match state {
+        OperationStatus::Held => result.is_none() && !terminal,
+        OperationStatus::Pending => !terminal && (result.is_none() || result == Some(BillingResult::Unknown)),
+        OperationStatus::Charged => terminal && matches!(result, Some(BillingResult::Succeeded | BillingResult::PartialRetained)),
+        OperationStatus::Released => terminal && result == Some(BillingResult::FailedNoEffect),
+        OperationStatus::Expired => terminal && result.is_none(),
+    };
+    if valid { Ok(()) } else { Err(unavailable()) }
+}
+
+fn validate_optional_timestamp(value: &Value, field: &str) -> Result<(), Refusal> {
+    match value.get(field) {
+        Some(Value::Null) => Ok(()),
+        Some(Value::String(text)) if !text.is_empty() => Ok(()),
+        _ => Err(unavailable()),
     }
+}
+
+fn require_timestamp(value: &Value) -> Result<(), Refusal> {
+    value.as_str().filter(|text| !text.is_empty()).map(|_| ()).ok_or_else(unavailable)
+}
+
+fn error_refusal(status: u16, value: &Value) -> Refusal {
+    let Some(raw) = value.pointer("/error/code").and_then(Value::as_str) else {
+        return generic_status_refusal(status);
+    };
+    let Some(code) = parse_error_code(raw) else {
+        return generic_status_refusal(status);
+    };
+    match Refusal::from_wire(code) {
+        Ok(code) => refusal(code),
+        Err(_) => generic_status_refusal(status),
+    }
+}
+
+/// Only the contract's generic 401 may be inferred from the transport status. Every other status
+/// needs an explicit frozen `ErrorCode`; otherwise the exchange fails closed.
+fn generic_status_refusal(status: u16) -> Refusal {
+    if status == 401 { refusal(RefusalCode::AuthRequired) } else { unavailable() }
 }
 
 fn parse_error_code(raw: &str) -> Option<ErrorCode> {
@@ -886,14 +993,9 @@ fn required_u64(value: &Value, pointer: &str) -> Result<u64, Refusal> {
     value.pointer(pointer).and_then(Value::as_u64).ok_or_else(unavailable)
 }
 
-/// The earlier of two RFC 3339 instants. Both are validated by `grant_from_absolute`; when they
-/// cannot be parsed the caller fails closed there.
-fn earliest<'a>(left: &'a str, right: &'a str) -> &'a str {
-    if left <= right { left } else { right }
-}
-
 /// Parse `YYYY-MM-DDTHH:MM:SS[.fff]Z` into Unix milliseconds. Only UTC and the exact frozen shape
-/// are accepted; anything else is an integrity failure.
+/// are accepted. The parser works on bytes and never slices the `&str` at an untrusted index, so
+/// arbitrary UTF-8 input is total and returns `None` instead of panicking.
 fn parse_rfc3339_utc_millis(raw: &str) -> Option<u64> {
     let bytes = raw.as_bytes();
     if bytes.len() < 20
@@ -905,22 +1007,35 @@ fn parse_rfc3339_utc_millis(raw: &str) -> Option<u64> {
     {
         return None;
     }
-    let year = parse_digits(&raw[0..4])?;
-    let month = parse_digits(&raw[5..7])?;
-    let day = parse_digits(&raw[8..10])?;
-    let hour = parse_digits(&raw[11..13])?;
-    let minute = parse_digits(&raw[14..16])?;
-    let second = parse_digits(&raw[17..19])?;
-    if !(1..=12).contains(&month) || day == 0 || day > days_in_month(year, month) || hour > 23 || minute > 59 || second > 59 {
+    let year = parse_digits(bytes.get(0..4)?)?;
+    let month = parse_digits(bytes.get(5..7)?)?;
+    let day = parse_digits(bytes.get(8..10)?)?;
+    let hour = parse_digits(bytes.get(11..13)?)?;
+    let minute = parse_digits(bytes.get(14..16)?)?;
+    let second = parse_digits(bytes.get(17..19)?)?;
+    if !(1970..=9999).contains(&year)
+        || !(1..=12).contains(&month)
+        || day == 0
+        || day > days_in_month(year, month)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
         return None;
     }
     let (fraction, suffix) = if bytes.get(19) == Some(&b'.') {
-        let end = raw[20..].find('Z')? + 20;
-        (parse_millis(&raw[20..end])?, &raw[end..])
+        let mut end = 20;
+        while end < bytes.len() && bytes[end] != b'Z' {
+            if !bytes[end].is_ascii_digit() {
+                return None;
+            }
+            end += 1;
+        }
+        (parse_millis(bytes.get(20..end)?)?, end)
     } else {
-        (0, &raw[19..])
+        (0, 19)
     };
-    if suffix != "Z" {
+    if bytes.get(suffix) != Some(&b'Z') || bytes.len() != suffix + 1 {
         return None;
     }
     let days = days_from_civil(year, month, day);
@@ -928,19 +1043,29 @@ fn parse_rfc3339_utc_millis(raw: &str) -> Option<u64> {
     seconds.checked_mul(1_000)?.checked_add(fraction)
 }
 
-fn parse_digits(raw: &str) -> Option<u64> {
-    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+fn parse_digits(raw: &[u8]) -> Option<u64> {
+    if raw.is_empty() {
         return None;
     }
-    raw.parse().ok()
+    let mut value = 0u64;
+    for byte in raw {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add(u64::from(byte - b'0'))?;
+    }
+    Some(value)
 }
 
-fn parse_millis(raw: &str) -> Option<u64> {
-    if raw.is_empty() || raw.len() > 9 || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+fn parse_millis(raw: &[u8]) -> Option<u64> {
+    if raw.is_empty() || raw.len() > 9 || !raw.iter().all(u8::is_ascii_digit) {
         return None;
     }
-    let padded = format!("{raw:0<3}");
-    padded[..3].parse().ok()
+    let mut value = 0u64;
+    for index in 0..3 {
+        value = value * 10 + u64::from(raw.get(index).map_or(0, |byte| byte - b'0'));
+    }
+    Some(value)
 }
 
 fn days_in_month(year: u64, month: u64) -> u64 {
@@ -987,5 +1112,59 @@ impl Transport for ScriptedTransport {
     fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
         self.requests.borrow_mut().push(request.clone());
         self.responses.borrow_mut().pop_front().unwrap_or(Err(TransportFailure::Network))
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+pub(crate) struct HandoffLog {
+    pub(crate) proofs: Vec<(Capability, Option<OperationId>, Secret)>,
+    pub(crate) settlements: Vec<(OperationId, Secret)>,
+    pub(crate) installations: Vec<(String, Secret)>,
+}
+
+#[cfg(test)]
+pub(crate) struct RecordingHandoff {
+    log: std::rc::Rc<RefCell<HandoffLog>>,
+    fail: bool,
+}
+
+#[cfg(test)]
+impl RecordingHandoff {
+    pub(crate) fn new() -> (Self, std::rc::Rc<RefCell<HandoffLog>>) {
+        let log = std::rc::Rc::new(RefCell::new(HandoffLog::default()));
+        (Self { log: log.clone(), fail: false }, log)
+    }
+
+    pub(crate) fn failing() -> (Self, std::rc::Rc<RefCell<HandoffLog>>) {
+        let log = std::rc::Rc::new(RefCell::new(HandoffLog::default()));
+        (Self { log: log.clone(), fail: true }, log)
+    }
+}
+
+#[cfg(test)]
+impl CredentialHandoff for RecordingHandoff {
+    fn execution_session_proof(&mut self, capability: Capability, operation: Option<&OperationId>, proof: Secret) -> Result<(), Refusal> {
+        if self.fail {
+            return Err(unavailable());
+        }
+        self.log.borrow_mut().proofs.push((capability, operation.cloned(), proof));
+        Ok(())
+    }
+
+    fn settlement_credential(&mut self, operation: &OperationId, credential: Secret) -> Result<(), Refusal> {
+        if self.fail {
+            return Err(unavailable());
+        }
+        self.log.borrow_mut().settlements.push((operation.clone(), credential));
+        Ok(())
+    }
+
+    fn installation_credential(&mut self, installation_id: &str, credential: Secret) -> Result<(), Refusal> {
+        if self.fail {
+            return Err(unavailable());
+        }
+        self.log.borrow_mut().installations.push((installation_id.to_owned(), credential));
+        Ok(())
     }
 }

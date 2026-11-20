@@ -336,8 +336,8 @@ mod tests {
     };
 
     use super::{ContractArtifacts, ContractError, ContractPin, canonical_json};
-    use crate::http::ScriptedTransport;
     use crate::http::{BootstrapPlatform, HttpAccountService, InstallationBootstrap, Secret, WireConnection, WireCredentials, WireResponse};
+    use crate::http::{HandoffLog, RecordingHandoff, ScriptedTransport};
 
     const T0: u64 = 1_767_225_600_000;
     const BASE: &str = "https://auth.intcad.invalid";
@@ -387,6 +387,12 @@ mod tests {
         assert_eq!(pin.artifact_slug, super::EXPECTED_ARTIFACT_SLUG);
         assert_eq!(pin.protocol_version, super::EXPECTED_PROTOCOL_VERSION);
         assert_eq!(pin.verification_state, "FROZEN");
+        assert_eq!(pin.manifest_embedded_sha256, "f4d677dd066429854eac45e7776f7e2611845db9c174e26833704af5faf6b45e");
+        assert_eq!(pin.openapi_embedded_sha256, "20f32b8cde8141220489cbd0db4dafd42a01a1d14d9ad9c20078807c5c8afcb8");
+        assert_eq!(pin.openapi_canonical_sha256, "16d732b54c695a070201aa17469d9813d16782d072218aa887b04772a28b9e77");
+        assert_eq!(pin.fixtures_embedded_sha256, "ee1d8dde51fac40debf95d1bc29555b787adfa60175901f98be2b97c73529b2b");
+        assert_eq!(pin.fixtures_canonical_sha256, "ba9e0cb1e74bb0ce127052266faedd5eb7f16863dc60ddd295fd3fea0e370a33");
+        assert_eq!(pin.operation_id_pattern, "^op_[A-Za-z0-9_-]{8,64}$");
         assert_eq!(pin.openapi_embedded_bytes, 47_822);
         assert_eq!(pin.fixtures_embedded_bytes, 176_410);
         assert_eq!(pin.vector_count, 68);
@@ -511,14 +517,178 @@ mod tests {
             credentials.settlement = credentials.settlement.or_else(|| Some(Secret::new("settlement_credential_example_0000000000000000")));
         }
         let response = WireResponse::new(status, body.to_string().into_bytes());
+        let client_version = request.pointer("/headers/X-Client-Version").and_then(Value::as_str).unwrap_or("1.0.0");
+        let (handoff, log) = RecordingHandoff::new();
         let mut service = HttpAccountService::with_transport(
             ScriptedTransport::new(vec![Ok(response)]),
-            WireConnection::new(BASE, "1.0.0").map_err(|_| ContractError::MalformedArtifact("base url"))?,
+            WireConnection::new(BASE, client_version).map_err(|_| ContractError::MalformedArtifact("base url"))?,
             Box::new(credentials),
+            Box::new(handoff),
             Box::new(Clock { millis: clock }),
         );
         let observed = observe(&mut service, request, outcome, &scope, &operation)?;
+        let requests = service.transport().take_requests();
+        assert_wire(request, outcome, &operation, &requests)?;
+        assert_handoff(outcome, &operation, &log.borrow())?;
         if (200..300).contains(&status) { verify_success(schema, body, observed, clock) } else { verify_error(body, observed) }
+    }
+
+    /// Assert the adapter sent the frozen method, path, authorization headers and request body.
+    fn assert_wire(request: &Value, outcome: &Value, operation: &OperationId, requests: &[crate::http::WireRequest]) -> Result<(), ContractError> {
+        let method = request.get("method").and_then(Value::as_str).ok_or(ContractError::MalformedArtifact("method"))?;
+        let path = request.get("path").and_then(Value::as_str).ok_or(ContractError::MalformedArtifact("path"))?;
+        let body = request.get("body").cloned().unwrap_or(Value::Null);
+        let headers = request.get("headers").and_then(Value::as_object);
+        let has = |name: &str| headers.is_some_and(|map| map.keys().any(|key| key.eq_ignore_ascii_case(name)));
+        let lookup_override = outcome.get("request_name").and_then(Value::as_str) == Some("lookup_with_existing_settlement_credential");
+        let send_expected = lookup_override
+            || match path {
+                "/v1/status" | "/v1/installations" => has("Authorization"),
+                "/v1/authorizations" => has("Authorization") && (body.get("renewal").is_none() || has("X-Execution-Session-Proof")),
+                "/v1/operations" => has("Authorization") && has("X-Installation-Credential"),
+                _ if path.ends_with("/finalize") || path.starts_with("/v1/operations/") => has("X-Settlement-Credential"),
+                _ => false,
+            };
+        if !send_expected {
+            if !requests.is_empty() {
+                return Err(ContractError::CoverageMismatch("an uncredentialed exchange sent a request"));
+            }
+            return Ok(());
+        }
+        if requests.len() != 1 {
+            return Err(ContractError::CoverageMismatch("the adapter did not send exactly one request"));
+        }
+        let sent = &requests[0];
+        let (expected_method, expected_path) =
+            if lookup_override { ("GET", format!("/v1/operations/{}", operation.as_str())) } else { (method, path.to_owned()) };
+        if sent.method() != expected_method || !sent.url().ends_with(&expected_path) {
+            return Err(ContractError::CoverageMismatch("outbound method or path differs from the frozen request"));
+        }
+        if let Some(headers) = headers {
+            for (name, value) in headers {
+                let Some(value) = value.as_str() else { continue };
+                let lower = name.to_ascii_lowercase();
+                let must_match = matches!(
+                    lower.as_str(),
+                    "authorization"
+                        | "x-installation-credential"
+                        | "x-settlement-credential"
+                        | "x-execution-session-proof"
+                        | "x-client-version"
+                        | "x-protocol-version"
+                );
+                // The START-013 lookup outcome deliberately uses only the synthesized settlement
+                // credential, not the product session or installation credential from the start
+                // request that precedes it.
+                let skipped_for_lookup = lookup_override && matches!(lower.as_str(), "authorization" | "x-installation-credential");
+                if must_match && !skipped_for_lookup && sent.header(name) != Some(value) {
+                    return Err(ContractError::CoverageMismatch("outbound header differs from the frozen request"));
+                }
+                if matches!(lower.as_str(), "authorization" | "x-installation-credential" | "x-settlement-credential" | "x-execution-session-proof")
+                    && sent.url().contains(value)
+                {
+                    return Err(ContractError::CoverageMismatch("a credential appeared in the request URL"));
+                }
+            }
+        }
+        if lookup_override && sent.header("X-Settlement-Credential").is_none() {
+            return Err(ContractError::CoverageMismatch("lookup did not use the settlement credential"));
+        }
+        match (expected_method == "POST", sent.body()) {
+            (true, Some(bytes)) => {
+                let actual: Value = serde_json::from_slice(bytes).map_err(|_| ContractError::MalformedArtifact("outbound body"))?;
+                if actual != body {
+                    return Err(ContractError::CoverageMismatch("outbound body differs from the frozen request"));
+                }
+            }
+            (false, None) => {}
+            _ => return Err(ContractError::CoverageMismatch("outbound body presence differs from the frozen request")),
+        }
+        Ok(())
+    }
+
+    /// Assert the native credential handoff matches the frozen response and never leaks execution
+    /// authority through `ALREADY_EXISTS`.
+    fn assert_handoff(outcome: &Value, operation: &OperationId, log: &HandoffLog) -> Result<(), ContractError> {
+        let schema = outcome.get("response_schema").and_then(Value::as_str).unwrap_or("");
+        let body = outcome.get("body").cloned().unwrap_or(Value::Null);
+        match schema {
+            "AuthorizationResponse" => {
+                if let Some(proof) = body.get("execution_session_proof").and_then(Value::as_str) {
+                    let capability = capability_of(&body)?;
+                    if proof.is_empty()
+                        || !log.proofs.iter().any(|(entry_capability, entry_operation, entry_proof)| {
+                            *entry_capability == capability && entry_operation.is_none() && entry_proof.expose_secret() == proof
+                        })
+                    {
+                        return Err(ContractError::CoverageMismatch("the initial authorization proof was not handed off"));
+                    }
+                }
+                if !log.settlements.is_empty() || !log.installations.is_empty() {
+                    return Err(ContractError::CoverageMismatch("an authorization exchange handed off the wrong credential class"));
+                }
+            }
+            "StartOperationSuccess" => match body.get("outcome").and_then(Value::as_str) {
+                Some("NEWLY_ADMITTED") => {
+                    let settlement =
+                        body.get("settlement_credential").and_then(Value::as_str).ok_or(ContractError::MalformedArtifact("settlement credential"))?;
+                    let proof = body
+                        .pointer("/execution_grant/session_proof")
+                        .and_then(Value::as_str)
+                        .ok_or(ContractError::MalformedArtifact("execution proof"))?;
+                    let capability = capability_of(body.pointer("/execution_grant").ok_or(ContractError::MalformedArtifact("execution grant"))?)?;
+                    if !log
+                        .settlements
+                        .iter()
+                        .any(|(entry_operation, entry_credential)| entry_operation == operation && entry_credential.expose_secret() == settlement)
+                        || !log.proofs.iter().any(|(entry_capability, entry_operation, entry_proof)| {
+                            *entry_capability == capability && entry_operation.as_ref() == Some(operation) && entry_proof.expose_secret() == proof
+                        })
+                        || !log.installations.is_empty()
+                    {
+                        return Err(ContractError::CoverageMismatch("NEWLY_ADMITTED credential handoff mismatch"));
+                    }
+                }
+                Some("ALREADY_EXISTS") => {
+                    match body.get("settlement_credential") {
+                        Some(Value::String(settlement)) => {
+                            if !log.settlements.iter().any(|(entry_operation, entry_credential)| {
+                                entry_operation == operation && entry_credential.expose_secret() == settlement
+                            }) {
+                                return Err(ContractError::CoverageMismatch("reissued settlement credential was not handed off"));
+                            }
+                        }
+                        Some(Value::Null) => {
+                            if !log.settlements.is_empty() {
+                                return Err(ContractError::CoverageMismatch("ALREADY_EXISTS handed off an absent settlement credential"));
+                            }
+                        }
+                        _ => return Err(ContractError::MalformedArtifact("settlement credential")),
+                    }
+                    if !log.proofs.is_empty() || !log.installations.is_empty() {
+                        return Err(ContractError::CoverageMismatch("ALREADY_EXISTS handed off execution authority"));
+                    }
+                }
+                _ => {}
+            },
+            "InstallationBootstrapResponse" => {
+                let id = body.get("installation_id").and_then(Value::as_str).ok_or(ContractError::MalformedArtifact("installation id"))?;
+                let credential =
+                    body.get("installation_credential").and_then(Value::as_str).ok_or(ContractError::MalformedArtifact("installation credential"))?;
+                if !log.installations.iter().any(|(entry_id, entry_credential)| entry_id == id && entry_credential.expose_secret() == credential)
+                    || !log.proofs.is_empty()
+                    || !log.settlements.is_empty()
+                {
+                    return Err(ContractError::CoverageMismatch("installation credential handoff mismatch"));
+                }
+            }
+            _ => {
+                if !log.proofs.is_empty() || !log.settlements.is_empty() || !log.installations.is_empty() {
+                    return Err(ContractError::CoverageMismatch("a non-issuing exchange handed off a credential"));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn observe(

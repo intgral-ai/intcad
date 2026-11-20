@@ -1,19 +1,20 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{
-    AccountId, AccountService, Admission, AuthenticatedHostScope, BillingResult, Capability, EntryCategory, HostSessionBinding, MonotonicClock,
-    MonotonicInstant, OperationId, OperationStatus, RefusalCode,
+    AccountId, AccountService, Admission, AuthenticatedHostScope, BillingResult, Capability, EntryCategory, GrantId, HostSessionBinding,
+    MonotonicClock, MonotonicInstant, OperationId, OperationStatus, RefusalCode,
 };
 
-use crate::http::ScriptedTransport;
 use crate::http::{
     BootstrapPlatform, FixedCredentials, HttpAccountService, HttpConfigError, MAX_RESPONSE_BYTES, Secret, TransportFailure, WireConnection,
     WireResponse,
 };
+use crate::http::{HandoffLog, RecordingHandoff, ScriptedTransport};
 
 const BASE: &str = "https://auth.intcad.invalid";
 const T0: u64 = 1_767_225_600_000;
@@ -59,21 +60,26 @@ fn operation() -> OperationId {
 }
 
 fn scripted(responses: Vec<Result<WireResponse, TransportFailure>>) -> HttpAccountService<ScriptedTransport> {
-    HttpAccountService::with_transport(
-        ScriptedTransport::new(responses),
-        WireConnection::new(BASE, "1.0.0").unwrap(),
-        Box::new(credentials()),
-        Box::new(TestClock::at(T0)),
-    )
+    scripted_with(credentials(), responses)
 }
 
 fn scripted_with(credentials: FixedCredentials, responses: Vec<Result<WireResponse, TransportFailure>>) -> HttpAccountService<ScriptedTransport> {
-    HttpAccountService::with_transport(
+    scripted_with_log(credentials, responses).0
+}
+
+fn scripted_with_log(
+    credentials: FixedCredentials,
+    responses: Vec<Result<WireResponse, TransportFailure>>,
+) -> (HttpAccountService<ScriptedTransport>, Rc<RefCell<HandoffLog>>) {
+    let (handoff, log) = RecordingHandoff::new();
+    let service = HttpAccountService::with_transport(
         ScriptedTransport::new(responses),
         WireConnection::new(BASE, "1.0.0").unwrap(),
         Box::new(credentials),
+        Box::new(handoff),
         Box::new(TestClock::at(T0)),
-    )
+    );
+    (service, log)
 }
 
 fn ok(status: u16, body: Value) -> Result<WireResponse, TransportFailure> {
@@ -134,6 +140,19 @@ fn admitted_body() -> Value {
             "session_proof": "execution_session_proof_example_000000000000000"
         },
         "settlement_credential": "settlement_credential_example_0000000000000000"
+    })
+}
+
+fn auth_response_body(proof: Value) -> Value {
+    json!({
+        "authorization_id": "grant_example_0001",
+        "capability": "chat",
+        "operation_id": null,
+        "renewed": false,
+        "expires_at": "2026-01-01T00:01:00.000Z",
+        "remaining_seconds": 60,
+        "renew_after_seconds": 20,
+        "execution_session_proof": proof
     })
 }
 
@@ -270,7 +289,7 @@ fn credentials_never_appear_in_url_logs_or_errors() {
         .with_installation_credential("install_SECRET_def")
         .with_settlement_credential("settle_SECRET_ghi")
         .with_execution_session_proof("proof_SECRET_jkl");
-    let mut service = scripted_with(
+    let (mut service, handoff) = scripted_with_log(
         credentials,
         vec![
             ok(200, admitted_body()),
@@ -285,7 +304,8 @@ fn credentials_never_appear_in_url_logs_or_errors() {
     assert!(matches!(admission, Admission::NewlyAdmitted { .. }));
     let error = service.finalize(&scope(), &operation(), BillingResult::Succeeded).unwrap_err();
     let bootstrap = service.bootstrap_installation(&scope(), BootstrapPlatform::Linux, Some("workstation")).unwrap();
-    let rendered = format!("{:?} {:?} {} {:?} {:?}", service, service.transport().take_requests(), error.message, error.code, bootstrap);
+    let rendered =
+        format!("{:?} {:?} {} {:?} {:?} {:?}", service, service.transport().take_requests(), error.message, error.code, bootstrap, handoff.borrow());
     for secret in ["product_SECRET_abc", "install_SECRET_def", "settle_SECRET_ghi", "proof_SECRET_jkl"] {
         assert!(!rendered.contains(secret), "a credential leaked into observable output");
     }
@@ -374,4 +394,184 @@ fn authorize_and_lookup_map_frozen_statuses() {
 
     let mut denied = scripted(vec![ok(403, error_body("CAPABILITY_DENIED"))]);
     assert_eq!(denied.authorize(&scope(), Capability::Chat).unwrap_err().code, RefusalCode::CapabilityDenied);
+}
+
+#[test]
+fn initial_authorization_requires_nonempty_proof_and_hands_it_off() {
+    let (mut service, log) = scripted_with_log(credentials(), vec![ok(200, auth_response_body(Value::String("proof_SECRET_initial".into())))]);
+    service.authorize(&scope(), Capability::Chat).unwrap();
+    let log = log.borrow();
+    assert_eq!(log.proofs.len(), 1);
+    assert_eq!(log.proofs[0].0, Capability::Chat);
+    assert!(log.proofs[0].1.is_none());
+    assert_eq!(log.proofs[0].2.expose_secret(), "proof_SECRET_initial");
+
+    for proof in [Value::Null, Value::String(String::new())] {
+        let mut service = scripted(vec![ok(200, auth_response_body(proof))]);
+        assert_eq!(service.authorize(&scope(), Capability::Chat).unwrap_err().code, RefusalCode::AuthUnavailable);
+    }
+}
+
+#[test]
+fn begin_hands_off_credentials_and_already_exists_never_hands_off_execution() {
+    let (mut service, log) = scripted_with_log(credentials(), vec![ok(200, admitted_body())]);
+    assert!(matches!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap(), Admission::NewlyAdmitted { .. }));
+    let log = log.borrow();
+    assert_eq!(log.settlements.len(), 1);
+    assert_eq!(log.settlements[0].0, operation());
+    assert_eq!(log.settlements[0].1.expose_secret(), "settlement_credential_example_0000000000000000");
+    assert_eq!(log.proofs.len(), 1);
+    assert_eq!(log.proofs[0].0, Capability::Chat);
+    assert_eq!(log.proofs[0].1.as_ref(), Some(&operation()));
+    assert_eq!(log.proofs[0].2.expose_secret(), "execution_session_proof_example_000000000000000");
+
+    let (mut service, log) = scripted_with_log(credentials(), vec![ok(200, already_exists_body())]);
+    assert!(matches!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap(), Admission::AlreadyExists { .. }));
+    assert_eq!(log.borrow().settlements.len(), 1);
+    assert!(log.borrow().proofs.is_empty());
+
+    let mut terminal = already_exists_body();
+    terminal["state"] = Value::String("CHARGED".into());
+    terminal["result"] = Value::String("SUCCEEDED".into());
+    terminal["terminal"] = Value::Bool(true);
+    let mut service = scripted(vec![ok(200, terminal)]);
+    assert_eq!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap_err().code, RefusalCode::AuthUnavailable);
+
+    let mut with_grant = already_exists_body();
+    with_grant["execution_grant"] = json!({"grant_id": "grant_forbidden"});
+    let mut service = scripted(vec![ok(200, with_grant)]);
+    assert_eq!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap_err().code, RefusalCode::AuthUnavailable);
+}
+
+#[test]
+fn handoff_failure_fails_closed_without_authority() {
+    let (handoff, _log) = RecordingHandoff::failing();
+    let mut service = HttpAccountService::with_transport(
+        ScriptedTransport::new(vec![ok(200, admitted_body())]),
+        WireConnection::new(BASE, "1.0.0").unwrap(),
+        Box::new(credentials()),
+        Box::new(handoff),
+        Box::new(TestClock::at(T0)),
+    );
+    assert_eq!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap_err().code, RefusalCode::AuthUnavailable);
+
+    let (handoff, _log) = RecordingHandoff::failing();
+    let mut service = HttpAccountService::with_transport(
+        ScriptedTransport::new(vec![ok(200, auth_response_body(Value::String("proof_SECRET_initial".into())))]),
+        WireConnection::new(BASE, "1.0.0").unwrap(),
+        Box::new(credentials()),
+        Box::new(handoff),
+        Box::new(TestClock::at(T0)),
+    );
+    assert_eq!(service.authorize(&scope(), Capability::Chat).unwrap_err().code, RefusalCode::AuthUnavailable);
+}
+
+#[test]
+fn installation_handoff_is_secret_wrapped() {
+    let (mut service, log) = scripted_with_log(
+        credentials(),
+        vec![ok(
+            201,
+            json!({"installation_id": "inst_example_0001", "installation_credential": "install_SECRET_def", "created_at": "2026-01-01T00:00:00.000Z"}),
+        )],
+    );
+    let bootstrap = service.bootstrap_installation(&scope(), BootstrapPlatform::Linux, Some("workstation")).unwrap();
+    let log = log.borrow();
+    assert_eq!(log.installations.len(), 1);
+    assert_eq!(log.installations[0].0, "inst_example_0001");
+    assert_eq!(log.installations[0].1.expose_secret(), "install_SECRET_def");
+    assert_eq!(bootstrap.into_credential().expose_secret(), "install_SECRET_def");
+    assert!(!format!("{log:?}").contains("install_SECRET_def"));
+}
+
+#[test]
+fn begin_matches_response_installation_to_trusted_scope() {
+    let mut wrong_installation = admitted_body();
+    wrong_installation["installation_id"] = Value::String("inst_other".into());
+    let mut service = scripted(vec![ok(200, wrong_installation)]);
+    assert_eq!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap_err().code, RefusalCode::AuthUnavailable);
+
+    let mut wrong_existing = already_exists_body();
+    wrong_existing["installation_id"] = Value::String("inst_other".into());
+    let mut service = scripted(vec![ok(200, wrong_existing)]);
+    assert_eq!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap_err().code, RefusalCode::AuthUnavailable);
+}
+
+#[test]
+fn untrusted_timestamps_are_total_and_numeric() {
+    let mut malformed = admitted_body();
+    malformed["execution_grant"]["expires_at"] = Value::String("2026-01-0üT00:01:00.000Z".into());
+    let mut service = scripted(vec![ok(200, malformed)]);
+    assert_eq!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap_err().code, RefusalCode::AuthUnavailable);
+
+    let mut malformed = admitted_body();
+    malformed["authorization_expires_at"] = Value::String("not-a-time-ü".into());
+    let mut service = scripted(vec![ok(200, malformed)]);
+    assert_eq!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap_err().code, RefusalCode::AuthUnavailable);
+
+    let mut zero_year = admitted_body();
+    zero_year["execution_grant"]["expires_at"] = Value::String("0000-01-01T00:00:00.000Z".into());
+    let mut service = scripted(vec![ok(200, zero_year)]);
+    assert_eq!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap_err().code, RefusalCode::AuthUnavailable);
+
+    let mut earlier = admitted_body();
+    earlier["authorization_expires_at"] = Value::String("2026-01-01T00:02:00.000Z".into());
+    earlier["execution_grant"]["expires_at"] = Value::String("2026-01-01T00:00:30.000Z".into());
+    let mut service = scripted(vec![ok(200, earlier)]);
+    match service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap() {
+        Admission::NewlyAdmitted { grant, .. } => assert_eq!(grant.expires_at(), MonotonicInstant::from_millis(T0 + 30_000)),
+        other => panic!("unexpected admission: {other:?}"),
+    }
+}
+
+#[test]
+fn http_status_does_not_invent_business_refusals() {
+    let service = scripted(vec![ok(403, json!({}))]);
+    assert_eq!(service.status().unwrap_err().code, RefusalCode::AuthUnavailable);
+    let mut service = scripted(vec![ok(402, json!({}))]);
+    assert_eq!(service.authorize(&scope(), Capability::Chat).unwrap_err().code, RefusalCode::AuthUnavailable);
+    let mut service = scripted(vec![ok(409, json!({}))]);
+    assert_eq!(service.finalize(&scope(), &operation(), BillingResult::Succeeded).unwrap_err().code, RefusalCode::AuthUnavailable);
+    let service = scripted(vec![ok(401, json!({}))]);
+    assert_eq!(service.status().unwrap_err().code, RefusalCode::AuthRequired);
+}
+
+#[test]
+fn finalize_rejects_invalid_receipt_state_result_combinations() {
+    let invalid = [
+        receipt_body("CHARGED", "FAILED_NO_EFFECT", true),
+        receipt_body("RELEASED", "SUCCEEDED", true),
+        receipt_body("PENDING", "UNKNOWN", true),
+        receipt_body("CHARGED", "SUCCEEDED", false),
+        receipt_body("EXPIRED", "SUCCEEDED", true),
+    ];
+    for body in invalid {
+        let mut service = scripted(vec![ok(200, body)]);
+        assert_eq!(service.finalize(&scope(), &operation(), BillingResult::Succeeded).unwrap_err().code, RefusalCode::AuthUnavailable);
+    }
+
+    let mut null_finalized = receipt_body("CHARGED", "SUCCEEDED", true);
+    null_finalized["finalized_at"] = Value::Null;
+    let mut service = scripted(vec![ok(200, null_finalized)]);
+    assert_eq!(service.finalize(&scope(), &operation(), BillingResult::Succeeded).unwrap_err().code, RefusalCode::AuthUnavailable);
+
+    let mut pending_with_time = receipt_body("PENDING", "UNKNOWN", false);
+    pending_with_time["finalized_at"] = Value::String("2026-01-01T00:00:30.000Z".into());
+    let mut service = scripted(vec![ok(200, pending_with_time)]);
+    assert_eq!(service.finalize(&scope(), &operation(), BillingResult::Unknown).unwrap_err().code, RefusalCode::AuthUnavailable);
+}
+
+#[test]
+fn begin_forwards_optional_authorization_id() {
+    let mut service = scripted(vec![ok(200, admitted_body())]);
+    service
+        .begin_with_authorization(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra, Some(&GrantId::new("grant_example_0001")))
+        .unwrap();
+    let body: Value = serde_json::from_slice(service.transport().take_requests()[0].body().unwrap()).unwrap();
+    assert_eq!(body["authorization_id"], "grant_example_0001");
+
+    let mut service = scripted(vec![ok(200, admitted_body())]);
+    service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap();
+    let body: Value = serde_json::from_slice(service.transport().take_requests()[0].body().unwrap()).unwrap();
+    assert!(body.get("authorization_id").is_none());
 }
