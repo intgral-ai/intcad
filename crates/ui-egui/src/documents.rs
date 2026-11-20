@@ -2233,6 +2233,9 @@ mod tests {
         assert_eq!(a.docs.closing, None);
         assert!(a.quit_requested, "every design answered: quit is staged");
         assert_eq!(a.docs.quitting, Some(Vec::new()), "the workflow guard stays until commit");
+        assert_eq!(a.host_close_state, HostCloseState::Required, "staging asks the host to close");
+        // The host completes the close when the Assistant has no unresolved owner.
+        a.set_host_close_state(HostCloseState::Ready);
         // Discard/reopen effects wait for one validated commit, not for the answer.
         let _commit = finish_quit(&mut a).unwrap();
         assert!(!a.quit_requested && a.docs.quitting.is_none());
