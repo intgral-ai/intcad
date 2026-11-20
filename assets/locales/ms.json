@@ -4186,7 +4186,7 @@
   "ui.agent_chat_limit": "Ejen telah mencapai had {limit} perubahan untuk satu mesej. Hantar mesej lain untuk meneruskan.",
   "ui.agent_chat_login_found": "log masuk ditemui",
   "ui.agent_chat_minimize": "Kecilkan kepada bar",
-  "ui.agent_chat_mode_all": "Automatik",
+  "ui.agent_chat_mode_all": "Auto",
   "ui.agent_chat_mode_ask": "Tanya",
   "ui.agent_chat_mode_edits": "Suntingan",
   "ui.agent_chat_model_custom": "Guna tersuai: {model}",

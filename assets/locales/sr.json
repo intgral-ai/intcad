@@ -4186,7 +4186,7 @@
   "ui.agent_chat_limit": "Агент је достигао ограничење од {limit} промена за једну поруку. Пошаљите нову поруку да га пустите да настави.",
   "ui.agent_chat_login_found": "пријава пронађена",
   "ui.agent_chat_minimize": "Смањи у траку",
-  "ui.agent_chat_mode_all": "Аутоматски",
+  "ui.agent_chat_mode_all": "Ауто",
   "ui.agent_chat_mode_ask": "Питај",
   "ui.agent_chat_mode_edits": "Измене",
   "ui.agent_chat_model_custom": "Користи прилагођени: {model}",

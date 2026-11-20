@@ -2475,7 +2475,7 @@
   "ui.agent_chat_limit": "Agent osiągnął limit {limit} zmian na jedną wiadomość. Wyślij kolejną wiadomość, aby mógł kontynuować.",
   "ui.agent_chat_login_found": "znaleziono logowanie",
   "ui.agent_chat_minimize": "Zminimalizuj do paska",
-  "ui.agent_chat_mode_all": "Automatyczny",
+  "ui.agent_chat_mode_all": "Auto",
   "ui.agent_chat_mode_ask": "Pytaj",
   "ui.agent_chat_mode_edits": "Edycje",
   "ui.agent_chat_model_no_tools": "{model} nie może używać narzędzi Intcad, więc może tylko rozmawiać. Wybierz model obsługujący narzędzia.",

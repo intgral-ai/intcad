@@ -18,8 +18,9 @@ const ui = resolve(mastra, 'packages/playground-ui');
 // (`assistantPickerText`); the English stays as the fallback. Each text must be found exactly
 // once in its file and every one must be met, so a Mastra commit that words or moves one fails
 // the build instead of leaving a text untranslated. Not listed, because this page never shows
-// them: the trigger's own "Model: " and "Select model" (the page gives the trigger its content)
-// and the texts for providers that are not connected (the page lists none).
+// them: the trigger's own "Model: " and "Select model" (the page gives the trigger its content),
+// the "Default" badge (the page names no default model) and the texts for providers that are not
+// connected (the page lists none).
 const PICKER_TEXTS = [
   ['domains/llm/model-picker-panel.tsx', 'placeholder="Search models"', 'placeholder={globalThis.assistantPickerText?.search ?? "Search models"}'],
   [

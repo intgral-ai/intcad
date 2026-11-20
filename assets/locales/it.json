@@ -4192,7 +4192,7 @@
   "ui.agent_chat_limit": "L'agente ha raggiunto il limite di {limit} modifiche per messaggio. Invia un altro messaggio per farlo proseguire.",
   "ui.agent_chat_login_found": "accesso trovato",
   "ui.agent_chat_minimize": "Riduci a una striscia",
-  "ui.agent_chat_mode_all": "Automatico",
+  "ui.agent_chat_mode_all": "Auto",
   "ui.agent_chat_mode_ask": "Chiedi",
   "ui.agent_chat_mode_edits": "Modifiche",
   "ui.agent_chat_model_custom": "Usa personalizzato: {model}",

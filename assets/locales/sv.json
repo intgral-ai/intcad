@@ -4187,7 +4187,7 @@
   "ui.agent_chat_limit": "Agenten nådde gränsen på {limit} ändringar för ett meddelande. Skicka ett nytt meddelande så att den kan fortsätta.",
   "ui.agent_chat_login_found": "inloggning hittad",
   "ui.agent_chat_minimize": "Minimera till ett fält",
-  "ui.agent_chat_mode_all": "Automatisk",
+  "ui.agent_chat_mode_all": "Auto",
   "ui.agent_chat_mode_ask": "Fråga",
   "ui.agent_chat_mode_edits": "Ändringar",
   "ui.agent_chat_model_custom": "Använd egen modell: {model}",

@@ -4468,7 +4468,7 @@
   "ui.agent_chat_limit": "Agentti saavutti yhden viestin {limit} muutoksen rajan. Lähetä uusi viesti, niin se voi jatkaa.",
   "ui.agent_chat_login_found": "kirjautuminen löytyi",
   "ui.agent_chat_minimize": "Pienennä palkiksi",
-  "ui.agent_chat_mode_all": "Automaattinen",
+  "ui.agent_chat_mode_all": "Auto",
   "ui.agent_chat_mode_ask": "Kysy",
   "ui.agent_chat_mode_edits": "Muokkaukset",
   "ui.agent_chat_model_custom": "Käytä mukautettua: {model}",

@@ -4496,7 +4496,7 @@
   "ui.agent_chat_limit": "El agente ha alcanzado el límite de {limit} cambios por mensaje. Envía otro mensaje para que continúe.",
   "ui.agent_chat_login_found": "inicio de sesión encontrado",
   "ui.agent_chat_minimize": "Minimizar a una franja",
-  "ui.agent_chat_mode_all": "Automático",
+  "ui.agent_chat_mode_all": "Auto",
   "ui.agent_chat_mode_ask": "Preguntar",
   "ui.agent_chat_mode_edits": "Ediciones",
   "ui.agent_chat_model_custom": "Usar personalizado: {model}",
