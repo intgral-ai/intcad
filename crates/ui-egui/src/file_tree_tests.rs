@@ -1821,6 +1821,91 @@ fn a_long_opener_notice_keeps_reveal_and_dismiss_inside_a_short_panel() {
     }
 }
 
+/// Two rendered parts overlap only when they share more than half a point in both axes; edges
+/// that merely touch after egui's rounding are still disjoint.
+fn overlapping(a: egui::Rect, b: egui::Rect) -> bool {
+    (a.max.x.min(b.max.x) - a.min.x.max(b.min.x) > 0.5) && (a.max.y.min(b.max.y) - a.min.y.max(b.min.y) > 0.5)
+}
+
+/// The Windows acceptance screenshots at 960x688 showed a notice drawn over the tree and the
+/// folder path. A bottom-up footer's nested vertical scope inherited the whole free area and
+/// drew its content at the top of it. Both window sizes below carry the notice and a batch
+/// summary together: every rendered band stays apart, inside the panel, and dismiss still
+/// answers a real click.
+#[test]
+fn notice_and_batch_summary_keep_path_rows_and_footer_disjoint() {
+    use crate::scenario::{Harness, handle_at, rect_of};
+    use serde_json::json;
+    for (width, height) in [(960.0, 688.0), (850.0, 480.0)] {
+        let scratch = Scratch::new();
+        for index in 0..12 {
+            scratch.file(&format!("row-{index:02}.txt"), "x");
+        }
+        let orphan = scratch.file("orphan.bin", "");
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+        h.call("ui.resize", json!({"width": width, "height": height}));
+        h.app.file_tree = listing(scratch.path());
+        h.app.file_tree.notice = Some((
+            format!(
+                "No application knows how to open URL {} (Error Domain=NSOSStatusErrorDomain Code=-10814 {})",
+                orphan.display(),
+                "detail ".repeat(40)
+            ),
+            true,
+        ));
+        h.app.file_tree.notice_reveal = Some(orphan.clone());
+        let failed = scratch.path().join("row-00.txt");
+        let target = scratch.path().join("sub/row-00.txt");
+        h.app.file_tree.report = Some(Report {
+            action: Action::Copy,
+            results: vec![
+                ItemResult {
+                    source: failed.clone(),
+                    target: target.clone(),
+                    outcome: Outcome::Failed(format!("permission denied {}", "while copying ".repeat(30))),
+                },
+                ItemResult { source: scratch.path().join("row-01.txt"), target: scratch.path().join("sub/row-01.txt"), outcome: Outcome::Done },
+                ItemResult { source: scratch.path().join("row-02.txt"), target: scratch.path().join("sub/row-02.txt"), outcome: Outcome::Skipped },
+            ],
+            cancelled: false,
+            retry: vec![OpItem { source: failed, destination: target, conflict: Conflict::KeepBoth }],
+        });
+        h.frames(8);
+        let panel = rect_of("rail:panel").unwrap_or_else(|| panic!("{width}x{height}: no panel"));
+        let path = rect_of("files:root").unwrap_or_else(|| panic!("{width}x{height}: no folder path"));
+        let rows = rect_of("files:list").unwrap_or_else(|| panic!("{width}x{height}: no rows"));
+        let notice = rect_of("files:notice").unwrap_or_else(|| panic!("{width}x{height}: no notice"));
+        let report = rect_of("files:report").unwrap_or_else(|| panic!("{width}x{height}: no report"));
+        for (name, rect) in [("path", path), ("rows", rows), ("notice", notice), ("report", report)] {
+            assert!(rect.is_positive(), "{width}x{height}: {name} is empty: {rect:?}");
+            assert!(panel.contains_rect(rect), "{width}x{height}: {name} {rect:?} leaves panel {panel:?}");
+        }
+        for (a_name, a, b_name, b) in [
+            ("path", path, "rows", rows),
+            ("path", path, "notice", notice),
+            ("path", path, "report", report),
+            ("rows", rows, "notice", notice),
+            ("rows", rows, "report", report),
+            ("notice", notice, "report", report),
+        ] {
+            assert!(!overlapping(a, b), "{width}x{height}: {a_name} {a:?} overlaps {b_name} {b:?}");
+        }
+        for (name, handle) in [("reveal", "files:notice_reveal"), ("dismiss", "files:notice_dismiss")] {
+            let rect = rect_of(handle).unwrap_or_else(|| panic!("{width}x{height}: no {name} control"));
+            assert!(notice.contains_rect(rect), "{width}x{height}: {name} {rect:?} leaves notice {notice:?}");
+            assert!(panel.contains_rect(rect), "{width}x{height}: {name} {rect:?} leaves panel {panel:?}");
+            assert_eq!(handle_at(handle), Some(rect.center()), "{width}x{height}: {name} is not the hit target at its centre");
+        }
+        h.step(&json!({"click": {"handle": "files:notice_dismiss"}})).unwrap();
+        h.frames(2);
+        assert!(h.app.file_tree.notice.is_none(), "{width}x{height}: a click on dismiss clears the notice");
+        assert!(rect_of("files:notice").is_none(), "{width}x{height}: the notice is no longer drawn");
+        assert!(h.app.file_tree.report.is_some(), "{width}x{height}: dismissing the notice keeps the batch summary");
+    }
+}
+
 /// Click the named row in a Files panel already listing `root`, as a person does, and check the
 /// tree took the keys.
 fn focus_file_row(h: &mut crate::scenario::Harness, name: &str) {
