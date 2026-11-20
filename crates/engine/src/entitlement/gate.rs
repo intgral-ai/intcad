@@ -155,6 +155,7 @@ impl<'a> CommitGate<'a> {
                 return CommitDecision::Drop { code: RefusalCode::CapabilityDenied };
             }
             match self.current_scope {
+                Some(scope) if !scope.is_provable() => return CommitDecision::Drop { code: RefusalCode::AuthRequired },
                 Some(scope) if scope != trusted.scope() => return CommitDecision::Drop { code: RefusalCode::AuthRequired },
                 Some(_) => {}
                 None => return CommitDecision::Drop { code: RefusalCode::AuthUnavailable },
@@ -168,6 +169,9 @@ impl<'a> CommitGate<'a> {
         }
         if !availability.online {
             return CommitDecision::Drop { code: RefusalCode::AuthUnavailable };
+        }
+        if !availability.version_supported {
+            return CommitDecision::Drop { code: RefusalCode::VersionUnsupported };
         }
         if matches!(self.status, Some(OperationStatus::Charged | OperationStatus::Released | OperationStatus::Expired)) {
             return CommitDecision::Drop { code: RefusalCode::OperationFinalized };
@@ -390,6 +394,16 @@ mod tests {
         let operation = operation();
         let decision = CommitGate::new(&operation, Capability::Control, EntryCategory::HumanGuiFree).check();
         assert_eq!(decision, CommitDecision::Allow);
+    }
+
+    #[test]
+    fn an_unsupported_version_cannot_commit() {
+        let scope = scope("acct-version");
+        let trusted = trusted(&scope);
+        let mut availability = online();
+        availability.version_supported = false;
+        let decision = gate(&operation(), &availability, &trusted, &scope, &deadline(60_000), 1_000).check();
+        assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::VersionUnsupported });
     }
 
     #[test]
