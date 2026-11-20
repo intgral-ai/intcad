@@ -552,6 +552,46 @@ struct ServerShared {
     index: Arc<Vec<u8>>,
     pictures: Pictures,
     host: String,
+    #[cfg(test)]
+    finish_gate: Option<Arc<WorkerGate>>,
+}
+
+/// Test-only gate: keeps a worker's join handle unfinished until the test has
+/// observed the retained owner, so "still stopping" is deterministic.
+#[cfg(test)]
+struct WorkerGate {
+    held: Mutex<bool>,
+    released: std::sync::Condvar,
+}
+#[cfg(test)]
+impl WorkerGate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { held: Mutex::new(true), released: std::sync::Condvar::new() })
+    }
+    fn wait(&self) {
+        let mut held = self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while *held {
+            held = self.released.wait(held).unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+    fn release(&self) {
+        *self.held.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+        self.released.notify_all();
+    }
+}
+struct StartOptions {
+    worker_limit: usize,
+    #[cfg(test)]
+    finish_gate: Option<Arc<WorkerGate>>,
+}
+impl StartOptions {
+    fn standard() -> Self {
+        Self { worker_limit: WORKERS, #[cfg(test)] finish_gate: None }
+    }
+    #[cfg(test)]
+    fn partial(worker_limit: usize, gate: Arc<WorkerGate>) -> Self {
+        Self { worker_limit, finish_gate: Some(gate) }
+    }
 }
 impl ServerShared {
     fn failure(&self, error: TransportError) {
@@ -570,6 +610,10 @@ pub(super) struct PageServer {
 }
 impl PageServer {
     pub fn start(assets: PageAssets, pictures: Pictures, authority: Arc<DocumentAuthority>) -> std::io::Result<Self> {
+        Self::start_with(assets, pictures, authority, StartOptions::standard())
+    }
+    fn start_with(assets: PageAssets, pictures: Pictures, authority: Arc<DocumentAuthority>, options: StartOptions) -> std::io::Result<Self> {
+        let StartOptions { worker_limit, #[cfg(test)] finish_gate } = options;
         let (_, raw) = (assets.resolve)("index.html").ok_or_else(|| std::io::Error::other("Assistant index unavailable"))?;
         let index = Arc::new(index_with_bridge(raw).map_err(std::io::Error::other)?);
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
@@ -587,9 +631,19 @@ impl PageServer {
             index,
             pictures,
             host: format!("127.0.0.1:{port}"),
+            #[cfg(test)]
+            finish_gate,
         });
         let mut server = Self { port, listener: Some(listener), workers, shared };
         for slot in 0..WORKERS {
+            if slot >= worker_limit {
+                // Partial pool: the same stopping-owner handoff a failed spawn
+                // performs below. The caller must retain and poll this server.
+                server.shared.failure(TransportError::Io);
+                server.shared.fatal.store(true, std::sync::atomic::Ordering::Release);
+                server.request_stop();
+                break;
+            }
             let listener = match server.listener.as_ref().map(std::net::TcpListener::try_clone) {
                 Some(Ok(listener)) => listener,
                 _ => {
@@ -613,6 +667,10 @@ impl PageServer {
             }
         }
         Ok(server)
+    }
+    #[cfg(test)]
+    fn start_partial(assets: PageAssets, pictures: Pictures, authority: Arc<DocumentAuthority>, worker_limit: usize, gate: Arc<WorkerGate>) -> std::io::Result<Self> {
+        Self::start_with(assets, pictures, authority, StartOptions::partial(worker_limit, gate))
     }
     pub fn port(&self) -> u16 {
         self.port
@@ -676,6 +734,28 @@ impl Drop for PageServer {
         }
     }
 }
+/// A failed-start server the app keeps until its owned workers have stopped.
+/// Dropping this before `Stopped` would detach the partial pool, so only the
+/// stopped server is released; the native owners stay retained elsewhere.
+pub(super) struct FailedStartServer(Option<PageServer>);
+impl FailedStartServer {
+    pub fn retain(mut server: PageServer) -> Self {
+        server.request_stop();
+        Self(Some(server))
+    }
+    pub fn advance(&mut self) -> ServerProgress {
+        let Some(server) = self.0.as_mut() else {
+            return ServerProgress::Stopped;
+        };
+        let progress = server.poll_stop();
+        if progress == ServerProgress::Stopped {
+            // All owned handles are joined now, so releasing the Rust server
+            // cannot detach a worker. Native owners stay retained elsewhere.
+            self.0 = None;
+        }
+        progress
+    }
+}
 fn worker(listener: std::net::TcpListener, shared: Arc<ServerShared>, slot: usize) {
     use std::sync::atomic::Ordering;
     while !shared.stop.load(Ordering::Acquire) {
@@ -713,6 +793,10 @@ fn worker(listener: std::net::TcpListener, shared: Arc<ServerShared>, slot: usiz
                 break;
             }
         }
+    }
+    #[cfg(test)]
+    if let Some(gate) = shared.finish_gate.as_ref() {
+        gate.wait();
     }
 }
 fn read_head(stream: &mut std::net::TcpStream, deadline: Instant) -> Result<Vec<u8>, TransportError> {
@@ -1390,5 +1474,34 @@ mod tests {
         again.request_stop();
         assert!(again.workers.is_empty(), "repeated stop did not reap finished workers");
         assert_eq!(again.poll_stop(), ServerProgress::Stopped);
+    }
+    #[test]
+    fn retained_failed_start_releases_its_server_only_after_owned_workers_stop() {
+        // A partial pool returned as Ok(stopping_server) by production start,
+        // retained through the same wrapper the failed-owner handoff uses.
+        let authority = Arc::new(DocumentAuthority::new());
+        let owner = bound(&authority);
+        let document = authority.begin_document(owner, [1; 32]).unwrap();
+        let pictures: Pictures = Arc::new(Mutex::new(HashMap::new()));
+        let witness = Arc::downgrade(&pictures);
+        let gate = WorkerGate::new();
+        let server = PageServer::start_partial(PageAssets { resolve: assets, font: b"font" }, pictures, authority.clone(), 1, gate.clone()).unwrap();
+        let mut retained = FailedStartServer::retain(server);
+        assert!(authority.enqueue(document, "approval".into()).is_err(), "failed start did not revoke its queue");
+        assert_eq!(retained.advance(), ServerProgress::Stopping);
+        assert!(witness.upgrade().is_some(), "picture ownership was released while an owned worker was unfinished");
+        gate.release();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let progress = retained.advance();
+            if progress == ServerProgress::Stopped {
+                break;
+            }
+            assert_eq!(progress, ServerProgress::Stopping, "retained server left the stopping progression");
+            assert!(Instant::now() < deadline, "owned worker did not stop");
+            std::thread::yield_now();
+        }
+        assert!(witness.upgrade().is_none(), "stopped Rust server still retained its pictures");
+        assert_eq!(retained.advance(), ServerProgress::Stopped, "released server did not stay released");
     }
 }

@@ -27,7 +27,7 @@ use welding::{
 
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::agent_chat::web;
-use crate::assistant_cef_http::{BrowserOwnerId, DocumentAuthority, DocumentId, NavigationIdentity, PageAssets, PageServer, Pictures, ServerProgress};
+use crate::assistant_cef_http::{BrowserOwnerId, DocumentAuthority, DocumentId, FailedStartServer, NavigationIdentity, PageAssets, PageServer, Pictures, ServerProgress};
 use crate::assistant_cef_lifecycle::{advance_owned_close, CloseProgress, Lifecycle, Phase};
 
 #[path = "assistant_cef_frame.rs"]
@@ -79,18 +79,37 @@ thread_local! {
 }
 struct FailedOwners {
     _runtime: CefRuntime,
-    _server: Option<PageServer>,
+    server: Option<FailedStartServer>,
     _host: Option<HostWgpuContext>,
 }
-fn retain_failed_start(runtime: CefRuntime, mut server: Option<PageServer>, host: Option<HostWgpuContext>) {
+fn retain_failed_start(runtime: CefRuntime, server: Option<PageServer>, host: Option<HostWgpuContext>) {
     FAILED_START.store(true, Ordering::Release);
-    if let Some(server) = &mut server { server.request_stop(); }
-    let owners = std::mem::ManuallyDrop::new(FailedOwners { _runtime: runtime, _server: server, _host: host });
+    // Own the stopping server; ordinary logic turns poll it until its workers
+    // have stopped, then release only this Rust server.
+    let server = server.map(FailedStartServer::retain);
+    let owners = std::mem::ManuallyDrop::new(FailedOwners { _runtime: runtime, server, _host: host });
     FAILED_OWNERS.with(|slot| {
         if let Ok(mut slot) = slot.try_borrow_mut() {
             if slot.is_none() { *slot = Some(owners); }
             // A second bundle also remains non-dropping; never replace/release
             // an older owner if an impossible re-entrant failure is observed.
+        }
+    });
+}
+
+/// Poll a retained failed-start server once per ordinary application logic turn.
+/// This runs even without an Assistant or a quit request: the transport stop is
+/// not a quit and authorizes no native shutdown. The runtime and host stay
+/// retained; only the Rust server is dropped, and only after `Stopped`.
+pub fn advance_failed_start() {
+    let _ = FAILED_OWNERS.try_with(|slot| {
+        let Ok(mut slot) = slot.try_borrow_mut() else {
+            return;
+        };
+        if let Some(owners) = slot.as_deref_mut() {
+            if let Some(server) = owners.server.as_mut() {
+                server.advance();
+            }
         }
     });
 }
