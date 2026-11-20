@@ -756,6 +756,22 @@ impl FailedStartServer {
         progress
     }
 }
+/// How long the app may stay idle before polling a retained failed-start server
+/// again. Delayed on purpose: a logic turn is not guaranteed while the window is
+/// idle, and an immediate repaint would spin. This is not the 5 s close barrier:
+/// a failed start never completes a quit and must not cancel or revive one.
+pub(super) const FAILED_START_RETRY: Duration = Duration::from_millis(100);
+
+/// The delay the app must request after advancing a retained failed-start
+/// server, or `None` once the Rust server is released.
+pub(super) fn failed_start_repaint_after(progress: ServerProgress) -> Option<Duration> {
+    match progress {
+        // `Failed`/`Running` are unexpected once stop was requested: keep the
+        // ownership and ask again instead of treating it as released.
+        ServerProgress::Stopping | ServerProgress::Failed | ServerProgress::Running => Some(FAILED_START_RETRY),
+        ServerProgress::Stopped => None,
+    }
+}
 fn worker(listener: std::net::TcpListener, shared: Arc<ServerShared>, slot: usize) {
     use std::sync::atomic::Ordering;
     while !shared.stop.load(Ordering::Acquire) {
@@ -1503,5 +1519,45 @@ mod tests {
         }
         assert!(witness.upgrade().is_none(), "stopped Rust server still retained its pictures");
         assert_eq!(retained.advance(), ServerProgress::Stopped, "released server did not stay released");
+    }
+    #[test]
+    fn retained_failed_start_asks_for_a_delayed_repaint_until_stopped() {
+        // An idle window may never produce another user-driven logic turn.
+        // While an owned worker is unfinished the tick must ask for a delayed
+        // frame; once the server is released it must stop asking.
+        let authority = Arc::new(DocumentAuthority::new());
+        let _owner = bound(&authority);
+        let pictures: Pictures = Arc::new(Mutex::new(HashMap::new()));
+        let gate = WorkerGate::new();
+        let server = PageServer::start_partial(PageAssets { resolve: assets, font: b"font" }, pictures, authority, 1, gate.clone()).unwrap();
+        let mut retained = FailedStartServer::retain(server);
+        assert_eq!(retained.advance(), ServerProgress::Stopping);
+        assert_eq!(failed_start_repaint_after(ServerProgress::Stopping), Some(FAILED_START_RETRY));
+        assert!(!FAILED_START_RETRY.is_zero(), "the retry must be delayed, not a busy spin");
+        gate.release();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let progress = retained.advance();
+            if progress == ServerProgress::Stopped {
+                break;
+            }
+            assert_eq!(progress, ServerProgress::Stopping, "retained server left the stopping progression");
+            assert_eq!(failed_start_repaint_after(progress), Some(FAILED_START_RETRY));
+            assert!(Instant::now() < deadline, "owned worker did not stop");
+            std::thread::yield_now();
+        }
+        assert_eq!(failed_start_repaint_after(ServerProgress::Stopped), None, "a released owner kept the app awake");
+        assert_eq!(retained.advance(), ServerProgress::Stopped);
+        assert_eq!(failed_start_repaint_after(ServerProgress::Stopped), None);
+    }
+    #[test]
+    fn failed_start_repaint_never_treats_unexpected_progress_as_released() {
+        // A retained failed-start owner requested stop, so Failed/Running are
+        // unexpected. They must keep asking for a bounded retry instead of
+        // being treated as released while owned work may remain.
+        assert_eq!(failed_start_repaint_after(ServerProgress::Failed), Some(FAILED_START_RETRY));
+        assert_eq!(failed_start_repaint_after(ServerProgress::Running), Some(FAILED_START_RETRY));
+        assert_eq!(failed_start_repaint_after(ServerProgress::Stopping), Some(FAILED_START_RETRY));
+        assert_eq!(failed_start_repaint_after(ServerProgress::Stopped), None);
     }
 }

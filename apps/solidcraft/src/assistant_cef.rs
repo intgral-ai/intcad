@@ -101,17 +101,22 @@ fn retain_failed_start(runtime: CefRuntime, server: Option<PageServer>, host: Op
 /// This runs even without an Assistant or a quit request: the transport stop is
 /// not a quit and authorizes no native shutdown. The runtime and host stay
 /// retained; only the Rust server is dropped, and only after `Stopped`.
-pub fn advance_failed_start() {
-    let _ = FAILED_OWNERS.try_with(|slot| {
+/// While an owned worker is still stopping, ask for one delayed repaint: an
+/// idle window may produce no further logic turn, and a delayed tick is not a
+/// busy spin. A re-entrant borrow keeps the retained work and asks again rather
+/// than silently treating it as released.
+pub fn advance_failed_start(ctx: &egui::Context) {
+    let after = FAILED_OWNERS.try_with(|slot| {
         let Ok(mut slot) = slot.try_borrow_mut() else {
-            return;
+            return Some(crate::assistant_cef_http::FAILED_START_RETRY);
         };
-        if let Some(owners) = slot.as_deref_mut() {
-            if let Some(server) = owners.server.as_mut() {
-                server.advance();
-            }
-        }
+        let owners = slot.as_deref_mut()?;
+        let server = owners.server.as_mut()?;
+        crate::assistant_cef_http::failed_start_repaint_after(server.advance())
     });
+    if let Ok(Some(after)) = after {
+        ctx.request_repaint_after(after);
+    }
 }
 
 thread_local! {

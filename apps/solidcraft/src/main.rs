@@ -270,9 +270,10 @@ impl eframe::App for App {
         self.solve.logic(ctx);
         // A retained failed-start page server is reaped on ordinary logic turns,
         // with no Assistant and no quit intent; only its stopped Rust server is
-        // released there.
+        // released there. While its workers stop, it keeps a delayed repaint
+        // scheduled so an idle window still advances.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        crate::assistant_cef::advance_failed_start();
+        crate::assistant_cef::advance_failed_start(ctx);
         // The Assistant's page asks and is told with the app's logic, painted or not.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         if let Some(cef) = self.assistant_cef.as_mut() {
