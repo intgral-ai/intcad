@@ -62,11 +62,22 @@ struct Accounting {
     budget: solidcraft_engine::entitlement::BudgetTable,
 }
 
+/// What may authorize a charged tool call at this server boundary.
+enum Authority {
+    /// No host billing authority is installed. Charged tools are refused before dispatch.
+    Closed,
+    /// The host installed both billing and the verified safe-stop budget.
+    Metered(Accounting),
+    /// The crate's own tests only. Production never compiles this variant.
+    #[cfg(test)]
+    LocalTest,
+}
+
 pub struct Server {
     backend: Box<dyn Backend>,
     initialized: bool,
     scope: Option<PathScope>,
-    accounting: Option<Accounting>,
+    authority: Authority,
 }
 
 /// The design files a call opens or saves (#7181): `open` and `save`, and the commands they run
@@ -100,8 +111,17 @@ fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
 }
 
 impl Server {
+    /// A default external server: charged tools stay fail-closed until the host installs billing
+    /// with [`Server::with_billing`] and supplies a trusted operation context. Free helpers
+    /// (protocol, render, catalog, diagnostics) keep working, as ordinary CAD and local files do.
     pub fn new(backend: Box<dyn Backend>) -> Self {
-        Self { backend, initialized: false, scope: None, accounting: None }
+        Self { backend, initialized: false, scope: None, authority: Authority::Closed }
+    }
+    /// The crate's own tests. Unmetered local calls are not reachable in a production build: this
+    /// constructor does not exist outside `cfg(test)`, so the unmetered path is sealed.
+    #[cfg(test)]
+    pub(crate) fn new_local_for_tests(backend: Box<dyn Backend>) -> Self {
+        Self { backend, initialized: false, scope: None, authority: Authority::LocalTest }
     }
     /// Confine the files tool calls may reach to `scope` (`None`: anywhere). `intcad-cli mcp`
     /// always sets one unless started with `--allow-any-path` (docs/mcp.md).
@@ -111,14 +131,13 @@ impl Server {
     }
     /// Install the host's billing authority and the verified safe-stop budget. A charged tool
     /// without a host-minted [`ToolCallContext`] is refused before dispatch, so a source label or
-    /// request id can never stand in for admission. Until the desktop/headless lifecycle installs
-    /// both, `Server::new` keeps its local embedded behaviour.
+    /// request id can never stand in for admission.
     pub fn with_billing(
         mut self,
         billing: Box<dyn solidcraft_engine::entitlement::BillingPort>,
         budget: solidcraft_engine::entitlement::BudgetTable,
     ) -> Self {
-        self.accounting = Some(Accounting { billing, budget });
+        self.authority = Authority::Metered(Accounting { billing, budget });
         self
     }
     pub fn backend(&mut self) -> &mut dyn Backend {
@@ -252,10 +271,10 @@ impl Server {
                 self.scope = self.scope.take().map(|s| s.with_design(open.as_deref()));
                 let scope = self.scope.clone();
                 let context = self.backend.tool_context(name);
-                let accounting = self.accounting.as_mut();
+                let authority = &mut self.authority;
                 let backend = self.backend.as_mut();
-                let mut result = vfs::scoped(scope, || match accounting {
-                    Some(accounting) => match context {
+                let mut result = vfs::scoped(scope, || match authority {
+                    Authority::Metered(accounting) => match context {
                         Some(context) => {
                             let reply =
                                 crate::account::call_tool_with(backend, name, &args, &context, &accounting.budget, accounting.billing.as_mut());
@@ -267,7 +286,13 @@ impl Server {
                             "this charged tool has no host-minted logical operation context",
                         )),
                     },
-                    None => call_tool(backend, name, &args),
+                    Authority::Closed if crate::account::tool_is_free(name) => call_tool(backend, name, &args),
+                    Authority::Closed => crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
+                        solidcraft_engine::entitlement::RefusalCode::AuthUnavailable,
+                        "no host billing authority is installed for this charged MCP tool",
+                    )),
+                    #[cfg(test)]
+                    Authority::LocalTest => call_tool(backend, name, &args),
                 });
                 // So does the folder of each design file the call opened or saved: the call reached
                 // it, so it was one of the agent's folders already. Only paths given in full: a

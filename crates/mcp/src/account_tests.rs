@@ -105,7 +105,9 @@ fn one_batch_of_n_steps_admits_once() {
 fn nested_batch_does_not_recharge() {
     let mut backend = Headless::default();
     let mut billing = CountingBilling::default();
-    let ctx = context("op_mcp_nested_0001");
+    let ctx = context("op_mcp_nested_0001")
+        .with_deadline(ConservativeDeadline::new(MonotonicInstant::from_millis(1_000), Duration::from_secs(60)))
+        .with_now(MonotonicInstant::from_millis(2_000));
     let outer = call_tool_with(&mut backend, "batch", &json!({"commands":[step(10.0),step(20.0)]}), &ctx, &verified_budget(), &mut billing);
     assert_eq!((billing.admits, billing.commits), (1, 1));
     let nested_ctx = outer.nested_context();
@@ -202,20 +204,85 @@ fn dfm_report_with_violations_still_charges_once() {
 }
 
 #[test]
-fn dfm_failure_releases_without_charge() {
-    let mut backend = ScriptedBackend { calls: 0, reply: Err("dfm runner failed".into()) };
+fn dfm_failure_with_typed_no_effect_releases_without_charge() {
+    let mut backend = ScriptedBackend {
+        calls: 0,
+        reply: Ok(json!({"ok":false,"completed":0,"results":[],
+            "failed":{"index":0,"command":"dfm.check","error":"dfm runner failed","stage":"runner"},
+            "rolled_back":true,"undone":0,"applied":[],"not_run":[0]})),
+    };
     let mut billing = CountingBilling::default();
     let reply = call_tool_with(
         &mut backend,
-        "execute",
-        &json!({"command":"dfm.check","params":{}}),
+        "batch",
+        &json!({"commands":[{"command":"dfm.check","params":{}}]}),
         &context("op_mcp_dfm_fail_0001"),
         &verified_budget(),
         &mut billing,
     );
     assert!(reply.is_error());
     assert_eq!((billing.admits, billing.commits, billing.releases), (1, 0, 1));
-    assert_eq!(backend.calls, 1);
+    assert_eq!(backend.calls, 1, "one outer DFM batch, one backend call");
+}
+
+#[test]
+fn ambiguous_dfm_runner_error_stays_unknown_and_never_releases() {
+    let mut backend = ScriptedBackend { calls: 0, reply: Err("dfm runner failed".into()) };
+    let mut billing = CountingBilling::default();
+    let reply = call_tool_with(
+        &mut backend,
+        "execute",
+        &json!({"command":"dfm.check","params":{}}),
+        &context("op_mcp_dfm_ambiguous_0001"),
+        &verified_budget(),
+        &mut billing,
+    );
+    assert!(reply.is_error());
+    assert_eq!(*reply.outcome(), CallOutcome::Unknown);
+    assert_eq!(reply_body(&reply)["code"], "OP_OUTCOME_UNKNOWN");
+    assert_eq!(reply_body(&reply)["operationId"], "op_mcp_dfm_ambiguous_0001");
+    assert_eq!((billing.admits, billing.commits, billing.releases), (1, 1, 0), "no effect was proved, so no release");
+}
+
+#[test]
+fn expectation_mismatch_still_charges_the_retained_cad_effect() {
+    let mut backend = Headless::default();
+    let mut billing = CountingBilling::default();
+    let reply = call_tool_with(
+        &mut backend,
+        "execute",
+        &json!({
+            "command":"solid.box",
+            "params":{"length":10,"width":10,"height":5},
+            "expect":{"bodies":99},
+        }),
+        &context("op_mcp_expectation_0001"),
+        &verified_budget(),
+        &mut billing,
+    );
+    assert!(reply.is_error(), "the expectation mismatch is still reported as an error");
+    assert_eq!(reply_body(&reply)["expectation"]["ok"], false, "{}", reply.value());
+    assert_eq!(reply_body(&reply)["created_bodies"], json!(["Body1"]), "the completed command result is retained");
+    assert_eq!(*reply.outcome(), CallOutcome::PartialRetained);
+    assert_eq!((billing.admits, billing.commits, billing.releases), (1, 1, 0), "a retained CAD effect is charged even when `expect` fails");
+}
+
+#[test]
+fn ambiguous_post_dispatch_error_stays_unknown_without_release() {
+    let mut backend = ScriptedBackend { calls: 0, reply: Err("the app did not answer engine.execute; it may have run".into()) };
+    let mut billing = CountingBilling::default();
+    let reply = call_tool_with(
+        &mut backend,
+        "execute",
+        &json!({"command":"solid.box","params":{"length":10,"width":10,"height":5}}),
+        &context("op_mcp_ambiguous_0001"),
+        &verified_budget(),
+        &mut billing,
+    );
+    assert!(reply.is_error());
+    assert_eq!(*reply.outcome(), CallOutcome::Unknown);
+    assert_eq!(reply_body(&reply)["code"], "OP_OUTCOME_UNKNOWN");
+    assert_eq!((billing.admits, billing.commits, billing.releases), (1, 1, 0));
 }
 
 #[test]
@@ -646,4 +713,44 @@ fn free_human_entry_tool_is_never_charged_or_admitted() {
     assert!(!reply.is_error(), "{}", reply.value());
     assert_eq!(reply.outcome(), &CallOutcome::Free);
     assert_eq!((billing.admits, billing.commits, billing.releases), (0, 0, 0));
+}
+
+#[test]
+fn nested_continuation_without_an_active_deadline_is_refused() {
+    let mut backend = Headless::default();
+    let mut billing = CountingBilling::default();
+    let outer = call_tool_with(
+        &mut backend,
+        "batch",
+        &json!({"commands":[step(10.0)]}),
+        &context("op_mcp_nested_no_deadline_0001"),
+        &verified_budget(),
+        &mut billing,
+    );
+    assert_eq!((billing.admits, billing.commits), (1, 1));
+    let nested = outer.nested_context();
+    let inner = call_tool_with(&mut backend, "batch", &json!({"commands":[step(20.0)]}), &nested, &verified_budget(), &mut billing);
+    assert!(inner.is_error());
+    assert_eq!(inner.outcome(), &CallOutcome::Refused(RefusalCode::UnsafeToStart));
+    assert_eq!((billing.admits, billing.commits, billing.releases), (1, 1, 0), "a refused nested hook never buys or settles anything");
+}
+
+#[test]
+fn default_server_charged_tool_is_refused_even_with_a_context() {
+    let (backend, calls) = context_backend(Some(context("op_mcp_closed_server_0001")));
+    let mut server = crate::Server::new(Box::new(backend));
+    let result = server_call(&mut server, "measure", json!({}));
+    assert_eq!(result["isError"], true, "{result}");
+    assert_eq!(result["structuredContent"]["errorDetails"]["code"], "OP_REFUSED");
+    assert_eq!(result["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE");
+    assert_eq!(calls.get(), 0, "the default external server has no host authority and never dispatch");
+}
+
+#[test]
+fn default_server_still_serves_a_free_helper() {
+    let (backend, calls) = context_backend(None);
+    let mut server = crate::Server::new(Box::new(backend));
+    let result = server_call(&mut server, "skill_reference", json!({"skill":"solidcraft-modeling"}));
+    assert_ne!(result["isError"], true, "{result}");
+    assert_eq!(calls.get(), 0);
 }

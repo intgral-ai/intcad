@@ -56,7 +56,12 @@ impl ToolCallContext {
     }
 
     /// A continuation inside the same outer operation. It never admits or settles again.
-    pub fn nested_context(&self, operation: OperationId) -> Self {
+    ///
+    /// This is sealed to the crate's tests until Task 8/9 bind the parent's admission and
+    /// deadline into a production forwarding context. A production context cannot set
+    /// `nested`, so an external caller cannot use it to skip admission.
+    #[cfg(test)]
+    fn nested_context(&self, operation: OperationId) -> Self {
         Self {
             operation,
             capability: self.capability,
@@ -67,6 +72,18 @@ impl ToolCallContext {
             admission: self.admission.clone(),
             nested: true,
         }
+    }
+
+    /// A nested continuation is valid only with a real parent admission and an authorization
+    /// window that is still active. Without both, a forwarded call is refused until Task 9.
+    fn has_active_parent(&self) -> bool {
+        let admitted = self.admission.as_ref().is_some_and(|admission| matches!(admission, Admission::NewlyAdmitted { .. }));
+        let remaining = self.remaining.is_some_and(|remaining| !remaining.is_zero());
+        let deadline_active = match (self.deadline.as_ref(), self.now) {
+            (Some(deadline), Some(now)) => deadline.remaining(now).is_some(),
+            _ => false,
+        };
+        admitted && remaining && deadline_active
     }
 
     pub fn operation(&self) -> &OperationId {
@@ -129,7 +146,9 @@ impl MeteredReply {
     }
 
     /// A continuation of this call: a batch step, a bridged tool or a forwarded DFM request.
-    pub fn nested_context(&self) -> ToolCallContext {
+    /// Test-only until Task 8/9 bind a production parent admission and active deadline.
+    #[cfg(test)]
+    pub(crate) fn nested_context(&self) -> ToolCallContext {
         self.context.nested_context(self.operation.clone())
     }
 
@@ -204,6 +223,12 @@ pub fn call_tool_with(
         return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone() };
     }
     if context.nested {
+        if !context.has_active_parent() {
+            return MeteredReply::refused(
+                context,
+                Refusal::new(RefusalCode::UnsafeToStart, "a forwarded MCP call has no active parent operation or deadline"),
+            );
+        }
         let value = crate::tools::call_tool(backend, name, args);
         let outcome = classify_reply(&value);
         return MeteredReply { value, operation, outcome, context: context.clone() };
@@ -324,38 +349,52 @@ fn classify_reply(value: &Value) -> CallOutcome {
         return CallOutcome::Succeeded;
     }
     let Some(body) = reply_body(value) else {
-        return if reply_text(value).is_some_and(|text| text.starts_with("still running:") || text.contains("was lost while")) {
-            CallOutcome::Unknown
-        } else {
-            CallOutcome::FailedNoEffect
-        };
+        let text = reply_text(value).unwrap_or_default();
+        if text.starts_with("still running:") || text.contains("was lost while") {
+            return CallOutcome::Unknown;
+        }
+        let no_effect = text.starts_with("not run:") || text.contains("was not sent") || text.starts_with("the app is not running");
+        return if no_effect { CallOutcome::FailedNoEffect } else { CallOutcome::Unknown };
     };
     if body.get("pending") == Some(&Value::Bool(true)) || body.get("outcomeUnknown") == Some(&Value::Bool(true)) {
         return CallOutcome::Unknown;
     }
+    // A typed proof that the request never reached the engine.
     if body.get("notSent") == Some(&Value::Bool(true)) {
         return CallOutcome::FailedNoEffect;
     }
+    // A typed checkpoint result: restored means no retained change; restored:false is the
+    // opposite and must be charged.
     if body.get("restored") == Some(&Value::Bool(true)) {
         return CallOutcome::FailedNoEffect;
     }
     if body.get("restored") == Some(&Value::Bool(false)) {
         return CallOutcome::PartialRetained;
     }
+    // A batch reports its own applied steps. Full rollback and an empty applied list are
+    // positive no-effect proof; a non-empty list is a retained effect.
     if body.get("rolled_back") == Some(&Value::Bool(true)) {
         return CallOutcome::FailedNoEffect;
     }
     if let Some(applied) = body.get("applied").and_then(Value::as_array) {
         return if applied.is_empty() { CallOutcome::FailedNoEffect } else { CallOutcome::PartialRetained };
     }
-    if body.get("ok") == Some(&Value::Bool(false)) {
-        let applied = body.get("applied").and_then(Value::as_array).map_or(0, Vec::len);
-        return if applied == 0 { CallOutcome::FailedNoEffect } else { CallOutcome::PartialRetained };
+    // An expectation check runs after the command completed. The write and stamp are retained,
+    // so a mismatch is still a charged partial-retained result, never a free failure.
+    if body.get("expectation").is_some_and(|expectation| expectation.get("ok") != Some(&Value::Bool(true))) {
+        return CallOutcome::PartialRetained;
     }
-    if body.get("error").and_then(Value::as_str).is_some_and(|text| text.starts_with("still running:") || text.contains("was lost while")) {
-        return CallOutcome::Unknown;
+    // Other typed batch failures: a checkpoint failure or zero completed steps proves that no
+    // step ran. Anything else may have retained a partial effect, and stays unknown.
+    if body.get("failed").is_some() {
+        if body.get("failed").and_then(|failed| failed.get("stage")).and_then(Value::as_str) == Some("checkpoint") {
+            return CallOutcome::FailedNoEffect;
+        }
+        if body.get("completed").and_then(Value::as_u64) == Some(0) && body.get("results").and_then(Value::as_array).is_none_or(Vec::is_empty) {
+            return CallOutcome::FailedNoEffect;
+        }
     }
-    CallOutcome::FailedNoEffect
+    CallOutcome::Unknown
 }
 
 fn reply_body(value: &Value) -> Option<Value> {

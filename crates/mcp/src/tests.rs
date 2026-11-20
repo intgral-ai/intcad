@@ -428,7 +428,7 @@ fn guarded_mcp_schema_and_direct_tool_validate_before_effects() {
             assert_eq!(reply["structuredContent"]["error"]["code"], "INVALID_REQUEST", "guard must precede expect: {reply}");
             assert!(b.calls.is_empty());
             let count = b.count.clone();
-            let mut s = Server::new(Box::new(b));
+            let mut s = crate::Server::new_local_for_tests(Box::new(b));
             assert_eq!(raw_tool(&mut s, name, args)["error"]["code"], -32602);
             assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
         }
@@ -449,7 +449,7 @@ fn guarded_mcp_schema_and_direct_tool_validate_before_effects() {
             assert_eq!(reply["structuredContent"]["error"]["code"], "INVALID_REQUEST", "{reply}");
             assert!(b.calls.is_empty());
             let count = b.count.clone();
-            assert_eq!(raw_tool(&mut Server::new(Box::new(b)), "batch", args)["error"]["code"], -32602);
+            assert_eq!(raw_tool(&mut crate::Server::new_local_for_tests(Box::new(b)), "batch", args)["error"]["code"], -32602);
             assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
         }
     }
@@ -981,7 +981,7 @@ fn guarded_headless_checkpoint_policy_and_native_failure_bodies() {
 }
 
 fn server() -> Server {
-    Server::new(Box::new(Headless::default()))
+    crate::Server::new_local_for_tests(Box::new(Headless::default()))
 }
 
 fn panel_headless() -> Headless {
@@ -1021,7 +1021,7 @@ fn headless_panel_single_batch_and_script_keep_one_backend_and_never_change_the_
 }
 #[test]
 fn mcp_panel_tools_publish_structured_errors_and_committed_state_through_shared_backend() {
-    let mut s = Server::new(Box::new(panel_headless()));
+    let mut s = crate::Server::new_local_for_tests(Box::new(panel_headless()));
     let input = panel_mcp_steps()[0].clone();
     let result = tool(&mut s, "execute", input);
     assert_eq!(result["layout"]["instances"][0]["id"], "log");
@@ -2832,7 +2832,7 @@ fn compare_picture_returns_the_overlay_as_an_image() {
     let recovery = base.join("recovery");
     std::fs::create_dir_all(&recovery).unwrap();
     let scope = crate::agent_scope_with(Some(recovery.clone()), []);
-    let mut s = Server::new(Box::new(Headless::default())).with_path_scope(Some(scope));
+    let mut s = crate::Server::new_local_for_tests(Box::new(Headless::default())).with_path_scope(Some(scope));
     tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 20, "width": 10, "height": 30}}));
     // A white rectangle on grey with the box's front-view proportions (20 x 30 mm).
     let (w, h) = (200u32, 300u32);
@@ -2883,7 +2883,7 @@ fn the_default_folders_are_the_designs_the_recovery_folder_and_the_scratch_folde
     let mut session = solidcraft_engine::Session::default();
     session.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10})).unwrap();
     session.execute("file.save_as", &json!({"path": at(&proj, "part.solidcraft")})).unwrap();
-    let mut s = Server::new(Box::new(Headless::new(session))).with_path_scope(Some(scope));
+    let mut s = crate::Server::new_local_for_tests(Box::new(Headless::new(session))).with_path_scope(Some(scope));
     // Legitimate work in the design's folder: export, save, open, screenshots, the recovery folder.
     tool(&mut s, "export", json!({"path": at(&proj, "part.step")}));
     tool(&mut s, "execute", json!({"command": "parameters.export", "params": {"path": at(&proj, "params.csv")}}));
@@ -2925,7 +2925,7 @@ fn a_folder_the_agent_saved_a_design_in_stays_its_folder() {
     let mut session = solidcraft_engine::Session::default();
     session.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10})).unwrap();
     session.execute("file.save_as", &json!({"path": at(&proj, "part.solidcraft")})).unwrap();
-    let mut s = Server::new(Box::new(Headless::new(session))).with_path_scope(Some(PathScope::new([])));
+    let mut s = crate::Server::new_local_for_tests(Box::new(Headless::new(session))).with_path_scope(Some(PathScope::new([])));
     tool(&mut s, "export", json!({"path": at(&proj, "part.step")}));
     tool(&mut s, "new_design", json!({}));
     tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 5, "width": 5, "height": 5}}));
@@ -2978,7 +2978,7 @@ fn tool_calls_stay_inside_the_agents_folders() {
     assert!(defaults.roots().contains(&std::fs::canonicalize(&root).unwrap()), "{defaults:?}");
     assert!(!defaults.roots().contains(&std::fs::canonicalize(std::env::temp_dir()).unwrap()), "{defaults:?}");
     // Only `root` here, to tell inside from outside within the temporary folder.
-    let mut s = Server::new(Box::new(Headless::default())).with_path_scope(Some(PathScope::new([root.clone()])));
+    let mut s = crate::Server::new_local_for_tests(Box::new(Headless::default())).with_path_scope(Some(PathScope::new([root.clone()])));
     tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10}}));
     tool(&mut s, "save", json!({"path": at(&root, "part.solidcraft")}));
     tool(&mut s, "export", json!({"path": at(&root, "part.step")}));
@@ -3064,7 +3064,7 @@ fn short_names_child() {
     use solidcraft_engine::io::vfs::windows_refusal;
     let temp = std::env::temp_dir();
     assert!(windows_refusal(&temp.to_string_lossy()).is_some_and(|why| why.contains("8.3")), "{}", temp.display());
-    let mut s = Server::new(Box::new(Headless::default())).with_path_scope(Some(crate::agent_scope([])));
+    let mut s = crate::Server::new_local_for_tests(Box::new(Headless::default())).with_path_scope(Some(crate::agent_scope([])));
     tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10}}));
     if renders() {
         tool(&mut s, "screenshot", json!({"width": 32, "height": 32}));
@@ -3165,7 +3165,7 @@ fn a_bridged_server_sends_the_folders_the_agent_saved_designs_in() {
         }
     });
     let remote = crate::Remote::connect_with_token(&addr, Some("0123456789abcdef0123456789abcdef")).unwrap();
-    let mut s = Server::new(Box::new(remote)).with_path_scope(Some(PathScope::new([])));
+    let mut s = crate::Server::new_local_for_tests(Box::new(remote)).with_path_scope(Some(PathScope::new([])));
     let r = raw_tool(&mut s, "save", json!({"path": at(&other, "x.solidcraft")}));
     assert_eq!(r["result"]["isError"], json!(true), "{r}");
     tool(&mut s, "save", json!({"path": "relative/y.solidcraft"}));
@@ -5465,7 +5465,7 @@ fn describe_command_and_strict_parameter_checking() {
 
     let mut headless = Headless::default();
     headless.session.param_check = solidcraft_engine::schema::ParamCheck::Strict;
-    let mut s = Server::new(Box::new(headless));
+    let mut s = crate::Server::new_local_for_tests(Box::new(headless));
     call(&mut s, 1, "initialize", json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
     let r = raw_tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 5, "width": 5, "height": 5, "operaton": "cut"}}));
     assert_eq!(r["result"]["isError"], json!(true), "{r}");
@@ -5491,7 +5491,7 @@ fn a_bridged_server_checks_calls_at_its_param_check_level() {
     });
     let bridged = |level| {
         let remote = crate::Remote::connect_with_token(&addr, Some("0123456789abcdef0123456789abcdef")).unwrap().with_param_check(level);
-        Server::new(Box::new(remote))
+        crate::Server::new_local_for_tests(Box::new(remote))
     };
     let sent = |what: &str| seen.lock().unwrap().1.iter().filter(|w| w.as_str() == what).count();
     let text = |r: &Value| r["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string();
@@ -5551,7 +5551,7 @@ fn a_bridged_server_leaves_the_check_to_an_app_that_makes_it() {
         }
     });
     let remote = crate::Remote::connect_with_token(&addr, Some("0123456789abcdef0123456789abcdef")).unwrap().with_param_check(ParamCheck::Strict);
-    let mut s = Server::new(Box::new(remote));
+    let mut s = crate::Server::new_local_for_tests(Box::new(remote));
     let sent = |what: &str| seen.lock().unwrap().1.iter().filter(|w| w.as_str() == what).count();
     let newer = json!({"command": "solid.box", "params": {"length": 5, "width": 5, "height": 5, "a_newer_key": 1}});
 
@@ -5580,7 +5580,7 @@ fn a_bridged_server_at_strict_refuses_an_unconfirmed_reply() {
             _ => json!({"ok": true, "result": {"created_bodies": ["Box1"]}, "param_check": echo}),
         });
         let remote = crate::Remote::connect_with_token(&addr, Some("0123456789abcdef0123456789abcdef")).unwrap().with_param_check(ParamCheck::Strict);
-        let mut s = Server::new(Box::new(remote));
+        let mut s = crate::Server::new_local_for_tests(Box::new(remote));
         let sent = |what: &str| seen.lock().unwrap().1.iter().filter(|w| w.as_str() == what).count();
         let r = raw_tool(&mut s, "execute", json!({"command": "solid.sphere", "params": {"radius": 2}}));
         assert_eq!(r["result"]["isError"], json!(true), "{r}");
@@ -5600,7 +5600,7 @@ fn auto_session_bridges_to_a_late_app_only_while_empty() {
     // A port nothing listens on: the bridge exists, its calls say the app is not running.
     let port = Rc::new(Cell::new(None::<u16>));
     let seen = port.clone();
-    let mut s = Server::new(Box::new(crate::Auto::new(Headless::default(), Box::new(move || seen.get()), None)));
+    let mut s = crate::Server::new_local_for_tests(Box::new(crate::Auto::new(Headless::default(), Box::new(move || seen.get()), None)));
     let text = |r: &Value| r["result"]["content"].as_array().unwrap().iter().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n");
 
     let r = raw_tool(&mut s, "list_commands", json!({}));
@@ -5617,14 +5617,14 @@ fn auto_session_bridges_to_a_late_app_only_while_empty() {
     // The headless session's `--param-check` level goes on checking the bridged calls.
     let mut headless = Headless::default();
     headless.session.param_check = solidcraft_engine::schema::ParamCheck::Strict;
-    let mut strict = Server::new(Box::new(crate::Auto::new(headless, Box::new(|| Some(1)), None)));
+    let mut strict = crate::Server::new_local_for_tests(Box::new(crate::Auto::new(headless, Box::new(|| Some(1)), None)));
     raw_tool(&mut strict, "inspect_design", json!({}));
     assert!(strict.backend().has_ui());
     assert_eq!(strict.backend().param_check(), solidcraft_engine::schema::ParamCheck::Strict);
 
     // With work in the headless session, the app showing up changes nothing.
     port.set(None);
-    let mut s = Server::new(Box::new(crate::Auto::new(
+    let mut s = crate::Server::new_local_for_tests(Box::new(crate::Auto::new(
         Headless::default(),
         Box::new({
             let p = port.clone();

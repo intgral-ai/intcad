@@ -572,9 +572,10 @@ fn text_result(v: &Value, is_error: bool) -> Value {
     r
 }
 
-/// Run a tool without admission. This is the local embedded entry used by a server that has not
-/// installed host billing authority; the external MCP boundary must use [`crate::call_tool_with`]
-/// (through [`crate::Server::with_billing`]) so a charged call cannot bypass the operation gate.
+/// Run a tool without admission. This is the internal unmetered body; the external MCP boundary
+/// must use [`crate::call_tool_with`] (through [`crate::Server::with_billing`]) so a charged call
+/// cannot bypass the operation gate. A default [`crate::Server`] refuses charged tools before
+/// reaching this function; only free helpers and the crate's sealed tests call it directly.
 /// Failures are tool results with `isError: true` (the model sees the message); nothing here
 /// panics on hostile arguments.
 pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> Value {
