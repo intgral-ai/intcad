@@ -129,12 +129,22 @@ fn auxiliary_method(method: &str) -> bool {
 /// Methods that start a native file operation answered later by a worker/save path, outside
 /// the typed admission carried into the current request. A controlled entry cannot carry that
 /// admission into their eventual commit yet, so it is refused before any admission or work.
-fn starts_async_file_work(method: &str, params: &Value) -> bool {
-    method == "ui.file" || (method == "ui.home" && params.get("sample").is_some())
+/// `ui.documents` can launch an asynchronous save through its `answer` or `changed_on_disk`
+/// fields; navigation, tab moves and prompts that only ask for an answer are not included.
+fn starts_async_native_work(method: &str, params: &Value) -> bool {
+    match method {
+        "ui.file" => true,
+        "ui.home" => params.get("sample").is_some(),
+        "ui.documents" => {
+            matches!(params.get("answer").and_then(Value::as_str), Some("save"))
+                || matches!(params.get("changed_on_disk").and_then(Value::as_str), Some("save_copy" | "overwrite"))
+        }
+        _ => false,
+    }
 }
 
-fn async_file_refusal(req: &ControlRequest) -> Option<Refusal> {
-    (!free_entry(req.entry) && starts_async_file_work(&req.method, &req.params))
+fn async_native_refusal(req: &ControlRequest) -> Option<Refusal> {
+    (!free_entry(req.entry) && starts_async_native_work(&req.method, &req.params))
         .then(|| Refusal::new(RefusalCode::UnsafeToStart, "this controlled entry starts a native file operation that has no durable commit path yet"))
 }
 
@@ -327,7 +337,7 @@ pub fn admit_control_request(req: &ControlRequest, budget: &BudgetTable, billing
     if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
         return Admission::Allowed;
     }
-    if let Some(refusal) = async_file_refusal(req) {
+    if let Some(refusal) = async_native_refusal(req) {
         return Admission::Refused(refusal);
     }
     if !budget.is_verified(capability, req.entry) {
@@ -374,13 +384,17 @@ pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result
     }
 }
 
-/// Release a grant taken earlier when a later seam discovers that the async path cannot carry it
-/// to a durable commit. Free entries have no grant. This never dispatches or grants anything.
-pub(crate) fn release_unstarted(app: &mut SolveApp, req: &ControlRequest) {
-    if let Some(Admission::NewlyAdmitted { operation, .. }) = &req.admission
+/// Consume a grant taken earlier when a later seam discovers that the async path cannot carry it
+/// to a durable commit. Taking the typed admission out of the request prevents a released
+/// request from being reused as if it were still admitted. Release bookkeeping (ledger state,
+/// server finalize, deadlines) remains Task 8/9 work; this only prevents reuse and makes a
+/// best-effort `release` call. Free entries have no grant.
+pub(crate) fn release_unstarted(app: &mut SolveApp, req: &mut ControlRequest) {
+    let admission = req.admission.take();
+    if let Some(Admission::NewlyAdmitted { operation, .. }) = admission
         && let Some(billing) = app.billing.as_mut()
     {
-        let _ = billing.release(operation, RefusalCode::UnsafeToStart);
+        let _ = billing.release(&operation, RefusalCode::UnsafeToStart);
     }
 }
 
@@ -888,7 +902,7 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
     if let Some(refusal) = entry_refusal(req) {
         return admission_refusal(&refusal);
     }
-    if let Some(refusal) = async_file_refusal(req) {
+    if let Some(refusal) = async_native_refusal(req) {
         return admission_refusal(&refusal);
     }
     if chat_turn_cancelled(req.chat_turn.as_deref()) {
@@ -2043,9 +2057,10 @@ mod tests {
         admission
     }
 
-    /// A billing double whose admission count survives being installed in the app.
+    /// A billing double whose admission/release counts survive being installed in the app.
     struct SharedCounting {
         admits: std::sync::Arc<AtomicUsize>,
+        releases: std::sync::Arc<AtomicUsize>,
     }
 
     impl BillingPort for SharedCounting {
@@ -2072,15 +2087,72 @@ mod tests {
         }
 
         fn release(&mut self, _operation: &OperationId, _reason: RefusalCode) -> Result<(), Refusal> {
+            self.releases.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
     }
 
-    fn app_with_billing() -> (SolveApp, std::sync::Arc<AtomicUsize>) {
+    fn app_with_billing() -> (SolveApp, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
         let admits = std::sync::Arc::new(AtomicUsize::new(0));
+        let releases = std::sync::Arc::new(AtomicUsize::new(0));
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
-        app.install_billing(Box::new(SharedCounting { admits: std::sync::Arc::clone(&admits) }), verified_budget());
-        (app, admits)
+        app.install_billing(
+            Box::new(SharedCounting { admits: std::sync::Arc::clone(&admits), releases: std::sync::Arc::clone(&releases) }),
+            verified_budget(),
+        );
+        (app, admits, releases)
+    }
+
+    #[test]
+    fn controlled_ui_documents_save_actions_are_refused_before_any_save() {
+        let (mut app, admits, _releases) = app_with_billing();
+        for params in [json!({"action":"close","answer":"save"}), json!({"changed_on_disk":"save_copy"}), json!({"changed_on_disk":"overwrite"})] {
+            let before = admits.load(Ordering::Relaxed);
+            let (mut req, _rx) = ControlRequest::trusted_control("ui.documents", params.clone());
+            let refusal = admit_once(&mut app, &mut req).expect_err("an async native save has no durable commit path yet");
+            assert_eq!(refusal.code, RefusalCode::UnsafeToStart, "{params}");
+            assert_eq!(admits.load(Ordering::Relaxed), before, "no grant was taken for {params}");
+            assert!(req.admission.is_none(), "a refused save takes no grant");
+            assert!(!app.file_load.busy() && app.saving.is_none(), "no save or load started for {params}");
+        }
+    }
+
+    #[test]
+    fn controlled_ui_documents_save_is_refused_before_handle_dispatch() {
+        let (mut app, admits, _releases) = app_with_billing();
+        app.docs.closing = Some(0);
+        let before = admits.load(Ordering::Relaxed);
+        let (req, rx) = ControlRequest::trusted_control("ui.documents", json!({"answer":"save"}));
+        let out = handle(&mut app, &egui::Context::default(), &req);
+        let Outcome::Done(reply) = out else { panic!("a documents request answers synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(admits.load(Ordering::Relaxed), before, "dispatch never reached the billing port");
+        assert!(app.saving.is_none(), "no asynchronous native save started");
+        assert_eq!(app.docs.closing, Some(0), "the save prompt state was not advanced");
+        assert!(rx.try_recv().is_err(), "handle does not reply on the request's channel when called directly");
+    }
+
+    #[test]
+    fn free_gui_ui_documents_save_path_is_not_refused_by_the_entitlement_gate() {
+        let (mut app, admits, _releases) = app_with_billing();
+        let before = admits.load(Ordering::Relaxed);
+        let (mut req, _rx) = ControlRequest::trusted_gui("ui.documents", json!({"action":"close","answer":"save"}));
+        assert!(matches!(admit_once(&mut app, &mut req), Ok(Admission::Allowed)));
+        assert_eq!(admits.load(Ordering::Relaxed), before, "free GUI never bills");
+        assert!(app.saving.is_none(), "the gate itself started nothing");
+    }
+
+    #[test]
+    fn released_admission_is_consumed_and_cannot_be_reused() {
+        let (mut app, admits, releases) = app_with_billing();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        assert!(matches!(admit_once(&mut app, &mut req), Ok(Admission::NewlyAdmitted { .. })));
+        assert_eq!(admits.load(Ordering::Relaxed), 1);
+        release_unstarted(&mut app, &mut req);
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the held grant was released once");
+        assert!(req.admission.is_none(), "the released admission cannot be reused");
+        assert!(matches!(admit_once(&mut app, &mut req), Ok(Admission::NewlyAdmitted { .. })), "a reuse must admit again");
+        assert_eq!(admits.load(Ordering::Relaxed), 2, "a released request is not treated as still admitted");
     }
 
     #[test]
@@ -2110,7 +2182,7 @@ mod tests {
 
     #[test]
     fn stored_admission_is_reused_by_a_reissued_request() {
-        let (mut app, admits) = app_with_billing();
+        let (mut app, admits, _releases) = app_with_billing();
         let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
         assert!(matches!(admit_once(&mut app, &mut req), Ok(Admission::NewlyAdmitted { .. })));
         assert_eq!(admits.load(Ordering::Relaxed), 1);
@@ -2122,7 +2194,7 @@ mod tests {
 
     #[test]
     fn a_pre_admitted_request_is_not_billed_again_at_dispatch() {
-        let (mut app, admits) = app_with_billing();
+        let (mut app, admits, _releases) = app_with_billing();
         let (mut req, rx) =
             ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
         assert!(admit_once(&mut app, &mut req).is_ok());

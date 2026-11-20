@@ -393,7 +393,7 @@ pub fn control(app: &mut SolveApp, mut req: crate::control::ControlRequest) -> O
     // This loader answers from an async worker, so a controlled entry has no durable commit path
     // yet: refuse before reading a file or taking a grant. Free GUI/local CAD loading is unchanged.
     if !crate::control::free_entry(req.entry) {
-        crate::control::release_unstarted(app, &req);
+        crate::control::release_unstarted(app, &mut req);
         let _ = req.reply.send(crate::control::async_controlled_refusal(&req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
         return None;
     }
