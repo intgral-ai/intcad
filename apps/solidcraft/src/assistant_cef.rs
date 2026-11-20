@@ -41,7 +41,7 @@ use admission::{FrameAdmission, FrameReject, InputTicket, Placement, ThemeTicket
 pub use config::HostBackend;
 use config::Switch;
 use welding::frame_geometry::{CaptureMetadata, FrameRect, FrameWatermarks};
-use welding::text_input::{ime_window_rect, utf16_selection};
+use welding::text_input::{ime_window_rect, take_current_ime_composition, utf16_selection};
 
 /// Largest single preedit/commit string owned by the input queue.
 const IME_MAX_TEXT_BYTES: usize = 400_000;
@@ -1562,6 +1562,10 @@ impl CefAssistant {
         self.queue.invalidate();
         self.pointer_capture = None;
         self.clear_ime_output(ctx);
+        // A report queued before this transition was measured against the old
+        // placement/ppp. Consume it here instead of publishing it after a
+        // refocus; the same rule runs in `publish_ime` every non-accepting frame.
+        let _ = take_current_ime_composition(false, || self.producer.poll_ime_composition());
         // Even a down+up entirely inside this egui frame predates the reset.
         // Discard that frame, then wait for held physical input to become neutral.
         self.input_quarantined = true;
@@ -1921,11 +1925,15 @@ impl CefAssistant {
     /// Publish the current composition's window rectangle; a missing poll result
     /// keeps the last one until commit/cancel/focus loss clears it.
     fn publish_ime(&mut self, ctx: &Context, page: egui::Rect, ppp: f32) {
-        if !self.focused || !self.shown || !self.can_input() {
+        // The current document, placement and admitted input ticket decide
+        // whether a report may be published. A non-accepting frame still takes
+        // the report so stale bounds are drained, not retained for the next
+        // origin/ppp.
+        let accepting = self.focused && self.shown && self.can_input();
+        let Some(composition) = take_current_ime_composition(accepting, || self.producer.poll_ime_composition()) else {
             self.clear_ime_output(ctx);
             return;
-        }
-        let Some(composition) = self.producer.poll_ime_composition() else { return };
+        };
         let bounds = composition.bounds;
         let Some([x, y, width, height]) = ime_window_rect(bounds.x, bounds.y, bounds.width, bounds.height, ppp, [page.min.x, page.min.y]) else {
             self.clear_ime_output(ctx);

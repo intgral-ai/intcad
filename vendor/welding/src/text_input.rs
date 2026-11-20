@@ -80,6 +80,28 @@ pub fn ime_window_rect(x: i32, y: i32, width: u32, height: u32, ppp: f32, origin
     rect.iter().all(|value| value.is_finite()).then_some(rect)
 }
 
+/// Take one IME composition report only while the host can still publish it.
+///
+/// CEF reports the candidate bounds asynchronously through
+/// `poll_ime_composition`, which takes the report. `accepting` is the host's
+/// current focus/visibility/document/placement/input-ticket state. A report
+/// queued before a transition (blur, hide, reload, placement move) was measured
+/// against the old origin and scale; publishing it after the transition would
+/// place the candidate window with the new ones. `pending` is therefore always
+/// called, so a non-accepting frame drains the mailbox instead of retaining the
+/// report for later.
+///
+/// This proves the mailbox transition rule only. It cannot observe when CEF
+/// generated or delivered a report, so it does not prove a real OS candidate
+/// window moved, nor that a callback arriving after the drain is fresh.
+pub fn take_current_ime_composition(
+    accepting: bool,
+    pending: impl FnOnce() -> Option<crate::surface::ImeComposition>,
+) -> Option<crate::surface::ImeComposition> {
+    let report = pending();
+    if accepting { report } else { None }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +176,38 @@ mod tests {
         }
         assert_eq!(ime_window_rect(0, 0, 0, 0, 2.0, [0.0, 0.0]), None);
         assert_eq!(ime_window_rect(20, 40, 10, 0, 2.0, [0.0, 0.0]), None);
+    }
+
+    /// Task3 M5: move/lose focus → cancel → refocus → new composition, with no
+    /// replay of the pre-transition report. The mailbox is the real production
+    /// `LatestComposition`; the transition rule is the real helper the app
+    /// calls in `publish_ime` and `cancel_input`.
+    #[test]
+    fn stale_composition_is_drained_on_a_transition_and_not_replayed() {
+        use crate::ime::LatestComposition;
+        use crate::surface::{ImeComposition, PopupRect};
+
+        let report = |x| ImeComposition {
+            bounds: PopupRect { x, y: 40, width: 8, height: 16 },
+            selection_start: 0,
+            selection_end: 1,
+        };
+        let mailbox = LatestComposition::default();
+
+        // Reported for the old placement and not yet polled when the transition
+        // (placement move / blur / reload) happens.
+        mailbox.set(report(10));
+        // The transition frame cannot publish. It must consume the report, not
+        // leave it queued for whatever origin and ppp come next.
+        assert_eq!(take_current_ime_composition(false, || mailbox.take()), None);
+        // Refocus must not replay it under the new geometry.
+        assert_eq!(
+            take_current_ime_composition(true, || mailbox.take()),
+            None,
+            "a composition reported before the transition must not be published after it"
+        );
+        // A composition reported after the transition is still published.
+        mailbox.set(report(64));
+        assert_eq!(take_current_ime_composition(true, || mailbox.take()), Some(report(64)));
     }
 }
