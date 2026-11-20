@@ -178,9 +178,9 @@ Two things keep working for what was published under the earlier names:
   (`packaging/tests/web_channels_test.py`).
 
 Intcad does not present itself as the successor of upstream's app: `io.tangencylabs.solidcraft`
-is not added to the AppStream `<replaces>`, `X-Flatpak-RenamedFrom` or the Flatpak rebase list,
-and settings kept in a Flatpak sandbox under that ID are not read. The older IDs listed below
-are upstream's own history and are left as upstream wrote them.
+is not added to the AppStream `<replaces>` or `X-Flatpak-RenamedFrom`, and settings kept in a
+Flatpak sandbox under that ID are not read. The older IDs listed below are upstream's own history
+and are left as upstream wrote them; Intcad does not rebase them or mark them end-of-life.
 
 Unchanged, and still shared with upstream by design: the design format (`.sc`, `solidcraft/N`,
 `application/x-solidcraft`), `SOLIDCRAFT_*` variables, crate and Cargo package names
@@ -190,7 +190,7 @@ Unchanged, and still shared with upstream by design: the design format (`.sc`, `
 
 | Package | Decision | Why |
 |---|---|---|
-| Flatpak app ID / Linux desktop ID | changed in 0.8 from `ai.storyteller.solvecraft` to `ai.storyteller.solidcraft`, then with the move to Tangency Labs to `io.tangencylabs.solidcraft` | The project's own reverse-DNS domain. The `.desktop`, metainfo and MIME file names, the icon name, and the Wayland `app_id` / X11 class follow it. Existing installs are moved over; see [Linux app ID](#linux-app-id). |
+| Flatpak app ID / Linux desktop ID | changed in 0.8 from `ai.storyteller.solvecraft` to `ai.storyteller.solidcraft`, then with the move to Tangency Labs to `io.tangencylabs.solidcraft` | The project's own reverse-DNS domain. The `.desktop`, metainfo and MIME file names, the icon name, and the Wayland `app_id` / X11 class follow it. Upstream's old installs are left as upstream wrote them; Intcad does not rebase them or move their data; see [Linux app ID](#linux-app-id). |
 | Flatpak remote file | `solidcraft.flatpakrepo`, plus a legacy `solvecraft.flatpakrepo` copy | Old links keep working; existing remotes point at the repo URL, which is unchanged. |
 | macOS bundle ID | changed to `ai.storyteller.solidcraft`, then to `io.tangencylabs.solidcraft`; the CLI's signing identifier is `io.tangencylabs.solidcraft.cli` (was `ai.storyteller.solidcraft-cli`) | No updater depends on it; the app is drag-installed and replaces the old `SolidCraft.app`. Settings live in folders named after the product, not the bundle ID, so they stay. macOS ties privacy permissions (such as access to Documents or Downloads) to the bundle ID, so it asks for them once more after the update. |
 | MSI `UpgradeCode` | **kept** (also through the `io.tangencylabs` move; the Windows build sets no AppUserModelID and its ProgIDs `Solidcraft.Design` / `Solidcraft.Model` don't carry the app ID, so nothing there changes) | So the new MSI upgrades the old install in place. Product name is SolidCraft; the default folder becomes `Program Files\SolidCraft` (the major upgrade removes the old folder). A custom install folder isn't remembered across this one upgrade. |
@@ -203,21 +203,20 @@ Upstream's releases used `ai.storyteller.solvecraft` up to 0.7, then `ai.storyte
 until the move to Tangency Labs, then `io.tangencylabs.solidcraft`. Intcad's own Flatpak app id is
 `ai.intgral.intcad` (the identity table above); it never had an earlier Flatpak app id of its
 own. The settings and autosave folders are named after the product, not the app ID, so outside
-the Flatpak sandbox they don't move. The install migration and the
-unrelated compatibility shims are:
+the Flatpak sandbox they don't move. The remaining compatibility shims are:
 
 | Shim | Where | What it does |
 |---|---|---|
-| End-of-life rebase in the Flatpak repository | `packaging/flatpak-site.sh` | Each release's Pages deploy keeps the old `app/ai.storyteller.solidcraft/<arch>/stable` and `app/ai.storyteller.solvecraft/<arch>/stable` refs (mirrored from the previous deploy) and marks each with `flatpak build-commit-from --end-of-life-rebase=<old id>=ai.intgral.intcad` (once the repository has the new ref). A ref already marked with a rebase to an older id (`ai.storyteller.solvecraft` pointed at `ai.storyteller.solidcraft`) is marked again, so every old install moves in one step. `flatpak update` then says the old app is end-of-life and offers to replace it with the new one; accepting installs `ai.intgral.intcad`, uninstalls the old app, and Flatpak moves `~/.var/app/<old id>` to the new id's folder (leaving a symlink at the old path) on the first launch. That is Flatpak's install migration of the app's own data; Intcad does not read any other folder under an upstream id. |
 | AppStream `<replaces>` / `<provides>` | `assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in` | Software centres treat the new id as the successor of `ai.storyteller.solidcraft` and `ai.storyteller.solvecraft` and of their `.desktop` ids. |
 | `X-Flatpak-RenamedFrom` | `assets/platforms/linux/ai.intgral.intcad.desktop` (both old `.desktop` ids) | Desktops that honour it (GNOME Shell) keep favourites and pinned launchers pointing at the renamed entry. |
 | The old window `app_id` as eframe's legacy storage key | `adopt_legacy_settings` (`LEGACY_APP_ID`) | Window state that releases before the settings rename kept under `~/.local/share/ai.storyteller.solvecraft` is still copied (section 4). |
 | Old AppImage menu entries | `packaging/linux/AppRun` | An AppImage's first run removes the `ai.storyteller.solidcraft.desktop` and `ai.storyteller.solvecraft.desktop` entries and icons that an earlier AppImage installed in `~/.local/share` (only entries it wrote itself), so the menu doesn't show the app twice. Test: `packaging/tests/apprun_test.py`. |
 
 There is no read-only grant and `solidcraft_io::legacy_flatpak_paths` is empty: settings and
-autosaves kept under an upstream app id are another product's and are never read (section 4). An
-install made next to the old app instead of through the rebase starts with Intcad's own settings;
-the old folders are left unchanged.
+autosaves kept under an upstream app id are another product's and are never read (section 4).
+The old `app/ai.storyteller.*` refs are upstream's history; Intcad does not mark them end-of-life
+or rebase them, so Flatpak does not move their `~/.var/app` data into Intcad. An install made next
+to the old app starts with Intcad's own settings; the old folders are left unchanged.
 
 deb and rpm need no shim: the package (`solidcraft`) is unchanged, and an upgrade removes the old
 `/usr/share/applications/ai.storyteller.*.desktop`, metainfo, MIME and icon files
@@ -230,11 +229,9 @@ launch it once (it starts with Intcad's own settings; data under an upstream app
 copied), then `flatpak uninstall --user ai.storyteller.solidcraft` (or
 `ai.storyteller.solvecraft`).
 
-**Removal:** keep the end-of-life refs in the Flatpak repository for at least six months after
-the release that moved to this app id and at least two minor releases; removing them strands any
-install that hasn't run `flatpak update` since. The read-only filesystem grants and the old-app-id
-adoption are already gone, and `solidcraft_io::legacy_flatpak_paths` is empty. `<replaces>`,
-`<provides>` and `X-Flatpak-RenamedFrom` are harmless and can stay.
+**Removal:** upstream's old `app/ai.storyteller.*` refs are upstream's to keep or remove; Intcad
+does not mark or rebase them. Intcad's own `app/ai.intgral.intcad` refs follow normal release
+retention. `<replaces>`, `<provides>` and `X-Flatpak-RenamedFrom` are harmless and can stay.
 Tests: `flatpak_twins_do_not_read_upstream_solidcraft_data`,
 `first_launch_adopts_the_previous_release_settings`.
 

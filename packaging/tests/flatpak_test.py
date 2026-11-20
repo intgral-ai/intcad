@@ -1,8 +1,14 @@
 """Fast failure-path checks for the desktop Flatpak and snap process probes."""
+import hashlib
 import importlib.util
 import itertools
 import json
+import os
+import re
 import struct
+import subprocess
+import tempfile
+import textwrap
 import zlib
 from pathlib import Path
 import unittest
@@ -237,6 +243,236 @@ class DesktopProbe(unittest.TestCase):
         with self.assertRaises(ValueError):
             SMOKE.validate_assistant([page], "wayland")
 
+
+class FlatpakRepositorySource(unittest.TestCase):
+    """The Intcad Flatpak repository must not rebase or import upstream app ids."""
+
+    def test_no_foreign_end_of_life_rebase(self):
+        script = (ROOT / "packaging/flatpak-site.sh").read_text()
+        self.assertNotIn("--end-of-life-rebase", script)
+        self.assertNotIn("legacy_ids", script)
+        self.assertNotIn("ai.storyteller", script)
+        # Intcad-native publication remains: its own id, bundle import, repo update and remote file.
+        self.assertIn("app_id=ai.intgral.intcad", script)
+        self.assertIn("flatpak build-import-bundle", script)
+        self.assertIn("flatpak build-update-repo", script)
+        self.assertIn("solidcraft.flatpakrepo", script)
+        docs = (ROOT / "docs/compatibility.md").read_text()
+        self.assertNotIn("end-of-life-rebase=<old id>=ai.intgral.intcad", docs)
+        self.assertNotIn("Flatpak moves `~/.var/app/<old id>`", docs)
+
+    def test_manifest_and_docs_have_no_foreign_rebase_claim(self):
+        manifest = (ROOT / "packaging/linux/flatpak/ai.intgral.intcad.bundle.yml").read_text()
+        self.assertNotIn("--filesystem=~/.var/app/ai.storyteller", manifest)
+        self.assertNotIn("end-of-life", manifest)
+        self.assertNotIn("moves old installs", manifest)
+        self.assertIn("id: ai.intgral.intcad", manifest)
+        self.assertIn("command: intcad", manifest)
+        docs = (ROOT / "docs/compatibility.md").read_text()
+        self.assertNotIn("Flatpak rebase list", docs)
+        self.assertNotIn("Existing installs are moved over", docs)
+        guide = (ROOT / "docs/book/src/guide/getting-started.md").read_text()
+        self.assertNotIn("your settings and autosaves move with it", guide)
+        self.assertNotIn("it copies your settings", guide)
+        self.assertIn("does not adopt", guide)
+        self.assertIn("remove the old app manually", guide)
+        self.assertNotIn("../../../compatibility.md", guide, "mdBook only builds docs/book/src")
+        targets = re.findall(r"\[compatibility notes\]\(([^)]+)\)", guide)
+        self.assertTrue(
+            any(target.startswith("https://github.com/intgral-ai/intcad/blob/")
+                and target.endswith("/docs/compatibility.md#linux-app-id") for target in targets),
+            targets,
+        )
+        self.assertIn("does not currently publish", guide)
+
+    @staticmethod
+    def _run_publication(seed_refs, fail=None):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            site = root / "site"
+            (site / "app").mkdir(parents=True)
+            (site / "index.html").write_text("index")
+            (site / "app" / "index.html").write_text("app")
+            fixtures = root / "fixtures"
+            fixtures.mkdir()
+            sums = []
+            for arch in ("x86_64", "aarch64"):
+                asset = f"intcad-1.0.0-linux-{arch}.flatpak"
+                data = f"bundle-{arch}".encode()
+                (fixtures / asset).write_bytes(data)
+                sums.append(f"{hashlib.sha256(data).hexdigest()}  {asset}")
+            (fixtures / "SHA256SUMS.txt").write_text("\n".join(sums) + "\n")
+            seed = root / "seed.txt"
+            seed.write_text(seed_refs)
+            mockbin = root / "bin"
+            mockbin.mkdir()
+            state = root / "state"
+            state.mkdir()
+            mocks = {
+                "gh": """#!/usr/bin/env bash
+set -euo pipefail
+if [ "$1" = api ]; then echo "${RELEASE_TAG:?}"; exit 0; fi
+if [ "$1 $2" = "release download" ]; then
+  pattern=; dir=
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pattern) pattern=$2; shift 2 ;;
+      --dir) dir=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  cp "${MOCK_FIXTURES:?}/$pattern" "$dir/$pattern"
+  exit 0
+fi
+echo "unexpected gh: $*" >&2; exit 1
+""",
+                "curl": """#!/usr/bin/env bash
+exit 0
+""",
+                "ostree": """#!/usr/bin/env bash
+set -euo pipefail
+echo "ostree $*" >> "${MOCK_STATE:?}/debug.log"
+repo=; args=()
+for a in "$@"; do
+  case "$a" in
+    --repo=*) repo=${a#--repo=} ;;
+    *) args+=("$a") ;;
+  esac
+done
+refs="${MOCK_STATE:?}/refs-$(printf '%s' "$repo" | tr '/' '_')"
+case "${args[0]:-}" in
+  init) mkdir -p "$repo"; : > "$refs"; touch "$repo/summary" ;;
+  remote) ;;
+  pull) cat "${MOCK_SEED:?}" >> "$refs" ;;
+  refs)
+    if [ "${MOCK_FAIL:-}" = refs ]; then exit 1; fi
+    if [ "${args[1]:-}" = "--delete" ]; then
+      prefix=${args[2]:?}
+      if [ "${MOCK_FAIL:-}" = delete ]; then exit 1; fi
+      awk -v p="$prefix" 'index($0,p)!=1' "$refs" > "$refs.tmp"
+      mv "$refs.tmp" "$refs"
+    else
+      cat "$refs" 2>/dev/null || true
+    fi
+    ;;
+  rev-parse|show) ;;
+  *) echo "unexpected ostree: $*" >&2; exit 1 ;;
+esac
+""",
+                "flatpak": """#!/usr/bin/env bash
+set -euo pipefail
+echo "flatpak $*" >> "${MOCK_STATE:?}/debug.log"
+cmd=${1:?}; repo=${2:?}
+refs="${MOCK_STATE:?}/refs-$(printf '%s' "$repo" | tr '/' '_')"
+case "$cmd" in
+  build-import-bundle)
+    asset=${3:?}
+    case "$asset" in
+      *x86_64*) arch=x86_64 ;;
+      *aarch64*) arch=aarch64 ;;
+      *) echo "unknown asset: $asset" >&2; exit 1 ;;
+    esac
+    echo "app/ai.intgral.intcad/$arch/stable" >> "$refs"
+    ;;
+  build-update-repo)
+    for last in "$@"; do :; done
+    echo summary > "$last/summary"
+    ;;
+  build-commit-from) echo "unexpected build-commit-from" >&2; exit 1 ;;
+  *) echo "unexpected flatpak: $*" >&2; exit 1 ;;
+esac
+""",
+            }
+            for name, text in mocks.items():
+                path = mockbin / name
+                path.write_text(textwrap.dedent(text))
+                path.chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                "PATH": f"{mockbin}:{env['PATH']}",
+                "RELEASE_TAG": "v1.0.0",
+                "GITHUB_REPOSITORY": "owner/repo",
+                "PAGES_BASE_URL": "https://example.test/project",
+                "MOCK_STATE": str(state),
+                "MOCK_FIXTURES": str(fixtures),
+                "MOCK_SEED": str(seed),
+                "MOCK_FAIL": fail or "",
+            })
+            result = subprocess.run(
+                ["bash", str(ROOT / "packaging/flatpak-site.sh"), str(site)],
+                cwd=ROOT, env=env, text=True, capture_output=True,
+            )
+            refs = []
+            for path in state.glob("refs-*"):
+                refs.extend(path.read_text().splitlines())
+            debug = (state / "debug.log").read_text() if (state / "debug.log").exists() else ""
+            return result, refs, debug
+
+    def test_previous_repo_foreign_refs_are_pruned(self):
+        seed = "\n".join([
+            "app/ai.intgral.intcad/x86_64/stable",
+            "app/ai.intgral.intcad/x86_64/master",
+            "app/ai.intgral.intcad/x86_64/beta",
+            "app/ai.intgral.intcad/aarch64/stable",
+            "app/ai.intgral.intcad/aarch64/master",
+            "app/ai.intgral.intcad/aarch64/beta",
+            "app/ai.storyteller.solidcraft/x86_64/stable",
+            "app/ai.storyteller.solidcraft/x86_64/stable-extra",
+            "app/ai.storyteller.solidcraft/aarch64/stable-extra",
+            "app/io.tangencylabs.solidcraft/x86_64/stable",
+            "app/ai.intgral.intcad2/x86_64/stable",
+        ])
+        result, refs, debug = self._run_publication(seed)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr + debug)
+        self.assertTrue(refs, "mock ostree saw no refs")
+        for ref in refs:
+            self.assertTrue(ref.startswith("app/ai.intgral.intcad/"), ref)
+        for ref in (
+            "app/ai.intgral.intcad/x86_64/stable",
+            "app/ai.intgral.intcad/x86_64/master",
+            "app/ai.intgral.intcad/x86_64/beta",
+            "app/ai.intgral.intcad/aarch64/stable",
+            "app/ai.intgral.intcad/aarch64/master",
+            "app/ai.intgral.intcad/aarch64/beta",
+        ):
+            self.assertIn(ref, refs)
+        self.assertFalse(any("storyteller" in ref or "tangencylabs" in ref or "intcad2" in ref for ref in refs))
+
+    def test_exact_app_id_prefix_fails_closed(self):
+        seed = "\n".join([
+            "app/ai.intgral.intcad",
+            "app/ai.intgral.intcad/x86_64/beta",
+            "app/ai.storyteller.solidcraft/x86_64/stable",
+        ])
+        result, _, debug = self._run_publication(seed)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("prefix of Intcad ref", result.stderr)
+        self.assertNotIn("flatpak build-update-repo", debug)
+
+    def test_hostile_leading_dash_ref_fails_closed(self):
+        seed = "\n".join(["-evil", "app/ai.intgral.intcad/x86_64/beta"])
+        result, _, debug = self._run_publication(seed)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue("unexpected ref" in result.stderr or "unsafe ref" in result.stderr, result.stderr)
+        self.assertNotIn("flatpak build-update-repo", debug)
+
+    def test_delete_failure_exits_nonzero(self):
+        seed = "\n".join([
+            "app/ai.intgral.intcad/x86_64/beta",
+            "app/ai.storyteller.solidcraft/x86_64/stable",
+        ])
+        result, _, debug = self._run_publication(seed, fail="delete")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("flatpak build-update-repo", debug)
+
+    def test_refs_enumeration_failure_exits_nonzero(self):
+        seed = "\n".join([
+            "app/ai.intgral.intcad/x86_64/beta",
+            "app/ai.storyteller.solidcraft/x86_64/stable",
+        ])
+        result, _, debug = self._run_publication(seed, fail="refs")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("flatpak build-update-repo", debug)
 
 if __name__ == "__main__":
     unittest.main()
