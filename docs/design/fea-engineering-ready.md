@@ -40,12 +40,13 @@ It stays an estimate. Section 6 says how the wording keeps that.
 | D1 | The first solve has no memory check | R2's plate at 0.7 mm in 8 GB: 115 s, then "ccx stopped with signal 9 … see gpl.htm" | Mesh first, count nodes, predict, then refuse or solve. gmsh alone took 9.8 s and 0.29 GB for 493,468 nodes (predicted solve: 11.9 GB). At 1.0 mm: 3.0 s, 199,504 nodes, 4.0 GB |
 | D2 | The default mesh fails at small holes | 5 of 6 bars with a Ø1–4 hole (the review's 10-bar table) failed: gmsh "overlapping facets" or ccx "nonpositive jacobian" | `-clcurv 12`: 6 of 6 mesh. `-clcurv 24 -optimize_ho`: 6 of 6, and Peterson +2.1 % (was −4.8 %). R2 unchanged (+0.28 %). `-optimize_ho` alone: 3 of 6 still fail |
 | D3 | Shell clamps over an area report a spurious reaction, and the reply calls correct numbers "suspect" | L bracket, base clamped: mismatch 4.5 % to 492 % depending on the mesh | Hold only translations on area supports: the reaction balances exactly (Fz 32.4 N → 3e-10 N), and the tip deflection 0.355 mm comes closer to the solid model's 0.351. Edge clamps must keep rotations: without them R1's strip is a mechanism (tip 2e10 mm) |
-| D4 | "Settled" (5 % over one 1.5× step) passed a fillet peak that was 5–6 % low | Peterson: 97.8 → 102.1, "settled"; converged value 108.2 | With D2's sizing the same check gives 1.2–1.5 % and is true. Section 4.1 replaces the criterion anyway |
+| D4 | "Settled" (5 % over one 1.5× step) passed a fillet peak that was 5–6 % low | Peterson: 97.8 → 102.1, "settled"; converged FE value about 109.6 (A6's study; the ship review's 108.2 came from meshes too coarse at the fillet) | With D2's sizing the same check gives 1.2–1.5 % and is true. Section 4.1 replaces the criterion anyway |
 | D5–D12 | 304L yield 21 % high; unknown keys dropped; rims and fillets called "holes"; two shares of yield; no thickness bands; analysis thickness unchecked; two approvals per estimate | see the review | section 4.1 |
 
-Two more findings shape the requirements:
+Three more findings shape the requirements:
 - gmsh gave two different meshes for the same input and size, so runs are not yet reproducible (seen in D3). Not reproduced on 2026-11-19: gmsh 4.12.1 already meshes on one thread, and the same STEP gave byte-identical meshes five times running for each of three parts. What did change between computers was CalculiX's thread count (its last digits), and Intcad read the results in a hash map's order. Both are fixed on `fea/8-reactions-repro` (A7).
 - The finer mesh-check run of a 68,863-node solid took 313 s (24 cores, under contention).
+- Solve time and memory depend on how deep the mesh is, not only on its nodes: a 50 mm cube with 95,384 nodes solved in 70–86 s and needed 3.0 GB; R2's 2 mm plate with 114,027 nodes solved in 13 s. `solver_bytes` is up to 48 % low on deep solids (measured 2026-11-20, 21 runs, for A13).
 
 ## 3. Phases
 
@@ -58,7 +59,7 @@ Two more findings shape the requirements:
 
 A comes first and is short. B and C can run in parallel once A has landed: they touch different files (setup and job writing, versus results and reporting).
 
-**Where Phase A stands (2026-11-19, draft PR 175, not merged):**
+**Where Phase A stands (2026-11-20; draft PRs 175 to 195, none merged):**
 
 | ID | State |
 |---|---|
@@ -66,13 +67,13 @@ A comes first and is short. B and C can run in parallel once A has landed: they 
 | A2, A3 | Done: curvature sizing and high-order optimisation; failures read as advice (V-A2, V-A3) |
 | A4 | Done: area supports on shells hold translations only (unit tests); V-A4's four-mesh bracket passes on `fea/8-reactions-repro` (forces and moments within 0.002 % at 2.75, 1.83, 1.0 and 0.6 mm) |
 | A5 | Done on `fea/8-reactions-repro` (2026-11-19, the eighth PR of the stack): each support's force and moment, and the moment balance; V-A5 passes (the clamp's F × e = 1000 N·mm to three figures, solids and shells; the test allows 0.5 %) |
-| A6 | Partly: a two-mesh check at 2.5 % with a first-order "may be off" bound; no three-mesh extrapolation or error band |
+| A6 | Done in draft #195 (`tianwei/fea-9-error-band-8e0f9c`, 2026-11-20): h, h/1.5 and, when the away peak moved more than 1 % and it fits A1's limit, h/2.25; curvature sizing refined with each step; Richardson at the observed order; a band on every quoted number, at least ±0.5 %; "keeps rising" under order 0.5. V-A6 passes: V-6 about 110 MPa within ±0.5 %, holding the FE limit 109.6; V-7 keeps rising |
 | A7 | Done on `fea/8-reactions-repro`: gmsh and CalculiX on one thread, results read in node order, both versions in the reply; V-A7 passes for V-2's plate and V-8's bracket as shells and as solids, twice each: identical replies. V-6's filleted bar is not in that test yet (no test builds it) |
 | A8, A9, A10 | Done (D6, D7, D8) |
-| A11 | Partly: 304L at 170 MPa; one upper thickness limit per grade, not its full bands |
-| A12 | Partly: sheets only; no ray-pairing check on solids |
-| A13 | Partly: a dry run asks no approval; the card does not yet show predicted nodes, memory and time |
-| A14 | Not started: the real-solve tests are `#[ignore]` and run by hand on Linux; no CI job runs them |
+| A11 | Done in draft #193: 304L at 170 MPa; every grade carries its standard's thickness bands (EN 10025-2, EN 485-2, ASTM B209M, ASTM A240), the yield is the band's for the part's thickness, and a warning fires outside every band (V-A11) |
+| A12 | Done for the shipping path in draft #193: sheets are checked against their own thickness; on a solid the reply says the thickness was not checked (decision 15). Ray pairing on solids stays before "ready" |
+| A13 | Done in draft #196: the card shows the prediction from the part's size before Allow, and each run's counted nodes, memory and time left after meshing; V-A13 passes (dry run without approval; the card's text; a real run's count) |
+| A14 | Done on Linux in draft #194: `fea-suite.yml` runs the real-solve suite nightly against `develop` and in the release gate at the candidate's commit, with gmsh 4.12.1 and CalculiX 2.21 pinned; a failing case, an empty run or another version blocks a stable or Beta release. 18 of 18 passed in 35 min on a standard 4-vCPU, 16 GB runner. Windows follows before ready (decision 13) |
 
 ## 4. Requirements
 
@@ -87,7 +88,7 @@ IDs carry over into PR titles. Each requirement names its acceptance test from s
 | A3 | **Readable failures.** Map the known mesher and solver failures to advice, naming the face or feature near the failure when the element can be located. The raw text goes to the kept log only. Known failures: overlapping facets, no elements in volume, nonpositive jacobian, out of memory, timeout. | V-A3 |
 | A4 | **Shell supports.** An area support holds translations only. An edge support (a sheet's end, rim or hole wall) holds translations and rotations, as now. | V-A4, V-1, V-4 |
 | A5 | **Equilibrium per support, and moments.** Print RF per support set, not only the total. Report each support's force and moment, and check force and moment balance about the middle of the part's bounding box (decision 17). The warning fires only when the balance fails. | V-A4, V-A5 |
-| A6 | **Discretisation error.** Replace "settled ≤ 5 %" with: solve on h and h/1.5; if the away peak moved more than 1 %, solve h/2.25 when it fits the memory limit. Use Richardson extrapolation with the observed order. Report the extrapolated value and an error band, e.g. "106 MPa, within ±2 % of the converged value". "Settled" requires the band to be ≤ 3 % and the observed order to lie in [0.5, 4]. A peak that grows without converging (observed order < 0.5) is reported as "keeps rising: likely a sharp inside corner or an idealised support". With only two meshes, say so and use the conservative bound \|Δ\| / (1.5 − 1). | V-A6 |
+| A6 | **Discretisation error.** Replace "settled ≤ 5 %" with: solve on h and h/1.5; if the away peak moved more than 1 %, solve h/2.25 when it fits the memory limit. Use Richardson extrapolation with the observed order. Report the extrapolated value and an error band, e.g. "106 MPa, within ±2 % of the converged value". "Settled" requires the band to be ≤ 3 % and the observed order to lie in [0.5, 4]. A peak that grows without converging (observed order < 0.5) is reported as "keeps rising: likely a sharp inside corner or an idealised support". With only two meshes, say so and use the conservative bound \|Δ\| / (1.5 − 1). Each step also refines the curvature sizing by 1.5 (24, 36, 54 elements per turn), so every element shrinks by the same ratio. An observed order over 4 means the first mesh was too coarse to count: the two finer meshes decide, with the two-mesh bound, and the number is settled when that bound is ≤ 3 %. No band is narrower than ±0.5 %: meshes of the same size made another way give peaks up to that much apart. | V-A6 |
 | A7 | **Reproducible runs.** The same design and request give the same mesh, the same numbers and the same words. Pin gmsh's threads for meshing (`-nt 1`, or whatever proves deterministic) and record both programs' versions in the reply. | V-A7 |
 | A8 | **Strict parameters.** Unknown keys, at top level and inside loads and supports, are refused in the dry run, with the nearest known key. This covers `at`, `load_cases` and `moment`, until Phase B makes them real. | V-A8 |
 | A9 | **Faces in words.** A cylindrical face is "a hole Ø…" only when it faces inward (a concave cylinder bounding a through or blind hole). Otherwise it is "the outer rim Ø…", "a fillet R…", "a boss Ø…" or "a curved face". | V-A9 |
@@ -133,7 +134,7 @@ D-1 bonded and contact assemblies, and bolted joints with contact. D-2 a faster 
 
 ## 5. Verification suite
 
-Each case runs through the command as an agent would. The away peak, or the stated point, must be within the tolerance of the reference, and the reported error band must contain the reference. Cases marked † are already in the code (R1–R6) or were run in the review; cases marked ‡ need their reference confirmed against the cited edition before they become tests.
+Each case runs through the command as an agent would. The away peak, or the stated point, must be within the tolerance of the reference, and the reported error band must contain the case's converged finite-element value. A handbook formula or chart has errors of its own that a discretisation band does not measure (R2: Heywood's 25.12 MPa sits 0.5 % under the band of 25.25 MPa). Cases marked † are already in the code (R1–R6) or were run in the review; cases marked ‡ need their reference confirmed against the cited edition before they become tests.
 
 Every case gates "ready" except those for requirements left out of it (decision 11): V-B4 to V-B9, V-C3, V-C4 and V-C5. Those stay in the suite and gate the release that adds their requirement.
 
@@ -156,7 +157,7 @@ Every case gates "ready" except those for requirements left out of it (decision 
 | V-A3 | A hole too small for even the minimum size; a solver killed for memory | plain advice, no program banner | behaviour |
 | V-A4 | V-8 at meshes 2.75, 1.83, 1.0, 0.6 | per-support forces balance within 0.1 %; no "suspect" warning | 4 of 4 |
 | V-A5 | A force with a lever arm, clamped | moment reaction = F × e | 0.5 % |
-| V-A6 | V-6 and V-7 at default settings | V-6: band ≤ 3 % and contains 107.3 to 108.2; V-7: "keeps rising" | verdict |
+| V-A6 | V-6 and V-7 at default settings | V-6: band ≤ 3 % and contains the FE model's converged value, 109.6 MPa (a quarter of the bar on two symmetry planes, meshes to h/3.4); the quoted value within V-6's 3 % of 107.3. V-7: "keeps rising", never "settled" | verdict |
 | V-A7 | V-2, V-6 and V-8, each run twice | identical node counts and numbers | exact |
 | V-A8 to V-A13 | One test per requirement: unknown keys refused; rim, fillet and boss wording; one share of yield; 304L at 170 MPa with a thickness band warning; a thickness mismatch warned; a dry run without approval | — | behaviour |
 | V-B1 | Plate bolted through two holes to ground, preload P, then a shear load | bolt axial force = P; shear shared by statics | 2 % |
@@ -171,7 +172,7 @@ Every case gates "ready" except those for requirements left out of it (decision 
 | V-C1 | V-4: probes at 15 points through the wall | Lamé σθ(r) | 1.5 % (met by a hand probe in the review) |
 | V-C2 | V-4: principal stresses at the bore | σ1 = σθ, σ3 = σr = −p | 2 % |
 | V-C3 | V-4: linearisation through the wall | membrane hoop = p a/(b − a) = 50 MPa; bending from Lamé's closed form | 2 % |
-| V-C4 | V-6 from the default mesh with refinement on | within 3 % of 108.2, with fewer nodes than a uniform mesh of the same accuracy | 3 % |
+| V-C4 | V-6 from the default mesh with refinement on | within 3 % of 109.6, the FE model's converged value (decision 19), with fewer nodes than a uniform mesh of the same accuracy | 3 % |
 | V-C5 | The report for V-B1 | every number equals the reply's; the versions and the design hash match | exact |
 | V-C6 | A bar in tension; V-1's cantilever strip | axial ε = F/(E A), lateral −ν ε; surface ε(x) = σ(x)/E away from the clamp | 2 % |
 
@@ -211,10 +212,15 @@ Agreed by Tianwei on 2026-11-20:
 
 16. **CalculiX always runs on one thread,** whatever `OMP_NUM_THREADS` says, so the same request gives the same numbers on every computer. Twenty-four threads changed the last digits (about 2 × 10⁻⁹ apart) and saved 3 % of the time on one 89,786-node job. No release shows the Stress button yet, so no user loses a default.
 17. **Moments are balanced about the middle of the part's bounding box,** not its centroid. When the forces balance, the moment balance is the same about any point; the point only changes the moments printed and the 1 % scale, and the middle needs no volume integration. The reply states the point it used. Each support's own moment is given about the middle of the nodes it holds.
+18. **A grade's yield is its standard's minimum for the part's thickness band (agreed 2026-11-20).** A sheet or shell takes the band of its thickness; a solid takes the band of its bounding box's thinnest side, the thinnest stock it can come from, and its material line says when thicker stock is specified lower. A warning fires only when the part is outside every band the standard covers. The alternative, one yield per grade with a warning naming the band's yield, keeps a yield the standard does not give for that thickness. In draft #193.
+19. **Error bands measure the mesh, not the handbook (agreed 2026-11-20).** A suite case's band must contain the FE model's own converged value; the quoted value must be within the case's tolerance of the reference. V-6's model converges to 109.6 MPa, 2.1 % over Peterson's 107.3. An observed order over 4 is judged on the two finer meshes, and no band is under ±0.5 %. In draft #195.
+20. **A Fieldcraft solver-leg spike runs against A14's suite (agreed 2026-11-20).** It starts from #194's branch, without waiting for #194 to merge. Tangency Labs' Fieldcraft 0.8.1 passed all five pass bars of a one-computer trial on Windows: V-A2's ten bars, V-2's plate within 3 % on quadratic meshes, V-A7's repeat runs, a refusal instead of a kill at fine sizes, and Intcad's `.sc` parts opened without editing. Its default mesh (tet4) is not usable for stress. The spike tries it as a replacement for the gmsh-and-CalculiX leg only, judged by A14's suite. Phase A is unchanged, and any swap is its own later decision.
+21. **The approval card shows the run's size twice (agreed 2026-11-20).** Before Allow, a prediction from the part's size, since the dry run starts no program (decision 4). After Allow, each run's counted nodes, its memory and the time left. The alternatives were the prediction alone, or the count alone. In draft #196.
+22. **One memory model for the card and the gates (agreed 2026-11-20).** A1's memory gate and the mesh check's gate move to A13's model, which counts the element layers (±14 % on 21 runs), from `solver_bytes`, which is up to 48 % low on deep solids, so A1's gate can let through a run that needs more memory than it predicts. Its own PR, after #195 merges, because the mesh check's gate is A6's code.
 
 ## 8. Risks
 - **CalculiX keyword support in 2.21** (couplings, pre-tension, transforms) is taken from its manual and not yet run. The Phase B spike settles it first.
-- **gmsh determinism** (A7): settled on Linux, where one thread repeats byte for byte. Still to see on Windows and with other gmsh versions; A14's CI runs V-A7 there.
+- **gmsh determinism** (A7): settled on Linux, across computers too: on CI's runner, V-A7's three cases gave the same node counts and numbers as on zhikun. Still to see on Windows and with other gmsh versions; A14's Windows job runs V-A7 there.
 - **Windows and macOS:** gmsh and CalculiX builds vary in version and solver. Pin and test them; refuse versions the suite has not passed.
 - **Mesh size:** curvature sizing raises node counts on parts with many small features: ×1.3 to ×3.3 on the test bars (`-clcurv` 12 and 24). A1's gate catches the extreme cases; C4's local refinement is the long-term answer.
 
@@ -223,8 +229,9 @@ Agreed by Tianwei on 2026-11-20:
 Phase A's first three steps (A1 to A4, A8 to A10, and parts of A6 and A11 to A13) landed in draft PR 175 as the fixes for the review's D1 to D12. What is left, each as one PR stacked on PR 175, with its acceptance tests:
 1. C8 + C1 + C2: strain, the point probe, and stress components and principal stresses. In progress on `fea/7-strain-probe` (2026-11-19): `probes` on the estimate (points, an optional gauge direction), read inside the solver's element; principal stresses and strains at the away peak; V-C1, V-C2 and V-C6 pass. Still to do for C1 and C2: probes on a face, an edge or a hole, the click in the viewport, and colour maps of principal stress and strain (with C7).
 2. A7 + A5 (the first step of INT-1498, the shortest path to showing the Stress button): repeatable runs with the versions in the reply, and reactions per support with the moment balance. Done on `fea/8-reactions-repro` (2026-11-19), stacked on `fea/7-strain-probe`; V-A4, V-A5 and V-A7 pass.
-3. A6: the three-mesh error band.
-4. A11 and A13's remainders (thickness bands per grade; the approval card's predicted nodes, memory and time), and A14: the suite in CI, on Linux first (decision 14).
-5. B1 to B3: bolts, bearing loads and pins, after the one-day CalculiX keyword spike (section 4.2).
+3. A6: the three-mesh error band. Done in draft #195 (2026-11-20), based on `fea/8-reactions-repro`.
+4. A11 and A13's remainders (thickness bands per grade; the approval card's predicted nodes, memory and time), and A14: the suite in CI, on Linux first (decision 14). A11 and A12 in draft #193 and A14 in draft #194 (2026-11-20), and A13 in draft #196, each based on `fea/8-reactions-repro`.
+5. Decision 22: A1's gate and the mesh check's gate on A13's memory model, after #195 merges.
+6. B1 to B3: bolts, bearing loads and pins, after the one-day CalculiX keyword spike (section 4.2).
 
 The rest of A11 to A13 goes with whichever PR touches the same code.
