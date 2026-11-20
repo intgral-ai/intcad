@@ -472,7 +472,10 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
       return { protocolVersion: 1, authMethods: [{ id: "openai-codex" }] };
     }
     configOptions(of: Json) {
-      return [{ id: "model", currentValue: model, options: of.models.map((item: Json) => ({ value: item.modelId, name: item.name })) }, { id: "mode", currentValue: "build", options: [] }];
+      // As Mastra Code does: the model in use is in the list whether or not anything serves it.
+      const listed = of.models.map((item: Json) => ({ value: item.modelId, name: item.name }));
+      if (!listed.some((item: Json) => item.value === model)) listed.push({ value: model, name: `${model} (provider not configured)` });
+      return [{ id: "model", currentValue: model, options: listed }, { id: "mode", currentValue: "build", options: [] }];
     }
     async prompt(): Promise<Json> {
       throw new RequestError(-32603, "401 Unauthorized: token expired");
@@ -512,7 +515,8 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
   model = "openai/gpt-5";
 
   // The model in use is gone after new keys or a finished sign-in: the session keeps it, gets the
-  // list of what can be used, and tells the app. Nobody chose another model, so none is taken.
+  // list of what can be used (without the model nothing serves, which Mastra Code would list), and
+  // tells the app. Nobody chose another model, so none is taken.
   await agent.refreshSessions();
   assert.equal(reloaded, 1);
   assert.equal(invalidated, 1, "Mastra is told that what can be used has changed");
@@ -536,6 +540,14 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
     return error.code === -32603;
   });
   assert.equal(asked, 0);
+  // A custom address that is gone has no name left: no prefix is told, not Mastra's word for its gateway.
+  model = "mastracode/gone/llama";
+  await assert.rejects(agent.prompt({ sessionId: "s1" }), (error: Json) => {
+    assert.deepEqual(error.data, { intcad: { kind: "model", prefix: "" } });
+    return true;
+  });
+  assert.equal(asked, 0);
+  model = "openai/gpt-5";
   Base.prototype.prompt = prompt;
 
   // After a sign-out the session does move, to the newest model it may use (the one case the PRD names).

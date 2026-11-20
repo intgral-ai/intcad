@@ -32,7 +32,13 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
     configOptions(entry) {
       const options = super.configOptions(entry);
       const model = options.find(option => option.id === 'model');
-      if (model) model.options = orderModelOptions(model.options, dates(), model.currentValue, id => connections.isCustom(id));
+      if (model) {
+        // Mastra Code lists the model in use even when nothing connected serves it. A session can
+        // stay on such a model (see #settle); it is then not one to pick, so it is not listed.
+        const order = listed => orderModelOptions(listed, dates(), model.currentValue, id => connections.isCustom(id));
+        const usable = entry.usable?.length ? order(model.options.filter(option => entry.usable.includes(option.value))) : [];
+        model.options = usable.length ? usable : order(model.options);
+      }
       return options;
     }
 
@@ -92,7 +98,7 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       // asked for on one. No provider is asked: the Assistant says to pick another model.
       const using = entry?.session.model.get() ?? '';
       if (entry?.usable?.length && !entry.usable.includes(using)) {
-        throw new RequestError(INTERNAL, `no connection serves ${using}`, { intcad: { kind: 'model', prefix: connections.prefixOf(using) } });
+        throw new RequestError(INTERNAL, `no connection serves ${using}`, { intcad: { kind: 'model', prefix: connections.prefixOf(using, { known: true }) } });
       }
       try {
         return await super.prompt(request);

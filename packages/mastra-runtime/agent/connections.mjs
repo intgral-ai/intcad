@@ -295,10 +295,12 @@ export class Connections {
    * The connection part of a model id: the longest prefix of a connection that it starts with (a
    * custom address's has two parts), else what stands before the first slash.
    */
-  prefixOf(model) {
+  prefixOf(model, { known = false } = {}) {
     const prefixes = [...PLANS.map(([, prefix]) => prefix), ...KEYS.map(([id]) => id), ...this.#custom.map(entry => this.#deps.customPrefix(entry.id))];
     const match = prefixes.filter(prefix => model.startsWith(`${prefix}/`)).sort((a, b) => b.length - a.length)[0];
-    return match ?? model.slice(0, Math.max(model.indexOf('/'), 0));
+    // `known`: none rather than the first part of the id, which for a custom address that is gone
+    // is Mastra's own word for its gateway and nothing the user has seen.
+    return match ?? (known ? '' : model.slice(0, Math.max(model.indexOf('/'), 0)));
   }
 
   /** Whether a model is one of a custom address: its name was typed by the user, who knows what it is. */

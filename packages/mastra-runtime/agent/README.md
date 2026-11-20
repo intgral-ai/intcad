@@ -91,10 +91,11 @@ sends the same snapshot as the notification `_intcad/connections/changed` whenev
 A session's `model` option lists only models one can talk to, newest first. After a sign-in, a
 sign-out or `setup`, every open session gets a `config_option_update` with its new list. Only a
 sign-out moves a session to another model when the one it used is gone. After a sign-in or a
-`setup` the session keeps its model, which is then not in its list, until the user picks one: the
-newest model may be one paid for by use, and nobody chose it. A `session/prompt` on a model nothing
-connected serves is refused with kind `model` before any provider is asked. A new session starts
-on a model that something connected can serve.
+`setup` the session keeps its model, which is then not in its list (Mastra Code would list it), until
+the user picks one: the newest model may be one paid for by use, and nobody chose it. A
+`session/prompt` on a model nothing connected serves is refused with kind `model` before any provider
+is asked; its `prefix` is empty when the model's connection was a custom address that is gone. A new
+session starts on a model that something connected can serve.
 
 A `session/prompt` that fails carries
 `data: { "intcad": { "kind": "auth" | "quota" | "rate" | "network" | "model" | "other", "prefix" } }`.
