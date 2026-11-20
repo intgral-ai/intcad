@@ -48,6 +48,7 @@ function world(overrides: Json = {}) {
   const held: { close: () => void; closed: boolean; callback: (url: string) => boolean }[] = [];
   let custom: Json[] | null = null;
   let refreshed = 0;
+  const whys: (Json | undefined)[] = [];
   const auth = {
     isLoggedIn: (id: string) => signedIn.has(id),
     getActiveAccount: (id: string) => (signedIn.has(id) ? { label: `${id}@example.com` } : undefined),
@@ -75,9 +76,9 @@ function world(overrides: Json = {}) {
       }),
     dates: () => DATES,
     changed: (snapshot: Json) => void told.push(snapshot),
-    refresh: async () => void (refreshed += 1),
+    refresh: async (why?: Json) => void ((refreshed += 1), whys.push(why)),
   });
-  return { connections, signedIn, told, opened, written, env, held, custom: () => custom, refreshed: () => refreshed };
+  return { connections, signedIn, told, opened, written, env, held, custom: () => custom, refreshed: () => refreshed, whys };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -322,7 +323,7 @@ test("a sign-in that cannot finish says why: the port, the network, or anything 
 });
 
 test("signing out, and a refused sign-in showing as expired until the next sign-in or sign-out", async () => {
-  const { connections, told, refreshed } = world({ signedIn: ["openai-codex", "anthropic"] });
+  const { connections, told, refreshed, whys } = world({ signedIn: ["openai-codex", "anthropic"] });
   connections.expired("openai");
   assert.equal(told.at(-1)!.plans[0].state, "expired");
   connections.expired("deepseek");
@@ -331,6 +332,7 @@ test("signing out, and a refused sign-in showing as expired until the next sign-
   assert.equal(snapshot.plans[0].state, "out");
   assert.equal(snapshot.plans[1].state, "in");
   assert.equal(refreshed(), 1);
+  assert.deepEqual(whys, [{ signedOut: true }], "only a sign-out lets a session go to another model by itself");
   await assert.rejects(connections.logout({ id: "nobody" }), { code: "INVALID" });
 });
 
@@ -509,15 +511,39 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
   assert.equal(dates.get("anthropic/claude-newer-than-the-registry"), "2026-12-01");
   model = "openai/gpt-5";
 
-  // The model in use is gone after a change: the session moves to the newest one it may use and tells the app.
+  // The model in use is gone after new keys or a finished sign-in: the session keeps it, gets the
+  // list of what can be used, and tells the app. Nobody chose another model, so none is taken.
   await agent.refreshSessions();
   assert.equal(reloaded, 1);
   assert.equal(invalidated, 1, "Mastra is told that what can be used has changed");
-  assert.equal(model, "anthropic/claude-newer-than-the-registry");
+  assert.equal(model, "openai/gpt-5");
   const newest = { value: "anthropic/claude-newer-than-the-registry", name: "anthropic/claude-newer-than-the-registry" };
+  const listed = [newest, { value: "anthropic/claude-fable-5-2", name: "anthropic/claude-fable-5-2" }];
   assert.deepEqual(updates.at(-1), {
     sessionId: "s1",
-    update: { sessionUpdate: "config_option_update", configOptions: [{ id: "model", currentValue: newest.value, options: [newest, { value: "anthropic/claude-fable-5-2", name: "anthropic/claude-fable-5-2" }] }, { id: "mode", currentValue: "build", options: [] }] },
+    update: { sessionUpdate: "config_option_update", configOptions: [{ id: "model", currentValue: "openai/gpt-5", options: listed }, { id: "mode", currentValue: "build", options: [] }] },
+  });
+
+  // A turn asked for on that model reaches no provider: the Assistant is told to have another model picked.
+  let asked = 0;
+  const prompt = Base.prototype.prompt;
+  Base.prototype.prompt = async () => {
+    asked += 1;
+    return {};
+  };
+  await assert.rejects(agent.prompt({ sessionId: "s1" }), (error: Json) => {
+    assert.deepEqual(error.data, { intcad: { kind: "model", prefix: "openai" } });
+    return error.code === -32603;
+  });
+  assert.equal(asked, 0);
+  Base.prototype.prompt = prompt;
+
+  // After a sign-out the session does move, to the newest model it may use (the one case the PRD names).
+  await agent.refreshSessions({ signedOut: true });
+  assert.equal(model, newest.value);
+  assert.deepEqual(updates.at(-1), {
+    sessionId: "s1",
+    update: { sessionUpdate: "config_option_update", configOptions: [{ id: "model", currentValue: newest.value, options: listed }, { id: "mode", currentValue: "build", options: [] }] },
   });
 });
 

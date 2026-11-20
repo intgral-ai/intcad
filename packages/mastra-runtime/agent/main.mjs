@@ -130,8 +130,8 @@ const connections = new Connections({
   changed: snapshot => {
     agent?.connection.extNotification('_intcad/connections/changed', snapshot).catch(error => process.stderr.write(`[intcad] could not tell the app: ${error}\n`));
   },
-  refresh: async () => {
-    await agent?.refreshSessions();
+  refresh: async why => {
+    await agent?.refreshSessions(why);
   },
 });
 // Until the app hands over its custom addresses there are none: Mastra's own settings file is not read for them.

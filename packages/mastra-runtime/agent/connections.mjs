@@ -285,7 +285,8 @@ export class Connections {
     this.#deps.auth().logout(id);
     this.#expired.delete(id);
     this.#problem = null;
-    await this.#deps.refresh();
+    // The one change after which a session may go to another model by itself (agent.mjs).
+    await this.#deps.refresh({ signedOut: true });
     this.#tell();
     return this.snapshot();
   }
