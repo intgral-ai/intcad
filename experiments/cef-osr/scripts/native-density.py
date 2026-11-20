@@ -556,6 +556,31 @@ def _linux_mandatory_resource_problems(resources, base, root):
     return problems
 
 
+def _origin_provenance(origin):
+    """Classify an origin receipt under the approved offline provenance policy.
+
+    A caller-supplied receipt is never independent authentication. A missing,
+    false or plausible self-asserted receipt is unknown (BLOCKED); only a
+    malformed receipt is a known mismatch (FAIL). This policy grants no new
+    trust authority and has no PASS path.
+    """
+    if not isinstance(origin, dict):
+        return "BLOCKED", "no artifact origin receipt"
+    authenticated = origin.get("authenticated")
+    if authenticated is not None and not isinstance(authenticated, bool):
+        return "FAIL", "authenticated origin receipt is malformed"
+    if authenticated is not True:
+        # Absent or explicitly false is unknown, not a known mismatch.
+        return "BLOCKED", "origin receipt does not claim authentication"
+    if (
+        not _bounded_string(origin.get("source"), 160)
+        or not isinstance(origin.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-fA-F]{64}", origin["sha256"]) is None
+    ):
+        return "FAIL", "authenticated origin receipt is malformed"
+    return "BLOCKED", "origin receipt is self-asserted; independent authentication is unavailable"
+
+
 def validate_manifest(manifest, base_dir):
     """Check whole-file hashes, resources and the complete built-in theme set."""
     checks = []
@@ -644,24 +669,8 @@ def validate_manifest(manifest, base_dir):
     # `authenticated` boolean is caller self-attestation, not independent proof.
     # The plan has no approved offline trust authority, so a plausible receipt
     # stays BLOCKED; only a malformed receipt is a known mismatch (FAIL).
-    origin = manifest.get("origin")
-    if not isinstance(origin, dict):
-        checks.append(_check("authenticated_origin", "BLOCKED", "no artifact origin receipt"))
-    else:
-        authenticated = origin.get("authenticated")
-        if authenticated is not None and not isinstance(authenticated, bool):
-            checks.append(_check("authenticated_origin", "FAIL", "authenticated origin receipt is malformed"))
-        elif authenticated is not True:
-            # Absent or explicitly false is unknown, not a known mismatch.
-            checks.append(_check("authenticated_origin", "BLOCKED", "origin receipt does not claim authentication"))
-        elif (
-            not _bounded_string(origin.get("source"), 160)
-            or not isinstance(origin.get("sha256"), str)
-            or re.fullmatch(r"[0-9a-fA-F]{64}", origin["sha256"]) is None
-        ):
-            checks.append(_check("authenticated_origin", "FAIL", "authenticated origin receipt is malformed"))
-        else:
-            checks.append(_check("authenticated_origin", "BLOCKED", "origin receipt is self-asserted; independent authentication is unavailable"))
+    origin_status, origin_detail = _origin_provenance(manifest.get("origin"))
+    checks.append(_check("authenticated_origin", origin_status, origin_detail))
     limitations = [
         "The authenticated distribution's whole bundle and required sandbox/GPU binaries cannot be verified offline.",
         "The mandatory resource list is a minimum inventory check, not proof the files match an authenticated origin.",
@@ -1433,6 +1442,70 @@ def _test_capture_bundle_does_not_trust_supplied_paths():
             raise AssertionError("app whole-file hash missing")
 
 
+def _live_checks():
+    """Synthetic live observations: every raw capture step passed."""
+    return [
+        _check("app_identity", "PASS", "app whole-file hash recorded"),
+        _check("app_pid_identity", "PASS", "supplied app is /proc/4242/exe"),
+        _check("process_starttime", "PASS", "pid 4242 starttime 100"),
+        _check("mapped_libcef", "PASS", "actual mapped libcef matches the supplied root"),
+        _check("pid_reuse", "PASS", "PID/starttime stayed stable during capture"),
+        _check("ui_scale_matrix", "PASS", "4/4 requested UI scales measured"),
+    ]
+
+
+def _test_live_report_without_authenticated_origin_is_blocked():
+    checks = _live_checks()
+    report = _live_report(checks)
+    _assert_status(report, "BLOCKED")
+    if _exit_code(report) != 2:
+        raise AssertionError("an absent origin must keep BLOCKED acceptance, not exit 0")
+    if _check_status(report, "authenticated_origin") != "BLOCKED":
+        raise AssertionError("live aggregation without independent origin must BLOCK provenance")
+    for check in checks:
+        if check not in report["checks"]:
+            raise AssertionError(f"raw observation {check['name']} was not preserved")
+
+
+def _test_live_report_self_asserted_origin_stays_blocked():
+    report = _live_report(_live_checks(), origin={
+        "authenticated": True,
+        "source": "stock-cef-fixture",
+        "sha256": "0" * 64,
+    })
+    _assert_status(report, "BLOCKED")
+    if _check_status(report, "authenticated_origin") != "BLOCKED":
+        raise AssertionError("a plausible self-asserted origin is not independent authentication")
+
+
+def _test_live_report_known_mismatch_fails_over_blocked_origin():
+    report = _live_report(_live_checks(), origin={
+        "authenticated": "true",
+        "source": "stock-cef-fixture",
+        "sha256": "0" * 64,
+    })
+    _assert_status(report, "FAIL")
+    if _check_status(report, "authenticated_origin") != "FAIL":
+        raise AssertionError("a malformed origin receipt is a known mismatch and must FAIL")
+    if _exit_code(report) != 1:
+        raise AssertionError("a known mismatch must keep FAIL acceptance, not BLOCKED/exit 2")
+    # A known runtime mismatch stays FAIL beside the BLOCKED unknown origin.
+    report = _live_report([_check("app_pid_identity", "FAIL", "supplied app is not the running executable")])
+    _assert_status(report, "FAIL")
+    if _check_status(report, "authenticated_origin") != "BLOCKED":
+        raise AssertionError("the absent origin must still be reported beside the FAIL")
+
+
+def _test_live_aggregates_through_authenticated_origin_seam():
+    source = Path(__file__).read_text(encoding="utf-8")
+    at = source.index("\ndef _live(")
+    body = source[at:source.index("\ndef main(", at)]
+    if "report = _live_report(" not in body:
+        raise AssertionError("live report construction must use the origin aggregator")
+    if "report = _report(" in body:
+        raise AssertionError("live report construction bypasses the origin aggregator")
+
+
 def _test_pid_starttime_with_parens_in_comm():
     after = ["S", "7"] + ["0"] * 17 + ["98765", "1", "0"]
     line = "4242 (a)b c) " + " ".join(after)
@@ -1529,6 +1602,10 @@ def _run_self_tests():
         _test_unknown_tag_through_cli_fails,
         _test_receipts_after_many_plain_lines,
         _test_capture_bundle_does_not_trust_supplied_paths,
+        _test_live_report_without_authenticated_origin_is_blocked,
+        _test_live_report_self_asserted_origin_stays_blocked,
+        _test_live_report_known_mismatch_fails_over_blocked_origin,
+        _test_live_aggregates_through_authenticated_origin_seam,
         _test_pid_starttime_with_parens_in_comm,
         _test_offline_cli_round_trip,
     ]
@@ -1670,6 +1747,25 @@ def task_identity_problem(task, source, platform):
     return None
 
 
+def _live_report(checks, artifacts=None, limitations=None, origin=None):
+    """Aggregate a live-capture report without letting observations bypass provenance.
+
+    Raw observation checks are copied unchanged so a capture stays inspectable.
+    Authenticated origin uses the same offline policy as validate_manifest: an
+    absent or self-asserted receipt is BLOCKED, and only a malformed receipt is
+    a known mismatch (FAIL). _aggregate keeps FAIL ahead of BLOCKED, so a known
+    mismatch is never downgraded to unknown.
+    """
+    provenance = _check("authenticated_origin", *_origin_provenance(origin))
+    return _report(
+        list(checks) + [provenance],
+        artifacts=artifacts,
+        limitations=list(limitations or []) + [
+            "Artifact provenance uses the offline receipt policy; live capture adds no independent authentication.",
+        ],
+    )
+
+
 def _live(app, cef_root, out, task, source, platform):
     import subprocess
 
@@ -1680,7 +1776,7 @@ def _live(app, cef_root, out, task, source, platform):
     ]
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", str(task)):
         checks.append(_check("task_name", "FAIL", "task name must be 1-40 safe characters"))
-        report = _report(checks, limitations=limitations)
+        report = _live_report(checks, limitations=limitations)
         _write_report(report, out)
         return _exit_code(report)
     app, cef_root, out = Path(app), Path(cef_root), Path(out)
@@ -1691,7 +1787,7 @@ def _live(app, cef_root, out, task, source, platform):
     if not (cef_root / "libcef.so").is_file():
         checks.append(_check("cef_root", "BLOCKED", "CEF root has no libcef.so"))
     if _aggregate(checks) in ("FAIL", "BLOCKED"):
-        report = _report(checks, limitations=limitations)
+        report = _live_report(checks, limitations=limitations)
         _write_report(report, out)
         return _exit_code(report)
 
@@ -1818,7 +1914,7 @@ def _live(app, cef_root, out, task, source, platform):
         checks.append(_check("ui_scale_matrix", "BLOCKED", "no UI-scale requests completed"))
     else:
         checks.append(_check("ui_scale_matrix", "FAIL" if scale_problems else "PASS", f"{len(scale_records) - len(scale_problems)}/{len(scale_records)} requested UI scales measured"))
-    report = _report(checks, artifacts=artifacts, limitations=limitations)
+    report = _live_report(checks, artifacts=artifacts, limitations=limitations)
     report["task"] = {"task": str(task), "source": source, "platform": platform}
     report["ui_scale_requests"] = scale_records
     written = _write_report(report, out)
