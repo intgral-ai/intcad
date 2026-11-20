@@ -1385,7 +1385,8 @@ fn authoritative_tombstone_expiry_ends_replay_but_not_selection_or_gc_with_resid
 
     let candidates = fixture.root.join("candidates");
     let expiry_clock = Arc::new(ManualClock::new(expiry));
-    let cleaner = port_with(&fixture.port.store.root, &candidates, runner_with(Vec::new()), Limits::default(), Arc::clone(&expiry_clock));
+    let expiry_clock_dyn: Arc<dyn Clock> = Arc::clone(&expiry_clock);
+    let cleaner = port_with(&fixture.port.store.root, &candidates, runner_with(Vec::new()), Limits::default(), expiry_clock_dyn);
     cleaner.cleanup(expiry);
     assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "cleanup keeps the expired tombstone while a live-looking state exists");
 
