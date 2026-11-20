@@ -134,17 +134,17 @@ fn every_grade_in_the_table_is_sourced_and_found_by_its_names() {
     assert!(fea::materials::grade("").is_none() && fea::materials::grade("steel").is_none());
 }
 
+/// The one setup preview is the whole app's (`fea::show_preview` replaces any other): a test that
+/// reads it back holds this while its dry run draws, and so do the A13 dry runs, which would
+/// otherwise replace it in between.
+static PREVIEW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// U10: the setup preview.
 /// Input: the 100 mm strip held at x = 0, 10 N down at x = 100, as a roller-free setup. Action: a
 /// dry run, then `inspect.stress_estimate.show {show: clear}`. Observable: `fea::preview` for the
 /// design. Pass: the dry run leaves a preview with one load arrow (10 N, pointing down) at the tip
 /// and one support labelled `fixed` at the root, and nothing painted; clear drops it. Nothing is
 /// faked.
-/// The one setup preview is the whole app's (`fea::show_preview` replaces any other): a test that
-/// reads it back holds this while its dry run draws, and so do the A13 dry runs, which would
-/// otherwise replace it in between.
-static PREVIEW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[test]
 fn a_dry_run_draws_its_supports_and_loads_until_cleared() {
     let _one = PREVIEW_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
