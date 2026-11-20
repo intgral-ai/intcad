@@ -800,9 +800,99 @@ fn same_batch_row_click_then_native_paste_then_down_does_not_paste_into_the_late
     assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source));
 }
 
-/// The converse transition: Files has the keys when the batch starts, but a click away ends
-/// that before the native CAD command. The tree never moves its row in this batch, so the CAD
-/// Cut or Paste must run rather than be suppressed by the entry frame's Files focus.
+/// A later tree key that cannot move the row is not a retarget: at the last row a Down is a
+/// no-op, so the native Cut must still act on the row settled when it was pressed, not be
+/// retired by mere key presence.
+#[test]
+fn same_batch_native_cut_then_noop_down_at_the_last_row_cuts_the_settled_row() {
+    let scratch = Scratch::new();
+    scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    focus_file_row(&mut h, "later.txt");
+    let before = cad_mark(&h);
+    h.frame_with(vec![
+        egui::Event::Cut,
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the boundary Down leaves the row");
+    let clip = h.app.file_tree.clip.as_ref().expect("the Cut applies to the row settled when pressed");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&later));
+    assert!(clip.cut);
+    assert_eq!(cad_mark(&h), before, "the command reaches Files, not CAD");
+}
+
+/// A move before the command settles the target; a later no-op Down must not make that move
+/// count as a post-command retarget. The command acts on the row it had when pressed.
+#[test]
+fn same_batch_early_down_then_native_cut_then_later_noop_down_cuts_the_settled_row() {
+    let scratch = Scratch::new();
+    scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    focus_file_row(&mut h, "first.txt");
+    let before = cad_mark(&h);
+    h.frame_with(vec![
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Cut,
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the first Down moved to the settled row");
+    let clip = h.app.file_tree.clip.as_ref().expect("the Cut applies to the settled row");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&later));
+    assert!(clip.cut);
+    assert_eq!(cad_mark(&h), before, "the command reaches Files, not CAD");
+}
+
+/// egui's logical key matching ignores the extra Alt, so the tree consumes Alt+Down and moves
+/// its row. A Cut pressed before it must be retired, not applied to the row the accepted
+/// navigation reached.
+#[test]
+fn same_batch_native_cut_then_alt_down_retires_the_command() {
+    let scratch = Scratch::new();
+    scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    focus_file_row(&mut h, "first.txt");
+    let before = cad_mark(&h);
+    let alt = Modifiers { alt: true, ..Default::default() };
+    h.frame_with(vec![egui::Event::Cut, key_event(egui::Key::ArrowDown, true, alt), key_event(egui::Key::ArrowDown, false, alt)]);
+    assert_eq!(h.app.file_tree.focus, Some(later), "the tree accepts Alt+Down as navigation");
+    assert!(h.app.file_tree.clip.is_none(), "the Cut is retired, not applied to the row Alt+Down reached");
+    assert_eq!(cad_mark(&h), before, "the ambiguous command reaches neither Files nor CAD");
+}
+
+/// egui's logical matching also ignores the extra Shift, so Cmd/Ctrl+Shift+A selects all rows.
+/// A Cut pressed before it must be retired rather than applied to the later selection.
+#[test]
+fn same_batch_native_cut_then_command_shift_a_retires_the_command() {
+    let scratch = Scratch::new();
+    let first = scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    // The assistant's default Ctrl+Shift+A toggle consumes this chord before any panel. The
+    // panel's own egui logical matching is what this test exercises.
+    crate::keymap::bind(&mut h.app, "ui.assistant", "", false).unwrap();
+    focus_file_row(&mut h, "first.txt");
+    let before = cad_mark(&h);
+    let chord = Modifiers::COMMAND | Modifiers::SHIFT;
+    h.frame_with(vec![egui::Event::Cut, key_event(egui::Key::A, true, chord), key_event(egui::Key::A, false, chord)]);
+    assert!(
+        h.app.file_tree.selection.contains(&first) && h.app.file_tree.selection.contains(&later),
+        "the tree accepts Cmd/Ctrl+Shift+A: {:?}",
+        h.app.file_tree.selection
+    );
+    assert!(h.app.file_tree.clip.is_none(), "the Cut is retired, not applied to the later selection");
+    assert_eq!(cad_mark(&h), before, "the ambiguous command reaches neither Files nor CAD");
+}
+
+/// The converse transition: Files has the keys when the batch starts, but a click in the
+/// retained-open viewport ends that before the native CAD command. The tree never moves its
+/// row in this batch, so the CAD Cut or Paste must run rather than be suppressed by the entry
+/// frame's Files focus.
 #[test]
 fn same_batch_click_away_then_native_cad_clipboard_then_down_keeps_the_cad_command() {
     for cut in [true, false] {
@@ -814,14 +904,18 @@ fn same_batch_click_away_then_native_cad_clipboard_then_down_keeps_the_cad_comma
         }
         focus_file_row(&mut h, "notes.txt");
         let body_count = h.app.session.model.state().bodies.len();
-        let rail = crate::scenario::rect_of("rail:item:files").unwrap();
-        let mut events = pointer_click(rail.center(), Modifiers::NONE);
+        let viewport = h.app.viewport.rect.expect("viewport");
+        let at = viewport.left_top() + egui::vec2(24.0, 24.0);
+        let mut events = pointer_click(at, Modifiers::NONE);
         events.push(if cut { egui::Event::Cut } else { egui::Event::Paste("native".into()) });
         events.push(key_event(egui::Key::ArrowDown, true, Modifiers::NONE));
         events.push(key_event(egui::Key::ArrowDown, false, Modifiers::NONE));
         h.frame_with(events);
         h.frames(2);
-        assert!(!h.app.file_tree.focused, "cut={cut}: the click away takes the Files keys");
+        assert!(crate::right_rail::shown(&h.app), "cut={cut}: the viewport click keeps the rail shown");
+        assert_eq!(crate::right_rail::open(&h.app), Some(crate::right_rail::Item::Files), "cut={cut}: the Files panel stays open");
+        assert!(h.app.shell.right_rail_panel.is_some(), "cut={cut}: the retained-open panel is drawn");
+        assert!(!h.app.file_tree.focused, "cut={cut}: the viewport click takes the Files keys");
         assert!(h.app.file_tree.clip.is_none(), "cut={cut}: Files did not act on its old row");
         if cut {
             assert_eq!(h.app.cut.bodies.as_slice(), std::slice::from_ref(&body), "the CAD Cut still marks the body");

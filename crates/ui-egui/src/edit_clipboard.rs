@@ -747,10 +747,8 @@ pub(crate) struct InputBatch {
     pub(crate) files_rendered: bool,
     pub(crate) entry_keyboard_owned: bool,
     ambiguous: bool,
-    /// A clipboard command appears before a tree target-moving key in this batch.
-    command_then_tree_key: bool,
-    /// The focused tree actually moved its row selection while laying out this batch.
-    pub(crate) files_moved_target: bool,
+    /// A tree key after the batch's clipboard command changed the target it would act on.
+    pub(crate) retargeted: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -796,17 +794,41 @@ fn keyboard_owned(app: &mut SolveApp, ctx: &egui::Context) -> bool {
         || app.file_load.busy()
 }
 
-/// Keys the focused tree moves its row selection with. A later one makes the batch's clipboard
-/// command refer to a row the person did not have selected when it was pressed.
-fn tree_retargets(event: &egui::Event) -> bool {
-    use egui::{Event, Key};
-    match event {
-        Event::Key { key: Key::ArrowDown | Key::ArrowUp | Key::ArrowLeft | Key::Home | Key::End, pressed: true, modifiers, .. } => {
-            !modifiers.command && !modifiers.ctrl && !modifiers.alt
+/// Which command targets a clipboard command before the tree's key would use. A Cut or Copy
+/// acts on the selection; a Paste acts on the folder. Navigation that changes only the other
+/// target does not make the command ambiguous.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CommandBefore {
+    pub(crate) selection: bool,
+    pub(crate) paste_folder: bool,
+}
+
+/// The first key event the tree would consume, and which command targets come before it. An
+/// empty result means no clipboard command precedes that key. Matching uses egui's logical
+/// modifiers, the same match `consume_key` uses, so an extra Alt or Shift the panel accepts is
+/// counted too. The panel supplies the key it actually handles: this is not a second list of
+/// navigation keys.
+pub(crate) fn key_after_command(ui: &egui::Ui, modifiers: egui::Modifiers, key: egui::Key) -> CommandBefore {
+    ui.input(|i| {
+        let mut before = CommandBefore::default();
+        for event in &i.events {
+            if let Some(command) = clipboard_command(event) {
+                match command {
+                    ClipboardCommand::Copy | ClipboardCommand::Cut => before.selection = true,
+                    ClipboardCommand::Paste => before.paste_folder = true,
+                }
+                continue;
+            }
+            if matches!(
+                event,
+                egui::Event::Key { key: event_key, pressed: true, modifiers: event_modifiers, .. }
+                    if *event_key == key && event_modifiers.matches_logically(modifiers)
+            ) {
+                return before;
+            }
         }
-        Event::Key { key: Key::A, pressed: true, modifiers, .. } => modifiers.command && !modifiers.shift && !modifiers.alt,
-        _ => false,
-    }
+        before
+    })
 }
 
 /// Reserve clipboard mutation until the widgets and current dialogs have seen the input.
@@ -815,23 +837,17 @@ pub(crate) fn begin_input(app: &mut SolveApp, ctx: &egui::Context) {
     let frame = ctx.cumulative_frame_nr();
     if app.clipboard_input.frame != Some(frame) {
         let entry_keyboard_owned = keyboard_owned(app, ctx);
-        // A later pointer or focus loss leaves both owners uncertain. A later tree key is not
-        // decided here: whether it moves the target depends on the tree actually handling it
-        // during layout (`files_moved_target`), not on entry-frame focus.
-        let (ambiguous, command_then_tree_key) = ctx.input(|i| {
+        // A later pointer or focus loss leaves both owners uncertain. A later tree key is decided
+        // by the panel: whether the key it actually handles comes after the command and changes
+        // the target it would act on.
+        let ambiguous = ctx.input(|i| {
             let mut command_seen = false;
-            let mut ambiguous = false;
-            let mut command_then_tree_key = false;
-            for event in &i.events {
+            i.events.iter().any(|event| {
                 command_seen |= clipboard_command(event).is_some();
-                if command_seen {
-                    ambiguous |= matches!(event, egui::Event::PointerButton { .. } | egui::Event::WindowFocused(false));
-                    command_then_tree_key |= tree_retargets(event);
-                }
-            }
-            (ambiguous, command_then_tree_key)
+                command_seen && matches!(event, egui::Event::PointerButton { .. } | egui::Event::WindowFocused(false))
+            })
         });
-        app.clipboard_input = InputBatch { frame: Some(frame), entry_keyboard_owned, ambiguous, command_then_tree_key, ..Default::default() };
+        app.clipboard_input = InputBatch { frame: Some(frame), entry_keyboard_owned, ambiguous, ..Default::default() };
     }
     app.clipboard_input.files_rendered = false;
     if !ctx.input(|i| i.focused) {
@@ -870,11 +886,10 @@ pub(crate) fn finish_input(app: &mut SolveApp, ctx: &egui::Context) {
         // A theme on the Appearance page precedes CAD/Files. Retire replay input below too.
         crate::prefs::take_theme_paste(app, ctx);
         if rendered && app.file_tree.focused {
-            // The tree consumed a key after the command and moved its target before this
-            // handler ran. Its command is retired for both owners rather than applied to the
-            // row the person did not select when pressing it.
-            let retargeted = app.clipboard_input.command_then_tree_key && app.clipboard_input.files_moved_target;
-            if !retargeted {
+            // The tree consumed a key after the command and actually changed the target it
+            // would act on before this handler ran. Its command is retired for both owners
+            // rather than applied to the row the person did not select when pressing it.
+            if !app.clipboard_input.retargeted {
                 let commands: Vec<_> = ctx.input(|i| {
                     i.events
                         .iter()

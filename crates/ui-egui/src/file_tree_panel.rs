@@ -756,14 +756,22 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
         return;
     }
     let shift = ui.input(|i| i.modifiers.shift);
-    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
+    if let Some(before_command) = take_key(ui, egui::Modifiers::NONE, egui::Key::ArrowDown) {
+        let before = clipboard_target(app);
         move_focus(app, visible, 1, shift);
-    } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)) {
+        note_retarget(app, before_command, before);
+    } else if let Some(before_command) = take_key(ui, egui::Modifiers::NONE, egui::Key::ArrowUp) {
+        let before = clipboard_target(app);
         move_focus(app, visible, -1, shift);
-    } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Home)) {
+        note_retarget(app, before_command, before);
+    } else if let Some(before_command) = take_key(ui, egui::Modifiers::NONE, egui::Key::Home) {
+        let before = clipboard_target(app);
         jump_focus(app, visible, 0, shift);
-    } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::End)) {
+        note_retarget(app, before_command, before);
+    } else if let Some(before_command) = take_key(ui, egui::Modifiers::NONE, egui::Key::End) {
+        let before = clipboard_target(app);
         jump_focus(app, visible, visible.len().saturating_sub(1), shift);
+        note_retarget(app, before_command, before);
     } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)) {
         if let Some(path) = app.file_tree.focus.clone()
             && matches!(app.file_tree.kind_at(&path), Some(Kind::Dir))
@@ -771,7 +779,8 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
         {
             app.file_tree.toggle_dir(&path);
         }
-    } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)) {
+    } else if let Some(before_command) = take_key(ui, egui::Modifiers::NONE, egui::Key::ArrowLeft) {
+        let before = clipboard_target(app);
         if let Some(path) = app.file_tree.focus.clone() {
             if app.file_tree.expanded.contains(&path) {
                 app.file_tree.toggle_dir(&path);
@@ -779,9 +788,9 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
                 && visible.iter().any(|p| p == parent)
             {
                 app.file_tree.select_only(parent);
-                note_target_moved(app);
             }
         }
+        note_retarget(app, before_command, before);
     } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
         if let Some(path) = app.file_tree.focus.clone()
             && let Some(path) = app.file_tree.activate(&path)
@@ -795,18 +804,41 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
     } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
     {
         request_delete(app);
-    } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+    } else if let Some(before_command) = take_key(ui, egui::Modifiers::COMMAND, egui::Key::A) {
+        let before = clipboard_target(app);
         app.file_tree.selection = visible.iter().cloned().collect();
         app.file_tree.focus = visible.first().cloned();
         app.file_tree.anchor = visible.first().cloned();
-        note_target_moved(app);
+        note_retarget(app, before_command, before);
     }
 }
 
-/// The tree actually handled a key that moved the row the clipboard would act on. `finish_input`
-/// reads this after layout; entry-frame focus cannot know that an accepted click gave the keys.
-fn note_target_moved(app: &mut SolveApp) {
-    app.clipboard_input.files_moved_target = true;
+/// What a Files clipboard command would act on: the selected paths and the folder a paste
+/// would enter. A key only retires an earlier command if it changes one of these.
+struct ClipboardTarget {
+    selected: Vec<std::path::PathBuf>,
+    folder: Option<std::path::PathBuf>,
+}
+
+fn clipboard_target(app: &SolveApp) -> ClipboardTarget {
+    let focus = app.file_tree.focus.clone();
+    ClipboardTarget { selected: app.file_tree.selected(focus.as_deref()), folder: app.file_tree.target_folder() }
+}
+
+/// The panel handled this key itself, so it can say whether the command's effective target
+/// changed and which command came before that key. Entry-frame focus cannot know either.
+fn note_retarget(app: &mut SolveApp, before_command: crate::edit_clipboard::CommandBefore, before: ClipboardTarget) {
+    let after = clipboard_target(app);
+    if (before_command.selection && after.selected != before.selected) || (before_command.paste_folder && after.folder != before.folder) {
+        app.clipboard_input.retargeted = true;
+    }
+}
+
+/// Consume the key the panel handles and report which command targets its first event follows.
+/// `consume_key` uses the same logical modifier match, so accepted Alt/Shift chords count too.
+fn take_key(ui: &mut egui::Ui, modifiers: egui::Modifiers, key: egui::Key) -> Option<crate::edit_clipboard::CommandBefore> {
+    let before = crate::edit_clipboard::key_after_command(ui, modifiers, key);
+    ui.input_mut(|i| i.consume_key(modifiers, key)).then_some(before)
 }
 
 fn move_focus(app: &mut SolveApp, visible: &[std::path::PathBuf], delta: isize, extend: bool) {
@@ -834,7 +866,6 @@ fn select_at(app: &mut SolveApp, visible: &[std::path::PathBuf], index: usize, e
         app.file_tree.select_only(path);
     }
     app.file_tree.scroll_to = Some(path.clone());
-    note_target_moved(app);
 }
 
 fn footer_rows(app: &mut SolveApp, ui: &mut egui::Ui) {
