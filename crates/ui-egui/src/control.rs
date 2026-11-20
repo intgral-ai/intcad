@@ -1552,20 +1552,41 @@ pub(crate) fn batch_step_command(step: &Value) -> Option<&str> {
 /// `rollback` (the default), the design goes back to its checkpoint. Step failures are part of
 /// the reply; refusals (`engine.batch unavailable: …`) come before anything runs, so the client
 /// can send the steps one by one instead.
-/// A conservative controlled-batch allowlist: only rollbackable document commands and a few
-/// read-only document queries. External file, export, network, UI/render and unknown effects are
-/// refused before any step.
+/// A conservative exact allowlist of audited document-local commands for controlled batches.
+/// Unknown commands, aliases resolving to anything else, file/import/link reads, external renders
+/// and network-capable commands are refused before any step.
+const CONTROLLED_BATCH_COMMANDS: &[&str] = &[
+    "parameters.add",
+    "parameters.change",
+    "parameters.comment",
+    "parameters.delete",
+    "parameters.favorite",
+    "parameters.graph",
+    "parameters.list",
+    "parameters.move",
+    "parameters.rename",
+    "parameters.users",
+    "sketch.create",
+    "sketch.line",
+    "sketch.point",
+    "sketch.finish",
+    "solid.box",
+    "solid.sphere",
+    "solid.cylinder",
+    "solid.cone",
+    "solid.torus",
+    "solid.extrude",
+    "solid.revolve",
+    "edit.undo",
+    "edit.redo",
+    "document.inspect",
+    "engine.commands",
+];
+
 fn controlled_batch_step_allowed(step: &Value) -> bool {
     let Some(id) = command(step) else { return false };
     let Some(spec) = solidcraft_engine::find_command(id) else { return false };
-    if solidcraft_engine::panels::commands::is_command(spec.id) {
-        return false;
-    }
-    if matches!(spec.id, "parameters.list" | "document.inspect" | "engine.commands") {
-        return true;
-    }
-    let document_area = ["parameters.", "sketch.", "solid.", "edit.", "body.", "feature.", "joint.", "assembly.", "component."];
-    spec.undoable && document_area.iter().any(|prefix| spec.id.starts_with(prefix))
+    CONTROLLED_BATCH_COMMANDS.contains(&spec.id)
 }
 
 /// Apply a controlled `engine.batch` with a verified per-step bound and a live gate before every
@@ -3694,6 +3715,58 @@ mod tests {
         assert_eq!(reply["result"]["completed"], 2, "{reply}");
         assert_eq!(commits.load(Ordering::Relaxed), 1, "a successful read-only batch charges once");
         assert_eq!(releases.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn the_controlled_batch_allowlist_is_exact_and_auditable() {
+        for id in CONTROLLED_BATCH_COMMANDS {
+            assert!(solidcraft_engine::find_command(id).is_some(), "allowlisted command must exist: {id}");
+        }
+        assert!(controlled_batch_step_allowed(&json!({"command":"solid.box","params":{}})));
+        assert!(controlled_batch_step_allowed(&json!({"command":"SOLID.BOX","params":{}})), "canonical case resolves to the audited command");
+        for step in [
+            json!({"command":"component.insert_design","params":{"path":"/tmp/opencode/int1497-never-imported.sc"}}),
+            json!({"command":"file.export","params":{"path":"/tmp/opencode/int1497-never-exported.step"}}),
+            json!({"command":"file.import","params":{"path":"/tmp/opencode/int1497-never-imported.sc"}}),
+            json!({"command":"solid.new_primitive","params":{}}),
+        ] {
+            assert!(!controlled_batch_step_allowed(&step), "must refuse {step}");
+        }
+    }
+
+    #[test]
+    fn a_finished_batch_retains_without_another_full_step_budget() {
+        let (mut app, authority, commits, _releases) = app_with_commit_authority_grant(300_000);
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[{"command":"solid.box","params":{"length":10,"width":10,"height":10}}]}),
+        );
+        req.deadline = Some(ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_millis(75_000)));
+        admit_once(&mut app, &mut req).expect("the step fits at t=0");
+        // Gate reads at 10/20/30/40 ms (35 s left, enough for 30 s); the retention read is 50 ms
+        // (25 s left, too short for another step but still before the cutoff).
+        authority.set_clock_advance(10_000, 5);
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(bodies(&app), 1, "the finished step is retained");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "finished work settles without a new start budget");
+    }
+
+    #[test]
+    fn a_controlled_batch_with_an_external_link_or_import_is_refused_before_work() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let path = "/tmp/opencode/int1497-never-imported.sc";
+        let _ = std::fs::remove_file(path);
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.batch", json!({"commands":[{"command":"component.insert_design","params":{"path":path}}]}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(!std::path::Path::new(path).exists(), "no import or link read happened");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 1);
     }
 
     #[test]
