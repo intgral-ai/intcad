@@ -14549,7 +14549,10 @@ mod mastra_backend_tests {
         let host = host_validation(&dir);
         let turn = turn_scope("s-late-settled", "t-late-settled", "w-late-settled");
         let profile = host.profile().unwrap();
-        let run_id = host.seed_queued_run_for_test(&turn, &candidate, &profile);
+        let candidate_engine: solidcraft_engine::schema::snapshot::CandidateRef =
+            serde_json::from_value(serde_json::to_value(&candidate).unwrap()).unwrap();
+        let profile_engine: solidcraft_engine::validation::ProfileRef = serde_json::from_value(serde_json::to_value(&profile).unwrap()).unwrap();
+        let run_id = host.seed_queued_run_for_test(&turn, &candidate_engine, &profile_engine);
         let (state, cancellation) = host.simulate_late_registration_for_test(&run_id).expect("the seeded run is in the book");
         assert_eq!(state, "cancelled", "the captured Queued must not replace the persisted terminal state");
         assert_eq!(cancellation.as_deref(), Some("persisted"), "a settled cancellation is monotonic");
