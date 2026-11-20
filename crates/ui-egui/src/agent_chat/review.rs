@@ -90,8 +90,8 @@ pub enum Phase {
 enum Slot {
     /// Here, on the window thread (boxed: the copy is large, the other states small).
     Here(Box<Copy>),
-    /// On a worker, computing.
-    Away(Away),
+    /// On a worker, computing (boxed for the same reason as the copy).
+    Away(Box<Away>),
     /// Its worker ended without sending it back: nothing more can run on it.
     Lost,
 }
@@ -581,7 +581,7 @@ fn send_away(preview: &mut Preview, work: Work, ask: Ask, labels: Vec<String>) -
             Err(RecvTimeoutError::Timeout) => {}
         }
     }
-    preview.slot = Slot::Away(away);
+    preview.slot = Slot::Away(Box::new(away));
     Sent::Away
 }
 
@@ -930,7 +930,11 @@ pub(crate) fn forget(chat: &mut super::AgentChat) {
         for req in preview.queued {
             let _ = req.reply.send(refusal());
         }
-        if let Slot::Away(Away { work: Work::Request(req), stopped: false, .. }) = preview.slot {
+        if let Slot::Away(away) = preview.slot
+            && !away.stopped
+            && matches!(&away.work, Work::Request(_))
+        {
+            let Work::Request(req) = away.work else { return };
             let _ = req.reply.send(refusal());
         }
         set_outcome(chat, preview.id, Outcome::Rejected);
