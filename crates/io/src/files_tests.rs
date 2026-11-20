@@ -1275,21 +1275,25 @@ fn a_witness_names_the_same_plain_entry_when_it_is_unchanged() {
     let file = scratch.file("bracket.sc", "design");
     let first = entry_witness(&file).expect("a plain file has a witness");
     let second = entry_witness(&file).expect("the same plain file has a witness");
-    assert!(same_object(&first, &second));
+    assert!(same_object_alias(&first, &second));
     assert!(same_entry(&first, &second));
     assert!(witness_matches(&first, &file));
 }
 
 #[cfg(unix)]
 #[test]
-fn a_recreated_entry_is_a_different_object_even_with_equal_bytes() {
+fn a_recreated_entry_is_a_different_object_when_the_old_inode_is_still_linked() {
     let scratch = Scratch::new();
     let file = scratch.file("bracket.sc", "same bytes");
     let before = entry_witness(&file).expect("the first file has a witness");
+    // Keep the old inode allocated while the public name is absent, so this test does not
+    // depend on allocator timing or on an inode never being reused after deletion.
+    let held = scratch.path().join("held.sc");
+    fs::hard_link(&file, &held).unwrap();
     fs::remove_file(&file).unwrap();
     scratch.file("bracket.sc", "same bytes");
     let after = entry_witness(&file).expect("the recreated file has a witness");
-    assert!(!same_object(&before, &after), "equal bytes do not make the recreated file the same object");
+    assert!(!same_object_alias(&before, &after), "equal bytes do not make the recreated file the same object");
     assert!(!same_entry(&before, &after));
     assert!(!witness_matches(&before, &file));
 }
@@ -1302,9 +1306,84 @@ fn an_in_place_edit_keeps_the_object_but_not_the_consented_entry() {
     let before = entry_witness(&file).expect("a plain file has a witness");
     fs::write(&file, "design plus an edit").unwrap();
     let after = entry_witness(&file).expect("the edited file has a witness");
-    assert!(same_object(&before, &after), "the edit did not replace the object");
+    assert!(same_object_alias(&before, &after), "the edit did not replace the object");
     assert!(!same_entry(&before, &after), "an edit is not the snapshot the person saw");
     assert!(!witness_matches(&before, &file));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_same_length_edit_with_the_old_mtime_restored_is_not_the_same_entry() {
+    use std::os::unix::fs::MetadataExt;
+    let scratch = Scratch::new();
+    let file = scratch.file("bracket.sc", "0123456789");
+    let before = entry_witness(&file).expect("a plain file has a witness");
+    let before_metadata = fs::metadata(&file).unwrap();
+    let old_modified = before_metadata.modified().unwrap();
+    fs::write(&file, "abcdefghij").unwrap();
+    let edited = fs::OpenOptions::new().write(true).open(&file).unwrap();
+    edited.set_times(fs::FileTimes::new().set_modified(old_modified)).unwrap();
+    drop(edited);
+    let after = entry_witness(&file).expect("the edited file has a witness");
+    let after_metadata = fs::metadata(&file).unwrap();
+    assert_eq!(after_metadata.len(), before_metadata.len());
+    assert_eq!(after_metadata.modified().unwrap(), old_modified);
+    assert_ne!(
+        (after_metadata.ctime(), after_metadata.ctime_nsec()),
+        (before_metadata.ctime(), before_metadata.ctime_nsec()),
+        "the edit changes ctime, which is the pre-displacement generation evidence"
+    );
+    assert!(same_object_alias(&before, &after), "the edit did not replace the object");
+    assert!(!same_entry(&before, &after), "same length and restored mtime are still an edit");
+    assert!(!witness_matches(&before, &file));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_recycled_inode_with_a_different_change_time_is_not_the_same_entry() {
+    use std::time::{Duration, UNIX_EPOCH};
+    let at = UNIX_EPOCH + Duration::from_secs(1_000);
+    let object = ObjectIdentity { device: 1, inode: 2 };
+    let first = EntryWitness { object, edit: DetectableEdit { len: 4, modified: Some(at), created: Some(at), changed: (1_000, 0) } };
+    let recycled = EntryWitness { object, edit: DetectableEdit { len: 4, modified: Some(at), created: Some(at), changed: (1_001, 0) } };
+    assert!(same_object_alias(&first, &recycled), "a reused inode can still look like the same object");
+    assert!(!same_entry(&first, &recycled), "a different change time is not the same generation");
+}
+
+#[cfg(unix)]
+#[test]
+fn authorization_names_only_the_exact_destination_not_a_hard_link_alias() {
+    let scratch = Scratch::new();
+    let file = scratch.file("bracket.sc", "design");
+    let alias = scratch.path().join("alias.sc");
+    fs::hard_link(&file, &alias).unwrap();
+    let authorization = replace_authorization(&file).expect("a plain file can be authorized");
+    assert!(authorization_matches(&authorization, &file));
+    assert!(!authorization_matches(&authorization, &alias), "a hard link is the same object but not the named destination");
+    assert!(
+        same_object_alias(&entry_witness(&file).unwrap(), &entry_witness(&alias).unwrap()),
+        "object-only alias evidence is available, but it must never authorize this alias"
+    );
+    fs::write(&file, "changed after the answer").unwrap();
+    assert!(!authorization_matches(&authorization, &file), "an edit revokes the exact-destination authorization");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_displaced_entry_matches_after_the_application_rename_but_an_edit_still_counts() {
+    use std::os::unix::fs::MetadataExt;
+    let scratch = Scratch::new();
+    let file = scratch.file("bracket.sc", "design");
+    let authorization = replace_authorization(&file).expect("a plain file can be authorized");
+    let before = fs::metadata(&file).unwrap();
+    let displaced = scratch.path().join("displaced.sc");
+    fs::rename(&file, &displaced).unwrap();
+    let after = fs::metadata(&displaced).unwrap();
+    assert_ne!((after.ctime(), after.ctime_nsec()), (before.ctime(), before.ctime_nsec()), "the application's own rename changes ctime");
+    assert!(displaced_entry_matches(&authorization, &displaced));
+    assert!(!authorization_matches(&authorization, &displaced), "the displaced name is not the named destination");
+    fs::write(&displaced, "design plus an edit").unwrap();
+    assert!(!displaced_entry_matches(&authorization, &displaced), "a detectable edit still revokes the displaced match");
 }
 
 #[cfg(unix)]

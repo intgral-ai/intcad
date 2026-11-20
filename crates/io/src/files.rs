@@ -248,9 +248,9 @@ impl ItemResult {
 }
 
 /// A snapshot of one plain file entry, taken when a destructive answer is offered. It binds the
-/// entry's object identity to the detectable edits (size and timestamps) read in the same
-/// no-follow metadata call. It is a snapshot, not an atomicity claim: the entry can change after
-/// it is read, and a conditional publication must re-check it before publishing.
+/// entry's object identity to the detectable edits (size, modified/creation time and change time)
+/// read in the same no-follow metadata call. It is a snapshot, not an atomicity claim: the entry
+/// can change after it is read, and a conditional publication must re-check it before publishing.
 ///
 /// The fields stay private so only this module decides what makes a usable witness. On Unix this
 /// is a device and inode plus the edit evidence; on a platform whose stable safe API cannot prove
@@ -265,26 +265,60 @@ pub struct EntryWitness {
 }
 
 #[cfg(unix)]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ObjectIdentity {
     device: u64,
     inode: u64,
 }
 
+/// The edit evidence in a witness. `changed` is ctime: it catches a write that restores the size
+/// and mtime, which an mtime-only check cannot. A rename of the entry itself also changes ctime,
+/// so a pre-rename ctime is never compared directly with a displaced entry; `displaced_entry_matches`
+/// omits it for that reason.
 #[cfg(unix)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DetectableEdit {
     len: u64,
     modified: Option<SystemTime>,
     created: Option<SystemTime>,
+    changed: (i64, i64),
+}
+
+/// An opaque authorization for one exact named destination. It binds the destination spelling to
+/// the witness read when the question opened. A hard link or another spelling of the same object
+/// is not this destination, so it can never use this authorization. Keep the object-only alias
+/// relation separate: [`same_object_alias`] is evidence, never consent.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplaceAuthorization {
+    destination: PathBuf,
+    witness: EntryWitness,
+}
+
+/// Read the exact destination named now and authorize replacement of that name only. `None`
+/// means there is no usable witness now. The authorization is a snapshot, not an atomic
+/// guarantee; it must be checked again on the same exact destination immediately before any
+/// conditional publication.
+pub fn replace_authorization(destination: &Path) -> Option<ReplaceAuthorization> {
+    entry_witness(destination).map(|witness| ReplaceAuthorization { destination: destination.to_path_buf(), witness })
+}
+
+/// Is this still the same exact named destination and the same entry the authorization binds?
+/// The path must be spelled exactly as the destination that was authorized. A hard-link alias of
+/// the same object is not this named destination, and an edit, replacement, missing path or
+/// unsupported platform never matches.
+pub fn authorization_matches(authorization: &ReplaceAuthorization, destination: &Path) -> bool {
+    authorization.destination == destination && witness_matches(&authorization.witness, destination)
 }
 
 /// Read one named plain entry without following a link and return a witness for destructive
 /// consent. `None` means the path is not a plain file now, or this platform has no safe way to
 /// prove the identity and capability a witness requires.
 ///
-/// Unix reads one no-follow metadata call, so a link, directory, device, socket or FIFO is
-/// refused rather than followed or treated as a file.
+/// No-follow applies to the final path component only: `symlink_metadata` does not follow the
+/// entry itself, but parent directories are resolved by the ordinary path lookup. A link,
+/// directory, device, socket or FIFO is refused rather than followed or treated as a file.
+/// This is a single metadata snapshot, not a pinned handle and not a generation proof.
 ///
 /// Windows replacement stays unsupported in this build. A witness there would require proving,
 /// from the opened entry itself, that its volume is local NTFS. The safe surface of `winapi-util`
@@ -304,7 +338,12 @@ pub fn entry_witness(path: &Path) -> Option<EntryWitness> {
         }
         Some(EntryWitness {
             object: ObjectIdentity { device: metadata.dev(), inode: metadata.ino() },
-            edit: DetectableEdit { len: metadata.len(), modified: metadata.modified().ok(), created: metadata.created().ok() },
+            edit: DetectableEdit {
+                len: metadata.len(),
+                modified: metadata.modified().ok(),
+                created: metadata.created().ok(),
+                changed: (metadata.ctime(), metadata.ctime_nsec()),
+            },
         })
     }
     #[cfg(not(unix))]
@@ -314,10 +353,11 @@ pub fn entry_witness(path: &Path) -> Option<EntryWitness> {
     }
 }
 
-/// Do two witnesses name the same object? This ignores detectable edits, so it can recognize a
-/// hard link or another spelling of one entry without treating an in-place edit as a new object.
+/// Do two witnesses name the same object? This ignores every detectable edit. It is **alias
+/// evidence only** — a hard link or another spelling of one entry — and must never be used to
+/// authorize a replacement. Use [`authorization_matches`] for destructive consent.
 /// A platform with no witness never reports same.
-pub fn same_object(a: &EntryWitness, b: &EntryWitness) -> bool {
+pub fn same_object_alias(a: &EntryWitness, b: &EntryWitness) -> bool {
     #[cfg(unix)]
     {
         a.object == b.object
@@ -329,9 +369,10 @@ pub fn same_object(a: &EntryWitness, b: &EntryWitness) -> bool {
     }
 }
 
-/// Do two witnesses name the same object *and* the same detectable edits? Only this stronger
-/// relation may keep destructive consent: an in-place edit keeps the object but revokes the
-/// snapshot the person saw. A platform with no witness never reports same.
+/// Do two witnesses name the same object *and* the same detectable edits, including change time?
+/// Only this stronger relation may keep destructive consent for the exact named destination: an
+/// in-place edit keeps the object but revokes the snapshot the person saw. A platform with no
+/// witness never reports same.
 pub fn same_entry(a: &EntryWitness, b: &EntryWitness) -> bool {
     #[cfg(unix)]
     {
@@ -348,6 +389,31 @@ pub fn same_entry(a: &EntryWitness, b: &EntryWitness) -> bool {
 /// Unknown, missing, replaced, edited and unsupported entries never count as the same.
 pub fn witness_matches(expected: &EntryWitness, path: &Path) -> bool {
     entry_witness(path).is_some_and(|current| same_entry(expected, &current))
+}
+
+/// Does the entry the application moved aside still match the authorized object and the edits a
+/// rename leaves alone? A rename necessarily changes ctime, so this excludes ctime and compares
+/// object identity, size, modified time and creation time. Call it only after
+/// [`authorization_matches`] succeeded on the exact destination and the application itself renamed
+/// that named entry to `displaced`; this function cannot prove that provenance. It is **not** a
+/// full authorization: a same-length edit whose mtime was restored in the window around the
+/// application's rename is indistinguishable here, and that exact invariant remains unresolved
+/// without a safe handle-based generation proof. Never publish on this result alone.
+pub fn displaced_entry_matches(authorization: &ReplaceAuthorization, displaced: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        entry_witness(displaced).is_some_and(|current| {
+            authorization.witness.object == current.object
+                && authorization.witness.edit.len == current.edit.len
+                && authorization.witness.edit.modified == current.edit.modified
+                && authorization.witness.edit.created == current.edit.created
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (authorization, displaced);
+        false
+    }
 }
 
 /// Copy `source` into the folder `destination`, following `conflict`.
