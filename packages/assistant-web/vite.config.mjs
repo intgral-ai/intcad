@@ -13,11 +13,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const mastra = resolve(here, process.env.MASTRA_CHECKOUT ?? '../../../../open-source/mastra');
 const ui = resolve(mastra, 'packages/playground-ui');
 
-// Mastra's model picker has three fixed English texts and no property for them. As the page is
-// built they are replaced by the page's own messages, which src/App.tsx sets (`assistantPickerText`);
-// the English stays as the fallback. Each text must be found exactly once in its file and all
-// three must be met, so a Mastra commit that words or moves one fails the build instead of
-// leaving a text untranslated.
+// Mastra's model picker has fixed English texts and no property for them. As the page is built,
+// the ones this page can show are replaced by the page's own messages, which src/App.tsx sets
+// (`assistantPickerText`); the English stays as the fallback. Each text must be found exactly
+// once in its file and every one must be met, so a Mastra commit that words or moves one fails
+// the build instead of leaving a text untranslated. Not listed, because this page never shows
+// them: the trigger's own "Model: " and "Select model" (the page gives the trigger its content)
+// and the texts for providers that are not connected (the page lists none).
 const PICKER_TEXTS = [
   ['domains/llm/model-picker-panel.tsx', 'placeholder="Search models"', 'placeholder={globalThis.assistantPickerText?.search ?? "Search models"}'],
   [
@@ -26,6 +28,21 @@ const PICKER_TEXTS = [
     '<CommandEmpty>{globalThis.assistantPickerText?.none ?? "No matching model."}</CommandEmpty>',
   ],
   ['domains/llm/model-picker-provider-filter.tsx', '>\n        All\n      </Button>', '>\n        {globalThis.assistantPickerText?.all ?? "All"}\n      </Button>'],
+  [
+    'domains/llm/model-picker-panel.tsx',
+    'Refine the search to see more.',
+    '{globalThis.assistantPickerText?.refine ?? "Refine the search to see more."}',
+  ],
+  [
+    'domains/llm/model-picker-provider-filter.tsx',
+    'aria-label="Filter by provider"',
+    'aria-label={globalThis.assistantPickerText?.filter ?? "Filter by provider"}',
+  ],
+  [
+    'domains/llm/model-picker.tsx',
+    '<DrawerTitle className="sr-only">Choose a model</DrawerTitle>',
+    '<DrawerTitle className="sr-only">{globalThis.assistantPickerText?.title ?? "Choose a model"}</DrawerTitle>',
+  ],
 ];
 
 function pickerTexts() {

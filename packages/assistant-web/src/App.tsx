@@ -953,7 +953,7 @@ function effortOf(state: AssistantState) {
 
 declare global {
   // Read by Mastra's model picker in place of its fixed English (PICKER_TEXTS in vite.config.mjs).
-  var assistantPickerText: { search: string; none: string; all: string } | undefined;
+  var assistantPickerText: { search: string; none: string; all: string; refine: string; filter: string; title: string } | undefined;
 }
 
 /**
@@ -986,9 +986,16 @@ function ProviderPicker({ state, connect, onConnections }: { state: AssistantSta
   const providers = inUse ? [inUse] : [...groups.values()].sort((a, b) => rank(a.id) - rank(b.id));
   const effort = effortOf(state);
   const mark = (group: string) => <Mark name={names.get(group) ?? group} size={14} />;
-  // Mastra's picker has no property for its search box, its empty list and its "All" filter: the
-  // build puts these in their place (PICKER_TEXTS in vite.config.mjs).
-  globalThis.assistantPickerText = { search: strings.modelSearch, none: strings.modelNoMatch, all: strings.dfmAll };
+  // Mastra's picker has no property for its own words: the build puts these in their place
+  // (PICKER_TEXTS in vite.config.mjs).
+  globalThis.assistantPickerText = {
+    search: strings.modelSearch,
+    none: strings.modelNoMatch,
+    all: strings.dfmAll,
+    refine: strings.modelRefine,
+    filter: strings.modelFilter,
+    title: strings.model,
+  };
   const model = (
     <MastraModelPicker
       providers={providers}

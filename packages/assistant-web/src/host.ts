@@ -228,7 +228,7 @@ export type StringKey =
   | 'notReady' | 'notSetUp'
   | 'refresh' | 'authTitle' | 'authNeeded' | 'authNone' | 'authTerminal' | 'authRetry' | 'setupTitle'
   | 'setupBody' | 'openSettings' | 'model' | 'queuedStopped' | 'sendNow' | 'sendNowTip' | 'edit'
-  | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'revalidate' | 'dropHint' | 'removeChip'
+  | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'modelRefine' | 'modelFilter' | 'revalidate' | 'dropHint' | 'removeChip'
   | 'openPicture' | 'selectedNow'
   | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel'
   | 'reviewTitle' | 'reviewAccept' | 'reviewReject' | 'reviewMade' | 'reviewChanged' | 'reviewRemoved'

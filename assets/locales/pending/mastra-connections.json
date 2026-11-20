@@ -69,7 +69,9 @@
     "ui.agent_chat_effort_high": "High",
     "ui.agent_chat_effort_xhigh": "Extra high",
     "ui.agent_chat_effort_max": "Max",
-    "ui.agent_chat_no_data_folder": "Intcad could not create the folder for the Assistant's data."
+    "ui.agent_chat_no_data_folder": "Intcad could not create the folder for the Assistant's data.",
+    "ui.agent_chat_model_filter": "Filter by provider",
+    "ui.agent_chat_model_refine": "Refine the search to see more."
   },
   "ar": {
     "ui.agent_chat_conn_title": "الاتصالات وتسجيل الدخول",
@@ -141,7 +143,9 @@
     "ui.agent_chat_effort_high": "مرتفع",
     "ui.agent_chat_effort_xhigh": "مرتفع جدًا",
     "ui.agent_chat_effort_max": "الأقصى",
-    "ui.agent_chat_no_data_folder": "تعذّر على Intcad إنشاء مجلد بيانات المساعد."
+    "ui.agent_chat_no_data_folder": "تعذّر على Intcad إنشاء مجلد بيانات المساعد.",
+    "ui.agent_chat_model_filter": "التصفية حسب المزوّد",
+    "ui.agent_chat_model_refine": "حدِّد البحث أكثر لعرض المزيد."
   },
   "de": {
     "ui.agent_chat_conn_title": "Verbindungen",
@@ -213,7 +217,9 @@
     "ui.agent_chat_effort_high": "Hoch",
     "ui.agent_chat_effort_xhigh": "Sehr hoch",
     "ui.agent_chat_effort_max": "Maximal",
-    "ui.agent_chat_no_data_folder": "Intcad konnte den Ordner für die Daten des Assistenten nicht anlegen."
+    "ui.agent_chat_no_data_folder": "Intcad konnte den Ordner für die Daten des Assistenten nicht anlegen.",
+    "ui.agent_chat_model_filter": "Nach Anbieter filtern",
+    "ui.agent_chat_model_refine": "Suche verfeinern, um mehr zu sehen."
   },
   "he": {
     "ui.agent_chat_conn_title": "חיבורים והתחברות",
@@ -285,7 +291,9 @@
     "ui.agent_chat_effort_high": "גבוהה",
     "ui.agent_chat_effort_xhigh": "גבוהה מאוד",
     "ui.agent_chat_effort_max": "מרבית",
-    "ui.agent_chat_no_data_folder": "Intcad לא הצליחה ליצור את התיקייה לנתוני העוזר."
+    "ui.agent_chat_no_data_folder": "Intcad לא הצליחה ליצור את התיקייה לנתוני העוזר.",
+    "ui.agent_chat_model_filter": "סינון לפי ספק",
+    "ui.agent_chat_model_refine": "יש לצמצם את החיפוש כדי לראות עוד."
   },
   "ja": {
     "ui.agent_chat_conn_title": "接続とサインイン",
@@ -357,7 +365,9 @@
     "ui.agent_chat_effort_high": "高",
     "ui.agent_chat_effort_xhigh": "とても高い",
     "ui.agent_chat_effort_max": "最大",
-    "ui.agent_chat_no_data_folder": "Intcad はアシスタントのデータ用フォルダーを作成できませんでした。"
+    "ui.agent_chat_no_data_folder": "Intcad はアシスタントのデータ用フォルダーを作成できませんでした。",
+    "ui.agent_chat_model_filter": "プロバイダーで絞り込む",
+    "ui.agent_chat_model_refine": "検索を絞り込むと、さらに表示されます。"
   },
   "ko": {
     "ui.agent_chat_conn_title": "연결 및 로그인",
@@ -429,7 +439,9 @@
     "ui.agent_chat_effort_high": "높음",
     "ui.agent_chat_effort_xhigh": "매우 높음",
     "ui.agent_chat_effort_max": "최대",
-    "ui.agent_chat_no_data_folder": "Intcad가 어시스턴트 데이터용 폴더를 만들지 못했습니다."
+    "ui.agent_chat_no_data_folder": "Intcad가 어시스턴트 데이터용 폴더를 만들지 못했습니다.",
+    "ui.agent_chat_model_filter": "공급자별로 필터링",
+    "ui.agent_chat_model_refine": "검색어를 더 구체적으로 입력하면 더 볼 수 있습니다."
   },
   "vi": {
     "ui.agent_chat_conn_title": "Kết nối và đăng nhập",
@@ -501,7 +513,9 @@
     "ui.agent_chat_effort_high": "Cao",
     "ui.agent_chat_effort_xhigh": "Rất cao",
     "ui.agent_chat_effort_max": "Tối đa",
-    "ui.agent_chat_no_data_folder": "Intcad không tạo được thư mục cho dữ liệu của Trợ lý."
+    "ui.agent_chat_no_data_folder": "Intcad không tạo được thư mục cho dữ liệu của Trợ lý.",
+    "ui.agent_chat_model_filter": "Lọc theo nhà cung cấp",
+    "ui.agent_chat_model_refine": "Thu hẹp tìm kiếm để xem thêm."
   },
   "zh": {
     "ui.agent_chat_conn_title": "连接与登录",
@@ -573,6 +587,8 @@
     "ui.agent_chat_effort_high": "高",
     "ui.agent_chat_effort_xhigh": "很高",
     "ui.agent_chat_effort_max": "最高",
-    "ui.agent_chat_no_data_folder": "Intcad 无法创建助手的数据文件夹。"
+    "ui.agent_chat_no_data_folder": "Intcad 无法创建助手的数据文件夹。",
+    "ui.agent_chat_model_filter": "按提供商筛选",
+    "ui.agent_chat_model_refine": "缩小搜索范围以查看更多。"
   }
 }

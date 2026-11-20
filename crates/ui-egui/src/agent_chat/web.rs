@@ -486,6 +486,8 @@ pub fn state(app: &mut SolveApp) -> String {
         ("modelSearch", "ui.agent_chat_model_search"),
         ("modelCustom", "ui.agent_chat_model_custom"),
         ("modelNoMatch", "ui.agent_chat_model_no_match"),
+        ("modelRefine", "ui.agent_chat_model_refine"),
+        ("modelFilter", "ui.agent_chat_model_filter"),
         ("revalidate", "ui.agent_chat_task_revalidate"),
         ("dropHint", "ui.agent_chat_drop_hint"),
         ("removeChip", "ui.agent_chat_remove_chip"),
