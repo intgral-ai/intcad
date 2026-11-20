@@ -1436,6 +1436,9 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
                 workflow_id,
                 bridge,
                 tools,
+                // Task 11's composition root supplies the authenticated host scope. Until then
+                // charged bridge tools stay fail-closed instead of trusting a source label.
+                host_scope: None,
                 instructions,
                 connection_auth: Arc::new(std::sync::Mutex::new(None)),
                 frozen_binding: Arc::new(std::sync::Mutex::new(None)),
@@ -3639,5 +3642,7 @@ pub fn status(app: &SolveApp) -> Value {
     state
 }
 
+#[cfg(test)]
+mod account_tests;
 #[cfg(test)]
 mod tests;

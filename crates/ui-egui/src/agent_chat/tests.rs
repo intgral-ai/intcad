@@ -13249,6 +13249,7 @@ mod mastra_backend_tests {
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
             tools: None,
+            host_scope: None,
             instructions: String::new(),
             connection_auth: auth,
             frozen_binding: Arc::new(Mutex::new(None)),
@@ -13918,6 +13919,11 @@ mod mastra_backend_tests {
         config.workflow_id = "w".into();
         config.bridge = Some(crate::agent_chat::acp::McpBridge { cli: "/bin/true".into(), port: 1 });
         config.tools = Some(tools.clone());
+        config.host_scope = Some(solidcraft_engine::entitlement::AuthenticatedHostScope::new(
+            solidcraft_engine::entitlement::AccountId::new("test-account"),
+            solidcraft_engine::entitlement::InstallationId::new("test-installation"),
+            solidcraft_engine::entitlement::HostSessionBinding::new("test-session"),
+        ));
         let launch = runtime_client::RuntimeLaunch {
             executable: program.executable.clone(),
             args: vec![script_path.into_os_string()],
@@ -14358,6 +14364,7 @@ mod mastra_backend_tests {
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
             tools: None,
+            host_scope: None,
             instructions: String::new(),
             connection_auth: Arc::new(Mutex::new(None)),
             frozen_binding: Arc::new(Mutex::new(None)),
@@ -14960,6 +14967,7 @@ done
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
             tools: None,
+            host_scope: None,
             instructions: String::new(),
             connection_auth: Arc::clone(&auth),
             frozen_binding: Arc::new(std::sync::Mutex::new(None)),

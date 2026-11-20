@@ -137,12 +137,9 @@ pub struct Job {
     stops: VecDeque<(Pos2, &'static str)>,
     chat_turn: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     guarded: Option<crate::execution_guard::GuardedAdmission>,
-    /// The trusted origin and host-minted operation admitted for this request, kept so running
-    /// it after the glide cannot turn a controlled entry into a free GUI one.
-    entry: solidcraft_engine::entitlement::EntryCategory,
-    operation: Option<solidcraft_engine::entitlement::OperationId>,
-    /// The typed admission taken before the pointer started computing ahead; reissue must keep it.
-    admission: Option<solidcraft_engine::entitlement::Admission>,
+    /// The trusted origin, operation, admission and host context admitted for this request, kept
+    /// so running it after the glide cannot turn a controlled entry into a free GUI one.
+    reissue: crate::control::Reissue,
     /// Seconds per glide and per click for this request (within [`TIME_BUDGET`] in all).
     glide: f64,
     click: f64,
@@ -392,9 +389,7 @@ pub fn intercept(app: &mut SolveApp, req: &mut crate::control::ControlRequest) -
         reply,
         chat_turn: req.chat_turn.clone(),
         guarded: req.guarded.clone(),
-        entry: req.entry(),
-        operation: req.operation().cloned(),
-        admission: req.admission.clone(),
+        reissue: crate::control::Reissue::from_request(req),
         stops,
         glide,
         click,
@@ -473,7 +468,7 @@ fn finish(app: &mut SolveApp, ctx: &egui::Context) {
     params["animate"] = json!(false);
     let cmd = params.get("command").or(params.get("id")).and_then(Value::as_str).unwrap_or_default().to_string();
     let id = solidcraft_engine::find_command(&cmd).map_or(cmd.clone(), |c| c.id.to_string());
-    let (mut req, _rx) = crate::control::reissue(job.entry, job.operation, job.admission, job.method, params);
+    let (mut req, _rx) = crate::control::reissue(job.reissue, job.method, params);
     req.chat_turn = job.chat_turn;
     req.guarded = job.guarded;
     // Check before installing kept results or changing followed camera bookkeeping. Returning

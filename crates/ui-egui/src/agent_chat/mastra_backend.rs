@@ -688,6 +688,10 @@ pub struct MastraConfig {
     /// The chat's control queue, used to serve the runtime's inherited MCP lane with the same
     /// gate, undo ownership and document state as every other chat tool call.
     pub tools: Option<std::sync::mpsc::Sender<crate::control::ControlRequest>>,
+    /// The host's authenticated account/installation/session binding for forwarded Intcad tool
+    /// calls. The desktop composition root supplies it (Task 11); without it charged bridge
+    /// tools stay fail-closed. It never comes from the runtime or a request body.
+    pub host_scope: Option<solidcraft_engine::entitlement::AuthenticatedHostScope>,
     /// Chat instructions copied into every new session.
     pub instructions: String,
     /// Set on the host worker when a `connection.describe` call answers; polled by the panel as
@@ -841,7 +845,8 @@ impl MastraBackend {
         let mut bridge_fallback: Option<String> = None;
         if config.bridge.is_some() {
             let tools = config.tools.clone().ok_or_else(|| crate::i18n::tr("ui.mastra_bridge_unavailable").to_string())?;
-            match HostBridge::open(tools) {
+            let provenance = config.host_scope.clone().map(super::host_bridge::HostProvenance::new);
+            match HostBridge::open(tools, provenance) {
                 Ok(bridge) => {
                     let fd = bridge.child_fd();
                     launch.args.push(std::ffi::OsString::from(format!("--bridge-fd={fd}")));
@@ -2302,6 +2307,10 @@ impl ChatBackend for MastraBackend {
 
     fn set_turn_control(&mut self, active: Arc<AtomicBool>) {
         self.turn_active = Some(active);
+    }
+
+    fn host_scope(&self) -> Option<solidcraft_engine::entitlement::AuthenticatedHostScope> {
+        self.host_bridge.as_ref().and_then(HostBridge::scope)
     }
 
     fn answer_permission(&mut self, key: u64, option: Option<&str>) {

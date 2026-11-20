@@ -8,14 +8,17 @@
 
 use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
+use solidcraft_engine::entitlement::{
+    AuthenticatedHostScope, Capability, ConservativeDeadline, EntryCategory, MonotonicInstant, OperationId, TrustedContext,
+};
 use solidcraft_engine::schema::ParamCheck;
-use solidcraft_mcp::{Backend, GuardedCallError, GuardedReply, Server};
+use solidcraft_mcp::{Backend, GuardedCallError, GuardedReply, Server, ToolCallContext};
 
 use super::backend::{Event, ToolStatus};
 use crate::control::ControlRequest;
@@ -27,6 +30,101 @@ use std::os::unix::net::UnixStream;
 
 /// Longest a single MCP tool call may wait for the app's answer.
 const CALL_TIMEOUT: Duration = Duration::from_secs(3_600);
+
+/// The host-owned provenance a bridge may bind forwarded calls to.
+///
+/// It is created only by the host composition root from an authenticated
+/// [`AuthenticatedHostScope`]. Each Intcad logical tool call gets a fresh operation; Mastra's own
+/// prompt/plan tools never reach the bridge and therefore never mint one.
+#[derive(Clone)]
+pub(crate) struct HostProvenance {
+    scope: AuthenticatedHostScope,
+    deadline: Option<ConservativeDeadline>,
+    now: Option<MonotonicInstant>,
+    minted: Arc<AtomicUsize>,
+}
+
+impl HostProvenance {
+    /// Bind a bridge to the host's authenticated account, installation and session.
+    pub(crate) fn new(scope: AuthenticatedHostScope) -> Self {
+        Self { scope, deadline: None, now: None, minted: Arc::new(AtomicUsize::new(0)) }
+    }
+
+    /// The host's conservative authorization window, when the composition root has one. A
+    /// forwarded call with a window that has already passed is refused before dispatch.
+    #[cfg(test)]
+    pub(crate) fn with_deadline(mut self, deadline: ConservativeDeadline, now: MonotonicInstant) -> Self {
+        self.deadline = Some(deadline);
+        self.now = Some(now);
+        self
+    }
+
+    pub(crate) fn scope(&self) -> &AuthenticatedHostScope {
+        &self.scope
+    }
+
+    #[cfg(test)]
+    pub(crate) fn minted(&self) -> usize {
+        self.minted.load(Ordering::Relaxed)
+    }
+
+    /// Mint one logical operation for one Intcad tool call. The operation comes from host
+    /// entropy; the caller cannot supply it.
+    pub(crate) fn begin_logical_call(&self, entry: EntryCategory, tool: &str) -> Result<LogicalCall, String> {
+        if !tool.is_empty() && solidcraft_mcp::tool_is_free(tool) {
+            return Err("a free helper does not create a billed logical operation".into());
+        }
+        let capability: Capability = crate::control::entry_capability(entry).ok_or_else(|| "this host entry has no billed capability".to_string())?;
+        let mut entropy = [0_u8; 16];
+        getrandom::fill(&mut entropy).map_err(|error| format!("the host could not mint an operation: {error}"))?;
+        let operation = OperationId::mint_from_entropy(&entropy).map_err(|_| "the host could not mint a valid operation id".to_string())?;
+        let trusted = TrustedContext::mint(&self.scope, operation.as_str(), capability, entry)
+            .map_err(|_| "the host could not mint a trusted operation context".to_string())?;
+        self.minted.fetch_add(1, Ordering::Relaxed);
+        Ok(LogicalCall { trusted, remaining: None, deadline: self.deadline.clone(), now: self.now })
+    }
+}
+
+/// One logical Intcad tool call. Its internal substeps share this operation id.
+#[derive(Clone)]
+pub(crate) struct LogicalCall {
+    trusted: TrustedContext,
+    remaining: Option<Duration>,
+    deadline: Option<ConservativeDeadline>,
+    now: Option<MonotonicInstant>,
+}
+
+impl LogicalCall {
+    #[cfg(test)]
+    pub(crate) fn operation_id(&self) -> &OperationId {
+        self.trusted.operation()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn trusted(&self) -> &TrustedContext {
+        &self.trusted
+    }
+
+    /// A substep of the same logical call, for example `validate` then `apply` inside one bridge
+    /// tool call. It keeps the operation, capability, entry and host binding.
+    pub(crate) fn substep(&self, _step: &str) -> ToolCallContext {
+        let mut context = ToolCallContext::from_trusted(self.trusted.clone());
+        if let Some(remaining) = self.remaining {
+            context = context.with_safe_stop(remaining);
+        }
+        if let Some(deadline) = &self.deadline {
+            context = context.with_deadline(deadline.clone());
+        }
+        if let Some(now) = self.now {
+            context = context.with_now(now);
+        }
+        context
+    }
+
+    pub(crate) fn context(&self) -> ToolCallContext {
+        self.substep("call")
+    }
+}
 
 /// The turn currently allowed to use the lane.
 #[derive(Clone)]
@@ -85,6 +183,12 @@ struct ChatBackend {
     state: Arc<BridgeState>,
     events: Arc<Mutex<VecDeque<Event>>>,
     next_call: Arc<AtomicU64>,
+    /// Host-minted provenance, `None` keeps the bridge closed until Task 11 composes a real
+    /// authority. It is never read from the runtime's wire messages.
+    provenance: Option<HostProvenance>,
+    /// The logical call the server announced for the current `tools/call`. Replaced on every
+    /// call, so it cannot leak into the next one.
+    forwarded: Option<ToolCallContext>,
 }
 
 impl ChatBackend {
@@ -103,7 +207,15 @@ impl ChatBackend {
                 output: None,
             },
         );
-        let (mut request, reply) = ControlRequest::trusted_bridge(method, params);
+        let forwarded = self.forwarded.as_ref().map(|context| {
+            let trusted = context.trusted().cloned();
+            (trusted, context.deadline().cloned(), context.now())
+        });
+        let (mut request, reply) = match forwarded {
+            Some((Some(trusted), deadline, now)) => ControlRequest::trusted_bridge_forwarded(method, params, trusted, deadline, now),
+            // Free helpers and any direct/local call still use the same trusted bridge entry.
+            _ => ControlRequest::trusted_bridge(method, params),
+        };
         request.chat_turn = Some(turn.active);
         if self.tools.send(request).is_err() {
             push_event(&self.events, bridge_result(&id, method, false, "the agent chat bridge is closed"));
@@ -155,6 +267,18 @@ impl Backend for ChatBackend {
     fn param_check(&self) -> ParamCheck {
         ParamCheck::Off
     }
+
+    fn tool_context(&self, tool: &str) -> Option<ToolCallContext> {
+        if solidcraft_mcp::tool_is_free(tool) {
+            return None;
+        }
+        let provenance = self.provenance.as_ref()?;
+        provenance.begin_logical_call(EntryCategory::GuiBridgeMcp, tool).ok().map(|call| call.context())
+    }
+
+    fn begin_tool_call(&mut self, context: Option<&ToolCallContext>) {
+        self.forwarded = context.cloned();
+    }
 }
 
 /// The host end of the runtime's bridge lane.
@@ -166,15 +290,17 @@ pub(crate) struct HostBridge {
     state: Arc<BridgeState>,
     error: Arc<Mutex<Option<String>>>,
     events: Arc<Mutex<VecDeque<Event>>>,
+    provenance: Option<HostProvenance>,
 }
 
 impl HostBridge {
     /// Create the lane and start serving MCP on the host end. `tools` is the chat's existing
-    /// control queue; no second command catalog is used.
-    pub(crate) fn open(tools: Sender<ControlRequest>) -> Result<Self, String> {
+    /// control queue; no second command catalog is used. `provenance` is only supplied by the
+    /// host composition root; `None` keeps charged tools fail-closed.
+    pub(crate) fn open(tools: Sender<ControlRequest>, provenance: Option<HostProvenance>) -> Result<Self, String> {
         #[cfg(not(unix))]
         {
-            let _ = tools;
+            let _ = (tools, provenance);
             return Err("the Mastra bridge lane is unavailable on this platform".into());
         }
         #[cfg(unix)]
@@ -191,13 +317,24 @@ impl HostBridge {
             let reader = host.try_clone().map_err(|error| format!("the Mastra bridge lane could not be cloned: {error}"))?;
             let writer = host.try_clone().map_err(|error| format!("the Mastra bridge lane could not be cloned: {error}"))?;
             let events = Arc::new(Mutex::new(VecDeque::new()));
-            let backend = ChatBackend { tools, state: Arc::clone(&state), events: Arc::clone(&events), next_call: Arc::new(AtomicU64::new(0)) };
+            let backend = ChatBackend {
+                tools,
+                state: Arc::clone(&state),
+                events: Arc::clone(&events),
+                next_call: Arc::new(AtomicU64::new(0)),
+                provenance: provenance.clone(),
+                forwarded: None,
+            };
             let reported = Arc::clone(&error);
             let close_state = Arc::clone(&state);
+            let lane_provenance = provenance.clone();
             std::thread::Builder::new()
                 .name("mastra-bridge".into())
                 .spawn(move || {
-                    let mut server = Server::new(Box::new(backend));
+                    let mut server = match &lane_provenance {
+                        Some(_) => Server::with_forwarded_authority(Box::new(backend)),
+                        None => Server::new(Box::new(backend)),
+                    };
                     let failure = match server.serve(BufReader::new(reader), BufWriter::new(writer)) {
                         // EOF after the runtime normally retired its turn is not an error.
                         Ok(()) if close_state.current().is_err() => None,
@@ -211,7 +348,7 @@ impl HostBridge {
                     }
                 })
                 .map_err(|error| format!("the Mastra bridge server could not start: {error}"))?;
-            Ok(Self { host, child: Some(child), state, error, events })
+            Ok(Self { host, child: Some(child), state, error, events, provenance })
         }
     }
 
@@ -258,6 +395,24 @@ impl HostBridge {
 
     pub(crate) fn take_events(&self) -> Vec<Event> {
         self.events.lock().map(|mut events| events.drain(..).collect()).unwrap_or_default()
+    }
+
+    /// The authenticated host scope this lane can bind. `None` keeps it closed.
+    pub(crate) fn scope(&self) -> Option<AuthenticatedHostScope> {
+        self.provenance.as_ref().map(|provenance| provenance.scope().clone())
+    }
+
+    /// Mint one logical call for the host bridge itself. Tests and the host composition root use
+    /// this to prove that sub-steps share an id while separate calls do not.
+    #[cfg(test)]
+    pub(crate) fn begin_logical_call(&self, entry: EntryCategory, tool: &str) -> Result<LogicalCall, String> {
+        self.provenance.as_ref().ok_or_else(|| "the bridge has no authenticated host provenance".to_string())?.begin_logical_call(entry, tool)
+    }
+
+    /// How many logical operations this lane has minted (test evidence only).
+    #[cfg(test)]
+    pub(crate) fn minted_operations(&self) -> usize {
+        self.provenance.as_ref().map_or(0, HostProvenance::minted)
     }
 }
 
@@ -359,7 +514,7 @@ mod tests {
     fn the_host_end_serves_mcp_initialize_over_the_inherited_lane() {
         use std::io::{BufRead, BufReader, Write};
         let (tools, _rx) = std::sync::mpsc::channel();
-        let mut bridge = HostBridge::open(tools).expect("the bridge opens");
+        let mut bridge = HostBridge::open(tools, None).expect("the bridge opens");
         let child = bridge.take_child().expect("the child end");
         let active = Arc::new(AtomicBool::new(true));
         bridge.begin_turn(Arc::clone(&active));
@@ -379,7 +534,7 @@ mod tests {
     #[cfg(unix)]
     fn a_closed_bridge_lane_reports_an_actionable_error() {
         let (tools, _rx) = std::sync::mpsc::channel();
-        let mut bridge = HostBridge::open(tools).expect("the bridge opens");
+        let mut bridge = HostBridge::open(tools, None).expect("the bridge opens");
         bridge.begin_turn(Arc::new(AtomicBool::new(true)));
         drop(bridge.take_child());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

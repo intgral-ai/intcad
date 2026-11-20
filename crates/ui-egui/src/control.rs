@@ -55,7 +55,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps};
-use solidcraft_engine::entitlement::{Admission, BillingPort, BudgetTable, Capability, EntryCategory, OperationId, Refusal, RefusalCode};
+use solidcraft_engine::entitlement::{
+    Admission, BillingPort, BudgetTable, Capability, ConservativeDeadline, EntryCategory, MonotonicInstant, OperationId, Refusal, RefusalCode,
+    TrustedContext,
+};
 use solidcraft_engine::io::vfs;
 use solidcraft_engine::render::{Camera, StandardView};
 use solidcraft_engine::schema::ParamCheck;
@@ -85,6 +88,13 @@ pub struct ControlRequest {
     /// carries it, so a request is never billed twice and an unclassified request is never
     /// admitted later by a shared dispatch helper.
     pub(crate) admission: Option<Admission>,
+    /// The host-minted context for a forwarded bridge call. It binds the operation to the same
+    /// account, installation, session, capability and entry; wire fields cannot supply it.
+    pub(crate) trusted: Option<TrustedContext>,
+    /// The host's conservative authorization window for a forwarded call, when one was measured.
+    pub(crate) deadline: Option<ConservativeDeadline>,
+    /// The host's monotonic reading at which the forwarded call was minted.
+    pub(crate) now: Option<MonotonicInstant>,
 }
 
 /// Entries whose human host path is free even when it shares command dispatch.
@@ -175,6 +185,9 @@ impl ControlRequest {
             entry,
             operation,
             admission: None,
+            trusted: None,
+            deadline: None,
+            now: None,
         };
         (request, rx)
     }
@@ -197,6 +210,36 @@ impl ControlRequest {
     /// A trusted runtime bridge forwarding an Intcad tool call.
     pub fn trusted_bridge(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
         Self::pending(EntryCategory::GuiBridgeMcp, method, params)
+    }
+
+    /// A forwarded bridge call that keeps the operation and authenticated host context minted
+    /// for this one logical MCP tool call. The entry, capability and operation are derived from
+    /// `trusted`, never from the wire request.
+    pub(crate) fn trusted_bridge_forwarded(
+        method: impl Into<String>,
+        params: Value,
+        trusted: TrustedContext,
+        deadline: Option<ConservativeDeadline>,
+        now: Option<MonotonicInstant>,
+    ) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        let entry = trusted.entry();
+        let operation = Some(trusted.operation().clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let request = Self {
+            method: method.into(),
+            params,
+            reply: tx,
+            started: Default::default(),
+            chat_turn: None,
+            guarded: None,
+            entry,
+            operation,
+            admission: None,
+            trusted: Some(trusted),
+            deadline,
+            now,
+        };
+        (request, rx)
     }
 
     /// An external ACP client, arriving through MCP.
@@ -243,6 +286,9 @@ impl ControlRequest {
             entry: EntryCategory::Unknown,
             operation: None,
             admission: None,
+            trusted: None,
+            deadline: None,
+            now: None,
         }
     }
 
@@ -252,6 +298,11 @@ impl ControlRequest {
 
     pub fn operation(&self) -> Option<&OperationId> {
         self.operation.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn trusted(&self) -> Option<&TrustedContext> {
+        self.trusted.as_ref()
     }
 
     pub(crate) fn refuse_cancelled_chat(&self) -> bool {
@@ -264,18 +315,40 @@ impl ControlRequest {
     }
 }
 
-/// Rebuild a request the agent cursor held back, keeping the origin and operation the host
-/// admitted. Reconstructing it as a free GUI request would let any entry bypass admission.
+/// The trusted origin and typed admission of a request held back after host admission.
 ///
-/// This is intentionally a free function rather than an associated constructor: the entry is not
-/// chosen here, it is carried from the request that was already classified.
-pub(crate) fn reissue(
+/// Fields are private so no module can invent an origin, operation, admission or host context.
+/// The only constructor takes an already-classified request, and [`reissue`] consumes the value
+/// once. A later caller cannot re-issue an arbitrary entry or grant.
+#[derive(Clone)]
+pub(crate) struct Reissue {
     entry: EntryCategory,
     operation: Option<OperationId>,
     admission: Option<Admission>,
-    method: impl Into<String>,
-    params: Value,
-) -> (ControlRequest, std::sync::mpsc::Receiver<ControlResponse>) {
+    trusted: Option<TrustedContext>,
+    deadline: Option<ConservativeDeadline>,
+    now: Option<MonotonicInstant>,
+}
+
+impl Reissue {
+    pub(crate) fn from_request(req: &ControlRequest) -> Self {
+        Self {
+            entry: req.entry,
+            operation: req.operation.clone(),
+            admission: req.admission.clone(),
+            trusted: req.trusted.clone(),
+            deadline: req.deadline.clone(),
+            now: req.now,
+        }
+    }
+}
+
+/// Rebuild a request the agent cursor held back, keeping the origin and operation the host
+/// admitted. Reconstructing it as a free GUI request would let any entry bypass admission.
+///
+/// The origin is not chosen here; it comes only from [`Reissue::from_request`].
+pub(crate) fn reissue(parts: Reissue, method: impl Into<String>, params: Value) -> (ControlRequest, std::sync::mpsc::Receiver<ControlResponse>) {
+    let Reissue { entry, operation, admission, trusted, deadline, now } = parts;
     let (tx, rx) = std::sync::mpsc::channel();
     let request = ControlRequest {
         method: method.into(),
@@ -287,6 +360,9 @@ pub(crate) fn reissue(
         entry,
         operation,
         admission,
+        trusted,
+        deadline,
+        now,
     };
     (request, rx)
 }
@@ -328,13 +404,29 @@ impl BillingPort for NoAuthorityBilling {
 /// a host-minted operation and a server-issued grant from the host's [`BillingPort`]; the local
 /// port never turns a balance check into authority.
 pub fn admit_control_request(req: &ControlRequest, budget: &BudgetTable, billing: &mut dyn BillingPort) -> Admission {
+    if let Some(refusal) = trusted_refusal(req) {
+        return Admission::Refused(refusal);
+    }
+    if let Some(refusal) = deadline_refusal(req) {
+        return Admission::Refused(refusal);
+    }
     if free_entry(req.entry) {
         return Admission::Allowed;
     }
     let Some(capability) = entry_capability(req.entry) else {
         return Admission::Refused(Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"));
     };
-    if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
+    // Protocol, navigation and render helpers are free for every MCP entry, as the MCP tool
+    // catalog already declares. Their arguments cannot choose an operation or account.
+    if matches!(
+        req.entry,
+        EntryCategory::DirectControl
+            | EntryCategory::ExternalUiAutomation
+            | EntryCategory::GuiBridgeMcp
+            | EntryCategory::HeadlessMcp
+            | EntryCategory::ExternalAcpMcp
+    ) && auxiliary_method(&req.method)
+    {
         return Admission::Allowed;
     }
     if let Some(refusal) = async_native_refusal(req) {
@@ -369,7 +461,21 @@ fn admit_for_app(app: &mut SolveApp, req: &ControlRequest) -> Admission {
 /// keeps it; later shared dispatch resolves the stored value instead of billing again. A refusal
 /// is never stored and is sent to the caller by the seam that took it.
 pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result<Admission, Refusal> {
+    if let Some(refusal) = entry_refusal(req) {
+        return Err(refusal);
+    }
+    // A host-minted context with an already expired window must not be dispatched, even if a
+    // request was held for a while. The actual durable commit deadline remains Task 9's gate;
+    // this is the admission-side check the host can prove now.
+    if let (Some(deadline), Some(now)) = (req.deadline.as_ref(), req.now)
+        && deadline.remaining(now).is_none()
+    {
+        return Err(Refusal::new(RefusalCode::UnsafeToStart, "the forwarded authorization window has passed"));
+    }
     if let Some(admission) = &req.admission {
+        if let Some(refusal) = admission_binding_refusal(req, admission) {
+            return Err(refusal);
+        }
         return match admission {
             Admission::Refused(refusal) => Err(refusal.clone()),
             admission => Ok(admission.clone()),
@@ -424,12 +530,69 @@ fn admission_refusal(reason: &Refusal) -> Outcome {
 }
 
 /// The origin-only fail-closed check: no method, parameter or local task gate may run before an
-/// unclassified request is refused.
+/// unclassified request is refused, or before a forwarded host context is checked for binding.
 fn entry_refusal(req: &ControlRequest) -> Option<Refusal> {
+    if let Some(refusal) = trusted_refusal(req) {
+        return Some(refusal);
+    }
+    if let Some(refusal) = deadline_refusal(req) {
+        return Some(refusal);
+    }
     if free_entry(req.entry) || entry_capability(req.entry).is_some() {
         None
     } else {
         Some(Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"))
+    }
+}
+
+/// A forwarded host context must match the request exactly. A caller cannot attach a trusted
+/// context for another entry, capability or operation, and a free/unclassified request cannot
+/// carry one at all.
+fn trusted_refusal(req: &ControlRequest) -> Option<Refusal> {
+    let trusted = req.trusted.as_ref()?;
+    if !trusted.is_provable() {
+        return Some(Refusal::new(
+            RefusalCode::CapabilityDenied,
+            "the forwarded host context has no stable account, installation and session binding",
+        ));
+    }
+    if trusted.entry() != req.entry {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "the forwarded host context belongs to a different entry"));
+    }
+    let Some(capability) = entry_capability(req.entry) else {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "a free or unclassified request cannot carry host operation authority"));
+    };
+    if trusted.capability() != capability {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "the forwarded host context belongs to a different capability"));
+    }
+    if req.operation.as_ref() != Some(trusted.operation()) {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "the forwarded operation does not match the host context"));
+    }
+    None
+}
+
+/// A forwarded request whose measured authorization window has already passed cannot be reused.
+/// The actual durable commit deadline remains Task 9's gate; this is the admission-side bound.
+fn deadline_refusal(req: &ControlRequest) -> Option<Refusal> {
+    match (req.deadline.as_ref(), req.now) {
+        (Some(deadline), Some(now)) if deadline.remaining(now).is_none() => {
+            Some(Refusal::new(RefusalCode::UnsafeToStart, "the forwarded authorization window has passed"))
+        }
+        _ => None,
+    }
+}
+
+/// A stored admission can only dispatch the operation it was granted for. This stops a held or
+/// reissued request from borrowing another call's grant.
+fn admission_binding_refusal(req: &ControlRequest, admission: &Admission) -> Option<Refusal> {
+    match admission {
+        Admission::NewlyAdmitted { operation, .. } if req.operation.as_ref() == Some(operation) => None,
+        Admission::NewlyAdmitted { .. } => Some(Refusal::new(RefusalCode::CapabilityDenied, "the stored admission belongs to a different operation")),
+        Admission::Allowed if req.trusted.is_some() => {
+            Some(Refusal::new(RefusalCode::CapabilityDenied, "a forwarded controlled operation needs a real admission"))
+        }
+        Admission::Allowed | Admission::AlreadyExists { .. } => None,
+        Admission::Refused(refusal) => Some(refusal.clone()),
     }
 }
 
@@ -2186,8 +2349,8 @@ mod tests {
         let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
         assert!(matches!(admit_once(&mut app, &mut req), Ok(Admission::NewlyAdmitted { .. })));
         assert_eq!(admits.load(Ordering::Relaxed), 1);
-        let admission = req.admission.clone();
-        let (mut reissued, _rx) = reissue(req.entry, req.operation.clone(), admission, "engine.execute", json!({"command":"solid.box","params":{}}));
+        let parts = Reissue::from_request(&req);
+        let (mut reissued, _rx) = reissue(parts, "engine.execute", json!({"command":"solid.box","params":{}}));
         assert!(matches!(admit_once(&mut app, &mut reissued), Ok(Admission::NewlyAdmitted { .. })));
         assert_eq!(admits.load(Ordering::Relaxed), 1, "a resumption keeps the first admission");
     }
