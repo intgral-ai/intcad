@@ -591,3 +591,27 @@ has a scoped task PASS (controller record); matched CI run `44640487050` succeed
 OK**, and the controller directly checked raw log lines 378/380. Installed Flatpak acceptance is
 **NOT_RUN**; the combined candidate review and CI are pending. No source consultation, build, CI or
 other worktree change was made for this entry.
+
+### 11.13 Security evidence checkpoint (2026-11-20T00:25Z)
+
+SEC-2 (STEP hostile decode): at `c5f2f42fe6f06ed5c2c4ec1df04f7e9c6aae50ad`, the app STEP import
+path routes through `solidcraft_io` and the kernel `step_in` wrapper to the vendored
+`solidcore-record` `decode_string_with`; `crates/step` is absent. The read-only audit
+`/tmp/opencode/int1454-security-current-audit/` records the source/call-chain check and two exact
+captured tests: `step::p21::tests::run_terminators_are_searched_once` and
+`step::p21::tests::hostile_text_is_an_error`, each **1 passed, exit 0** under Rust/Cargo **1.99.1**,
+`--locked`. The extracted `solidcore` tree `8b5c01445619305dcfc5072db3fe76b8cfea67be` has **8,457
+entries, 0 mismatches before/after**; the controller checked both raw logs and the Git tree. This
+supplements the c5 JUnit, where these two tests were **NOT_RUN**. It is not final-SHA or full-CI
+evidence, and not security acceptance.
+
+SEC-3 (connection-limit refusal drain): **low availability, not fully adopted**. The `crates/control`
+scoped limit-refusal drain has a c5 JUnit pass
+(`solidcraft-control :: server::tests::a_connection_past_the_limit_reads_why`; all 33 control tests
+passed). The app still uses the separate `apps/solidcraft/src/control_server.rs`; its limit-refusal
+branch sends the refusal and drops the stream without the drain. The **app path is unverified**.
+This is not a permission change and gives no access gain.
+
+Scope: no code, reproduction, build, rerun, CI metadata poll, source consultation or new policy
+decision was made. Provider: official DeepSeek; Go and GOAT recorded unavailable; no quota probes.
+No Flatpak evidence was duplicated.
