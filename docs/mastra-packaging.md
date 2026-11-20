@@ -258,8 +258,11 @@ Each of these fails the build, and no package is made:
 - Mastra Code's session builder is not the file `agent/session.mjs` was adapted from;
 - the folder is for another target, is not whole, or (macOS, Linux) can be written;
 - the agent, started with the folder's own Node and entry as the package carries them, does not
-  answer: three turns, a command after a permission request and a tool of an MCP server, against
-  stand-ins (`agent-smoke.mjs`), with a check that no vector store was made.
+  pass its seven cases against stand-ins (`agent-smoke.mjs`): three turns; a command after a
+  permission request; a tool of an MCP server; a refused command, which does not run; a refused
+  file write, which writes nothing; a turn cancelled while a permission request is open; and a
+  turn cancelled while the answer streams. After each refusal or cancel nothing is left behind and
+  the session answers the next message. No vector store may have been made.
 
 A package script takes the folder only through `packaging/mastra/stage-agent.sh` (`.ps1`), which
 runs the folder's check first and copies nothing when it fails.
