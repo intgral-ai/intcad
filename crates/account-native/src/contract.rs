@@ -85,8 +85,20 @@ impl ContractPin {
         if self.protocol_version != EXPECTED_PROTOCOL_VERSION {
             return Err(ContractError::PinMismatch("protocol version is not intcad-auth/1.0"));
         }
+        if self.openapi_version != "1.0.0" {
+            return Err(ContractError::PinMismatch("OpenAPI info.version is not 1.0.0"));
+        }
+        if self.operation_id_pattern != "^op_[A-Za-z0-9_-]{8,64}$" {
+            return Err(ContractError::PinMismatch("operation id pattern is not the frozen grammar"));
+        }
         if self.verification_state != "FROZEN" {
             return Err(ContractError::NotFrozen);
+        }
+        if (self.manifest_embedded_bytes, self.openapi_embedded_bytes, self.fixtures_embedded_bytes) != (1_405, 47_822, 176_410)
+            || (self.vector_count, self.primary_vector_count, self.support_vector_count) != (68, 64, 4)
+            || (self.permission_count, self.race_matrix_count, self.rollback_matrix_count) != (16, 10, 6)
+        {
+            return Err(ContractError::PinMismatch("pinned version, byte or count value changed"));
         }
         for (label, hash) in [
             ("manifest_embedded_sha256", &self.manifest_embedded_sha256),
@@ -383,6 +395,14 @@ mod tests {
         assert_eq!(pin.permission_count, 16);
         assert_eq!(pin.race_matrix_count, 10);
         assert_eq!(pin.rollback_matrix_count, 6);
+    }
+
+    #[test]
+    fn changed_pin_values_are_rejected() {
+        let changed_count = super::PIN_JSON.replace("\"vector_count\": 68", "\"vector_count\": 67");
+        assert!(matches!(ContractPin::from_json(&changed_count), Err(ContractError::PinMismatch(_))));
+        let not_frozen = super::PIN_JSON.replace("\"verification_state\": \"FROZEN\"", "\"verification_state\": \"DRAFT\"");
+        assert!(matches!(ContractPin::from_json(&not_frozen), Err(ContractError::NotFrozen)));
     }
 
     #[test]
