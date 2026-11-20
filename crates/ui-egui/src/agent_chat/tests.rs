@@ -14577,10 +14577,18 @@ mod mastra_backend_tests {
         let (state, cancellation) = host.simulate_late_registration_for_test(&run_id).expect("the seeded run is in the book");
         assert_eq!(state, "cancelled");
         assert_eq!(cancellation.as_deref(), Some("persisted"));
-        host.merge_state_for_test(&run_id, ValidationState::Queued);
-        assert_eq!(host.state_for_test(&run_id), Some(ValidationState::Cancelled), "a delayed Queued snapshot must not reopen the settled run");
-        host.merge_state_for_test(&run_id, ValidationState::Running);
-        assert_eq!(host.state_for_test(&run_id), Some(ValidationState::Cancelled), "a delayed Running snapshot must not reopen the settled run");
+        host.merge_state_for_test(&run_id, solidcraft_engine::validation::ValidationState::Queued);
+        assert_eq!(
+            host.state_for_test(&run_id),
+            Some(solidcraft_engine::validation::ValidationState::Cancelled),
+            "a delayed Queued snapshot must not reopen the settled run"
+        );
+        host.merge_state_for_test(&run_id, solidcraft_engine::validation::ValidationState::Running);
+        assert_eq!(
+            host.state_for_test(&run_id),
+            Some(solidcraft_engine::validation::ValidationState::Cancelled),
+            "a delayed Running snapshot must not reopen the settled run"
+        );
         drop(host);
         let _ = std::fs::remove_dir_all(dir);
     }
