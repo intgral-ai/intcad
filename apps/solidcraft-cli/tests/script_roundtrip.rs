@@ -109,9 +109,7 @@ fn joint_comparison_keeps_stored_refs_and_normalizes_only_absent_source_refs() {
         }))
         .unwrap()
     };
-    let compare = |a: solidcraft_engine::doc::joints::Joint, b: solidcraft_engine::doc::joints::Joint| {
-        joints_for_comparison(&[a], &[b])
-    };
+    let compare = |a: solidcraft_engine::doc::joints::Joint, b: solidcraft_engine::doc::joints::Joint| joints_for_comparison(&[a], &[b]);
     // A stored direction is part of the joint, not a pick-derived reference.
     let (left, right) = compare(
         joint(1, json!({"type": "point", "point": [0.0, 0.0, 0.0], "x": [1.0, 0.0, 0.0]})),
