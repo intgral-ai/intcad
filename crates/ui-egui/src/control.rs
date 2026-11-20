@@ -1577,8 +1577,6 @@ const CONTROLLED_BATCH_COMMANDS: &[&str] = &[
     "solid.torus",
     "solid.extrude",
     "solid.revolve",
-    "edit.undo",
-    "edit.redo",
     "document.inspect",
     "engine.commands",
 ];
@@ -3724,6 +3722,9 @@ mod tests {
         }
         assert!(controlled_batch_step_allowed(&json!({"command":"solid.box","params":{}})));
         assert!(controlled_batch_step_allowed(&json!({"command":"SOLID.BOX","params":{}})), "canonical case resolves to the audited command");
+        assert!(!controlled_batch_step_allowed(&json!({"command":"edit.undo","id":"solid.box"})), "command wins over id");
+        assert!(!controlled_batch_step_allowed(&json!({"command":"edit.redo","params":{}})), "history reversal cannot be in a controlled batch");
+        assert!(controlled_batch_step_allowed(&json!({"command":"solid.box","id":"edit.undo"})), "the audited command still wins over an id alias");
         for step in [
             json!({"command":"component.insert_design","params":{"path":"/tmp/opencode/int1497-never-imported.sc"}}),
             json!({"command":"file.export","params":{"path":"/tmp/opencode/int1497-never-exported.step"}}),
@@ -3752,6 +3753,47 @@ mod tests {
         assert_eq!(reply["result"]["completed"], 1, "{reply}");
         assert_eq!(bodies(&app), 1, "the finished step is retained");
         assert_eq!(commits.load(Ordering::Relaxed), 1, "finished work settles without a new start budget");
+    }
+
+    #[test]
+    fn unchanged_parameter_edit_still_bumps_revision_residual() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.session.execute("parameters.add", &json!({"name":"width","expression":"10 mm"})).unwrap();
+        let before = app.session.revision;
+        app.session.execute("parameters.change", &json!({"name":"width","expression":"10 mm"})).unwrap();
+        assert!(app.session.revision > before, "residual: unchanged parameter edits still bump the revision, so revision is not content equality");
+    }
+
+    #[test]
+    fn a_controlled_batch_with_history_reversal_is_refused_before_the_first_step() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"edit.undo","params":{}}
+            ]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(bodies(&app), 0, "no step ran, including the first box");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn free_gui_undo_and_redo_still_work() {
+        let (mut app, admits, _releases) = app_with_billing();
+        app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
+        assert_eq!(bodies(&app), 1);
+        for command in ["edit.undo", "edit.redo"] {
+            let (mut req, _rx) = ControlRequest::trusted_gui("engine.execute", json!({"command":command,"params":{}}));
+            let out = handle(&mut app, &egui::Context::default(), &mut req);
+            let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+            assert_eq!(reply["ok"], true, "{reply}");
+        }
+        assert_eq!(admits.load(Ordering::Relaxed), 0, "free human CAD is not billed");
     }
 
     #[test]
