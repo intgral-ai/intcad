@@ -454,6 +454,23 @@ impl ValidationPort {
                 self.submit_result(&submission.run_id, &admission.candidate, &admission.profile)
             }
             Err(error) if error.code == ErrorCode::NotFound => {
+                // Retention may have removed the run while its key is still valid for
+                // idempotency. The tombstone keeps the durable terminal outcome: never recreate
+                // the admission/state as a fresh Queued run.
+                if let Some(tombstone) = self.store.read_tombstone(&submission.run_id)? {
+                    if tombstone.submission_key != key.text || tombstone.run_id != submission.run_id {
+                        return Err(ValidationError::internal("the retired-key record names another submission"));
+                    }
+                    if now >= tombstone.expires_at_ms {
+                        return Err(ValidationError::request_expired("the retired submission key has expired"));
+                    }
+                    return Ok(SubmitResult {
+                        run_id: submission.run_id.clone(),
+                        state: tombstone.state,
+                        candidate: submission.candidate.clone(),
+                        profile: submission.profile.clone(),
+                    });
+                }
                 // The process stopped after writing the key but before the admission. Complete
                 // the admission from the key; this is the only replay that needs the profile.
                 let resolved = self.resolve_profile(profile)?;

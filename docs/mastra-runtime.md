@@ -820,7 +820,10 @@ matching state publication share that transaction; runner computation does not.
 A fully verified pending report is recovered before consulting a cancel marker,
 including legacy report/state gaps. Unverifiable reports never become passing evidence.
 Retention checks and deletion use the same transaction, so a late completion cannot
-recreate an expired run.
+recreate an expired run. When retention retires a terminal run while its submission
+key is still valid, a small tombstone keeps that key's durable terminal outcome until
+the key expires; replaying the key returns that outcome and never recreates the
+admission or state as a new queued run.
 
 Stop/reset retire turn authority synchronously in memory. Disk-backed cancellation
 uses one separate control worker, independent of the runner pump, with at most 64
@@ -834,7 +837,9 @@ The retirement ledger retains at most 4,096 bindings; exhaustion closes validati
 admission until that host service is reopened rather than evicting an in-flight binding.
 Shutdown interrupts cancellation lock acquisition and never joins a disk-blocked worker
 on the window thread. An admitted transaction's filesystem operations are not forcibly
-interrupted.
+interrupted. Validation cards carry their original session, turn and workflow run;
+a late result updates only the owning turn's existing card and is never appended to
+another turn's history.
 
 All participants must be stopped before upgrade or rollback. Keep the stable lock
 file and existing run records. Mixed old/new concurrent writers are unsupported:

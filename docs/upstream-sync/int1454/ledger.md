@@ -12,6 +12,14 @@ Base: `c5f2f42fe`. Task branch: `fix/int1454-validation-transaction`.
 Status: targeted behavioral RED observed at `7f5bdde70` (run `44589009058`);
 transaction and cancellation control implementation in progress. No GREEN or independent
 review claimed. The earlier full run's test execution remains unknown.
+Recovery 2026-11-19: worker recovered at clean `fa12cfe47`; the prior "GREEN"
+attempt `44599155675` actually failed (native transaction child clock, unrelated
+stacked-base CLI corpus test, and a clippy `unreachable!` in the test module).
+Clock corrected first so race evidence is valid. Independent L3 findings F1-F5
+verified against the source call chain; deterministic RED tests added at `9a2a25ebf`
+before the fixes. F1 is reachable whenever a host lowers retention below the key's
+seven-day validity. F2 needs the owner carried on the card and the panel routing it.
+F3 and F4 are the mutex and monotonic-merge races described in their tests.
 Local baseline/builds NOT_RUN under the disk-growth gate. Use remote CI.
 Stop all validation participants before upgrade or rollback. Keep the stable
 transaction lock file and run records; mixed old/new concurrent writers are not supported.

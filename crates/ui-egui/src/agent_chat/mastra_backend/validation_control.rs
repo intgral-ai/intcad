@@ -69,7 +69,12 @@ impl Control {
     }
 
     pub fn shutdown(&self) {
+        // Set the predicate under the same mutex the worker holds while it checks it and arms
+        // the wait. Notifying after a bare atomic store can land between that check and the
+        // wait, which loses the wakeup and leaks the control worker.
+        let guard = self.shared.queue.lock();
         self.shared.stop.store(true, Ordering::Release);
+        drop(guard);
         self.shared.ready.notify_all();
     }
 

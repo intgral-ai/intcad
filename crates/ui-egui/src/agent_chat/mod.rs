@@ -605,6 +605,17 @@ fn append_agent_text(items: &mut [Item], thought: bool, text: &str) -> bool {
     }
 }
 
+/// The original Mastra session/turn/workflow run named by a validation card.
+fn validation_event_owner(output: Option<&str>) -> Option<(String, String, String)> {
+    let value: serde_json::Value = serde_json::from_str(output?).ok()?;
+    let owner = value.get("owner")?;
+    Some((
+        owner.get("sessionId")?.as_str()?.to_owned(),
+        owner.get("turnId")?.as_str()?.to_owned(),
+        owner.get("workflowRunId")?.as_str()?.to_owned(),
+    ))
+}
+
 impl AgentChat {
     /// Exchange document state, keeping window services and preferences UI in the window.
     pub(crate) fn swap_document(&mut self, other: &mut Self) {
@@ -907,6 +918,17 @@ impl AgentChat {
                 }
             }
             Event::Tool { id, title, kind, status, input, output } => {
+                // A validation card names the turn that owns it. A late result for a retired
+                // turn updates that turn's existing card, never the current turn's history.
+                if kind.as_deref() == Some("validation")
+                    && !self.items.iter().any(|item| matches!(item, Item::Tool { id: known, .. } if *known == id))
+                {
+                    let Some(owner) = validation_event_owner(output.as_deref()) else { return None };
+                    let Some(current) = self.turn.as_ref().and_then(|turn| turn.owner.as_ref()) else { return None };
+                    if current != &owner {
+                        return None;
+                    }
+                }
                 if let Some(turn) = self.turn.as_mut() {
                     turn.tool_called = true;
                 }

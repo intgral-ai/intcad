@@ -166,6 +166,9 @@ struct CachedValidationReport {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ValidationIdentity {
     pub run_id: String,
+    pub session_id: String,
+    pub turn_id: String,
+    pub workflow_run_id: String,
     pub candidate_id: String,
     pub candidate_digest: String,
     pub manifest_digest: String,
@@ -192,6 +195,11 @@ impl ValidationIdentity {
         serde_json::json!({
             "stage": "validate",
             "runId": self.run_id,
+            "owner": {
+                "sessionId": self.session_id,
+                "turnId": self.turn_id,
+                "workflowRunId": self.workflow_run_id,
+            },
             "candidateId": self.candidate_id,
             "candidateDigest": self.candidate_digest,
             "manifestDigest": self.manifest_digest,
@@ -467,6 +475,9 @@ impl HostValidation {
                 }
                 None => ValidationIdentity {
                     run_id: run_id.to_owned(),
+                    session_id: String::new(),
+                    turn_id: String::new(),
+                    workflow_run_id: String::new(),
                     candidate_id: String::new(),
                     candidate_digest: String::new(),
                     manifest_digest: String::new(),
@@ -500,6 +511,9 @@ impl HostValidation {
         let state = report.map_or(run.state, |report| report.state);
         ValidationIdentity {
             run_id: run.run_id.clone(),
+            session_id: run.session_id.clone(),
+            turn_id: run.turn_id.clone(),
+            workflow_run_id: run.workflow_run_id.clone(),
             candidate_id: run.candidate.candidate_id.clone(),
             candidate_digest: run.candidate.candidate_digest.clone(),
             manifest_digest: run.candidate.manifest_digest.clone(),
@@ -756,6 +770,27 @@ impl ValidationBook {
     }
 
     fn insert_run(&mut self, run_id: &str, record: ValidationRunRecord) {
+        if let Some(existing) = self.runs.get_mut(run_id)
+            && existing.session_id == record.session_id
+            && existing.turn_id == record.turn_id
+            && existing.workflow_run_id == record.workflow_run_id
+        {
+            // A duplicate callback can register after the control worker persisted a settled
+            // cancellation. Merge monotonically: a captured Queued never replaces a terminal
+            // state or a persisted/failed cancellation, and its dirty flag must not coalesce
+            // away the only honest update.
+            let settled = matches!(existing.cancellation.as_ref(), Some(CancellationStatus::Persisted | CancellationStatus::Failed(_)));
+            if !settled {
+                if record.cancellation.is_some() {
+                    existing.cancellation = record.cancellation;
+                }
+                existing.cancellation_dirty |= record.cancellation_dirty;
+            }
+            if !existing.state.is_terminal() && !(record.state == ValidationState::Queued && existing.state != ValidationState::Queued) {
+                existing.state = record.state;
+            }
+            return;
+        }
         self.runs.insert(run_id.to_owned(), record);
         if !self.run_order.iter().any(|known| known == run_id) {
             self.run_order.push_back(run_id.to_owned());
