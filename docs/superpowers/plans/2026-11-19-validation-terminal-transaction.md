@@ -75,6 +75,20 @@ Expected RED: pending Cancelled report currently produces REPORT_MISMATCH, and p
 - [x] Record tests NOT_RUN or BLOCKED rather than infer passing.
 - [ ] Hand off branch/diff/ledger to controller for independent review; no integration or merge.
 
+### Task 5: Authoritative tombstone repair (private, no new public surface)
+
+**Files:** existing `crates/engine/src/validation/mod.rs`, `store.rs`, `tests.rs`.
+
+**Interfaces:** private `ValidationPort::retirement(run_id, &TransactionGuard) -> Result<Option<TombstoneRecord>>`; private replay helper that returns the same run/candidate/profile/state for an unexpired key. No public API, record, wire, auth or schema change.
+
+- [ ] Add deterministic tests first: tombstone blocks both replay routes and status/report/evidence/cancel/cancel_until/complete/start_next/counts/reconcile; expiry ends replay but not selection; invalid/unreadable tombstone is not absence; conflicting/unreadable GC is monotone; no tombstone keeps crash-after-key and verified-report-before-marker.
+- [ ] Run the bounded RED lane and observe the new tests fail for the missing authority.
+- [ ] Validate tombstone path/run id/schema/run/key binding/terminal state/expiry under the caller's existing TransactionGuard; invalid/unreadable is not absence.
+- [ ] Consult one retirement decision before every recovery write, replay, status/report/evidence, both cancel entries, counts/selection, reconcile, and completion before evidence publication. Retired non-replay paths return ordinary post-deletion NotFound and do not mutate.
+- [ ] Keep replay semantics: owner/payload checks first; same run/candidate/profile/state for an unexpired key; REQUEST_EXPIRED at expiry; no inference for legacy both-records-absent.
+- [ ] Make GC monotone: never overwrite a conflicting or unreadable tombstone; keep tombstones while admission/state residue exists; expiry only ends replay; exclude retired residues from live counts, not the physical record cap; improve the no-key removal ordering without using it as a tombstone substitute.
+- [ ] Run the bounded GREEN lane, then remove the temporary diagnostic workflow in a separate commit and record the tested/final net-diff equality, artifact and receipts.
+
 ## Execution ledger
 
 - Base `c5f2f42fe6f06ed5c2c4ec1df04f7e9c6aae50ad`; sparse worktree initially 2,359,296 bytes.
