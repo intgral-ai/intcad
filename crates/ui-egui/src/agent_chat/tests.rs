@@ -15571,8 +15571,20 @@ fn the_web_page_is_told_the_conversation_in_the_apps_language() {
     assert!(state["agents"].is_array() && state["notes"].is_array() && state["missing"].is_array());
     assert_eq!(state["permissions"], "edits");
     assert_eq!(state["strings"]["send"], "Send");
+    assert_eq!(state["strings"]["modelEffort"], "Model", "without an effort control the group is the model's own word");
     // The host asks outside the app's own passes: the words still follow the app's language.
     h.app.preferences.language = "zh".into();
+    h.app.agent_chat.config_options = Some(vec![acp::ConfigOption {
+        id: "thought".into(),
+        name: "Thinking".into(),
+        description: String::new(),
+        category: "thought_level".into(),
+        current_value: "medium".into(),
+        options: ["off", "medium"]
+            .into_iter()
+            .map(|value| acp::ConfigChoice { value: value.into(), name: value.into(), description: String::new(), group: None })
+            .collect(),
+    }]);
     let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
     let expected = {
         let _language = crate::i18n::scope("zh");
@@ -15581,6 +15593,7 @@ fn the_web_page_is_told_the_conversation_in_the_apps_language() {
     assert_ne!(expected.0, "Send", "the catalog has the word in Chinese");
     assert_eq!(state["strings"]["send"], expected.0);
     assert_eq!(state["items"][5]["label"], expected.1);
+    assert_eq!(state["strings"]["modelEffort"], "模型、思考强度", "a whole group label, in the locale's own punctuation");
 }
 
 /// The page may ask only for what is listed, and each request is checked against the chat as it
@@ -16639,7 +16652,10 @@ fn with_nothing_connected_the_built_in_agent_asks_for_a_sign_in_and_opens_no_ses
         "the five keys, named as the agent names them"
     );
     assert_eq!(connect["plans"][0], json!({"id": "openai-codex", "name": "ChatGPT", "state": "out", "account": null, "prefix": "openai"}));
-    assert_eq!(connect["keys"][1], json!({"id": "openai", "name": "OpenAI", "saved": false, "shadowed": false, "prefix": "openai"}));
+    assert_eq!(
+        connect["keys"][1],
+        json!({"id": "openai", "name": "OpenAI", "saved": false, "shadowed": false, "prefix": "openai", "title": "API key for OpenAI"})
+    );
     assert_eq!(
         (&connect["custom"], &connect["login"], &connect["problem"], &connect["error"], &connect["dates"]),
         (&json!([]), &Value::Null, &Value::Null, &Value::Null, &json!({}))
@@ -16647,9 +16663,17 @@ fn with_nothing_connected_the_built_in_agent_asks_for_a_sign_in_and_opens_no_ses
     // The agent's own sign-in methods are not offered, and the old action cannot reach them.
     assert_eq!(state["auth"], json!([]));
     assert!(conn_act(&mut app, &ctx, json!({"type": "auth", "id": "oauth"})).is_err());
-    // The plans are in the user's language.
+    // A provider name is a value of the title, not another template: braces in it stay as typed.
+    script.report(Event::Connections(conn_snapshot(|told| told["keys"][2]["name"] = json!("Acme {key}"))));
+    poll(&mut app, &ctx);
+    let stated = page_state(&mut app);
+    assert_eq!(stated["connect"]["keys"][2]["title"], "API key for Acme {key}");
+    // The plans and the key titles are in the user's language.
     app.preferences.language = "zh".into();
     assert_eq!(page_state(&mut app)["connect"]["plans"][0]["name"], "ChatGPT");
+    let stated = page_state(&mut app);
+    assert_eq!(stated["connect"]["keys"][0]["title"], "Anthropic 的 API key");
+    assert_eq!(stated["connect"]["keys"][2]["title"], "Acme {key} 的 API key");
     // A message typed now waits for the sign-in; it opens no session either.
     send(&mut app, &ctx, "make a box".into());
     poll(&mut app, &ctx);
@@ -18110,6 +18134,25 @@ fn every_word_of_the_connections_page_is_sent_in_each_complete_language() {
         (&chinese["connTitle"], &chinese["connUse"], &chinese["planGithubCopilot"]),
         (&json!("连接与登录"), &json!("切换"), &json!("GitHub Copilot"))
     );
+    // A whole group label, translated as one sentence: no locale leaves a placeholder for the page.
+    app.agent_chat.config_options = Some(vec![acp::ConfigOption {
+        id: "thought".into(),
+        name: "Thinking".into(),
+        description: String::new(),
+        category: "thought_level".into(),
+        current_value: "medium".into(),
+        options: Vec::new(),
+    }]);
+    let english = words(&mut app, "en");
+    assert_eq!(english["modelEffort"], "Model, Reasoning effort");
+    for language in ["en", "zh", "ar", "he", "ja", "vi"] {
+        let told = words(&mut app, language);
+        let label = told["modelEffort"].as_str().unwrap_or_else(|| panic!("{language}: modelEffort is not sent"));
+        assert!(!label.contains('{') && !label.contains('}'), "{language}: modelEffort = {label}");
+        if language != "en" {
+            assert_ne!(label, "Model, Reasoning effort", "{language}: modelEffort is not translated");
+        }
+    }
     for language in ["en", "zh", "ar", "he", "ja", "vi"] {
         let told = words(&mut app, language);
         for name in CONNECTION_STRINGS {

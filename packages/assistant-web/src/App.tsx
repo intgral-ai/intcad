@@ -1021,7 +1021,7 @@ function ProviderPicker({ state, connect, onConnections }: { state: AssistantSta
   );
   if (!effort) return model;
   return (
-    <ButtonsGroup size="sm" aria-label={`${strings.model}, ${effort.label}`} className="min-w-0">
+    <ButtonsGroup size="sm" aria-label={strings.modelEffort} className="min-w-0">
       {model}
       <ThinkingLevelPicker options={effort.options} value={effort.value} label={effort.label} onChange={effort.set} />
     </ButtonsGroup>
@@ -1720,7 +1720,7 @@ function KeyDialog({
       onClose();
     }
   }, [stamp]);
-  const title = strings.connKeyTitle.replace('{name}', entry.name);
+  const title = entry.title;
   function save() {
     const key = draft.trim();
     if (!key) return;

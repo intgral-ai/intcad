@@ -417,7 +417,7 @@ pub fn state(app: &mut SolveApp) -> String {
             found.missing.iter().map(listed).collect()
         })
         .unwrap_or_default();
-    let strings: serde_json::Map<String, Value> = [
+    let mut strings: serde_json::Map<String, Value> = [
         ("placeholder", "ui.agent_chat_placeholder"),
         ("placeholderBusy", "ui.agent_chat_placeholder_busy"),
         ("send", "ui.agent_chat_send"),
@@ -601,6 +601,14 @@ pub fn state(app: &mut SolveApp) -> String {
     .into_iter()
     .map(|(name, key)| (name.to_string(), Value::from(tr(key))))
     .collect();
+    // The group's complete name, with its two controls' own words as values: a locale puts them
+    // in its own order and punctuation. Without an effort control the page shows only the model.
+    let model_effort = if chat.config_options.as_ref().is_some_and(|options| options.iter().any(|option| option.category == "thought_level")) {
+        trf("ui.agent_chat_web_model_effort", &[("model", tr("ui.ai_model")), ("effort", tr("ui.agent_chat_effort"))])
+    } else {
+        tr("ui.ai_model").to_string()
+    };
+    strings.insert("modelEffort".into(), Value::from(model_effort));
     json!({
         "items": items,
         // A text file open from a file card: the start of its text, read when the card was clicked.

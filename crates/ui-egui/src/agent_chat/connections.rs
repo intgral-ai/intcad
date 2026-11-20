@@ -704,7 +704,7 @@ fn fit_addresses(kept: &[CustomAddress]) -> Vec<CustomAddress> {
 use super::State;
 use super::backend::Secrets;
 use crate::SolveApp;
-use crate::i18n::tr;
+use crate::i18n::{format as trf, tr};
 
 /// Whether the agent has a session to answer in.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -955,7 +955,13 @@ fn page(conn: &Conn) -> Value {
     let keys: Vec<Value> = snapshot
         .keys
         .iter()
-        .map(|key| json!({"id": key.id, "name": key.name, "saved": key.saved, "shadowed": key.shadowed, "prefix": key.prefix}))
+        .map(|key| {
+            json!({
+                "id": key.id, "name": key.name, "saved": key.saved, "shadowed": key.shadowed, "prefix": key.prefix,
+                // The dialog's complete title: the provider's name is a value, never a template.
+                "title": trf("ui.agent_chat_conn_key_title", &[("name", &key.name)]),
+            })
+        })
         .collect();
     let custom: Vec<Value> = snapshot
         .custom

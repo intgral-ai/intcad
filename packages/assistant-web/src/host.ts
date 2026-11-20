@@ -135,7 +135,7 @@ export interface TurnProblem {
 export interface Connect {
   plans: { id: string; name: string; state: 'in' | 'out' | 'expired'; account: string | null; prefix: string }[];
   /** `shadowed`: a signed-in plan serves the same models, and wins. */
-  keys: { id: string; name: string; saved: boolean; shadowed: boolean; prefix: string }[];
+  keys: { id: string; name: string; saved: boolean; shadowed: boolean; prefix: string; title: string }[];
   custom: { id: string; name: string; url: string; models: string[]; keyed: boolean; prefix: string }[];
   login: { id: string; phase: 'starting' | 'browser' | 'device' | 'code'; userCode: string | null; error: 'incomplete' | null } | null;
   /** The last sign-in that could not finish. */
@@ -228,7 +228,7 @@ export type StringKey =
   | 'notReady' | 'notSetUp'
   | 'refresh' | 'authTitle' | 'authNeeded' | 'authNone' | 'authTerminal' | 'authRetry' | 'setupTitle'
   | 'setupBody' | 'openSettings' | 'model' | 'queuedStopped' | 'sendNow' | 'sendNowTip' | 'edit'
-  | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'modelRefine' | 'modelFilter' | 'revalidate' | 'dropHint' | 'removeChip'
+  | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'modelRefine' | 'modelFilter' | 'modelEffort' | 'revalidate' | 'dropHint' | 'removeChip'
   | 'openPicture' | 'selectedNow'
   | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel'
   | 'reviewTitle' | 'reviewAccept' | 'reviewReject' | 'reviewMade' | 'reviewChanged' | 'reviewRemoved'
