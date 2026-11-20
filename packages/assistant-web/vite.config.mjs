@@ -53,14 +53,15 @@ function pickerTexts() {
     enforce: 'pre',
     transform(code, id) {
       const file = id.split('?')[0].replaceAll('\\', '/');
+      const texts = [...PICKER_TEXTS.entries()].filter(([, [path]]) => file.endsWith(`/playground-ui/src/${path}`));
+      if (texts.length === 0) return null;
       let out = code.replace(/\r\n/g, '\n');
-      for (const [index, [path, from, to]] of PICKER_TEXTS.entries()) {
-        if (!file.endsWith(`/playground-ui/src/${path}`)) continue;
+      for (const [index, [path, from, to]] of texts) {
         if (out.split(from).length !== 2) this.error(`${path}: expected ${JSON.stringify(from)} exactly once (see PICKER_TEXTS in vite.config.mjs)`);
         out = out.replace(from, to);
         met.add(index);
       }
-      return met.size && out !== code ? { code: out, map: null } : null;
+      return { code: out, map: null };
     },
     buildEnd(error) {
       if (!error && met.size !== PICKER_TEXTS.length) this.error(`the model picker's texts were met ${met.size} times, not ${PICKER_TEXTS.length} (see PICKER_TEXTS in vite.config.mjs)`);
