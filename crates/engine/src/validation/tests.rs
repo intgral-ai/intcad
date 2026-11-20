@@ -1551,6 +1551,119 @@ fn cleanup_collects_a_valid_expired_tombstone_and_key_when_no_residue_exists() {
     let _ = std::fs::remove_dir_all(fixture.root);
 }
 
+/// A validated tombstone proves retirement only for the key it names. A key record for the
+/// same run that names another submission key is conflicting evidence: collecting it from a
+/// foreign tombstone would delete a key the retirement decision never covered.
+#[test]
+fn cleanup_keeps_a_key_when_the_tombstone_names_another_submission_key() {
+    const NOW: u64 = 1_760_000_000_000;
+    let fixture = retire_to_tombstone_only("authority-key-mismatch");
+    let original = SubmissionKey::parse(&fixture.key, NOW).unwrap();
+    let other_timestamp = NOW - 2 * 24 * 60 * 60 * 1000;
+    let other_key = generate_submission_key(other_timestamp);
+    let other_name = solidcraft_io::candidate::digest_hex(other_key.as_bytes());
+    let other_expiry = other_timestamp + 7 * 24 * 60 * 60 * 1000;
+    let mut record: store::SubmissionRecord = fixture.port.store.read_json(&fixture.port.store.key_path(&original.file_name()), 1 << 20).unwrap();
+    record.submission_key = other_key;
+    record.created_at_ms = other_timestamp;
+    record.expires_at_ms = other_expiry;
+    fixture.port.store.write_json_replace(&fixture.port.store.key_path(&other_name), &record).unwrap();
+
+    fixture.port.cleanup(other_expiry + 1);
+    assert!(fixture.port.store.key_path(&other_name).is_file(), "a foreign tombstone is not permission to collect another submission key");
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "the retirement record is still authority");
+    assert!(fixture.port.store.key_path(&original.file_name()).is_file(), "the bound key is untouched");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+/// The collector must consult the tombstone's own expiry, not the key record's retention
+/// window. A key record whose expiry conflicts with a still-unexpired tombstone is conflicting
+/// evidence; deleting either would end authority before the bound key has expired.
+#[test]
+fn cleanup_keeps_a_tombstone_that_has_not_reached_its_own_expiry() {
+    const NOW: u64 = 1_760_000_000_000;
+    let fixture = retire_to_tombstone_only("authority-independent-expiry");
+    let parsed = SubmissionKey::parse(&fixture.key, NOW).unwrap();
+    let key_path = fixture.port.store.key_path(&parsed.file_name());
+    let mut record: store::SubmissionRecord = fixture.port.store.read_json(&key_path, 1 << 20).unwrap();
+    let early_expiry = parsed.timestamp_ms + 1000;
+    record.expires_at_ms = early_expiry;
+    fixture.port.store.write_json_replace(&key_path, &record).unwrap();
+
+    fixture.port.cleanup(early_expiry + 1);
+    assert!(fixture.port.store.key_path(&parsed.file_name()).is_file(), "conflicting key evidence is preserved");
+    assert!(
+        fixture.port.store.tombstone_path(&fixture.run_id).is_file(),
+        "an unexpired tombstone is not collected with a key record's earlier expiry"
+    );
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+/// Retire the run to a tombstone, then restore the admission, profile and an evidence file so
+/// cleanup sees an admission-only run. The state stays absent, as after a crash between the
+/// admission and state writes.
+fn retire_with_admission_records(name: &str) -> (TerminalKeyFixture, Vec<u8>, Vec<u8>) {
+    let fixture = terminal_run_with_key(name);
+    let admission = std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap();
+    let profile = std::fs::read(fixture.port.store.profile_path(&fixture.run_id)).unwrap();
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file());
+    assert!(!fixture.port.store.state_path(&fixture.run_id).is_file());
+    std::fs::write(fixture.port.store.admission_path(&fixture.run_id), &admission).unwrap();
+    std::fs::write(fixture.port.store.profile_path(&fixture.run_id), &profile).unwrap();
+    (fixture, admission, profile)
+}
+
+/// An admission with no state still needs valid retirement evidence before its associated
+/// records can be removed. Otherwise deleting the admission lets a live key rebuild Queued.
+#[test]
+fn cleanup_preserves_admission_only_records_with_invalid_retirement_evidence() {
+    let (fixture, admission, profile) = retire_with_admission_records("authority-admission-only-invalid");
+    let mut record = tombstone_record(&fixture, fixture.terminal);
+    record.schema_version = "0.9".into();
+    write_tombstone_record(&fixture, &record);
+    let tombstone = std::fs::read(fixture.port.store.tombstone_path(&fixture.run_id)).unwrap();
+    let marker = fixture.port.store.evidence_dir(&fixture.run_id).join("marker.json");
+    std::fs::create_dir_all(fixture.port.store.evidence_dir(&fixture.run_id)).unwrap();
+    std::fs::write(&marker, b"{}").unwrap();
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert_eq!(
+        std::fs::read(fixture.port.store.admission_path(&fixture.run_id)).unwrap(),
+        admission,
+        "invalid retirement evidence preserves the admission"
+    );
+    assert_eq!(
+        std::fs::read(fixture.port.store.profile_path(&fixture.run_id)).unwrap(),
+        profile,
+        "invalid retirement evidence preserves the frozen profile"
+    );
+    assert!(marker.is_file(), "invalid retirement evidence preserves the associated evidence");
+    assert_eq!(
+        std::fs::read(fixture.port.store.tombstone_path(&fixture.run_id)).unwrap(),
+        tombstone,
+        "the invalid retirement record is kept unchanged"
+    );
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
+/// The valid control: an admission-only run with a tombstone naming its key can be collected
+/// once its admission is old enough. The tombstone stays until its own expiry.
+#[test]
+fn cleanup_collects_admission_only_records_with_valid_associated_evidence() {
+    let (fixture, _, _) = retire_with_admission_records("authority-admission-only-valid");
+    let marker = fixture.port.store.evidence_dir(&fixture.run_id).join("marker.json");
+    std::fs::create_dir_all(fixture.port.store.evidence_dir(&fixture.run_id)).unwrap();
+    std::fs::write(&marker, b"{}").unwrap();
+
+    fixture.port.cleanup(1_760_000_000_000);
+    assert!(!fixture.port.store.admission_path(&fixture.run_id).is_file(), "valid associated evidence permits collection");
+    assert!(!fixture.port.store.profile_path(&fixture.run_id).is_file());
+    assert!(!marker.is_file());
+    assert!(fixture.port.store.tombstone_path(&fixture.run_id).is_file(), "the unexpired tombstone still blocks replay");
+    let _ = std::fs::remove_dir_all(fixture.root);
+}
+
 #[test]
 fn a_changed_input_byte_after_a_pass_rejects_the_report() {
     let root = scratch("changed-after");
