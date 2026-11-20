@@ -228,7 +228,10 @@ pub fn call_tool_with(
     reply_context.admission = Some(admission);
     let mut reply = MeteredReply { value: result_value, operation: operation.clone(), outcome, context: reply_context };
     if let Err(error) = settle {
-        let disposition = missing_operation_state(context.deadline.as_ref(), context.now.unwrap_or_else(settlement_now), error.code);
+        let disposition = match (context.deadline.as_ref(), context.now) {
+            (Some(deadline), Some(now)) => missing_operation_state(Some(deadline), now, error.code),
+            _ => MissingOperationState::Unknown,
+        };
         match disposition {
             MissingOperationState::ExpiredNoState => {
                 let body = json!({
@@ -300,14 +303,6 @@ pub fn missing_operation_state(deadline: Option<&ConservativeDeadline>, now: Mon
         Some(deadline) if deadline.remaining(now).is_none() => MissingOperationState::ExpiredNoState,
         _ => MissingOperationState::Unknown,
     }
-}
-
-/// A clock reading for settlement failure handling at the MCP boundary.
-///
-/// The host installs the real monotonic clock at the lifecycle seam. Until then a refusal whose
-/// deadline cannot be checked stays unknown instead of guessing a charge or release.
-fn settlement_now() -> MonotonicInstant {
-    MonotonicInstant::from_millis(0)
 }
 
 /// The same run keeps one logical operation across MCP, the bridge and a Review tool.
