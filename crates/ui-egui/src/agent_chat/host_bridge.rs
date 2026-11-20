@@ -103,7 +103,7 @@ impl ChatBackend {
                 output: None,
             },
         );
-        let (mut request, reply) = ControlRequest::new(method, params);
+        let (mut request, reply) = ControlRequest::trusted_bridge(method, params);
         request.chat_turn = Some(turn.active);
         if self.tools.send(request).is_err() {
             push_event(&self.events, bridge_result(&id, method, false, "the agent chat bridge is closed"));

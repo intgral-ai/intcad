@@ -55,6 +55,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps};
+use solidcraft_engine::entitlement::{Admission, BillingPort, BudgetTable, Capability, EntryCategory, OperationId, Refusal, RefusalCode};
 use solidcraft_engine::io::vfs;
 use solidcraft_engine::render::{Camera, StandardView};
 use solidcraft_engine::schema::ParamCheck;
@@ -74,12 +75,147 @@ pub struct ControlRequest {
     pub(crate) chat_turn: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Original document precondition and tab context, pinned at first host admission.
     pub(crate) guarded: Option<crate::execution_guard::GuardedAdmission>,
+    /// Where this request entered Intcad. Only the host's named constructors set it from the
+    /// path that actually produced the request; request parameters never choose it.
+    pub(crate) entry: EntryCategory,
+    /// The host-minted logical operation for a controlled entry; `None` for free entries and
+    /// when the host could not mint one (admission then fails closed).
+    pub(crate) operation: Option<OperationId>,
+}
+
+/// Entries whose human host path is free even when it shares command dispatch.
+pub fn free_entry(entry: EntryCategory) -> bool {
+    entry.is_free()
+}
+
+/// The capability the frozen rev3 entry matrix pairs with a controlled entry.
+/// `None` for free entries and for unclassified requests.
+pub fn entry_capability(entry: EntryCategory) -> Option<Capability> {
+    match entry {
+        EntryCategory::HumanGuiFree | EntryCategory::WebGuiFree | EntryCategory::Unknown => None,
+        EntryCategory::Mastra => Some(Capability::Harness),
+        EntryCategory::ExternalAcpMcp | EntryCategory::HeadlessMcp | EntryCategory::GuiBridgeMcp => Some(Capability::Mcp),
+        EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation => Some(Capability::Control),
+        EntryCategory::CliDfm => Some(Capability::Dfm),
+        EntryCategory::ReviewPanel => Some(Capability::Review),
+    }
+}
+
+/// Protocol, maintenance, navigation and rendering methods that no controlled entry bills.
+/// They are checked only after the entry is classified, so an unclassified request stays
+/// refused even for a navigation method.
+fn auxiliary_method(method: &str) -> bool {
+    matches!(
+        method,
+        "control.running"
+            | "control.pending"
+            | "control.capabilities"
+            | "control.subscribe"
+            | "engine.commands"
+            | "ui.inspect"
+            | "ui.rects"
+            | "ui.view"
+            | "ui.screenshot"
+            | "ui.render"
+            | "ui.icon_audit"
+            | "ui.resize"
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mint_operation() -> Option<OperationId> {
+    let mut entropy = [0_u8; 16];
+    getrandom::fill(&mut entropy).ok()?;
+    OperationId::mint_from_entropy(&entropy).ok()
+}
+
+/// The browser never creates a controlled entry, and has no host entropy to mint one with.
+#[cfg(target_arch = "wasm32")]
+fn mint_operation() -> Option<OperationId> {
+    None
 }
 
 impl ControlRequest {
-    pub fn new(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+    fn pending(entry: EntryCategory, method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        let operation = entry_capability(entry).and_then(|_| mint_operation());
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { method: method.into(), params, reply: tx, started: Default::default(), chat_turn: None, guarded: None }, rx)
+        let request =
+            Self { method: method.into(), params, reply: tx, started: Default::default(), chat_turn: None, guarded: None, entry, operation };
+        (request, rx)
+    }
+
+    /// A person acting in this app's own window, including commands that reuse `engine.execute`.
+    pub fn trusted_gui(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::HumanGuiFree, method, params)
+    }
+
+    /// A normal browser CAD request: anonymous, offline and free.
+    pub fn trusted_web(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::WebGuiFree, method, params)
+    }
+
+    /// The built-in Mastra harness calling an Intcad logical tool.
+    pub fn trusted_mastra(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::Mastra, method, params)
+    }
+
+    /// A trusted runtime bridge forwarding an Intcad tool call.
+    pub fn trusted_bridge(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::GuiBridgeMcp, method, params)
+    }
+
+    /// An external ACP client, arriving through MCP.
+    pub fn trusted_acp(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::ExternalAcpMcp, method, params)
+    }
+
+    /// A standalone headless MCP server.
+    pub fn trusted_mcp(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::HeadlessMcp, method, params)
+    }
+
+    /// An authenticated external control connection.
+    pub fn trusted_control(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::DirectControl, method, params)
+    }
+
+    /// The Review panel's own logical check.
+    pub fn trusted_review_panel(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::ReviewPanel, method, params)
+    }
+
+    /// A mixed CLI validation request that contains a DFM check.
+    pub fn trusted_cli_dfm(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::CliDfm, method, params)
+    }
+
+    /// External UI automation driving real operations.
+    pub fn trusted_external_ui(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::ExternalUiAutomation, method, params)
+    }
+
+    /// A request with no trusted origin, for ordering and fail-closed tests only.
+    #[cfg(test)]
+    pub(crate) fn unclassified_for_test(method: impl Into<String>, params: Value) -> Self {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        Self {
+            method: method.into(),
+            params,
+            reply: tx,
+            started: Default::default(),
+            chat_turn: None,
+            guarded: None,
+            entry: EntryCategory::Unknown,
+            operation: None,
+        }
+    }
+
+    pub fn entry(&self) -> EntryCategory {
+        self.entry
+    }
+
+    pub fn operation(&self) -> Option<&OperationId> {
+        self.operation.as_ref()
     }
 
     pub(crate) fn refuse_cancelled_chat(&self) -> bool {
@@ -90,6 +226,127 @@ impl ControlRequest {
             false
         }
     }
+}
+
+/// Rebuild a request the agent cursor held back, keeping the origin and operation the host
+/// admitted. Reconstructing it as a free GUI request would let any entry bypass admission.
+///
+/// This is intentionally a free function rather than an associated constructor: the entry is not
+/// chosen here, it is carried from the request that was already classified.
+pub(crate) fn reissue(
+    entry: EntryCategory,
+    operation: Option<OperationId>,
+    method: impl Into<String>,
+    params: Value,
+) -> (ControlRequest, std::sync::mpsc::Receiver<ControlResponse>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let request =
+        ControlRequest { method: method.into(), params, reply: tx, started: Default::default(), chat_turn: None, guarded: None, entry, operation };
+    (request, rx)
+}
+
+/// The only refusal port used when the host has not installed billing authority yet. It never
+/// grants; it keeps the production path fail-closed instead of silently treating a controlled
+/// entry as free.
+struct NoAuthorityBilling;
+
+impl BillingPort for NoAuthorityBilling {
+    fn admit(
+        &mut self,
+        _operation: &OperationId,
+        _capability: Capability,
+        _entry: EntryCategory,
+    ) -> Result<solidcraft_engine::entitlement::Grant, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "no host billing authority is installed for this controlled entry"))
+    }
+
+    fn commit(
+        &mut self,
+        _operation: &OperationId,
+        _result: solidcraft_engine::entitlement::BillingResult,
+    ) -> Result<solidcraft_engine::entitlement::BillingResult, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "no host billing authority is installed for this controlled entry"))
+    }
+
+    fn release(&mut self, _operation: &OperationId, _reason: RefusalCode) -> Result<(), Refusal> {
+        Ok(())
+    }
+}
+
+/// Decide one request from its trusted entry, before any method or parameter dispatch.
+///
+/// A free human/web entry is allowed and never touches the budget or billing port. An
+/// unclassified entry is refused with `CapabilityDenied` even for a navigation method. A direct
+/// control or external-UI-automation protocol/navigation/render method is free; every Intcad
+/// logical operation, including a read-only MCP/Mastra tool, needs a verified safe-stop bound,
+/// a host-minted operation and a server-issued grant from the host's [`BillingPort`]; the local
+/// port never turns a balance check into authority.
+pub fn admit_control_request(req: &ControlRequest, budget: &BudgetTable, billing: &mut dyn BillingPort) -> Admission {
+    if free_entry(req.entry) {
+        return Admission::Allowed;
+    }
+    let Some(capability) = entry_capability(req.entry) else {
+        return Admission::Refused(Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"));
+    };
+    if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
+        return Admission::Allowed;
+    }
+    if !budget.is_verified(capability, req.entry) {
+        return Admission::Refused(Refusal::new(RefusalCode::UnsafeToStart, "this controlled entry has no verified safe-stop bound"));
+    }
+    let Some(operation) = req.operation.clone() else {
+        return Admission::Refused(Refusal::new(RefusalCode::CapabilityDenied, "the host did not mint an operation for this controlled entry"));
+    };
+    match billing.admit(&operation, capability, req.entry) {
+        Ok(grant) => Admission::NewlyAdmitted { operation, grant },
+        Err(refusal) => Admission::Refused(refusal),
+    }
+}
+
+/// Admit a request against the app's installed authority. No port is installed by default, so
+/// every controlled entry is refused before dispatch until the desktop composition root
+/// supplies one (Task 11). Free GUI, browser CAD and ordinary local commands are unaffected.
+fn admit_for_app(app: &mut SolveApp, req: &ControlRequest) -> Admission {
+    let budget = app.budget.clone();
+    match app.billing.as_mut() {
+        Some(billing) => admit_control_request(req, &budget, billing.as_mut()),
+        None => admit_control_request(req, &budget, &mut NoAuthorityBilling),
+    }
+}
+
+fn admission_refusal(reason: &Refusal) -> Outcome {
+    Outcome::Done(json!({
+        "ok": false,
+        "error": reason.message,
+        "errorDetails": {"code": format!("{:?}", reason.code), "retry": "never"},
+    }))
+}
+
+/// The origin-only fail-closed check: no method, parameter or local task gate may run before an
+/// unclassified request is refused.
+fn entry_refusal(req: &ControlRequest) -> Option<Refusal> {
+    if free_entry(req.entry) || entry_capability(req.entry).is_some() {
+        None
+    } else {
+        Some(Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"))
+    }
+}
+
+/// Whether the admission carries authority to run the operation now. `AlreadyExists` is status,
+/// never execution authority, so it must not dispatch a second time.
+fn may_dispatch(admission: &Admission) -> bool {
+    matches!(admission, Admission::Allowed | Admission::NewlyAdmitted { .. })
+}
+
+#[cfg(test)]
+static COMMIT_GATE_CHECKS: AtomicUsize = AtomicUsize::new(0);
+
+/// Placeholder for the engine commit gate Task 9 owns. It is called before every reply is
+/// written back, so removing the call point is visible to the tests even while it allows all.
+fn commit_gate_placeholder(_admission: &Admission, _out: &Outcome) -> bool {
+    #[cfg(test)]
+    COMMIT_GATE_CHECKS.fetch_add(1, Ordering::Relaxed);
+    true
 }
 
 pub(crate) fn chat_turn_cancelled(turn: Option<&std::sync::atomic::AtomicBool>) -> bool {
@@ -538,16 +795,37 @@ pub fn view_png(app: &SolveApp, w: u32, h: u32) -> Result<Vec<u8>, String> {
 }
 
 pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+    // The trusted entry is classified before any method, parameter or command dispatch. Free
+    // human and browser entries pass; an unclassified entry is refused without touching the
+    // design, and a controlled entry needs host authority before it can dispatch.
+    if let Some(refusal) = entry_refusal(req) {
+        return admission_refusal(&refusal);
+    }
     if chat_turn_cancelled(req.chat_turn.as_deref()) {
         return Outcome::Done(cancelled_request_response(&req.method, &req.params, req.guarded.is_some()));
     }
     // The Text-to-CAD task narrows the existing gate before a request can reach it. A denial is
-    // returned to the agent as an error and executes nothing.
+    // returned to the agent as an error and executes nothing. It runs before billing admission so
+    // a local refusal never holds a server grant.
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(reason) = crate::agent_chat::task_runtime::before_tool(app, &req.method, &req.params, req.chat_turn.as_ref()) {
         return Outcome::Done(json!({"ok": false, "error": format!("refused by the host task: {reason}")}));
     }
+    let admission = admit_for_app(app, req);
+    if let Admission::Refused(refusal) = &admission {
+        return admission_refusal(refusal);
+    }
+    if !may_dispatch(&admission) {
+        return admission_refusal(&Refusal::new(RefusalCode::OperationConflict, "this operation already exists and will not run again"));
+    }
     let out = crate::agent_chat::with_tool_request(app, req.chat_turn.as_ref(), |app| handle_request(app, ctx, req));
+    // Task 9 replaces this placeholder with the engine commit gate. Keeping one call point here
+    // means every transport writes back through the same check.
+    if !commit_gate_placeholder(&admission, &out) {
+        return Outcome::Done(
+            json!({"ok": false, "error": "refused before writing the result", "errorDetails": {"code": "STALE_CONTEXT", "retry": "never"}}),
+        );
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if let Outcome::Done(reply) = &out {
         crate::agent_chat::task_runtime::after_tool(app, &req.method, &req.params, reply, req.chat_turn.as_ref());
@@ -1604,6 +1882,191 @@ pub(crate) fn write_screenshot(image: &egui::ColorImage, path: &str) -> Result<(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// A local test double at the billing boundary: it never ships and only grants inside this
+    /// test module. It records exactly how often admission and commit happen.
+    #[derive(Default)]
+    struct CountingBilling {
+        admits: usize,
+        commits: usize,
+        releases: usize,
+    }
+
+    impl BillingPort for CountingBilling {
+        fn admit(
+            &mut self,
+            operation: &OperationId,
+            capability: Capability,
+            _entry: EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Grant, Refusal> {
+            self.admits = self.admits.saturating_add(1);
+            Ok(solidcraft_engine::entitlement::Grant::from_server(
+                solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
+                capability,
+                solidcraft_engine::entitlement::MonotonicInstant::from_millis(60_000),
+            ))
+        }
+
+        fn commit(
+            &mut self,
+            _operation: &OperationId,
+            result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::BillingResult, Refusal> {
+            self.commits = self.commits.saturating_add(1);
+            Ok(result)
+        }
+
+        fn release(&mut self, _operation: &OperationId, _reason: RefusalCode) -> Result<(), Refusal> {
+            self.releases = self.releases.saturating_add(1);
+            Ok(())
+        }
+    }
+
+    /// Test evidence only: these bounds stand in for measured safe-stop values.
+    fn verified_budget() -> BudgetTable {
+        let mut budget = BudgetTable::unverified_default();
+        for entry in EntryCategory::CONTROLLED {
+            if let Some(capability) = entry_capability(entry) {
+                budget.set_verified(capability, entry, Duration::from_secs(30));
+            }
+        }
+        budget
+    }
+
+    /// A request the origin gate can inspect without a window.
+    #[derive(Default)]
+    pub(super) struct DispatchSpy {
+        pub(super) calls: usize,
+    }
+
+    /// Run the same entry gate the app uses, counting the dispatch a free entry would reach.
+    /// Unknown and controlled entries must never reach it.
+    fn handle_with_spy(req: &ControlRequest, spy: &mut DispatchSpy) -> Admission {
+        let admission = admit_control_request(req, &BudgetTable::unverified_default(), &mut NoAuthorityBilling);
+        if may_dispatch(&admission) {
+            spy.calls = spy.calls.saturating_add(1);
+        }
+        admission
+    }
+
+    #[test]
+    fn same_engine_execute_gui_is_free_control_is_billed_exactly_once() {
+        let params = json!({"command":"solid.box","params":{}});
+        let (gui, _gui_rx) = ControlRequest::trusted_gui("engine.execute", params.clone());
+        let (ext, _ext_rx) = ControlRequest::trusted_control("engine.execute", params);
+        let mut billing = CountingBilling::default();
+        let gui_out = admit_control_request(&gui, &verified_budget(), &mut billing);
+        assert!(matches!(gui_out, Admission::Allowed));
+        assert_eq!(billing.admits, 0);
+        let ext_out = admit_control_request(&ext, &verified_budget(), &mut billing);
+        assert!(matches!(ext_out, Admission::NewlyAdmitted { .. }));
+        assert_eq!(billing.admits, 1);
+        assert_eq!(billing.commits, 0, "commit happens only after execution");
+    }
+
+    #[test]
+    fn gui_review_panel_is_controlled_and_billed_once() {
+        let mut billing = CountingBilling::default();
+        let (req, _rx) = ControlRequest::trusted_review_panel("engine.execute", json!({"command":"dfm.run","params":{}}));
+        assert!(matches!(admit_control_request(&req, &verified_budget(), &mut billing), Admission::NewlyAdmitted { .. }));
+        assert_eq!(billing.admits, 1);
+    }
+
+    #[test]
+    fn web_gui_same_method_is_free() {
+        let mut billing = CountingBilling::default();
+        let (req, _rx) = ControlRequest::trusted_web("engine.execute", json!({"command":"solid.box","params":{}}));
+        assert!(matches!(admit_control_request(&req, &verified_budget(), &mut billing), Admission::Allowed));
+        assert_eq!(billing.admits, 0);
+    }
+
+    #[test]
+    fn origin_is_checked_before_method() {
+        let req = ControlRequest::unclassified_for_test("ui.view", json!({}));
+        let mut dispatch = DispatchSpy::default();
+        let out = handle_with_spy(&req, &mut dispatch);
+        assert_eq!(out.refusal_code(), Some(RefusalCode::CapabilityDenied));
+        assert_eq!(dispatch.calls, 0);
+    }
+
+    #[test]
+    fn protocol_and_navigation_are_free() {
+        let mut billing = CountingBilling::default();
+        for (method, params) in [("control.pending", json!({})), ("ui.view", json!({"view":"iso"}))] {
+            let (req, _rx) = ControlRequest::trusted_control(method, params);
+            assert!(matches!(admit_control_request(&req, &verified_budget(), &mut billing), Admission::Allowed));
+        }
+        assert_eq!(billing.admits, 0);
+    }
+
+    #[test]
+    fn ui_automation_real_operation_is_billed() {
+        let mut billing = CountingBilling::default();
+        let (req, _rx) = ControlRequest::trusted_external_ui("engine.execute", json!({"command":"solid.box","params":{}}));
+        assert!(matches!(admit_control_request(&req, &verified_budget(), &mut billing), Admission::NewlyAdmitted { .. }));
+        assert_eq!(billing.admits, 1);
+    }
+
+    #[test]
+    fn unclassified_entry_fails_closed() {
+        let req = ControlRequest::unclassified_for_test("engine.execute", json!({"command":"solid.box","params":{}}));
+        let mut dispatch = DispatchSpy::default();
+        let out = handle_with_spy(&req, &mut dispatch);
+        assert_eq!(out.refusal_code(), Some(RefusalCode::CapabilityDenied));
+        assert_eq!(dispatch.calls, 0);
+    }
+
+    #[test]
+    fn free_gui_still_reaches_dispatch_without_billing() {
+        let (req, _rx) = ControlRequest::trusted_gui("engine.execute", json!({"command":"solid.box","params":{}}));
+        let mut dispatch = DispatchSpy::default();
+        let out = handle_with_spy(&req, &mut dispatch);
+        assert!(matches!(out, Admission::Allowed));
+        assert_eq!(dispatch.calls, 1);
+    }
+
+    #[test]
+    fn mastra_every_logical_tool_call_is_billed_even_a_read_only_one() {
+        let mut billing = CountingBilling::default();
+        let (req, _rx) = ControlRequest::trusted_mastra("ui.view", json!({"view":"iso"}));
+        assert!(matches!(admit_control_request(&req, &verified_budget(), &mut billing), Admission::NewlyAdmitted { .. }));
+        assert_eq!(billing.admits, 1);
+    }
+
+    #[test]
+    fn unverified_bound_refuses_control_before_billing() {
+        let (req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let mut billing = CountingBilling::default();
+        let out = admit_control_request(&req, &BudgetTable::unverified_default(), &mut billing);
+        assert_eq!(out.refusal_code(), Some(RefusalCode::UnsafeToStart));
+        assert_eq!(billing.admits, 0, "an unmeasured path never reaches the billing port");
+    }
+
+    #[test]
+    fn controlled_entries_use_the_rev3_capability_pairs() {
+        assert_eq!(entry_capability(EntryCategory::Mastra), Some(Capability::Harness));
+        assert_eq!(entry_capability(EntryCategory::ExternalAcpMcp), Some(Capability::Mcp));
+        assert_eq!(entry_capability(EntryCategory::HeadlessMcp), Some(Capability::Mcp));
+        assert_eq!(entry_capability(EntryCategory::GuiBridgeMcp), Some(Capability::Mcp));
+        assert_eq!(entry_capability(EntryCategory::DirectControl), Some(Capability::Control));
+        assert_eq!(entry_capability(EntryCategory::CliDfm), Some(Capability::Dfm));
+        assert_eq!(entry_capability(EntryCategory::ReviewPanel), Some(Capability::Review));
+        assert_eq!(entry_capability(EntryCategory::ExternalUiAutomation), Some(Capability::Control));
+        assert_eq!(entry_capability(EntryCategory::Unknown), None);
+    }
+
+    #[test]
+    fn the_commit_gate_is_checked_before_a_reply_is_written() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let before = COMMIT_GATE_CHECKS.load(Ordering::Relaxed);
+        let (req, _rx) = ControlRequest::trusted_gui("ui.view", json!({"view":"iso"}));
+        let out = handle(&mut app, &egui::Context::default(), &req);
+        let Outcome::Done(reply) = out else { panic!("a view is answered synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert!(COMMIT_GATE_CHECKS.load(Ordering::Relaxed) > before, "the result went through the commit gate");
+    }
+
     fn guard_stamp(app: &mut SolveApp) -> Value {
         let stamp = app.session.document_stamp();
         json!({"documentId": stamp.document_id, "revision": stamp.revision.to_string()})
@@ -1658,7 +2121,7 @@ mod tests {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         app.control_rx = Some(rx);
-        let (req, reply) = ControlRequest::new(method, params);
+        let (req, reply) = ControlRequest::trusted_gui(method, params);
         tx.send(req).unwrap();
         app.drain_control(&egui::Context::default());
         reply.try_recv().expect("synchronous request must answer without a worker")
@@ -1746,7 +2209,7 @@ mod tests {
             if outer {
                 params["expectedDocument"] = Value::Null;
             }
-            let (mut req, rx) = ControlRequest::new("engine.execute", params);
+            let (mut req, rx) = ControlRequest::trusted_gui("engine.execute", params);
             req.chat_turn = Some(std::sync::Arc::new(AtomicBool::new(false)));
             let reply = if queued {
                 let (tx, queue) = std::sync::mpsc::channel();
@@ -1774,7 +2237,7 @@ mod tests {
     fn assistant_writes_to_project_settings_and_overrides_are_refused() {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         let assistant = |app: &mut SolveApp, method: &str, params: Value| {
-            let (mut req, _rx) = ControlRequest::new(method, params);
+            let (mut req, _rx) = ControlRequest::trusted_gui(method, params);
             req.chat_turn = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)));
             let Outcome::Done(reply) = handle(app, &egui::Context::default(), &req) else { panic!("synchronous reply") };
             reply
@@ -1794,7 +2257,7 @@ mod tests {
         }
         // The same call from the app (no assistant turn) is not refused by this guard: it reaches
         // the command and reports that the design is not in a project.
-        let (req, _rx) = ControlRequest::new("engine.execute", json!({"command":"project.ci_set","params":{"enabled":false}}));
+        let (req, _rx) = ControlRequest::trusted_gui("engine.execute", json!({"command":"project.ci_set","params":{"enabled":false}}));
         let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &req) else { panic!("synchronous reply") };
         assert_ne!(reply["errorDetails"]["code"], "FORBIDDEN", "{reply}");
     }
@@ -1968,7 +2431,7 @@ mod tests {
         app = app.with_control(rx);
         app.services.pick_open = Some(Box::new(|_| Box::pin(std::future::pending())));
         app.pick_open(|_, _| {});
-        let (req, reply) = ControlRequest::new("engine.execute", guard_change(&expected, "30 mm"));
+        let (req, reply) = ControlRequest::trusted_gui("engine.execute", guard_change(&expected, "30 mm"));
         tx.send(req).unwrap();
         app.drain_control(&egui::Context::default());
         assert_eq!(app.control_held.len(), 1);
@@ -1981,7 +2444,7 @@ mod tests {
         assert_eq!(reply.try_recv().unwrap()["ok"], true);
 
         let expected = guard_stamp(&mut app);
-        let (req, reply) = ControlRequest::new("engine.execute", guard_change(&expected, "40 mm"));
+        let (req, reply) = ControlRequest::trusted_gui("engine.execute", guard_change(&expected, "40 mm"));
         app.pick_open(|_, _| {});
         tx.send(req).unwrap();
         app.drain_control(&egui::Context::default());
@@ -2055,7 +2518,7 @@ mod tests {
             assert_eq!(response["errorDetails"]["code"], "UNSUPPORTED_CAPABILITY", "{method} {params}: {response}");
             assert!(std::sync::Arc::ptr_eq(&doc, &app.session.doc));
             assert_eq!((app.session.undo.len(), app.session.redo.len()), history);
-            let (req, reply) = ControlRequest::new(method, params);
+            let (req, reply) = ControlRequest::trusted_gui(method, params);
             let _ = crate::file_load::control(&mut app, req);
             assert_eq!(reply.try_recv().unwrap()["errorDetails"]["code"], "UNSUPPORTED_CAPABILITY");
             assert!(!app.file_load.busy());
@@ -2158,7 +2621,7 @@ mod tests {
         app
     }
     fn panel_control(app: &mut crate::SolveApp, method: &str, params: serde_json::Value) -> serde_json::Value {
-        let (request, _) = super::ControlRequest::new(method, params);
+        let (request, _) = super::ControlRequest::trusted_gui(method, params);
         match super::handle(app, &egui::Context::default(), &request) {
             super::Outcome::Done(reply) => reply,
             _ => panic!("unexpected screenshot"),
@@ -2369,7 +2832,6 @@ mod tests {
     use serde_json::json;
     use solidcraft_engine::{Sel, Session};
 
-    use super::*;
     use crate::Services;
 
     #[test]
@@ -2424,7 +2886,7 @@ mod tests {
     fn scroll_sends_a_native_pinch_with_ctrl() {
         let mut app = SolveApp::new(Session::default(), Services::default());
         let ctx = crate::fonts::test_context();
-        let (req, _) = ControlRequest::new("ui.scroll", json!({"x":200,"y":300,"delta":40,"ctrl":true}));
+        let (req, _) = ControlRequest::trusted_gui("ui.scroll", json!({"x":200,"y":300,"delta":40,"ctrl":true}));
         assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
         // The pointer event is delivered a frame before the wheel (one pointer event per frame).
         let mut events = Vec::new();
@@ -2456,7 +2918,7 @@ mod tests {
         assert_eq!(changes.last().copied(), Some(egui::Modifiers::NONE), "Ctrl is released after it: {changes:?}");
         app.synthetic.clear();
 
-        let (req, _) = ControlRequest::new("ui.scroll", json!({"x":200,"y":300,"delta":40}));
+        let (req, _) = ControlRequest::trusted_gui("ui.scroll", json!({"x":200,"y":300,"delta":40}));
         assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
         let mut events = Vec::new();
         for _ in 0..2 {
@@ -2484,7 +2946,7 @@ mod tests {
         {
             let mut params = json!({"x":200,"y":300,"delta":40,"ctrl":true});
             params.as_object_mut().unwrap().extend(invalid.as_object().unwrap().clone());
-            let (req, _) = ControlRequest::new("ui.scroll", params.clone());
+            let (req, _) = ControlRequest::trusted_gui("ui.scroll", params.clone());
             let Outcome::Done(reply) = handle(&mut app, &ctx, &req) else { panic!("not a scroll reply") };
             assert_eq!(reply["ok"], false, "{params}: {reply}");
             assert!(app.synthetic.is_empty(), "a rejected scroll must not queue input: {params}");
@@ -2511,10 +2973,10 @@ mod tests {
     fn touchpad_text_prefix_does_not_collapse_queued_pointer_frames() {
         let mut app = SolveApp::new(Session::default(), Services::default());
         let ctx = crate::fonts::test_context();
-        let (req, _) = ControlRequest::new("ui.text", json!({"text":"prefix"}));
+        let (req, _) = ControlRequest::trusted_gui("ui.text", json!({"text":"prefix"}));
         assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
         for params in [json!({"x":10,"y":10,"shift":true}), json!({"x":20,"y":20,"alt":true}), json!({"x":30,"y":30})] {
-            let (req, _) = ControlRequest::new("ui.move", params);
+            let (req, _) = ControlRequest::trusted_gui("ui.move", params);
             assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
         }
         for (p, shift, alt) in [(10.0, true, false), (20.0, false, true), (30.0, false, false)] {
@@ -2536,7 +2998,7 @@ mod tests {
         let mut app = SolveApp::new(Session::default(), Services::default());
         let ctx = crate::fonts::test_context();
         for params in [json!({"x":10,"y":10,"shift":true}), json!({"x":20,"y":20,"alt":true}), json!({"x":30,"y":30})] {
-            let (req, _) = ControlRequest::new("ui.move", params);
+            let (req, _) = ControlRequest::trusted_gui("ui.move", params);
             assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
         }
         for (p, shift, alt) in [(10.0, true, false), (20.0, false, true), (30.0, false, false)] {
@@ -2650,7 +3112,7 @@ mod tests {
     }
 
     fn render(app: &mut SolveApp, path: &std::path::Path) -> Vec<u8> {
-        let (req, _rx) = ControlRequest::new("ui.render", json!({"path": path.to_string_lossy(), "width": 200, "height": 140}));
+        let (req, _rx) = ControlRequest::trusted_gui("ui.render", json!({"path": path.to_string_lossy(), "width": 200, "height": 140}));
         match handle(app, &crate::fonts::test_context(), &req) {
             Outcome::Done(v) => assert_eq!(v["ok"], true, "{v}"),
             Outcome::Screenshot { .. } => panic!("ui.render took a screenshot"),
@@ -2751,7 +3213,7 @@ mod tests {
         for (k, v) in extra.as_object().into_iter().flatten() {
             params[k.as_str()] = v.clone();
         }
-        let (req, _rx) = ControlRequest::new("ui.render", params);
+        let (req, _rx) = ControlRequest::trusted_gui("ui.render", params);
         let renderer = match handle(app, &crate::fonts::test_context(), &req) {
             Outcome::Done(v) => {
                 assert_eq!(v["ok"], true, "{v}");
@@ -3458,7 +3920,7 @@ mod tests {
             if scoped {
                 params["allow_paths"] = json!([root.to_string_lossy()]);
             }
-            let (req, _rx) = ControlRequest::new(method, params);
+            let (req, _rx) = ControlRequest::trusted_gui(method, params);
             match handle(&mut app, &crate::fonts::test_context(), &req) {
                 Outcome::Done(v) => v,
                 Outcome::Screenshot { path } => json!({"ok": true, "screenshot": path}),
@@ -3550,7 +4012,7 @@ mod tests {
         let mut call = |path: String, designs: Value| {
             let params =
                 json!({"command": "file.export", "params": {"path": path}, "allow_paths": [root.to_string_lossy()], "design_folders": designs});
-            let (req, _rx) = ControlRequest::new("engine.execute", params);
+            let (req, _rx) = ControlRequest::trusted_gui("engine.execute", params);
             match handle(&mut app, &crate::fonts::test_context(), &req) {
                 Outcome::Done(v) => v,
                 Outcome::Screenshot { path } => json!({"ok": true, "screenshot": path}),
@@ -3591,7 +4053,7 @@ mod tests {
         let before = h.app.cam;
         // Reading during an animated view change leaves it running (no frames run between).
         fn raw(h: &mut crate::scenario::Harness, method: &str, params: Value) -> Value {
-            let (req, _rx) = ControlRequest::new(method, params);
+            let (req, _rx) = ControlRequest::trusted_gui(method, params);
             match handle(&mut h.app, &h.ctx, &req) {
                 Outcome::Done(v) => v,
                 Outcome::Screenshot { .. } => Value::Null,
@@ -3795,7 +4257,7 @@ mod tests {
         crate::scenario::publish_rect("agent_chat:panel", page.expand(9.0));
         crate::scenario::publish_rect("toolbar", egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 34.0)));
         let ctx = egui::Context::default();
-        let (request, _) = super::ControlRequest::new("ui.rects", json!({"prefix": "agent_chat:"}));
+        let (request, _) = super::ControlRequest::trusted_gui("ui.rects", json!({"prefix": "agent_chat:"}));
         let reply = match super::handle(&mut app, &ctx, &request) {
             super::Outcome::Done(reply) => reply,
             _ => panic!("unexpected screenshot"),

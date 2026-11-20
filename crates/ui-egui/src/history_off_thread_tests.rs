@@ -85,7 +85,7 @@ fn guarded_request(
 ) -> (crate::ControlRequest, std::sync::mpsc::Receiver<serde_json::Value>) {
     let stamp = h.app.session.document_stamp();
     params["expectedDocument"] = json!({"documentId":stamp.document_id,"revision":stamp.revision.to_string()});
-    let (mut req, rx) = crate::ControlRequest::new(method, params);
+    let (mut req, rx) = crate::ControlRequest::trusted_gui(method, params);
     crate::execution_guard::admit(&mut h.app, &mut req).unwrap_or_else(|_| panic!("matching admission"));
     (req, rx)
 }
@@ -902,7 +902,7 @@ fn switching_from_a_sketch_to_a_feature_defers_press_pull_with_its_pick_contract
 
 /// A control request for the app, and where its reply lands.
 fn ask(tx: &std::sync::mpsc::Sender<crate::ControlRequest>, method: &str, params: serde_json::Value) -> std::sync::mpsc::Receiver<serde_json::Value> {
-    let (req, reply) = crate::ControlRequest::new(method, params);
+    let (req, reply) = crate::ControlRequest::trusted_gui(method, params);
     tx.send(req).unwrap();
     reply
 }

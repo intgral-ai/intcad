@@ -8362,7 +8362,7 @@ fn app_in_a_turn() -> (SolveApp, Sender<ControlRequest>) {
 }
 
 fn ask(tx: &Sender<ControlRequest>, method: &str, params: Value) -> Receiver<Value> {
-    let (req, rx) = ControlRequest::new(method, params);
+    let (req, rx) = ControlRequest::trusted_gui(method, params);
     tx.send(req).unwrap();
     rx
 }
@@ -8795,7 +8795,7 @@ fn ended(script: &Script, reason: &str) {
 fn guarded_stop_request(app: &mut SolveApp, method: &str, mut params: Value) -> (ControlRequest, Receiver<Value>) {
     let stamp = app.session.document_stamp();
     params["expectedDocument"] = json!({"documentId":stamp.document_id,"revision":stamp.revision.to_string()});
-    let (mut req, reply) = ControlRequest::new(method, params);
+    let (mut req, reply) = ControlRequest::trusted_gui(method, params);
     req.chat_turn = Some(app.agent_chat.turn.as_ref().unwrap().active.clone());
     crate::execution_guard::admit(app, &mut req).unwrap_or_else(|_| panic!("matching admission"));
     (req, reply)
@@ -9057,7 +9057,7 @@ fn assert_legacy_command_chip_reply(cursor: bool) {
     let active = app.agent_chat.turn.as_ref().unwrap().active.clone();
     app.apply_off_thread = Some(std::time::Duration::ZERO);
     app.preferences.agent_off_thread = true;
-    let (mut req, reply) = ControlRequest::new("engine.execute", boxed(0.0));
+    let (mut req, reply) = ControlRequest::trusted_gui("engine.execute", boxed(0.0));
     req.chat_turn = Some(active.clone());
     assert!(req.guarded.is_none() && req.params.get("expectedDocument").is_none());
     let gate = crate::history_off_thread_tests::guarded_workers::gate();
@@ -9098,7 +9098,7 @@ fn assert_legacy_command_chip_reply(cursor: bool) {
     assert!(Arc::ptr_eq(&doc, &app.session.doc));
     assert_eq!(guarded_stop_history(&app), history);
     assert_eq!(app.run("edit.checkpoint", json!({})).unwrap()["checkpoint"], checkpoint + 1);
-    let (mut next, next_reply) = ControlRequest::new("engine.execute", boxed(20.0));
+    let (mut next, next_reply) = ControlRequest::trusted_gui("engine.execute", boxed(20.0));
     next.chat_turn = Some(active);
     app.run_control(&ctx, next);
     assert_eq!(next_reply.try_recv().unwrap()["ok"], true);
@@ -9558,7 +9558,7 @@ fn a_script_resets_chat_only_after_a_replacement_succeeds() {
         for params in [steps.clone(), json!({"commands": steps})] {
             let (mut app, _script, ctx) = app_with_script();
             send(&mut app, &ctx, "first request".into());
-            let (req, reply) = ControlRequest::new("engine.script", params);
+            let (req, reply) = ControlRequest::trusted_gui("engine.script", params);
             app.run_control(&ctx, req);
             assert!(reply.try_recv().is_ok());
             assert_eq!(app.agent_chat.backend.is_none(), replaced);
@@ -13677,7 +13677,7 @@ mod mastra_backend_tests {
 
         send(&mut app, &ctx, "add a width".into());
         let (request, reply) =
-            ControlRequest::new("engine.execute", json!({"command": "parameters.add", "params": {"name": "w", "expression": "10 mm"}}));
+            ControlRequest::trusted_gui("engine.execute", json!({"command": "parameters.add", "params": {"name": "w", "expression": "10 mm"}}));
         tx.send(request).unwrap();
         super::frame(&mut app);
         assert_eq!(reply.recv_timeout(Duration::from_secs(30)).unwrap()["ok"], true, "the running turn may change the design");
@@ -13701,7 +13701,7 @@ mod mastra_backend_tests {
         assert!(!active.load(std::sync::atomic::Ordering::Relaxed));
         let doc = Arc::clone(&app.session.doc);
         let revision = app.session.document_stamp();
-        let (mut deferred, _reply) = ControlRequest::new(
+        let (mut deferred, _reply) = ControlRequest::trusted_gui(
             "engine.execute",
             json!({
                 "command": "parameters.change",
@@ -13716,7 +13716,7 @@ mod mastra_backend_tests {
 
         // Unguarded requests enforce the same trusted flag; they are not exempt because they
         // carry no expected document.
-        let mut unguarded = ControlRequest::new("document.revision", json!({})).0;
+        let mut unguarded = ControlRequest::trusted_gui("document.revision", json!({})).0;
         unguarded.chat_turn = Some(stopped.clone());
         assert!(crate::execution_guard::admit(&mut app, &mut unguarded).is_err(), "an unguarded stopped-turn request is refused");
         assert!(Arc::ptr_eq(&app.session.doc, &doc));
@@ -13726,7 +13726,8 @@ mod mastra_backend_tests {
         send(&mut app, &ctx, "fresh turn".into());
         let current = app.agent_chat.turn.as_ref().expect("the new turn").active.clone();
         assert!(current.load(std::sync::atomic::Ordering::Relaxed), "the new turn may write");
-        let mut late = ControlRequest::new("engine.execute", json!({"command":"parameters.change","params":{"name":"w","expression":"30 mm"}})).0;
+        let mut late =
+            ControlRequest::trusted_gui("engine.execute", json!({"command":"parameters.change","params":{"name":"w","expression":"30 mm"}})).0;
         late.chat_turn = Some(stopped.clone());
         assert!(crate::execution_guard::admit(&mut app, &mut late).is_err(), "the old turn's flag cannot borrow the new turn's permission");
         assert!(Arc::ptr_eq(&app.session.doc, &doc));
@@ -13849,12 +13850,60 @@ mod mastra_backend_tests {
     }
 
     #[cfg(unix)]
+    #[derive(Default)]
+    struct BridgeTestBilling;
+
+    #[cfg(unix)]
+    impl solidcraft_engine::entitlement::BillingPort for BridgeTestBilling {
+        fn admit(
+            &mut self,
+            operation: &solidcraft_engine::entitlement::OperationId,
+            capability: solidcraft_engine::entitlement::Capability,
+            _entry: solidcraft_engine::entitlement::EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Grant, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::Grant::from_server(
+                solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
+                capability,
+                solidcraft_engine::entitlement::MonotonicInstant::from_millis(60_000),
+            ))
+        }
+
+        fn commit(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::BillingResult, solidcraft_engine::entitlement::Refusal> {
+            Ok(result)
+        }
+
+        fn release(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _reason: solidcraft_engine::entitlement::RefusalCode,
+        ) -> Result<(), solidcraft_engine::entitlement::Refusal> {
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    fn bridge_test_budget() -> solidcraft_engine::entitlement::BudgetTable {
+        let mut budget = solidcraft_engine::entitlement::BudgetTable::unverified_default();
+        budget.set_verified(
+            solidcraft_engine::entitlement::Capability::Mcp,
+            solidcraft_engine::entitlement::EntryCategory::GuiBridgeMcp,
+            Duration::from_secs(30),
+        );
+        budget
+    }
+
+    #[cfg(unix)]
     fn bridge_app(
         mut app: SolveApp,
         script: String,
         limits: Limits,
     ) -> (SolveApp, egui::Context, Arc<Mutex<test_support::Log>>, Arc<std::sync::mpsc::Sender<ControlRequest>>) {
         use super::mastra_worker_support::*;
+        app.install_billing(Box::<BridgeTestBilling>::default(), bridge_test_budget());
         let program = super::mastra_peer_program().unwrap();
         let script_path = program.directory.join("bridge-peer");
         std::fs::write(&script_path, script).unwrap();
@@ -15381,7 +15430,7 @@ fn an_anatomy_turn_refuses_a_write_before_the_gate() {
     let (mut app, _script, ctx) = app_with_script();
     app.agent_chat.skill = skill::Skill::Anatomy;
     send(&mut app, &ctx, "explain the cover".into());
-    let (request, reply) = ControlRequest::new("engine.execute", json!({"command": "solid.box", "params": {"length": 1}}));
+    let (request, reply) = ControlRequest::trusted_gui("engine.execute", json!({"command": "solid.box", "params": {"length": 1}}));
     let (tx, rx) = channel();
     tx.send(request).unwrap();
     app.agent_chat.tools_rx = Some(rx);

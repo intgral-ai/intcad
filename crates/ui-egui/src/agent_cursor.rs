@@ -137,6 +137,10 @@ pub struct Job {
     stops: VecDeque<(Pos2, &'static str)>,
     chat_turn: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     guarded: Option<crate::execution_guard::GuardedAdmission>,
+    /// The trusted origin and host-minted operation admitted for this request, kept so running
+    /// it after the glide cannot turn a controlled entry into a free GUI one.
+    entry: solidcraft_engine::entitlement::EntryCategory,
+    operation: Option<solidcraft_engine::entitlement::OperationId>,
     /// Seconds per glide and per click for this request (within [`TIME_BUDGET`] in all).
     glide: f64,
     click: f64,
@@ -378,6 +382,8 @@ pub fn intercept(app: &mut SolveApp, req: &crate::control::ControlRequest) -> bo
         reply: reply.clone(),
         chat_turn: req.chat_turn.clone(),
         guarded: req.guarded.clone(),
+        entry: req.entry(),
+        operation: req.operation().cloned(),
         stops,
         glide,
         click,
@@ -456,7 +462,7 @@ fn finish(app: &mut SolveApp, ctx: &egui::Context) {
     params["animate"] = json!(false);
     let cmd = params.get("command").or(params.get("id")).and_then(Value::as_str).unwrap_or_default().to_string();
     let id = solidcraft_engine::find_command(&cmd).map_or(cmd.clone(), |c| c.id.to_string());
-    let (mut req, _rx) = crate::control::ControlRequest::new(job.method, params);
+    let (mut req, _rx) = crate::control::reissue(job.entry, job.operation, job.method, params);
     req.chat_turn = job.chat_turn;
     req.guarded = job.guarded;
     // Check before installing kept results or changing followed camera bookkeeping. Returning
@@ -636,8 +642,10 @@ mod tests {
         h.call("ui.agent_cursor", json!({"show": true, "speed": 1}));
         assert!(crate::scenario::handle_at("toolbar:solid.box").is_none());
         assert!(button("solid.box").is_some(), "the closed group is the pointer's target");
-        let (req, rx) =
-            crate::control::ControlRequest::new("engine.execute", json!({"command":"solid.box", "params":{"length":10,"width":10,"height":10}}));
+        let (req, rx) = crate::control::ControlRequest::trusted_gui(
+            "engine.execute",
+            json!({"command":"solid.box", "params":{"length":10,"width":10,"height":10}}),
+        );
         assert!(intercept(&mut h.app, &req));
         h.frames(3);
         assert!(h.widget("Box").is_some(), "the command must be identified before it executes");
@@ -659,7 +667,7 @@ mod tests {
             {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
             {"command":"solid.sphere","params":{"center":[30,0,0],"radius":3}}
         ]});
-        let (req, rx) = crate::control::ControlRequest::new("engine.batch", params);
+        let (req, rx) = crate::control::ControlRequest::trusted_gui("engine.batch", params);
         assert!(intercept(&mut h.app, &req));
         let mut seen = Vec::new();
         for _ in 0..120 {

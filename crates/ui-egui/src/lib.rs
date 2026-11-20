@@ -801,6 +801,10 @@ pub struct SolveApp {
     pub home: home::HomeState,
     /// Intcad product account and available-credit UI; no port is installed by default.
     pub account: account::State,
+    /// Host-injected billing authority for controlled entries; `None` fails closed.
+    pub(crate) billing: Option<Box<dyn solidcraft_engine::entitlement::BillingPort + Send>>,
+    /// Safe-stop bounds per controlled capability and entry; unverified until measured.
+    pub(crate) budget: solidcraft_engine::entitlement::BudgetTable,
     /// The New Project window, when open.
     pub new_project: Option<new_project::NewProject>,
     /// The Project Settings window, when open.
@@ -990,6 +994,8 @@ impl SolveApp {
             embed_editor: false,
             home: home::HomeState::default(),
             account: account::State::default(),
+            billing: None,
+            budget: solidcraft_engine::entitlement::BudgetTable::unverified_default(),
             new_project: None,
             project_settings: None,
             dfm_chat: dfm_chat::State::default(),
@@ -1007,6 +1013,29 @@ impl SolveApp {
         };
         easyprint_ui::install(&mut app);
         app
+    }
+
+    /// Install the host's billing authority and measured safe-stop bounds. Only the desktop
+    /// composition root does this; the browser never installs one and stays anonymous.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn install_billing(
+        &mut self,
+        billing: Box<dyn solidcraft_engine::entitlement::BillingPort + Send>,
+        budget: solidcraft_engine::entitlement::BudgetTable,
+    ) {
+        self.billing = Some(billing);
+        self.budget = budget;
+    }
+
+    /// The browser has no billing authority: keep the anonymous free paths and ignore an attempt
+    /// by a shared host entry point to install one.
+    #[cfg(target_arch = "wasm32")]
+    pub fn install_billing(
+        &mut self,
+        billing: Box<dyn solidcraft_engine::entitlement::BillingPort + Send>,
+        budget: solidcraft_engine::entitlement::BudgetTable,
+    ) {
+        drop((billing, budget));
     }
 
     /// Translate text using the active language preference.

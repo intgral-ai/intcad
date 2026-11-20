@@ -156,7 +156,7 @@ fn window_picks_divide_physical_pixels_at_hidpi() {
 
 /// One control request without the harness settling frames (which would reset the scale).
 fn raw_call(h: &mut Harness, method: &str, params: serde_json::Value) -> serde_json::Value {
-    let (req, _rx) = crate::control::ControlRequest::new(method, params);
+    let (req, _rx) = crate::control::ControlRequest::trusted_gui(method, params);
     match crate::control::handle(&mut h.app, &h.ctx, &req) {
         crate::control::Outcome::Done(v) => v,
         crate::control::Outcome::Screenshot { .. } => json!({"ok": true}),

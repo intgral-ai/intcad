@@ -667,7 +667,7 @@ mod tests {
         let store = dir.join("candidates");
         solidcraft_engine::cmd::set_candidate_store(Some(store.clone()));
         let stamp = h.app.session.document_stamp();
-        let (req, rx) = crate::control::ControlRequest::new(
+        let (req, rx) = crate::control::ControlRequest::trusted_gui(
             "engine.execute",
             json!({"command":"document.snapshot.capture","params":{},
                 "expectedDocument":{"documentId":stamp.document_id,"revision":stamp.revision.to_string()}}),

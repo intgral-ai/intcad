@@ -953,7 +953,7 @@ fn serve_with(
                     // Counted before the window answers, so it publishes every change from its
                     // answer on.
                     joining = (method == "control.subscribe").then(|| design.join());
-                    let (req, rrx) = ControlRequest::new(method.clone(), params);
+                    let (req, rrx) = ControlRequest::trusted_control(method.clone(), params);
                     let ticket = running.add(connection, &id, &req);
                     if tx.send(req).is_err() {
                         break;
@@ -1004,6 +1004,52 @@ fn serve_with(
 mod tests {
     use super::*;
 
+    /// A local test double at the billing boundary for the external control path. It grants only
+    /// inside this test module; no production path installs it.
+    #[derive(Default)]
+    struct ControlTestBilling;
+
+    impl solidcraft_engine::entitlement::BillingPort for ControlTestBilling {
+        fn admit(
+            &mut self,
+            operation: &solidcraft_engine::entitlement::OperationId,
+            capability: solidcraft_engine::entitlement::Capability,
+            _entry: solidcraft_engine::entitlement::EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Grant, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::Grant::from_server(
+                solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
+                capability,
+                solidcraft_engine::entitlement::MonotonicInstant::from_millis(60_000),
+            ))
+        }
+
+        fn commit(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::BillingResult, solidcraft_engine::entitlement::Refusal> {
+            Ok(result)
+        }
+
+        fn release(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _reason: solidcraft_engine::entitlement::RefusalCode,
+        ) -> Result<(), solidcraft_engine::entitlement::Refusal> {
+            Ok(())
+        }
+    }
+
+    fn control_test_budget() -> solidcraft_engine::entitlement::BudgetTable {
+        let mut budget = solidcraft_engine::entitlement::BudgetTable::unverified_default();
+        budget.set_verified(
+            solidcraft_engine::entitlement::Capability::Control,
+            solidcraft_engine::entitlement::EntryCategory::DirectControl,
+            Duration::from_secs(30),
+        );
+        budget
+    }
+
     // Uses the real server and UI control handler; the owner gate makes the stale result late.
     #[test]
     fn guarded_control_capability_is_additive_and_pending_preserves_metadata() {
@@ -1016,6 +1062,7 @@ mod tests {
         let (gate_tx, gate_rx) = channel();
         let owner = std::thread::spawn(move || {
             let mut app = SolveApp::new(solidcraft_engine::Session::default(), Services::default());
+            app.install_billing(Box::<ControlTestBilling>::default(), control_test_budget());
             let ctx = egui::Context::default();
             let stamp = app.session.document_stamp();
             base_tx.send(json!({"documentId":stamp.document_id,"revision":stamp.revision.to_string()})).unwrap();

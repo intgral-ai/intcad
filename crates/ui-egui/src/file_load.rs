@@ -1563,7 +1563,7 @@ mod tests {
         h.frames(4);
         assert!(h.app.file_load.busy());
         let at = crate::scenario::handle_at("file_loading:cancel").unwrap();
-        let (request, _reply) = crate::control::ControlRequest::new("ui.click", json!({"x":at.x,"y":at.y}));
+        let (request, _reply) = crate::control::ControlRequest::trusted_gui("ui.click", json!({"x":at.x,"y":at.y}));
         let _ = crate::control::handle(&mut h.app, &h.ctx, &request);
         h.frames(4);
         assert!(progress.is_cancelled());

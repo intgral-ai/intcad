@@ -54,7 +54,7 @@ fn measure_starts_with_selected_vertices_edges_and_faces() {
             h.app.run("select.set", json!({"items":items})).unwrap();
             let expected = h.app.session.measure_items(&h.app.session.selection);
             assert!(expected.get("error").is_none(), "{expected}");
-            let (req, _rx) = crate::control::ControlRequest::new("ui.start", json!({"command":"inspect.measure"}));
+            let (req, _rx) = crate::control::ControlRequest::trusted_gui("ui.start", json!({"command":"inspect.measure"}));
             crate::control::handle(&mut h.app, &h.ctx, &req);
             let d = h.app.dialog.as_ref().unwrap();
             assert_eq!(d.inputs[0].items.len(), count, "{kind}");
@@ -430,10 +430,10 @@ fn the_distance_row_has_a_copy_button_that_copies_the_shown_value() {
     let want = crate::prefs::show_mm(&h.app, 5.0, 1);
     assert!(crate::scenario::handle_at("measure:copy:distance").is_some(), "the Distance row publishes its copy button");
     let at = crate::scenario::handle_at("measure:copy:distance").unwrap_or_default();
-    let (hover, _) = crate::control::ControlRequest::new("ui.move", json!({"x": f64::from(at.x), "y": f64::from(at.y)}));
+    let (hover, _) = crate::control::ControlRequest::trusted_gui("ui.move", json!({"x": f64::from(at.x), "y": f64::from(at.y)}));
     crate::control::handle(&mut h.app, &h.ctx, &hover);
     h.frames(2);
-    let (request, _reply) = crate::control::ControlRequest::new("ui.click", json!({"x": f64::from(at.x), "y": f64::from(at.y)}));
+    let (request, _reply) = crate::control::ControlRequest::trusted_gui("ui.click", json!({"x": f64::from(at.x), "y": f64::from(at.y)}));
     crate::control::handle(&mut h.app, &h.ctx, &request);
     let mut copied = Vec::new();
     for _ in 0..8 {
