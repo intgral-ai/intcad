@@ -474,6 +474,13 @@ mod tests {
                 documents::answer_prompt(&mut app, documents::Answer::DontSave);
                 documents::answer_prompt(&mut app, documents::Answer::DontSave);
                 assert!(app.quit_requested);
+                assert_eq!(app.host_close_state, documents::HostCloseState::Required, "staging asks the host to close");
+                // The host completes the close when the Assistant has no unresolved owner. Only
+                // then does the commit apply the Don't Save decisions, before the shutdown hook
+                // gets a chance to save the still-dirty designs again.
+                app.set_host_close_state(documents::HostCloseState::Ready);
+                documents::finish_quit(&mut app).unwrap();
+                assert!(documents::quit_committed(&app), "the quit committed before shutdown");
             }
             close(&mut app);
             assert_eq!(recovery::orphans(&dir).len(), if discard { 0 } else { 2 });
