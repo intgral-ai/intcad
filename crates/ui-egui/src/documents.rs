@@ -940,7 +940,7 @@ impl SolveApp {
             return true;
         }
         self.docs.slots.iter().flatten().any(|slot| {
-            slot.jobs.blocks_quit() || slot.pending_feature_edit.is_some() || slot.edit_in_place.is_some()
+            slot.jobs.blocks_quit() || slot.pending_feature_edit.is_some() || slot.edit_in_place.is_some() || slot.work.editing_state.is_some()
         })
     }
 }
@@ -2637,6 +2637,99 @@ mod barrier_tests {
         assert!(matches!(finish_quit(&mut app), Err(QuitIntentError::Changed)));
         assert!(app.session.is_dirty(), "the newer edit is not marked saved");
         assert!(!app.quit_requested && app.docs.quitting.is_none() && !quit_committed(&app));
+    }
+
+    /// Tab 0 holds two unsaved boxes with the first feature's editor open (its history rolled
+    /// back); tab 1 is blank and shown, so tab 0's editor waits in its slot with the
+    /// keep-work-on-switch preference.
+    fn inactive_kept_feature_editor() -> (crate::scenario::Harness, u64, Option<usize>) {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.preferences.keep_work_on_tab_switch = true;
+        h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        h.app.run("solid.box", json!({"length": 5, "width": 5, "height": 30})).unwrap();
+        let first = h.app.session.doc.features.first().map(|f| f.id).unwrap();
+        h.call("ui.editFeature", json!({"feature": first}));
+        h.frames(3);
+        assert!(h.app.editing_state.is_some(), "a previewing feature editor holds the history");
+        let marker = h.app.session.doc.marker;
+        new_design(&mut h.app);
+        h.frames(2);
+        assert!(h.app.editing_state.is_none(), "the editor is not the shown tab's");
+        assert!(
+            h.app.docs.slots.first().and_then(Option::as_ref).is_some_and(|slot| slot.work.editing_state.is_some()),
+            "the editor waits in its inactive tab"
+        );
+        (h, first, marker)
+    }
+
+    /// Approved W3/R1: a kept feature editor in an inactive tab is outstanding owner work that
+    /// can replace the design's history. A force-programmatic quit must refuse before staging any
+    /// prompt or discard, leaving the design and editor exactly as they were.
+    #[test]
+    fn kept_feature_edit_in_an_inactive_tab_blocks_programmatic_quit() {
+        let (mut h, first, marker) = inactive_kept_feature_editor();
+        let features = h.app.docs.slots[0].as_ref().unwrap().session.doc.features.len();
+        assert_eq!(
+            request_quit_programmatic(&mut h.app, true),
+            Err("quit refused: document-operation-pending"),
+            "force grants no consent while an inactive tab holds an editor"
+        );
+        assert!(!h.app.quit_requested, "no quit was staged");
+        assert!(h.app.docs.quitting.is_none(), "no prompt or quitting guard");
+        assert!(h.app.docs.closing.is_none(), "no tab was asked about");
+        assert!(h.app.docs.quit_intent.is_none(), "no consent token");
+        assert_eq!(h.app.host_close_state, HostCloseState::Ready, "the host close barrier is untouched");
+        // The design and its kept editor are preserved, not cancelled or marked saved.
+        switch(&mut h.app, 0);
+        h.frames(2);
+        assert_eq!(h.app.dialog.as_ref().and_then(|d| d.editing).map(|(id, _)| id), Some(first), "the editor is open again in its tab");
+        assert!(h.app.editing_state.is_some());
+        assert_eq!(
+            (h.app.session.doc.features.len(), h.app.session.doc.marker),
+            (features, marker),
+            "the rolled-back history is where the edit left it"
+        );
+        assert!(h.app.session.is_dirty(), "the refused quit discarded nothing");
+    }
+
+    /// Approved W3/R1: the final commit re-checks pending owner work even when the quit was
+    /// already consented to and staged. A clean tab keeping its feature editor in the background
+    /// must cancel the quit before any Discard mark_saved.
+    #[test]
+    fn finish_quit_refuses_pending_work_from_an_inactive_kept_editor() {
+        let (mut h, first, marker) = inactive_kept_feature_editor();
+        // Save tab 0 with its editor open, then show and dirty tab 1: the UI quit asks about tab
+        // 1 alone and stages with tab 0's kept editor still in its slot.
+        switch(&mut h.app, 0);
+        h.frames(2);
+        assert!(h.app.editing_state.is_some());
+        let revision = h.app.session.design_revision();
+        assert_eq!(h.call("document.saved", json!({"revision": revision}))["ok"], true);
+        assert!(!h.app.session.is_dirty(), "the edited design is saved");
+        switch(&mut h.app, 1);
+        h.frames(2);
+        h.app.run("solid.box", json!({"length": 4, "width": 4, "height": 4})).unwrap();
+        assert!(h.app.session.is_dirty());
+        assert!(h.app.docs.slots[0].as_ref().is_some_and(|slot| slot.work.editing_state.is_some()), "the editor waits in its inactive tab");
+        request_quit(&mut h.app);
+        assert_eq!(h.app.docs.closing, Some(1), "only the shown dirty tab is asked about");
+        answer_prompt(&mut h.app, Answer::DontSave);
+        assert!(h.app.quit_requested, "staged");
+        assert_eq!(h.app.docs.quit_intent.as_ref().map(|intent| intent.stage), Some(QuitStage::Staged));
+        assert!(
+            h.app.docs.slots[0].as_ref().is_some_and(|slot| slot.work.editing_state.is_some()),
+            "the editor was never shown, so it waits in its inactive tab"
+        );
+        h.app.set_host_close_state(HostCloseState::Ready);
+        assert!(matches!(finish_quit(&mut h.app), Err(QuitIntentError::PendingWork)), "the final check refuses the staged quit");
+        assert!(!h.app.quit_requested && h.app.docs.quit_intent.is_none() && !quit_committed(&h.app));
+        assert!(h.app.session.is_dirty(), "no Discard mark_saved ran before the pending-work refusal");
+        assert!(h.app.docs.slots[0].as_ref().is_some_and(|slot| !slot.session.is_dirty()), "the saved tab is still saved");
+        switch(&mut h.app, 0);
+        h.frames(2);
+        assert_eq!(h.app.dialog.as_ref().and_then(|d| d.editing).map(|(id, _)| id), Some(first));
+        assert_eq!(h.app.session.doc.marker, marker, "the editor's rollback survived the refusal");
     }
 
     #[test]
