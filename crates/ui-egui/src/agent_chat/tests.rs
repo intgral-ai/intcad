@@ -14559,35 +14559,51 @@ mod mastra_backend_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// A status snapshot captured before Stop can lose the book-lock race to the control worker
-    /// and arrive after the cancellation is persisted. Both wire status and wire cancel must
-    /// merge it monotonically instead of assigning the delayed state over the settled one.
+    /// A real status snapshot captured before Stop can lose the book-lock race to the control
+    /// worker and arrive after the cancellation is persisted. The worker is stopped first so the
+    /// run stays Queued; a barrier parks the real status call after it read the port. Both wire
+    /// status and wire cancel share the same monotone publication merge.
     #[test]
-    fn mastra_validation_delayed_status_does_not_downgrade_settled_cancellation() {
+    fn mastra_validation_delayed_status_publication_does_not_dowgrade_settled_cancellation() {
         let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let dir = scratch_validation("late-status-settled");
-        let (candidate, _live) = captured_candidate(&dir);
+        let dir = scratch_validation("late-status-publication");
+        let (candidate, live) = captured_candidate(&dir);
         let host = host_validation(&dir);
+        host.stop_worker_and_wait_for_test();
         let turn = turn_scope("s-late-status", "t-late-status", "w-late-status");
+        let scope = Scope::Turn(turn.clone());
         let profile = host.profile().unwrap();
-        let candidate_engine: solidcraft_engine::schema::snapshot::CandidateRef =
-            serde_json::from_value(serde_json::to_value(&candidate).unwrap()).unwrap();
-        let profile_engine: solidcraft_engine::validation::ProfileRef = serde_json::from_value(serde_json::to_value(&profile).unwrap()).unwrap();
-        let run_id = host.seed_queued_run_for_test(&turn, &candidate_engine, &profile_engine);
-        let (state, cancellation) = host.simulate_late_registration_for_test(&run_id).expect("the seeded run is in the book");
-        assert_eq!(state, "cancelled");
-        assert_eq!(cancellation.as_deref(), Some("persisted"));
-        host.merge_state_for_test(&run_id, solidcraft_engine::validation::ValidationState::Queued);
+        let key = solidcraft_engine::validation::generate_submission_key(solidcraft_engine::validation::now_ms());
+        let submitted = host
+            .submit(&scope, ValidationSubmitParams { candidate, profile, request_id: SubmissionKey::parse(&key).unwrap() })
+            .expect("validation.submit is routed");
+        let run_id = submitted.run_id.clone();
         assert_eq!(
-            host.state_for_test(&run_id),
-            Some(solidcraft_engine::validation::ValidationState::Cancelled),
-            "a delayed Queued snapshot must not reopen the settled run"
+            host.state_for_test(run_id.as_str()),
+            Some(solidcraft_engine::validation::ValidationState::Queued),
+            "the stopped worker leaves the submitted run queued"
         );
-        host.merge_state_for_test(&run_id, solidcraft_engine::validation::ValidationState::Running);
+
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        host.install_status_gate_for_test(Arc::clone(&gate));
+        let status_host = Arc::clone(&host);
+        let status_scope = scope.clone();
+        let status_run = run_id.clone();
+        let status = std::thread::spawn(move || {
+            status_host.status(&status_scope, ValidationStatusParams { run_id: status_run }).expect("validation.status is routed")
+        });
+        gate.wait(); // the status call read Queued and is parked before publication
+
+        host.cancel_turn(&turn, Some(&live));
+        host.wait_cancellations_for_test().unwrap();
+        gate.wait(); // release the delayed status snapshot
+        host.clear_status_gate_for_test();
+        let delayed = status.join().unwrap();
+        assert!(matches!(delayed.state, ValidationState::Queued), "the delayed reply is the old snapshot");
         assert_eq!(
-            host.state_for_test(&run_id),
+            host.state_for_test(run_id.as_str()),
             Some(solidcraft_engine::validation::ValidationState::Cancelled),
-            "a delayed Running snapshot must not reopen the settled run"
+            "the settled control-lane cancellation must not be overwritten by the delayed status"
         );
         drop(host);
         let _ = std::fs::remove_dir_all(dir);

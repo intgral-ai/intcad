@@ -124,6 +124,10 @@ pub(crate) struct HostValidation {
     book: Arc<Mutex<ValidationBook>>,
     cancellation_control: validation_control::Control,
     worker_stop: Arc<AtomicBool>,
+    #[cfg(test)]
+    worker_exit: Arc<Mutex<Option<Arc<std::sync::Barrier>>>>,
+    #[cfg(test)]
+    status_gate: Mutex<Option<Arc<std::sync::Barrier>>>,
 }
 
 #[derive(Default)]
@@ -246,6 +250,8 @@ impl HostValidation {
         let profile = validation_port::profile_ref(&native).map_err(|error| format!("{error}"))?;
         let book = Arc::new(Mutex::new(ValidationBook::default()));
         let cancellation_control = validation_control::Control::start(Arc::clone(&port), Arc::clone(&book))?;
+        #[cfg(test)]
+        let worker_exit = Arc::new(Mutex::new(None));
         let host = HostValidation {
             port: Arc::clone(&port),
             profile,
@@ -254,8 +260,14 @@ impl HostValidation {
             book,
             cancellation_control,
             worker_stop: Arc::new(AtomicBool::new(false)),
+            #[cfg(test)]
+            worker_exit: Arc::clone(&worker_exit),
+            #[cfg(test)]
+            status_gate: Mutex::new(None),
         };
         let stop = Arc::clone(&host.worker_stop);
+        #[cfg(test)]
+        let worker_exit_for_thread = Arc::clone(&worker_exit);
         std::thread::Builder::new()
             .name("mastra-validation-worker".into())
             .spawn(move || {
@@ -265,6 +277,10 @@ impl HostValidation {
                         // new work. The next queued job can still run.
                     }
                     std::thread::sleep(Duration::from_millis(25));
+                }
+                #[cfg(test)]
+                if let Some(barrier) = worker_exit_for_thread.lock().ok().and_then(|slot| slot.clone()) {
+                    barrier.wait();
                 }
             })
             .map_err(|error| format!("validation runner control could not start: {error}"))?;
@@ -350,6 +366,11 @@ impl HostValidation {
         let status = self.port.status(params.run_id.as_str()).map_err(validation_wire)?;
         if status.candidate != run.candidate || status.profile != run.profile {
             return Err(validation_wire(validation_port::ValidationError::report_mismatch("the status response names another candidate or profile")));
+        }
+        #[cfg(test)]
+        if let Some(gate) = self.status_gate.lock().ok().and_then(|slot| slot.clone()) {
+            gate.wait();
+            gate.wait();
         }
         if let Ok(mut book) = self.book.lock()
             && let Some(record) = book.runs.get_mut(params.run_id.as_str())
@@ -738,14 +759,31 @@ impl HostValidation {
         Some((identity.state, identity.cancellation_status))
     }
 
-    /// The state merge used by `validation.status`, `validation.cancel` and the control worker.
-    /// A test can feed the delayed snapshot that lost the book lock race without a real socket.
+    /// Stop the runner loop and wait for it before a test creates a run that must stay Queued.
+    /// The barrier is installed before the stop flag so an exiting worker cannot miss it.
     #[cfg(test)]
-    pub(crate) fn merge_state_for_test(&self, run_id: &str, state: validation_port::ValidationState) {
-        if let Ok(mut book) = self.book.lock()
-            && let Some(record) = book.runs.get_mut(run_id)
-        {
-            record.merge_state(state);
+    pub(crate) fn stop_worker_and_wait_for_test(&self) {
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        if let Ok(mut slot) = self.worker_exit.lock() {
+            *slot = Some(Arc::clone(&gate));
+        }
+        self.worker_stop.store(true, Ordering::Release);
+        gate.wait();
+    }
+
+    /// Park a real `validation.status` after it read the port and before it publishes into the
+    /// book. The test releases the second wait after the control lane has persisted.
+    #[cfg(test)]
+    pub(crate) fn install_status_gate_for_test(&self, gate: Arc<std::sync::Barrier>) {
+        if let Ok(mut slot) = self.status_gate.lock() {
+            *slot = Some(gate);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_status_gate_for_test(&self) {
+        if let Ok(mut slot) = self.status_gate.lock() {
+            *slot = None;
         }
     }
 
