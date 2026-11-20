@@ -929,14 +929,14 @@ fn every_file_modal_has_first_refusal_of_escape_and_clipboard() {
                 cut: false,
                 names: vec!["source.txt".into()],
                 files_only: true,
-                replaceable: vec![path.clone()],
+                replaceable: Vec::new(),
             },
             "replace_open" => Modal::ReplaceOpen {
                 sources: vec![path.clone()],
                 destination: scratch.path().to_path_buf(),
                 cut: false,
                 dirty: vec![path.to_string_lossy().into_owned()],
-                replaceable: vec![path.clone()],
+                replaceable: Vec::new(),
             },
             "reload" => Modal::DiscardReload { path: path.to_string_lossy().into_owned() },
             _ => panic!("unknown modal case: {variant}"),
@@ -1178,6 +1178,83 @@ fn a_batch_replace_does_not_consent_for_a_destination_that_appears_later() {
 }
 
 #[test]
+fn an_unresolved_case_only_spelling_is_an_uncertain_destination_alias() {
+    let scratch = Scratch::new();
+    let existing = scratch.file("part.sc", "existing");
+    let other = scratch.path().join("Part.sc");
+    assert!(same_destination(&existing, &other), "an unresolved case-only spelling is kept as an uncertain alias");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_case_alias_of_one_entry_is_one_destination_without_realpath_normalization() {
+    let scratch = Scratch::new();
+    let first = scratch.file("part.sc", "same entry");
+    let second = scratch.path().join("Part.sc");
+    fs::hard_link(&first, &second).expect("a same-entry fixture");
+    assert_ne!(
+        std::fs::canonicalize(&first).unwrap(),
+        std::fs::canonicalize(&second).unwrap(),
+        "the observable spellings must differ, so this cannot rely on realpath case normalization"
+    );
+    assert!(same_destination(&first, &second), "one entry reached by two spellings is one destination");
+}
+
+#[test]
+fn a_batch_replace_does_not_replace_a_destination_that_changed_after_the_question() {
+    let scratch = Scratch::new();
+    let source = scratch.file("bracket.sc", "new");
+    let into = scratch.dir("parts");
+    fs::write(into.join("bracket.sc"), "old").unwrap();
+    let mut tree = listing(scratch.path());
+    tree.place(vec![source.clone()], &into, false, None);
+    let replaceable = asked_replacements(&tree);
+    // The destination the question named is replaced by another entry while the answer is open.
+    let newcomer = scratch.file("newcomer.sc", "changed after the question");
+    fs::remove_file(into.join("bracket.sc")).unwrap();
+    fs::rename(&newcomer, into.join("bracket.sc")).unwrap();
+    tree.resolve_conflict(vec![source.clone()], into.clone(), false, Conflict::Replace, &replaceable);
+    let answer = wait_for_answer(&mut tree);
+    assert_eq!(answer.results.len(), 1);
+    let result = &answer.results[0];
+    assert_eq!(fs::read(into.join("bracket.sc")).unwrap(), b"changed after the question", "the newcomer is never silently replaced");
+    assert!(result.succeeded(), "{result:?}");
+    assert_ne!(result.target, into.join("bracket.sc"), "the source is placed under a free name");
+    assert_eq!(fs::read(&result.target).unwrap(), b"new", "the source bytes are preserved at the reported target");
+}
+
+#[test]
+fn a_batch_move_replace_keeps_each_sources_distinct_bytes() {
+    let scratch = Scratch::new();
+    let one = scratch.dir("one");
+    let first = one.join("part.sc");
+    fs::write(&first, "first").unwrap();
+    let two = scratch.dir("two");
+    let second = two.join("part.sc");
+    fs::write(&second, "second").unwrap();
+    let into = scratch.dir("into");
+    fs::write(into.join("part.sc"), "old").unwrap();
+    let mut tree = listing(scratch.path());
+    let sources = vec![first.clone(), second.clone()];
+    tree.place(sources.clone(), &into, true, None);
+    let replaceable = asked_replacements(&tree);
+    tree.resolve_conflict(sources, into.clone(), true, Conflict::Replace, &replaceable);
+    let answer = wait_for_answer(&mut tree);
+    assert_eq!(answer.results.len(), 2);
+    let result = |source: &std::path::Path| {
+        answer.results.iter().find(|result| result.source == source).unwrap_or_else(|| panic!("no result for {}", source.display()))
+    };
+    let first_result = result(&first);
+    let second_result = result(&second);
+    assert_eq!(first_result.target, into.join("part.sc"));
+    assert_eq!(fs::read(&first_result.target).unwrap(), b"first", "the first move owns the confirmed destination");
+    assert!(second_result.succeeded(), "{second_result:?}");
+    assert_ne!(second_result.target, into.join("part.sc"));
+    assert_eq!(fs::read(&second_result.target).unwrap(), b"second", "the later move is preserved at its reported target");
+    assert!(!first.exists() && !second.exists(), "the moved sources leave their folders");
+}
+
+#[test]
 fn a_batch_replace_keeps_case_only_destinations_distinct_when_the_volume_does() {
     let scratch = Scratch::new();
     let one = scratch.dir("one");
@@ -1212,7 +1289,7 @@ fn a_batch_replace_keeps_case_only_destinations_distinct_when_the_volume_does() 
 
 /// The sources the conflict question actually offered for replacement, as the panel would read
 /// them when it takes the modal and answers it.
-fn asked_replacements(tree: &FileTree) -> Vec<PathBuf> {
+fn asked_replacements(tree: &FileTree) -> Vec<super::ReplaceConsent> {
     match &tree.modal {
         Some(Modal::Conflict { replaceable, .. }) => replaceable.clone(),
         other => panic!("the conflict question is not open: {}", other.is_some()),

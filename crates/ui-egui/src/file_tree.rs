@@ -223,13 +223,34 @@ pub(crate) enum EditKind {
     Model,
 }
 
+/// The destination entry a conflict answer may replace. `identity` is read while the question
+/// opens: an answer may not silently replace a different entry that appeared at that path later.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReplaceConsent {
+    source: PathBuf,
+    identity: EntryIdentity,
+}
+
+/// What a file entry was, not just how its path was spelled. Unix gives reliable device and inode
+/// identity; elsewhere the size and timestamps are the best available standard-library evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EntryIdentity {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    created: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
 /// A question the panel keeps until the person answers it.
 pub(crate) enum Modal {
     /// Pasting or dropping would replace entries that are already there. `replaceable` is the
     /// sources whose destination existed when the question opened: a name that appears later is
     /// not included, and a second source for the same destination is kept as a copy rather than
     /// replacing the first result.
-    Conflict { sources: Vec<PathBuf>, destination: PathBuf, cut: bool, names: Vec<String>, files_only: bool, replaceable: Vec<PathBuf> },
+    Conflict { sources: Vec<PathBuf>, destination: PathBuf, cut: bool, names: Vec<String>, files_only: bool, replaceable: Vec<ReplaceConsent> },
     /// Deleting entries, with the open designs that hold unsaved work among them.
     Delete { paths: Vec<PathBuf>, dirty: Vec<String> },
     /// The trash is not usable here; deleting for good needs another, explicit answer.
@@ -238,7 +259,7 @@ pub(crate) enum Modal {
     DiscardReload { path: String },
     /// Replacing a file that an open design with unsaved work owns. `replaceable` is carried
     /// through from the conflict answer so the same destinations stay the only replacements.
-    ReplaceOpen { sources: Vec<PathBuf>, destination: PathBuf, cut: bool, dirty: Vec<String>, replaceable: Vec<PathBuf> },
+    ReplaceOpen { sources: Vec<PathBuf>, destination: PathBuf, cut: bool, dirty: Vec<String>, replaceable: Vec<ReplaceConsent> },
 }
 
 /// What a finished batch is reported as, under the tree until dismissed.
@@ -853,14 +874,14 @@ impl FileTree {
     }
 
     /// [`FileTree::place`], with the sources whose existing destination the person specifically
-    /// agreed to replace. An item outside `replaceable` keeps both entries even when the batch
-    /// answer is Replace: a name that appears after the question, or a second source for the
-    /// same destination as an earlier item, was not that consent.
-    fn place_with(&mut self, sources: Vec<PathBuf>, destination: &Path, cut: bool, conflict: Option<Conflict>, replaceable: &[PathBuf]) {
+    /// agreed to replace and the entry identity seen then. An item outside `replaceable`, a
+    /// destination entry that has changed since the question, or a second source for the same
+    /// destination as an earlier item keeps both entries even when the batch answer is Replace.
+    fn place_with(&mut self, sources: Vec<PathBuf>, destination: &Path, cut: bool, conflict: Option<Conflict>, replaceable: &[ReplaceConsent]) {
         let mut items = Vec::new();
         let mut conflicts = Vec::new();
         let mut files_only = true;
-        let mut asked_replacements = Vec::new();
+        let mut asked_replacements: Vec<ReplaceConsent> = Vec::new();
         let mut replacing: Vec<PathBuf> = Vec::new();
         for source in sources {
             let Some(name) = source.file_name().and_then(|n| n.to_str()).map(str::to_owned) else { continue };
@@ -869,14 +890,20 @@ impl FileTree {
                 conflicts.push(name.clone());
                 let files = source.is_file() && target.is_file();
                 files_only &= files;
-                if files {
-                    asked_replacements.push(source.clone());
+                if files && let Some(identity) = entry_identity(&target) {
+                    asked_replacements.push(ReplaceConsent { source: source.clone(), identity });
                 }
             }
             let item_conflict = match conflict {
                 Some(Conflict::Replace) => {
-                    let allowed = replaceable.iter().any(|allowed| same_source(allowed, &source));
-                    if allowed && !replacing.iter().any(|earlier| same_destination(earlier, &target)) {
+                    // This is the bounded orchestration check, made before submission. The worker
+                    // still uses its existing publication primitives; no atomic revalidation or
+                    // compare-and-swap is claimed between this check and the rename.
+                    let unchanged = replaceable
+                        .iter()
+                        .find(|consent| same_source(&consent.source, &source))
+                        .is_some_and(|consent| entry_identity(&target).as_ref() == Some(&consent.identity));
+                    if unchanged && !replacing.iter().any(|earlier| same_destination(earlier, &target)) {
                         replacing.push(target.clone());
                         Conflict::Replace
                     } else {
@@ -1091,9 +1118,17 @@ impl FileTree {
     }
 
     /// Answer the conflict question. A Replace answer replaces only `replaceable`, the sources
-    /// whose destination was named when the question opened; every other item keeps both entries.
-    /// The policy for the rest of the batch (Keep Both or Skip) applies to every item as before.
-    pub(crate) fn resolve_conflict(&mut self, sources: Vec<PathBuf>, destination: PathBuf, cut: bool, conflict: Conflict, replaceable: &[PathBuf]) {
+    /// whose destination was named when the question opened and whose destination entry is still
+    /// that same entry now; every other item keeps both entries. The policy for the rest of the
+    /// batch (Keep Both or Skip) applies to every item as before.
+    pub(crate) fn resolve_conflict(
+        &mut self,
+        sources: Vec<PathBuf>,
+        destination: PathBuf,
+        cut: bool,
+        conflict: Conflict,
+        replaceable: &[ReplaceConsent],
+    ) {
         if conflict == Conflict::Replace {
             let dirty: Vec<String> = sources
                 .iter()
@@ -1317,22 +1352,51 @@ impl FileTree {
     }
 }
 
-/// Is `b` the source the person allowed? Canonical identity keeps a symlink alias, a redundant
-/// separator or a file system's case folding from losing an answer that was already given.
-fn same_source(a: &Path, b: &Path) -> bool {
-    a == b || crate::documents::same_path(&a.to_string_lossy(), &b.to_string_lossy())
+/// Read what a file entry was. A symbolic link is not a plain file for this purpose, matching the
+/// no-follow rule of the file operations.
+fn entry_identity(path: &Path) -> Option<EntryIdentity> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Some(EntryIdentity {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            created: metadata.created().ok(),
+            dev: metadata.dev(),
+            ino: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        Some(EntryIdentity { len: metadata.len(), modified: metadata.modified().ok(), created: metadata.created().ok() })
+    }
 }
 
-/// Do two items of one batch write the same destination? An existing path is resolved by the
-/// file system, so a case-insensitive volume's aliases compare equal. A name that does not exist
-/// yet cannot be resolved that way; names differing only in case are treated as one because the
-/// first item may create the other spelling's entry. Keeping the second item under a free name is
-/// safer than replacing the first item's output. Distinct names stay distinct.
+/// Is `b` the source the person allowed? Exact equality covers the normal answer. A different
+/// spelling of the same existing entry is also the same source where standard metadata can show
+/// that; it does not depend on a path spelling.
+fn same_source(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    matches!((entry_identity(a), entry_identity(b)), (Some(a), Some(b)) if a == b)
+}
+
+/// Do two items of one batch write the same destination? Exact paths are equal. Existing entries
+/// are compared by their metadata identity, so a case alias remains one destination even when the
+/// native realpath keeps the two input spellings. Distinct existing entries stay distinct. When
+/// the paths cannot be resolved as existing files, names that differ only in case are treated as
+/// one uncertain alias: keeping the later item under a free name is safer than replacing an
+/// earlier output, while differing names remain distinct.
 fn same_destination(a: &Path, b: &Path) -> bool {
     if a == b {
         return true;
     }
-    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+    if let (Some(a), Some(b)) = (entry_identity(a), entry_identity(b)) {
         return a == b;
     }
     let (Some(a_parent), Some(b_parent)) = (a.parent(), b.parent()) else { return false };

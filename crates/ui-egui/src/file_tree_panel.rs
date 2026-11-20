@@ -4,7 +4,7 @@
 use egui::{Align, Color32, FontId, Layout, Rect, Sense, Stroke, UiBuilder, pos2, vec2};
 use solidcraft_engine::io::files::{self, Conflict, Kind};
 
-use super::{EditKind, External, Listing, Modal, Row, RowState};
+use super::{EditKind, External, Listing, Modal, ReplaceConsent, Row, RowState};
 use crate::i18n::tr;
 use crate::ui_kit::{self, Button};
 use crate::{SolveApp, i18n::format as trf, theme::Tokens};
@@ -1003,7 +1003,7 @@ fn conflict_modal(
     cut: bool,
     names: Vec<String>,
     files_only: bool,
-    replaceable: Vec<std::path::PathBuf>,
+    replaceable: Vec<ReplaceConsent>,
 ) {
     let title = tr("ui.files_conflict_title");
     let summary = trf("ui.files_conflict_count", &[("n", &names.len().to_string()), ("names", &names_summary(&names, names.len()))]);
@@ -1051,7 +1051,7 @@ fn replace_open_modal(
     destination: std::path::PathBuf,
     cut: bool,
     dirty: Vec<String>,
-    replaceable: Vec<std::path::PathBuf>,
+    replaceable: Vec<ReplaceConsent>,
 ) {
     let count = dirty.len();
     let message = trf("ui.files_replace_dirty", &[("n", &count.to_string())]);
