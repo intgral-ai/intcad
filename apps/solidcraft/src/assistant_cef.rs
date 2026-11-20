@@ -1281,10 +1281,12 @@ impl CefAssistant {
         self.poll_close()
     }
 
-    /// Advance close state from the platform's owned completion only. A late
-    /// callback after quarantine may finish cleanup, but it cannot resume quit.
-    /// The same nonblocking barrier also owns the page server's HTTP workers:
-    /// the browser owner is released only after every worker has stopped.
+    /// Advance close state only after both owned barriers are observed: CEF's
+    /// matching platform completion for this browser and the page server's HTTP
+    /// workers having stopped. Either barrier alone stays pending until the one
+    /// existing close deadline quarantines it, so the browser owner is never
+    /// released while a worker is still owned. A late callback after quarantine
+    /// may finish cleanup, but it cannot resume quit.
     pub fn poll_close(&mut self) -> CloseProgress {
         let now = Instant::now();
         let workers_stopped = self.server.poll_stop() == ServerProgress::Stopped;

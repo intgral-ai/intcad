@@ -353,6 +353,12 @@ mod tests {
         }
         let stopped = server.poll_stop() == ServerProgress::Stopped;
         assert!(stopped, "owned workers must reach Stopped");
+        // The worker barrier alone is not completion: without the matching
+        // platform completion the close stays pending and the owner is retained.
+        assert_eq!(
+            (advance_owned_close(&mut lifecycle, 7, false, stopped, now + Duration::from_millis(100)), lifecycle.phase()),
+            (CloseProgress::Pending, Phase::Closing)
+        );
         assert_eq!(advance_owned_close(&mut lifecycle, 7, true, stopped, now + Duration::from_millis(100)), CloseProgress::Complete);
         assert_eq!(lifecycle.phase(), Phase::Closed);
     }
