@@ -364,18 +364,19 @@ impl SectionRoles<'_> {
         for (k, (sketch, loops)) in self.sections.iter().enumerate() {
             let curves = crate::config::ExactSketchCurves::new(sketch);
             for seg in loops.iter().flat_map(|lp| &lp.segs) {
-                // INT-1454: analytic evidence first. `find_along` returning none can mean several
-                // analytic lines run along the wall, not that no curve does; ask `find_all_along`
-                // so that ambiguity stays unnamed and never falls through to a coincident
-                // free-form span. Only with no analytic candidate may a whole exact free-form
-                // segment (a conic or spline wall) name it. Temporary Doc adjustment; retire with
-                // the upstream fix (docs/superpowers/plans/2026-11-20-int1454-union-doc-naming.md).
+                // INT-1454: `find_along` is the only positive analytic source. It returning none
+                // can mean several analytic lines or a merely overlapping projection; neither
+                // may fall through to a free-form span. `find_all_along` is only a refusal guard
+                // here (its linked overlap is never a role): a whole exact free-form segment
+                // names the wall only when no analytic candidate exists at all. Temporary Doc
+                // adjustment; retire with the upstream fix (docs/superpowers/plans/2026-11-20-int1454-union-doc-naming.md).
                 let role = |id: &str| if k == 0 { format!("side:{id}") } else { format!("side:s{k}.{id}") };
-                let role = match curves.find_all_along(seg).as_slice() {
-                    [id] => Some(role(id)),
-                    [] => curves.find_free_form(seg).map(|id| role(&id)),
-                    _ => None,
+                let id = match curves.find_along(seg) {
+                    Some(id) => Some(id),
+                    None if curves.find_all_along(seg).is_empty() => curves.find_free_form(seg),
+                    None => None,
                 };
+                let role = id.map(|id| role(&id));
                 segments.push((k, role));
             }
         }

@@ -331,3 +331,45 @@ fn section_roles_keep_analytic_ambiguity_over_a_matching_spline_span() {
     assert_eq!(roles[0], Vec::<String>::new(), "two lines run along segment 0; the matching spline must not decide it");
     assert_eq!(roles[1], vec!["side:l1".to_string()], "one analytic line still names segment 1");
 }
+
+/// INT-1454: `find_all_along` also answers linked (projected) curves that merely overlap the
+/// segment. That is not positive analytic evidence for a section role: only `find_along` may
+/// name the wall, and its projected-overlap fallback stays empty. A free-form span must not take
+/// the place of a projection either.
+#[test]
+fn section_roles_do_not_name_a_wall_from_a_partly_overlapping_projection() {
+    use crate::SolvedSketch;
+    use crate::lineage::SectionRoles;
+    use solidcore_record::{Loop2, Plane, Seg2, Vec2};
+    use solidcraft_kernel::history::{Change, FaceOrigin, FaceProv, History};
+    use solidcraft_sketch::Sketch;
+
+    let mut source = Sketch::new();
+    let projected = source.add_line(Vec2::new(5., 0.), Vec2::new(9., 0.), None, None, Some("projected")).unwrap();
+    source.curves[projected].link = Some("boundary".into());
+    source.add_line(Vec2::new(8., 0.), Vec2::new(10., 0.), None, None, Some("exact")).unwrap();
+    let report = solidcraft_sketch::solve(&mut source);
+    let sketch = SolvedSketch {
+        feature: 1,
+        name: "sections".into(),
+        plane: Plane::XY,
+        sketch: source,
+        report,
+        profiles: Vec::new(),
+        profiles_3d: Vec::new(),
+        ends: Default::default(),
+    };
+    let loop2 =
+        Loop2 { segs: vec![Seg2::Line { a: Vec2::new(2., 0.), b: Vec2::new(8., 0.) }, Seg2::Line { a: Vec2::new(8., 0.), b: Vec2::new(10., 0.) }] };
+    let history = History {
+        operands: 0,
+        faces: vec![
+            FaceProv { origins: vec![FaceOrigin::Profile { segment: 0 }], change: Change::Generated },
+            FaceProv { origins: vec![FaceOrigin::Profile { segment: 1 }], change: Change::Generated },
+        ],
+        edges: Vec::new(),
+    };
+    let roles = SectionRoles { sections: vec![(&sketch, vec![&loop2])] }.of(&history);
+    assert_eq!(roles[0], Vec::<String>::new(), "a partial projection overlap alone must not name the wall");
+    assert_eq!(roles[1], vec!["side:exact".to_string()], "an exact analytic line keeps its role beside the same projection");
+}
