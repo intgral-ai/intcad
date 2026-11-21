@@ -536,6 +536,9 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
             && r.width() >= 900.0
             && r.right() - (captions + chip_reserve) - 28.0 - CLUSTER_BUTTONS - 8.0 - tabs_start >= TABS_KEPT
             && (app.header.version != VersionPlace::Header || version_room(r, captions + chip_reserve, tabs_start, version.size().x).is_some());
+        // The File menu is the compact fallback when the caption chip has no room. It opens the
+        // same account menu, so sign-in, browser, sign-out and switch stay identical.
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("sc_account_compact"), chip_width.is_some() && !chip_fits));
         let inset = captions + if chip_fits { chip_reserve } else { 0.0 };
         let (report, report_label) = report_rect(r, inset, tabs_start, label_width, version.size().x, app.header);
         // Settings' left edge; command search, when the bar holds it, sits just before it and
@@ -766,6 +769,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     let mut close = false;
+    let compact_account = ctx.data(|d| d.get_temp::<bool>(egui::Id::new("sc_account_compact")).unwrap_or(false));
     let resp = Container::new(ctx, Surface::Popup)
         .area(egui::Id::new("sc_file_area"))
         .fixed_pos(pos2(ctx.data(|d| d.get_temp::<f32>(egui::Id::new("sc_file_menu_x"))).unwrap_or(100.0), APP_BAR_HEIGHT))
@@ -891,6 +895,11 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     close = true;
                 }
                 ui.separator();
+                // Without room for the caption chip, the File menu keeps the permanent account
+                // entry: the same shared menu, so every account action stays in one place.
+                if compact_account && crate::account::compact_menu_entry(app, ui) {
+                    close = true;
+                }
                 // The browser can install SolidCraft as an app (`install`): only while it offers to.
                 if let Some(offer) = crate::install::offered(app)
                     && crate::context_menu::button(ui, crate::i18n::tr("install.menu"), "new")

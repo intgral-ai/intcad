@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use egui::Pos2;
+use serde_json::json;
 use solidcraft_engine::entitlement::{AuthenticatedHostScope, Refusal, RefusalCode};
 
 use super::panel::{ChipTone, chip_label, chip_tone};
@@ -661,6 +662,105 @@ fn the_shared_toolbar_account_menu_offers_login_and_queues_one_sign_in() {
     assert_eq!(flow.with_state(|state| state.opens), Some(0), "the menu never opens a browser");
     harness.app.account.process_actions();
     assert_eq!(flow.calls().iter().filter(|call| call.as_str() == "sign_in").count(), 1);
+}
+
+fn compact_account_label() -> String {
+    format!("{}…", crate::i18n::tr("account.title"))
+}
+
+fn open_compact_account_menu(harness: &mut crate::scenario::Harness) {
+    crate::test_support::click(harness, "appbar:file");
+    assert!(harness.widget(&compact_account_label()).is_some(), "the File menu has the compact account entry: {:?}", crate::scenario::handles(""));
+    harness.step(&json!({"widget": compact_account_label()})).unwrap();
+    harness.frames(3);
+}
+
+#[test]
+fn below_900_the_file_menu_offers_the_same_sign_in_without_home() {
+    let flow = FlowPort::signed_out(None);
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = State::with_port(Box::new(flow.clone()));
+    harness.call("ui.resize", json!({"width":700.0,"height":720}));
+    harness.frames(3);
+    assert!(crate::scenario::handle_at("titlebar:account_status").is_none(), "the chip needs 900 px");
+    open_compact_account_menu(&mut harness);
+    assert!(crate::scenario::handle_at("account:sign_in").is_some(), "handles: {:?}", crate::scenario::handles("account:"));
+    assert_eq!(harness.app.account.pending_action(), None);
+    crate::test_support::click(&mut harness, "account:sign_in");
+    assert_eq!(harness.app.account.pending_action(), Some(Action::SignIn));
+    assert_eq!(flow.with_state(|state| state.opens), Some(0), "the compact menu never opens a browser");
+    harness.app.account.process_actions();
+    assert_eq!(flow.calls().iter().filter(|call| call.as_str() == "sign_in").count(), 1);
+}
+
+#[test]
+fn the_normal_width_chip_stays_the_only_account_entry() {
+    let flow = FlowPort::signed_out(None);
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = State::with_port(Box::new(flow));
+    harness.call("ui.resize", json!({"width":1200.0,"height":720}));
+    harness.frames(3);
+    assert!(crate::scenario::handle_at("titlebar:account_status").is_some());
+    crate::test_support::click(&mut harness, "appbar:file");
+    assert!(harness.widget(&compact_account_label()).is_none(), "the File menu duplicates the visible chip");
+}
+
+#[test]
+fn the_compact_menu_keeps_signed_in_sign_out_and_switch() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = State::with_port(Box::new(FakeAccountPort::with_view(signed_in_view(), calls)));
+    harness.call("ui.resize", json!({"width":700.0,"height":720}));
+    harness.frames(3);
+    assert!(crate::scenario::handle_at("titlebar:account_status").is_none());
+    open_compact_account_menu(&mut harness);
+    assert!(crate::scenario::handle_at("account:sign_out").is_some(), "handles: {:?}", crate::scenario::handles("account:"));
+    assert!(crate::scenario::handle_at("account:switch_account").is_some());
+    crate::test_support::click(&mut harness, "account:sign_out");
+    assert_eq!(harness.app.account.pending_action(), Some(Action::SignOut));
+}
+
+#[test]
+fn unavailable_or_no_port_builds_keep_the_narrow_file_menu_without_an_account_entry() {
+    let cases: Vec<State> =
+        vec![State::default(), State::with_port(Box::new(FakeAccountPort::with_view(AccountView::unavailable(), Arc::new(Mutex::new(Vec::new())))))];
+    for state in cases {
+        let mut harness = crate::scenario::Harness::new();
+        harness.app.home.open = false;
+        harness.app.account = state;
+        harness.call("ui.resize", json!({"width":700.0,"height":720}));
+        harness.frames(3);
+        assert!(crate::scenario::handle_at("titlebar:account_status").is_none());
+        crate::test_support::click(&mut harness, "appbar:file");
+        assert!(harness.widget(&compact_account_label()).is_none(), "an unavailable build offers an account entry");
+        assert!(harness.widget("Sign in").is_none(), "an unavailable build offers a sign-in");
+    }
+}
+
+#[test]
+fn the_compact_challenge_keeps_the_explicit_browser_gesture_and_never_opens_by_itself() {
+    let flow = FlowPort::signed_out(Some(future_device_code(300)));
+    let state = start_flow(&flow);
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = state;
+    harness.call("ui.resize", json!({"width":700.0,"height":720}));
+    harness.frames(3);
+    assert!(crate::scenario::handle_at("titlebar:account_status").is_none());
+    open_compact_account_menu(&mut harness);
+    let calls = flow.calls();
+    assert!(crate::scenario::handle_at("account:open_browser").is_some(), "handles: {:?}", crate::scenario::handles("account:"));
+    assert!(!calls.iter().any(|call| call == "open_verification"), "a compact frame opened the browser: {calls:?}");
+    assert_eq!(flow.with_state(|state| state.opens), Some(0));
+    crate::test_support::click(&mut harness, "account:open_browser");
+    assert_eq!(harness.app.account.pending_action(), Some(Action::OpenVerification));
+    assert_eq!(flow.with_state(|state| state.opens), Some(0), "a rendered click opened the browser before processing");
+    harness.app.account.process_actions();
+    assert_eq!(flow.with_state(|state| state.opens), Some(1));
+    assert_eq!(flow.calls().iter().filter(|call| call.as_str() == "open_verification").count(), 1);
 }
 
 #[test]

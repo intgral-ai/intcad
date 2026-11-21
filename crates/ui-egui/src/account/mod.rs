@@ -13,8 +13,8 @@ pub(crate) mod tests;
 
 use solidcraft_engine::entitlement::{Refusal, RefusalCode};
 
-pub(crate) use panel::status_chip_width;
 pub use panel::{PromptContext, show_product_prompt, show_summary, status_chip};
+pub(crate) use panel::{compact_menu_entry, status_chip_width};
 
 /// A point in time for a device-code login, in seconds since the Unix epoch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

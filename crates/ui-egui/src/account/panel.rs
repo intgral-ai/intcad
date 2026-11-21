@@ -257,12 +257,35 @@ pub fn status_chip(app: &mut SolveApp, ui: &Ui, slot: Rect) {
     let response = response.backing_on_hover_text(&tip);
     crate::scenario::publish_handle("titlebar:account_status", slot.center());
     crate::scenario::publish_rect("titlebar:account_status", slot);
-    Container::new(ui.ctx(), Surface::Popup).menu(&response).frame(Menu::frame()).show(|ui| account_menu(app, ui));
+    Container::new(ui.ctx(), Surface::Popup).menu(&response).frame(Menu::frame()).show(|ui| show_menu(app, ui));
+}
+
+/// Whether this build offers the permanent account entry at all: an installed port and either a
+/// signed-in account or an explicit sign-in action. Unavailable and browser builds show neither.
+pub(crate) fn menu_available(app: &SolveApp) -> bool {
+    if !app.account.is_installed() {
+        return false;
+    }
+    let view = app.account.view();
+    view.signed_in || view.sign_in_visible
+}
+
+/// The File menu's compact fallback when the caption chip lacks room. It opens the same
+/// [`show_menu`] body as the chip, so sign-in, browser, sign-out and switch stay identical.
+/// Returns whether an action was taken.
+pub(crate) fn compact_menu_entry(app: &mut SolveApp, ui: &mut Ui) -> bool {
+    if !menu_available(app) {
+        return false;
+    }
+    let label = format!("{}…", app.tr("account.title"));
+    let entry = crate::ui_kit::Menu::button(ui, label, |ui| show_menu(app, ui));
+    crate::scenario::publish_handle("account:overflow", entry.response.rect.center());
+    entry.inner == Some(true)
 }
 
 /// The permanent account menu: who is signed in, the one shared device challenge, and the
-/// explicit sign-in, browser and sign-out actions.
-fn account_menu(app: &mut SolveApp, ui: &mut Ui) {
+/// explicit sign-in, browser and sign-out actions. Returns whether an action was taken.
+pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let t = Tokens::get();
     let view = app.account.view().clone();
     let notice = app.account.notice().cloned();
@@ -343,6 +366,7 @@ fn account_menu(app: &mut SolveApp, ui: &mut Ui) {
     if switch_clicked {
         app.account.request(Action::SwitchAccount);
     }
+    sign_in_clicked || sign_out_clicked || switch_clicked
 }
 
 /// The shared device challenge, shown by the Home summary, the account menu and the contextual
