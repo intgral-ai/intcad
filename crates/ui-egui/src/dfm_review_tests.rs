@@ -3,16 +3,17 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::dfm_chat::{Card, Finding, Measure, Requirement};
 use crate::scenario::{Harness, rect_of};
 use crate::shell::LayoutMode;
 use serde_json::json;
+use solidcraft_engine::dfm::run::{RunMeta, RunOutcome, RunStore};
 use solidcraft_engine::entitlement::{
     AccountId, AuthenticatedHostScope, BillingPort, BillingResult, BudgetTable, Capability, EntryCategory, FreshIntent, Grant, GrantId,
     MonotonicInstant, OperationId, OperationRecord, OperationStore, OperationStoreError, Refusal, RefusalCode, RetryDecision, RetryScopeKey,
-    ReviewOperation, RunId, SaveOutcome, TransportCorrelation,
+    ReviewOperation, RunId, SaveOutcome, SettlementIntent, TransportCorrelation,
 };
 
 #[derive(Clone, Default)]
@@ -65,6 +66,9 @@ impl BillingPort for CountingBilling {
 struct ReviewLedger {
     reviews: Arc<Mutex<BTreeMap<String, OperationId>>>,
     records: Arc<Mutex<BTreeMap<String, OperationRecord>>>,
+    intents: Arc<Mutex<BTreeMap<String, SettlementIntent>>>,
+    fail_intent: Arc<Mutex<bool>>,
+    fail_terminal: Arc<Mutex<bool>>,
 }
 
 impl ReviewLedger {
@@ -75,6 +79,22 @@ impl ReviewLedger {
 
     fn operation_for(&self, run: &str) -> Option<OperationId> {
         self.reviews.lock().expect("reviews").get(run).cloned()
+    }
+
+    fn intent_for(&self, operation: &OperationId) -> Option<SettlementIntent> {
+        self.intents.lock().expect("intents").get(operation.as_str()).copied()
+    }
+
+    fn status_for(&self, operation: &OperationId) -> Option<solidcraft_engine::entitlement::OperationStatus> {
+        self.records.lock().expect("records").get(operation.as_str()).map(|record| record.status)
+    }
+
+    fn fail_next_intent(&self, fail: bool) {
+        *self.fail_intent.lock().expect("flag") = fail;
+    }
+
+    fn fail_next_terminal(&self, fail: bool) {
+        *self.fail_terminal.lock().expect("flag") = fail;
     }
 }
 
@@ -95,6 +115,9 @@ impl OperationStore for LedgerHandle {
     }
 
     fn mark_terminal(&mut self, operation: &OperationId, status: solidcraft_engine::entitlement::OperationStatus) -> Result<(), OperationStoreError> {
+        if *self.0.fail_terminal.lock().expect("flag") {
+            return Err(OperationStoreError::Unavailable);
+        }
         let mut records = self.0.records.lock().expect("records");
         let record = records.get_mut(operation.as_str()).ok_or(OperationStoreError::UnknownOperation)?;
         if record.status.is_terminal() {
@@ -137,6 +160,30 @@ impl OperationStore for LedgerHandle {
 
     fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError> {
         Ok(self.0.reviews.lock().expect("reviews").get(run_id.as_str()).cloned())
+    }
+
+    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError> {
+        if *self.0.fail_intent.lock().expect("flag") {
+            return Err(OperationStoreError::Unavailable);
+        }
+        let records = self.0.records.lock().expect("records");
+        let record = records.get(operation.as_str()).ok_or(OperationStoreError::UnknownOperation)?;
+        if record.status.is_terminal() {
+            return Err(OperationStoreError::TerminalState);
+        }
+        drop(records);
+        let mut intents = self.0.intents.lock().expect("intents");
+        match intents.get(operation.as_str()) {
+            Some(existing) if existing != &intent => Err(OperationStoreError::InvalidState),
+            _ => {
+                intents.insert(operation.as_str().to_string(), intent);
+                Ok(())
+            }
+        }
+    }
+
+    fn settlement_intent(&self, operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
+        Ok(self.0.intents.lock().expect("intents").get(operation.as_str()).copied())
     }
 }
 
@@ -536,5 +583,207 @@ fn review_start_failure_releases_one_hold() {
     assert_eq!(billing.commits(), 0);
     assert_eq!(billing.releases(), 1, "no work ran, so the single hold is released");
     let run = h.app.dfm_review.mapped_run.clone().expect("the reserved run was bound before dispatch");
-    assert_eq!(ledger.operation_for(&run), Some(operation));
+    assert_eq!(ledger.operation_for(&run), Some(operation.clone()));
+    assert_eq!(ledger.intent_for(&operation), Some(SettlementIntent::Release(RefusalCode::UnsafeToStart)));
+    assert_eq!(ledger.status_for(&operation), Some(solidcraft_engine::entitlement::OperationStatus::Released));
+}
+
+struct ProjectScratch(std::path::PathBuf);
+
+impl ProjectScratch {
+    fn new(name: &str) -> Self {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("intcad-review-{name}-{}-{nanos}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for ProjectScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn project_session(h: &mut Harness, scratch: &ProjectScratch) -> std::path::PathBuf {
+    let created = solidcraft_engine::project::create(&scratch.0, "review-project", "part").expect("an empty project");
+    h.app.session.path = Some(created.design.to_string_lossy().into_owned());
+    created.project.root().to_path_buf()
+}
+
+fn stopped_run(root: &std::path::Path, run: &str, outcome: RunOutcome) {
+    let store = RunStore::new(root);
+    let meta = RunMeta::new(
+        run,
+        "review-project",
+        "sha256:candidate",
+        "sha256:config",
+        "model",
+        "2026-11-21T00:00:00.000Z",
+        "2026-11-21T00:00:01.000Z",
+        outcome,
+        Some("the inert fixture stopped before a report".into()),
+    );
+    store.write_stopped(&meta).expect("an inert stopped record");
+}
+
+fn complete_findings(root: &std::path::Path, run: &str) {
+    let store = RunStore::new(root);
+    let dir = store.run_dir(run).expect("the run folder");
+    let findings = json!({
+        "schemaVersion": 2,
+        "runId": run,
+        "candidateDigest": "sha256:candidate",
+        "profileDigest": "sha256:profile",
+        "configDigest": "sha256:config",
+        "modelVersion": "model",
+        "projectId": "review-project",
+        "source": {"kind": "native"},
+        "findings": [],
+        "rules": [],
+        "notChecked": "",
+    });
+    std::fs::write(dir.join("findings.json"), findings.to_string()).unwrap();
+}
+
+/// A cancelled stopped run has `run.json` but no `findings.json`; the actual poll path reads its
+/// terminal metadata independently of a findings report and releases once.
+#[test]
+fn review_poll_settles_a_stopped_cancelled_run() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let (_operation, run) = begin_with_record(&mut h, &billing, &ledger);
+    let scratch = ProjectScratch::new("cancelled");
+    let root = project_session(&mut h, &scratch);
+    stopped_run(&root, &run, RunOutcome::Cancelled);
+    h.app.dfm_review.running = true;
+    h.app.dfm_review.cancelling = true;
+    let ctx = egui::Context::default();
+    h.app.dfm_review.polled = -1.0;
+    crate::dfm_review::poll(&mut h.app, &ctx);
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(billing.releases(), 1, "a terminal cancelled run with no report releases once");
+    assert!(!h.app.dfm_review.running);
+    assert!(!h.app.dfm_review.cancelling, "cancelling must not loop forever");
+}
+
+/// A superseded run that completed its findings is durable proof of a produced report and is
+/// charged once, even though a newer run owns `latest`.
+#[test]
+fn review_poll_charges_a_superseded_complete_run() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let (_operation, run) = begin_with_record(&mut h, &billing, &ledger);
+    let scratch = ProjectScratch::new("superseded");
+    let root = project_session(&mut h, &scratch);
+    stopped_run(&root, &run, RunOutcome::Superseded);
+    complete_findings(&root, &run);
+    h.app.dfm_review.running = true;
+    let ctx = egui::Context::default();
+    h.app.dfm_review.polled = -1.0;
+    crate::dfm_review::poll(&mut h.app, &ctx);
+    assert_eq!(billing.commits(), 1, "superseded with durable findings is still a produced report");
+    assert_eq!(billing.releases(), 0);
+}
+
+/// A superseded run without findings is ambiguous: keep the hold and surface recovery.
+#[test]
+fn review_poll_holds_a_superseded_run_without_findings() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let (_operation, run) = begin_with_record(&mut h, &billing, &ledger);
+    let scratch = ProjectScratch::new("superseded-ambiguous");
+    let root = project_session(&mut h, &scratch);
+    stopped_run(&root, &run, RunOutcome::Superseded);
+    h.app.dfm_review.running = true;
+    let ctx = egui::Context::default();
+    for _ in 0..5 {
+        h.app.dfm_review.polled = -1.0;
+        crate::dfm_review::poll(&mut h.app, &ctx);
+    }
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(billing.releases(), 0, "ambiguous completion never releases");
+    assert!(h.app.dfm_review.error.as_deref().is_some_and(|error| error.starts_with("AUTH_UNAVAILABLE:")), "{:?}", h.app.dfm_review.error);
+}
+
+/// A commit whose terminal ledger write fails still persists the settlement intent. A restart
+/// must not repeat the wire call blindly; it surfaces recovery and keeps the one charge.
+#[test]
+fn review_terminal_write_failure_never_repeats_settlement() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let mut first = Harness::new();
+    let (_operation, run) = begin_with_record(&mut first, &billing, &ledger);
+    ledger.fail_next_terminal(true);
+    let error = crate::dfm_review::settle_review_run(&mut first.app, &run, true).unwrap_err();
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert_eq!(billing.commits(), 1);
+
+    ledger.fail_next_terminal(false);
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    let recovery = crate::dfm_review::settle_review_run(&mut restarted.app, &run, true).unwrap_err();
+    assert!(recovery.starts_with("AUTH_UNAVAILABLE:"), "{recovery}");
+    assert_eq!(billing.commits(), 1, "an ambiguous prior settlement is never charged again");
+}
+
+/// If the settlement intent cannot be written, no billing wire call is made.
+#[test]
+fn review_intent_write_failure_does_not_call_billing() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let (_operation, run) = begin_with_record(&mut h, &billing, &ledger);
+    ledger.fail_next_intent(true);
+    let error = crate::dfm_review::settle_review_run(&mut h.app, &run, true).unwrap_err();
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(billing.releases(), 0);
+    assert!(ledger.intent_for(&h.app.dfm_review.operation.clone().expect("operation")).is_none());
+}
+
+/// A restart finds the controlled run from the project's run folders plus the durable store
+/// mapping and settles the stopped terminal record without rerunning it.
+#[test]
+fn review_startup_resumes_a_stopped_cancelled_run() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let mut first = Harness::new();
+    let (_operation, run) = begin_with_record(&mut first, &billing, &ledger);
+    let scratch = ProjectScratch::new("startup-cancelled");
+    let root = project_session(&mut first, &scratch);
+    stopped_run(&root, &run, RunOutcome::Cancelled);
+
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    restarted.app.session.path = first.app.session.path.clone();
+    crate::dfm_review::resume_review(&mut restarted.app);
+    assert_eq!(billing.releases(), 1, "startup settles the one stopped run");
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(restarted.app.dfm_review.mapped_run.as_deref(), Some(run.as_str()));
+    assert!(!restarted.app.dfm_review.running, "startup never reruns the check");
+}
+
+#[test]
+fn review_startup_charges_a_superseded_complete_run() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let mut first = Harness::new();
+    let (_operation, run) = begin_with_record(&mut first, &billing, &ledger);
+    let scratch = ProjectScratch::new("startup-superseded");
+    let root = project_session(&mut first, &scratch);
+    stopped_run(&root, &run, RunOutcome::Superseded);
+    complete_findings(&root, &run);
+
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    restarted.app.session.path = first.app.session.path.clone();
+    crate::dfm_review::resume_review(&mut restarted.app);
+    assert_eq!(billing.commits(), 1, "a durable superseded report is charged once");
+    assert_eq!(billing.releases(), 0);
+    assert!(!restarted.app.dfm_review.running);
 }

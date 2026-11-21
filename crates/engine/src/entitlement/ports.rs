@@ -10,7 +10,7 @@ use super::types::RetryMapping;
 use super::types::{
     Admission, AuthenticatedHostScope, Availability, BillingResult, Capability, CredentialError, EntryCategory, FreshIntent, Grant, OperationId,
     OperationRecord, OperationStatus, OperationStoreError, Refusal, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome,
-    TransportCorrelation,
+    SettlementIntent, TransportCorrelation,
 };
 
 pub trait AccountService {
@@ -60,6 +60,12 @@ pub trait OperationStore {
     fn lookup_original_retry(&self, key: &RetryScopeKey) -> RetryDecision;
     fn record_review(&mut self, review: &ReviewOperation) -> Result<(), OperationStoreError>;
     fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError>;
+    /// Persist one settlement intent before the host's first settlement wire call. The same
+    /// operation may repeat the same intent after a crash; a different intent or a terminal row
+    /// is refused. The record never grants execution authority.
+    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError>;
+    /// The settlement intent recorded for this operation, or `None`.
+    fn settlement_intent(&self, operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError>;
 }
 
 pub trait CredentialStore {
@@ -140,6 +146,7 @@ pub struct InMemoryOperationStore {
     records: BTreeMap<OperationId, OperationRecord>,
     mappings: BTreeMap<RetryScopeKey, RetryMapping>,
     reviews: BTreeMap<RunId, OperationId>,
+    settlements: BTreeMap<OperationId, SettlementIntent>,
     next: u64,
     pub admissions: usize,
     pub commits: usize,
@@ -290,6 +297,24 @@ impl OperationStore for InMemoryOperationStore {
 
     fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError> {
         Ok(self.reviews.get(run_id).cloned())
+    }
+
+    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError> {
+        let record = self.records.get(operation).ok_or(OperationStoreError::UnknownOperation)?;
+        if record.status.is_terminal() {
+            return Err(OperationStoreError::TerminalState);
+        }
+        match self.settlements.get(operation) {
+            Some(existing) if existing != &intent => Err(OperationStoreError::InvalidState),
+            _ => {
+                self.settlements.insert(operation.clone(), intent);
+                Ok(())
+            }
+        }
+    }
+
+    fn settlement_intent(&self, operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
+        Ok(self.settlements.get(operation).copied())
     }
 }
 

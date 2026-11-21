@@ -5,8 +5,9 @@ use std::path::PathBuf;
 
 use super::*;
 use solidcraft_engine::entitlement::{
-    AccountId, AuthenticatedHostScope, Capability, EntryCategory, HostSessionBinding, InstallationId, OperationId, OperationRecord, OperationStatus,
-    OperationStore, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, TransportCorrelation,
+    AccountId, AuthenticatedHostScope, BillingResult, Capability, EntryCategory, HostSessionBinding, InstallationId, OperationId, OperationRecord,
+    OperationStatus, OperationStore, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, SettlementIntent,
+    TransportCorrelation,
 };
 
 struct TempStore {
@@ -675,4 +676,21 @@ fn ambiguous_concurrent_review_pairing_fails_closed_at_lookup() {
         std::fs::write(path, format!(r#"{{"run_id":"{}","operation_id":"{}"}}"#, run.as_str(), operation.as_str())).unwrap();
     }
     assert_eq!(store.reopen().review_operation(&run), Err(OperationStoreError::Unavailable));
+}
+
+#[test]
+fn settlement_intent_is_durable_and_write_once() {
+    let mut store = TempStore::new("settlement-intent");
+    let record = held_record("op_settlement_intent_0001");
+    store.save_new(&record).unwrap();
+    let commit = SettlementIntent::Commit(BillingResult::Succeeded);
+    store.record_settlement_intent(&record.operation, commit).unwrap();
+    assert_eq!(store.reopen().settlement_intent(&record.operation).unwrap(), Some(commit));
+    assert_eq!(store.record_settlement_intent(&record.operation, commit), Ok(()));
+    assert_eq!(
+        store.record_settlement_intent(&record.operation, SettlementIntent::Release(RefusalCode::UnsafeToStart)),
+        Err(OperationStoreError::InvalidState)
+    );
+    store.mark_terminal(&record.operation, OperationStatus::Charged).unwrap();
+    assert_eq!(store.record_settlement_intent(&record.operation, commit), Err(OperationStoreError::TerminalState));
 }

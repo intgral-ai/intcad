@@ -17,7 +17,8 @@ use std::time::Duration;
 use egui::{Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
 use serde_json::Value;
 use solidcraft_engine::entitlement::{
-    BillingResult, Capability, EntryCategory, OperationId, OperationStatus, OperationStoreError, RefusalCode, ReviewOperation, RunId, UpperBound,
+    BillingResult, Capability, EntryCategory, OperationId, OperationStatus, OperationStoreError, RefusalCode, ReviewOperation, RunId,
+    SettlementIntent, UpperBound,
 };
 
 use crate::SolveApp;
@@ -186,6 +187,97 @@ fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(St
     Ok((run, stop_at_ms))
 }
 
+/// Persist the settlement intent, then perform exactly one wire action for this operation.
+/// A terminal row finishes without another call; an existing intent without a terminal row is an
+/// ambiguous earlier attempt and is surfaced, never repeated.
+fn apply_settlement(app: &mut SolveApp, operation: &OperationId, intent: SettlementIntent) -> Result<(), String> {
+    if let Some(store) = app.review_store.as_ref() {
+        match store.load(operation) {
+            Ok(Some(record)) if record.status.is_terminal() => {
+                app.dfm_review.settled = true;
+                return Ok(());
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return Err(coded(
+                    RefusalCode::AuthUnavailable,
+                    format!("the Review operation {} has no durable row; it cannot settle safely", operation.as_str()),
+                ));
+            }
+            Err(error) => {
+                return Err(coded(RefusalCode::AuthUnavailable, format!("the Review ledger is unavailable: {error:?}")));
+            }
+        }
+    }
+    if let Some(store) = app.review_store.as_mut() {
+        match store.settlement_intent(operation) {
+            Ok(Some(previous)) if previous == intent => {
+                return Err(coded(
+                    RefusalCode::AuthUnavailable,
+                    format!(
+                        "operation {} already has a settlement intent; an earlier wire call may have completed. Query/resume under the same id and never repeat it blindly",
+                        operation.as_str()
+                    ),
+                ));
+            }
+            Ok(Some(_)) => {
+                return Err(coded(
+                    RefusalCode::AuthUnavailable,
+                    format!(
+                        "operation {} has a different settlement intent; refuse rather than charge or release another action",
+                        operation.as_str()
+                    ),
+                ));
+            }
+            Ok(None) => {
+                store.record_settlement_intent(operation, intent).map_err(|error| {
+                    coded(
+                        RefusalCode::AuthUnavailable,
+                        format!("operation {} could not persist its settlement intent; no wire call was made: {error:?}", operation.as_str()),
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(coded(RefusalCode::AuthUnavailable, format!("the Review ledger could not read a settlement intent: {error:?}")));
+            }
+        }
+    }
+    let Some(billing) = app.billing.as_mut() else {
+        return Err(coded(RefusalCode::AuthUnavailable, "no host billing authority is installed for the Review panel"));
+    };
+    let outcome = match intent {
+        SettlementIntent::Commit(result) => billing.commit(operation, result).map(|_| ()),
+        SettlementIntent::Release(reason) => billing.release(operation, reason),
+    };
+    match outcome {
+        Ok(()) => {
+            let terminal = match intent {
+                SettlementIntent::Commit(_) => OperationStatus::Charged,
+                SettlementIntent::Release(_) => OperationStatus::Released,
+            };
+            if let Some(store) = app.review_store.as_mut()
+                && let Err(error) = store.mark_terminal(operation, terminal)
+                && error != OperationStoreError::TerminalState
+            {
+                app.dfm_review.settled = true;
+                return Err(coded(
+                    RefusalCode::AuthUnavailable,
+                    format!(
+                        "operation {} settled but its terminal ledger row was not written; do not settle it again: {error:?}",
+                        operation.as_str()
+                    ),
+                ));
+            }
+            app.dfm_review.settled = true;
+            Ok(())
+        }
+        Err(error) => Err(coded(
+            error.code,
+            format!("the Review result was handled but settlement of operation {} was not confirmed; do not run it again", operation.as_str()),
+        )),
+    }
+}
+
 /// Settle one exact Review run once. `produced` must come from that run's own report, never from
 /// the newest run or an active-run inference. A terminal ledger row is never settled again.
 pub(crate) fn settle_review_run(app: &mut SolveApp, run: &str, produced: bool) -> Result<(), String> {
@@ -211,58 +303,52 @@ pub(crate) fn settle_review_run(app: &mut SolveApp, run: &str, produced: bool) -
             }
         }
     };
-    if let Some(store) = app.review_store.as_ref() {
-        match store.load(&operation) {
-            Ok(Some(record)) if record.status.is_terminal() => {
-                app.dfm_review.settled = true;
-                return Ok(());
-            }
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                return Err(coded(
-                    RefusalCode::AuthUnavailable,
-                    format!("the Review operation {} has no durable row; it cannot settle safely", operation.as_str()),
-                ));
-            }
-            Err(error) => {
-                return Err(coded(RefusalCode::AuthUnavailable, format!("the Review ledger is unavailable: {error:?}")));
+    let intent = if produced { SettlementIntent::Commit(BillingResult::Succeeded) } else { SettlementIntent::Release(RefusalCode::UnsafeToStart) };
+    apply_settlement(app, &operation, intent)
+}
+
+/// After a restart, find a controlled Review run from the project's durable submitted/run records
+/// and its store mapping. It settles that exact run once; it never reruns or replaces it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn resume_review(app: &mut SolveApp) {
+    if !available() || app.dfm_review.running || app.dfm_review.operation.is_some() {
+        return;
+    }
+    let Some(store) = app.review_store.as_ref() else { return };
+    let Some(path) = app.session.path.as_deref() else { return };
+    let Ok(Some(project)) = solidcraft_engine::project::Project::of(std::path::Path::new(path)) else { return };
+    let run_store = solidcraft_engine::dfm::run::RunStore::new(project.root());
+    let mut candidates = Vec::new();
+    if let Ok(Some(submitted)) = run_store.submitted() {
+        candidates.push(submitted.run_id);
+    }
+    if let Ok(entries) = std::fs::read_dir(run_store.runs_dir()) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("run-") && !candidates.iter().any(|candidate| candidate == &name) {
+                candidates.push(name);
             }
         }
     }
-    let Some(billing) = app.billing.as_mut() else {
-        return Err(coded(RefusalCode::AuthUnavailable, "no host billing authority is installed for the Review panel"));
+    let Some((run, operation)) =
+        candidates.into_iter().find_map(|run| store.review_operation(&RunId::new(&run)).ok().flatten().map(|operation| (run, operation)))
+    else {
+        return;
     };
-    let outcome = if produced {
-        billing.commit(&operation, BillingResult::Succeeded).map(|_| ())
+    app.dfm_review.operation = Some(operation);
+    app.dfm_review.mapped_run = Some(run.clone());
+    app.dfm_review.settled = false;
+    let card = crate::dfm_chat::refresh_run(app, Some(&run));
+    let produced = card.report_produced;
+    let settle = if matches!(card.outcome.as_deref(), Some("cancelled" | "failed")) && !produced {
+        settle_review_run(app, &run, false)
+    } else if produced {
+        settle_review_run(app, &run, true)
     } else {
-        billing.release(&operation, RefusalCode::UnsafeToStart)
+        app.dfm_review.error = Some(surface_uncertain(app));
+        return;
     };
-    match outcome {
-        Ok(()) => {
-            // Persist the terminal row under the same operation id. A restart must see that this
-            // logical operation is already settled, not infer a second charge from a report.
-            let terminal = if produced { OperationStatus::Charged } else { OperationStatus::Released };
-            if let Some(store) = app.review_store.as_mut()
-                && let Err(error) = store.mark_terminal(&operation, terminal)
-                && error != OperationStoreError::TerminalState
-            {
-                app.dfm_review.settled = true;
-                return Err(coded(
-                    RefusalCode::AuthUnavailable,
-                    format!(
-                        "operation {} settled but its terminal ledger row was not written; do not settle it again: {error:?}",
-                        operation.as_str()
-                    ),
-                ));
-            }
-            app.dfm_review.settled = true;
-            Ok(())
-        }
-        Err(error) => Err(coded(
-            error.code,
-            format!("the Review result was handled but settlement of operation {} was not confirmed; do not run it again", operation.as_str()),
-        )),
-    }
+    app.dfm_review.error = settle.err();
 }
 
 /// Surface a held Review operation whose exact run has no terminal evidence. It is never released
@@ -280,14 +366,7 @@ fn release_unstarted(app: &mut SolveApp, reason: RefusalCode) -> Result<(), Stri
         return Ok(());
     }
     let Some(operation) = app.dfm_review.operation.clone() else { return Ok(()) };
-    let Some(billing) = app.billing.as_mut() else {
-        return Err(coded(RefusalCode::AuthUnavailable, "no host billing authority is installed for the Review panel"));
-    };
-    billing.release(&operation, reason).map_err(|error| {
-        coded(error.code, format!("operation {} could not be released; it stays for recovery and must not be rerun", operation.as_str()))
-    })?;
-    app.dfm_review.settled = true;
-    Ok(())
+    apply_settlement(app, &operation, SettlementIntent::Release(reason))
 }
 
 /// Start one check from the panel and keep it on show while it runs. Nothing of the Assistant is
@@ -382,20 +461,29 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     // never this operation's identity.
     let card = crate::dfm_chat::refresh_run(app, Some(&run));
     match card.outcome.as_deref() {
-        Some("current") if card.available => {
+        Some("current") if card.report_produced => {
             let settle = settle_review_run(app, &run, true);
             app.dfm_review.running = false;
             app.dfm_review.cancelling = false;
             app.dfm_review.error = settle.err();
             adopt(app, card);
         }
-        Some("cancelled" | "superseded" | "failed") => {
+        Some("superseded") if card.report_produced => {
+            // A superseded run completed its report before a newer submission; its own findings
+            // are durable evidence, so it is charged once like a current run.
+            let settle = settle_review_run(app, &run, true);
+            app.dfm_review.running = false;
+            app.dfm_review.cancelling = false;
+            app.dfm_review.error = settle.err();
+            adopt(app, card);
+        }
+        Some("cancelled" | "failed") if !card.report_produced => {
             let settle = settle_review_run(app, &run, false);
             app.dfm_review.running = false;
             app.dfm_review.cancelling = false;
             app.dfm_review.error = settle.err().or_else(|| Some(tr("ui.dfm_review_did_not_finish").to_string()));
         }
-        _ if card.available && card.status == "done" => {
+        _ if card.report_produced => {
             let settle = settle_review_run(app, &run, true);
             app.dfm_review.running = false;
             app.dfm_review.cancelling = false;
@@ -504,6 +592,8 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui, area: Rect) {
         app.dfm_review.clear();
         app.dfm_review.document = Some(document);
         reload(app);
+        #[cfg(not(target_arch = "wasm32"))]
+        resume_review(app);
     }
     let t = Tokens::get();
     let mut child =

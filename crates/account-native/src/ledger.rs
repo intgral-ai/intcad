@@ -22,8 +22,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use solidcraft_engine::entitlement::{
-    AccountId, AuthenticatedHostScope, Capability, EntryCategory, FreshIntent, GrantId, OperationId, OperationRecord, OperationStatus,
-    OperationStore, OperationStoreError, RetryDecision, RetryMapping, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, TransportCorrelation,
+    AccountId, AuthenticatedHostScope, BillingResult, Capability, EntryCategory, FreshIntent, GrantId, OperationId, OperationRecord, OperationStatus,
+    OperationStore, OperationStoreError, RefusalCode, RetryDecision, RetryMapping, RetryScopeKey, ReviewOperation, RunId, SaveOutcome,
+    SettlementIntent, TransportCorrelation,
 };
 
 const MAPPINGS_DIR: &str = "mappings";
@@ -84,6 +85,12 @@ struct PersistedMapping {
 struct PersistedReview {
     run_id: String,
     operation_id: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct PersistedSettlementIntent {
+    action: String,
+    result: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -153,6 +160,10 @@ impl FileOperationStore {
 
     fn operation_review_path(&self, operation: &OperationId) -> PathBuf {
         self.records_dir().join(format!("{}.review.json", operation.as_str()))
+    }
+
+    fn operation_settlement_path(&self, operation: &OperationId) -> PathBuf {
+        self.records_dir().join(format!("{}.settlement-intent.json", operation.as_str()))
     }
 
     fn mapping_path(&self, key: &RetryScopeKey) -> PathBuf {
@@ -519,6 +530,36 @@ impl OperationStore for FileOperationStore {
             None => Err(OperationStoreError::Unavailable),
         }
     }
+
+    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError> {
+        let Some(record) = self.load_and_apply_markers(operation).map_err(|_| OperationStoreError::Unavailable)? else {
+            return Err(OperationStoreError::UnknownOperation);
+        };
+        if record.status.is_terminal() {
+            return Err(OperationStoreError::TerminalState);
+        }
+        let path = self.operation_settlement_path(operation);
+        let persisted = persisted_settlement(intent);
+        let bytes = serde_json::to_vec(&persisted).map_err(|_| OperationStoreError::Unavailable)?;
+        match publish_create_only(&path, &bytes) {
+            Ok(true) => Ok(()),
+            Ok(false) => match read_json::<PersistedSettlementIntent>(&path).map_err(|_| OperationStoreError::Unavailable)? {
+                Some(existing) if settlement_from_persisted(existing.clone()) == Some(intent) => Ok(()),
+                Some(_) => Err(OperationStoreError::InvalidState),
+                None => Err(OperationStoreError::Unavailable),
+            },
+            Err(_) => Err(OperationStoreError::Unavailable),
+        }
+    }
+
+    fn settlement_intent(&self, operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
+        let persisted =
+            read_json::<PersistedSettlementIntent>(&self.operation_settlement_path(operation)).map_err(|_| OperationStoreError::Unavailable)?;
+        match persisted {
+            Some(persisted) => settlement_from_persisted(persisted).map(Some).ok_or(OperationStoreError::Unavailable),
+            None => Ok(None),
+        }
+    }
 }
 
 /// An in-memory ledger for tests only. It never grants execution authority.
@@ -527,6 +568,7 @@ pub struct InMemoryOperationStore {
     records: BTreeMap<OperationId, OperationRecord>,
     mappings: BTreeMap<RetryScopeKey, RetryMapping>,
     reviews: BTreeMap<RunId, OperationId>,
+    settlements: BTreeMap<OperationId, SettlementIntent>,
     next: u64,
     pub admissions: usize,
     pub commits: usize,
@@ -725,6 +767,24 @@ impl OperationStore for InMemoryOperationStore {
     fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError> {
         Ok(self.reviews.get(run_id).cloned())
     }
+
+    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError> {
+        let record = self.records.get(operation).ok_or(OperationStoreError::UnknownOperation)?;
+        if record.status.is_terminal() {
+            return Err(OperationStoreError::TerminalState);
+        }
+        match self.settlements.get(operation) {
+            Some(existing) if existing != &intent => Err(OperationStoreError::InvalidState),
+            _ => {
+                self.settlements.insert(operation.clone(), intent);
+                Ok(())
+            }
+        }
+    }
+
+    fn settlement_intent(&self, operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
+        Ok(self.settlements.get(operation).copied())
+    }
 }
 
 impl FileOperationStore {
@@ -878,6 +938,77 @@ fn status_from_name(name: &str) -> Option<OperationStatus> {
         "charged" => Some(OperationStatus::Charged),
         "released" => Some(OperationStatus::Released),
         "expired" => Some(OperationStatus::Expired),
+        _ => None,
+    }
+}
+
+fn billing_name(result: BillingResult) -> &'static str {
+    match result {
+        BillingResult::Succeeded => "succeeded",
+        BillingResult::PartialRetained => "partial_retained",
+        BillingResult::FailedNoEffect => "failed_no_effect",
+        BillingResult::Unknown => "unknown",
+    }
+}
+
+fn billing_from_name(name: &str) -> Option<BillingResult> {
+    match name {
+        "succeeded" => Some(BillingResult::Succeeded),
+        "partial_retained" => Some(BillingResult::PartialRetained),
+        "failed_no_effect" => Some(BillingResult::FailedNoEffect),
+        "unknown" => Some(BillingResult::Unknown),
+        _ => None,
+    }
+}
+
+fn refusal_name(code: RefusalCode) -> &'static str {
+    match code {
+        RefusalCode::AuthRequired => "auth_required",
+        RefusalCode::EmailUnverified => "email_unverified",
+        RefusalCode::AccountDisabled => "account_disabled",
+        RefusalCode::CapabilityDenied => "capability_denied",
+        RefusalCode::VersionUnsupported => "version_unsupported",
+        RefusalCode::ProtocolUnsupported => "protocol_unsupported",
+        RefusalCode::UnsafeToStart => "unsafe_to_start",
+        RefusalCode::CreditsExhausted => "credits_exhausted",
+        RefusalCode::CreditsHeld => "credits_held",
+        RefusalCode::OperationConflict => "operation_conflict",
+        RefusalCode::OperationFinalized => "operation_finalized",
+        RefusalCode::OperationOwnedElsewhere => "operation_owned_elsewhere",
+        RefusalCode::AuthUnavailable => "auth_unavailable",
+    }
+}
+
+fn refusal_from_name(name: &str) -> Option<RefusalCode> {
+    match name {
+        "auth_required" => Some(RefusalCode::AuthRequired),
+        "email_unverified" => Some(RefusalCode::EmailUnverified),
+        "account_disabled" => Some(RefusalCode::AccountDisabled),
+        "capability_denied" => Some(RefusalCode::CapabilityDenied),
+        "version_unsupported" => Some(RefusalCode::VersionUnsupported),
+        "protocol_unsupported" => Some(RefusalCode::ProtocolUnsupported),
+        "unsafe_to_start" => Some(RefusalCode::UnsafeToStart),
+        "credits_exhausted" => Some(RefusalCode::CreditsExhausted),
+        "credits_held" => Some(RefusalCode::CreditsHeld),
+        "operation_conflict" => Some(RefusalCode::OperationConflict),
+        "operation_finalized" => Some(RefusalCode::OperationFinalized),
+        "operation_owned_elsewhere" => Some(RefusalCode::OperationOwnedElsewhere),
+        "auth_unavailable" => Some(RefusalCode::AuthUnavailable),
+        _ => None,
+    }
+}
+
+fn persisted_settlement(intent: SettlementIntent) -> PersistedSettlementIntent {
+    match intent {
+        SettlementIntent::Commit(result) => PersistedSettlementIntent { action: "commit".into(), result: Some(billing_name(result).into()) },
+        SettlementIntent::Release(code) => PersistedSettlementIntent { action: "release".into(), result: Some(refusal_name(code).into()) },
+    }
+}
+
+fn settlement_from_persisted(persisted: PersistedSettlementIntent) -> Option<SettlementIntent> {
+    match (persisted.action.as_str(), persisted.result.as_deref()) {
+        ("commit", Some(name)) => billing_from_name(name).map(SettlementIntent::Commit),
+        ("release", Some(name)) => refusal_from_name(name).map(SettlementIntent::Release),
         _ => None,
     }
 }

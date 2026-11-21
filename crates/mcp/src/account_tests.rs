@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{
     AccountId, AuthenticatedHostScope, BillingPort, BillingResult, BudgetTable, Capability, ConservativeDeadline, EntryCategory, Grant, GrantId,
     HostSessionBinding, InstallationId, MonotonicInstant, OperationId, OperationRecord, OperationStatus, OperationStore, OperationStoreError,
-    Refusal, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, TransportCorrelation, TrustedContext,
+    Refusal, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, SettlementIntent, TransportCorrelation, TrustedContext,
 };
 
 use crate::account::{
@@ -521,6 +521,12 @@ impl OperationStore for ReviewStore {
     }
     fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError> {
         Ok(self.reviews.get(run_id).cloned())
+    }
+    fn record_settlement_intent(&mut self, _operation: &OperationId, _intent: SettlementIntent) -> Result<(), OperationStoreError> {
+        Ok(())
+    }
+    fn settlement_intent(&self, _operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
+        Ok(None)
     }
 }
 

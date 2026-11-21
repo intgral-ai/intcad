@@ -258,6 +258,12 @@ fn start_with_reservation(session: &mut Session, reservation: Option<Reservation
     };
     let (tx, shared) = service()?;
     let replaces_running = shared.running.load(Ordering::Acquire);
+    if replaces_running && reservation.is_some() {
+        // A free manual check may replace the previous check. A controlled run carries a billed
+        // operation and a durable mapping, so it must never be silently replaced or cancelled by
+        // a second press; the caller refuses instead.
+        return Err(internal("a controlled Review check is already running; a new controlled run may not replace it"));
+    }
     if replaces_running {
         cancel_shared(&shared);
     }
@@ -363,7 +369,10 @@ pub fn inspect(session: &mut Session, run: Option<&str>, model_digest: Option<&s
         });
     };
     let meta = store.load_meta(&run_id).map_err(|error| internal(error.to_string()))?;
-    let written = store.load_findings(&run_id).map_err(|error| internal(error.to_string()))?;
+    // A stopped or failed run has no `findings.json`; terminal metadata is still readable. Never
+    // turn a missing findings document into an unreadable run: the exact run and its outcome
+    // decide settlement, and a missing report stays explicit as `findings: None`.
+    let written = if store.is_complete(&run_id) { Some(store.load_findings(&run_id).map_err(|error| internal(error.to_string()))?) } else { None };
     let summary = store.load_summary(&run_id).ok();
     let current_revision = session.document_stamp().revision.to_string();
     let digest_owned = model_digest.map(str::to_string);
@@ -372,7 +381,7 @@ pub fn inspect(session: &mut Session, run: Option<&str>, model_digest: Option<&s
         (!meta.source_revision.is_empty() && meta.source_revision == current_revision).then_some(meta.candidate_digest.as_str())
     });
     let fresh = freshness(&meta, current_model, live_config.as_deref());
-    let findings_value = serde_json::to_value(&written).map_err(|error| internal(error.to_string()))?;
+    let findings_value = written.as_ref().map(serde_json::to_value).transpose().map_err(|error| internal(error.to_string()))?;
     Ok(Inspection {
         available: true,
         running: status().running,
@@ -383,7 +392,7 @@ pub fn inspect(session: &mut Session, run: Option<&str>, model_digest: Option<&s
         candidate_digest: Some(meta.candidate_digest),
         config_digest: Some(meta.config_digest),
         freshness: Some(freshness_name(fresh).to_string()),
-        findings: Some(findings_value),
+        findings: findings_value,
         summary,
         source_revision: (!meta.source_revision.is_empty()).then_some(meta.source_revision),
     })

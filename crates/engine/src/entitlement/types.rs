@@ -419,6 +419,17 @@ pub enum BillingResult {
     Unknown,
 }
 
+/// The settlement action a host durably records before its first settlement wire call.
+///
+/// The record is intent, not proof that the remote call completed. A host that finds an intent
+/// without a terminal row must fail closed and query/resume under the same operation; it never
+/// repeats an ambiguous settlement blindly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettlementIntent {
+    Commit(BillingResult),
+    Release(RefusalCode),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SaveOutcome {
     Saved,
