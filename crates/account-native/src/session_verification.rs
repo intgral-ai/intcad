@@ -4,8 +4,9 @@
 //! it verifies the token's RS256 signature against WorkOS's per-client JWKS, validates the signed
 //! claims and reads the WorkOS user record with its server-side API key. The client does not
 //! reimplement any of that. It sends the provider token to the configured product service origin
-//! as a bearer and activates a product session only when `GET /v1/status` returns a contract-valid,
-//! active snapshot for that verified identity.
+//! as a bearer and activates a product session only when `GET /v1/status` returns an active
+//! snapshot whose consumed fields pass the checks below. It is not a general status decoder: it
+//! does not interpret capabilities, policy metadata, snapshot timestamps or credit sufficiency.
 //!
 //! This is not implicit token promotion:
 //! - a completed provider login alone never activates or persists a product session;
@@ -78,8 +79,20 @@ impl<T: Transport> ProductSessionExchange for ServerVerifiedProductSession<T> {
     }
 }
 
-/// Accept only the frozen status shape that proves an active, verified account for this client and
-/// protocol. Every missing, inconsistent or unsupported value is a refusal.
+/// Accept only the consumed status fields that prove an active, verified account for this client
+/// and protocol. The checks are:
+///
+/// - `/account/id` matches `^acct_[A-Za-z0-9_-]{8,64}$`;
+/// - `/account/status` is `active` and `/account/email_verified` is `true`;
+/// - `/protocol/version` is the frozen protocol and `/protocol/supported` is `true`;
+/// - `/client/supported` is `true`;
+/// - `eligible` is `true` and `reasons` is empty (a local fail-closed precondition, not a credit
+///   or capability decision);
+/// - `balance`, `held` and `available` are present non-negative integers with `held <= balance`
+///   and `available == balance - held`.
+///
+/// Other status members are deliberately not decoded here. A missing, inconsistent, unsupported
+/// or out-of-grammar consumed value is a refusal.
 fn verified_account(value: &Value) -> Result<String, ProductExchangeError> {
     let account =
         value.pointer("/account/id").and_then(Value::as_str).filter(|account| valid_account(account)).ok_or(ProductExchangeError::Unavailable)?;
@@ -107,12 +120,11 @@ fn verified_account(value: &Value) -> Result<String, ProductExchangeError> {
     Ok(account.to_owned())
 }
 
-/// The server account id is the contract's `acct_` label. This is shape validation only; it makes
-/// no claim about the WorkOS identity mapping, which only the server verified.
+/// The server account id must match the frozen rev3 `^acct_[A-Za-z0-9_-]{8,64}$` grammar. This is
+/// shape validation only; it makes no claim about the WorkOS identity mapping, which only the
+/// server verified.
 fn valid_account(account: &str) -> bool {
-    account.len() > "acct_".len()
-        && account.len() <= 128
-        && account
-            .strip_prefix("acct_")
-            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'))
+    account.strip_prefix("acct_").is_some_and(|suffix| {
+        (8..=64).contains(&suffix.len()) && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    })
 }

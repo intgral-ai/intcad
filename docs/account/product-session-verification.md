@@ -34,12 +34,24 @@ document does not copy, restate or reinterpret the server contract.
 1. It takes an already validated HTTPS `WireConnection` and an injectable `Transport`.
 2. It sends one `GET /v1/status` with the provider access token as its bearer, the configured
    client version, the frozen protocol version and no body.
-3. It activates a product session only when the response is `200` and the frozen status shape
-   proves an active account: valid `acct_…` id, `active` status, `email_verified`, supported
-   client and protocol, `eligible`, no reasons, and a coherent balance/held/available snapshot.
+3. It activates a product session only when the response is `200` and the **consumed** status
+   fields pass these checks:
+   - `/account/id` matches the frozen rev3 grammar `^acct_[A-Za-z0-9_-]{8,64}$`;
+   - `/account/status` is `active` and `/account/email_verified` is `true`;
+   - `/protocol/version` is `intcad-auth/1.0` and `/protocol/supported` is `true`;
+   - `/client/supported` is `true`;
+   - `eligible` is `true` and `reasons` is empty;
+   - `balance`, `held` and `available` are present `u64` values with `held <= balance` and
+     `available == balance - held`.
 4. The stored product bearer is the exact provider token, because the server's documented scheme
    verifies that token on every product request. The client does not parse, refresh or mint a
    second token.
+
+This is not a general status decoder. It deliberately ignores `/capabilities`, `/policy`,
+`/snapshot_at` and every other member of the status response. In particular, `eligible` and
+`reasons` are used only as local fail-closed activation preconditions: activation makes no
+credit, quota, capability or execution decision, and it does not prove any controlled capability
+is enabled. A later adapter must decode and enforce those fields separately.
 
 The exchange is explicit:
 
@@ -55,13 +67,36 @@ The exchange is explicit:
 - non-`200` statuses, including `401`/`403` and server errors;
 - disabled/deleted accounts and unverified email;
 - wrong, unsupported or ineligible client/protocol metadata and non-empty reasons;
-- missing, malformed, over-long or non-`acct_` account identifiers;
+- missing `account/id`, a non-`acct_` id, `acct_` with a suffix shorter than 8 or longer than 64
+  characters, and a disallowed suffix character;
 - incoherent balance/held/available values;
 - malformed and over-sized response bodies, timeout and redirect transport failures;
 - request shape: exact configured origin, contract headers, provider bearer, no body.
 
+The positive fixtures also cover a coherent zero balance and a positive held balance. They prove
+only that the consumed arithmetic is accepted; they do not establish credit authority.
+
 Tests live in `crates/account-native/src/session_verification_tests.rs` and use a scripted
-transport. They perform no network request and use no real credential.
+transport. They perform no network request and use no real credential. This note does not claim
+live, staging or production verification.
+
+## Before production activation
+
+The following are required together; none is present in this build:
+
+- a **trusted configured product service origin**, supplied by reviewed configuration rather than
+  an environment heuristic, token field or response value;
+- a **native HTTPS transport with redirects disabled** (the existing production `ureq` transport
+  sets `https_only`, `max_redirects(0)` and platform certificates) and tests that exercise it
+  without a live service;
+- **startup tombstone recovery**: a durable sign-out marker may be cleared only after a fresh
+  provider login is verified against the configured origin and the new product session is bound
+  to the account/installation; a marker alone never restores authority;
+- **installation bootstrap**: `POST /v1/installations` with the activated product bearer and a
+  provable host scope, followed by durable installation credential storage, so a later
+  `AuthenticatedHostScope` can be proven;
+- an explicit provider sign-in command/flow, token expiry/refresh handling and revocation
+  revalidation.
 
 ## Explicit non-goals
 

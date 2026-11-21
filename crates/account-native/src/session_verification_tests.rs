@@ -165,6 +165,55 @@ fn invalid_account_identifiers_and_inconsistent_balances_never_activate() {
 }
 
 #[test]
+fn account_ids_use_the_frozen_rev3_acct_suffix_bounds() {
+    // Frozen grammar: `^acct_[A-Za-z0-9_-]{8,64}$`. Each case is a complete status body;
+    // this test only changes the consumed `/account/id` field.
+    let cases = [
+        ("missing", None, false),
+        ("suffix seven", Some(format!("acct_{}", "a".repeat(7))), false),
+        ("suffix eight", Some(format!("acct_{}", "a".repeat(8))), true),
+        ("suffix sixty four", Some(format!("acct_{}", "a".repeat(64))), true),
+        ("suffix sixty five", Some(format!("acct_{}", "a".repeat(65))), false),
+        ("bad character", Some("acct_abc/defgh".to_owned()), false),
+    ];
+
+    for (label, account, expected) in cases {
+        let mut body = active_body();
+        match account {
+            Some(account) => body["account"]["id"] = Value::String(account),
+            None => {
+                body["account"].as_object_mut().unwrap().remove("id");
+            }
+        }
+        let session = logged_in();
+        let result = session.activate_product_session(&exchange(vec![response(200, body)]));
+        assert_eq!(result.is_ok(), expected, "case {label}");
+        assert_eq!(session.product_session_active(), expected, "case {label}");
+        if !expected {
+            assert_not_activated(&session);
+        }
+    }
+}
+
+#[test]
+fn activation_accepts_a_coherent_zero_or_held_balance_snapshot() {
+    let mut zero = active_body();
+    zero["balance"] = json!(0);
+    zero["held"] = json!(0);
+    zero["available"] = json!(0);
+    let mut held = active_body();
+    held["balance"] = json!(10);
+    held["held"] = json!(3);
+    held["available"] = json!(7);
+
+    for body in [zero, held] {
+        let session = logged_in();
+        assert!(session.activate_product_session(&exchange(vec![response(200, body)])).is_ok());
+        assert!(session.product_session_active());
+    }
+}
+
+#[test]
 fn malformed_oversized_and_transport_failures_never_activate() {
     let malformed = Ok(WireResponse::new(200, b"{".to_vec()));
     let oversized = Ok(WireResponse::new(200, vec![b' '; MAX_RESPONSE_BYTES + 1]));
