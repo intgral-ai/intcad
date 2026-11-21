@@ -19,6 +19,13 @@ use solidcraft_engine::entitlement::{AccountService, AuthenticatedHostScope, Bud
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::account::{AccountPort, AccountView, DeleteAccountGuide, DeviceCode, LifecycleEvent, OwnModelView, State};
 
+/// Account facts read once before the window exists.
+#[derive(Clone, Debug)]
+pub struct AccountStartup {
+    secure_store: bool,
+    restored: Option<AuthenticatedHostScope>,
+}
+
 /// The host-owned account runtime.
 ///
 /// `service` stays `None` until a documented and reviewed account service plus an authenticated
@@ -73,10 +80,22 @@ impl AccountRuntime {
 
     /// A session is restored only when the secure store is usable, a product session is active
     /// and the authenticated account, installation and session binding are provable.
+    #[cfg(test)]
     pub fn restored_session(&self) -> Option<AuthenticatedHostScope> {
+        self.restored_with_store(self.credentials.is_persistent())
+    }
+
+    /// Read the secure-store facts once, before the window exists, so `install` does no keyring
+    /// work on the window's thread.
+    pub fn startup(&self) -> AccountStartup {
+        let secure_store = self.credentials.is_persistent();
+        AccountStartup { secure_store, restored: self.restored_with_store(secure_store) }
+    }
+
+    fn restored_with_store(&self, secure_store: bool) -> Option<AuthenticatedHostScope> {
         let scope = self.authenticated_scope();
         crate::startup::can_restore_account_session(
-            self.credentials.is_persistent(),
+            secure_store,
             self.credentials.product_session_active(),
             scope.as_ref().is_some_and(AuthenticatedHostScope::is_provable),
         )
@@ -92,9 +111,11 @@ impl AccountRuntime {
 
     /// Take the installed account service and clock only when a provable session backs them.
     fn take_commit_authority(&mut self) -> Option<(AuthenticatedHostScope, Box<dyn AccountService + Send>, Box<dyn MonotonicClock + Send>)> {
-        let scope = self.authenticated_scope()?;
+        // Check the service first: with no reviewed adapter this task performs no credential
+        // read while the window is being created.
         let service = self.service.take()?;
         let clock = self.clock.take()?;
+        let scope = self.authenticated_scope()?;
         Some((scope, service, clock))
     }
 
@@ -149,17 +170,17 @@ struct DesktopAccountPort {
 }
 
 impl DesktopAccountPort {
-    fn new(runtime: AccountRuntime) -> Self {
-        let view = current_view(&runtime);
+    fn new(runtime: AccountRuntime, startup: &AccountStartup) -> Self {
+        let view = current_view(startup);
         Self { runtime, view, lifecycle: None }
     }
 }
 
-fn current_view(runtime: &AccountRuntime) -> AccountView {
-    if !runtime.credentials.is_persistent() {
+fn current_view(startup: &AccountStartup) -> AccountView {
+    if !startup.secure_store {
         return AccountView::unavailable();
     }
-    match runtime.authenticated_scope() {
+    match startup.restored.as_ref() {
         Some(scope) => AccountView {
             signed_in: true,
             sign_in_visible: false,
@@ -245,20 +266,19 @@ impl AccountPort for DesktopAccountPort {
 /// durable ledgers are installed when they opened. Commit and billing authority are installed
 /// only from the same runtime when a reviewed service exists; in this task it does not, so
 /// controlled entries keep the existing default refusal.
-pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime) {
-    let restored = runtime.restored_session();
+pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: AccountStartup) {
     if let Some(ledger) = runtime.ledger.take() {
         app.install_review_store(Box::new(ledger));
     }
     if let Some((scope, service, clock)) = runtime.take_commit_authority() {
         app.install_commit_authority(scope, service, clock);
         solidcraft_engine::note!("account: authenticated commit authority installed for the restored session");
-    } else if restored.is_some() {
+    } else if startup.restored.is_some() {
         solidcraft_engine::note!("account: session restored from the secure store; controlled authority stays closed");
     } else {
         solidcraft_engine::note!("account: no account session restored; CAD stays anonymous and offline");
     }
-    app.account = State::with_port(Box::new(DesktopAccountPort::new(runtime)));
+    app.account = State::with_port(Box::new(DesktopAccountPort::new(runtime, &startup)));
 }
 
 #[cfg(test)]
@@ -373,7 +393,9 @@ mod tests {
     #[test]
     fn sign_out_and_switch_clear_credentials_and_raise_one_lifecycle_event() {
         for (action, expected) in [(Action::SignOut, LifecycleEvent::SignedOut), (Action::SwitchAccount, LifecycleEvent::AccountSwitched)] {
-            let mut port = DesktopAccountPort::new(AccountRuntime::with_session(active_session()));
+            let runtime = AccountRuntime::with_session(active_session());
+            let startup = runtime.startup();
+            let mut port = DesktopAccountPort::new(runtime, &startup);
             assert!(port.view().signed_in);
             if action == Action::SignOut {
                 port.sign_out().unwrap();
@@ -390,7 +412,8 @@ mod tests {
     #[test]
     fn sign_in_never_turns_a_provider_login_into_a_product_session() {
         let runtime = AccountRuntime::with_session(installed_session());
-        let mut port = DesktopAccountPort::new(runtime);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
         assert_eq!(port.sign_in().unwrap_err().code, RefusalCode::AuthUnavailable);
         assert!(!port.runtime.credentials.product_session_active());
         assert!(!port.view().signed_in);
@@ -400,8 +423,9 @@ mod tests {
     #[test]
     fn installing_the_runtime_leaves_controlled_authority_closed_without_a_service() {
         let runtime = AccountRuntime::with_session(active_session());
+        let startup = runtime.startup();
         let mut app = solidcraft_ui_egui::SolveApp::new(solidcraft_engine::Session::default(), solidcraft_ui_egui::Services::default());
-        install(&mut app, runtime);
+        install(&mut app, runtime, startup);
         assert!(app.account.is_installed(), "the desktop port is installed");
         assert!(app.account.view().signed_in, "the restored product session is shown");
 
@@ -446,7 +470,9 @@ mod tests {
 
     #[test]
     fn a_window_port_refresh_is_local_and_never_claims_a_quota() {
-        let mut port = DesktopAccountPort::new(AccountRuntime::with_session(active_session()));
+        let runtime = AccountRuntime::with_session(active_session());
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
         assert_eq!(port.view().available, None);
         assert!(port.refresh_status().is_err(), "no service may invent an online snapshot");
         assert_eq!(port.view().available, None);

@@ -1080,6 +1080,7 @@ fn main() -> eframe::Result {
     // Before the window exists: probe the platform credential store and open the durable ledger
     // off the UI thread. A missing secure store restores nothing and authorizes nothing.
     let account_runtime = account::AccountRuntime::desktop(settings.as_deref());
+    let account_startup = account_runtime.startup();
     if std::env::var_os("SOLIDCRAFT_SETTINGS_DIR").is_none() {
         adopt_legacy_settings();
     }
@@ -1294,7 +1295,7 @@ fn main() -> eframe::Result {
             // The single account composition root: UI port, durable ledger and, only when a
             // reviewed adapter exists, commit/billing authority. Ordinary CAD stays free and
             // anonymous when no session or secure store is available.
-            account::install(&mut app, account_runtime);
+            account::install(&mut app, account_runtime, account_startup);
             if let Some(path) = &theme_file
                 && let Err(e) = solidcraft_ui_egui::prefs::follow_theme_file_for_run(&mut app, path)
             {
