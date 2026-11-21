@@ -65,6 +65,9 @@ pub struct ControlRequest {
     pub reply: Sender<ControlResponse>,
     /// Set once the window starts on it; until then it waits its turn (`control.running`, #3654).
     pub started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Set while the agent chat holds it for the user's Allow or Deny: the control server does not
+    /// count that time against the request's wait, which starts again at Allow (#197).
+    pub asking: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Chat requests already admitted by the gate may outlive a tab switch. This turn's
     /// validity follows them through queues, computation and cursor animation.
     pub(crate) chat_turn: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -75,7 +78,8 @@ pub struct ControlRequest {
 impl ControlRequest {
     pub fn new(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { method: method.into(), params, reply: tx, started: Default::default(), chat_turn: None, guarded: None }, rx)
+        let (started, asking) = Default::default();
+        (Self { method: method.into(), params, reply: tx, started, asking, chat_turn: None, guarded: None }, rx)
     }
 
     pub(crate) fn refuse_cancelled_chat(&self) -> bool {

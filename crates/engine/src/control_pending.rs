@@ -98,6 +98,22 @@ pub fn reads_only(method: &str, params: &Value) -> bool {
     effect(method, params) == Effect::ReadsOnly
 }
 
+/// For a request whose time the app forecasts, the number forecasts made for it will come after
+/// (the latest one's now): a stress estimate's, once a run has meshed and counted its nodes
+/// (PIL-294 A13, [`crate::fea::Forecast`]). `None` for any other request (#197).
+pub fn forecast_after(method: &str, params: &Value) -> Option<u64> {
+    let command = matches!(method, "engine.execute" | "command").then(|| params.get("command").or_else(|| params.get("id")).and_then(Value::as_str));
+    let id = command.flatten().map(|c| crate::find_command(c).map_or(c, |spec| spec.id))?;
+    (id == "inspect.stress_estimate").then(crate::fea::forecast_seq)
+}
+
+/// What the app still expects a request to take, in seconds, by the latest forecast made after
+/// `after` ([`forecast_after`]), and that forecast's number. `None` until there is one.
+pub fn expected(after: u64) -> Option<(u64, f64)> {
+    let f = crate::fea::forecast().filter(|f| f.seq > after)?;
+    (f.seconds_left.is_finite() && f.seconds_left >= 0.0).then_some((f.seq, f.seconds_left))
+}
+
 /// The request in a message: "`engine.execute` (solid.fillet)", or just "`ui.inspect`".
 pub fn describe(method: &str, params: &Value) -> String {
     let command = matches!(method, "engine.execute" | "command")

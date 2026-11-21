@@ -4,7 +4,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -94,7 +94,8 @@ pub fn start(listen_on: control_auth::Listen, ctx: egui::Context) -> Receiver<Co
 /// The agent chat's own endpoint for its agent's MCP server (docs/agent-chat.md): a free loopback
 /// port with a fresh token of its own (never `SOLIDCRAFT_CONTROL_TOKEN`), written to the usual
 /// token file, where the MCP server finds it, so the token never passes through the agent. Its
-/// requests go to `tx`, where the chat's gate reads them; one may wait long for the user's Allow.
+/// requests go to `tx`, where the chat's gate reads them; one may wait long for the user's Allow,
+/// and its wait starts again then (#197).
 pub fn listen_agent(tx: Sender<ControlRequest>, ctx: egui::Context) -> Option<u16> {
     let Some(token) = new_token() else {
         solidcraft_engine::note!("solidcraft: agent chat endpoint not started: no random token available");
@@ -111,7 +112,8 @@ pub fn listen_agent(tx: Sender<ControlRequest>, ctx: egui::Context) -> Option<u1
 }
 
 /// Serve `listener` (loopback) with `token`; the port it listens on.
-/// `patient`: every request may wait as long as a batch (a person decides on it).
+/// `patient`: a request's wait does not count the time a person takes to decide on it
+/// ([`ControlRequest::asking`], #197).
 fn listen_on_listener(listener: TcpListener, token: String, tx: Sender<ControlRequest>, ctx: egui::Context, patient: bool) -> Option<u16> {
     let port = listener.local_addr().ok()?.port();
     match control_auth::token_path(port) {
@@ -277,6 +279,34 @@ struct Waits {
 
 const WAITS: Waits = Waits { short: Duration::from_secs(60), long: Duration::from_secs(3600), token: TOKEN_WAIT };
 
+/// How often a request the agent chat holds for the user's answer is looked at while its reply is
+/// awaited.
+const ASKING_LOOK: Duration = Duration::from_millis(50);
+
+/// Wait for `reply` up to `wait`, not counting the time `asking` is set: the agent chat holding the
+/// request for the user's Allow or Deny, so its wait starts again at Allow (#197). However long
+/// the user takes, it waits no longer than `cap` in all. Without `asking`, `wait` from now.
+fn await_reply(reply: &Receiver<Value>, wait: Duration, asking: Option<&AtomicBool>, cap: Duration) -> Result<Value, RecvTimeoutError> {
+    let Some(asking) = asking else { return reply.recv_timeout(wait) };
+    let sent = Instant::now();
+    let (mut counted, mut last) = (Duration::ZERO, sent);
+    loop {
+        let now = Instant::now();
+        if !asking.load(Ordering::Relaxed) {
+            counted += now - last;
+        }
+        last = now;
+        let left = wait.saturating_sub(counted).min(cap.saturating_sub(now - sent));
+        if left.is_zero() {
+            return Err(RecvTimeoutError::Timeout);
+        }
+        match reply.recv_timeout(left.min(ASKING_LOOK)) {
+            Err(RecvTimeoutError::Timeout) => {}
+            other => return other,
+        }
+    }
+}
+
 /// A request that timed out but is still running in the app (#1618): its id and method, and where
 /// its reply will land.
 struct Pending {
@@ -285,6 +315,10 @@ struct Pending {
     /// The request in messages ("`engine.execute` (solid.fillet)").
     what: String,
     reply: Receiver<Value>,
+    /// For a request whose time the app forecasts (a stress estimate), the number its forecasts
+    /// come after ([`control_pending::forecast_after`]): `control.pending` says what the latest
+    /// one expects (#197).
+    forecast_after: Option<u64>,
 }
 
 /// Every request the app has been sent and not answered yet, from every connection, for
@@ -640,7 +674,12 @@ fn serve_with(
                         (None, _) => json!({"ok": true, "result": {"pending": null}}),
                         (Some(p), Some(reply)) => json!({"ok": true, "result": {"pending": p.id, "method": p.method, "done": true, "reply": reply}}),
                         (Some(p), None) => {
-                            let r = json!({"ok": true, "result": {"pending": p.id, "method": p.method, "done": false}});
+                            let mut r = json!({"ok": true, "result": {"pending": p.id, "method": p.method, "done": false}});
+                            // What the app still expects it to take, once it has said (#197).
+                            if let Some((forecast, seconds)) = p.forecast_after.and_then(control_pending::expected) {
+                                r["result"]["expected_s"] = json!((seconds * 10.0).round() / 10.0);
+                                r["result"]["forecast"] = json!(forecast);
+                            }
                             pending = Some(p);
                             r
                         }
@@ -662,23 +701,26 @@ fn serve_with(
                         pending = None;
                     }
                     // A batch replaces many short requests: the whole of it may take long (#743).
-                    let wait = if patient || method == "engine.batch" { waits.long } else { waits.short };
+                    let wait = if method == "engine.batch" { waits.long } else { waits.short };
                     let what = control_pending::describe(&method, &params);
                     let effect = control_pending::effect(&method, &params);
+                    let forecast_after = control_pending::forecast_after(&method, &params);
                     // Counted before the window answers, so it publishes every change from its
                     // answer on.
                     joining = (method == "control.subscribe").then(|| design.join());
                     let (req, rrx) = ControlRequest::new(method.clone(), params);
                     let ticket = running.add(connection, &id, &req);
+                    let asking = req.asking.clone();
                     if tx.send(req).is_err() {
                         break;
                     }
                     ctx.request_repaint();
-                    match rrx.recv_timeout(wait) {
+                    // On the chat's endpoint the user's time to answer is not counted.
+                    match await_reply(&rrx, wait, patient.then_some(&*asking), waits.long.saturating_add(wait)) {
                         Ok(r) => r,
                         Err(_) => {
                             let r = json!({"ok": false, "running": true, "error": timeout_message(&what, effect)});
-                            pending = Some(Pending { id: id.clone(), method, what, reply: watch(rrx, ticket) });
+                            pending = Some(Pending { id: id.clone(), method, what, reply: watch(rrx, ticket), forecast_after });
                             r
                         }
                     }
@@ -1183,6 +1225,205 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!WATCH.subscribed(), "a closed connection is not counted on the watch");
+    }
+
+    /// The agent chat's endpoint with the MCP server its agent starts (`intcad-cli mcp
+    /// --connect`, `solidcraft_mcp::Remote`), at a hundredth of their real waits: a minute here
+    /// is 0.6 s (#197).
+    mod chat_waits {
+        use super::*;
+        use solidcraft_mcp::Backend;
+
+        const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+        fn scaled(d: Duration) -> Duration {
+            d / 100
+        }
+
+        /// The bridge's waits, scaled: its first reply, after "still running", for an earlier
+        /// request, and beyond a forecast.
+        fn bridge_waits() -> solidcraft_mcp::Waits {
+            let d = solidcraft_mcp::Waits::DEFAULT;
+            solidcraft_mcp::Waits {
+                read: scaled(d.read),
+                pending: scaled(d.pending),
+                settle: scaled(d.settle),
+                poll: Duration::from_millis(5),
+                forecast_slack: scaled(d.forecast_slack),
+                forecast_cap: scaled(d.forecast_cap),
+            }
+        }
+
+        /// The stress estimate a [`chat_window`] runs: its card waits `approval` for the user's
+        /// Allow, then the window starts it, publishes a forecast of `forecast` seconds left if
+        /// given (as a run does once it has meshed), and it runs for `run`, or until Stop
+        /// ([`solidcraft_engine::fea::cancel`]).
+        #[derive(Clone, Copy)]
+        struct Estimate {
+            approval: Duration,
+            run: Duration,
+            forecast: Option<f64>,
+        }
+
+        /// Tests that publish forecasts or press Stop share the estimate's state.
+        static FEA: Mutex<()> = Mutex::new(());
+
+        /// The chat's side of its endpoint, as `agent_chat` and the window do it, for stress
+        /// estimates ([`Estimate`]); anything else is answered at once. Counts the estimates sent.
+        fn chat_window(rx: Receiver<ControlRequest>, estimate: Estimate) -> Arc<AtomicUsize> {
+            use solidcraft_engine::fea;
+            let sent = Arc::new(AtomicUsize::new(0));
+            let count = sent.clone();
+            std::thread::spawn(move || {
+                for req in rx {
+                    if req.params["command"] != "inspect.stress_estimate" {
+                        let _ = req.reply.send(json!({"ok": true, "result": req.method}));
+                        continue;
+                    }
+                    count.fetch_add(1, Ordering::SeqCst);
+                    // The card (`agent_chat`'s gate); the window goes on with other requests meanwhile.
+                    req.asking.store(true, Ordering::Relaxed);
+                    std::thread::spawn(move || {
+                        std::thread::sleep(estimate.approval);
+                        req.asking.store(false, Ordering::Relaxed);
+                        req.started.store(true, Ordering::Relaxed);
+                        let stop = fea::cancel_generation();
+                        if let Some(seconds_left) = estimate.forecast {
+                            fea::set_forecast(fea::Forecast {
+                                document_id: "chat-waits".into(),
+                                seq: 0,
+                                run: 1,
+                                runs: 1,
+                                elements: fea::Elements::Solid,
+                                nodes: 68_863,
+                                bytes: 1e9,
+                                seconds_left,
+                            });
+                        }
+                        let ran = Instant::now();
+                        let reply = loop {
+                            if fea::cancel_generation() != stop {
+                                break json!({"ok": false, "error": fea::STOPPED});
+                            }
+                            if ran.elapsed() >= estimate.run {
+                                break json!({"ok": true, "result": {"estimated": true}});
+                            }
+                            std::thread::sleep(Duration::from_millis(5));
+                        };
+                        let _ = req.reply.send(reply);
+                    });
+                }
+            });
+            sent
+        }
+
+        /// The chat's endpoint (`patient`, as [`listen_agent`] serves it) at a hundredth of its
+        /// waits; its address and the estimates its window was sent.
+        fn chat_endpoint(running: &'static Running, estimate: Estimate) -> (String, Arc<AtomicUsize>) {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            let (tx, rx) = channel::<ControlRequest>();
+            let sent = chat_window(rx, estimate);
+            let waits = Waits { short: scaled(WAITS.short), long: scaled(WAITS.long), token: TOKEN_WAIT };
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || serve_with(stream, TOKEN, tx, egui::Context::default(), true, waits, running, &DESIGN_WATCH));
+                }
+            });
+            (addr, sent)
+        }
+
+        fn estimate(bridge: &mut solidcraft_mcp::Remote) -> Result<Value, String> {
+            bridge.call("engine.execute", json!({"command": "inspect.stress_estimate", "params": {}}))
+        }
+
+        /// The bridge the agent chat starts for agent `builtin` or another, at a hundredth of its
+        /// waits.
+        fn bridge(addr: &str, builtin: bool) -> solidcraft_mcp::Remote {
+            solidcraft_mcp::Remote::new(addr, Some(TOKEN)).with_waits(bridge_waits()).with_forecast_wait(builtin)
+        }
+
+        /// #197, step 1: the wait starts at Allow, not when the agent asked. An approval held for
+        /// 200 s, then a 150 s run: the agent gets the run's result, and the estimate was sent
+        /// once. Before #197 the bridge's 300 s counted from the send, so the reply came too late
+        /// and the bridge sent the estimate again.
+        #[test]
+        fn a_chat_requests_wait_starts_at_allow() {
+            let _fea = FEA.lock().unwrap_or_else(PoisonError::into_inner);
+            static RUNNING: Running = Running::new();
+            let run = Estimate { approval: Duration::from_millis(2000), run: Duration::from_millis(1500), forecast: None };
+            for builtin in [true, false] {
+                let (addr, sent) = chat_endpoint(&RUNNING, run);
+                let asked = Instant::now();
+                let r = estimate(&mut bridge(&addr, builtin));
+                let (took, sent) = (asked.elapsed(), sent.load(Ordering::SeqCst));
+                assert_eq!(
+                    (r.as_ref().ok(), sent),
+                    (Some(&json!({"estimated": true})), 1),
+                    "built-in {builtin}, after {took:?}, sent {sent} times: {r:?}"
+                );
+            }
+        }
+
+        /// #197: an approval held for 200 s, then a 450 s run that its forecast says takes 400 s.
+        /// The built-in agent's bridge waits for it and gets the result. Another agent's says it
+        /// still runs 300 s after Allow, as before, and `pending` gets the result later.
+        #[test]
+        fn the_built_in_agent_waits_for_the_forecast_and_others_keep_pending() {
+            let _fea = FEA.lock().unwrap_or_else(PoisonError::into_inner);
+            static RUNNING: Running = Running::new();
+            let run = Estimate { approval: Duration::from_millis(2000), run: Duration::from_millis(4500), forecast: Some(4.0) };
+            let other = std::thread::spawn(move || {
+                let (addr, sent) = chat_endpoint(&RUNNING, run);
+                let mut bridge = bridge(&addr, false);
+                let asked = Instant::now();
+                let r = estimate(&mut bridge);
+                let took = asked.elapsed();
+                assert!(r.as_ref().is_err_and(|e| e.starts_with("still running:") && e.contains("`pending`")), "after {took:?}: {r:?}");
+                // 300 s after Allow, not after the send.
+                assert!(took >= Duration::from_millis(4800) && took < Duration::from_millis(6400), "{took:?}");
+                let deadline = Instant::now() + Duration::from_secs(20);
+                let body = loop {
+                    let r = solidcraft_mcp::call_tool(&mut bridge, "pending", &json!({}));
+                    let body: Value = serde_json::from_str(r["content"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
+                    if body["done"] == true || Instant::now() > deadline {
+                        break body;
+                    }
+                };
+                assert_eq!((&body["done"], &body["result"]), (&json!(true), &json!({"estimated": true})), "{body}");
+                assert_eq!(sent.load(Ordering::SeqCst), 1);
+            });
+            static BUILTIN: Running = Running::new();
+            let (addr, sent) = chat_endpoint(&BUILTIN, run);
+            let asked = Instant::now();
+            let r = estimate(&mut bridge(&addr, true));
+            let took = asked.elapsed();
+            assert_eq!((r.as_ref().ok(), sent.load(Ordering::SeqCst)), (Some(&json!({"estimated": true})), 1), "after {took:?}: {r:?}");
+            assert!(took >= Duration::from_millis(6500), "it ran its 450 s: {took:?}");
+            other.join().unwrap();
+        }
+
+        /// #197: Stop still stops a running estimate while the built-in agent's bridge waits for
+        /// its forecast: the call returns at once with the estimate's "stopped" error.
+        #[test]
+        fn stop_still_stops_an_estimate_the_built_in_agent_waits_for() {
+            let _fea = FEA.lock().unwrap_or_else(PoisonError::into_inner);
+            static RUNNING: Running = Running::new();
+            let run = Estimate { approval: Duration::from_millis(500), run: Duration::from_secs(30), forecast: Some(30.0) };
+            let (addr, _) = chat_endpoint(&RUNNING, run);
+            let stopper = std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(2500));
+                // What the chat's Stop does while an estimate runs (`agent_chat::cancel`).
+                solidcraft_engine::fea::cancel();
+                Instant::now()
+            });
+            let r = estimate(&mut bridge(&addr, true));
+            let returned = Instant::now();
+            let stopped = stopper.join().unwrap();
+            assert!(r.as_ref().is_err_and(|e| e.starts_with("stopped")), "{r:?}");
+            assert!(returned.duration_since(stopped) < Duration::from_millis(500), "at once: {:?}", returned.duration_since(stopped));
+        }
     }
 
     /// A timed-out request that only reads is not said to "still apply", nor is one that only

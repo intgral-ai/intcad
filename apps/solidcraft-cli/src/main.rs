@@ -18,7 +18,7 @@
 //! intcad-cli oracle <case-dir>...                         replay recipes and compare with expected.json
 //! intcad-cli kernel-cases [--json] [--dumps=DIR] [--validation=MODE] <case-dir>... the kernel regression rig (tests/kernel-cases)
 //! intcad-cli mcp [--headless] [--in design|script] [--connect HOST:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]
-//!                    [--param-check off|warn|strict]
+//!                    [--param-check off|warn|strict] [--wait-for-forecast]
 //!                                                             MCP server on stdio (docs/mcp.md)
 //! intcad-cli mcp setup [--dry-run] [--client NAME] [--live] (alias: mcp install) add it to OpenCode, Claude Desktop, Claude Code, Cursor
 //! intcad-cli licences                                     Intcad's licence and the third-party licences
@@ -93,7 +93,7 @@ const USAGE_KERNEL_CASES: &str = "  intcad-cli kernel-cases <case-dir>... [--jso
 /// `fuzz`'s lines in the usage.
 const USAGE_FUZZ: &str = "  intcad-cli fuzz [--from N] [--count N] [--jobs J] [--timeout S] [--steps N] [--minimise] [--out DIR] [--report FILE]\n";
 /// `mcp`'s lines in the usage.
-const USAGE_MCP: &str = "  intcad-cli mcp [--headless] [--in design.sc|script.json] [--connect 127.0.0.1:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]\n                     [--param-check off|warn|strict] [--render-gpu]\n  intcad-cli mcp setup [--dry-run] [--client opencode|claude-desktop|claude-code|cursor] [--live]\n      (adds a `solidcraft` server, with this program's path, to each installed AI client; --live adds `intcad-live` for the running app; alias: mcp install)\n";
+const USAGE_MCP: &str = "  intcad-cli mcp [--headless] [--in design.sc|script.json] [--connect 127.0.0.1:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]\n                     [--param-check off|warn|strict] [--render-gpu] [--wait-for-forecast]\n  intcad-cli mcp setup [--dry-run] [--client opencode|claude-desktop|claude-code|cursor] [--live]\n      (adds a `solidcraft` server, with this program's path, to each installed AI client; --live adds `intcad-live` for the running app; alias: mcp install)\n";
 /// `crashes`'s lines in the usage.
 const USAGE_CRASHES: &str = "  intcad-cli crashes [list [--json] | show <id> | replay <id> | dir | clear [<id>]]\n";
 /// `licences`'s lines in the usage.
@@ -878,7 +878,11 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
                 return Err(format!("mcp: --connect wants HOST:PORT, such as 127.0.0.1:7878, not `{addr}`"));
             };
             // Serve without the app too: the tools connect once it runs, and say it isn't until then.
-            let mut remote = solidcraft_mcp::Remote::new(addr, flag(args, "--token")).with_param_check(param_check);
+            // `--wait-for-forecast`: a long stress estimate is waited for as long as the app
+            // forecasts, for a client that waits on a tool call that long (docs/mcp.md, #197).
+            let mut remote = solidcraft_mcp::Remote::new(addr, flag(args, "--token"))
+                .with_param_check(param_check)
+                .with_forecast_wait(args.iter().any(|a| a == "--wait-for-forecast"));
             if let Err(e) = remote.try_connect() {
                 solidcraft_engine::note!(
                     "solidcraft mcp: no Intcad app at {addr} yet ({e}); start it with `intcad --control {port}` \

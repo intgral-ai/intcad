@@ -369,6 +369,13 @@ run, so nothing is queued to apply unseen behind it. `control.pending` belongs t
 connection: a new connection has nothing pending. The bridged MCP server does this itself
 ([mcp.md](mcp.md#long-running-requests)).
 
+For a stress estimate, `control.pending` also says what the app still expects it to take, once a
+run has meshed and counted its nodes: `"expected_s"` (seconds, by its latest forecast) and
+`"forecast"` (that forecast's number; a new number is a new forecast). The agent chat's own
+endpoint does not count the time a request waits for the user's Allow or Deny in its wait (60
+seconds, 3600 for `engine.batch`), so the wait goes on from Allow. However long the user takes, it
+says "still running" at most an hour later than it otherwise would.
+
 `control.pending` answers only for its own connection. `control.running` answers for the whole
 app, the same on every connection, at once (it never waits behind a running request, and a
 connection may ask it while it is `busy`): every request the app has been sent and has not
