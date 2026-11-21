@@ -219,19 +219,27 @@ impl DesktopAccountPort {
     /// worker. The worker's result is applied only for its own generation, so a late result from
     /// an older switch can never clear a newer cleanup state.
     fn revoke(&mut self, event: LifecycleEvent) -> Result<(), Refusal> {
-        // Synchronous, lock-free in-process revocation: no reader can take the credential store
-        // or derive a scope while the worker holds the session lock across keyring IO.
+        // Publish the new generation and set the barrier in the same short lock. A finishing
+        // older worker takes that lock before clearing anything, so it can never clear a newer
+        // barrier between generation publication and its own stale-result check. No keyring IO
+        // happens while this lock is held.
+        let mut status = match self.cleanup.lock() {
+            Ok(status) => status,
+            Err(_) => {
+                self.runtime.credentials.revoke_in_process();
+                self.lifecycle = Some(event);
+                self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
+                return Err(account_unavailable("the account cleanup state is unavailable"));
+            }
+        };
         self.runtime.credentials.revoke_in_process();
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
+        status.pending = Some(generation);
+        status.error = None;
+        drop(status);
         self.lifecycle = Some(event);
         self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
-        if let Ok(mut status) = self.cleanup.lock() {
-            status.pending = Some(generation);
-            status.error = None;
-        } else {
-            return Err(account_unavailable("the account cleanup state is unavailable"));
-        }
 
         let credentials = self.runtime.credentials.clone();
         let cleanup = Arc::clone(&self.cleanup);
@@ -386,8 +394,8 @@ pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: Account
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::collections::{BTreeMap, VecDeque};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc::{Receiver, channel};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -415,7 +423,10 @@ mod tests {
         entries: Arc<Mutex<BTreeMap<String, String>>>,
         fail_delete: Arc<AtomicBool>,
         fail_get: Arc<AtomicBool>,
-        block_delete: Arc<Mutex<Option<Receiver<()>>>>,
+        block_delete: Arc<Mutex<VecDeque<Receiver<()>>>>,
+        block_get: Arc<Mutex<Option<Receiver<()>>>>,
+        delete_waiting: Arc<AtomicUsize>,
+        get_waiting: Arc<AtomicUsize>,
     }
 
     impl Default for TestStore {
@@ -424,21 +435,34 @@ mod tests {
                 entries: Arc::new(Mutex::new(BTreeMap::new())),
                 fail_delete: Arc::new(AtomicBool::new(false)),
                 fail_get: Arc::new(AtomicBool::new(false)),
-                block_delete: Arc::new(Mutex::new(None)),
+                block_delete: Arc::new(Mutex::new(VecDeque::new())),
+                block_get: Arc::new(Mutex::new(None)),
+                delete_waiting: Arc::new(AtomicUsize::new(0)),
+                get_waiting: Arc::new(AtomicUsize::new(0)),
             }
         }
     }
 
     impl TestStore {
-        /// Make the first delete wait until the test releases it, so the worker's off-thread
-        /// order is observable.
+        /// Make the next delete wait until the test releases it, so overlapping workers are
+        /// observable.
         fn block_next_delete(&self, gate: Receiver<()>) {
-            *self.block_delete.lock().unwrap() = Some(gate);
+            self.block_delete.lock().unwrap().push_back(gate);
+        }
+
+        /// Make the next read wait while this store's session lock is held.
+        fn block_next_get(&self, gate: Receiver<()>) {
+            *self.block_get.lock().unwrap() = Some(gate);
         }
     }
 
     impl CredentialStore for TestStore {
         fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
+            let gate = self.block_get.lock().unwrap().take();
+            if let Some(gate) = gate {
+                self.get_waiting.fetch_add(1, Ordering::SeqCst);
+                let _ = gate.recv();
+            }
             if self.fail_get.load(Ordering::SeqCst) {
                 return Err(store_error());
             }
@@ -451,8 +475,9 @@ mod tests {
         }
 
         fn delete(&mut self, key: &str) -> Result<(), CredentialError> {
-            let gate = self.block_delete.lock().unwrap().take();
+            let gate = self.block_delete.lock().unwrap().pop_front();
             if let Some(gate) = gate {
+                self.delete_waiting.fetch_add(1, Ordering::SeqCst);
                 let _ = gate.recv();
             }
             if self.fail_delete.load(Ordering::SeqCst) {
@@ -492,6 +517,17 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(port.cleanup.lock().unwrap().pending.is_none(), "cleanup worker did not finish");
+    }
+
+    fn wait_for_counter(counter: &AtomicUsize, target: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if counter.load(Ordering::SeqCst) >= target {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(counter.load(Ordering::SeqCst) >= target, "expected {target} waiting operation(s)");
     }
 
     fn active_session() -> CredentialSession {
@@ -637,6 +673,56 @@ mod tests {
         assert!(!port.runtime.credentials.is_revoked(), "the owning generation lifted the barrier");
         port.shutdown();
         assert!(!port.logout_pending, "the startup gate was already clear");
+    }
+
+    #[test]
+    fn an_older_cleanup_cannot_clear_the_newer_generation_barrier() {
+        let store = TestStore::default();
+        let (gate_one_tx, gate_one_rx) = channel();
+        let (gate_two_tx, gate_two_rx) = channel();
+        let runtime = AccountRuntime::with_session(activate_session(&store));
+        store.block_next_delete(gate_one_rx);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+
+        port.sign_out().unwrap();
+        wait_for_counter(&store.delete_waiting, 1);
+        store.block_next_delete(gate_two_rx);
+        port.sign_out().unwrap();
+        assert_eq!(port.cleanup.lock().unwrap().pending, Some(2));
+        assert!(port.runtime.credentials.is_revoked());
+
+        // Let the older worker finish. It must not clear the newer generation's barrier while
+        // the newer worker waits before its first delete.
+        gate_one_tx.send(()).unwrap();
+        wait_for_counter(&store.delete_waiting, 2);
+        assert!(port.runtime.credentials.is_revoked(), "the older cleanup cleared a newer barrier");
+        assert_eq!(port.cleanup.lock().unwrap().pending, Some(2));
+
+        gate_two_tx.send(()).unwrap();
+        wait_for_cleanup(&port);
+        assert!(!port.runtime.credentials.is_revoked(), "the owning generation lifts the barrier");
+        port.shutdown();
+    }
+
+    #[test]
+    fn a_reader_that_passed_the_pre_lock_check_cannot_return_authority_after_revocation() {
+        let store = TestStore::default();
+        let session = activate_session(&store);
+        let (gate_tx, gate_rx) = channel();
+        store.block_next_get(gate_rx);
+        let reader_session = session.clone();
+        let reader = std::thread::spawn(move || reader_session.authenticated_scope());
+
+        wait_for_counter(&store.get_waiting, 1);
+        // The reader passed the lock-free pre-check, holds the session lock and is blocked in
+        // store IO. Revoke and then clear the boolean as a completed cleanup would.
+        session.revoke_in_process();
+        assert!(session.is_revoked());
+        session.end_revocation();
+        assert!(!session.is_revoked());
+        gate_tx.send(()).unwrap();
+        assert!(reader.join().unwrap().is_none(), "the epoch change must still invalidate the waiting reader");
     }
 
     #[test]
