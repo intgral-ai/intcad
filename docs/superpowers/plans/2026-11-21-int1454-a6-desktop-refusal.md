@@ -40,6 +40,12 @@
 
 ### Round 1 review status
 
+Round 1 was reviewed at `530033c25e092127858b39246a373eb6b7ce4a11`: Spec PASS, remaining
+Q3/Q5 quality items. Round 2 closes Q3 (timeout setup failure and sub-millisecond remainder
+fail closed on the limit-refusal write and drain; ordinary/unauthorized readers unchanged)
+and Q5 (no `Instant` origin assumption in the tiny-remainder test). Q1/Q4 real-platform
+evidence and independent integration review remain NOT_RUN.
+
 Round 0 was reviewed at `b70da3901b0eed054566322e20069d4b12e4e3e0`: Spec FAIL, Quality
-CONCERNS. Round 1 addresses F1-F6 in the same scoped desktop file. Independent Spec/Quality
+CONCERNS. Round 1 addressed F1-F6 in the same scoped desktop file. Independent Spec/Quality
 review and integration are still open; scoped local checks are not desktop acceptance.

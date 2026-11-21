@@ -20,6 +20,9 @@ const MAX_CONNECTIONS: usize = 16;
 /// How long a refused connection has for its reply and cleanup, from the moment it is refused.
 /// One absolute deadline covers the write and the drain; nothing extends it.
 const REFUSAL_BUDGET: Duration = Duration::from_millis(500);
+/// The smallest socket timeout a refusal uses. Some platforms round a smaller positive timeout
+/// to zero, which can mean no timeout at all, so a sub-millisecond remainder fails closed.
+const REFUSAL_TIMEOUT_FLOOR: Duration = Duration::from_millis(1);
 /// Bytes of what a refused client already sent that are read and dropped before closing on the
 /// unauthorized path, so a reset cannot overtake the refusal.
 const UNAUTHORIZED_DRAIN_BYTES: u64 = 64 * 1024;
@@ -198,9 +201,10 @@ fn too_many_connections() -> Value {
     json!({"ok": false, "error": "too many connections"})
 }
 
-/// What is left of an absolute deadline; `None` once it has passed.
-fn time_left(deadline: Instant) -> Option<Duration> {
-    deadline.checked_duration_since(Instant::now()).filter(|left| !left.is_zero())
+/// What is left of an absolute deadline at `now`, when it is at least [`REFUSAL_TIMEOUT_FLOOR`]:
+/// `None` once it has passed or is too small for a safe socket timeout.
+fn refusal_time_left(deadline: Instant, now: Instant) -> Option<Duration> {
+    deadline.checked_duration_since(now).filter(|left| *left >= REFUSAL_TIMEOUT_FLOOR)
 }
 
 /// The socket work of one refusal, apart from admission, so a test can script it in process.
@@ -218,30 +222,40 @@ trait RefusalIo: Send {
 /// and the drain share the same instant. A failed or incomplete write closes the write side and
 /// drains what is left of the budget; an orderly close is expected on the normal path only.
 fn refuse_within(io: &mut impl RefusalIo, reply: &Value, deadline: Instant) {
-    if time_left(deadline).is_none() {
+    refuse_within_at(io, reply, deadline, Instant::now());
+}
+
+/// [`refuse_within`] with the start of the refusal given as `now`, so a test can place a
+/// sub-millisecond remainder deterministically without assuming where `Instant` starts.
+fn refuse_within_at(io: &mut impl RefusalIo, reply: &Value, deadline: Instant, now: Instant) {
+    if refusal_time_left(deadline, now).is_none() {
         return;
     }
     let _ = io.write_reply(reply, deadline);
     io.close_write();
-    io.drain(deadline, LIMIT_REFUSAL_DRAIN_BYTES);
+    if refusal_time_left(deadline, Instant::now()).is_some() {
+        io.drain(deadline, LIMIT_REFUSAL_DRAIN_BYTES);
+    }
 }
 
 /// A writer whose next write can be given only what is left of an absolute deadline.
 trait DeadlineWrite {
-    fn set_write_timeout(&mut self, left: Option<Duration>);
+    /// Set the timeout for the next write. The write must not be attempted when this fails.
+    fn set_write_timeout(&mut self, left: Option<Duration>) -> std::io::Result<()>;
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize>;
 }
 
 /// Write `line` inside `deadline`, giving every write only what is left of it. A partial write
 /// must not buy the next one another full timeout, so the timeout is recomputed before each
-/// write; `now` is a parameter so a test can advance the clock without sleeping.
+/// write; `now` is a parameter so a test can advance the clock without sleeping. A failed timeout
+/// setup, or less than [`REFUSAL_TIMEOUT_FLOOR`] left, stops before the write.
 fn write_deadline(w: &mut impl DeadlineWrite, line: &[u8], deadline: Instant, now: &mut impl FnMut() -> Instant) -> std::io::Result<()> {
     let mut written = 0;
     while written < line.len() {
-        let Some(left) = deadline.checked_duration_since(now()).filter(|left| !left.is_zero()) else {
+        let Some(left) = refusal_time_left(deadline, now()) else {
             return Err(std::io::ErrorKind::TimedOut.into());
         };
-        w.set_write_timeout(Some(left));
+        w.set_write_timeout(Some(left))?;
         match w.write(line.get(written..).unwrap_or(&[])) {
             Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
             Ok(n) => written += n,
@@ -269,12 +283,30 @@ struct SocketRefusal {
 struct SocketWrite<'a>(&'a mut TcpStream);
 
 impl DeadlineWrite for SocketWrite<'_> {
-    fn set_write_timeout(&mut self, left: Option<Duration>) {
-        let _ = self.0.set_write_timeout(left);
+    fn set_write_timeout(&mut self, left: Option<Duration>) -> std::io::Result<()> {
+        self.0.set_write_timeout(left)
     }
 
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.0.write(buf)
+    }
+}
+
+/// A limit refusal's drain read: each read gets only what is left of the one deadline, and a
+/// sub-millisecond remainder or a timeout the platform refuses stops the drain. Ordinary request
+/// reads keep [`ClientInput`] unchanged.
+struct RefusalRead {
+    socket: TcpStream,
+    deadline: Instant,
+}
+
+impl std::io::Read for RefusalRead {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let Some(left) = refusal_time_left(self.deadline, Instant::now()) else {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        };
+        self.socket.set_read_timeout(Some(left))?;
+        std::io::Read::read(&mut self.socket, buf)
     }
 }
 
@@ -293,7 +325,7 @@ impl RefusalIo for SocketRefusal {
 
     fn drain(&mut self, deadline: Instant, max: u64) {
         let Ok(read) = self.stream.try_clone() else { return };
-        let mut reader = BufReader::new(ClientInput { socket: read, deadline: Some(deadline) });
+        let mut reader = RefusalRead { socket: read, deadline };
         drain_refused(&mut reader, max);
     }
 }
@@ -1641,11 +1673,14 @@ mod tests {
         steps: Vec<usize>,
         writes: usize,
         timeouts: Vec<Duration>,
+        /// 1-based timeout call that fails; 0 means no failure.
+        fail_at: usize,
     }
 
     impl DeadlineWrite for PartialWriter {
-        fn set_write_timeout(&mut self, left: Option<Duration>) {
+        fn set_write_timeout(&mut self, left: Option<Duration>) -> std::io::Result<()> {
             self.timeouts.push(left.unwrap_or_default());
+            if self.fail_at != 0 && self.timeouts.len() == self.fail_at { Err(std::io::Error::other("scripted timeout failure")) } else { Ok(()) }
         }
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             self.writes += 1;
@@ -1683,9 +1718,9 @@ mod tests {
         refuse_within(&mut io, &too_many_connections(), Instant::now() + REFUSAL_BUDGET);
         assert_eq!(io.order, ["reply", "close", "drain"], "a failed reply still closes the write side and drains");
 
-        let deadline = Instant::now().checked_sub(Duration::from_millis(1)).unwrap();
+        let now = Instant::now();
         let mut io = Scripted::default();
-        refuse_within(&mut io, &too_many_connections(), deadline);
+        refuse_within_at(&mut io, &too_many_connections(), now, now);
         assert!(io.order.is_empty(), "a refusal past its deadline writes nothing");
     }
 
@@ -1718,7 +1753,7 @@ mod tests {
             clock += Duration::from_millis(200);
             at
         };
-        let mut writer = PartialWriter { steps: vec![2, 2, 2], writes: 0, timeouts: Vec::new() };
+        let mut writer = PartialWriter { steps: vec![2, 2, 2], writes: 0, timeouts: Vec::new(), fail_at: 0 };
         write_deadline(&mut writer, &[b'x'; 6], deadline, &mut now).unwrap();
         assert_eq!(writer.writes, 3);
         assert_eq!(
@@ -1736,11 +1771,64 @@ mod tests {
             clock += Duration::from_millis(150);
             at
         };
-        let mut writer = PartialWriter { steps: vec![1, 1], writes: 0, timeouts: Vec::new() };
+        let mut writer = PartialWriter { steps: vec![1, 1], writes: 0, timeouts: Vec::new(), fail_at: 0 };
         let error = write_deadline(&mut writer, &[b'x'; 4], deadline, &mut now).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert_eq!(writer.writes, 1);
         assert_eq!(writer.timeouts, [Duration::from_millis(100)]);
+    }
+
+    /// A timeout the platform refuses is not ignored: the write is not attempted, whether the
+    /// setup fails on the first write or after a partial one.
+    #[test]
+    fn a_refusal_timeout_setup_failure_stops_before_the_write() {
+        let now = Instant::now();
+        let deadline = now + REFUSAL_BUDGET;
+        let clock = now;
+        let mut clock_now = move || clock;
+
+        let mut writer = PartialWriter { steps: vec![6], writes: 0, timeouts: Vec::new(), fail_at: 1 };
+        let error = write_deadline(&mut writer, &[b'x'; 6], deadline, &mut clock_now).unwrap_err();
+        assert_eq!(writer.writes, 0, "no write after the first timeout setup failed");
+        assert_eq!(writer.timeouts, [REFUSAL_BUDGET]);
+        assert!(error.to_string().contains("scripted timeout failure"), "{error}");
+
+        let clock = now;
+        let mut clock_now = move || clock;
+        let mut writer = PartialWriter { steps: vec![2, 4], writes: 0, timeouts: Vec::new(), fail_at: 2 };
+        let error = write_deadline(&mut writer, &[b'x'; 6], deadline, &mut clock_now).unwrap_err();
+        assert_eq!(writer.writes, 1, "the second write is not attempted after its timeout setup failed");
+        assert_eq!(writer.timeouts, [REFUSAL_BUDGET, Duration::from_millis(500)]);
+        assert!(error.to_string().contains("scripted timeout failure"), "{error}");
+    }
+
+    /// A sub-millisecond remainder fails closed before a socket timeout is configured: a platform
+    /// may round it to zero, which can mean no timeout at all.
+    #[test]
+    fn a_sub_millisecond_refusal_fails_closed() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_micros(500);
+        assert!(refusal_time_left(deadline, now).is_none(), "sub-ms is not a safe socket timeout");
+        assert_eq!(refusal_time_left(now + Duration::from_millis(2), now), Some(Duration::from_millis(2)));
+
+        let mut io = Scripted::default();
+        refuse_within_at(&mut io, &too_many_connections(), deadline, now);
+        assert!(io.order.is_empty(), "no reply or drain starts with a sub-ms remainder");
+    }
+
+    /// The write path applies the same sub-millisecond floor: no timeout is configured and no
+    /// bytes are written.
+    #[test]
+    fn a_sub_millisecond_write_fails_closed() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_micros(500);
+        let clock = now;
+        let mut clock_now = move || clock;
+        let mut writer = PartialWriter { steps: vec![6], writes: 0, timeouts: Vec::new(), fail_at: 0 };
+        let error = write_deadline(&mut writer, &[b'x'; 6], deadline, &mut clock_now).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(writer.writes, 0);
+        assert!(writer.timeouts.is_empty(), "no platform timeout is configured with a sub-ms remainder");
     }
 
     /// The handoff returns before the reply is delivered: a job held on a channel cannot delay the
