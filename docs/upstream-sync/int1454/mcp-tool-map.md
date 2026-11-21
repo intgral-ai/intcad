@@ -44,7 +44,7 @@ and effect classes did not change. Adopting them is a schema change that must be
 tool before merge (CD-2: semantically equivalent → migrate together; behaviour, permission or side
 effect change → separate Compatibility Decision).
 
-## Disposition proposed
+## Original disposition proposal
 
 1. `version` (ReadOnly): adopt. Cheap, read-only, and the MCP unit needs a way to report the
    build; it does not change another tool.
@@ -55,6 +55,20 @@ effect change → separate Compatibility Decision).
    `mcp-server` machinery, if the split is taken) and classify each hunk as
    equivalent / behaviour change. Do this before the MCP PR; the map is a precondition, not a
    by-product.
+
+## Candidate A1 disposition
+
+Frozen upstream: `e151d5ea6866fb055e011379153fb1cae0566f22`. Candidate: `db0b8dd350bbdffed8927845c86c5028d280cb0e`. Implementation commit `6e1bcf53af8d001b838abb1545aa63aa55363bc7` is an ancestor of the candidate and records the three choices below. This is a source inventory of those choices, not a new Compatibility Decision.
+
+| Upstream → candidate | Input and output | Effects, callers and disposition |
+| --- | --- | --- |
+| `version` → `version` | Closed empty-object input; success payload `{version, commit, mode}`. The mode is `app` or `headless`; unavailable commit is `unknown`. | **Adopted**, `ReadOnly`. A standalone MCP tool, not a batch step; reads metadata from the backend answering the session through `ui.help`. See `crates/mcp/src/tools.rs:89–96,1115–1124,1479` at the candidate. |
+| `cancel` → absent | Upstream closed empty-object input; forwards the `control.cancel` outcome. No candidate registration or dispatch arm. | **Not adopted**. Upstream `Edits` tool for that MCP server's outstanding app request, not document undo. The implementation records that no reachable app cancellation route was identified. See frozen `crates/mcp/src/tools.rs:386–398,1000` and `docs/mcp.md:488–501`. |
+| `batch` with optional `path` → `batch` with required inline `commands` | The upstream string `path` selects a server-read script as an alternative to inline steps; the candidate schema rejects this field at the MCP RPC boundary. The candidate still returns inline batch results and failure/rollback details. | **`path` not adopted**; the `Files` tool itself remains. The extra server-side file-read input was left for a separate CD; this record does not approve it. See frozen `crates/mcp/src/tools.rs:144–179,1509–1515` and candidate `tools.rs:165–197,575–580,1740–1743`, `crates/mcp-server/src/schema.rs:38–43,66–82`. |
+
+The candidate MCP wrapper owns `solidcraft_mcp_server::Server<Agent>` (`crates/mcp/src/server.rs:197–206`). Both the CLI (`apps/solidcraft-cli/src/main.rs:934`) and the desktop chat bridge (`crates/ui-egui/src/agent_chat/host_bridge.rs:200–201`) use that wrapper. The shared RPC host checks arguments before dispatch (`crates/mcp-server/src/server.rs:255–263`). The old “crate split deferred” record does not describe this candidate.
+
+No runtime contract pass is claimed here. The historical MCP-connect receipt in [acceptance](acceptance.md) is on a different workflow/source pair; §5a does not supply a source-pinned verdict for this entire MCP surface. The remaining tool-by-tool schema, output, side-effect and caller classifications and final-SHA verification remain open.
 
 ## Callers to update with any tool change
 
