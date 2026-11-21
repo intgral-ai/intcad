@@ -222,18 +222,19 @@ trait RefusalIo: Send {
 /// and the drain share the same instant. A failed or incomplete write closes the write side and
 /// drains what is left of the budget; an orderly close is expected on the normal path only.
 fn refuse_within(io: &mut impl RefusalIo, reply: &Value, deadline: Instant) {
-    refuse_within_at(io, reply, deadline, Instant::now());
+    let mut now = Instant::now;
+    refuse_within_with(io, reply, deadline, &mut now);
 }
 
-/// [`refuse_within`] with the start of the refusal given as `now`, so a test can place a
-/// sub-millisecond remainder deterministically without assuming where `Instant` starts.
-fn refuse_within_at(io: &mut impl RefusalIo, reply: &Value, deadline: Instant, now: Instant) {
-    if refusal_time_left(deadline, now).is_none() {
+/// [`refuse_within`] with the clock given as `now`, so a test can show a successful reply spending
+/// the budget before cleanup is considered.
+fn refuse_within_with(io: &mut impl RefusalIo, reply: &Value, deadline: Instant, now: &mut impl FnMut() -> Instant) {
+    if refusal_time_left(deadline, now()).is_none() {
         return;
     }
     let _ = io.write_reply(reply, deadline);
     io.close_write();
-    if refusal_time_left(deadline, Instant::now()).is_some() {
+    if refusal_time_left(deadline, now()).is_some() {
         io.drain(deadline, LIMIT_REFUSAL_DRAIN_BYTES);
     }
 }
@@ -272,6 +273,38 @@ fn drain_refused(reader: &mut impl std::io::Read, max: u64) -> u64 {
     std::io::copy(&mut bounded, &mut std::io::sink()).unwrap_or(0)
 }
 
+/// A reader whose next read can be given only what is left of an absolute deadline.
+trait DeadlineRead {
+    /// Set the timeout for the next read. The read must not be attempted when this fails.
+    fn set_read_timeout(&mut self, left: Duration) -> std::io::Result<()>;
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
+}
+
+/// Read and drop up to `max` bytes of a refused client's request inside `deadline`, giving every
+/// read only what is left of it. The loop stops at the byte ceiling, at
+/// [`REFUSAL_TIMEOUT_FLOOR`], when a timeout cannot be configured, at end of stream, or on a read
+/// error; `now` is a parameter so a test can script the clock.
+fn drain_deadline(r: &mut impl DeadlineRead, max: u64, deadline: Instant, now: &mut impl FnMut() -> Instant) -> u64 {
+    const CHUNK: usize = 8 * 1024;
+    let mut buf = [0u8; CHUNK];
+    let mut dropped = 0u64;
+    while dropped < max {
+        let Some(left) = refusal_time_left(deadline, now()) else { break };
+        if r.set_read_timeout(left).is_err() {
+            break;
+        }
+        let room = (max - dropped).min(CHUNK as u64) as usize;
+        let Some(chunk) = buf.get_mut(..room) else { break };
+        match r.read(chunk) {
+            Ok(0) => break,
+            Ok(n) => dropped = dropped.saturating_add(n.min(room) as u64),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    dropped
+}
+
 /// One connection past the limit: its socket, to be replied to and closed inside the deadline the
 /// refusal job carries.
 struct SocketRefusal {
@@ -292,20 +325,18 @@ impl DeadlineWrite for SocketWrite<'_> {
     }
 }
 
-/// A limit refusal's drain read: each read gets only what is left of the one deadline, and a
-/// sub-millisecond remainder or a timeout the platform refuses stops the drain. Ordinary request
-/// reads keep [`ClientInput`] unchanged.
-struct RefusalRead {
+/// The refusal socket as a [`DeadlineRead`]: each read is bounded by what is left of the one
+/// deadline, including across partial reads.
+struct SocketRead {
     socket: TcpStream,
-    deadline: Instant,
 }
 
-impl std::io::Read for RefusalRead {
+impl DeadlineRead for SocketRead {
+    fn set_read_timeout(&mut self, left: Duration) -> std::io::Result<()> {
+        self.socket.set_read_timeout(Some(left))
+    }
+
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let Some(left) = refusal_time_left(self.deadline, Instant::now()) else {
-            return Err(std::io::ErrorKind::TimedOut.into());
-        };
-        self.socket.set_read_timeout(Some(left))?;
         std::io::Read::read(&mut self.socket, buf)
     }
 }
@@ -325,8 +356,9 @@ impl RefusalIo for SocketRefusal {
 
     fn drain(&mut self, deadline: Instant, max: u64) {
         let Ok(read) = self.stream.try_clone() else { return };
-        let mut reader = RefusalRead { socket: read, deadline };
-        drain_refused(&mut reader, max);
+        let mut reader = SocketRead { socket: read };
+        let mut now = Instant::now;
+        drain_deadline(&mut reader, max, deadline, &mut now);
     }
 }
 
@@ -1650,6 +1682,9 @@ mod tests {
         write_deadline: Option<Instant>,
         drain: Option<(Instant, u64)>,
         fail_write: bool,
+        /// The clock the reply advances by `consume`, for a test that spends the budget.
+        clock: Option<Arc<Mutex<Instant>>>,
+        consume: Duration,
     }
 
     impl RefusalIo for Scripted {
@@ -1657,6 +1692,11 @@ mod tests {
             self.order.push("reply");
             self.reply = Some(reply.clone());
             self.write_deadline = Some(deadline);
+            if let Some(clock) = &self.clock
+                && let Ok(mut at) = clock.lock()
+            {
+                *at += self.consume;
+            }
             if self.fail_write { Err(std::io::Error::other("scripted write failure")) } else { Ok(()) }
         }
         fn close_write(&mut self) {
@@ -1684,6 +1724,37 @@ mod tests {
         }
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             self.writes += 1;
+            let step = if self.steps.is_empty() { 0 } else { self.steps.remove(0) };
+            Ok(step.min(buf.len()))
+        }
+    }
+
+    /// A reader that returns a scripted number of bytes per call and records each timeout; its
+    /// scripted clock advances after each read.
+    struct ScriptedRead {
+        steps: Vec<usize>,
+        reads: usize,
+        timeouts: Vec<Duration>,
+        /// 1-based timeout call that fails; 0 means no failure.
+        fail_at: usize,
+        clock: Arc<Mutex<Instant>>,
+        advance: Duration,
+    }
+
+    impl DeadlineRead for ScriptedRead {
+        fn set_read_timeout(&mut self, left: Duration) -> std::io::Result<()> {
+            self.timeouts.push(left);
+            if self.fail_at != 0 && self.timeouts.len() == self.fail_at {
+                Err(std::io::Error::other("scripted read timeout failure"))
+            } else {
+                Ok(())
+            }
+        }
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            if let Ok(mut at) = self.clock.lock() {
+                *at += self.advance;
+            }
             let step = if self.steps.is_empty() { 0 } else { self.steps.remove(0) };
             Ok(step.min(buf.len()))
         }
@@ -1719,8 +1790,9 @@ mod tests {
         assert_eq!(io.order, ["reply", "close", "drain"], "a failed reply still closes the write side and drains");
 
         let now = Instant::now();
+        let mut clock = move || now;
         let mut io = Scripted::default();
-        refuse_within_at(&mut io, &too_many_connections(), now, now);
+        refuse_within_with(&mut io, &too_many_connections(), now, &mut clock);
         assert!(io.order.is_empty(), "a refusal past its deadline writes nothing");
     }
 
@@ -1811,8 +1883,9 @@ mod tests {
         assert!(refusal_time_left(deadline, now).is_none(), "sub-ms is not a safe socket timeout");
         assert_eq!(refusal_time_left(now + Duration::from_millis(2), now), Some(Duration::from_millis(2)));
 
+        let mut clock = move || now;
         let mut io = Scripted::default();
-        refuse_within_at(&mut io, &too_many_connections(), deadline, now);
+        refuse_within_with(&mut io, &too_many_connections(), deadline, &mut clock);
         assert!(io.order.is_empty(), "no reply or drain starts with a sub-ms remainder");
     }
 
@@ -1829,6 +1902,66 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
         assert_eq!(writer.writes, 0);
         assert!(writer.timeouts.is_empty(), "no platform timeout is configured with a sub-ms remainder");
+    }
+
+    /// A successful reply that spends the whole budget leaves nothing for cleanup: no drain
+    /// starts and no socket timeout or read is attempted.
+    #[test]
+    fn a_reply_that_consumes_the_budget_leaves_no_drain() {
+        let start = Instant::now();
+        let deadline = start + REFUSAL_BUDGET;
+        let clock = Arc::new(Mutex::new(start));
+        let mut io = Scripted { clock: Some(clock.clone()), consume: REFUSAL_BUDGET, ..Default::default() };
+        let mut now = {
+            let clock = clock.clone();
+            move || *clock.lock().unwrap()
+        };
+        refuse_within_with(&mut io, &too_many_connections(), deadline, &mut now);
+        assert_eq!(io.order, ["reply", "close"], "no drain after the reply spent the budget");
+        assert!(io.drain.is_none(), "cleanup is not started with no budget left");
+    }
+
+    /// In-progress cleanup stops when less than a millisecond is left, before another timeout or
+    /// read is attempted.
+    #[test]
+    fn cleanup_stops_on_a_sub_millisecond_budget_before_another_read() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(2);
+        let clock = Arc::new(Mutex::new(start));
+        let mut reader = ScriptedRead {
+            steps: vec![4, 4],
+            reads: 0,
+            timeouts: Vec::new(),
+            fail_at: 0,
+            clock: clock.clone(),
+            advance: Duration::from_micros(1500),
+        };
+        let mut now = {
+            let clock = clock.clone();
+            move || *clock.lock().unwrap()
+        };
+        let dropped = drain_deadline(&mut reader, 100, deadline, &mut now);
+        assert_eq!(dropped, 4);
+        assert_eq!(reader.reads, 1, "no second read with a sub-ms remainder");
+        assert_eq!(reader.timeouts, [Duration::from_millis(2)], "the second timeout is not configured");
+    }
+
+    /// In-progress cleanup stops when a read timeout cannot be configured, before another read.
+    #[test]
+    fn cleanup_stops_on_a_read_timeout_error_before_another_read() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(10);
+        let clock = Arc::new(Mutex::new(start));
+        let mut reader =
+            ScriptedRead { steps: vec![4, 4], reads: 0, timeouts: Vec::new(), fail_at: 2, clock: clock.clone(), advance: Duration::from_micros(100) };
+        let mut now = {
+            let clock = clock.clone();
+            move || *clock.lock().unwrap()
+        };
+        let dropped = drain_deadline(&mut reader, 100, deadline, &mut now);
+        assert_eq!(dropped, 4);
+        assert_eq!(reader.reads, 1, "no second read after the timeout setup failed");
+        assert_eq!(reader.timeouts.len(), 2, "the failing setup was attempted");
     }
 
     /// The handoff returns before the reply is delivered: a job held on a channel cannot delay the
