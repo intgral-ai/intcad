@@ -54,6 +54,15 @@ policy into a small generic seam without changing production behavior; no defect
 demonstrated, so there is no behavior fix. The report wording for the earlier initial-guard-only
 test is corrected. Q1/Q4 real-platform evidence and independent integration remain NOT_RUN.
 
+Round 3 review: evidence correction. Round 4 corrects the test-coverage claim: the earlier
+ceiling test exercised `drain_refused`, which is unauthorized-only, not the production limit
+helper `drain_deadline`. Round 4 adds a synthetic `DeadlineRead` ceiling test for
+`drain_deadline` (exact max, chunk larger than remainder, no extra read), pins the production
+limit argument through the existing `RefusalIo` seam, and keeps the independent unauthorized
+64 KiB test. The report now states the helpers are separate with different read-ahead
+semantics. Production behavior is unchanged. Q1/Q4 real-platform evidence and independent
+integration remain NOT_RUN.
+
 Round 0 was reviewed at `b70da3901b0eed054566322e20069d4b12e4e3e0`: Spec FAIL, Quality
 CONCERNS. Round 1 addressed F1-F6 in the same scoped desktop file. Independent Spec/Quality
 review and integration are still open; scoped local checks are not desktop acceptance.

@@ -267,7 +267,7 @@ fn write_deadline(w: &mut impl DeadlineWrite, line: &[u8], deadline: Instant, no
     Ok(())
 }
 
-/// Read and drop up to `max` bytes of a refused client's request: the drain's byte ceiling.
+/// Read and drop up to `max` bytes of an unauthorized client's request: that path's byte ceiling.
 fn drain_refused(reader: &mut impl std::io::Read, max: u64) -> u64 {
     let mut bounded = std::io::Read::take(reader, max);
     std::io::copy(&mut bounded, &mut std::io::sink()).unwrap_or(0)
@@ -1796,21 +1796,52 @@ mod tests {
         assert!(io.order.is_empty(), "a refusal past its deadline writes nothing");
     }
 
-    /// The drain reads at most its byte ceiling from a request that was already on its way; each
-    /// refusal path has its own ceiling.
+    /// The unauthorized drain helper reads at most its own 64 KiB ceiling. The connection-limit
+    /// path uses the separate `drain_deadline` helper, covered below.
     #[test]
-    fn a_refusal_drains_only_up_to_its_byte_ceiling() {
-        for (max, len) in [
-            (LIMIT_REFUSAL_DRAIN_BYTES, 0),
-            (LIMIT_REFUSAL_DRAIN_BYTES, 1),
-            (LIMIT_REFUSAL_DRAIN_BYTES, LIMIT_REFUSAL_DRAIN_BYTES),
-            (LIMIT_REFUSAL_DRAIN_BYTES, LIMIT_REFUSAL_DRAIN_BYTES + 100),
-            (UNAUTHORIZED_DRAIN_BYTES, UNAUTHORIZED_DRAIN_BYTES),
-            (UNAUTHORIZED_DRAIN_BYTES, UNAUTHORIZED_DRAIN_BYTES + 100),
-        ] {
+    fn unauthorized_drain_stops_at_its_64_kib_ceiling() {
+        for len in [0u64, 1, UNAUTHORIZED_DRAIN_BYTES, UNAUTHORIZED_DRAIN_BYTES + 100] {
             let mut reader = std::io::Cursor::new(vec![b'x'; len as usize]);
-            assert_eq!(drain_refused(&mut reader, max), max.min(len));
+            assert_eq!(drain_refused(&mut reader, UNAUTHORIZED_DRAIN_BYTES), UNAUTHORIZED_DRAIN_BYTES.min(len));
         }
+    }
+
+    /// The connection-limit drain helper stops exactly at the byte ceiling: when the scripted
+    /// chunk is larger than what remains, it reads only the remainder and makes no extra read.
+    #[test]
+    fn limit_drain_stops_exactly_at_its_byte_ceiling_with_no_extra_read() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(10);
+        let clock = Arc::new(Mutex::new(start));
+        let mut reader = ScriptedRead {
+            steps: vec![8, 8, 8],
+            reads: 0,
+            timeouts: Vec::new(),
+            fail_at: 0,
+            clock: clock.clone(),
+            advance: Duration::from_micros(100),
+        };
+        let mut now = {
+            let clock = clock.clone();
+            move || *clock.lock().unwrap()
+        };
+        let dropped = drain_deadline(&mut reader, 10, deadline, &mut now);
+        assert_eq!(dropped, 10, "the helper drops exactly the ceiling");
+        assert_eq!(reader.reads, 2, "the second read takes only the 2-byte remainder; no third read");
+        assert_eq!(reader.timeouts.len(), 2);
+    }
+
+    /// The production limit-refusal path hands the limit ceiling, not the unauthorized ceiling,
+    /// to its drain through the existing `RefusalIo` seam.
+    #[test]
+    fn the_limit_refusal_drain_uses_the_max_line_ceiling() {
+        let deadline = Instant::now() + REFUSAL_BUDGET;
+        let mut io = Scripted::default();
+        let mut now = Instant::now;
+        refuse_within_with(&mut io, &too_many_connections(), deadline, &mut now);
+        assert_eq!(io.drain, Some((deadline, LIMIT_REFUSAL_DRAIN_BYTES)), "the limit path passes its own ceiling");
+        assert_eq!(LIMIT_REFUSAL_DRAIN_BYTES, MAX_LINE as u64 + 1);
+        assert_ne!(LIMIT_REFUSAL_DRAIN_BYTES, UNAUTHORIZED_DRAIN_BYTES);
     }
 
     /// A partial write is followed by only what is left of the one absolute deadline, not another
