@@ -23,6 +23,7 @@ use solidcraft_engine::entitlement::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -334,6 +335,11 @@ pub struct ProductLogin {
 #[derive(Clone)]
 pub struct CredentialSession {
     inner: Arc<Mutex<SessionState>>,
+    /// An in-process revocation barrier, set synchronously before any keyring cleanup starts.
+    /// Reads consult it without taking the session lock, so they fail immediately even while a
+    /// worker holds the lock across a slow keyring delete. Only a completed cleanup for the
+    /// owning generation may clear it.
+    revoked: Arc<AtomicBool>,
 }
 
 struct SessionState {
@@ -359,7 +365,33 @@ impl CredentialSession {
                 provider_account: None,
                 locked: false,
             })),
+            revoked: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Fail all credential and scope reads synchronously. This never takes the session lock, so a
+    /// caller can revoke on the window thread while a worker holds the lock for keyring IO.
+    pub fn revoke_in_process(&self) {
+        self.revoked.store(true, Ordering::SeqCst);
+    }
+
+    /// Re-enable reads after the owning cleanup generation completed successfully.
+    pub fn end_revocation(&self) {
+        self.revoked.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_revoked(&self) -> bool {
+        self.revoked.load(Ordering::SeqCst)
+    }
+
+    /// The common read gate: check the lock-free barrier first, then the durable tombstone/lock
+    /// under the store lock.
+    fn lock_if_authorized(&self) -> Option<MutexGuard<'_, SessionState>> {
+        if self.revoked.load(Ordering::SeqCst) {
+            return None;
+        }
+        let state = self.inner.lock().ok()?;
+        authority_usable(&state).then_some(state)
     }
 
     pub fn with_keyring() -> Self {
@@ -375,7 +407,7 @@ impl CredentialSession {
     }
 
     pub fn bound_account(&self) -> Option<String> {
-        self.inner.lock().ok().filter(|state| !state.locked).and_then(|state| state.account.clone())
+        self.lock_if_authorized().and_then(|state| state.account.clone())
     }
 
     pub fn is_persistent(&self) -> bool {
@@ -389,10 +421,7 @@ impl CredentialSession {
     /// fails closed. Logout, a product-session exchange and switching accounts each change (or
     /// remove) the binding, so a result admitted by an old session cannot commit into a new one.
     pub fn authenticated_scope(&self) -> Option<AuthenticatedHostScope> {
-        let mut state = self.inner.lock().ok()?;
-        if !authority_usable(&state) {
-            return None;
-        }
+        let mut state = self.lock_if_authorized()?;
         if state.account.is_none() || state.installation.is_none() {
             adopt_persisted_labels(&mut state)?;
         }
@@ -445,6 +474,9 @@ impl CredentialSession {
         if state.account.as_deref() == Some(account) && !state.locked {
             return Ok(());
         }
+        // A switch replaces all old authority. Persist the same sign-out tombstone first so a
+        // failed delete cannot leave the old bearer restorable by a later process.
+        mark_logout(&mut state)?;
         clear_authority(&mut state)?;
         state.account = Some(account.to_owned());
         if let Err(error) = state.store.set(ACCOUNT_KEY, account) {
@@ -458,6 +490,23 @@ impl CredentialSession {
     /// A non-persistent headless session has no cross-process bearer to suppress, so its marker
     /// write is allowed to fail with `NoPersistentCredential` while it still clears memory.
     pub fn sign_out(&self) -> Result<(), CredentialError> {
+        self.revoke_in_process();
+        let result = self.clear_with_tombstone();
+        if result.is_ok() {
+            self.end_revocation();
+        }
+        result
+    }
+
+    /// The host worker variant: keep the in-process barrier set after a successful delete. The
+    /// host clears it only after confirming this cleanup belongs to the latest revocation
+    /// generation.
+    pub fn sign_out_keeping_revocation(&self) -> Result<(), CredentialError> {
+        self.revoke_in_process();
+        self.clear_with_tombstone()
+    }
+
+    fn clear_with_tombstone(&self) -> Result<(), CredentialError> {
         let mut state = self.lock()?;
         mark_logout(&mut state)?;
         clear_authority(&mut state)
@@ -902,10 +951,7 @@ fn valid_operation(operation: &OperationId) -> bool {
 
 impl WireCredentials for CredentialSession {
     fn product_session(&self) -> Option<Secret> {
-        let state = self.inner.lock().ok()?;
-        if !authority_usable(&state) {
-            return None;
-        }
+        let state = self.lock_if_authorized()?;
         let account = state.account.as_deref()?;
         if !safe_token(account, MAX_ACCOUNT_BYTES) {
             return None;
@@ -917,10 +963,7 @@ impl WireCredentials for CredentialSession {
     }
 
     fn installation_credential(&self) -> Option<Secret> {
-        let state = self.inner.lock().ok()?;
-        if !authority_usable(&state) {
-            return None;
-        }
+        let state = self.lock_if_authorized()?;
         let account = state.account.as_deref()?;
         let installation = state.installation.as_deref()?;
         if !safe_token(account, MAX_ACCOUNT_BYTES) || !safe_token(installation, MAX_IDENTIFIER_BYTES) {
@@ -936,7 +979,7 @@ impl WireCredentials for CredentialSession {
     }
 
     fn settlement_credential(&self, operation: &OperationId) -> Option<Secret> {
-        let state = self.inner.lock().ok()?;
+        let state = self.lock_if_authorized()?;
         let (_, _, digest) = bound_scope(&state)?;
         if !valid_operation(operation) {
             return None;
@@ -945,7 +988,7 @@ impl WireCredentials for CredentialSession {
     }
 
     fn execution_session_proof(&self, operation: &OperationId) -> Option<Secret> {
-        let state = self.inner.lock().ok()?;
+        let state = self.lock_if_authorized()?;
         let (_, _, digest) = bound_scope(&state)?;
         if !valid_operation(operation) {
             return None;
@@ -954,7 +997,7 @@ impl WireCredentials for CredentialSession {
     }
 
     fn initial_lease_proof(&self, authorization: &GrantId) -> Option<Secret> {
-        let state = self.inner.lock().ok()?;
+        let state = self.lock_if_authorized()?;
         let (_, _, digest) = bound_scope(&state)?;
         if !safe_token(authorization.as_str(), MAX_IDENTIFIER_BYTES) {
             return None;

@@ -217,10 +217,13 @@ fn logout_and_switch_account_delete_old_credential_first() {
 
     session.switch_account("acct_new").unwrap();
     let calls = store.take_calls();
-    let first_set = calls.iter().position(|call| matches!(call, Call::Set(_))).unwrap();
+    let tombstone = calls.iter().position(|call| matches!(call, Call::Set(key) if key == "auth/logout_pending")).unwrap();
+    let first_delete = calls.iter().position(|call| matches!(call, Call::Delete(_))).unwrap();
     let last_delete = calls.iter().rposition(|call| matches!(call, Call::Delete(_))).unwrap();
-    assert!(last_delete < first_set, "old credentials must be deleted before the new account is written: {calls:?}");
-    assert_eq!(calls.first(), Some(&Call::Delete(PRODUCT_SESSION_KEY.to_owned())), "the session credential is removed first");
+    let account_set = calls.iter().position(|call| matches!(call, Call::Set(key) if key == "account/id")).unwrap();
+    assert!(tombstone < first_delete, "the durable sign-out marker is written before any delete: {calls:?}");
+    assert!(last_delete < account_set, "old credentials must be deleted before the new account is written: {calls:?}");
+    assert_eq!(calls.get(first_delete), Some(&Call::Delete(PRODUCT_SESSION_KEY.to_owned())), "the session credential is removed first");
     assert!(calls.iter().any(|call| matches!(call, Call::Delete(key) if key == "install/credential")));
     assert!(!store.contains_key(PRODUCT_SESSION_KEY));
     assert!(WireCredentials::product_session(&session).is_none());
