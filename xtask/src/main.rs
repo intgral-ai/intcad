@@ -234,6 +234,21 @@ pub fn metadata() -> Result<serde_json::Value, String> {
     serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: bad JSON: {e}"))
 }
 
+/// The locked resolved graph, including registry dependencies and their target conditions.
+pub fn metadata_resolved() -> Result<serde_json::Value, String> {
+    let out = cargo().args(["metadata", "--format-version", "1", "--locked"]).output().map_err(|e| format!("cargo metadata: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("cargo metadata failed:\n{}", String::from_utf8_lossy(&out.stderr)));
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: bad JSON: {e}"))
+}
+
+/// Fail when a native-only dependency reaches a browser or wasm root.
+fn closure_guard() -> Result<Vec<layers::Violation>, String> {
+    let graph = layers::from_resolve(&metadata_resolved()?)?;
+    Ok(layers::closure_check(&graph))
+}
+
 /// The full action matrix (apps/solidcraft-cli/tests/action_matrix.rs), with the ci profile.
 fn cmd_action_matrix(bless: bool, results: Option<&str>, from: Option<&str>) -> Result<(), String> {
     let mut c = cargo();
@@ -286,16 +301,24 @@ fn cmd_layers() -> Result<(), String> {
         println!("{:<28} {:<14} {}", c.name, layers::describe(layers::classify(&c.name)), ws.join(", "));
     }
     let violations = layers::check(&crates);
+    let closure = closure_guard()?;
     println!();
-    if violations.is_empty() {
+    println!("Native-only dependency closures:");
+    if closure.is_empty() {
+        println!("OK: no native-only crate reaches a browser or wasm root.");
+    }
+    for v in &closure {
+        println!("  - {v}");
+    }
+    if violations.is_empty() && closure.is_empty() {
         println!("OK: {} crates, no layering violations.", crates.len());
         Ok(())
     } else {
-        println!("{} violation(s):", violations.len());
+        println!("{} violation(s):", violations.len() + closure.len());
         for v in &violations {
             println!("  - {v}");
         }
-        Err(format!("{} layering violation(s)", violations.len()))
+        Err(format!("{} layering violation(s)", violations.len() + closure.len()))
     }
 }
 
@@ -442,6 +465,13 @@ fn cmd_wasm() -> Result<(), String> {
 /// The wasm check and how many crates it covers. It uses the ci profile so the host build
 /// scripts and proc macros built for clippy and the tests are reused.
 fn wasm_check() -> Result<(Command, usize), String> {
+    // The graph, not only the member list: a native-only registry dependency must not reach the
+    // browser or the wasm closure.
+    let closure = closure_guard()?;
+    if !closure.is_empty() {
+        let text: Vec<String> = closure.iter().map(ToString::to_string).collect();
+        return Err(format!("{} native-only dependency closure violation(s): {}", closure.len(), text.join("; ")));
+    }
     let crates = layers::from_metadata(&metadata()?)?;
     let mut set: Vec<String> =
         crates.iter().filter(|c| matches!(layers::classify(&c.name), Some(layers::Class::Layer(_)))).map(|c| c.name.clone()).collect();
