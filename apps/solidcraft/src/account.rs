@@ -209,6 +209,9 @@ impl DesktopAccountPort {
         if let Some(error) = &status.error {
             return Err(error.clone());
         }
+        if self.runtime.credentials.is_revoked() {
+            return Err(account_unavailable("the account authority is revoked"));
+        }
         Ok(())
     }
 
@@ -216,26 +219,35 @@ impl DesktopAccountPort {
     /// worker. The worker's result is applied only for its own generation, so a late result from
     /// an older switch can never clear a newer cleanup state.
     fn revoke(&mut self, event: LifecycleEvent) -> Result<(), Refusal> {
+        // Synchronous, lock-free in-process revocation: no reader can take the credential store
+        // or derive a scope while the worker holds the session lock across keyring IO.
+        self.runtime.credentials.revoke_in_process();
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
+        self.lifecycle = Some(event);
+        self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
         if let Ok(mut status) = self.cleanup.lock() {
             status.pending = Some(generation);
             status.error = None;
         } else {
             return Err(account_unavailable("the account cleanup state is unavailable"));
         }
-        self.lifecycle = Some(event);
-        self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
 
         let credentials = self.runtime.credentials.clone();
         let cleanup = Arc::clone(&self.cleanup);
         let worker = std::thread::Builder::new().name("intcad-account-cleanup".into()).spawn(move || {
-            let result = credentials.sign_out();
+            let result = credentials.sign_out_keeping_revocation();
             if let Ok(mut status) = cleanup.lock()
                 && status.pending == Some(generation)
             {
                 status.pending = None;
-                status.error = result.err().map(|_| account_unavailable("the account session cleanup did not complete"));
+                if result.is_ok() {
+                    // Only the owning generation may lift the barrier.
+                    credentials.end_revocation();
+                    status.error = None;
+                } else {
+                    status.error = Some(account_unavailable("the account session cleanup did not complete"));
+                }
             }
         });
         match worker {
@@ -243,11 +255,12 @@ impl DesktopAccountPort {
                 self.workers.push(handle);
                 Ok(())
             }
-            // The in-process authority is already revoked. The durable marker was never written,
-            // so this process stays fail-closed and the caller sees the error; cross-process
-            // suppression cannot be claimed when the worker cannot start.
+            // In-process authority and the event are already applied. The durable marker was
+            // never written, so the status says cleanup never started (not that it is pending),
+            // and this process stays fail-closed; cross-process suppression cannot be claimed.
             Err(_) => {
                 if let Ok(mut status) = self.cleanup.lock() {
+                    status.pending = None;
                     status.error = Some(account_unavailable("the sign-out cleanup could not start"));
                 }
                 Err(account_unavailable("the sign-out cleanup could not start"))
@@ -382,7 +395,7 @@ mod tests {
     use serde_json::json;
     use solidcraft_account_native::{
         CredentialHandoff, CredentialSession, MemorySession, NoPersistentStore, ProductExchangeError, ProductSession, ProductSessionExchange,
-        ProviderSession, Secret,
+        ProviderSession, Secret, WireCredentials,
     };
     use solidcraft_engine::entitlement::{
         Admission, BillingResult, Capability, CredentialError, CredentialErrorCode, CredentialStore, EntryCategory, Grant, OperationId, Refusal,
@@ -466,7 +479,7 @@ mod tests {
         let mut session = CredentialSession::new(Box::new(store.clone()));
         session.complete_provider_login("provider_account", "provider_token").unwrap();
         session.activate_product_session(&TestExchange).unwrap();
-        session.installation_credential("installation_desktop", Secret::new("installation_credential")).unwrap();
+        CredentialHandoff::installation_credential(&mut session, "installation_desktop", Secret::new("installation_credential")).unwrap();
         session
     }
 
@@ -526,7 +539,7 @@ mod tests {
         let mut session = CredentialSession::new(Box::new(memory.clone()));
         session.complete_provider_login("provider_account", "provider_token").unwrap();
         session.activate_product_session(&TestExchange).unwrap();
-        session.installation_credential("installation_memory", Secret::new("installation_credential")).unwrap();
+        CredentialHandoff::installation_credential(&mut session, "installation_memory", Secret::new("installation_credential")).unwrap();
         assert!(session.authenticated_scope().is_some(), "the in-memory session is usable now");
 
         let restarted = AccountRuntime::with_session(CredentialSession::new(Box::new(memory)));
@@ -611,10 +624,17 @@ mod tests {
         assert_eq!(port.take_lifecycle_event(), Some(LifecycleEvent::SignedOut));
         assert!(!port.view().signed_in, "authority is revoked before the worker finishes");
         assert!(port.cleanup.lock().unwrap().pending.is_some(), "the worker is waiting on the inert delete");
+        // The lock-free barrier is already set, so no reader can recover the old bearer or derive
+        // its scope even though the worker is blocked before its first delete.
+        assert!(port.runtime.credentials.is_revoked());
+        assert!(WireCredentials::product_session(&port.runtime.credentials).is_none());
+        assert!(WireCredentials::installation_credential(&port.runtime.credentials).is_none());
+        assert!(port.runtime.authenticated_scope().is_none());
 
         gate_tx.send(()).unwrap();
         wait_for_cleanup(&port);
         assert!(port.cleanup.lock().unwrap().error.is_none(), "cleanup completed");
+        assert!(!port.runtime.credentials.is_revoked(), "the owning generation lifted the barrier");
         port.shutdown();
         assert!(!port.logout_pending, "the startup gate was already clear");
     }
