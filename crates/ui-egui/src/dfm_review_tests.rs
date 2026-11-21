@@ -73,6 +73,7 @@ struct ReviewLedger {
     fail_terminal: Arc<Mutex<bool>>,
     fail_mapping: Arc<Mutex<bool>>,
     fail_lookup: Arc<Mutex<bool>>,
+    fail_inventory: Arc<Mutex<bool>>,
 }
 
 impl ReviewLedger {
@@ -136,6 +137,14 @@ impl ReviewLedger {
 
     fn fail_next_lookup(&self, fail: bool) {
         *self.fail_lookup.lock().expect("flag") = fail;
+    }
+
+    fn fail_next_inventory(&self, fail: bool) {
+        *self.fail_inventory.lock().expect("flag") = fail;
+    }
+
+    fn remove_record(&self, operation: &OperationId) {
+        self.records.lock().expect("records").remove(operation.as_str());
     }
 
     fn record_settlement_intent_claim(&self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError> {
@@ -257,7 +266,7 @@ impl OperationStore for LedgerHandle {
     }
 
     fn unsettled_operations(&self, scope: Option<&AuthenticatedHostScope>) -> Result<Vec<UnsettledOperation>, OperationStoreError> {
-        if *self.0.fail_lookup.lock().expect("flag") {
+        if *self.0.fail_inventory.lock().expect("flag") {
             return Err(OperationStoreError::Unavailable);
         }
         let records = self.0.records.lock().expect("records");
@@ -1000,7 +1009,7 @@ fn review_startup_ledger_error_is_visible() {
     let mut restarted = Harness::new();
     install(&mut restarted.app, &billing, &ledger);
     restarted.app.session.path = first.app.session.path.clone();
-    ledger.fail_next_lookup(true);
+    ledger.fail_next_inventory(true);
     crate::dfm_review::resume_review(&mut restarted.app);
     assert!(
         restarted.app.dfm_review.error.as_deref().is_some_and(|error| error.starts_with("AUTH_UNAVAILABLE:")),
@@ -1159,4 +1168,129 @@ fn review_startup_settles_a_pending_run_in_the_matching_scope() {
     assert_eq!(billing.releases(), 1, "the original pending operation settles once");
     assert!(restarted.app.dfm_review.settled);
     assert!(!restarted.app.dfm_review.running, "settlement never reruns the check");
+}
+
+/// An inventory read failure leaves an explicit fail-closed state that is independent of any
+/// operation id. A valid new row and billing authority do not admit or dispatch a fresh check.
+#[test]
+fn review_inventory_error_blocks_start_before_any_admission() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    install(&mut h.app, &billing, &ledger);
+    ledger.fail_next_inventory(true);
+    crate::dfm_review::resume_review(&mut h.app);
+    assert!(h.app.dfm_review.recovery_unverified, "an unverified inventory is fail-closed");
+    assert!(h.app.dfm_review.error.as_deref().is_some_and(|error| error.starts_with("AUTH_UNAVAILABLE:")), "{:?}", h.app.dfm_review.error);
+
+    // UI state changes keep the conservative process-local block.
+    h.app.dfm_review.clear();
+    assert!(h.app.dfm_review.recovery_unverified, "a document change cannot clear the block");
+
+    // A direct preparation with an otherwise valid durable row is refused before admission.
+    let prepared = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record(prepared.clone());
+    let error = crate::dfm_review::prepare_review_with(&mut h.app, prepared).unwrap_err();
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert_eq!(billing.admits(), 0, "no fresh grant is requested while the inventory is unverified");
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(billing.releases(), 0);
+    assert!(h.app.dfm_review.mapped_run.is_none(), "no run is bound or dispatched");
+
+    // The actual UI press clears its old warning first, then the central guard restores the
+    // refusal without admitting anything.
+    let started = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record(started.clone());
+    crate::dfm_review::start(&mut h.app);
+    assert!(h.app.dfm_review.recovery_unverified, "start cannot clear the fail-closed state");
+    let error = h.app.dfm_review.error.clone().expect("the press reports its refusal");
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert_eq!(billing.admits(), 0, "a run press admits nothing");
+    assert_eq!(billing.releases(), 0, "nothing was held, so nothing is released");
+    assert!(!h.app.dfm_review.running);
+}
+
+/// A fallback mapping lookup failure after a successful empty inventory is also fail-closed, so
+/// the same press cannot proceed on a later valid row.
+#[test]
+fn review_fallback_lookup_error_blocks_a_fresh_start() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let mut first = Harness::new();
+    let (operation, run) = begin_with_record(&mut first, &billing, &ledger);
+    let scratch = ProjectScratch::new("fallback-lookup-error");
+    let root = project_session(&mut first, &scratch);
+    stopped_run(&root, &run, RunOutcome::Cancelled);
+    ledger.set_terminal(&operation, solidcraft_engine::entitlement::OperationStatus::Released);
+
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    restarted.app.session.path = first.app.session.path.clone();
+    ledger.fail_next_lookup(true);
+    crate::dfm_review::resume_review(&mut restarted.app);
+    assert!(restarted.app.dfm_review.recovery_unverified, "a failed fallback lookup is fail-closed");
+    assert!(
+        restarted.app.dfm_review.error.as_deref().is_some_and(|error| error.starts_with("AUTH_UNAVAILABLE:")),
+        "{:?}",
+        restarted.app.dfm_review.error
+    );
+
+    let prepared = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record(prepared.clone());
+    let admits = billing.admits();
+    let error = crate::dfm_review::prepare_review_with(&mut restarted.app, prepared).unwrap_err();
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert_eq!(billing.admits(), admits, "the failed fallback lookup blocks new admission");
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(billing.releases(), 0);
+}
+
+/// A mapped run whose durable row disappears during recovery is not treated as "nothing to do".
+#[test]
+fn review_disappearing_row_blocks_a_fresh_start() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let mut first = Harness::new();
+    let (operation, run) = begin_with_record(&mut first, &billing, &ledger);
+    let scratch = ProjectScratch::new("disappearing-row");
+    let root = project_session(&mut first, &scratch);
+    stopped_run(&root, &run, RunOutcome::Cancelled);
+    ledger.remove_record(&operation);
+
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    restarted.app.session.path = first.app.session.path.clone();
+    crate::dfm_review::resume_review(&mut restarted.app);
+    assert!(restarted.app.dfm_review.recovery_unverified, "a disappearing row is unverified, not empty");
+    assert!(
+        restarted.app.dfm_review.error.as_deref().is_some_and(|error| error.starts_with("AUTH_UNAVAILABLE:")),
+        "{:?}",
+        restarted.app.dfm_review.error
+    );
+    assert_eq!(billing.releases(), 0);
+    assert_eq!(billing.commits(), 0);
+
+    let prepared = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record(prepared.clone());
+    let admits = billing.admits();
+    let error = crate::dfm_review::prepare_review_with(&mut restarted.app, prepared).unwrap_err();
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert_eq!(billing.admits(), admits, "a disappearing row blocks new admission");
+}
+
+/// A successful empty inventory is not a failure and still allows one fresh Review operation.
+#[test]
+fn review_empty_inventory_keeps_fresh_start_available() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    install(&mut h.app, &billing, &ledger);
+    crate::dfm_review::resume_review(&mut h.app);
+    assert!(!h.app.dfm_review.recovery_unverified);
+    assert!(h.app.dfm_review.error.is_none());
+
+    let operation = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record(operation.clone());
+    crate::dfm_review::prepare_review_with(&mut h.app, operation).expect("an empty inventory admits a fresh operation");
+    assert_eq!(billing.admits(), 1);
 }

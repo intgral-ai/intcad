@@ -71,6 +71,11 @@ pub struct State {
     /// A recovered row whose original scope could not be proven is kept for the original session.
     /// The current session may neither settle nor release it.
     pub(crate) settlement_blocked: bool,
+    /// The controlled operation journal could not be verified (inventory or fallback read
+    /// failure). This is independent of whether an operation id is known and blocks fresh
+    /// admission and settlement. It is conservatively retained for this process; no automatic
+    /// revalidation clears it.
+    pub(crate) recovery_unverified: bool,
 }
 
 impl State {
@@ -83,7 +88,8 @@ impl State {
         let settled = self.settled;
         let cancelling = self.cancelling;
         let settlement_blocked = self.settlement_blocked;
-        *self = Self { operation, mapped_run, settled, cancelling, settlement_blocked, ..Self::default() };
+        let recovery_unverified = self.recovery_unverified;
+        *self = Self { operation, mapped_run, settled, cancelling, settlement_blocked, recovery_unverified, ..Self::default() };
     }
 }
 
@@ -137,9 +143,23 @@ fn authority_error(app: &SolveApp) -> Option<String> {
     None
 }
 
+/// A recovery read that failed leaves the journal's disposition unverified. This is checked
+/// before admission and before settlement, independently of whether an operation id is known.
+fn unverified_recovery_refusal(app: &SolveApp) -> Option<String> {
+    app.dfm_review.recovery_unverified.then(|| {
+        coded(
+            RefusalCode::AuthUnavailable,
+            "the controlled operation journal could not be verified in this process; no fresh Review admission or settlement is allowed until the app restarts or a reviewed revalidation succeeds",
+        )
+    })
+}
+
 /// The host's exact Review identity: a free-looking latest run or the service's active run is
 /// never used to infer this operation.
 fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(String, u64), String> {
+    if let Some(error) = unverified_recovery_refusal(app) {
+        return Err(error);
+    }
     if app.dfm_review.settlement_blocked
         && let Some(previous) = app.dfm_review.operation.as_ref()
     {
@@ -212,6 +232,9 @@ fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(St
 /// A terminal row finishes without another call; an existing intent without a terminal row is an
 /// ambiguous earlier attempt and is surfaced, never repeated.
 fn apply_settlement(app: &mut SolveApp, operation: &OperationId, intent: SettlementIntent) -> Result<(), String> {
+    if let Some(error) = unverified_recovery_refusal(app) {
+        return Err(error);
+    }
     if app.dfm_review.settlement_blocked {
         return Err(coded(
             RefusalCode::AuthUnavailable,
@@ -349,6 +372,7 @@ pub(crate) fn resume_review(app: &mut SolveApp) {
     let rows = match store.unsettled_operations(app.commit_scope.as_ref()) {
         Ok(rows) => rows,
         Err(error) => {
+            app.dfm_review.recovery_unverified = true;
             app.dfm_review.error =
                 Some(coded(RefusalCode::AuthUnavailable, format!("the Review ledger could not list unresolved operations: {error:?}")));
             return;
@@ -432,6 +456,7 @@ pub(crate) fn resume_review(app: &mut SolveApp) {
         }
     });
     if let Some(error) = lookup_error {
+        app.dfm_review.recovery_unverified = true;
         app.dfm_review.error = Some(coded(RefusalCode::AuthUnavailable, format!("the Review ledger could not scan mapped runs: {error:?}")));
         return;
     }
@@ -447,15 +472,18 @@ pub(crate) fn resume_review(app: &mut SolveApp) {
             app.dfm_review.mapped_run = Some(run.clone());
             app.dfm_review.settled = false;
             app.dfm_review.settlement_blocked = true;
+            app.dfm_review.recovery_unverified = true;
             app.dfm_review.error = Some(coded(
                 RefusalCode::AuthUnavailable,
                 format!("Review operation {} remains unresolved but was not classified by the durable inventory; it is kept", operation.as_str()),
             ));
         }
         Ok(None) => {
+            app.dfm_review.recovery_unverified = true;
             app.dfm_review.error = Some(coded(RefusalCode::AuthUnavailable, format!("Review operation {} has no durable row", operation.as_str())));
         }
         Err(error) => {
+            app.dfm_review.recovery_unverified = true;
             app.dfm_review.error = Some(coded(RefusalCode::AuthUnavailable, format!("the Review ledger is unavailable: {error:?}")));
         }
     }
