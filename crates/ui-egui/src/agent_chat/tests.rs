@@ -12788,6 +12788,217 @@ fn no_tool_turn_warning_leaves_answers_and_incomplete_turns_quiet() {
     }
 }
 
+// ---- A stress estimate's answer, checked for the wording rules (#201) ----
+// The direct API path's test (`api_client.rs`) uses these too.
+
+pub(super) const STRESS_FACTOR: &str = "The peak is 138 MPa at the root, a safety factor 1.4 against the 193 MPa yield.";
+pub(super) const STRESS_ZH_VERDICT: &str = "最大应力约 138 MPa，位于根部，结构合格。";
+pub(super) const STRESS_GOOD: &str = "Away from the clamp, the highest von Mises stress is about 106 MPa near the inner corner of the bend: about 55 % \
+                           of the yield strength given (193 MPa, 5052-H32). The mesh check says it settled (+1.2 %). The supports carry \
+                           10.0 N against 10.0 N applied.";
+pub(super) const STRESS_GOOD_ZH: &str =
+    "远离夹持处的最大 von Mises 应力约为 106 MPa，约为给定屈服强度（193 MPa，5052-H32）的 55%。通过网格检查可以看出该数值已稳定。";
+
+/// A 10 mm cube to estimate, and a setup for it that the approval card's check accepts.
+pub(super) fn stress_cube(app: &mut SolveApp, dry_run: bool) -> Value {
+    if app.session.model.state().bodies.is_empty() {
+        app.run("solid.box", boxed(0.0)["params"].clone()).unwrap();
+    }
+    json!({"loads": [{"face": [10, 5, 5], "force": [0, 0, -10]}], "supports": [{"face": [0, 5, 5]}], "material": "6061-T6", "dry_run": dry_run})
+}
+
+/// The agent asks for a stress estimate on the cube, as its MCP server sends it; the user allows
+/// a solve on its approval card (a dry run asks nothing). The run itself (gmsh and CalculiX) is
+/// not part of these tests: a solved one is shown with [`stress_answer::show_solved`].
+pub(super) fn ask_and_allow_stress(app: &mut SolveApp, tx: &Sender<ControlRequest>, dry_run: bool) {
+    let params = stress_cube(app, dry_run);
+    let _reply = ask(tx, "engine.execute", json!({"command": "inspect.stress_estimate", "params": params}));
+    pump_tools(app);
+    if !dry_run {
+        let id = app.agent_chat.held.first().map(|h| h.id).expect("the approval card");
+        approve(app, id, true);
+    }
+    assert_eq!(app.control_held.len(), 1, "the estimate went to run");
+    app.control_held.clear();
+}
+
+/// One turn on the scripted backend: the request (`Some(dry_run)`; `None`: no estimate), a
+/// solved estimate shown or not, the answer and the turn's end.
+fn stress_turn(asked: Option<bool>, solve: bool, answer: &str, reason: &str) -> SolveApp {
+    let (mut app, _, _) = app_with_script();
+    let (tx, rx) = channel();
+    app.agent_chat.tools_rx = Some(rx);
+    app.agent_chat.tools_port = Some(12345);
+    stress_cube(&mut app, false);
+    start_turn(&mut app, "How much stress is in the bracket?".into(), false, None, vec![]);
+    if let Some(dry_run) = asked {
+        ask_and_allow_stress(&mut app, &tx, dry_run);
+    }
+    if solve {
+        stress_answer::show_solved(&app.session.document_id);
+    }
+    app.agent_chat.on_event(Event::Text { thought: false, text: answer.into() });
+    app.agent_chat.on_event(Event::TurnEnded { reason: reason.into() });
+    end_turn(&mut app);
+    app
+}
+
+/// The agent's answer as shown, and the notices after it (nothing else may follow it).
+pub(super) fn after_answer(app: &SolveApp) -> (String, Vec<String>) {
+    let at = app.agent_chat.items.iter().rposition(|i| matches!(i, Item::Agent { thought: false, .. })).unwrap();
+    let Item::Agent { text, .. } = &app.agent_chat.items[at] else { panic!("not an answer") };
+    let notices = app.agent_chat.items[at + 1..]
+        .iter()
+        .map(|i| match i {
+            Item::Notice { text, error: false } => text.clone(),
+            other => panic!("only notices follow the answer: {other:?}"),
+        })
+        .collect();
+    (text.clone(), notices)
+}
+
+#[test]
+fn a_stress_answer_with_a_verdict_gets_a_warning_under_it_and_keeps_its_words() {
+    let _shown = stress_answer::shown_lock();
+    for (answer, word) in [(STRESS_FACTOR, "safety factor"), (STRESS_ZH_VERDICT, "合格")] {
+        let app = stress_turn(Some(false), true, answer, "");
+        let (shown, notices) = after_answer(&app);
+        assert_eq!(shown, answer, "the answer is never rewritten");
+        let verdict = trf("ui.agent_chat_stress_verdict", &[("words", word)]);
+        assert_eq!(notices, [format!("{verdict}\n{}", tr("ui.agent_chat_stress_no_share"))], "{answer}");
+        assert_eq!(status(&app)["turnWarning"], notices[0], "the control channel reports it too");
+    }
+    // In a batch, the same.
+    let (mut app, _, _) = app_with_script();
+    let (tx, rx) = channel();
+    app.agent_chat.tools_rx = Some(rx);
+    let setup = stress_cube(&mut app, false);
+    start_turn(&mut app, "Run it".into(), false, None, vec![]);
+    let _reply = ask(&tx, "engine.batch", json!({"commands": [{"command": "model.faces"}, {"command": "inspect.stress_estimate", "params": setup}]}));
+    pump_tools(&mut app);
+    let id = app.agent_chat.held.first().map(|h| h.id).expect("the approval card");
+    approve(&mut app, id, true);
+    app.control_held.clear();
+    stress_answer::show_solved(&app.session.document_id);
+    app.agent_chat.on_event(Event::Text { thought: false, text: "The part passes: about 55 % of the yield strength.".into() });
+    app.agent_chat.on_event(Event::TurnEnded { reason: String::new() });
+    end_turn(&mut app);
+    assert_eq!(after_answer(&app).1, [trf("ui.agent_chat_stress_verdict", &[("words", "passes")])]);
+}
+
+#[test]
+fn a_stress_answer_that_follows_the_rules_gets_no_warning() {
+    let _shown = stress_answer::shown_lock();
+    for answer in [STRESS_GOOD, STRESS_GOOD_ZH] {
+        let app = stress_turn(Some(false), true, answer, "");
+        assert_eq!(after_answer(&app), (answer.to_string(), Vec::new()), "{answer}");
+        assert!(status(&app)["turnWarning"].is_null());
+    }
+    // Without the share of yield, only that is said.
+    let app = stress_turn(Some(false), true, "The highest stress is about 106 MPa near the root; the mesh check settled.", "");
+    assert_eq!(after_answer(&app).1, [tr("ui.agent_chat_stress_no_share").to_string()]);
+}
+
+/// No warning on a turn that solved no estimate: none asked for, only a dry run, an allowed run
+/// that failed (nothing new shown), a result shown without a request (Show), a turn that was
+/// stopped, cut off or failed, or the turn after an estimate.
+#[test]
+fn no_warning_on_a_turn_without_a_solved_stress_estimate() {
+    let _shown = stress_answer::shown_lock();
+    for (case, asked, solve, reason) in [
+        ("no estimate", None, false, ""),
+        ("shown without a request", None, true, ""),
+        ("a dry run", Some(true), false, ""),
+        ("a dry run, then something shown", Some(true), true, ""),
+        ("allowed but failed", Some(false), false, ""),
+        ("stopped", Some(false), true, "cancelled"),
+        ("cut off", Some(false), true, "max_tokens"),
+        ("failed turn", Some(false), true, "error"),
+    ] {
+        let app = stress_turn(asked, solve, STRESS_FACTOR, reason);
+        let warned = stress_answer::warning(STRESS_FACTOR).unwrap();
+        assert!(!app.agent_chat.items.iter().any(|i| matches!(i, Item::Notice { text, .. } if *text == warned)), "{case}");
+        assert!(status(&app)["turnWarning"].is_null(), "{case}");
+    }
+    // The next turn does not inherit the last one's estimate.
+    let (mut app, _, _) = app_with_script();
+    let (tx, rx) = channel();
+    app.agent_chat.tools_rx = Some(rx);
+    stress_cube(&mut app, false);
+    start_turn(&mut app, "How much stress?".into(), false, None, vec![]);
+    ask_and_allow_stress(&mut app, &tx, false);
+    stress_answer::show_solved(&app.session.document_id);
+    app.agent_chat.on_event(Event::Text { thought: false, text: STRESS_GOOD.into() });
+    app.agent_chat.on_event(Event::TurnEnded { reason: String::new() });
+    end_turn(&mut app);
+    start_turn(&mut app, "Is it safe?".into(), false, None, vec![]);
+    app.agent_chat.on_event(Event::Text { thought: false, text: "I cannot say it is safe.".into() });
+    app.agent_chat.on_event(Event::TurnEnded { reason: String::new() });
+    end_turn(&mut app);
+    assert!(!app.agent_chat.items.iter().any(|i| matches!(i, Item::Notice { .. })), "{:?}", app.agent_chat.items);
+}
+
+/// The same with a real agent process speaking ACP, as the built-in agent does: its answer
+/// streams as an `agent_message_chunk` and the turn ends with `end_turn`. The estimate request
+/// reaches the gate as the agent's MCP server sends it.
+#[cfg(unix)]
+#[test]
+fn an_acp_agents_stress_answer_is_checked_when_its_turn_ends() {
+    let _shown = stress_answer::shown_lock();
+    let dir = std::env::temp_dir().join(format!("sc-agent-chat-stress-answer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let cases = [(STRESS_FACTOR, true), (STRESS_ZH_VERDICT, true), (STRESS_GOOD, false), (STRESS_GOOD_ZH, false)];
+    // Each prompt is answered with the next argument (one session/update line), then end_turn.
+    let script = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"}}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id" ;;
+    *'"method":"session/prompt"'*)
+      printf '%s\n' "$1"; shift
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+  esac
+done
+"#;
+    let mut argv = vec!["sh".to_string(), "-c".to_string(), script.to_string(), "fake-agent".to_string()];
+    for (answer, _) in cases {
+        let update = json!({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "s1", "update": {
+            "sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": answer}}}});
+        argv.push(update.to_string());
+    }
+    let start = backend::StartContext { cwd: dir.clone(), bridge: None, tools: None, wake: Box::new(|| {}) };
+    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.agent_chat.backend = Some(Box::new(acp_client::AcpBackend::start(&argv, start).unwrap()));
+    app.agent_chat.state = Some(State::Starting);
+    let (tx, rx) = channel();
+    app.agent_chat.tools_rx = Some(rx);
+    let ctx = crate::fonts::test_context();
+    let until = |app: &mut SolveApp, what: &str, done: &dyn Fn(&SolveApp) -> bool| {
+        let t = std::time::Instant::now();
+        while !done(app) {
+            assert!(t.elapsed() < std::time::Duration::from_secs(60), "timed out waiting for {what}");
+            poll(app, &ctx);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    until(&mut app, "the agent to be ready", &|a| a.agent_chat.state() == State::Ready);
+    stress_cube(&mut app, false);
+    for (answer, warned) in cases {
+        send(&mut app, &ctx, "How much stress is in the bracket?".into());
+        ask_and_allow_stress(&mut app, &tx, false);
+        stress_answer::show_solved(&app.session.document_id);
+        until(&mut app, "the turn to end", &|a| a.agent_chat.state() == State::Ready && a.agent_chat.turn.is_none());
+        let (shown, notices) = after_answer(&app);
+        assert_eq!(shown, answer);
+        let expected: Vec<String> = stress_answer::warning(answer).into_iter().collect();
+        assert_eq!(notices, expected, "{answer}");
+        assert_eq!(!notices.is_empty(), warned, "{answer}");
+    }
+    disconnect(&mut app);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A turn that ends with nothing shown because the reply hit its length limit, or the model
 /// declined, says so instead of blaming tool support (#9495).
 #[test]

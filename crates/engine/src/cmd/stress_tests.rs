@@ -342,8 +342,30 @@ fn peaked_run(max: f64, at: Option<&str>, away: Option<f64>, disp: f64) -> fea::
     r
 }
 
-/// Words that would read as a verdict. The estimate says how far from yield, never these.
-const VERDICTS: &[&str] = &["pass", "fail", "safe", "approved", "acceptable", "verdict", "compliant", "factor of safety", "safety factor"];
+/// The verdict words in the estimate's own words: none. One list with the chat's check of an
+/// agent's answer (`fea::report_words`, #201), since agents quote these words.
+fn verdicts(all: &str) -> Vec<&'static str> {
+    fea::report_words::verdict_words(all)
+}
+
+/// `how_to_report` forbids the words the shared list catches, and its own sample of a share of
+/// yield passes the chat's check (#201).
+#[test]
+fn how_to_report_forbids_the_words_the_chat_checks_and_its_sample_passes() {
+    let rules = HOW_TO_REPORT.join(" ");
+    for named in ["safe", "unsafe", "pass", "fail", "certify", "OK", "safety factor", "passes", "fails", "acceptable", "margin", "verdicts"] {
+        assert!(rules.contains(named), "how_to_report no longer names `{named}`: {rules}");
+        assert_eq!(verdicts(&format!("The part is {named}.")), [named], "{named}");
+    }
+    let sample = "about 60 % of the yield strength";
+    assert!(rules.contains(sample), "how_to_report's sample changed: {rules}");
+    assert_eq!(verdicts(sample), Vec::<&str>::new());
+    assert!(fea::report_words::gives_share_of_yield(sample));
+    // The guide's answer to "is it strong enough?" (skills/solidcraft-analysis/SKILL.md).
+    let guide = "answer with the numbers (where the stress peaks, about how large, what fraction of yield) and what the estimate leaves \
+                 out: real bolts and welds, fatigue, buckling, impact, temperature.";
+    assert_eq!(verdicts(guide), Vec::<&str>::new());
+}
 
 #[test]
 fn the_words_say_estimate_and_how_far_from_yield_never_pass_or_fail() {
@@ -357,11 +379,10 @@ fn the_words_say_estimate_and_how_far_from_yield_never_pass_or_fail() {
         let outcome = Outcome { done: &done, shown: &done[0], check: &Check::Off };
         let (summary, assumptions, both) = wording(&material, &loads, &supports, &outcome, 1.5, &near);
         let all = [summary.clone(), assumptions.join("\n"), both.clone().unwrap_or_default()].join("\n").to_lowercase();
-        for w in VERDICTS {
-            assert!(!all.contains(w), "`{w}` in: {all}");
-        }
+        assert_eq!(verdicts(&all), Vec::<&str>::new(), "{all}");
         assert!(summary.starts_with("Estimate"), "{summary}");
         assert!(summary.contains("% of the yield strength given"), "{summary}");
+        assert!(fea::report_words::gives_share_of_yield(&summary), "an agent quoting the summary gives the share of yield: {summary}");
         assert!(both.is_some_and(|b| b.contains("Shell vs solid")));
         for needed in [
             "5052-H32",
@@ -640,8 +661,8 @@ fn rollers_on_tilted_or_curved_faces_and_pressures_without_units_are_refused_bef
 /// Input: fake runs at 20, 190 and 900 MPa against a 193 MPa yield; a peak at a support, still
 /// changing; a reaction 10 % short; every kind of mesh check. Action: `wording`,
 /// `check_warnings`, `check_line`, `equilibrium_line`, `equilibrium_warning`, the setup's words.
-/// Pass: none of pass, fail, safe, approved, acceptable, verdict, compliant, factor of safety or
-/// safety factor appears in any of them.
+/// Pass: no word of the verdict list the chat checks answers with (`fea::report_words`) appears in
+/// any of them.
 #[test]
 fn the_new_words_never_pass_or_fail_the_part_or_give_a_factor_of_safety() {
     let material = Material { name: "5052-H32".into(), e_mpa: 70300.0, nu: 0.33, yield_mpa: 193.0, source: "a handbook".into() };
@@ -674,9 +695,7 @@ fn the_new_words_never_pass_or_fail_the_part_or_give_a_factor_of_safety() {
             all.extend(loads.iter().map(load_words));
             all.extend(supports.iter().map(support_words));
             let all = all.join("\n").to_lowercase();
-            for w in VERDICTS {
-                assert!(!all.contains(w), "`{w}` in: {all}");
-            }
+            assert_eq!(verdicts(&all), Vec::<&str>::new(), "{all}");
         }
     }
 }
