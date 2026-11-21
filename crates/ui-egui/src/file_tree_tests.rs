@@ -483,6 +483,145 @@ fn theme_paste_on_the_interface_page_precedes_competing_cad_and_files_clipboards
     assert_eq!(fs::read(source).unwrap(), b"source");
 }
 
+/// The Appearance page claims a valid theme Paste, but the Files tree must still retire the
+/// Copy/Cut before a later Down. Removing the Paste from the batch shortens the command list,
+/// so retirement has to be decided against the commands as they were before that removal.
+#[test]
+fn theme_paste_then_tree_command_then_down_imports_the_theme_and_retires_the_command() {
+    use serde_json::json;
+    for cut in [false, true] {
+        let scratch = Scratch::new();
+        let first = scratch.file("first.txt", "1");
+        let later = scratch.file("later.txt", "2");
+        let mut h = clipboard_window(scratch.path());
+        h.call("ui.prefs", json!({"open": "Interface"}));
+        h.frames(3);
+        assert!(h.app.prefs_window.open, "Preferences stays nonmodal on the Appearance page");
+        let before = cad_mark(&h);
+        let row = crate::scenario::rect_of("files:row:first.txt").unwrap();
+        let (command, name) = if cut { (egui::Event::Cut, "Order Cut") } else { (egui::Event::Copy, "Order Copy") };
+        let theme = format!(r##"{{"format":"solidcraft-theme/1","name":"{name}","base":"dark","colors":{{"panel":"#102030"}}}}"##);
+        let mut events = pointer_click(row.center(), Modifiers::NONE);
+        events.push(egui::Event::Paste(theme));
+        events.push(command);
+        events.push(key_event(egui::Key::ArrowDown, true, Modifiers::NONE));
+        events.push(key_event(egui::Key::ArrowDown, false, Modifiers::NONE));
+        h.frame_with(events);
+        assert!(h.app.file_tree.focused, "the real row click gives the tree the keys");
+        assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the Down settles the later row");
+        assert!(
+            h.app.preferences.custom_themes.iter().any(|t| t.name == name),
+            "the theme paste still imports: {:?}",
+            h.app.preferences.custom_themes.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+        assert_eq!(h.app.preferences.theme, if cut { "order-cut" } else { "order-copy" });
+        assert!(h.app.file_tree.clip.is_none(), "{name}: the earlier command is retired, not applied to the later row");
+        assert_eq!(cad_mark(&h), before, "the theme and Files commands never touch CAD");
+        h.frames(30);
+        assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none());
+        let clip = h.app.file_tree.clip.as_ref();
+        assert!(clip.is_none(), "no replay copied {first:?} or {later:?}");
+        assert_eq!(fs::read(&first).unwrap(), b"1");
+        assert_eq!(fs::read(&later).unwrap(), b"2");
+    }
+}
+
+/// The Appearance page claims the theme Paste before the tree sees the batch. A later Down into
+/// another folder retires that Paste only; the Cut after the Down keeps the settled target even
+/// though the theme removed an earlier command from the list.
+#[test]
+fn theme_paste_then_down_to_another_folder_then_cut_imports_the_theme_and_keeps_the_later_cut() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let first = scratch.dir("first");
+    let later = scratch.dir("later");
+    let mut h = clipboard_window(scratch.path());
+    h.call("ui.prefs", json!({"open": "Interface"}));
+    h.frames(3);
+    assert!(h.app.prefs_window.open, "Preferences stays nonmodal on the Appearance page");
+    let before = cad_mark(&h);
+    let row = crate::scenario::rect_of("files:row:first").unwrap();
+    let theme = r##"{"format":"solidcraft-theme/1","name":"Folder Order","base":"dark","colors":{"panel":"#203040"}}"##.to_string();
+    let mut events = pointer_click(row.center(), Modifiers::NONE);
+    events.push(egui::Event::Paste(theme));
+    events.push(key_event(egui::Key::ArrowDown, true, Modifiers::NONE));
+    events.push(key_event(egui::Key::ArrowDown, false, Modifiers::NONE));
+    events.push(egui::Event::Cut);
+    h.frame_with(events);
+    assert!(h.app.file_tree.focused, "the real row click gives the tree the keys");
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the Down settles the later folder");
+    assert!(
+        h.app.preferences.custom_themes.iter().any(|t| t.name == "Folder Order"),
+        "the theme paste still imports: {:?}",
+        h.app.preferences.custom_themes.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+    assert_eq!(h.app.preferences.theme, "folder-order");
+    let clip = h.app.file_tree.clip.as_ref().expect("the later Cut is not retired with the earlier theme Paste");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&later), "the Cut acts on the folder after the Down");
+    assert!(clip.cut);
+    assert!(!clip.paths.contains(&first), "the retired Paste did not cut the earlier folder");
+    assert_eq!(cad_mark(&h), before, "the theme and Files command never touch CAD");
+}
+
+/// Ordinary text on the Appearance page is not a theme, so the tree still claims the Paste. This
+/// control keeps the theme-claim result from dropping a Files paste it did not take.
+#[test]
+fn nonmodal_interface_preferences_ordinary_paste_stays_a_files_paste() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let into = scratch.dir("into");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.call("ui.prefs", json!({"open": "Interface"}));
+    h.frames(3);
+    assert!(h.app.prefs_window.open, "Preferences stays nonmodal on the Appearance page");
+    let before = cad_mark(&h);
+    let row = crate::scenario::rect_of("files:row:into").unwrap();
+    let mut events = pointer_click(row.center(), Modifiers::NONE);
+    events.push(egui::Event::Paste("ordinary".into()));
+    h.frame_with(events);
+    assert!(h.app.file_tree.focused, "the real row click gives the tree the keys");
+    h.frames(30);
+    assert_eq!(fs::read(into.join("source.txt")).unwrap(), b"source", "ordinary text is still a Files paste");
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+    assert_eq!(cad_mark(&h), before, "CAD must not also paste");
+    assert!(!into.join("source (copy).txt").exists(), "no replay");
+}
+
+/// A paste that names the theme format but is not a valid theme is still claimed on the
+/// Appearance page, as before: it reports the error instead of reaching Files.
+#[test]
+fn invalid_theme_paste_on_interface_page_is_claimed_before_files() {
+    use serde_json::json;
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let into = scratch.dir("into");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.call("ui.prefs", json!({"open": "Interface"}));
+    h.frames(3);
+    assert!(h.app.prefs_window.open, "Preferences stays nonmodal on the Appearance page");
+    let before = cad_mark(&h);
+    let row = crate::scenario::rect_of("files:row:into").unwrap();
+    let invalid = r#"{"format":"solidcraft-theme/1","name":"Broken","base":"sepia"}"#.to_string();
+    let mut events = pointer_click(row.center(), Modifiers::NONE);
+    events.push(egui::Event::Paste(invalid));
+    h.frame_with(events);
+    assert!(h.app.file_tree.focused, "the real row click gives the tree the keys");
+    let (status, _, error) = h.app.status.clone().expect("the invalid theme is reported");
+    assert!(error, "the theme error is shown: {status}");
+    assert!(status.contains("Theme import"), "the message names the theme import: {status}");
+    assert!(h.app.preferences.custom_themes.is_empty(), "an invalid theme is not added");
+    assert!(!into.join("source.txt").exists(), "the claimed paste never reaches Files");
+    h.frames(30);
+    assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none(), "no file job runs");
+    let clip = h.app.file_tree.clip.as_ref().expect("the file clipboard is kept");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source));
+    assert!(!clip.cut);
+    assert_eq!(cad_mark(&h), before, "the invalid theme never touches CAD");
+}
+
 #[test]
 fn shortcut_recorder_keeps_escape_while_the_custom_file_menu_is_open() {
     use serde_json::json;
@@ -666,6 +805,9 @@ fn a_dirty_open_document_follows_a_case_only_file_tree_rename() {
     app.file_tree.editing.as_mut().unwrap().name = "Bracket.sc".into();
     assert!(app.file_tree.commit_edit().is_none(), "rename must not open another document");
     tick(&mut app, &egui::Context::default(), 1.0);
+    // The app takes Files answers once per frame before layout; a direct `tick` is only the panel's
+    // draw, so drive the same drain the frame logic does.
+    crate::file_tree::drain_documents(&mut app, &egui::Context::default());
     assert_eq!(app.session.path.as_deref(), new.to_str());
     assert_eq!(app.session.doc.name, "Bracket");
     assert!(app.session.is_dirty(), "unsaved geometry follows the renamed file");
@@ -689,6 +831,391 @@ fn a_clipboard_command_before_a_later_click_is_not_retargeted() {
     h.frame_with(events);
     assert!(h.app.file_tree.clip.is_none(), "a later row is not the command's selection");
     assert_eq!(cad_mark(&h), before, "ambiguous application actions are suppressed, not rerouted");
+}
+
+/// A native Cut and an Arrow Down in one batch: the tree consumes the Down after the command
+/// and moves its row focus, so the Cut must be retired rather than applied to the later row.
+/// The arrow still moves the row; only the ambiguous clipboard command is lost.
+#[test]
+fn same_batch_native_cut_then_down_does_not_cut_the_later_row() {
+    let scratch = Scratch::new();
+    let first = scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.select_only(&first);
+    h.app.file_tree.focused = true;
+    let before = cad_mark(&h);
+    h.frame_with(vec![
+        egui::Event::Cut,
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later), "the arrow still moves the row");
+    assert!(h.app.file_tree.clip.is_none(), "the cut is retired, not applied to the row the arrow selected");
+    assert_eq!(cad_mark(&h), before, "the ambiguous command reaches neither Files nor CAD");
+}
+
+/// A native Paste and an Arrow Down in one batch: the Down moves the row focus to a later
+/// folder, so the Paste must not be sent to the later folder. It is retired, not guessed to
+/// the folder that was selected when the batch began.
+#[test]
+fn same_batch_native_paste_then_down_does_not_paste_into_the_later_folder() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let first = scratch.dir("first");
+    let later = scratch.dir("later");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.app.file_tree.select_only(&first);
+    h.app.file_tree.focused = true;
+    let before = cad_mark(&h);
+    h.frame_with(vec![
+        egui::Event::Paste("native".into()),
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the arrow still moves the row");
+    assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none(), "the paste is retired, not queued");
+    h.frames(30);
+    assert!(!later.join("source.txt").exists(), "the later folder is not the paste target");
+    assert!(!first.join("source.txt").exists(), "the earlier folder is not guessed either");
+    assert!(!h.app.file_tree.busy, "no file job ran");
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+    assert_eq!(cad_mark(&h), before, "the ambiguous command reaches neither Files nor CAD");
+    let clip = h.app.file_tree.clip.as_ref().expect("the file clipboard is kept");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source));
+}
+
+/// The entry frame need not have the Files keys yet: an accepted row click in this batch gives
+/// them to the tree, and the later Down moves the row. A native Cut earlier in the batch must be
+/// retired, not applied to the row the click and arrow ended on.
+#[test]
+fn same_batch_row_click_then_native_cut_then_down_does_not_cut_the_later_row() {
+    let scratch = Scratch::new();
+    let first = scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.select_only(&first);
+    assert!(!h.app.file_tree.focused, "the batch starts without the Files keys");
+    let row = crate::scenario::rect_of("files:row:first.txt").unwrap();
+    let before = cad_mark(&h);
+    let mut events = pointer_click(row.center(), Modifiers::NONE);
+    events.push(egui::Event::Cut);
+    events.push(key_event(egui::Key::ArrowDown, true, Modifiers::NONE));
+    events.push(key_event(egui::Key::ArrowDown, false, Modifiers::NONE));
+    h.frame_with(events);
+    assert!(h.app.file_tree.focused, "the accepted row click gives the tree the keys");
+    assert_eq!(h.app.file_tree.focus, Some(later), "the Down moves the row");
+    assert!(h.app.file_tree.clip.is_none(), "the Cut is retired, not applied to the row the click and Down ended on");
+    assert_eq!(cad_mark(&h), before, "the ambiguous command reaches neither Files nor CAD");
+}
+
+/// The same transition for Paste: an accepted row click starts the Files keys, then the native
+/// Paste, then Down moves to a later folder. The Paste is retired rather than sent to the later
+/// folder or guessed back to the earlier one.
+#[test]
+fn same_batch_row_click_then_native_paste_then_down_does_not_paste_into_the_later_folder() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let first = scratch.dir("first");
+    let later = scratch.dir("later");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    assert!(!h.app.file_tree.focused, "the batch starts without the Files keys");
+    let row = crate::scenario::rect_of("files:row:first").unwrap();
+    let before = cad_mark(&h);
+    let mut events = pointer_click(row.center(), Modifiers::NONE);
+    events.push(egui::Event::Paste("native".into()));
+    events.push(key_event(egui::Key::ArrowDown, true, Modifiers::NONE));
+    events.push(key_event(egui::Key::ArrowDown, false, Modifiers::NONE));
+    h.frame_with(events);
+    assert!(h.app.file_tree.focused, "the accepted row click gives the tree the keys");
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the Down moves to the later folder");
+    assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none(), "the paste is retired, not queued");
+    h.frames(30);
+    assert!(!later.join("source.txt").exists(), "the later folder is not the paste target");
+    assert!(!first.join("source.txt").exists(), "the earlier folder is not guessed either");
+    assert!(!h.app.file_tree.busy, "no file job ran");
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+    assert_eq!(cad_mark(&h), before, "the ambiguous command reaches neither Files nor CAD");
+    let clip = h.app.file_tree.clip.as_ref().expect("the file clipboard is kept");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source));
+}
+
+/// A later tree key that cannot move the row is not a retarget: at the last row a Down is a
+/// no-op, so the native Cut must still act on the row settled when it was pressed, not be
+/// retired by mere key presence.
+#[test]
+fn same_batch_native_cut_then_noop_down_at_the_last_row_cuts_the_settled_row() {
+    let scratch = Scratch::new();
+    scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    focus_file_row(&mut h, "later.txt");
+    let before = cad_mark(&h);
+    h.frame_with(vec![
+        egui::Event::Cut,
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the boundary Down leaves the row");
+    let clip = h.app.file_tree.clip.as_ref().expect("the Cut applies to the row settled when pressed");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&later));
+    assert!(clip.cut);
+    assert_eq!(cad_mark(&h), before, "the command reaches Files, not CAD");
+}
+
+/// A move before the command settles the target; a later no-op Down must not make that move
+/// count as a post-command retarget. The command acts on the row it had when pressed.
+#[test]
+fn same_batch_early_down_then_native_cut_then_later_noop_down_cuts_the_settled_row() {
+    let scratch = Scratch::new();
+    scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    focus_file_row(&mut h, "first.txt");
+    let before = cad_mark(&h);
+    h.frame_with(vec![
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Cut,
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the first Down moved to the settled row");
+    let clip = h.app.file_tree.clip.as_ref().expect("the Cut applies to the settled row");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&later));
+    assert!(clip.cut);
+    assert_eq!(cad_mark(&h), before, "the command reaches Files, not CAD");
+}
+
+/// egui's logical key matching ignores the extra Alt, so the tree consumes Alt+Down and moves
+/// its row. A Cut pressed before it must be retired, not applied to the row the accepted
+/// navigation reached.
+#[test]
+fn same_batch_native_cut_then_alt_down_retires_the_command() {
+    let scratch = Scratch::new();
+    scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    focus_file_row(&mut h, "first.txt");
+    let before = cad_mark(&h);
+    let alt = Modifiers { alt: true, ..Default::default() };
+    h.frame_with(vec![egui::Event::Cut, key_event(egui::Key::ArrowDown, true, alt), key_event(egui::Key::ArrowDown, false, alt)]);
+    assert_eq!(h.app.file_tree.focus, Some(later), "the tree accepts Alt+Down as navigation");
+    assert!(h.app.file_tree.clip.is_none(), "the Cut is retired, not applied to the row Alt+Down reached");
+    assert_eq!(cad_mark(&h), before, "the ambiguous command reaches neither Files nor CAD");
+}
+
+/// egui's logical matching also ignores the extra Shift, so Cmd/Ctrl+Shift+A selects all rows.
+/// A Cut pressed before it must be retired rather than applied to the later selection.
+#[test]
+fn same_batch_native_cut_then_command_shift_a_retires_the_command() {
+    let scratch = Scratch::new();
+    let first = scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    // The assistant's default Ctrl+Shift+A toggle consumes this chord before any panel. The
+    // panel's own egui logical matching is what this test exercises.
+    crate::keymap::bind(&mut h.app, "ui.assistant", "", false).unwrap();
+    focus_file_row(&mut h, "first.txt");
+    let before = cad_mark(&h);
+    let chord = Modifiers::COMMAND | Modifiers::SHIFT;
+    h.frame_with(vec![egui::Event::Cut, key_event(egui::Key::A, true, chord), key_event(egui::Key::A, false, chord)]);
+    assert!(
+        h.app.file_tree.selection.contains(&first) && h.app.file_tree.selection.contains(&later),
+        "the tree accepts Cmd/Ctrl+Shift+A: {:?}",
+        h.app.file_tree.selection
+    );
+    assert!(h.app.file_tree.clip.is_none(), "the Cut is retired, not applied to the later selection");
+    assert_eq!(cad_mark(&h), before, "the ambiguous command reaches neither Files nor CAD");
+}
+
+/// Each command has its own position: the Copy before the Down is retired, but the later Cut
+/// after the Down keeps the target it can see. A single batch-wide retarget flag loses it.
+#[test]
+fn same_batch_copy_then_down_then_native_cut_retains_the_later_cut() {
+    let scratch = Scratch::new();
+    scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    focus_file_row(&mut h, "first.txt");
+    let before = cad_mark(&h);
+    h.frame_with(vec![
+        egui::Event::Copy,
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Cut,
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the Down settles the later row");
+    let clip = h.app.file_tree.clip.as_ref().expect("the later Cut is not retired with the earlier Copy");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&later), "the Cut acts on the row after the Down");
+    assert!(clip.cut, "the later command is the Cut");
+    assert_eq!(cad_mark(&h), before, "both commands belong to Files");
+}
+
+/// A Cut before a Down into another folder is retired, but the Paste after that Down keeps the
+/// folder the person can see. The seeded file clipboard proves the real paste destination.
+#[test]
+fn same_batch_cut_then_down_to_another_folder_then_native_paste_retains_the_later_paste() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let first = scratch.dir("first");
+    let later = scratch.dir("later");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    focus_file_row(&mut h, "first");
+    h.frame_with(vec![
+        egui::Event::Cut,
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Paste("native".into()),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the Down settles the later folder");
+    h.frames(30);
+    assert_eq!(fs::read(later.join("source.txt")).unwrap(), b"source", "the later Paste enters the later folder");
+    assert!(!first.join("source.txt").exists(), "the retired Cut did not paste into the earlier folder");
+    let clip = h.app.file_tree.clip.as_ref().expect("the file clipboard is kept");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source), "the earlier Cut is retired, leaving the seeded clipboard");
+    assert!(!clip.cut);
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+    assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none());
+}
+
+/// Target kinds are separate: a Down within one folder changes the Copy selection but not the
+/// Paste destination, so only the Copy is retired. The seeded clipboard proves the Paste ran.
+#[test]
+fn same_batch_copy_then_native_paste_then_down_in_one_folder_retires_only_the_copy() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let into = scratch.dir("into");
+    scratch.file("into/a.txt", "a");
+    scratch.file("into/b.txt", "b");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.app.file_tree.toggle_dir(&into);
+    h.frames(2);
+    focus_file_row(&mut h, "a.txt");
+    h.frame_with(vec![
+        egui::Event::Copy,
+        egui::Event::Paste("native".into()),
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(into.join("b.txt")), "the Down moves within the same folder");
+    h.frames(30);
+    assert_eq!(fs::read(into.join("source.txt")).unwrap(), b"source", "the Paste destination is unchanged and still runs");
+    let clip = h.app.file_tree.clip.as_ref().expect("the file clipboard is kept");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&source), "the Copy is retired instead of replacing the clipboard");
+    assert!(!clip.cut);
+    assert_eq!(fs::read(&source).unwrap(), b"source");
+    assert!(!h.app.file_tree.busy && h.app.file_tree.modal.is_none());
+}
+
+/// Duplicate Down press events in one batch are consumed together and move the row once, as
+/// egui's all-consume one-action semantics do. With both Downs before the command it still acts
+/// on that single-step row; this is a control, not a demonstrated wrong target.
+#[test]
+fn same_batch_duplicate_down_events_move_once_and_document_all_consume_one_action() {
+    let scratch = Scratch::new();
+    scratch.file("first.txt", "1");
+    let second = scratch.file("second.txt", "2");
+    scratch.file("third.txt", "3");
+    let mut h = clipboard_window(scratch.path());
+    focus_file_row(&mut h, "first.txt");
+    let repeat = egui::Event::Key { key: egui::Key::ArrowDown, physical_key: None, pressed: true, repeat: true, modifiers: Modifiers::NONE };
+    h.frame_with(vec![
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        repeat,
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Cut,
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(second.clone()), "two Down events move exactly one row");
+    let clip = h.app.file_tree.clip.as_ref().expect("the Cut after the Downs is settled");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&second));
+    assert!(clip.cut);
+    assert!(h.app.file_tree.focused, "the tree keeps the keys");
+}
+
+/// The converse transition: Files has the keys when the batch starts, but a click in the
+/// retained-open viewport ends that before the native CAD command. The tree never moves its
+/// row in this batch, so the CAD Cut or Paste must run rather than be suppressed by the entry
+/// frame's Files focus.
+#[test]
+fn same_batch_click_away_then_native_cad_clipboard_then_down_keeps_the_cad_command() {
+    for cut in [true, false] {
+        let scratch = Scratch::new();
+        scratch.file("notes.txt", "n");
+        let (mut h, body) = cad_body_and_files(&scratch);
+        if !cut {
+            assert!(crate::edit_clipboard::copy(&mut h.app));
+        }
+        focus_file_row(&mut h, "notes.txt");
+        let body_count = h.app.session.model.state().bodies.len();
+        let viewport = h.app.viewport.rect.expect("viewport");
+        let at = viewport.left_top() + egui::vec2(24.0, 24.0);
+        let mut events = pointer_click(at, Modifiers::NONE);
+        events.push(if cut { egui::Event::Cut } else { egui::Event::Paste("native".into()) });
+        events.push(key_event(egui::Key::ArrowDown, true, Modifiers::NONE));
+        events.push(key_event(egui::Key::ArrowDown, false, Modifiers::NONE));
+        h.frame_with(events);
+        h.frames(2);
+        assert!(crate::right_rail::shown(&h.app), "cut={cut}: the viewport click keeps the rail shown");
+        assert_eq!(crate::right_rail::open(&h.app), Some(crate::right_rail::Item::Files), "cut={cut}: the Files panel stays open");
+        assert!(h.app.shell.right_rail_panel.is_some(), "cut={cut}: the retained-open panel is drawn");
+        assert!(!h.app.file_tree.focused, "cut={cut}: the viewport click takes the Files keys");
+        assert!(h.app.file_tree.clip.is_none(), "cut={cut}: Files did not act on its old row");
+        if cut {
+            assert_eq!(h.app.cut.bodies.as_slice(), std::slice::from_ref(&body), "the CAD Cut still marks the body");
+        } else {
+            assert_eq!(h.app.session.model.state().bodies.len(), body_count + 1, "the CAD Paste still copies the body");
+        }
+    }
+}
+
+/// The reverse order is unaffected: the arrow settles the row before the native Cut, so the
+/// command acts on the row the user can see when it is applied.
+#[test]
+fn same_batch_down_then_native_cut_cuts_the_row_it_moved_to() {
+    let scratch = Scratch::new();
+    let first = scratch.file("first.txt", "1");
+    let later = scratch.file("later.txt", "2");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.select_only(&first);
+    h.app.file_tree.focused = true;
+    h.frame_with(vec![
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Cut,
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the arrow moves the row");
+    let clip = h.app.file_tree.clip.as_ref().expect("the settled row is cut");
+    assert_eq!(clip.paths.as_slice(), std::slice::from_ref(&later));
+    assert!(clip.cut);
+}
+
+/// The reverse order for Paste: the arrow settles the destination folder before the native
+/// Paste, so the paste goes to the row the user can see when it is applied.
+#[test]
+fn same_batch_down_then_native_paste_pastes_into_the_folder_it_moved_to() {
+    let scratch = Scratch::new();
+    let source = scratch.file("source.txt", "source");
+    let first = scratch.dir("first");
+    let later = scratch.dir("later");
+    let mut h = clipboard_window(scratch.path());
+    h.app.file_tree.clip = Some(Clip { paths: vec![source.clone()], cut: false });
+    h.app.file_tree.select_only(&first);
+    h.app.file_tree.focused = true;
+    h.frame_with(vec![
+        key_event(egui::Key::ArrowDown, true, Modifiers::NONE),
+        key_event(egui::Key::ArrowDown, false, Modifiers::NONE),
+        egui::Event::Paste("native".into()),
+    ]);
+    assert_eq!(h.app.file_tree.focus, Some(later.clone()), "the arrow settles the destination");
+    h.frames(30);
+    assert_eq!(fs::read(later.join("source.txt")).unwrap(), b"source", "the settled folder is the paste target");
+    assert!(!first.join("source.txt").exists(), "the folder before the arrow is not used");
+    assert_eq!(fs::read(&source).unwrap(), b"source");
 }
 
 #[test]
@@ -1436,6 +1963,50 @@ fn deleting_a_dirty_design_names_it_in_the_question_and_a_copy_saves_the_work_fi
     assert!(!app.session.is_dirty(), "the copy holds the work");
 }
 
+/// Two dirty tabs with the same file name under one deleted subtree each get their own copy
+/// outside it. An existing file in the folder is left untouched; both tabs follow their copy
+/// and the copies re-open with each tab's own edit.
+#[test]
+fn save_copies_keeps_two_dirty_same_named_tabs_apart_and_keeps_an_existing_file() {
+    let scratch = Scratch::new();
+    let subtree = scratch.dir("parts");
+    let left_dir = subtree.join("left");
+    let right_dir = subtree.join("right");
+    fs::create_dir_all(&left_dir).unwrap();
+    fs::create_dir_all(&right_dir).unwrap();
+    let left = left_dir.join("bracket.sc");
+    let right = right_dir.join("bracket.sc");
+    let mut one = Session::default();
+    one.execute("file.save_as", &serde_json::json!({"path": left.to_string_lossy(), "cache": false})).unwrap();
+    one.execute("solid.box", &serde_json::json!({"length": 3, "width": 3, "height": 3})).unwrap();
+    let mut two = Session::default();
+    two.execute("file.save_as", &serde_json::json!({"path": right.to_string_lossy(), "cache": false})).unwrap();
+    two.execute("solid.box", &serde_json::json!({"length": 7, "width": 7, "height": 7})).unwrap();
+    let edits = [serde_json::to_value(&one.doc.features).unwrap(), serde_json::to_value(&two.doc.features).unwrap()];
+    let sentinel = scratch.file("bracket.sc", "sentinel");
+    let mut app = crate::SolveApp::new(one, Default::default());
+    crate::documents::open_tab(&mut app, two).unwrap();
+    let saved = crate::file_tree::save_copies(&mut app, std::slice::from_ref(&subtree)).unwrap();
+    assert_eq!(saved, 2);
+    let open = documents::open_sessions(&app);
+    let paths: Vec<_> = open.iter().map(|session| session.path.clone().expect("each tab now owns a file")).collect();
+    assert_eq!(paths.len(), 2);
+    assert_ne!(paths[0], paths[1], "two same-named tabs must not share one copy");
+    for path in &paths {
+        let path = std::path::Path::new(path);
+        assert!(path.is_file(), "the copy was written: {}", path.display());
+        assert!(!path.starts_with(&subtree), "the copy is outside the deleted subtree: {}", path.display());
+    }
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "sentinel", "an existing file is not replaced");
+    assert!(open.iter().all(|session| !session.is_dirty()), "the copies hold the work");
+    for (expected, path) in edits.iter().zip(&paths) {
+        let (doc, _) = solidcraft_engine::io::read_design_file(path, None::<fn(solidcraft_engine::io::DesignPreview)>).unwrap();
+        let reopened = serde_json::to_value(&doc.features).unwrap();
+        assert_eq!(&reopened, expected, "the copy at {} holds this tab's own edit", std::path::Path::new(path).display());
+    }
+    assert_ne!(edits[0], edits[1], "the two tabs' edits differ");
+}
+
 #[test]
 fn an_operation_that_cannot_trash_asks_before_deleting_for_good() {
     let mut tree = FileTree::new();
@@ -1638,6 +2209,168 @@ fn moving_a_folder_moves_every_open_design_inside_it() {
     assert!(open.iter().all(|session| session.is_dirty()), "both keep their edits");
 }
 
+/// A move that finishes while Files is closed still reaches the open tab, its save path and its
+/// unsaved edits before the panel is reopened. The worker is held, so the answer cannot be
+/// mistaken for one the panel happened to draw.
+#[test]
+fn a_move_finished_while_files_is_closed_updates_the_open_tab_before_the_panel_reopens() {
+    let scratch = Scratch::new();
+    let root = scratch.path().to_path_buf();
+    let old = scratch.file("bracket.sc", "old");
+    let into = scratch.dir("into");
+
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.app.preferences.right_rail = true;
+    h.app.preferences.right_rail_open = "files".into();
+    h.app.run("file.save_as", serde_json::json!({"path": old.to_string_lossy(), "cache": false})).unwrap();
+    h.app.run("solid.box", serde_json::json!({"length": 4, "width": 4, "height": 4})).unwrap();
+    let features = h.app.session.doc.features.len();
+    assert!(h.app.session.is_dirty());
+    h.app.file_tree = listing(&root);
+    h.frames(3);
+
+    let (started, release) = h.app.file_tree.hold_next_operation();
+    h.app.file_tree.select_only(&old);
+    h.app.file_tree.place(vec![old.clone()], &into, true, None);
+    let worker = started.recv_timeout(std::time::Duration::from_secs(60)).expect("operation worker started");
+    assert_ne!(worker, std::thread::current().id(), "the move runs off the window thread");
+    assert!(h.app.file_tree.busy);
+
+    // Close Files before the answer can be taken: no panel draw remains to fold it in.
+    h.app.preferences.right_rail = false;
+    h.app.preferences.right_rail_open = String::new();
+    h.frame();
+    assert!(!h.app.preferences.right_rail, "Files is closed");
+    assert!(h.app.file_tree.busy, "the worker is still held");
+    assert_eq!(h.app.session.path.as_deref(), Some(old.to_string_lossy().as_ref()), "the held answer changes nothing yet");
+
+    release.send(()).unwrap();
+    for _ in 0..2000 {
+        h.frame();
+        if !h.app.file_tree.busy {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(!h.app.file_tree.busy, "the completion was taken on a normal frame");
+    assert!(!h.app.preferences.right_rail, "still closed when the tab follows");
+    let moved = into.join("bracket.sc");
+    assert_eq!(h.app.session.path.as_deref(), Some(moved.to_string_lossy().as_ref()));
+    assert_eq!(h.app.session.doc.features.len(), features, "the unsaved edits stay");
+    assert!(h.app.session.is_dirty(), "the design is still unsaved");
+    h.app.session.execute("file.save", &serde_json::json!({})).unwrap();
+    assert!(moved.is_file(), "Save targets the moved path");
+    assert!(!old.exists(), "the old name is not written again");
+
+    // Reopening Files finds the answer already applied, not applied a second time.
+    h.app.preferences.right_rail = true;
+    h.app.preferences.right_rail_open = "files".into();
+    h.frames(3);
+    assert!(h.app.file_tree.take_answers().is_empty(), "one completion was taken once");
+    assert_eq!(h.app.session.path.as_deref(), Some(moved.to_string_lossy().as_ref()));
+    assert!(!h.app.file_tree.busy);
+}
+
+/// A nested move remaps only its own subtree: the root listing, unrelated open folders, cached
+/// listings and selection stay, while affected paths follow and their parents are read again.
+#[test]
+fn a_nested_move_keeps_unrelated_tree_state_and_remaps_affected_paths() {
+    let scratch = Scratch::new();
+    let root = scratch.path().to_path_buf();
+    let parts = scratch.dir("parts");
+    let opened = parts.join("bracket.sc");
+    fs::write(&opened, "old").unwrap();
+    let other = scratch.dir("other");
+    let unrelated = other.join("notes.txt");
+    fs::write(&unrelated, "notes").unwrap();
+    let sub = scratch.dir("sub");
+    let notes = scratch.file("notes.txt", "notes");
+
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.app.preferences.right_rail = true;
+    h.app.preferences.right_rail_open = "files".into();
+    h.app.run("file.save_as", serde_json::json!({"path": opened.to_string_lossy(), "cache": false})).unwrap();
+    h.app.run("solid.box", serde_json::json!({"length": 3, "width": 3, "height": 3})).unwrap();
+    assert!(h.app.session.is_dirty());
+
+    let mut tree = listing(&root);
+    tree.dirs.insert(parts.clone(), Dir { entries: files::read_dir(&parts).unwrap(), state: Listing::Ready });
+    tree.dirs.insert(other.clone(), Dir { entries: files::read_dir(&other).unwrap(), state: Listing::Ready });
+    tree.expanded.insert(parts.clone());
+    tree.expanded.insert(other.clone());
+    tree.selection.insert(notes.clone());
+    tree.selection.insert(opened.clone());
+    tree.focus = Some(notes.clone());
+    tree.anchor = Some(opened.clone());
+    h.app.file_tree = tree;
+    h.frames(2);
+
+    let (started, release) = h.app.file_tree.hold_next_operation();
+    h.app.file_tree.place(vec![parts.clone()], &sub, true, None);
+    let worker = started.recv_timeout(std::time::Duration::from_secs(60)).expect("operation worker started");
+    assert_ne!(worker, std::thread::current().id());
+    // Close Files too: the tree state and the refresh requests must be right before any panel
+    // draw gets a chance to read the scans.
+    h.app.preferences.right_rail = false;
+    h.app.preferences.right_rail_open = String::new();
+    h.frame();
+    // A pending scroll request is set while the panel is closed: an open draw would consume it
+    // before the move answer arrives, which is not what this test is about.
+    h.app.file_tree.scroll_to = Some(opened.clone());
+    release.send(()).unwrap();
+    for _ in 0..2000 {
+        h.frame();
+        if !h.app.file_tree.busy {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(!h.app.file_tree.busy, "the move completed");
+
+    let moved_folder = sub.join("parts");
+    let moved_file = moved_folder.join("bracket.sc");
+    let tree = &h.app.file_tree;
+    assert_eq!(tree.root.as_deref(), Some(root.as_path()), "the browsed root itself is unchanged");
+    assert!(tree.expanded.contains(&other), "an unrelated open folder stays open");
+    assert!(tree.expanded.contains(&moved_folder), "the moved folder keeps its open state under its new path");
+    assert!(!tree.expanded.contains(&parts), "the old path is gone");
+    assert!(tree.selection.contains(&notes), "an unrelated selection stays");
+    assert!(tree.selection.contains(&moved_file), "the affected selection follows the move");
+    assert!(!tree.selection.contains(&opened));
+    assert_eq!(tree.focus.as_deref(), Some(notes.as_path()), "unrelated focus stays");
+    assert_eq!(tree.anchor.as_deref(), Some(moved_file.as_path()));
+    assert_eq!(tree.scroll_to.as_deref(), Some(moved_file.as_path()));
+    assert!(tree.dirs.contains_key(&other), "an unrelated folder cache stays");
+    assert!(tree.dirs.contains_key(&moved_folder), "the moved folder's cache follows it");
+    assert!(!tree.dirs.contains_key(&parts));
+    let root_dir = tree.dirs.get(&root).expect("the root listing is kept");
+    assert!(root_dir.entries.iter().any(|entry| entry.name == "notes.txt"), "its rows survive until the refresh arrives");
+    assert!(tree.scanning.contains(&root), "the source parent is read again");
+    assert!(tree.scanning.contains(&sub), "the destination parent is read again");
+    let session_path = h.app.session.path.clone();
+    assert_eq!(session_path.as_deref(), Some(moved_file.to_string_lossy().as_ref()));
+    assert!(h.app.session.is_dirty());
+
+    // The refresh answers reach the open panel as usual, and only the affected folders change.
+    h.app.preferences.right_rail = true;
+    h.app.preferences.right_rail_open = "files".into();
+    for _ in 0..2000 {
+        h.frame();
+        if h.app.file_tree.scanning.is_empty() {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    let tree = &h.app.file_tree;
+    let root_names: Vec<&str> = tree.dirs.get(&root).unwrap().entries.iter().map(|entry| entry.name.as_str()).collect();
+    assert!(root_names.contains(&"notes.txt") && root_names.contains(&"sub") && !root_names.contains(&"parts"), "{root_names:?}");
+    let sub_names: Vec<&str> = tree.dirs.get(&sub).unwrap().entries.iter().map(|entry| entry.name.as_str()).collect();
+    assert!(sub_names.contains(&"parts"), "the destination parent shows the moved folder: {sub_names:?}");
+    assert_eq!(tree.dirs.get(&other).unwrap().entries.len(), 1, "the unrelated folder's cache was not refreshed or dropped");
+}
+
 /// A batch reports each item: the good copy is made and the missing source is a failure, so a
 /// partial success is never shown as one success.
 #[test]
@@ -1818,6 +2551,91 @@ fn a_long_opener_notice_keeps_reveal_and_dismiss_inside_a_short_panel() {
         let rect = rect_of(handle).unwrap_or_else(|| panic!("missing {handle}"));
         assert!(panel.contains_rect(rect), "{handle}: {rect:?} outside {panel:?}");
         assert!(rect.is_positive());
+    }
+}
+
+/// Two rendered parts overlap only when they share more than half a point in both axes; edges
+/// that merely touch after egui's rounding are still disjoint.
+fn overlapping(a: egui::Rect, b: egui::Rect) -> bool {
+    (a.max.x.min(b.max.x) - a.min.x.max(b.min.x) > 0.5) && (a.max.y.min(b.max.y) - a.min.y.max(b.min.y) > 0.5)
+}
+
+/// The Windows acceptance screenshots at 960x688 showed a notice drawn over the tree and the
+/// folder path. A bottom-up footer's nested vertical scope inherited the whole free area and
+/// drew its content at the top of it. Both window sizes below carry the notice and a batch
+/// summary together: every rendered band stays apart, inside the panel, and dismiss still
+/// answers a real click.
+#[test]
+fn notice_and_batch_summary_keep_path_rows_and_footer_disjoint() {
+    use crate::scenario::{Harness, handle_at, rect_of};
+    use serde_json::json;
+    for (width, height) in [(960.0, 688.0), (850.0, 480.0)] {
+        let scratch = Scratch::new();
+        for index in 0..12 {
+            scratch.file(&format!("row-{index:02}.txt"), "x");
+        }
+        let orphan = scratch.file("orphan.bin", "");
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.call("ui.prefs", json!({"right_rail": true, "right_rail_open": "files"}));
+        h.call("ui.resize", json!({"width": width, "height": height}));
+        h.app.file_tree = listing(scratch.path());
+        h.app.file_tree.notice = Some((
+            format!(
+                "No application knows how to open URL {} (Error Domain=NSOSStatusErrorDomain Code=-10814 {})",
+                orphan.display(),
+                "detail ".repeat(40)
+            ),
+            true,
+        ));
+        h.app.file_tree.notice_reveal = Some(orphan.clone());
+        let failed = scratch.path().join("row-00.txt");
+        let target = scratch.path().join("sub/row-00.txt");
+        h.app.file_tree.report = Some(Report {
+            action: Action::Copy,
+            results: vec![
+                ItemResult {
+                    source: failed.clone(),
+                    target: target.clone(),
+                    outcome: Outcome::Failed(format!("permission denied {}", "while copying ".repeat(30))),
+                },
+                ItemResult { source: scratch.path().join("row-01.txt"), target: scratch.path().join("sub/row-01.txt"), outcome: Outcome::Done },
+                ItemResult { source: scratch.path().join("row-02.txt"), target: scratch.path().join("sub/row-02.txt"), outcome: Outcome::Skipped },
+            ],
+            cancelled: false,
+            retry: vec![OpItem { source: failed, destination: target, conflict: Conflict::KeepBoth }],
+        });
+        h.frames(8);
+        let panel = rect_of("rail:panel").unwrap_or_else(|| panic!("{width}x{height}: no panel"));
+        let path = rect_of("files:root").unwrap_or_else(|| panic!("{width}x{height}: no folder path"));
+        let rows = rect_of("files:list").unwrap_or_else(|| panic!("{width}x{height}: no rows"));
+        let notice = rect_of("files:notice").unwrap_or_else(|| panic!("{width}x{height}: no notice"));
+        let report = rect_of("files:report").unwrap_or_else(|| panic!("{width}x{height}: no report"));
+        for (name, rect) in [("path", path), ("rows", rows), ("notice", notice), ("report", report)] {
+            assert!(rect.is_positive(), "{width}x{height}: {name} is empty: {rect:?}");
+            assert!(panel.contains_rect(rect), "{width}x{height}: {name} {rect:?} leaves panel {panel:?}");
+        }
+        for (a_name, a, b_name, b) in [
+            ("path", path, "rows", rows),
+            ("path", path, "notice", notice),
+            ("path", path, "report", report),
+            ("rows", rows, "notice", notice),
+            ("rows", rows, "report", report),
+            ("notice", notice, "report", report),
+        ] {
+            assert!(!overlapping(a, b), "{width}x{height}: {a_name} {a:?} overlaps {b_name} {b:?}");
+        }
+        for (name, handle) in [("reveal", "files:notice_reveal"), ("dismiss", "files:notice_dismiss")] {
+            let rect = rect_of(handle).unwrap_or_else(|| panic!("{width}x{height}: no {name} control"));
+            assert!(notice.contains_rect(rect), "{width}x{height}: {name} {rect:?} leaves notice {notice:?}");
+            assert!(panel.contains_rect(rect), "{width}x{height}: {name} {rect:?} leaves panel {panel:?}");
+            assert_eq!(handle_at(handle), Some(rect.center()), "{width}x{height}: {name} is not the hit target at its centre");
+        }
+        h.step(&json!({"click": {"handle": "files:notice_dismiss"}})).unwrap();
+        h.frames(2);
+        assert!(h.app.file_tree.notice.is_none(), "{width}x{height}: a click on dismiss clears the notice");
+        assert!(rect_of("files:notice").is_none(), "{width}x{height}: the notice is no longer drawn");
+        assert!(h.app.file_tree.report.is_some(), "{width}x{height}: dismissing the notice keeps the batch summary");
     }
 }
 

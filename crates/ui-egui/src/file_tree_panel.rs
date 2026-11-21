@@ -6,6 +6,7 @@ use solidcraft_engine::io::files::{self, Conflict, Kind};
 
 use super::{EditKind, External, Listing, Modal, ReplaceConsent, Row, RowState};
 use crate::i18n::tr;
+use crate::ui_kit::BackingTooltipExt as _;
 use crate::ui_kit::{self, Button};
 use crate::{SolveApp, i18n::format as trf, theme::Tokens};
 
@@ -107,15 +108,15 @@ fn header(app: &mut SolveApp, ui: &mut egui::Ui) {
     let tooltip = name.clone();
     let mut right = rect.right();
     let more = Rect::from_center_size(pos2(right - t.space_8, rect.center().y), vec2(20.0, 20.0));
-    let more_response = ui_kit::button_at(ui, "files_more", more, "⋯", Button::Ghost).on_hover_text(tr("ui.files_root_menu"));
+    let more_response = ui_kit::button_at(ui, "files_more", more, "⋯", Button::Ghost).backing_on_hover_text(tr("ui.files_root_menu"));
     crate::scenario::publish_target("files:more", more);
     right = more.left() - t.space_2;
     let refresh = Rect::from_center_size(pos2(right - t.space_8, rect.center().y), vec2(20.0, 20.0));
-    let refresh_response = ui_kit::button_at(ui, "files_refresh", refresh, "⟳", Button::Ghost).on_hover_text(tr("ui.files_refresh"));
+    let refresh_response = ui_kit::button_at(ui, "files_refresh", refresh, "⟳", Button::Ghost).backing_on_hover_text(tr("ui.files_refresh"));
     crate::scenario::publish_target("files:refresh", refresh);
     right = refresh.left() - t.space_2;
     let plus = Rect::from_center_size(pos2(right - t.space_8, rect.center().y), vec2(20.0, 20.0));
-    let plus_response = ui_kit::button_at(ui, "files_new", plus, "+", Button::Ghost).on_hover_text(tr("ui.files_new"));
+    let plus_response = ui_kit::button_at(ui, "files_new", plus, "+", Button::Ghost).backing_on_hover_text(tr("ui.files_new"));
     crate::scenario::publish_target("files:new", plus);
     right = plus.left() - t.space_6;
     let icon = Rect::from_min_size(pos2(rect.left() + t.space_2, rect.center().y - ICON / 2.0), vec2(ICON, ICON));
@@ -125,7 +126,7 @@ fn header(app: &mut SolveApp, ui: &mut egui::Ui) {
     let galley = ui.painter().layout_no_wrap(name, font, t.text);
     let painter = ui.painter().with_clip_rect(name_rect);
     painter.galley(pos2(name_rect.left(), name_rect.center().y - galley.size().y / 2.0), galley, t.text);
-    let _ = ui.interact(name_rect, egui::Id::new("files_root_name"), Sense::hover()).on_hover_text(tooltip);
+    let _ = ui.interact(name_rect, egui::Id::new("files_root_name"), Sense::hover()).backing_on_hover_text(tooltip);
 
     if refresh_response.clicked() {
         app.file_tree.refresh(&root);
@@ -362,7 +363,7 @@ fn rows(app: &mut SolveApp, ui: &mut egui::Ui, height: f32) {
         return;
     }
     let root = app.file_tree.root.clone().map(|root| root.to_string_lossy().into_owned()).unwrap_or_default();
-    egui::ScrollArea::vertical().id_salt(("sc_files_rows", root)).auto_shrink([false, false]).max_height(height).show_rows(
+    let list = egui::ScrollArea::vertical().id_salt(("sc_files_rows", root)).auto_shrink([false, false]).max_height(height).show_rows(
         ui,
         ROW,
         rows.len(),
@@ -374,9 +375,10 @@ fn rows(app: &mut SolveApp, ui: &mut egui::Ui, height: f32) {
                 let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW), Sense::hover());
                 row_ui(app, ui, rect, row, &visible, &open);
             }
-            crate::scenario::publish_target("files:list", ui.min_rect());
         },
     );
+    // The viewport, not the unclipped content: the visible rows are what the footer must clear.
+    crate::scenario::publish_target("files:list", list.inner_rect);
     if let Some(draft) = edit {
         app.file_tree.editing = Some(draft);
     }
@@ -516,7 +518,7 @@ fn row_ui(
     let text = format!("{}{suffix}", row.name);
     let galley = ui.painter().layout_no_wrap(text, FontId::proportional(t.font_small), color);
     ui.painter().with_clip_rect(name_rect).galley(pos2(name_rect.left(), name_rect.center().y - galley.size().y / 2.0), galley, color);
-    response.clone().on_hover_text(row.path.display().to_string());
+    response.clone().backing_on_hover_text(row.path.display().to_string());
     crate::scenario::publish_target(&format!("files:row:{}", row.name), rect);
     match &row.state {
         RowState::Loading => {
@@ -756,14 +758,22 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
         return;
     }
     let shift = ui.input(|i| i.modifiers.shift);
-    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)) {
+    if let Some(before_command) = take_key(ui, egui::Modifiers::NONE, egui::Key::ArrowDown) {
+        let before = clipboard_target(app);
         move_focus(app, visible, 1, shift);
-    } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)) {
+        note_retarget(app, before_command, before);
+    } else if let Some(before_command) = take_key(ui, egui::Modifiers::NONE, egui::Key::ArrowUp) {
+        let before = clipboard_target(app);
         move_focus(app, visible, -1, shift);
-    } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Home)) {
+        note_retarget(app, before_command, before);
+    } else if let Some(before_command) = take_key(ui, egui::Modifiers::NONE, egui::Key::Home) {
+        let before = clipboard_target(app);
         jump_focus(app, visible, 0, shift);
-    } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::End)) {
+        note_retarget(app, before_command, before);
+    } else if let Some(before_command) = take_key(ui, egui::Modifiers::NONE, egui::Key::End) {
+        let before = clipboard_target(app);
         jump_focus(app, visible, visible.len().saturating_sub(1), shift);
+        note_retarget(app, before_command, before);
     } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)) {
         if let Some(path) = app.file_tree.focus.clone()
             && matches!(app.file_tree.kind_at(&path), Some(Kind::Dir))
@@ -771,7 +781,8 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
         {
             app.file_tree.toggle_dir(&path);
         }
-    } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)) {
+    } else if let Some(before_command) = take_key(ui, egui::Modifiers::NONE, egui::Key::ArrowLeft) {
+        let before = clipboard_target(app);
         if let Some(path) = app.file_tree.focus.clone() {
             if app.file_tree.expanded.contains(&path) {
                 app.file_tree.toggle_dir(&path);
@@ -781,6 +792,7 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
                 app.file_tree.select_only(parent);
             }
         }
+        note_retarget(app, before_command, before);
     } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
         if let Some(path) = app.file_tree.focus.clone()
             && let Some(path) = app.file_tree.activate(&path)
@@ -794,11 +806,44 @@ fn keys(app: &mut SolveApp, ui: &mut egui::Ui, visible: &[std::path::PathBuf]) {
     } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
     {
         request_delete(app);
-    } else if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
+    } else if let Some(before_command) = take_key(ui, egui::Modifiers::COMMAND, egui::Key::A) {
+        let before = clipboard_target(app);
         app.file_tree.selection = visible.iter().cloned().collect();
         app.file_tree.focus = visible.first().cloned();
         app.file_tree.anchor = visible.first().cloned();
+        note_retarget(app, before_command, before);
     }
+}
+
+/// What a Files clipboard command would act on: the selected paths and the folder a paste
+/// would enter. A key only retires an earlier command if it changes one of these.
+struct ClipboardTarget {
+    selected: Vec<std::path::PathBuf>,
+    folder: Option<std::path::PathBuf>,
+}
+
+fn clipboard_target(app: &SolveApp) -> ClipboardTarget {
+    let focus = app.file_tree.focus.clone();
+    ClipboardTarget { selected: app.file_tree.selected(focus.as_deref()), folder: app.file_tree.target_folder() }
+}
+
+/// The panel handled this key itself, so it can say which earlier commands had their effective
+/// target changed by that action. Entry-frame focus cannot know either.
+fn note_retarget(app: &mut SolveApp, before_key: crate::edit_clipboard::CommandsBeforeKey, before: ClipboardTarget) {
+    let after = clipboard_target(app);
+    if after.selected != before.selected {
+        app.clipboard_input.retire_commands(&before_key.selection);
+    }
+    if after.folder != before.folder {
+        app.clipboard_input.retire_commands(&before_key.paste_folder);
+    }
+}
+
+/// Consume the key the panel handles and report the commands its first event follows.
+/// `consume_key` uses the same logical modifier match, so accepted Alt/Shift chords count too.
+fn take_key(ui: &mut egui::Ui, modifiers: egui::Modifiers, key: egui::Key) -> Option<crate::edit_clipboard::CommandsBeforeKey> {
+    let before = crate::edit_clipboard::commands_before_key(ui, modifiers, key);
+    ui.input_mut(|i| i.consume_key(modifiers, key)).then_some(before)
 }
 
 fn move_focus(app: &mut SolveApp, visible: &[std::path::PathBuf], delta: isize, extend: bool) {
@@ -840,30 +885,32 @@ fn footer_rows(app: &mut SolveApp, ui: &mut egui::Ui) {
         });
     }
     if let Some((notice, error)) = app.file_tree.notice.clone() {
-        let shown = ui.vertical(|ui| {
-            let ink = if error { t.form_error } else { t.text_dim };
-            // Keep the complete reason in a tooltip, but never let hostile diagnostic length
-            // displace the two recovery controls or the rows outside the panel.
-            ui.add(egui::Label::new(egui::RichText::new(&notice).font(FontId::proportional(t.font_small)).color(ink)).truncate())
-                .on_hover_text(&notice);
-            ui.horizontal(|ui| {
-                if let Some(path) = app.file_tree.notice_reveal.clone() {
-                    let reveal = ui_kit::button(ui, tr("ui.files_reveal"), Button::Small);
-                    crate::scenario::publish_target("files:notice_reveal", reveal.rect);
-                    if reveal.clicked() {
-                        report_error(app, files::reveal(&path), tr("ui.files_reveal"));
-                        app.file_tree.notice_reveal = None;
-                    }
-                }
-                let dismiss = ui_kit::button(ui, "×", Button::Ghost);
-                crate::scenario::publish_target("files:notice_dismiss", dismiss.rect);
-                if dismiss.clicked() {
-                    app.file_tree.notice = None;
+        let ink = if error { t.form_error } else { t.text_dim };
+        // The footer is bottom-up: its first row sits lowest. Add the actions before the
+        // truncated reason, which draws above them, and keep both direct rows instead of a
+        // nested vertical scope (that scope inherited the whole free area and drew at its top,
+        // over the rows). Keep the complete reason in a tooltip, but never let hostile
+        // diagnostic length displace the recovery controls or the rows outside the panel.
+        let actions = ui.allocate_ui_with_layout(vec2(ui.available_width(), ui_kit::row_height()), Layout::left_to_right(Align::Center), |ui| {
+            if let Some(path) = app.file_tree.notice_reveal.clone() {
+                let reveal = ui_kit::button(ui, tr("ui.files_reveal"), Button::Small);
+                crate::scenario::publish_target("files:notice_reveal", reveal.rect);
+                if reveal.clicked() {
+                    report_error(app, files::reveal(&path), tr("ui.files_reveal"));
                     app.file_tree.notice_reveal = None;
                 }
-            });
+            }
+            let dismiss = ui_kit::button(ui, "×", Button::Ghost);
+            crate::scenario::publish_target("files:notice_dismiss", dismiss.rect);
+            if dismiss.clicked() {
+                app.file_tree.notice = None;
+                app.file_tree.notice_reveal = None;
+            }
         });
-        crate::scenario::publish_target("files:notice", shown.response.rect);
+        let reason = ui
+            .add(egui::Label::new(egui::RichText::new(&notice).font(FontId::proportional(t.font_small)).color(ink)).truncate())
+            .backing_on_hover_text(&notice);
+        crate::scenario::publish_target("files:notice", reason.rect.union(actions.response.rect));
     }
     let Some(report) = app.file_tree.report.as_ref() else { return };
     let (succeeded, failed, skipped, cancelled) = (report.succeeded(), report.failed(), report.skipped(), report.cancelled);
@@ -880,7 +927,18 @@ fn footer_rows(app: &mut SolveApp, ui: &mut egui::Ui) {
     let summary = trf("ui.files_report", &[("done", &succeeded.to_string()), ("failed", &failed.to_string()), ("skipped", &skipped.to_string())]);
     let ink = if failed > 0 { t.form_error } else { t.text_dim };
     let mut dismiss = false;
-    ui.horizontal(|ui| {
+    // Bottom-up: draw the failed items below the summary, so the summary stays the top line.
+    let details_rect = if details.is_empty() {
+        None
+    } else {
+        let text = details.join("\n");
+        Some(
+            ui.add(egui::Label::new(egui::RichText::new(&text).font(FontId::proportional(t.font_small)).color(t.text_dim)).truncate())
+                .backing_on_hover_text(&text)
+                .rect,
+        )
+    };
+    let summary_row = ui.allocate_ui_with_layout(vec2(ui.available_width(), ui_kit::row_height()), Layout::left_to_right(Align::Center), |ui| {
         ui.add(egui::Label::new(egui::RichText::new(summary).font(FontId::proportional(t.font_small)).color(ink)).truncate());
         if cancelled {
             ui_kit::text(ui, tr("ui.files_cancelled"), ui_kit::Text::Note(tr("ui.files_cancelled")));
@@ -892,17 +950,13 @@ fn footer_rows(app: &mut SolveApp, ui: &mut egui::Ui) {
             retry = usize::MAX;
         }
     });
-    if !details.is_empty() {
-        let text = details.join("\n");
-        ui.add(egui::Label::new(egui::RichText::new(&text).font(FontId::proportional(t.font_small)).color(t.text_dim)).truncate())
-            .on_hover_text(&text);
-    }
     if retry == usize::MAX {
         app.file_tree.retry_failed();
     } else if dismiss {
         app.file_tree.report = None;
     }
-    crate::scenario::publish_target("files:report", ui.min_rect());
+    let report = details_rect.map_or(summary_row.response.rect, |details| details.union(summary_row.response.rect));
+    crate::scenario::publish_target("files:report", report);
 }
 
 /// The questions a file operation asks.

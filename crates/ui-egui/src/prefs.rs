@@ -3496,15 +3496,17 @@ fn looks_like_theme(text: &str) -> bool {
 /// Ctrl/Cmd+V on the Appearance page with a theme file's text on the clipboard imports it, like
 /// Import… with a file (#8226). Called before the global Copy and Paste shortcuts, which would
 /// otherwise paste copied components; the paste is taken out of the input once it is a theme's.
-pub fn take_theme_paste(app: &mut SolveApp, ctx: &egui::Context) {
+/// Returns whether the paste was claimed, including a theme-looking text that fails to import:
+/// that still owns the paste so no other clipboard shortcut pastes it instead.
+pub fn take_theme_paste(app: &mut SolveApp, ctx: &egui::Context) -> bool {
     if !app.prefs_window.open || app.prefs_window.section != PAGE_APPEARANCE {
-        return;
+        return false;
     }
     let Some(text) = ctx.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None })) else {
-        return;
+        return false;
     };
     if !looks_like_theme(&text) {
-        return;
+        return false;
     }
     ctx.input_mut(|i| {
         i.events.retain(|e| {
@@ -3512,6 +3514,7 @@ pub fn take_theme_paste(app: &mut SolveApp, ctx: &egui::Context) {
         })
     });
     import_theme_text(app, Ok(text));
+    true
 }
 
 /// Files dropped on the theme Import tile are themes to import, not designs to open (#8226).
