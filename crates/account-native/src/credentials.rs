@@ -578,7 +578,17 @@ impl CredentialSession {
         if !safe_token(provider_account, MAX_ACCOUNT_BYTES) || access_token.is_empty() || has_control(access_token) {
             return Err(unavailable());
         }
+        // A sign-out or account switch advances the epoch and sets the barrier before any store
+        // IO. A worker that reaches completion afterwards must not reconstruct provider authority
+        // that the cleanup just removed. Check before the lock and again while holding it.
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        if self.revoked.load(Ordering::SeqCst) {
+            return Err(unavailable());
+        }
         let mut state = self.lock()?;
+        if !self.epoch_unchanged(epoch) || state.locked {
+            return Err(unavailable());
+        }
         clear_authority(&mut state)?;
         let result = write_provider_login(&mut state, provider_account, access_token);
         if result.is_err() {
@@ -592,8 +602,15 @@ impl CredentialSession {
     /// token is input to the exchange, never the product bearer. Without a documented exchange the
     /// default [`BlockedProductExchange`] leaves product login inactive.
     pub fn activate_product_session(&self, exchange: &dyn ProductSessionExchange) -> Result<ProductLogin, CredentialError> {
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        if self.revoked.load(Ordering::SeqCst) {
+            return Err(unavailable());
+        }
         let provider = {
             let state = self.inner.lock().map_err(|_| unavailable())?;
+            if !self.epoch_unchanged(epoch) || !authority_usable(&state) {
+                return Err(unavailable());
+            }
             read_provider_session(&state).ok_or_else(provider_required)?
         };
         let product = exchange.exchange(&provider).map_err(product_exchange_error)?;
@@ -610,6 +627,12 @@ impl CredentialSession {
         }
 
         let mut state = self.lock()?;
+        // The exchange can run for a whole network round trip. A sign-out or account switch that
+        // happened meanwhile must win: the barrier is checked before the provider recheck so no
+        // product credential is written for a session that is being retired.
+        if !self.epoch_unchanged(epoch) || !authority_usable(&state) {
+            return Err(unavailable());
+        }
         let current = read_provider_session(&state).ok_or_else(provider_required)?;
         if current.account_id != provider.account_id || current.access_token != provider.access_token {
             // A provider re-login or logout raced the exchange; fail closed and write nothing.

@@ -243,6 +243,18 @@ pub trait Transport {
     fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure>;
 }
 
+impl<T: Transport + ?Sized> Transport for Box<T> {
+    fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
+        (**self).send(request)
+    }
+}
+
+impl<T: Transport + ?Sized> Transport for std::sync::Arc<T> {
+    fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
+        (**self).send(request)
+    }
+}
+
 /// HTTPS transport built on `ureq`, with OS certificates, no redirects, and hard bounds.
 #[derive(Clone, Debug)]
 pub struct UreqTransport {

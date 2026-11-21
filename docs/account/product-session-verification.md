@@ -57,9 +57,57 @@ The exchange is explicit:
 
 - `CredentialSession::complete_provider_login` still never activates a product session.
 - `BlockedProductExchange` remains the default for callers that do not opt in.
-- The desktop and CLI configure no product service origin and no shipped provider sign-in, so
-  `sign_in` still refuses and no production billing, commit or MCP authority is installed.
+- The desktop starts the documented WorkOS device flow only from an explicit account action. The
+  worker leaves the window thread, shows the returned code, and opens the verification page only
+  when the user explicitly asks for the browser action.
+- The desktop trusts the verification page only when its normalized HTTPS origin equals the
+  configured AuthKit origin, and sends the provider token only to the configured HTTPS product
+  base. Missing or malformed values leave sign-in unavailable; no address is baked in.
+- A completed device flow is recognized only after the product service verifies the provider
+  token and the product session is stored. Refresh reads the cached result and does not replay the
+  exchange.
 - No token is sent to any origin other than the caller-configured `WireConnection`.
+
+## Desktop orchestration
+
+`apps/solidcraft/src/account.rs` owns one explicit sign-in worker per process:
+
+1. `sign_in` checks the sign-out barrier, the secure store and the complete configuration before
+   starting anything. A missing value returns `AUTH_UNAVAILABLE` with no request.
+2. The worker calls the documented device-authorization endpoint, checks the returned
+   `verification_uri` and optional complete URI against the configured AuthKit origin, and
+   publishes the code for display.
+3. Polling waits the server's interval, follows `slow_down` by increasing it, stops at
+   `expires_in`, and checks cancellation before every request and before each credential write.
+   Cancelling a worker wakes the wait immediately; the session revocation epoch also rejects a
+   late write after sign-out or account switch.
+4. After approval the worker stores the provider login, then calls
+   `ServerVerifiedProductSession` against the configured product origin. The product-service
+   refusal or transport failure leaves the product session inactive; provider success alone never
+   grants authority.
+5. The host reads the cached completed result. A completed view reports the account label but
+   still refuses chat, billed tools and commit authority because no installation bootstrap or
+   account service is wired.
+
+Production configuration is three explicit host values, all required together:
+
+- `INTCAD_WORKOS_CLIENT_ID`: the approved WorkOS public client id (never a secret).
+- `INTCAD_AUTHKIT_ORIGIN`: the trusted HTTPS AuthKit origin, for example the hosted domain only.
+- `INTCAD_PRODUCT_SERVICE_ORIGIN`: the trusted HTTPS product service base (host only).
+
+Tests script both transports, a virtual clock and an inert browser opener. They perform no network
+request, open no browser and use no real credential. Late authorization after cancellation or
+account switch, untrusted origins, slow-down and deadline handling, provider success followed by a
+product refusal, and verified success without a replayed exchange are covered locally.
+
+This checkpoint does not yet:
+
+- perform `POST /v1/installations` or persist an installation credential, so a restarted process
+  has no provable `AuthenticatedHostScope` and controlled authority stays closed;
+- install a reviewed account service, quota snapshot, billing or commit authority;
+- render the device-code prompt or account menu in the UI (Entry 3);
+- refresh, revoke or revalidate the product session after startup;
+- run against a live WorkOS, AuthKit or product deployment.
 
 ## Fail-closed cases covered by local tests
 
@@ -85,25 +133,30 @@ live, staging or production verification.
 The following are required together; none is present in this build:
 
 - a **trusted configured product service origin**, supplied by reviewed configuration rather than
-  an environment heuristic, token field or response value;
+  an environment heuristic, token field or response value; the desktop reads it from one explicit
+  host variable and validates it as HTTPS with no path prefix (implemented, unverified live);
 - a **native HTTPS transport with redirects disabled** (the existing production `ureq` transport
   sets `https_only`, `max_redirects(0)` and platform certificates) and tests that exercise it
-  without a live service;
+  without a live service (implemented; local tests use scripted transports);
 - **startup tombstone recovery**: a durable sign-out marker may be cleared only after a fresh
   provider login is verified against the configured origin and the new product session is bound
-  to the account/installation; a marker alone never restores authority;
+  to the account/installation; a marker alone never restores authority (not implemented; the
+  desktop still refuses sign-in while a marker is unconfirmed);
 - **installation bootstrap**: `POST /v1/installations` with the activated product bearer and a
   provable host scope, followed by durable installation credential storage, so a later
-  `AuthenticatedHostScope` can be proven;
-- an explicit provider sign-in command/flow, token expiry/refresh handling and revocation
-  revalidation.
+  `AuthenticatedHostScope` can be proven (not implemented);
+- token expiry/refresh handling, revocation polling or periodic revalidation (not implemented).
+- live WorkOS/AuthKit/product verification with the approved public client id and staging origins
+  (not run; requires the QA configuration named above).
 
 ## Explicit non-goals
 
 This checkpoint does not deliver:
 
-- a shipped product service origin, WorkOS client id, provider sign-in command or browser flow;
-- token expiry/refresh handling, revocation polling or periodic revalidation;
+- a baked-in product service origin, WorkOS client id or AuthKit origin (all three are required
+  from the host environment and remain unset in the shipped build);
+- a finished account entry UI, prompt expiry/retry presentation or account menu (Entry 3);
+- installation bootstrap, token expiry/refresh handling, revocation polling or periodic revalidation;
 - production billing, settlement, MCP authority or controlled execution;
 - restart-time server revalidation (startup still relies on the earlier activation and the
   persisted session binding);

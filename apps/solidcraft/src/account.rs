@@ -4,22 +4,335 @@
 //! budget and the monotonic clock, and installs the UI account port. It never opens a dialog or
 //! the network on a render pass.
 //!
-//! Fail closed: a documented server-verified `ProductSessionExchange` exists in `account-native`,
-//! but this build configures no product service origin and no shipped UI action completes a
-//! WorkOS provider sign-in. The desktop therefore does **not** install production billing or
-//! commit authority and never promotes a provider token implicitly. Ordinary CAD stays free and
-//! anonymous; controlled entries keep their existing default refusal. A secure store is probed
-//! before any session is restored, and sign-out or account switch ends the old session's
-//! authority immediately.
+//! Fail closed: a documented server-verified `ProductSessionExchange` exists in `account-native`
+//! and the desktop can run it from an explicit sign-in, but this build configures no product
+//! service origin, WorkOS client id or AuthKit origin unless the host supplies all three. No
+//! shipped UI action completes a provider sign-in implicitly, no browser opens without an explicit
+//! browser action, and a completed flow activates only after the configured product service
+//! verifies it. The desktop installs no production billing or commit authority and never promotes
+//! a provider token implicitly. Ordinary CAD stays free and anonymous; controlled entries keep
+//! their existing default refusal. A secure store is probed before any session is restored, and
+//! sign-out or account switch ends the old session's authority immediately.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use solidcraft_account_native::{CredentialSession, FileOperationStore};
+use solidcraft_account_native::{
+    CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodePrompt, DeviceCodeTransport, FileOperationStore, ProductLogin,
+    ServerVerifiedProductSession, Transport, UreqDeviceCodeTransport, UreqTransport, WireConnection, WorkOsPublicClient,
+};
 use solidcraft_engine::entitlement::{AccountService, AuthenticatedHostScope, BudgetTable, MonotonicClock, MonotonicInstant, Refusal, RefusalCode};
 use solidcraft_ui_egui::SolveApp;
-use solidcraft_ui_egui::account::{AccountPort, AccountView, DeleteAccountGuide, DeviceCode, LifecycleEvent, OwnModelView, State};
+use solidcraft_ui_egui::account::{AccountPort, AccountView, DeleteAccountGuide, DeviceCode, LifecycleEvent, OwnModelView, State, Timestamp};
+
+/// Explicit desktop sign-in configuration. Every value comes from the host; no origin is ever
+/// derived from a token, a response field or a guessed default, and no secret is baked in.
+#[derive(Clone, Debug)]
+struct SignInConfig {
+    client: WorkOsPublicClient,
+    authkit: AuthKitOrigin,
+    product: WireConnection,
+}
+
+impl SignInConfig {
+    fn new(client_id: &str, authkit_origin: &str, product_origin: &str, client_version: &str) -> Result<Self, Refusal> {
+        let client = WorkOsPublicClient::new(client_id).ok_or_else(|| account_unavailable("no WorkOS public client id is configured"))?;
+        let authkit = AuthKitOrigin::new(authkit_origin).ok_or_else(|| account_unavailable("no trusted HTTPS AuthKit origin is configured"))?;
+        let product = WireConnection::new(product_origin, client_version)
+            .map_err(|_| account_unavailable("no trusted HTTPS product service origin is configured"))?;
+        Ok(Self { client, authkit, product })
+    }
+
+    /// The production source is three explicit host-provided values. A missing or malformed value
+    /// leaves sign-in unavailable rather than falling back to any built-in address.
+    fn from_environment() -> Option<Self> {
+        let client_id = std::env::var("INTCAD_WORKOS_CLIENT_ID").ok()?;
+        let authkit = std::env::var("INTCAD_AUTHKIT_ORIGIN").ok()?;
+        let product = std::env::var("INTCAD_PRODUCT_SERVICE_ORIGIN").ok()?;
+        Self::new(client_id.trim(), authkit.trim(), product.trim(), env!("CARGO_PKG_VERSION")).ok()
+    }
+}
+
+/// A normalized HTTPS origin that a WorkOS verification page must match exactly.
+///
+/// WorkOS returns the address of its own hosted page. The desktop trusts it only when its scheme,
+/// host and port equal the configured AuthKit origin; a path, query or fragment on the response
+/// does not change the origin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AuthKitOrigin {
+    origin: String,
+}
+
+impl AuthKitOrigin {
+    fn new(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        // Configuration names an origin only, with no path, query or fragment. The returned
+        // verification page may of course carry a path; `matches` compares origins alone.
+        let rest = raw.strip_prefix("https://")?;
+        let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        if !(rest.len() == authority_end || rest.get(authority_end..) == Some("/")) {
+            return None;
+        }
+        normalized_https_origin(raw).map(|origin| Self { origin })
+    }
+
+    fn matches(&self, uri: &str) -> bool {
+        normalized_https_origin(uri).is_some_and(|origin| origin == self.origin)
+    }
+}
+
+/// Parse only `https://host[:port]` (or that followed by `/`, `?` or `#`) and return a normalized
+/// lowercase origin. Userinfo, plain HTTP, control bytes and empty hosts are rejected.
+fn normalized_https_origin(raw: &str) -> Option<String> {
+    let rest = raw.strip_prefix("https://")?;
+    if rest.is_empty() || rest.chars().any(|character| character.is_control() || character.is_whitespace() || matches!(character, '\\' | '@')) {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() || authority.len() > 255 {
+        return None;
+    }
+    let authority = authority.to_ascii_lowercase();
+    let authority = authority.strip_suffix(":443").unwrap_or(&authority);
+    let host = authority.split(':').next().unwrap_or_default();
+    if host.is_empty() || !host.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-') {
+        return None;
+    }
+    if let Some((host_part, port)) = authority.rsplit_once(':') {
+        if host_part.is_empty() || host_part.contains(':') || port.is_empty() || port.len() > 5 || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        port.parse::<u16>().ok().filter(|port| *port != 0)?;
+    }
+    Some(format!("https://{authority}"))
+}
+
+/// A cancellation flag that wakes the worker immediately, so no sign-in keeps polling for its
+/// server interval after the user switches accounts or closes the session.
+#[derive(Clone, Default)]
+struct SignInCancellation {
+    state: Arc<CancelState>,
+}
+
+#[derive(Default)]
+struct CancelState {
+    cancelled: AtomicBool,
+    lock: Mutex<()>,
+    wake: Condvar,
+}
+
+impl SignInCancellation {
+    fn cancel(&self) {
+        self.state.cancelled.store(true, Ordering::SeqCst);
+        self.state.wake.notify_all();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.state.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Wait for the interval or a cancellation, whichever comes first. Returns `false` on cancel.
+    fn wait(&self, interval: Duration) -> bool {
+        if self.is_cancelled() {
+            return false;
+        }
+        let mut guard = match self.state.lock.lock() {
+            Ok(guard) => guard,
+            Err(error) => error.into_inner(),
+        };
+        let now = Instant::now();
+        let deadline = now.checked_add(interval).unwrap_or(now);
+        loop {
+            if self.is_cancelled() {
+                return false;
+            }
+            let now = Instant::now();
+            let remaining = deadline.saturating_duration_since(now);
+            if remaining.is_zero() {
+                return true;
+            }
+            let waited = match self.state.wake.wait_timeout(guard, remaining) {
+                Ok(waited) => waited,
+                Err(error) => error.into_inner(),
+            };
+            guard = waited.0;
+            if waited.1.timed_out() {
+                return !self.is_cancelled();
+            }
+        }
+    }
+}
+
+/// The worker's only time source. Tests supply a virtual clock; production waits on the
+/// cancellation-aware condition variable.
+trait SignInTiming: Send + Sync {
+    fn now(&self) -> Duration;
+    fn wait(&self, interval: Duration, cancel: &SignInCancellation) -> bool;
+}
+
+struct SystemSignInTiming {
+    start: Instant,
+}
+
+impl SystemSignInTiming {
+    fn new() -> Self {
+        Self { start: Instant::now() }
+    }
+}
+
+impl SignInTiming for SystemSignInTiming {
+    fn now(&self) -> Duration {
+        self.start.elapsed()
+    }
+
+    fn wait(&self, interval: Duration, cancel: &SignInCancellation) -> bool {
+        cancel.wait(interval)
+    }
+}
+
+fn auth_required(message: &'static str) -> Refusal {
+    Refusal::new(RefusalCode::AuthRequired, message)
+}
+
+fn wall_seconds() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// Drive one explicit WorkOS device-code login through to a verified product session.
+///
+/// Only this function sends sign-in requests: it starts the documented device authorization,
+/// shows the prompt for an explicit browser action, polls on the server's interval and slow-down
+/// backoff until the user approves or the code's lifetime ends, then stores the provider login and
+/// asks the configured product service to verify it. Cancellation is checked before every request
+/// and before either credential write, so a late result after sign-out or account switch writes
+/// nothing. The caller never replays a request that already completed.
+fn drive_device_sign_in<D, P>(
+    flow: &mut DeviceCodeFlow<D>,
+    authkit: &AuthKitOrigin,
+    product: &WireConnection,
+    transport: P,
+    timing: &dyn SignInTiming,
+    cancel: &SignInCancellation,
+    publish: &mut dyn FnMut(&DeviceCodePrompt),
+) -> Result<ProductLogin, Refusal>
+where
+    D: DeviceCodeTransport,
+    P: Transport,
+{
+    let started_at = timing.now();
+    let prompt = flow.start()?;
+    if !authkit.matches(prompt.verification_uri()) || prompt.verification_uri_complete().is_some_and(|uri| !authkit.matches(uri)) {
+        return Err(account_unavailable("the sign-in service returned an untrusted verification address"));
+    }
+    let deadline = started_at.saturating_add(prompt.expires_in());
+    publish(&prompt);
+    let mut interval = prompt.interval();
+    loop {
+        if cancel.is_cancelled() {
+            return Err(auth_required("the sign-in was cancelled"));
+        }
+        if timing.now() >= deadline {
+            return Err(auth_required("the sign-in code expired"));
+        }
+        if !timing.wait(interval, cancel) {
+            return Err(auth_required("the sign-in was cancelled"));
+        }
+        if timing.now() >= deadline {
+            return Err(auth_required("the sign-in code expired"));
+        }
+        match flow.poll()? {
+            DeviceCodePoll::Pending { interval: next } | DeviceCodePoll::SlowDown { interval: next } => interval = next,
+            DeviceCodePoll::Authorized => break,
+            DeviceCodePoll::Denied => return Err(auth_required("the sign-in was denied in the browser")),
+            DeviceCodePoll::Expired => return Err(auth_required("the sign-in code expired")),
+            DeviceCodePoll::Failed(_) => return Err(auth_required("the sign-in service rejected the request")),
+        }
+        if cancel.is_cancelled() {
+            return Err(auth_required("the sign-in was cancelled"));
+        }
+    }
+    // The browser approval may have arrived just as the session was retired. Check before the
+    // provider write, and again before the product exchange, so a cancelled worker stops here.
+    if cancel.is_cancelled() {
+        return Err(auth_required("the sign-in was cancelled"));
+    }
+    flow.complete()?;
+    if cancel.is_cancelled() {
+        return Err(auth_required("the sign-in was cancelled"));
+    }
+    let exchange = ServerVerifiedProductSession::new(transport, product.clone());
+    flow.session().activate_product_session(&exchange).map_err(|_| account_unavailable("the product service did not verify the sign-in"))
+}
+
+/// Open one validated verification page in the system browser. Only an explicit browser action
+/// calls this; no prompt, refusal or noninteractive path opens a browser by itself.
+fn open_system_browser(url: &str) -> Result<(), String> {
+    let mut command = if cfg!(target_os = "windows") {
+        // `rundll32` takes the URL as data, with no shell string to split or interpolate.
+        std::process::Command::new("rundll32.exe")
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    if cfg!(target_os = "windows") {
+        command.args(["url.dll,FileProtocolHandler", url]);
+    } else {
+        command.arg(url);
+    }
+    command.spawn().map(|_| ()).map_err(|error| error.to_string())
+}
+
+type DeviceTransportFactory = Arc<dyn Fn() -> Box<dyn DeviceCodeTransport + Send + Sync> + Send + Sync>;
+type ProductTransportFactory = Arc<dyn Fn() -> Box<dyn Transport + Send + Sync> + Send + Sync>;
+type BrowserOpener = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SignInPhase {
+    Starting,
+    WaitingForApproval,
+    SignedIn,
+    Failed,
+    Cancelled,
+}
+
+struct SignInShared {
+    phase: SignInPhase,
+    prompt: Option<DeviceCode>,
+    browser_uri: Option<String>,
+    account: Option<String>,
+    notice: Option<Refusal>,
+}
+
+impl Default for SignInShared {
+    fn default() -> Self {
+        Self { phase: SignInPhase::Starting, prompt: None, browser_uri: None, account: None, notice: None }
+    }
+}
+
+struct SignInJob {
+    cancel: SignInCancellation,
+    shared: Arc<Mutex<SignInShared>>,
+}
+
+/// A signed-in view after a completed device flow. Controlled authority stays closed: this
+/// checkpoint performs no installation bootstrap and installs no account service, so chat and
+/// billed tools are still unavailable even though the product session is recognized.
+fn signed_in_view(account: &str) -> AccountView {
+    AccountView {
+        signed_in: true,
+        sign_in_visible: false,
+        account_label: Some(account.to_owned()),
+        available: None,
+        held: 0,
+        settling: false,
+        chat_available: false,
+        tool_blocked: Some(RefusalCode::AuthUnavailable),
+        own_model_label: None,
+    }
+}
 
 /// Account facts read once before the window exists.
 #[derive(Clone, Debug)]
@@ -45,6 +358,13 @@ pub struct AccountRuntime {
     budget: BudgetTable,
     clock: Option<Box<dyn MonotonicClock + Send + Sync>>,
     service: Option<Box<dyn AccountService + Send + Sync>>,
+    /// Explicit device sign-in settings, absent unless the host supplied all three trusted values.
+    sign_in: Option<SignInConfig>,
+    /// Test-injected transports. Production creates the documented HTTPS transports per job.
+    sign_in_device: Option<DeviceTransportFactory>,
+    sign_in_product: Option<ProductTransportFactory>,
+    sign_in_timing: Option<Arc<dyn SignInTiming>>,
+    sign_in_opener: Option<BrowserOpener>,
 }
 
 impl AccountRuntime {
@@ -59,7 +379,14 @@ impl AccountRuntime {
                 None
             }
         });
-        Self::new(credentials, ledger)
+        let mut runtime = Self::new(credentials, ledger);
+        if let Some(sign_in) = SignInConfig::from_environment() {
+            runtime.sign_in = Some(sign_in);
+            runtime.sign_in_opener = Some(Arc::new(open_system_browser));
+        } else {
+            solidcraft_engine::note!("account: no complete WorkOS/AuthKit/product origin configuration; sign-in stays unavailable");
+        }
+        runtime
     }
 
     /// A test-only runtime over a caller-supplied credential store.
@@ -75,7 +402,37 @@ impl AccountRuntime {
     }
 
     fn new(credentials: CredentialSession, ledger: Option<FileOperationStore>) -> Self {
-        Self { credentials, ledger, budget: BudgetTable::unverified_default(), clock: Some(Box::new(SystemMonotonicClock::new())), service: None }
+        Self {
+            credentials,
+            ledger,
+            budget: BudgetTable::unverified_default(),
+            clock: Some(Box::new(SystemMonotonicClock::new())),
+            service: None,
+            sign_in: None,
+            sign_in_device: None,
+            sign_in_product: None,
+            sign_in_timing: None,
+            sign_in_opener: None,
+        }
+    }
+
+    /// Test-only injection: fresh transport factories, a virtual clock and an inert browser
+    /// opener, so orchestration tests never touch a network, a credential or a real browser.
+    #[cfg(test)]
+    fn with_sign_in_harness(
+        mut self,
+        config: SignInConfig,
+        device: DeviceTransportFactory,
+        product: ProductTransportFactory,
+        timing: Arc<dyn SignInTiming>,
+        opener: BrowserOpener,
+    ) -> Self {
+        self.sign_in = Some(config);
+        self.sign_in_device = Some(device);
+        self.sign_in_product = Some(product);
+        self.sign_in_timing = Some(timing);
+        self.sign_in_opener = Some(opener);
+        self
     }
 
     /// The host's authenticated account, installation and session binding, or `None`.
@@ -157,9 +514,10 @@ impl MonotonicClock for SystemMonotonicClock {
 
 /// The desktop implementation of the UI account seam.
 ///
-/// No method opens the network or starts a provider flow. Sign-in is an explicit action and still
-/// fails closed until a documented product-session exchange exists. The view is cached; the
-/// render path never calls the port.
+/// `sign_in` starts one explicit, cancellable worker; every network and credential step happens
+/// off the window thread, and the snapshot methods only read cached worker state. Sign-out and
+/// account switch cancel the worker and revoke the session before the durable cleanup starts.
+/// The view is cached; the render path never calls the port.
 #[derive(Default)]
 struct CleanupStatus {
     /// The latest revocation generation whose durable cleanup has not finished.
@@ -179,6 +537,9 @@ struct DesktopAccountPort {
     secure_store: bool,
     generation: u64,
     cleanup: Arc<Mutex<CleanupStatus>>,
+    /// One explicit device sign-in at a time. The worker owns the network; this only holds the
+    /// cancellation flag and the state the window may read.
+    sign_in: Option<SignInJob>,
     workers: Vec<std::thread::JoinHandle<()>>,
 }
 
@@ -193,8 +554,21 @@ impl DesktopAccountPort {
             secure_store: startup.secure_store,
             generation: 0,
             cleanup: Arc::new(Mutex::new(CleanupStatus::default())),
+            sign_in: None,
             workers: Vec::new(),
         }
+    }
+
+    /// Stop a device worker without waiting on its network request. The session's revocation
+    /// barrier makes a late result write nothing, and the handle is joined on shutdown.
+    fn cancel_sign_in(&mut self) {
+        if let Some(job) = self.sign_in.take() {
+            job.cancel.cancel();
+        }
+    }
+
+    fn completed_sign_in_account(&self) -> Option<String> {
+        self.sign_in.as_ref()?.shared.lock().ok()?.account.clone()
     }
 
     /// Refuse account work while a durable sign-out is unconfirmed, a cleanup is running or its
@@ -220,6 +594,9 @@ impl DesktopAccountPort {
     /// worker. The worker's result is applied only for its own generation, so a late result from
     /// an older switch can never clear a newer cleanup state.
     fn revoke(&mut self, event: LifecycleEvent) -> Result<(), Refusal> {
+        // A running device flow belongs to the session being retired. Cancel it before the
+        // generation barrier is published, so no later approval can write for the old session.
+        self.cancel_sign_in();
         // Publish the new generation and set the barrier in the same short lock. A finishing
         // older worker takes that lock before clearing anything, so it can never clear a newer
         // barrier between generation publication and its own stale-result check. No keyring IO
@@ -283,6 +660,99 @@ impl DesktopAccountPort {
             let _ = worker.join();
         }
     }
+
+    /// Start one explicit device flow on its own worker and return at once. The prompt becomes
+    /// readable through [`AccountPort::begin_device_code`]; only an explicit browser action opens
+    /// it. No request is sent before this call succeeds its configuration and sign-out gates.
+    fn start_sign_in(&mut self) -> Result<(), Refusal> {
+        self.cleanup_confirmed()?;
+        if !self.secure_store {
+            return Err(account_unavailable("no secure credential store is available"));
+        }
+        let Some(config) = self.runtime.sign_in.clone() else {
+            return Err(account_unavailable("no configured sign-in service origins"));
+        };
+        if let Some(job) = self.sign_in.as_ref() {
+            let phase = job.shared.lock().map_err(|_| account_unavailable("the sign-in state is unavailable"))?.phase;
+            match phase {
+                SignInPhase::Starting | SignInPhase::WaitingForApproval => {
+                    return Err(account_unavailable("a sign-in is already in progress"));
+                }
+                SignInPhase::SignedIn => {
+                    return Err(account_unavailable("the account is already signed in"));
+                }
+                // A refused or cancelled flow may be retried by a new explicit action. It is
+                // never replayed: the old worker is dropped and a new device authorization starts.
+                SignInPhase::Failed | SignInPhase::Cancelled => self.cancel_sign_in(),
+            }
+        }
+        let device_factory = self.runtime.sign_in_device.clone();
+        let product_factory = self.runtime.sign_in_product.clone();
+        let timing = self.runtime.sign_in_timing.clone();
+        let session = self.runtime.credentials.clone();
+        let shared = Arc::new(Mutex::new(SignInShared::default()));
+        let cancel = SignInCancellation::default();
+        let worker_shared = Arc::clone(&shared);
+        let worker_cancel = cancel.clone();
+        let worker = std::thread::Builder::new().name("intcad-account-sign-in".into()).spawn(move || {
+            let device: Box<dyn DeviceCodeTransport + Send + Sync> = match device_factory.as_ref() {
+                Some(factory) => factory(),
+                None => Box::new(UreqDeviceCodeTransport::new()),
+            };
+            let product_transport: Box<dyn Transport + Send + Sync> = match product_factory.as_ref() {
+                Some(factory) => factory(),
+                None => Box::new(UreqTransport::new()),
+            };
+            let timing: Arc<dyn SignInTiming> = timing.unwrap_or_else(|| Arc::new(SystemSignInTiming::new()));
+            let mut flow = DeviceCodeFlow::new(config.client, device, session, DeviceCodeMode::Explicit);
+            let mut publish = |prompt: &DeviceCodePrompt| publish_device_prompt(&worker_shared, prompt);
+            let result = drive_device_sign_in(&mut flow, &config.authkit, &config.product, product_transport, &*timing, &worker_cancel, &mut publish);
+            apply_sign_in_result(&worker_shared, &worker_cancel, result);
+        });
+        match worker {
+            Ok(handle) => {
+                self.workers.push(handle);
+                self.sign_in = Some(SignInJob { cancel, shared });
+                Ok(())
+            }
+            Err(_) => Err(account_unavailable("the sign-in worker could not start")),
+        }
+    }
+}
+
+fn publish_device_prompt(shared: &Arc<Mutex<SignInShared>>, prompt: &DeviceCodePrompt) {
+    let expires_at = wall_seconds().saturating_add(prompt.expires_in().as_secs());
+    let code = DeviceCode {
+        user_code: prompt.user_code().to_owned(),
+        verification_uri: prompt.verification_uri().to_owned(),
+        expires_at: Timestamp(expires_at),
+    };
+    let browser_uri = prompt.verification_uri_complete().unwrap_or_else(|| prompt.verification_uri()).to_owned();
+    if let Ok(mut shared) = shared.lock() {
+        shared.prompt = Some(code);
+        shared.browser_uri = Some(browser_uri);
+        shared.phase = SignInPhase::WaitingForApproval;
+    }
+}
+
+fn apply_sign_in_result(shared: &Arc<Mutex<SignInShared>>, cancel: &SignInCancellation, result: Result<ProductLogin, Refusal>) {
+    if let Ok(mut shared) = shared.lock() {
+        if cancel.is_cancelled() {
+            shared.phase = SignInPhase::Cancelled;
+            return;
+        }
+        match result {
+            Ok(login) => {
+                shared.account = Some(login.account_id);
+                shared.phase = SignInPhase::SignedIn;
+                shared.notice = None;
+            }
+            Err(refusal) => {
+                shared.phase = SignInPhase::Failed;
+                shared.notice = Some(refusal);
+            }
+        }
+    }
 }
 
 fn current_view(startup: &AccountStartup) -> AccountView {
@@ -309,11 +779,20 @@ fn current_view(startup: &AccountStartup) -> AccountView {
 
 impl AccountPort for DesktopAccountPort {
     fn view(&self) -> AccountView {
+        if let Some(account) = self.completed_sign_in_account() {
+            return signed_in_view(&account);
+        }
         self.view.clone()
     }
 
     fn refresh_status(&mut self) -> Result<AccountView, Refusal> {
         self.cleanup_confirmed()?;
+        // A completed device flow is recognized from the cached worker state. It is not replayed
+        // or exchanged again; this process has no installation binding or account service, so the
+        // snapshot stays the one the verified sign-in produced.
+        if self.completed_sign_in_account().is_some() {
+            return Ok(self.view());
+        }
         if !self.secure_store {
             self.view = AccountView::unavailable();
             return Ok(self.view.clone());
@@ -329,11 +808,7 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn sign_in(&mut self) -> Result<(), Refusal> {
-        self.cleanup_confirmed()?;
-        // A provider token is not a product session. This build configures no product service
-        // origin and no shipped provider flow, so a normal UI action cannot reach the reviewed
-        // server-verified exchange either.
-        Err(account_unavailable("no configured product-session verification origin"))
+        self.start_sign_in()
     }
 
     fn sign_out(&mut self) -> Result<(), Refusal> {
@@ -351,9 +826,43 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn begin_device_code(&self) -> Result<DeviceCode, Refusal> {
-        // Only an explicit terminal command may start a device flow; no desktop key or client id
-        // is configured or documented for this build.
-        Err(Refusal::new(RefusalCode::AuthRequired, "an explicit sign-in command is required"))
+        let Some(job) = self.sign_in.as_ref() else {
+            return Err(Refusal::new(RefusalCode::AuthRequired, "an explicit sign-in command is required"));
+        };
+        let shared = job.shared.lock().map_err(|_| account_unavailable("the sign-in state is unavailable"))?;
+        shared.prompt.clone().ok_or_else(|| auth_required("the sign-in prompt is not ready"))
+    }
+
+    fn open_verification(&mut self) -> Result<(), Refusal> {
+        let Some(job) = self.sign_in.as_ref() else {
+            return Err(auth_required("start a sign-in first"));
+        };
+        let (phase, browser_uri, prompt_expires) = {
+            let shared = job.shared.lock().map_err(|_| account_unavailable("the sign-in state is unavailable"))?;
+            (shared.phase, shared.browser_uri.clone(), shared.prompt.as_ref().map(|prompt| prompt.expires_at.0))
+        };
+        if phase != SignInPhase::WaitingForApproval {
+            return Err(auth_required("no sign-in is waiting for browser approval"));
+        }
+        let Some(browser_uri) = browser_uri else {
+            return Err(auth_required("the sign-in prompt is not ready"));
+        };
+        if prompt_expires.is_some_and(|expires_at| expires_at <= wall_seconds()) {
+            return Err(auth_required("the sign-in code expired"));
+        }
+        // The worker validated the response; the explicit action rechecks it against the same
+        // configured origin because a browser is opened only here.
+        if !self.runtime.sign_in.as_ref().is_some_and(|config| config.authkit.matches(&browser_uri)) {
+            return Err(account_unavailable("the verification address is not trusted"));
+        }
+        let Some(opener) = self.runtime.sign_in_opener.clone() else {
+            return Err(account_unavailable("no system browser opener is installed"));
+        };
+        opener(&browser_uri).map_err(|_| account_unavailable("the system browser could not be opened"))
+    }
+
+    fn take_sign_in_notice(&mut self) -> Option<Refusal> {
+        self.sign_in.as_ref()?.shared.lock().ok()?.notice.take()
     }
 
     fn own_model_view(&self) -> Option<OwnModelView> {
@@ -404,8 +913,8 @@ mod tests {
 
     use serde_json::json;
     use solidcraft_account_native::{
-        CredentialHandoff, CredentialSession, MemorySession, NoPersistentStore, ProductExchangeError, ProductSession, ProductSessionExchange,
-        ProviderSession, Secret, WireCredentials,
+        CredentialHandoff, CredentialSession, DeviceCodeTransport, MemorySession, NoPersistentStore, ProductExchangeError, ProductLogin,
+        ProductSession, ProductSessionExchange, ProviderSession, Secret, Transport, TransportFailure, WireCredentials, WireRequest, WireResponse,
     };
     use solidcraft_engine::entitlement::{
         Admission, BillingResult, Capability, CredentialError, CredentialErrorCode, CredentialStore, EntryCategory, Grant, OperationId, Refusal,
@@ -530,6 +1039,243 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(counter.load(Ordering::SeqCst) >= target, "expected {target} waiting operation(s)");
+    }
+
+    fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if condition() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(condition(), "timed out waiting for {what}");
+    }
+
+    fn account_config() -> SignInConfig {
+        SignInConfig::new("client_test", "https://auth.example", "https://api.example", "1.0.0").unwrap()
+    }
+
+    fn device_body() -> serde_json::Value {
+        json!({
+            "device_code": "device_code_SECRET_000000000000000000000000",
+            "user_code": "BCDF-GHJK",
+            "verification_uri": "https://auth.example/device",
+            "verification_uri_complete": "https://auth.example/device?user_code=BCDF-GHJK",
+            "expires_in": 300,
+            "interval": 5
+        })
+    }
+
+    fn device_body_until(expires_in: u64) -> serde_json::Value {
+        let mut body = device_body();
+        body["expires_in"] = json!(expires_in);
+        body
+    }
+
+    fn token_body() -> serde_json::Value {
+        json!({
+            "user": {"object": "user", "id": "user_01E4ZCR3C56J083X43JQXF3JK5", "email_verified": true},
+            "organization_id": "org_01H945H0YD4F97JN9MATX7BYAG",
+            "access_token": "access_token_SECRET_000000000000000000000000",
+            "authentication_method": "Password"
+        })
+    }
+
+    fn status_body() -> serde_json::Value {
+        json!({
+            "account": {"id": "acct_product_0001", "email_verified": true, "status": "active"},
+            "client": {"version": "1.0.0", "supported": true},
+            "protocol": {"version": "intcad-auth/1.0", "supported": true},
+            "eligible": true,
+            "reasons": [],
+            "balance": 10,
+            "held": 0,
+            "available": 10
+        })
+    }
+
+    #[derive(Default)]
+    struct DeviceScript {
+        responses: VecDeque<Result<(u16, Vec<u8>), CredentialError>>,
+        requests: Vec<String>,
+        token_gate: Option<Receiver<()>>,
+        cancel_on_authorized: Option<SignInCancellation>,
+    }
+
+    #[derive(Clone, Default)]
+    struct ScriptedDevice {
+        state: Arc<Mutex<DeviceScript>>,
+        authorized_waiting: Arc<AtomicUsize>,
+    }
+
+    impl ScriptedDevice {
+        fn scripted(responses: Vec<(u16, serde_json::Value)>) -> Self {
+            let device = Self::default();
+            {
+                let mut state = device.state.lock().unwrap();
+                for (status, body) in responses {
+                    state.responses.push_back(Ok((status, body.to_string().into_bytes())));
+                }
+            }
+            device
+        }
+
+        fn hold_token_success(&self, gate: Receiver<()>) {
+            self.state.lock().unwrap().token_gate = Some(gate);
+        }
+
+        fn cancel_on_authorized(&self, cancel: SignInCancellation) {
+            self.state.lock().unwrap().cancel_on_authorized = Some(cancel);
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.state.lock().unwrap().requests.clone()
+        }
+    }
+
+    impl DeviceCodeTransport for ScriptedDevice {
+        fn post(&self, url: &str, _content_type: &str, _body: &[u8]) -> Result<(u16, Vec<u8>), CredentialError> {
+            let mut state = self.state.lock().unwrap();
+            state.requests.push(url.to_owned());
+            let response = state.responses.pop_front().unwrap_or_else(|| {
+                Err(CredentialError { code: CredentialErrorCode::Unavailable, message: "inert scripted device transport".into() })
+            });
+            let authorized = match &response {
+                Ok((status, body)) => {
+                    *status == 200 && serde_json::from_slice::<serde_json::Value>(body).is_ok_and(|value| value.get("access_token").is_some())
+                }
+                Err(_) => false,
+            };
+            let gate = if authorized {
+                if let Some(cancel) = state.cancel_on_authorized.clone() {
+                    cancel.cancel();
+                }
+                state.token_gate.take()
+            } else {
+                None
+            };
+            drop(state);
+            if let Some(gate) = gate {
+                self.authorized_waiting.fetch_add(1, Ordering::SeqCst);
+                let _ = gate.recv();
+            }
+            response
+        }
+    }
+
+    #[derive(Default)]
+    struct ProductScript {
+        responses: VecDeque<Result<WireResponse, TransportFailure>>,
+        requests: Vec<WireRequest>,
+    }
+
+    #[derive(Clone, Default)]
+    struct ScriptedProduct {
+        state: Arc<Mutex<ProductScript>>,
+    }
+
+    impl ScriptedProduct {
+        fn scripted(responses: Vec<Result<WireResponse, TransportFailure>>) -> Self {
+            let product = Self::default();
+            product.state.lock().unwrap().responses = responses.into();
+            product
+        }
+
+        fn ok() -> Self {
+            Self::scripted(vec![Ok(WireResponse::new(200, status_body().to_string().into_bytes()))])
+        }
+
+        fn requests(&self) -> Vec<WireRequest> {
+            self.state.lock().unwrap().requests.clone()
+        }
+    }
+
+    impl Transport for ScriptedProduct {
+        fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
+            let mut state = self.state.lock().unwrap();
+            state.requests.push(request.clone());
+            state.responses.pop_front().unwrap_or(Err(TransportFailure::Network))
+        }
+    }
+
+    #[derive(Default)]
+    struct VirtualTiming {
+        millis: Mutex<u64>,
+        waits: Mutex<Vec<Duration>>,
+    }
+
+    impl VirtualTiming {
+        fn waits(&self) -> Vec<Duration> {
+            self.waits.lock().unwrap().clone()
+        }
+    }
+
+    impl SignInTiming for VirtualTiming {
+        fn now(&self) -> Duration {
+            Duration::from_millis(*self.millis.lock().unwrap())
+        }
+
+        fn wait(&self, interval: Duration, cancel: &SignInCancellation) -> bool {
+            self.waits.lock().unwrap().push(interval);
+            let mut millis = self.millis.lock().unwrap();
+            *millis = millis.saturating_add(u64::try_from(interval.as_millis()).unwrap_or(0));
+            !cancel.is_cancelled()
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingOpener {
+        urls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RecordingOpener {
+        fn opener(&self) -> BrowserOpener {
+            let urls = Arc::clone(&self.urls);
+            Arc::new(move |url: &str| {
+                if let Ok(mut urls) = urls.lock() {
+                    urls.push(url.to_owned());
+                }
+                Ok(())
+            })
+        }
+
+        fn urls(&self) -> Vec<String> {
+            self.urls.lock().unwrap().clone()
+        }
+    }
+
+    fn harness_runtime(
+        session: CredentialSession,
+        device: ScriptedDevice,
+        product: ScriptedProduct,
+        timing: Arc<VirtualTiming>,
+        opener: &RecordingOpener,
+    ) -> AccountRuntime {
+        let device_factory: DeviceTransportFactory = {
+            let device = device.clone();
+            Arc::new(move || Box::new(Arc::new(device.clone())))
+        };
+        let product_factory: ProductTransportFactory = {
+            let product = product.clone();
+            Arc::new(move || Box::new(Arc::new(product.clone())))
+        };
+        AccountRuntime::with_session(session).with_sign_in_harness(account_config(), device_factory, product_factory, timing, opener.opener())
+    }
+
+    fn run_drive(
+        device: ScriptedDevice,
+        product: ScriptedProduct,
+        timing: Arc<VirtualTiming>,
+        cancel: SignInCancellation,
+    ) -> (Result<ProductLogin, Refusal>, CredentialSession, Vec<String>, Vec<DeviceCodePrompt>) {
+        let config = account_config();
+        let session = CredentialSession::new(Box::new(MemorySession::default()));
+        let mut flow = DeviceCodeFlow::new(config.client.clone(), device.clone(), session.clone(), DeviceCodeMode::Explicit);
+        let mut prompts = Vec::new();
+        let mut publish = |prompt: &DeviceCodePrompt| prompts.push(prompt.clone());
+        let result = drive_device_sign_in(&mut flow, &config.authkit, &config.product, product.clone(), &*timing, &cancel, &mut publish);
+        (result, session, device.requests(), prompts)
     }
 
     fn active_session() -> CredentialSession {
@@ -787,6 +1533,54 @@ mod tests {
     }
 
     #[test]
+    fn sign_in_configuration_requires_https_origins_and_clean_values() {
+        assert_eq!(SignInConfig::new("", "https://auth.example", "https://api.example", "1.0.0").unwrap_err().code, RefusalCode::AuthUnavailable);
+        assert_eq!(
+            SignInConfig::new("client", "http://auth.example", "https://api.example", "1.0.0").unwrap_err().code,
+            RefusalCode::AuthUnavailable
+        );
+        assert_eq!(
+            SignInConfig::new("client", "https://auth.example/path", "https://api.example", "1.0.0").unwrap_err().code,
+            RefusalCode::AuthUnavailable,
+            "the configured AuthKit value is an origin, not a page"
+        );
+        assert_eq!(
+            SignInConfig::new("client", "https://auth.example", "https://api.example/v1", "1.0.0").unwrap_err().code,
+            RefusalCode::AuthUnavailable,
+            "the product value is a clean HTTPS base, never a path prefix"
+        );
+        let config = SignInConfig::new("client", "https://auth.example:443/", "https://api.example", "1.0.0").unwrap();
+        assert!(config.authkit.matches("https://auth.example/device?user_code=BCDF-GHJK"));
+        assert!(!config.authkit.matches("https://auth.example.evil.example/device"));
+        assert!(!config.authkit.matches("http://auth.example/device"));
+    }
+
+    #[test]
+    fn a_failed_sign_in_can_be_retried_without_replaying_the_old_flow() {
+        let mut untrusted = device_body();
+        untrusted["verification_uri"] = json!("https://untrusted.example/device");
+        untrusted["verification_uri_complete"] = json!(null);
+        let device = ScriptedDevice::scripted(vec![(200, untrusted), (200, device_body()), (200, token_body())]);
+        let product = ScriptedProduct::ok();
+        let timing = Arc::new(VirtualTiming::default());
+        let opener = RecordingOpener::default();
+        let runtime = harness_runtime(installed_session(), device.clone(), product.clone(), timing, &opener);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+
+        port.sign_in().unwrap();
+        wait_until("the refused origin", || port.take_sign_in_notice().is_some());
+        assert!(!port.view().signed_in);
+
+        port.sign_in().unwrap();
+        wait_until("the retried verified sign-in", || port.view().signed_in);
+        assert_eq!(device.requests().len(), 3, "the retry starts a new authorization; the old flow is not replayed");
+        assert_eq!(product.requests().len(), 1);
+        assert!(opener.urls().is_empty());
+        port.shutdown();
+    }
+
+    #[test]
     fn a_window_port_refresh_is_local_and_never_claims_a_quota() {
         let runtime = AccountRuntime::with_session(active_session());
         let startup = runtime.startup();
@@ -794,5 +1588,206 @@ mod tests {
         assert_eq!(port.view().available, None);
         assert!(port.refresh_status().is_err(), "no service may invent an online snapshot");
         assert_eq!(port.view().available, None);
+    }
+
+    #[test]
+    fn desktop_sign_in_without_configuration_is_refused_before_any_request() {
+        let runtime = AccountRuntime::with_session(CredentialSession::new(Box::new(TestStore::default())));
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        assert_eq!(port.sign_in().unwrap_err().code, RefusalCode::AuthUnavailable);
+        assert!(port.sign_in.is_none(), "no worker starts without all three trusted values");
+        assert_eq!(port.begin_device_code().unwrap_err().code, RefusalCode::AuthRequired);
+    }
+
+    #[test]
+    fn explicit_sign_in_shows_the_prompt_and_opens_the_browser_only_on_an_explicit_action() {
+        let device = ScriptedDevice::scripted(vec![(200, device_body()), (200, token_body())]);
+        let (gate_tx, gate_rx) = channel();
+        device.hold_token_success(gate_rx);
+        let product = ScriptedProduct::ok();
+        let timing = Arc::new(VirtualTiming::default());
+        let opener = RecordingOpener::default();
+        let runtime = harness_runtime(installed_session(), device.clone(), product.clone(), timing, &opener);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+
+        port.sign_in().unwrap();
+        wait_until("the device prompt", || port.begin_device_code().is_ok());
+        let prompt = port.begin_device_code().unwrap();
+        assert_eq!(prompt.user_code, "BCDF-GHJK");
+        assert!(prompt.verification_uri.starts_with("https://auth.example/"));
+        assert!(opener.urls().is_empty(), "showing a code never opens a browser");
+
+        port.open_verification().unwrap();
+        assert_eq!(
+            opener.urls(),
+            vec!["https://auth.example/device?user_code=BCDF-GHJK".to_owned()],
+            "one explicit action opens exactly the trusted verification page"
+        );
+
+        gate_tx.send(()).unwrap();
+        wait_until("the verified sign-in", || port.view().signed_in);
+        assert_eq!(port.view().account_label.as_deref(), Some("acct_product_0001"));
+        assert_eq!(port.take_sign_in_notice(), None);
+        assert!(port.runtime.credentials.product_session_active(), "a verified product session is recognized");
+        assert!(port.runtime.credentials.authenticated_scope().is_none(), "no installation binding, so controlled authority stays closed");
+        assert_eq!(port.view().tool_blocked, Some(RefusalCode::AuthUnavailable));
+        assert_eq!(product.requests().len(), 1, "the product service verifies the provider token once");
+
+        // Recognizing the completed flow is cached: refreshing never replays the exchange.
+        let view = port.refresh_status().unwrap();
+        assert!(view.signed_in);
+        assert_eq!(product.requests().len(), 1, "a refresh must not replay product verification");
+        port.shutdown();
+    }
+
+    #[test]
+    fn an_untrusted_verification_origin_reports_an_in_place_refusal_and_never_opens_a_browser() {
+        let mut body = device_body();
+        body["verification_uri"] = json!("https://untrusted.example/device");
+        body["verification_uri_complete"] = json!("https://untrusted.example/device?user_code=BCDF-GHJK");
+        let device = ScriptedDevice::scripted(vec![(200, body)]);
+        let product = ScriptedProduct::ok();
+        let timing = Arc::new(VirtualTiming::default());
+        let opener = RecordingOpener::default();
+        let runtime = harness_runtime(installed_session(), device.clone(), product.clone(), timing, &opener);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+
+        port.sign_in().unwrap();
+        wait_until("the origin refusal", || port.take_sign_in_notice().is_some());
+        assert!(!port.view().signed_in);
+        assert!(opener.urls().is_empty(), "an untrusted origin is never opened");
+        assert_eq!(device.requests().len(), 1, "only the authorization request is sent");
+        assert_eq!(device.requests()[0], solidcraft_account_native::WORKOS_DEVICE_AUTHORIZATION_URL);
+        port.shutdown();
+    }
+
+    #[test]
+    fn switching_account_cancels_the_worker_and_a_late_approval_writes_nothing() {
+        let device = ScriptedDevice::scripted(vec![(200, device_body()), (200, token_body())]);
+        let (gate_tx, gate_rx) = channel();
+        device.hold_token_success(gate_rx);
+        let product = ScriptedProduct::ok();
+        let timing = Arc::new(VirtualTiming::default());
+        let opener = RecordingOpener::default();
+        let runtime = harness_runtime(installed_session(), device.clone(), product.clone(), timing, &opener);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+
+        port.sign_in().unwrap();
+        wait_until("the polled token request", || device.authorized_waiting.load(Ordering::SeqCst) >= 1);
+        port.switch_account().unwrap();
+        wait_for_cleanup(&port);
+        gate_tx.send(()).unwrap();
+        port.shutdown();
+
+        assert!(port.sign_in.is_none(), "the retired job is gone");
+        assert!(port.runtime.credentials.provider_account().is_none(), "a late approval must not store provider credentials");
+        assert!(!port.runtime.credentials.product_session_active(), "a late approval must not activate a product session");
+        assert!(!port.view().signed_in);
+        assert!(opener.urls().is_empty());
+    }
+
+    #[test]
+    fn device_sign_in_rejects_a_prompt_outside_the_configured_authkit_origin() {
+        let mut body = device_body();
+        body["verification_uri"] = json!("https://untrusted.example/device");
+        body["verification_uri_complete"] = json!(null);
+        let device = ScriptedDevice::scripted(vec![(200, body)]);
+        let timing = Arc::new(VirtualTiming::default());
+        let (result, session, requests, prompts) = run_drive(device, ScriptedProduct::ok(), timing, SignInCancellation::default());
+
+        assert_eq!(result.unwrap_err().code, RefusalCode::AuthUnavailable);
+        assert!(prompts.is_empty(), "a rejected address is never shown for a browser action");
+        assert_eq!(requests.len(), 1, "nothing is polled after an untrusted prompt");
+        assert!(session.provider_account().is_none());
+        assert!(!session.product_session_active());
+    }
+
+    #[test]
+    fn device_sign_in_waits_the_server_interval_and_slow_down_backoff() {
+        let device = ScriptedDevice::scripted(vec![
+            (200, device_body()),
+            (400, json!({"error": "authorization_pending"})),
+            (400, json!({"error": "slow_down"})),
+            (200, token_body()),
+        ]);
+        let timing = Arc::new(VirtualTiming::default());
+        let (result, session, requests, prompts) = run_drive(device, ScriptedProduct::ok(), timing.clone(), SignInCancellation::default());
+
+        assert_eq!(result.unwrap().account_id, "acct_product_0001");
+        assert_eq!(
+            timing.waits(),
+            vec![Duration::from_secs(5), Duration::from_secs(5), Duration::from_secs(10)],
+            "slow_down increases each later interval"
+        );
+        assert_eq!(requests.len(), 4);
+        assert_eq!(prompts.len(), 1, "one prompt is shown for one explicit sign-in");
+        assert_eq!(session.provider_account().as_deref(), Some("user_01E4ZCR3C56J083X43JQXF3JK5"));
+        assert!(session.product_session_active());
+    }
+
+    #[test]
+    fn device_sign_in_stops_at_the_code_deadline_without_an_extra_poll() {
+        let device = ScriptedDevice::scripted(vec![
+            (200, device_body_until(12)),
+            (400, json!({"error": "authorization_pending"})),
+            (400, json!({"error": "authorization_pending"})),
+        ]);
+        let timing = Arc::new(VirtualTiming::default());
+        let (result, session, requests, _prompts) = run_drive(device, ScriptedProduct::ok(), timing.clone(), SignInCancellation::default());
+
+        assert_eq!(result.unwrap_err().code, RefusalCode::AuthRequired);
+        assert_eq!(timing.waits().len(), 3);
+        assert_eq!(requests.len(), 3, "the authorization request and two polls, then no request past the deadline");
+        assert!(session.provider_account().is_none());
+        assert!(!session.product_session_active());
+    }
+
+    #[test]
+    fn device_sign_in_cancelled_after_authorization_writes_no_credential() {
+        let cancel = SignInCancellation::default();
+        let device = ScriptedDevice::scripted(vec![(200, device_body()), (200, token_body())]);
+        device.cancel_on_authorized(cancel.clone());
+        let timing = Arc::new(VirtualTiming::default());
+        let (result, session, _requests, _prompts) = run_drive(device, ScriptedProduct::ok(), timing, cancel);
+
+        assert_eq!(result.unwrap_err().code, RefusalCode::AuthRequired);
+        assert!(session.provider_account().is_none(), "the provider login is not written after cancellation");
+        assert!(!session.product_session_active());
+    }
+
+    #[test]
+    fn provider_success_requires_product_service_verification_before_activation() {
+        let device = ScriptedDevice::scripted(vec![(200, device_body()), (200, token_body())]);
+        let product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(
+            403,
+            json!({"error": {"code": "AUTH_REQUIRED", "message": "refused", "retryable": false, "request_id": "req_test"}}).to_string().into_bytes(),
+        ))]);
+        let timing = Arc::new(VirtualTiming::default());
+        let (result, session, _requests, _prompts) = run_drive(device, product.clone(), timing, SignInCancellation::default());
+
+        assert_eq!(result.unwrap_err().code, RefusalCode::AuthUnavailable);
+        assert_eq!(session.provider_account().as_deref(), Some("user_01E4ZCR3C56J083X43JQXF3JK5"));
+        assert!(!session.product_session_active(), "provider success alone never activates a product session");
+        let requests = product.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url(), "https://api.example/v1/status");
+    }
+
+    #[test]
+    fn verified_sign_in_requests_each_step_once_and_stores_the_product_session() {
+        let device = ScriptedDevice::scripted(vec![(200, device_body()), (400, json!({"error": "authorization_pending"})), (200, token_body())]);
+        let product = ScriptedProduct::ok();
+        let timing = Arc::new(VirtualTiming::default());
+        let (result, session, requests, prompts) = run_drive(device, product.clone(), timing, SignInCancellation::default());
+
+        assert_eq!(result.unwrap().account_id, "acct_product_0001");
+        assert_eq!(requests.len(), 3, "one authorization request and two polls; no step repeats");
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(product.requests().len(), 1);
+        assert_eq!(WireCredentials::product_session(&session).unwrap().expose_secret(), "access_token_SECRET_000000000000000000000000");
     }
 }

@@ -264,6 +264,58 @@ fn account_switch_that_cannot_delete_old_credentials_fails_closed() {
 }
 
 #[test]
+fn a_revoked_session_refuses_a_late_provider_login_or_product_activation() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    store.take_calls();
+    session.revoke_in_process();
+
+    assert_eq!(
+        session.complete_provider_login("user_provider_late", "provider_late_SECRET").unwrap_err().code,
+        CredentialErrorCode::Unavailable,
+        "a login that finishes after sign-out or switch must not write provider credentials"
+    );
+    assert_eq!(
+        session
+            .activate_product_session(&FixedExchange {
+                account_id: "acct_late",
+                product_session: "product_late_SECRET",
+                expires_at_unix_seconds: None
+            })
+            .unwrap_err()
+            .code,
+        CredentialErrorCode::Unavailable,
+        "a product activation that finishes after sign-out or switch must not write a product session"
+    );
+    assert!(store.take_calls().is_empty(), "a revoked session refuses before any store write");
+    assert!(!session.product_session_active());
+    assert!(session.provider_account().is_none());
+}
+
+#[test]
+fn a_product_exchange_that_revokes_the_session_before_activation_writes_nothing() {
+    struct RevokingExchange(CredentialSession);
+    impl ProductSessionExchange for RevokingExchange {
+        fn exchange(&self, _provider: &ProviderSession) -> Result<ProductSession, ProductExchangeError> {
+            self.0.revoke_in_process();
+            Ok(ProductSession::from_trusted_exchange("acct_late", crate::http::Secret::new("product_late_SECRET"), None))
+        }
+    }
+
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    session.complete_provider_login("user_provider_0001", "provider_access_SECRET").unwrap();
+    store.take_calls();
+    assert_eq!(
+        session.activate_product_session(&RevokingExchange(session.clone())).unwrap_err().code,
+        CredentialErrorCode::Unavailable,
+        "the exchange must not resurrect product authority after a sign-out raced it"
+    );
+    assert!(store.take_calls().iter().all(|call| !matches!(call, Call::Set(_))), "no product credential may be written");
+    assert!(WireCredentials::product_session(&session).is_none());
+}
+
+#[test]
 fn a_revoked_session_refuses_handoff_writes_without_touching_the_store() {
     let store = RecordingStore::default();
     let session = CredentialSession::new(Box::new(store.clone()));

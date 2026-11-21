@@ -137,6 +137,17 @@ pub trait AccountPort: Send + Sync {
     fn begin_device_code(&self) -> Result<DeviceCode, Refusal>;
     fn own_model_view(&self) -> Option<OwnModelView>;
 
+    /// Open the trusted verification page in the system browser. Only an explicit browser action
+    /// calls this; nothing here opens a browser on its own.
+    fn open_verification(&mut self) -> Result<(), Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "no browser verification is available"))
+    }
+
+    /// Take the latest asynchronous sign-in failure, once, for an in-place prompt.
+    fn take_sign_in_notice(&mut self) -> Option<Refusal> {
+        None
+    }
+
     /// Take the host event that ends the old session's authority, if one occurred.
     ///
     /// The default is no event, so a port that never signs out needs no extra method. The desktop
@@ -346,6 +357,26 @@ impl State {
             return Err(Refusal::new(RefusalCode::AuthUnavailable, "no account port is installed"));
         };
         port.begin_device_code()
+    }
+
+    /// An explicit browser action. Rendering enqueues a plain click; this call is made outside a
+    /// frame, so a slow system opener never runs in a paint pass.
+    pub fn open_verification(&mut self) -> Result<(), Refusal> {
+        let Some(port) = self.port.as_mut() else {
+            return Err(Refusal::new(RefusalCode::AuthUnavailable, "no account port is installed"));
+        };
+        let result = port.open_verification();
+        if let Err(refusal) = &result {
+            self.notice = Some(refusal.clone());
+        }
+        result
+    }
+
+    /// Drain a failed asynchronous sign-in into the account notice. Call outside a frame.
+    pub fn take_sign_in_notice(&mut self) -> Option<Refusal> {
+        let refusal = self.port.as_mut()?.take_sign_in_notice()?;
+        self.notice = Some(refusal.clone());
+        Some(refusal)
     }
 
     pub fn own_model_view(&self) -> Option<OwnModelView> {

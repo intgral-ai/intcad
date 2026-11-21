@@ -114,6 +114,18 @@ pub trait DeviceCodeTransport {
     fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<(u16, Vec<u8>), CredentialError>;
 }
 
+impl<T: DeviceCodeTransport + ?Sized> DeviceCodeTransport for Box<T> {
+    fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<(u16, Vec<u8>), CredentialError> {
+        (**self).post(url, content_type, body)
+    }
+}
+
+impl<T: DeviceCodeTransport + ?Sized> DeviceCodeTransport for Arc<T> {
+    fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<(u16, Vec<u8>), CredentialError> {
+        (**self).post(url, content_type, body)
+    }
+}
+
 /// The documented WorkOS public-client flow. HTTPS-only, no redirects, bounded response.
 pub struct UreqDeviceCodeTransport {
     agent: ureq::Agent,
