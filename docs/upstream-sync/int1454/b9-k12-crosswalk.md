@@ -36,3 +36,17 @@ Match `testcase@classname + "::" + testcase@name` exactly. **Missing** means no 
 Each historical JUnit records **5 passes, 12 failures, 3 missing, and no skips** for this cohort. The three missing UI IDs have no verified exact aliases or replacement coverage. The existing db0 known-failing list (blob `1359412a109e5c4f4cbab019a45a77d494515522`) overlaps 12 upstream known-failing IDs and none of the quarantine IDs; db0 has no quarantine file.
 
 Keep same-head execution and before/after kernel-case evidence open under [K12](ledger.md) and [acceptance](acceptance.md). The historical results do not close K12, and no assertions, lists, or gates change.
+
+## Candidate source gaps and evidence routing
+
+At `db0b8dd35`, 17 exact IDs are present in source. The three UI IDs below are absent, not passed, failed, or skipped. Nearby candidate tests are not verified replacements.
+
+| ID | Frozen upstream source (`e151d5ea`) | Candidate gap |
+| --- | --- | --- |
+| Q:10 | `crates/ui-egui/src/render_workspace_tests.rs:13253` | Candidate setup-error tests do not check that disconnected preflight retains ownership across document reset, rejects a new request, and releases ownership at app teardown. |
+| Q:11 | `crates/ui-egui/tests/scenarios/universal_panel_host_shared_actions.json`, generated into a scenario test by `crates/ui-egui/build.rs` | Candidate panel-runtime tests do not drive the shared move menu through the workspace host or check fixture disablement. |
+| Q:12 | `crates/ui-egui/src/shell_tests.rs:1055` | Candidate runtime tests do not run the shell scenarios or prove shared action dispatch, session/undo preservation, and fixture lifecycle. |
+
+Keep Q:11 and Q:12 open under U11/CD-6; do not import kit-coupled fixtures to close this table. Keep Q:10 open as a separate render-workspace evidence gap.
+
+When authorized CI runs on the reviewed candidate, use the full-mode **Native Linux selected regression gate** (`rust` in `.github/workflows/ci.yml`) to obtain the 17 exact outcomes. The ordinary PR lane in `scripts/ci/main_merge.py` applies an affected-package partition and excludes `action_matrix_sample` (K:10). Use SHA-bound `evidence-rust/rust/{selection.json,junit.xml,commands.json,receipt.json}`, not the job conclusion; preserve raw failures even if the existing grader accepts them. This route is not a new dispatch or a waiver. Separate case-level before/after Kernel rig evidence remains required for changed K12 expectations.
