@@ -50,6 +50,10 @@ const PROVIDER_ACCESS_TOKEN_KEY: &str = "provider/access_token";
 // Legacy key from the first Task 4 delivery. It is deleted during cleanup but never written again:
 // the documented WorkOS flow has no reviewed refresh use yet.
 const REFRESH_TOKEN_KEY: &str = "auth/refresh_token";
+/// A durable sign-out intent. It is written before any credential is deleted and removed only
+/// after the old authority is fully gone. A present or unreadable marker means startup must not
+/// restore a session or admit controlled work.
+const LOGOUT_KEY: &str = "auth/logout_pending";
 const KEYRING_PROBE_KEY: &str = "intcad/keyring-probe";
 
 pub(crate) fn unavailable() -> CredentialError {
@@ -386,7 +390,7 @@ impl CredentialSession {
     /// remove) the binding, so a result admitted by an old session cannot commit into a new one.
     pub fn authenticated_scope(&self) -> Option<AuthenticatedHostScope> {
         let mut state = self.inner.lock().ok()?;
-        if state.locked {
+        if !authority_usable(&state) {
             return None;
         }
         if state.account.is_none() || state.installation.is_none() {
@@ -449,9 +453,25 @@ impl CredentialSession {
         Ok(())
     }
 
+    /// Mark a durable sign-out before deleting anything. The marker is intentionally written
+    /// first: if a delete fails, the next process sees it and refuses to restore the old bearer.
+    /// A non-persistent headless session has no cross-process bearer to suppress, so its marker
+    /// write is allowed to fail with `NoPersistentCredential` while it still clears memory.
     pub fn sign_out(&self) -> Result<(), CredentialError> {
         let mut state = self.lock()?;
+        mark_logout(&mut state)?;
         clear_authority(&mut state)
+    }
+
+    /// Whether a previous sign-out marker is present. `Err` means safety cannot be confirmed and
+    /// callers must fail closed.
+    pub fn logout_pending(&self) -> Result<bool, CredentialError> {
+        let state = self.lock()?;
+        match state.store.get(LOGOUT_KEY) {
+            Ok(Some(_)) => Ok(true),
+            Ok(None) => Ok(false),
+            Err(_) => Err(unavailable()),
+        }
     }
 
     /// The WorkOS provider account, if a provider login completed. This is not an Intcad account.
@@ -602,6 +622,28 @@ fn clear_authority(state: &mut SessionState) -> Result<(), CredentialError> {
     result
 }
 
+/// Persist the sign-out intent before any delete. An unavailable persistent store locks the
+/// session; no cross-process suppression can be claimed in that state.
+fn mark_logout(state: &mut SessionState) -> Result<(), CredentialError> {
+    match state.store.set(LOGOUT_KEY, "sign_out") {
+        Ok(()) => Ok(()),
+        Err(error) if error.code == CredentialErrorCode::NoPersistentCredential => Ok(()),
+        Err(error) => Err(store_failure(state, error)),
+    }
+}
+
+fn logout_tombstone(state: &SessionState) -> Option<bool> {
+    match state.store.get(LOGOUT_KEY) {
+        Ok(Some(_)) => Some(true),
+        Ok(None) => Some(false),
+        Err(_) => None,
+    }
+}
+
+fn authority_usable(state: &SessionState) -> bool {
+    !state.locked && logout_tombstone(state) == Some(false)
+}
+
 /// Delete only the Intcad product authority; the provider login is kept for the exchange.
 fn clear_product_authority(state: &mut SessionState) -> Result<(), CredentialError> {
     state.locked = true;
@@ -623,6 +665,9 @@ fn clear_product_authority_inner(state: &mut SessionState) -> Result<(), Credent
     for key in [INSTALLATION_ID_KEY, ACCOUNT_KEY, INDEX_KEY] {
         state.store.delete(key).map_err(|_| unavailable())?;
     }
+    // The old authority is fully gone; only now may the sign-out marker disappear. A failed
+    // marker delete leaves it present, which is conservative: startup fails closed.
+    state.store.delete(LOGOUT_KEY).map_err(|_| unavailable())?;
     state.index.clear();
     state.account = None;
     state.installation = None;
@@ -791,7 +836,7 @@ fn adopt_persisted_labels(state: &mut SessionState) -> Option<()> {
 }
 
 fn bound_scope(state: &SessionState) -> Option<(String, String, String)> {
-    if state.locked {
+    if !authority_usable(state) {
         return None;
     }
     let account = state.account.clone()?;
@@ -858,7 +903,7 @@ fn valid_operation(operation: &OperationId) -> bool {
 impl WireCredentials for CredentialSession {
     fn product_session(&self) -> Option<Secret> {
         let state = self.inner.lock().ok()?;
-        if state.locked {
+        if !authority_usable(&state) {
             return None;
         }
         let account = state.account.as_deref()?;
@@ -873,7 +918,7 @@ impl WireCredentials for CredentialSession {
 
     fn installation_credential(&self) -> Option<Secret> {
         let state = self.inner.lock().ok()?;
-        if state.locked {
+        if !authority_usable(&state) {
             return None;
         }
         let account = state.account.as_deref()?;

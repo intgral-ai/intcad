@@ -245,6 +245,39 @@ fn account_switch_that_cannot_delete_old_credentials_fails_closed() {
 }
 
 #[test]
+fn a_failed_sign_out_delete_persists_a_tombstone_and_a_fresh_session_fails_closed() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_old", "product_old_SECRET");
+    session.bind_scope(&scope("acct_old", "inst_old")).unwrap();
+    assert!(session.authenticated_scope().is_some());
+    store.set_fail_delete(PRODUCT_SESSION_KEY);
+
+    assert_eq!(session.sign_out().unwrap_err().code, CredentialErrorCode::Unavailable);
+    assert!(session.logout_pending().unwrap(), "the marker is durable before the failed delete");
+    assert!(session.authenticated_scope().is_none(), "the old process refuses its old authority");
+    assert!(WireCredentials::product_session(&session).is_none());
+
+    // A fresh process over the same inert store sees the marker and restores nothing.
+    let fresh = CredentialSession::new(Box::new(store.clone()));
+    assert!(fresh.logout_pending().unwrap());
+    assert!(fresh.authenticated_scope().is_none());
+    assert!(!fresh.product_session_active());
+}
+
+#[test]
+fn a_completed_sign_out_removes_the_tombstone_only_after_authority_is_gone() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_old", "product_old_SECRET");
+    session.bind_scope(&scope("acct_old", "inst_old")).unwrap();
+    session.sign_out().unwrap();
+    assert!(!session.logout_pending().unwrap());
+    assert!(!store.contains_key(PRODUCT_SESSION_KEY));
+    assert!(session.authenticated_scope().is_none());
+}
+
+#[test]
 fn initial_lease_proofs_and_operation_credentials_share_one_store_and_use_separate_keys() {
     let store = RecordingStore::default();
     let mut handoff = CredentialSession::new(Box::new(store.clone()));
