@@ -36,7 +36,7 @@ the vector run below passed those internal checks as part of `contract_vectors`.
 
 Logs:
 
-- `/tmp/opencode/int1497-task13/contract-hashes.log` — staged copy sizes and SHA-256 values.
+- `/tmp/opencode/int1497-task13/contract-hashes.log` — SHA-256 values of the staged copies.
 - `/tmp/opencode/int1497-task13/server-sha256sum.log` — `sha256sum -c SHA256SUMS` in the
   read-only server tree: all three files `OK`.
 - `/tmp/opencode/int1497-task13/contract-vectors.log` — client run at the client revision above.
@@ -51,8 +51,9 @@ INTCAD_CONTRACT_VECTORS=/tmp/opencode/int1497-task13/contract-v1 \
 
 Result: **PASS**, `1 passed; 0 failed; 0 ignored; 100 filtered out`. The test verifies the exact
 artifacts against the pin and runs every applicable frozen vector through the scripted adapter.
-Four support vectors are reported as explicitly unsupported responsibilities and the support
-matrices are counted, as designed; they are not silently skipped.
+The runner checks for exactly 52 applicable vectors (56 cases) and 16 explicitly listed vectors
+outside the client adapter's responsibilities. The bundle's four support vectors are not that
+exclusion list; the runner also checks the permission, race and rollback matrix counts.
 
 For context only, the normal library run at the same revision also passed:
 `100 passed; 0 failed; 1 ignored` (`/tmp/opencode/int1497-task13/native-lib.log`). The one ignored
