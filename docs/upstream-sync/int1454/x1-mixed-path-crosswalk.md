@@ -7,7 +7,24 @@ Of 2,700 commits tagged `retired` in [the frozen inventory](generated/commits.ts
 | K0 / CD-7 | Vendored counterparts of 21 of the 22 names | `e151d5ea:solidcore` and `db0b8dd35:solidcore` both have tree `8b5c01445619305dcfc5072db3fe76b8cfea67be`. This establishes the nested source snapshot, not runtime coverage or root workflow parity. |
 | B1 / K0 / K12 | `.github/workflows/{ci,pages,release}.yml` | `db0b8dd35:.github/workflows/kernel-rig.yml` is configured to run selected IntCAD case and ladder checks via `scripts/ci/kernel_rig_plan.py`; this is a separate product rig, not the upstream vendored goldens/profile jobs (`96b1a9869`). The nested kernel CI retains those jobs and `check_panic_sites.py` (`7236f4410`); no corresponding root workflow invocation was identified at `db0b8dd35`. Source presence is not execution parity. |
 | B3 / B1 | `scripts/ci/warm-target.sh` | The only name without a nested counterpart. The root blob `6bbb3aedccb10b740956809e27524303e257b55f` matches at `e151d5ea`, `0fd92bea2`, and `db0b8dd35`; no workflow caller was identified. Source presence is not a test receipt and does not fall under #203 or standalone enforcement. |
-| B6 / K0 | Root `Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`, `.gitignore`, `.gitattributes`, `clippy.toml`, `deny.toml`, `rust-toolchain.toml`, `rustfmt.toml` | See the [root Cargo workspace evidence](x1-b6-root-workspace.md) for the manifest, lockfile, and deny policy dispositions. The root `.cargo/config.toml`, `clippy.toml`, and `rustfmt.toml` match the frozen source at baseline and candidate. #180 covers the Rust pin and its CI wiring only. Ignore/attribute dispositions remain open and separate from the nested workspace. |
+| B6 / K0 | Root `Cargo.toml`, `Cargo.lock`, `.cargo/config.toml`, `.gitignore`, `.gitattributes`, `clippy.toml`, `deny.toml`, `rust-toolchain.toml`, `rustfmt.toml` | See the [root Cargo workspace evidence](x1-b6-root-workspace.md) for the manifest, lockfile, and deny policy dispositions; see below for ignore and attribute rules. The root `.cargo/config.toml`, `clippy.toml`, and `rustfmt.toml` match the frozen source at baseline and candidate. #180 covers the Rust pin and its CI wiring only. |
 | B8 / K15 / K0 | `AGENTS.md`, `README.md`, `CONTRIBUTING.md`, `ATTRIBUTION.md`, `NOTICE`, `assets/README.md`, `docs/{layers.md,mutation-testing.md,sponsors/blacksmith-ci-powered.png}` | K15 owns the layering guidance; the root `docs/layers.md` is absent at `db0b8dd35`. The mutation-testing doc and sponsor image match frozen upstream at baseline and candidate; source identity is not asset clearance. B8 still owns root guidance and attribution; K0's nested notices do not close it. |
 
 To reproduce the source classification, select exact comma-delimited `retired` tags in the frozen TSV, list paths changed by those SHAs with `git diff-tree --stdin -r -M --name-only --format=@@%H`, and intersect with `git ls-tree -r --name-only e151d5ea`. Use `git rev-parse <revision>:<path>` to compare pinned source objects. This is an owning-row crosswalk, not an adoption receipt or a whole-commit exclusion.
+
+## Root Git rules
+
+The candidate `db0b8dd35` retains the pre-sync `0fd92bea2` root `.gitignore`
+(`a148f97e639b`) and `.gitattributes` (`0ff3cca6dcfa`). Frozen upstream
+`e151d5ea` has different blobs (`10fd26817f26` and `9899538358e3`).
+
+| Rule | Owner and disposition |
+| --- | --- |
+| Ignore root `/node_modules/` | B6: preserve the IntCAD rule. The remaining upstream-only `.gitignore` delta is a plugin-example comment, not another pattern. |
+| Pin the icon discovery list to LF | B8 / CD-6: candidate pins `assets/icons/ui/design/requested_icons.txt`; upstream pins its own `crates/look/` path. Keep the IntCAD path; no brand import. |
+| Pin `*.wat` to LF | A3 / CD-5: upstream has six tracked plugin fixtures; candidate has zero tracked `.wat` files. Do not import the rule as a plugin migration deliverable while the plugin host is deferred. |
+| Pin `*.wgsl` to LF | B6 / U3: **open**. Candidate has 20 tracked WGSL files, including shaders loaded via `include_str!`. `git check-attr --source=db0b8dd35` reports `eol: unspecified` for the tessellation shader, while frozen upstream reports `eol: lf`. This establishes a checkout-policy difference, not a Windows failure. Evaluate separately on a CRLF checkout with existing shader tests before proposing a rule. |
+| Mark `solidcore/**` as `linguist-vendored` | B6 / K0: upstream-only GitHub language statistics rule. Candidate does not set it. Any adoption is separate from CD-7, licence coverage, and building the nested workspace. |
+
+No Git configuration, checkouts, or product files were changed; no shader
+test or Windows run is claimed.
