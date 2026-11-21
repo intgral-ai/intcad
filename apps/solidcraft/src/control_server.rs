@@ -1113,6 +1113,35 @@ mod tests {
         budget
     }
 
+    #[test]
+    fn control_server_sets_external_category() {
+        use solidcraft_ui_egui::control;
+        let (control, _) = ControlRequest::trusted_control("engine.execute", json!({"command": "document.inspect"}));
+        assert_eq!(control.entry_category(), solidcraft_engine::entitlement::EntryCategory::DirectControl);
+        assert!(!control::free_entry(control.entry_category()));
+        let mut billing = ControlTestBilling;
+        assert!(matches!(
+            control::admit_control_request(&control, &solidcraft_engine::entitlement::BudgetTable::unverified_default(), &mut billing),
+            solidcraft_engine::entitlement::Admission::Refused(solidcraft_engine::entitlement::Refusal {
+                code: solidcraft_engine::entitlement::RefusalCode::UnsafeToStart,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn gui_paths_remain_free() {
+        use solidcraft_ui_egui::control;
+        let (gui, _) = ControlRequest::trusted_gui("engine.execute", json!({"command": "document.inspect"}));
+        assert_eq!(gui.entry_category(), solidcraft_engine::entitlement::EntryCategory::HumanGuiFree);
+        assert!(control::free_entry(gui.entry_category()));
+        let mut billing = ControlTestBilling;
+        assert!(matches!(
+            control::admit_control_request(&gui, &solidcraft_engine::entitlement::BudgetTable::unverified_default(), &mut billing),
+            solidcraft_engine::entitlement::Admission::Allowed
+        ));
+    }
+
     // Uses the real server and UI control handler; the owner gate makes the stale result late.
     #[test]
     fn guarded_control_capability_is_additive_and_pending_preserves_metadata() {

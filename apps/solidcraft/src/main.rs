@@ -17,6 +17,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![deny(unsafe_code)]
 
+mod account;
 #[cfg(not(target_os = "macos"))]
 #[path = "../../../assets/icons/app/shared/source/app_icon.rs"]
 mod app_icon;
@@ -193,6 +194,11 @@ fn changes_settings(event: &egui::Event) -> bool {
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Explicit account actions run before any paint, network or controlled dispatch this
+        // frame. The port is local and nonblocking in this build; a sign-out or switch closes the
+        // old session's commit authority before the control queue is read below.
+        self.solve.account.process_actions();
+        self.solve.drain_account_lifecycle();
         if self.frames < 2 {
             self.frames += 1;
             // Before the window is shown: its title bar must be within reach (window_fit.rs).
@@ -316,6 +322,10 @@ impl eframe::App for App {
         self.prefs_writer.written = Some(prefs);
     }
     fn on_exit(&mut self) {
+        // Exit ends the session's authority before Agent work or saves wind down. The secure
+        // credential store keeps the session for the next start; only in-memory scheduling and
+        // the commit gate are closed here.
+        self.solve.end_controlled_session();
         // The Assistant's web view is a child of the window: it goes while the window is there.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         self.assistant_web.close();
@@ -1067,6 +1077,9 @@ fn main() -> eframe::Result {
     solidcraft_engine::timing::profile_from_env();
     // Validate before legacy adoption, crash markers or any user preference read.
     let settings = settings_dir().map_err(|error| eframe::Error::AppCreation(error.into()))?;
+    // Before the window exists: probe the platform credential store and open the durable ledger
+    // off the UI thread. A missing secure store restores nothing and authorizes nothing.
+    let account_runtime = account::AccountRuntime::desktop(settings.as_deref());
     if std::env::var_os("SOLIDCRAFT_SETTINGS_DIR").is_none() {
         adopt_legacy_settings();
     }
@@ -1278,6 +1291,10 @@ fn main() -> eframe::Result {
             app.graphics_fallback = fallback_note.clone();
             let stored_ui = cc.storage.and_then(|s| solidcraft_ui_egui::prefs::stored(|k| s.get_string(k)));
             restore_preferences(&mut app, stored_ui.as_deref(), graphics().as_ref(), safe_mode);
+            // The single account composition root: UI port, durable ledger and, only when a
+            // reviewed adapter exists, commit/billing authority. Ordinary CAD stays free and
+            // anonymous when no session or secure store is available.
+            account::install(&mut app, account_runtime);
             if let Some(path) = &theme_file
                 && let Err(e) = solidcraft_ui_egui::prefs::follow_theme_file_for_run(&mut app, path)
             {
