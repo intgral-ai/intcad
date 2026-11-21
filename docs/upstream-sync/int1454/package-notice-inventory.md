@@ -10,7 +10,7 @@ publication was performed. No artifact below is final landed-SHA evidence.
 | Linux x86_64 `intcad-0.1.2-linux-x86_64.tar.gz` | PR #178 nonpublishing test merge `760f000f49af13fa89599792b36e6410a251eae7`. The retained tarball matches the entry in artifact `14620548705`. | `b1ab0547d3e3395b3a0b5a69331e92937e0cc1f2f0ed2787bcab1b52f3674537` | The eight product notice files listed below exist under the package's `share/doc/intcad/`; the runtime also carries its two notice files. |
 | Linux x86_64 `intcad-0.1.2-linux-x86_64.deb` | Same PR #178 test merge and artifact. | `af28a3eb084a04ed6f255c844a987fa0986aa32d5f2f4c461e62caac9ce3688d` | The same eight product files exist under `usr/share/doc/intcad/` in the data archive; the runtime also carries its two notice files. |
 | Linux x86_64 `intcad-0.1.2-linux-x86_64.rpm` | Same PR #178 test merge and artifact. | `440e9adbabaae84b5cedd975bb822c983b763504ef27a83646f5ff06c73f705a` | The RPM file table lists the same eight files under `/usr/share/doc/intcad/` and the two runtime files. This is a manifest inspection, not an installation or signature check. |
-| Linux x86_64 `intcad-0.1.2-linux-x86_64.AppImage` | Same PR #178 test merge and artifact. | `f05bf83d6700aecb1ddcb2af13c337431ea9b3a47a9e20990798ce49acb7b9ea` | The embedded SquashFS lists the two runtime files under `usr/lib/intcad/mastra-agent/licenses/`. None of the eight product notice filenames was found outside `node_modules/`, except the runtime file named `THIRD-PARTY-LICENSES.txt`. This says nothing about notices embedded in the app binary. |
+| Linux x86_64 `intcad-0.1.2-linux-x86_64.AppImage` | Same PR #178 test merge and artifact. | `f05bf83d6700aecb1ddcb2af13c337431ea9b3a47a9e20990798ce49acb7b9ea` | The embedded SquashFS lists the two runtime files under `usr/lib/intcad/mastra-agent/licenses/`. None of the eight product notice filenames was found outside `node_modules/`, except the runtime file named `THIRD-PARTY-LICENSES.txt`. See the embedded-text follow-up below. |
 | `intcad-0.1.2-macos-aarch64.dmg` | Same PR #178 test merge, [macOS job](https://github.com/intgral-ai/intcad/actions/runs/44715398096/job/136217397497), artifact `14622163271`. | `adab62b9d83214f51c50d95c31792a9789fae760d23a56b79f3e069d64410ab0` | The HFS listing shows all eight files in `Intcad.app/Contents/Resources/Licenses/` plus its README, and the two runtime notices in `Contents/Resources/mastra-agent/licenses/`. |
 | `intcad-0.1.2-windows-x64-portable.zip` | Same PR #178 test merge, [Windows job](https://github.com/intgral-ai/intcad/actions/runs/44715398096/job/136217397922), artifact `14622644962`. | `20800f4f27b07ff8fd8521e412324420b90dd6f7d473472de096e808721e47ca` | The ZIP lists the first six product notice files below at its package root, and the two runtime notices under `mastra-agent/licenses/`. |
 | `intcad-0.1.2-windows-x64.msi` | Same PR #178 test merge and Windows artifact. | `136700cc64d8dd5e1263d0ef31f564442882428615086c972089ba455d4bad04` | `cab1.cab` contains the first six product notices; extracted texts match pinned sources after CRLF normalization. 7-Zip reported a compound-container end-of-archive error while retrieving the cabinets, so this verifies those six streams only, not the complete MSI payload or runtime notice layout. |
@@ -61,3 +61,36 @@ MSI cabinet IDs came from `7z`/`cabextract`; the Linux inspections used
 `ar`/`tar`, `rpm -qpl`, and `7z -tsquashfs` without executing the AppImage.
 The older GUI-only MSI and PR #178 test packages do not verify final
 package notice completeness.
+
+## AppImage follow-up: embedded texts
+
+For the same SHA-bound PR #178 AppImage, rehashed the original artifact
+ZIP and AppImage against the digests above, then extracted only
+`usr/bin/intcad` and `usr/bin/intcad-cli` with `7z -tsquashfs` without
+running either program. Searched each binary for the **complete
+byte-for-byte Git blobs** at `760f000f49af13fa89599792b36e6410a251eae7`:
+
+| Embedded text | Desktop `intcad` | `intcad-cli` |
+| --- | --- | --- |
+| `LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`, `THIRD-PARTY-LICENSES.txt` | 4/4 exact matches | 4/4 exact matches |
+| `packages/assistant-web/THIRD-PARTY-NOTICES.txt`, `packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt`, `ATTRIBUTION.md` | 3/3 exact matches | No exact full-blob match |
+
+This is consistent with the compile-time inclusion in
+`crates/engine/src/licences.rs` and `crates/ui-egui/src/help.rs`.
+At this source pin, `packaging/linux/package.sh:164–175` moves the
+AppDir's entire `usr/share/doc` subtree out before sealing; it does not
+move the Mastra runtime directory. The source routes the desktop texts
+to About > Licences and About > Attributions, and routes the four core
+texts to `intcad-cli licences`.
+Binary hashes: desktop
+`de5cac5682fe8a4a7a5fdd23984ed4cf68e869f1f58b0c28f26aaf6ffbd50601`,
+CLI `109ee0da72883111c9cadb693595906d92f168aaf064bd585c4cc43211425694`.
+Local offsets and sizes:
+`/tmp/opencode/int1454-appimage-notices.3MJIHh/embedded.txt`
+(SHA-256 `4f3337a8b78ed968c499d002aa030c2f306501b3c8327a1c0335cb259a207a51`).
+
+This confirms embedded bytes despite the missing standalone filenames.
+It does not check access through the About dialog or CLI, distribution
+rights, notice completeness, or final-candidate packaging. The test merge
+does not have the vendored `solidcore/` tree, so these results cannot
+verify the final vendored-kernel notice.
