@@ -71,6 +71,11 @@ jobs:
         run: |
           set -o pipefail
           cargo test -p solidcraft-doc --lib section_roles_keep_analytic_ambiguity_over_a_matching_spline_span --locked -- --nocapture 2>&1 | tee evidence/section-roles.log
+      - name: Projection overlap roles
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test -p solidcraft-doc --lib section_roles_do_not_name_a_wall_from_a_partly_overlapping_projection --locked -- --nocapture 2>&1 | tee evidence/projection-roles.log
       - name: Free-form role sources
         if: always()
         run: |
