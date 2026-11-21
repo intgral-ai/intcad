@@ -374,4 +374,125 @@ mod tests {
         assert_eq!(doc.deps[2].kind, Dev);
         assert!(check(&g).is_empty());
     }
+
+    // RED scaffold: represent the current absence of any standalone check.
+    fn check_solidcore_manifests(_: &std::path::Path) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+
+    struct Fixture(std::path::PathBuf);
+
+    impl Fixture {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            loop {
+                let dir = std::env::temp_dir().join(format!("xtask-layers-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+                match std::fs::create_dir(&dir) {
+                    Ok(()) => return Self(dir),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(e) => panic!("{}: {e}", dir.display()),
+                }
+            }
+        }
+
+        fn write(&self, file: &str, bytes: impl AsRef<[u8]>) {
+            let path = self.0.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn standalone_accepts_internal_paths_and_workspace_inheritance() {
+        let tree = Fixture::new();
+        tree.write(
+            "solidcore/Cargo.toml",
+            "[workspace]\nmembers = ['crates/local']\n[workspace.dependencies]\nlocal = { path = './crates/local' }\nserde = '1'",
+        );
+        tree.write(
+            "solidcore/crates/local/Cargo.toml",
+            "[package]\nname = 'local'\n[dependencies]\nserde.workspace = true\n[dev-dependencies]\nlocal.path = '../local'",
+        );
+        tree.write("solidcore/target/Cargo.toml", "not a manifest");
+        let violations = check_solidcore_manifests(&tree.0).unwrap();
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    #[test]
+    fn standalone_rejects_rooted_and_escaping_paths() {
+        let tree = Fixture::new();
+        tree.write("solidcore/Cargo.toml", "[workspace]");
+        for path in [
+            "../../../crates/geom",
+            "../../../solidcore/crates/local",
+            r"..\..\..\crates\geom",
+            "/crates/geom",
+            r"\crates\geom",
+            r"\\server\share\geom",
+            r"C:\crates\geom",
+            "C:crates/geom",
+        ] {
+            tree.write("solidcore/crates/local/Cargo.toml", format!("[dependencies]\nleak.path = '{path}'"));
+            let errors = check_solidcore_manifests(&tree.0).unwrap();
+            assert!(
+                matches!(&errors[..], [e] if e.contains("solidcore/crates/local/Cargo.toml") && e.contains(path)),
+                "{path}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_rejects_application_packages_in_all_dependency_tables() {
+        let tree = Fixture::new();
+        tree.write("solidcore/Cargo.toml", "[workspace]");
+        for (table, entry) in [
+            ("dependencies", "solidcraft-geom = '1'"),
+            ("dependencies", "alias = { package = 'solidcraft', version = '1' }"),
+            ("dependencies", "alias = { package = 'solidcraft-geom', version = '1' }"),
+            ("workspace.dependencies", "alias.package = 'solidcraft-geom'"),
+            ("target.'cfg(unix)'.dependencies", "alias.package = 'solidcraft-geom'"),
+            ("target.'cfg(unix)'.dev-dependencies", "alias.package = 'solidcraft-geom'"),
+            ("target.'cfg(unix)'.build-dependencies", "alias.package = 'solidcraft-geom'"),
+            ("dev-dependencies", "alias.package = 'solidcraft-geom'"),
+            ("build-dependencies", "alias.package = 'solidcraft-geom'"),
+            ("dev_dependencies", "alias.package = 'solidcraft-geom'"),
+            ("build_dependencies", "alias.package = 'solidcraft-geom'"),
+            ("patch.crates-io", "alias.package = 'solidcraft-geom'"),
+            ("replace", "'solidcraft-geom:1.0.0' = { path = 'crates/local' }"),
+            ("replace", "'solidcraft:1.0.0' = { path = 'crates/local' }"),
+        ] {
+            tree.write("solidcore/Cargo.toml", format!("[{table}]\n{entry}"));
+            let errors = check_solidcore_manifests(&tree.0).unwrap();
+            assert!(matches!(&errors[..], [e] if e.contains("solidcraft")), "{table}: {entry}: {errors:?}");
+        }
+    }
+
+    #[test]
+    fn standalone_reports_malformed_toml() {
+        let tree = Fixture::new();
+        tree.write("solidcore/Cargo.toml", "[workspace");
+        let errors = check_solidcore_manifests(&tree.0).unwrap();
+        assert!(matches!(&errors[..], [e] if e.contains("Cargo.toml") && e.contains("parse")), "{errors:?}");
+    }
+
+    #[test]
+    fn standalone_fails_when_manifest_inspection_fails() {
+        let tree = Fixture::new();
+        assert!(check_solidcore_manifests(&tree.0).is_err(), "missing solidcore tree");
+        tree.write("solidcore/crates/local/Cargo.toml", "[dependencies]");
+        assert!(check_solidcore_manifests(&tree.0).is_err(), "missing solidcore/Cargo.toml");
+        tree.write("solidcore/Cargo.toml", "[workspace]");
+        // Invalid UTF-8 represents a read failure without relying on permissions
+        // or whether the test process is privileged.
+        tree.write("solidcore/crates/local/Cargo.toml", [0xFF]);
+        let error = check_solidcore_manifests(&tree.0).unwrap_err();
+        assert!(error.contains("solidcore/crates/local/Cargo.toml"), "{error}");
+    }
 }
