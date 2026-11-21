@@ -729,3 +729,15 @@ build, test, worktree or Linear change was made for this entry.
 Evidence and commands: `git show -s`, `git rev-parse`, `git ls-tree`, `git diff --quiet`, the
 retained JUnit/selection/commands files above, and a Python `xml.etree` count of the JUnit. No
 `gh` query, CI dispatch/rerun, local build, test run or source edit was performed.
+
+### 11.16 A6 isolated Windows diagnostic
+
+[Run 44893965299, attempt 1, job 136815530268](https://github.com/intgral-ai/intcad/actions/runs/44893965299/job/136815530268) passed. Workflow commit `9641436fb7bf284fae32582f07af26d3102ccf58` checked out clean product source `581e606f0e30f3404b1bc9cd786a44bc015537ea`. The runner receipt records `win25-vs2026`, image `20261116.315.1`, and Rust/Cargo `1.99.1`.
+
+The five `cargo test -p solidcraft --bin intcad --profile ci --locked` selections all exited zero: startup **18/18**, native crash **2/2**, native frame **1/1**, A6 shared refusal worker **1/1**, and A6 drain ceiling **1/1**. The native `cargo build -p solidcraft --profile ci --locked` and the existing Windows startup and resize smoke scripts also passed. The job log records six startup scenarios, a first frame at 1024×720, and an 80 px bottom-edge resize.
+
+- Evidence ZIP `14704593233`: 14,054 bytes; verified SHA-256 `4a219a27ef7b129556aa317db7d377d95e8db199ddcc153128a999d00daccc69`.
+- Job log SHA-256 `f7f55263ba5fb6634a613405a1a048a1b0e0dfb9b00f2b4d54e178f2ac70aa5e`.
+- Runner-reported executable SHA-256 `78d2b9a05a6fa866853ebc2ed0f4044f77bb2d4e7dac321d175d3e4f3304742b`. The archive contains the hash receipt, not the executable or screenshots; no independent executable rehash is claimed.
+
+This is isolated hosted Windows evidence, not a full Windows VM E2E run, a real desktop TCP limit-refusal check, combined-candidate CI, or landed-`develop` evidence. Keep those gates open and do not integrate the diagnostic workflow.
