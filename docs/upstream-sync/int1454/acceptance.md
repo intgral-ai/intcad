@@ -69,6 +69,10 @@ No exact head count is claimed until the landing commit is fixed and the index i
 
 ## 2b. Licence audit (Cargo inventory and rights provenance are separate)
 
+The [historical package notice inventory](package-notice-inventory.md)
+separates examined payloads from build receipts. It is not the final
+landed-SHA package or licence gate.
+
 The ledger's licence audit records the vendored kernel as Apache-2.0 (not dual MIT/Apache), and the
 SolidCraft-derived crates as MIT OR Apache-2.0; Cargo metadata is the inventory source, not a rights
 conclusion. The kernel's own `LICENSE`,
