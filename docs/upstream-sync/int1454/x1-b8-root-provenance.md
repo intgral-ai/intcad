@@ -20,8 +20,9 @@ publish. This audit does not change any of the nine files.
 
 The vendored `LICENSE`, `NOTICE` and `ATTRIBUTION.md` at `db0b8dd35` have
 blob prefixes `6f461b24eea3`, `71d968f79b68` and `6c9e35da60eb` respectively.
-CD-7 proves retention of the nested tree; the root documentation does not
-replace these files or establish package contents.
+The matching pinned `solidcore/` tree IDs at `e151d5ea` and `db0b8dd35`
+verify retention of the nested tree under CD-7. The root documentation
+does not replace these files or establish package contents.
 
 The same sponsor banner appears in the vendored tree and is linked by its
 README. The attribution does not establish that Blacksmith's original
