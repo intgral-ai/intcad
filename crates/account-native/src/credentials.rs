@@ -378,8 +378,11 @@ impl CredentialSession {
     /// The epoch advances first, so a reader already waiting on that lock cannot mistake a
     /// later barrier clear for permission to return an old credential.
     pub fn revoke_in_process(&self) {
-        self.epoch.fetch_add(1, Ordering::SeqCst);
+        // The barrier closes first so a new reader cannot capture the new epoch and slip
+        // through before the boolean is published; the epoch then invalidates readers that
+        // passed the pre-check before this call.
         self.revoked.store(true, Ordering::SeqCst);
+        self.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Re-enable reads after the owning cleanup generation completed successfully.
