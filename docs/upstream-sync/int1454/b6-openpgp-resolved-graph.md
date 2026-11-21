@@ -10,7 +10,7 @@ unchanged before and after resolution. No code was compiled or executed.
 
 Use the native packaging selection (`-p solidcraft -p solidcraft-cli`)
 on `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
-`x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`, `x86_64-apple-darwin`,
+`x86_64-pc-windows-msvc`, `i686-pc-windows-msvc`, `aarch64-pc-windows-msvc`, `x86_64-apple-darwin`,
 `aarch64-apple-darwin`, and `x86_64-unknown-freebsd`. Use `-p solidcraft-web`
 on `wasm32-unknown-unknown`. These are product selections with defaults;
 see candidate `packaging/{linux,macos,freebsd}/package.sh`,
@@ -31,7 +31,7 @@ on the selected target; it is not a product link manifest.
 
 ## Exception-specific consumers and features
 
-| Exception | Resolved features on all eight product targets | Complete reverse consumer set below the application crates |
+| Exception | Resolved features on all nine checked product targets | Complete reverse consumer set below the application crates |
 | --- | --- | --- |
 | `RUSTSEC-2023-0071` — `rsa 0.9.10` | `default,pem,std,u64_digit` | Sole immediate consumer: `pgp 0.21.1`. No other intermediary between `rsa` and the application crates. |
 | `RUSTSEC-2026-0387` — `crypto-bigint 0.5.5` | `generic-array,rand_core,zeroize` | Immediate consumers: `cx448 0.1.1`, `elliptic-curve 0.13.8`. Remaining intermediaries: `ecdsa 0.16.9`, `k256 0.13.4`, `p256 0.13.2`, `p384 0.13.1`, `p521 0.13.3`, `primeorder 0.13.6`, `pgp 0.21.1`. No consumer path into the application bypassed `pgp`. |
@@ -42,7 +42,7 @@ application consumer sets in the selected graphs are:
 
 | Selection | Remaining application consumers for either exception |
 | --- | --- |
-| Native installer pair, seven targets | `solidcraft-engine`, `solidcraft-agent-task-engine`, `solidcraft-mcp`, `solidcraft-ui-egui`, `solidcraft-cli`, `solidcraft` |
+| Native installer pair, eight targets | `solidcraft-engine`, `solidcraft-agent-task-engine`, `solidcraft-mcp`, `solidcraft-ui-egui`, `solidcraft-cli`, `solidcraft` |
 | Standalone Linux CLI | `solidcraft-engine`, `solidcraft-mcp`, `solidcraft-cli` |
 | wasm browser product | `solidcraft-engine`, `solidcraft-ui-egui`, `solidcraft-web` |
 | Workspace comparison | Union of the native and browser sets; no additional intermediary consumer of either affected crate. |
@@ -64,4 +64,8 @@ Raw reverse graphs, feature provenance and summary are retained at
 `/tmp/opencode/int1454-b6-graph.8e3pHV/`. `graphs.sha256` covers 67 text
 receipts, including standalone CLI normal/build graphs; its SHA-256 is
 `3e79a5f915112a52192a84d404f1eb2a886834b537af1fb0db0dfefeceb48002`.
+The eight additional Windows x86 graphs are recorded separately in
+`windows-x86.sha256` (SHA-256
+`20cb2dfee878dc24b7bf7701741e0d841af7ee645874fdeaaadc2c96bfada65c`).
+Each matched the corresponding Windows x64 receipt byte-for-byte.
 This is neither runtime validation nor approval to modify `deny.toml`.
