@@ -145,6 +145,9 @@ pub trait AccountPort: Send + Sync {
     fn take_lifecycle_event(&mut self) -> Option<LifecycleEvent> {
         None
     }
+
+    /// Wait for host cleanup that must not be lost on a normal exit. The default has no work.
+    fn shutdown(&mut self) {}
 }
 
 /// Browser and other no-account fallback: no keyring, HTTP, login action or quota.
@@ -324,6 +327,14 @@ impl State {
             self.guide = Some(port.delete_account_guide());
         }
         Some(event)
+    }
+
+    /// Wait for the host's account cleanup on a normal exit. Called after authority is closed,
+    /// never from a frame.
+    pub fn shutdown(&mut self) {
+        if let Some(port) = self.port.as_mut() {
+            port.shutdown();
+        }
     }
 
     pub fn delete_account_guide(&self) -> Option<DeleteAccountGuide> {
