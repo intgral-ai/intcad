@@ -50,7 +50,12 @@ Both job checkout logs identify the same test-merge SHA as the Linux job.
   in the inspected INT-1454 receipts. Formats outside the listed
   artifacts were not verified.
 
-Local receipt directory: `/tmp/opencode/int1454-package-inventory.r23tiI`.
+Local manifests, metadata, checkout logs, and PR #178 macOS/Windows
+artifact ZIPs: `/tmp/opencode/int1454-package-inventory.r23tiI/`.
+The Linux `artifact.zip` and `intcad.tar.gz` are retained in
+`~/.local/state/intcad-e2e/pr178-mastra-ln-artifact/`. The GUI-only MSI,
+its `.sha256` sidecar, and `artifact.json` are retained in
+`~/.local/state/intcad-e2e/windows/builds/int1454-ui-c28767d6c085/f82b56372d41-e3b0c44298fc/`.
 Package SHA-256 values were computed from bytes, not inferred from filenames.
 MSI cabinet IDs came from `7z`/`cabextract`; the Linux inspections used
 `ar`/`tar`, `rpm -qpl`, and `7z -tsquashfs` without executing the AppImage.
