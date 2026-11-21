@@ -241,6 +241,12 @@ pub struct ProviderSession {
 }
 
 impl ProviderSession {
+    /// The typed provider handoff from a completed device-code poll. It carries no product
+    /// authority and must be verified by a trusted exchange before anything is persisted.
+    pub(crate) fn from_authorized(account_id: String, access_token: Secret) -> Self {
+        Self { account_id, access_token }
+    }
+
     pub fn account_id(&self) -> &str {
         &self.account_id
     }
@@ -586,6 +592,41 @@ impl CredentialSession {
         }
         result?;
         Ok(ProviderLogin { provider_account_id: provider_account.to_owned() })
+    }
+
+    /// Persist a provider login together with the product session a trusted exchange derived from
+    /// it. This is the explicit flow for a live device-code login: verification happens off-thread
+    /// before any credential is written, so a canceled or obsolete attempt leaves the store as it
+    /// was. The caller must have verified the provider session with the configured product origin;
+    /// this method does not exchange, choose an origin or add execution authority.
+    pub fn persist_verified_login(&self, provider: &ProviderSession, product: &ProductSession) -> Result<ProductLogin, CredentialError> {
+        if !safe_token(&provider.account_id, MAX_ACCOUNT_BYTES)
+            || provider.access_token.is_empty()
+            || has_control(provider.access_token.expose_secret())
+        {
+            return Err(unavailable());
+        }
+        let account = product.account_id().to_owned();
+        if !safe_token(&account, MAX_ACCOUNT_BYTES) || product.product_session().is_empty() || has_control(product.product_session().expose_secret())
+        {
+            return Err(unavailable());
+        }
+        if let Some(expires_at) = product.expires_at_unix_seconds() {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0);
+            if expires_at <= now {
+                return Err(unavailable());
+            }
+        }
+
+        let mut state = self.lock()?;
+        clear_authority(&mut state)?;
+        if let Err(error) = write_provider_login(&mut state, &provider.account_id, provider.access_token.expose_secret())
+            .and_then(|()| write_product_login(&mut state, &account, product.product_session().expose_secret()))
+        {
+            let _ = clear_authority(&mut state);
+            return Err(error);
+        }
+        Ok(ProductLogin { account_id: account })
     }
 
     /// Activate an Intcad product session only from a typed, trusted exchange result. The provider

@@ -36,7 +36,7 @@ pub use device_code::{
 };
 pub use http::{
     BootstrapPlatform, CredentialHandoff, FixedCredentials, HttpAccountService, HttpConfigError, InstallationBootstrap, Secret, Transport,
-    TransportFailure, WireConnection, WireCredentials, WireRequest, WireResponse,
+    TransportFailure, UreqTransport, WireConnection, WireCredentials, WireRequest, WireResponse,
 };
 pub use ledger::{FileOperationStore, InMemoryOperationStore};
 pub use session_verification::ServerVerifiedProductSession;

@@ -57,8 +57,21 @@ The exchange is explicit:
 
 - `CredentialSession::complete_provider_login` still never activates a product session.
 - `BlockedProductExchange` remains the default for callers that do not opt in.
-- The desktop and CLI configure no product service origin and no shipped provider sign-in, so
-  `sign_in` still refuses and no production billing, commit or MCP authority is installed.
+- The desktop now has an explicit sign-in worker: one UI click starts one WorkOS device-code
+  attempt, a background worker polls it, and the provider session is offered to
+  `ServerVerifiedProductSession` before anything is written. A verified result is persisted with
+  `CredentialSession::persist_verified_login`; a provider-only or rejected result writes nothing.
+- The worker's attempt id is checked before and after verification and again under the persistence
+  gate, so cancel, sign-out, account switch, shutdown and late replies cannot install a stale
+  session. `State::poll` adopts the worker snapshot on the host logic step, never on a paint pass.
+- The browser is launched only by a separate explicit "Sign in in browser" action, only at the
+  HTTPS verification address from the current provider prompt; sign-in itself never opens one.
+- The desktop ships no reviewed WorkOS client id or product service origin. `DesktopAccountConfig`
+  accepts only explicit values through `WorkOsPublicClient::new` and `WireConnection::new`; with
+  no configuration, `sign_in` refuses before any request. No environment heuristic, token field,
+  response value or arbitrary URL is accepted.
+- The CLI still configures no product service origin and no shipped provider sign-in; `sign_in`
+  still refuses and no production billing, commit or MCP authority is installed.
 - No token is sent to any origin other than the caller-configured `WireConnection`.
 
 ## Fail-closed cases covered by local tests
@@ -82,10 +95,10 @@ live, staging or production verification.
 
 ## Before production activation
 
-The following are required together; none is present in this build:
+The following are required together; the client seam exists, but no reviewed values ship:
 
-- a **trusted configured product service origin**, supplied by reviewed configuration rather than
-  an environment heuristic, token field or response value;
+- a **trusted configured product service origin and WorkOS public client id**, supplied by
+  reviewed configuration rather than an environment heuristic, token field or response value;
 - a **native HTTPS transport with redirects disabled** (the existing production `ureq` transport
   sets `https_only`, `max_redirects(0)` and platform certificates) and tests that exercise it
   without a live service;
@@ -95,14 +108,16 @@ The following are required together; none is present in this build:
 - **installation bootstrap**: `POST /v1/installations` with the activated product bearer and a
   provable host scope, followed by durable installation credential storage, so a later
   `AuthenticatedHostScope` can be proven;
-- an explicit provider sign-in command/flow, token expiry/refresh handling and revocation
-  revalidation.
+- token expiry/refresh handling, revocation revalidation and an installation bootstrap for the
+  desktop flow. The explicit device-code worker and browser action are wired, but no production
+  credential has been exercised.
 
 ## Explicit non-goals
 
 This checkpoint does not deliver:
 
-- a shipped product service origin, WorkOS client id, provider sign-in command or browser flow;
+- a shipped product service origin or WorkOS client id (the explicit configuration seam exists);
+- an installation bootstrap, so a fresh desktop login is not yet a provable host scope;
 - token expiry/refresh handling, revocation polling or periodic revalidation;
 - production billing, settlement, MCP authority or controlled execution;
 - restart-time server revalidation (startup still relies on the earlier activation and the

@@ -32,7 +32,11 @@ not activate a product session from a provider login alone. Product credentials 
 native OS-protected store. Passwords, keyring data and service tokens never enter the browser
 bundle or Web storage.
 
-At this checkpoint no production sign-in, service origin, settlement authority or UI wiring is
+The desktop wires an explicit UI sign-in to the native device-code worker and the reviewed
+server-verified exchange. The WorkOS public client id and bare HTTPS product origin come only
+from `DesktopAccountConfig`; no reviewed values ship, so sign-in refuses before a request. The
+worker never opens a browser, and a browser is launched only by a separate explicit click at the
+provider-issued HTTPS verification address. No settlement, billing or execution authority is
 enabled; those remain gated by the surrounding tasks in the plan.
 
 ## Closure guard

@@ -7,7 +7,7 @@ use crate::SolveApp;
 use crate::theme::Tokens;
 use crate::ui_kit::{BackingTooltipExt as _, Button, FileView, Text, button, text};
 
-use super::{AccountView, Action};
+use super::{AccountView, Action, SignInState};
 
 /// How the caption chip reads: neutral for unknown or settling state, green for a usable balance,
 /// and the error ink for a blocked or empty balance. The short label always carries the meaning,
@@ -48,12 +48,22 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let signing_out = app.tr("account.signing_out").to_string();
     let switching = app.tr("account.switching").to_string();
     let action_pending = app.tr("account.action_pending").to_string();
+    let sign_in_starting = app.tr("account.sign_in_starting").to_string();
+    let sign_in_waiting = app.tr("account.sign_in_waiting").to_string();
+    let sign_in_browser = app.tr("account.sign_in_browser").to_string();
+    let sign_in_cancel = app.tr("account.sign_in_cancel").to_string();
+    let sign_in_expired = app.tr("account.sign_in_expired").to_string();
+    let sign_in_failed = app.tr("account.sign_in_failed").to_string();
+    let sign_in_retry = app.tr("account.sign_in_retry").to_string();
+    let chat_review_sign_in = app.tr("account.chat_review_sign_in").to_string();
     let blocked = view
         .tool_blocked
         .filter(|code| !matches!(code, RefusalCode::CreditsExhausted | RefusalCode::CreditsHeld))
         .map(|code| refusal_text(app, code));
     let notice = notice.map(|refusal| refusal_text(app, refusal.code));
     let mut sign_in_clicked = false;
+    let mut sign_in_browser_clicked = false;
+    let mut cancel_sign_in_clicked = false;
     let mut sign_out_clicked = false;
     let mut switch_clicked = false;
 
@@ -112,13 +122,48 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
             }
         } else if view.sign_in_visible {
             FileView::detail(ui, &signed_out);
-            let label = if pending == Some(Action::SignIn) { &signing_in } else { &sign_in_label };
-            let options = if pending.is_none() { Button::Primary } else { Button::Enabled(false) };
-            let response = button(ui, label, options);
-            publish("account:sign_in", &response);
-            sign_in_clicked = response.clicked();
-            if pending.is_some() {
-                FileView::detail(ui, &action_pending);
+            FileView::detail(ui, &chat_review_sign_in);
+            match view.sign_in_state {
+                SignInState::Starting => {
+                    FileView::detail(ui, &sign_in_starting);
+                }
+                SignInState::Waiting => {
+                    FileView::detail(ui, &sign_in_waiting);
+                    if let Some(code) = &view.sign_in_prompt {
+                        FileView::detail(ui, &crate::i18n::format("account.sign_in_code", &[("code", &code.user_code)]));
+                        FileView::detail(ui, &crate::i18n::format("account.sign_in_address", &[("url", &code.verification_uri)]));
+                        ui.horizontal(|ui| {
+                            let response = button(ui, &sign_in_browser, Button::Primary);
+                            publish("account:sign_in_browser", &response);
+                            sign_in_browser_clicked = response.clicked();
+                            ui.add_space(t.space_8);
+                            let response = button(ui, &sign_in_cancel, Button::Normal);
+                            publish("account:sign_in_cancel", &response);
+                            cancel_sign_in_clicked = response.clicked();
+                        });
+                    }
+                }
+                SignInState::Expired | SignInState::Failed => {
+                    if view.sign_in_state == SignInState::Expired {
+                        FileView::detail(ui, &sign_in_expired);
+                    } else {
+                        let reason = view.sign_in_error.map(|code| refusal_text(app, code)).unwrap_or_else(|| sign_in_failed.clone());
+                        FileView::detail(ui, &reason);
+                    }
+                    let response = button(ui, &sign_in_retry, Button::Primary);
+                    publish("account:sign_in", &response);
+                    sign_in_clicked = response.clicked();
+                }
+                SignInState::Idle => {
+                    let label = if pending == Some(Action::SignIn) { &signing_in } else { &sign_in_label };
+                    let options = if pending.is_none() { Button::Primary } else { Button::Enabled(false) };
+                    let response = button(ui, label, options);
+                    publish("account:sign_in", &response);
+                    sign_in_clicked = response.clicked();
+                    if pending.is_some() {
+                        FileView::detail(ui, &action_pending);
+                    }
+                }
             }
         } else {
             FileView::detail(ui, &unavailable);
@@ -137,6 +182,12 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
 
     if sign_in_clicked {
         app.account.request(Action::SignIn);
+    }
+    if sign_in_browser_clicked {
+        app.account.request(Action::OpenSignInBrowser);
+    }
+    if cancel_sign_in_clicked {
+        app.account.request(Action::CancelSignIn);
     }
     if sign_out_clicked {
         app.account.request(Action::SignOut);
@@ -239,6 +290,36 @@ fn chip_tip(app: &SolveApp, view: &AccountView) -> String {
         tip.push_str(app.tr("account.chat_unavailable"));
     }
     tip
+}
+
+/// A local, in-place sign-in prompt for a refusal surface such as Chat or Review. It only
+/// enqueues the same explicit action the account menu uses; it never opens a browser itself.
+/// `handle` must be unique on the surface so scripted UI checks can address the button.
+pub fn show_inline_sign_in(app: &mut SolveApp, ui: &mut Ui, message_id: &str, handle: &str) {
+    if !app.account.is_installed() {
+        return;
+    }
+    let view = app.account.view().clone();
+    if view.signed_in || !view.sign_in_visible {
+        return;
+    }
+    let t = Tokens::get();
+    let message = app.tr(message_id).to_string();
+    FileView::detail(ui, &message);
+    if view.sign_in_state.pending() {
+        FileView::detail(ui, app.tr("account.sign_in_waiting"));
+        return;
+    }
+    let label = match view.sign_in_state {
+        SignInState::Expired | SignInState::Failed => app.tr("account.sign_in_retry").to_string(),
+        _ => app.tr("account.sign_in").to_string(),
+    };
+    let response = button(ui, &label, Button::Primary);
+    publish(handle, &response);
+    if response.clicked() {
+        app.account.request(Action::SignIn);
+    }
+    ui.add_space(t.space_4);
 }
 
 fn publish(name: &str, response: &egui::Response) {

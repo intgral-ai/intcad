@@ -169,6 +169,33 @@ fn device_code_polls_the_documented_workos_flow_and_completes_into_memory() {
 }
 
 #[test]
+fn provider_credentials_are_persisted_only_after_a_trusted_product_exchange() {
+    struct Rejected;
+    impl ProductSessionExchange for Rejected {
+        fn exchange(&self, _provider: &ProviderSession) -> Result<ProductSession, ProductExchangeError> {
+            Err(ProductExchangeError::Rejected)
+        }
+    }
+
+    let transport = ScriptedDeviceTransport::scripted(vec![(200, device_body()), (200, token_body())]);
+    let (session, memory) = session_with_memory();
+    let mut flow = DeviceCodeFlow::new(WorkOsPublicClient::new("client_test").unwrap(), transport, session.clone(), DeviceCodeMode::Explicit);
+    flow.start().unwrap();
+    assert_eq!(flow.poll().unwrap(), DeviceCodePoll::Authorized);
+    let provider = flow.authorized_provider().unwrap();
+
+    assert_eq!(Rejected.exchange(&provider).unwrap_err(), ProductExchangeError::Rejected);
+    assert!(memory.is_empty(), "a rejected product verification persisted provider credentials");
+    assert!(!session.product_session_active());
+
+    let product = TestExchange.exchange(&provider).unwrap();
+    session.persist_verified_login(&provider, &product).unwrap();
+    assert!(session.product_session_active());
+    assert_eq!(session.provider_account().as_deref(), Some("user_01E4ZCR3C56J083X43JQXF3JK5"));
+    assert_eq!(WireCredentials::product_session(&session).unwrap().expose_secret(), "product_SECRET");
+}
+
+#[test]
 fn device_code_denied_expired_and_bad_responses_fail_closed() {
     for (error, expected) in [
         ("access_denied", DeviceCodePoll::Denied),

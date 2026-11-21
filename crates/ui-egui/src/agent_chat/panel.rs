@@ -821,6 +821,11 @@ fn desktop_body(app: &mut SolveApp, ui: &mut egui::Ui) {
         refresh(app, ui.ctx());
     }
     let state = app.agent_chat.state();
+    if !app.account.view().signed_in && app.account.is_installed() && app.account.view().sign_in_visible {
+        ui_kit::scope(ui, |ui| {
+            inset(ui, |ui| crate::account::show_inline_sign_in(app, ui, "account.sign_in_for_chat", "agent_chat:sign_in"));
+        });
+    }
     if app.agent_chat.confirm_new {
         ui_kit::scope(ui, |ui| {
             inset(ui, |ui| {

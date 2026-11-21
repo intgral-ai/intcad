@@ -15,7 +15,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{CredentialError, CredentialErrorCode, Refusal, RefusalCode};
 
-use crate::credentials::{CredentialSession, MAX_ACCOUNT_BYTES, ProviderLogin, auth_unavailable, has_control, safe_token, unavailable};
+use crate::credentials::{
+    CredentialSession, MAX_ACCOUNT_BYTES, ProviderLogin, ProviderSession, auth_unavailable, has_control, safe_token, unavailable,
+};
 use crate::http::Secret;
 
 /// WorkOS CLI Auth device authorization endpoint (`POST`).
@@ -311,6 +313,15 @@ impl<T: DeviceCodeTransport> DeviceCodeFlow<T> {
             }
             _ => Err(auth_unavailable("the sign-in service returned an unknown error")),
         }
+    }
+
+    /// The typed provider session after [`DeviceCodePoll::Authorized`], without writing it. A live
+    /// desktop worker offers it to the configured [`crate::credentials::ProductSessionExchange`]
+    /// first and persists both only after verification. The provider token is never a product
+    /// bearer and this call does not activate anything.
+    pub fn authorized_provider(&self) -> Result<ProviderSession, Refusal> {
+        let authorization = self.authorized.as_ref().ok_or_else(|| auth_required("poll until the sign-in is authorized first"))?;
+        Ok(ProviderSession::from_authorized(authorization.account_id.clone(), authorization.access_token.clone()))
     }
 
     /// Persist the authorized provider login into the shared credential store. This does not

@@ -14,7 +14,7 @@ pub(crate) mod tests;
 use solidcraft_engine::entitlement::{Refusal, RefusalCode};
 
 pub(crate) use panel::status_chip_width;
-pub use panel::{show_summary, status_chip};
+pub use panel::{show_inline_sign_in, show_summary, status_chip};
 
 /// A point in time for a device-code login, in seconds since the Unix epoch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -27,8 +27,31 @@ pub struct Timestamp(pub u64);
 pub enum Action {
     RefreshStatus,
     SignIn,
+    /// Open the system browser at the verification address the provider just returned. Only a
+    /// fresh explicit click may do this; a pending login never launches a browser by itself.
+    OpenSignInBrowser,
+    CancelSignIn,
     SignOut,
     SwitchAccount,
+}
+
+/// Where an explicit desktop sign-in stands. The host fills this from its own worker; rendering
+/// only reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SignInState {
+    #[default]
+    Idle,
+    Starting,
+    Waiting,
+    Expired,
+    Failed,
+}
+
+impl SignInState {
+    /// A worker is starting or polling: one gesture is still in progress.
+    pub fn pending(self) -> bool {
+        matches!(self, Self::Starting | Self::Waiting)
+    }
 }
 
 /// A host event that ends the authority of the account session that admitted controlled work.
@@ -70,6 +93,12 @@ pub struct AccountView {
     pub signed_in: bool,
     /// Show the explicit sign-in action; false in a build with no account support.
     pub sign_in_visible: bool,
+    /// Where an explicit desktop sign-in stands. It is idle unless the host started one.
+    pub sign_in_state: SignInState,
+    /// The provider's code and verification address while a login waits for the person.
+    pub sign_in_prompt: Option<DeviceCode>,
+    /// The stable reason a sign-in failed, if it did.
+    pub sign_in_error: Option<RefusalCode>,
     pub account_label: Option<String>,
     /// Credits a new billed operation may use; `None` when not known.
     pub available: Option<u64>,
@@ -91,6 +120,9 @@ impl AccountView {
         Self {
             signed_in: false,
             sign_in_visible: true,
+            sign_in_state: SignInState::Idle,
+            sign_in_prompt: None,
+            sign_in_error: None,
             account_label: None,
             available: None,
             held: 0,
@@ -106,6 +138,9 @@ impl AccountView {
         Self {
             signed_in: false,
             sign_in_visible: false,
+            sign_in_state: SignInState::Idle,
+            sign_in_prompt: None,
+            sign_in_error: None,
             account_label: None,
             available: None,
             held: 0,
@@ -131,6 +166,16 @@ pub trait AccountPort: Send + Sync {
     fn view(&self) -> AccountView;
     fn refresh_status(&mut self) -> Result<AccountView, Refusal>;
     fn sign_in(&mut self) -> Result<(), Refusal>;
+    /// Open the browser at the current provider-issued verification address. Default: no browser.
+    fn open_sign_in_browser(&mut self) -> Result<(), Refusal> {
+        Err(Refusal::new(RefusalCode::AuthRequired, "no sign-in is waiting for a browser"))
+    }
+    /// Stop the current attempt. Default: nothing to cancel.
+    fn cancel_sign_in(&mut self) {}
+    /// Take a view the host worker produced, if it changed. Default: no worker.
+    fn poll(&mut self) -> Option<AccountView> {
+        None
+    }
     fn sign_out(&mut self) -> Result<(), Refusal>;
     fn switch_account(&mut self) -> Result<(), Refusal>;
     fn delete_account_guide(&self) -> DeleteAccountGuide;
@@ -288,6 +333,11 @@ impl State {
     pub fn process_actions(&mut self) {
         let actions = std::mem::take(&mut self.pending);
         let Some(port) = self.port.as_mut() else { return };
+        // A host worker publishes its own snapshot; this is the logic step, never a frame.
+        if let Some(view) = port.poll() {
+            self.view = view;
+            self.guide = Some(port.delete_account_guide());
+        }
         for action in actions {
             match action {
                 Action::RefreshStatus => match port.refresh_status() {
@@ -301,6 +351,16 @@ impl State {
                 Action::SignIn => {
                     let result = port.sign_in();
                     apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
+                }
+                Action::OpenSignInBrowser => {
+                    let result = port.open_sign_in_browser();
+                    apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
+                }
+                Action::CancelSignIn => {
+                    port.cancel_sign_in();
+                    self.view = port.view();
+                    self.guide = Some(port.delete_account_guide());
+                    self.notice = None;
                 }
                 Action::SignOut => {
                     let result = port.sign_out();

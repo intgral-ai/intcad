@@ -15,6 +15,8 @@ pub(crate) struct FakeAccountPort {
     switch_guide: Option<&'static str>,
     lifecycle: Option<LifecycleEvent>,
     calls: Arc<Mutex<Vec<String>>>,
+    browser: Arc<Mutex<Vec<String>>>,
+    poll_view: Option<AccountView>,
 }
 
 impl FakeAccountPort {
@@ -30,11 +32,22 @@ impl FakeAccountPort {
             switch_guide: None,
             lifecycle: None,
             calls,
+            browser: Arc::new(Mutex::new(Vec::new())),
+            poll_view: None,
         }
     }
 
     fn with_guide(view: AccountView, guide: DeleteAccountGuide, calls: Arc<Mutex<Vec<String>>>) -> Self {
-        Self { view, guide, switch_label: None, switch_guide: None, lifecycle: None, calls }
+        Self {
+            view,
+            guide,
+            switch_label: None,
+            switch_guide: None,
+            lifecycle: None,
+            calls,
+            browser: Arc::new(Mutex::new(Vec::new())),
+            poll_view: None,
+        }
     }
 
     fn log(&self, name: &str) {
@@ -63,6 +76,26 @@ impl AccountPort for FakeAccountPort {
         self.view.chat_available = true;
         self.view.tool_blocked = None;
         Ok(())
+    }
+
+    fn open_sign_in_browser(&mut self) -> Result<(), Refusal> {
+        self.log("open_sign_in_browser");
+        let url = self.view.sign_in_prompt.as_ref().map(|prompt| prompt.verification_uri.clone());
+        if let Some(url) = url {
+            self.browser.lock().unwrap().push(url);
+            Ok(())
+        } else {
+            Err(Refusal::new(RefusalCode::AuthRequired, "no sign-in is waiting for a browser"))
+        }
+    }
+
+    fn cancel_sign_in(&mut self) {
+        self.log("cancel_sign_in");
+        self.view = AccountView::signed_out();
+    }
+
+    fn poll(&mut self) -> Option<AccountView> {
+        self.poll_view.take()
     }
 
     fn sign_out(&mut self) -> Result<(), Refusal> {
@@ -122,6 +155,9 @@ fn signed_in_view() -> AccountView {
     AccountView {
         signed_in: true,
         sign_in_visible: false,
+        sign_in_state: SignInState::Idle,
+        sign_in_prompt: None,
+        sign_in_error: None,
         account_label: Some("alice@example.com".into()),
         available: Some(999),
         held: 0,
@@ -200,6 +236,76 @@ fn clicking_sign_in_enqueues_and_processes_outside_a_frame() {
     let log = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
     assert_eq!(log, vec!["sign_in", "view"]);
     assert!(harness.app.account.view().signed_in);
+}
+
+#[test]
+fn waiting_sign_in_shows_the_code_and_launches_the_browser_only_on_an_explicit_click() {
+    let browser = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut port = FakeAccountPort::with_view(
+        AccountView {
+            sign_in_state: SignInState::Waiting,
+            sign_in_prompt: Some(DeviceCode {
+                user_code: "BCDF-GHJK".into(),
+                verification_uri: "https://auth.example/device".into(),
+                expires_at: Timestamp(9_999),
+            }),
+            ..AccountView::signed_out()
+        },
+        calls.clone(),
+    );
+    port.browser = browser.clone();
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = true;
+    harness.app.account = State::with_port(Box::new(port));
+    harness.frames(2);
+    if let Ok(mut calls) = calls.lock() {
+        calls.clear();
+    }
+    assert!(browser.lock().unwrap().is_empty(), "rendering a pending sign-in launched a browser");
+    assert!(crate::scenario::handle_at("account:sign_in_browser").is_some());
+    crate::test_support::click(&mut harness, "account:sign_in_browser");
+    harness.app.account.process_actions();
+    assert_eq!(browser.lock().unwrap().as_slice(), ["https://auth.example/device"]);
+    let log = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
+    assert_eq!(log, vec!["open_sign_in_browser", "view"]);
+}
+
+#[test]
+fn expired_sign_in_explains_and_offers_one_explicit_retry() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = true;
+    harness.app.account = State::with_port(Box::new(FakeAccountPort::with_view(
+        AccountView { sign_in_state: SignInState::Expired, ..AccountView::signed_out() },
+        calls.clone(),
+    )));
+    harness.frames(2);
+    if let Ok(mut calls) = calls.lock() {
+        calls.clear();
+    }
+    assert!(crate::scenario::handle_at("account:sign_in").is_some(), "retry handle");
+    crate::test_support::click(&mut harness, "account:sign_in");
+    assert_eq!(harness.app.account.pending_action(), Some(Action::SignIn));
+    harness.app.account.process_actions();
+    assert!(harness.app.account.view().signed_in, "the explicit retry ran one sign-in");
+    let log = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
+    assert_eq!(log, vec!["sign_in", "view"]);
+}
+
+#[test]
+fn a_host_poll_update_is_adopted_without_replaying_an_action() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut port = FakeAccountPort::with_view(AccountView::signed_out(), calls.clone());
+    port.poll_view = Some(signed_in_view());
+    let mut state = State::with_port(Box::new(port));
+    if let Ok(mut calls) = calls.lock() {
+        calls.clear();
+    }
+    state.process_actions();
+    assert!(state.view().signed_in, "the worker's verified view was shown");
+    let log = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
+    assert!(log.is_empty(), "a poll is not an explicit action: {log:?}");
 }
 
 #[test]
