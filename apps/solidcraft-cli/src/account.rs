@@ -6,33 +6,34 @@
 //! program never opens a browser. The fallback session is process-local and is never persisted.
 //!
 //! MCP composition is defensive. The CLI builds one [`McpAccount`] from the same credential
-//! session the account commands use, and `serve_mcp` consults it for every backend route:
+//! session the account commands use, and `serve_mcp` consults it for every backend route.
+//! **Transport is not authority:** a reachable app control port, a valid launch token, a TCP
+//! connection, a header or a request field never authorizes a charged MCP tool.
 //!
-//! - A headless charged tool stays denied unless the host has a provable
-//!   account/installation/session scope, a billing authority and a verified safe-stop bound.
-//!   The shipped CLI passes a non-persistent session, so no scope exists and `Server::new`
-//!   keeps its default refusal.
-//! - A GUI-bridged MCP call is forwarded only to the authenticated local app control channel
-//!   (`Remote`). The CLI never bills it locally; the app's control server remains the single
-//!   admission and settlement authority. A backend that does not declare that authenticated
-//!   channel keeps the pre-dispatch refusal.
-//! - A future reviewed product-session exchange can install a real host scope with
-//!   [`McpAccount::authorized`]. It is a production seam, not a fake account: the constructor
-//!   refuses an unprovable scope or a zero authorization window.
+//! - Every charged call is denied before dispatch in production. There is no approved
+//!   product-session exchange, reviewed production [`BillingPort`], durable operation/intent
+//!   lifecycle or verified MCP safe-stop budget yet, and no reviewed authenticated protocol
+//!   proves that a bridged app may settle a charged call. The shipped CLI passes a
+//!   non-persistent session, so it has no host scope; `Server::new` keeps its default refusal.
+//! - A GUI-bridged call may use the app for uncharged tool transport, but charged calls remain
+//!   closed; the CLI never bills a remote call locally.
+//! - `McpAccount::authorized` is a local test-only static-window composition seam. It proves
+//!   the backend wiring with an in-memory billing double; it is not a live lifecycle and must
+//!   not be used to enable production. Static/synthetic host scopes and test grants never
+//!   authorize production.
 //!
 //! The remaining live interface is explicit. Headless metering still needs an approved
 //! `ProductSessionExchange`, a reviewed [`BillingPort`] over the native account adapter, a
-//! durable operation/intent store and a verified MCP safe-stop budget with the host-measured
-//! remaining window. GUI bridging needs the app's own production authority and same-id durable
-//! settlement. The external control wire still labels the forwarded call `DirectControl`; if
-//! the product contract requires `GuiBridgeMcp`, a later server change must carry the
-//! app-verified entry and operation without letting the CLI mint either. Until both paths have
-//! an approved authority, the shipped CLI passes a non-persistent session and every charged
-//! tool keeps today's default refusal.
+//! durable operation/intent store, a verified MCP safe-stop budget and a live authority
+//! revalidation at dispatch/commit (not a fixed window captured at startup). GUI bridging
+//! additionally needs a reviewed authenticated protocol that proves the app's authority and
+//! carries the app-verified entry, operation and deadline without letting the CLI mint either,
+//! plus same-id durable settlement. Until then the shipped CLI stays fail-closed.
 //!
-//! No token, account label or session binding is read from MCP wire arguments. The only host
-//! scope this module returns comes from [`CredentialSession::authenticated_scope`] after the
-//! same secure-store, logout-marker and product-session gates the desktop runtime uses.
+//! No token, account label or session binding is read from MCP wire arguments. A host scope
+//! candidate, when present, comes only from [`CredentialSession::authenticated_scope`] after the
+//! same secure-store, logout-marker and product-session gates the desktop runtime uses; it is
+//! never authority by itself.
 
 use std::time::Duration;
 
@@ -84,12 +85,12 @@ pub enum McpRoute {
     GuiBridge,
 }
 
-/// A reviewed host authority for one CLI MCP process.
+/// A **test-only** local authority for the composition wiring.
 ///
-/// `billing` must be the host's real [`BillingPort`]; the CLI never constructs one from a test
-/// double. `budget` must contain a verified bound for [`Capability::Mcp`] at
-/// [`EntryCategory::HeadlessMcp`]. `remaining` is the host-measured authorization window and is
-/// compared with that bound before dispatch.
+/// It is never installed by the shipped CLI. `billing` is an in-memory double, `budget` a
+/// deterministic verified bound and `remaining` a fixed static window. It proves admission and
+/// settlement plumbing, not a live account lifecycle; a production authority must revalidate
+/// authorization at dispatch and commit instead.
 pub struct McpAuthority {
     scope: AuthenticatedHostScope,
     billing: Box<dyn BillingPort>,
@@ -123,15 +124,13 @@ impl McpAccount {
         Self { scope, authority: None }
     }
 
-    /// Install a reviewed authority over a real host scope.
+    /// Install a local test-only authority over an in-memory scope.
     ///
-    /// This is the production injection seam for a future approved product exchange, billing
-    /// adapter, durable operation lifecycle and same-id settlement. It refuses to create a
-    /// half-authority: an unprovable binding or an empty window stays closed.
-    ///
-    /// No shipped CLI caller invokes it until those prerequisites exist; the local tests exercise
-    /// the same composition with a deterministic billing double.
-    #[allow(dead_code)] // a reviewed composition root, not a shipped placeholder
+    /// This proves the headless composition wiring and refusal paths only. It captures a fixed
+    /// window and cannot revalidate a live account lifecycle, so it is `cfg(test)` and is never
+    /// a production authorization path. A future live seam must reject static/synthetic scopes,
+    /// recheck authority at dispatch/commit and settle under the durable original id.
+    #[cfg(test)]
     pub fn authorized(
         scope: AuthenticatedHostScope,
         billing: Box<dyn BillingPort>,
@@ -151,10 +150,9 @@ impl McpAccount {
 /// Compose the MCP server from the host route and account decision.
 ///
 /// Free helpers and protocol reads keep working through every route because the server's free
-/// catalog answers them without an operation. A headless charged call reaches the backend only
-/// when [`McpAccount::authorized`] supplied a provable scope, billing authority and verified
-/// budget. A GUI-bridged call reaches the app's authenticated control channel, which owns
-/// admission and settlement; the CLI never charges it locally.
+/// catalog answers them without an operation. A GUI-bridged charged call is refused before
+/// dispatch: a reachable app is transport, not proven authority. The headless authority branch
+/// is reachable only from the `cfg(test)` local seam; production always closes charged calls.
 pub fn compose_mcp_server(backend: Box<dyn Backend>, path_scope: Option<PathScope>, account: McpAccount, route: McpRoute) -> Server {
     let McpAccount { scope, authority } = account;
     match (route, scope, authority) {
@@ -165,11 +163,11 @@ pub fn compose_mcp_server(backend: Box<dyn Backend>, path_scope: Option<PathScop
                 Box::new(HostScopedBackend { inner: backend, scope: authority.scope.clone(), remaining: authority.remaining });
             Server::new(backend).with_path_scope(path_scope).with_billing(authority.billing, authority.budget)
         }
-        // The app's control server is the single charged authority for a bridge. The server
-        // still refuses wire provenance and a backend that does not declare an authenticated
-        // host channel, so this is not an unbilled pass-through for a headless backend.
-        (McpRoute::GuiBridge, _, _) => Server::with_authenticated_bridge(backend).with_path_scope(path_scope),
-        // A CLI account scope without an authority keeps the headless default refusal.
+        // Transport is not authority. The app's control port may be local and token-bearing,
+        // but the CLI has no reviewed authenticated protocol that proves the app may settle a
+        // charged call. Keep the pre-dispatch refusal.
+        (McpRoute::GuiBridge, _, _) => Server::new(backend).with_path_scope(path_scope),
+        // A CLI account scope without a live authority keeps the headless default refusal.
         _ => Server::new(backend).with_path_scope(path_scope),
     }
 }
@@ -464,30 +462,29 @@ mod tests {
     }
 
     #[test]
-    fn gui_bridged_mcp_refuses_an_unauthenticated_backend() {
+    fn a_provable_scope_alone_never_enables_a_charged_headless_call() {
+        let account = McpAccount::from_session(active_product_session());
+        assert!(account.scope.is_some(), "the secure product session yields the host scope candidate");
+        let (backend, calls) = counting_backend();
+        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::Headless);
+        let result = call(&mut server, "measure", json!({}));
+        assert_eq!(result["isError"], true, "{result}");
+        assert_eq!(result["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE");
+        assert_eq!(calls.get(), 0, "a host scope is not authority without a reviewed live settlement path");
+    }
+
+    #[test]
+    fn gui_bridged_mcp_without_live_authority_refuses_before_dispatch() {
         let (backend, calls) = counting_backend();
         let (billing, counts) = counting_billing();
         let account = McpAccount::authorized(test_scope(), Box::new(billing), verified_mcp_budget(), Duration::from_secs(60))
-            .expect("the local host scope is provable");
+            .expect("the local test scope is provable");
         let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::GuiBridge);
         let result = call(&mut server, "measure", json!({}));
         assert_eq!(result["isError"], true, "{result}");
         assert_eq!(result["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE");
-        assert_eq!(calls.get(), 0, "an unmarked backend never receives a charged call");
-        assert_eq!(counts.admits(), 0, "a GUI bridge call is not charged by the CLI locally");
-    }
-
-    #[test]
-    fn gui_bridged_mcp_forwards_a_charged_call_to_the_app_authority() {
-        let (backend, calls) = authenticated_bridge_backend();
-        let (billing, counts) = counting_billing();
-        let account = McpAccount::authorized(test_scope(), Box::new(billing), verified_mcp_budget(), Duration::from_secs(60))
-            .expect("the local host scope is provable");
-        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::GuiBridge);
-        let result = call(&mut server, "measure", json!({}));
-        assert_ne!(result["isError"], true, "{result}");
-        assert_eq!(calls.get(), 1, "the authenticated app control channel receives the call once");
-        assert_eq!(counts.admits(), 0, "the app owns admission and settlement; the CLI never bills locally");
+        assert_eq!(calls.get(), 0, "transport to a reachable app is not proven authority");
+        assert_eq!(counts.admits(), 0, "a GUI bridge call is never charged by the CLI locally");
     }
 
     fn call(server: &mut Server, name: &str, arguments: Value) -> Value {
@@ -505,7 +502,6 @@ mod tests {
     struct CountingBackend {
         headless: Headless,
         calls: Rc<Cell<usize>>,
-        authenticated_host: bool,
     }
 
     impl Backend for CountingBackend {
@@ -521,20 +517,11 @@ mod tests {
         fn describe(&self) -> String {
             "CLI account composition test backend".into()
         }
-
-        fn forwards_to_authenticated_host(&self) -> bool {
-            self.authenticated_host
-        }
     }
 
     fn counting_backend() -> (CountingBackend, Rc<Cell<usize>>) {
         let calls = Rc::new(Cell::new(0));
-        (CountingBackend { headless: Headless::default(), calls: Rc::clone(&calls), authenticated_host: false }, calls)
-    }
-
-    fn authenticated_bridge_backend() -> (CountingBackend, Rc<Cell<usize>>) {
-        let calls = Rc::new(Cell::new(0));
-        (CountingBackend { headless: Headless::default(), calls: Rc::clone(&calls), authenticated_host: true }, calls)
+        (CountingBackend { headless: Headless::default(), calls: Rc::clone(&calls) }, calls)
     }
 
     #[derive(Clone, Default)]

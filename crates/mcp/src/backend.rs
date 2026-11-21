@@ -1,11 +1,12 @@
 //! Where MCP tool calls end up: a control-channel method call (`docs/control-protocol.md`).
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use solidcraft_engine::Session;
+use solidcraft_engine::control_auth::ClientToken;
 use solidcraft_engine::control_pending;
 use solidcraft_engine::panels::ActionSink;
 use solidcraft_engine::panels::commands::LayoutCatalogue;
@@ -55,16 +56,6 @@ pub trait Backend {
     /// the host already minted belongs here. `None` keeps a charged call fail-closed.
     fn tool_context(&self, _tool: &str) -> Option<crate::ToolCallContext> {
         None
-    }
-    /// Whether this backend is an authenticated local control channel whose host owns charged
-    /// admission and settlement (the running app through [`Remote`]).
-    ///
-    /// Only a composition root that trusts that channel may use
-    /// [`Server::with_authenticated_bridge`](crate::Server::with_authenticated_bridge). A source
-    /// label, tool argument or request field never answers this; it is a property of the backend
-    /// the host built. The default is `false`, so a headless or unknown backend stays closed.
-    fn forwards_to_authenticated_host(&self) -> bool {
-        false
     }
     /// Told by the host which logical operation (if any) this tool call belongs to.
     ///
@@ -206,6 +197,19 @@ fn outcome(v: &Value) -> Result<Value, String> {
     }
 }
 
+/// Whether `addr` names this computer's loopback interface. Only such a destination may use the
+/// local app's launch token; a hostname that merely resolves locally is treated as non-local
+/// because the check must not resolve or contact the destination.
+fn loopback_destination(addr: &str) -> bool {
+    let host = if let Some(rest) = addr.strip_prefix('[') {
+        rest.split_once(']').map_or(rest, |(host, _)| host)
+    } else {
+        addr.rsplit_once(':').map_or(addr, |(host, _)| host)
+    };
+    let host = host.trim();
+    host.eq_ignore_ascii_case("localhost") || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
 /// A running Intcad app reached through its loopback control port
 /// (`intcad --control PORT`).
 pub struct Remote {
@@ -216,6 +220,10 @@ pub struct Remote {
     /// `--token`, when given. Otherwise each request looks the token up again, since every
     /// launch of the app makes a new one (docs/control-protocol.md).
     explicit_token: Option<String>,
+    /// Whether this destination may use this computer's local launch credentials (the token file
+    /// for its port or `SOLIDCRAFT_CONTROL_TOKEN`). Only a loopback app is local; a non-local
+    /// address gets its own explicit `--token` or no token.
+    local_launch_credentials: bool,
     /// A request still running in the app; its reply waits on `conn`.
     outstanding: Option<Outstanding>,
     /// An outstanding request's end, once a later call waited for it (for `pending`).
@@ -265,6 +273,7 @@ impl Remote {
             conn: None,
             next_id: 1,
             explicit_token,
+            local_launch_credentials: loopback_destination(addr),
             outstanding: None,
             settled: None,
             waits: WAITS,
@@ -292,6 +301,31 @@ impl Remote {
     #[cfg(test)]
     pub(crate) fn set_next_id(&mut self, id: u64) {
         self.next_id = id;
+    }
+
+    /// The token this destination is allowed to receive. A non-loopback destination never reads
+    /// this computer's token file or environment variable; it gets only the explicit token the
+    /// caller supplied for it.
+    fn token(&self) -> Option<ClientToken> {
+        if self.local_launch_credentials {
+            solidcraft_engine::control_auth::client_token(self.port, self.explicit_token.as_deref())
+        } else {
+            self.explicit_token
+                .as_deref()
+                .map(str::trim)
+                .filter(|token| !token.is_empty())
+                .map(|token| ClientToken { token: token.to_owned(), file: None })
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn token_for_test(&self) -> Option<ClientToken> {
+        self.token()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn uses_local_launch_credentials_for_test(&self) -> bool {
+        self.local_launch_credentials
     }
 
     /// Close the connection. A request still running loses its reply with it.
@@ -419,9 +453,9 @@ impl Remote {
             }
         }
         let mut msg = json!({"id": id, "method": method, "params": params});
-        // The token goes with every request (an app restarted mid-session has a new one).
-        let token = solidcraft_engine::control_auth::client_token(self.port, self.explicit_token.as_deref());
-        if let Some(t) = &token {
+        // The token goes with every request (an app restarted mid-session has a new one). A
+        // non-loopback destination never receives this computer's local launch credential.
+        if let Some(t) = &self.token() {
             msg["token"] = json!(t.token);
         }
         msg.to_string()
@@ -627,10 +661,7 @@ impl Remote {
             return self.call_once(method, params, false);
         }
         // A refused token: say which token file it came from (and whether it is stale).
-        outcome(&v).map_err(|error| {
-            solidcraft_engine::control_auth::client_token(self.port, self.explicit_token.as_deref())
-                .map_or_else(|| error.clone(), |t| t.explain_error(&error))
-        })
+        outcome(&v).map_err(|error| self.token().map_or_else(|| error.clone(), |t| t.explain_error(&error)))
     }
 }
 
@@ -959,12 +990,6 @@ impl Backend for Remote {
             )
         }
     }
-
-    /// The running app owns charged admission and settlement at its control seam. A connection
-    /// without a valid launch token is refused there, so this channel never stands in for one.
-    fn forwards_to_authenticated_host(&self) -> bool {
-        true
-    }
 }
 
 /// An in-process headless session (no window); renders with the CPU rasterizer.
@@ -1244,19 +1269,6 @@ impl Auto {
 }
 
 impl Backend for Auto {
-    /// Look for the app before the host decides whether this is an authenticated bridge call.
-    /// The server asks this after `begin_tool_call`, so a charged call can be forwarded once the
-    /// app is found while the headless session still has no work of its own.
-    fn begin_tool_call(&mut self, _context: Option<&crate::ToolCallContext>, _helper: Option<&str>) {
-        if self.remote.is_none() {
-            self.look_for_app();
-        }
-    }
-
-    fn forwards_to_authenticated_host(&self) -> bool {
-        self.remote.is_some()
-    }
-
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         refuse_legacy_guard(&params)?;
         if self.remote.is_none() {

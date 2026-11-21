@@ -72,10 +72,6 @@ enum Authority {
     /// own control authority. Charged calls require a provable host context from the backend and
     /// are admitted and settled only once, at that host seam.
     Forwarded,
-    /// A bridge to an authenticated local control channel (the running app through
-    /// [`crate::Remote`]). The backend declares that its host owns admission and settlement;
-    /// this server performs no local billing. A backend that does not declare it stays closed.
-    AuthenticatedBridge,
     /// The crate's own tests only. Production never compiles this variant.
     #[cfg(test)]
     LocalTest,
@@ -139,17 +135,6 @@ impl Server {
     /// cannot be billed twice. Wire arguments still cannot supply the context.
     pub fn with_forwarded_authority(backend: Box<dyn Backend>) -> Self {
         Self { backend, initialized: false, scope: None, authority: Authority::Forwarded }
-    }
-    /// A bridge to an authenticated local host control channel, which owns charged admission and
-    /// settlement itself.
-    ///
-    /// Only [`Server::with_authenticated_bridge`] can install this when the backend's
-    /// [`Backend::forwards_to_authenticated_host`] is true (the running app through
-    /// [`crate::Remote`]). The server still refuses wire-supplied provenance and performs no
-    /// local admission or settlement, so the app remains the single authority. A backend that
-    /// does not declare an authenticated host keeps today's pre-dispatch refusal.
-    pub fn with_authenticated_bridge(backend: Box<dyn Backend>) -> Self {
-        Self { backend, initialized: false, scope: None, authority: Authority::AuthenticatedBridge }
     }
     /// Confine the files tool calls may reach to `scope` (`None`: anywhere). `intcad-cli mcp`
     /// always sets one unless started with `--allow-any-path` (docs/mcp.md).
@@ -303,7 +288,7 @@ impl Server {
                 let open = self.backend.design_path();
                 self.scope = self.scope.take().map(|s| s.with_design(open.as_deref()));
                 let scope = self.scope.clone();
-                let forwarded = matches!(self.authority, Authority::Forwarded | Authority::AuthenticatedBridge);
+                let forwarded = matches!(self.authority, Authority::Forwarded);
                 let helper = crate::account::tool_is_free(name).then_some(name);
                 // A tool that would make more than one controlled backend call cannot yet carry
                 // the parent's validated admission into its substeps. Refuse it before any work;
@@ -345,20 +330,6 @@ impl Server {
                             "this forwarded tool call has no authenticated host context",
                         )),
                     },
-                    Authority::AuthenticatedBridge => {
-                        if crate::account::tool_is_free(name) {
-                            call_tool(backend, name, &args)
-                        } else if backend.forwards_to_authenticated_host() {
-                            // The app's control server admits and settles this request. The MCP
-                            // boundary still checked provenance and the multi-substep gate above.
-                            call_tool(backend, name, &args)
-                        } else {
-                            crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
-                                solidcraft_engine::entitlement::RefusalCode::AuthUnavailable,
-                                "this bridge backend is not an authenticated host control channel",
-                            ))
-                        }
-                    }
                     Authority::Closed if crate::account::tool_is_free(name) => call_tool(backend, name, &args),
                     Authority::Closed => crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
                         solidcraft_engine::entitlement::RefusalCode::AuthUnavailable,

@@ -3106,6 +3106,32 @@ fn a_bridged_request_carries_the_agents_folders() {
     echo.join().unwrap();
 }
 
+/// A reachable address is not a local app. Only loopback may use this computer's token file or
+/// `SOLIDCRAFT_CONTROL_TOKEN`; a non-local destination gets its own explicit token or none.
+#[test]
+fn remote_uses_local_launch_credentials_only_for_loopback_destinations() {
+    for addr in ["127.0.0.1:9", "localhost:9", "[::1]:9"] {
+        assert!(crate::Remote::new(addr, None).uses_local_launch_credentials_for_test(), "{addr}");
+    }
+    for addr in ["192.0.2.10:9", "example.com:9", "0.0.0.0:9", "[2001:db8::1]:9"] {
+        assert!(!crate::Remote::new(addr, None).uses_local_launch_credentials_for_test(), "{addr}");
+    }
+}
+
+#[test]
+fn remote_sends_no_local_launch_credential_to_a_nonlocal_destination() {
+    for addr in ["192.0.2.10:9", "example.com:9", "0.0.0.0:9", "[2001:db8::1]:9"] {
+        let remote = crate::Remote::new(addr, None);
+        assert!(remote.token_for_test().is_none(), "{addr} must receive no local launch token");
+    }
+    let remote = crate::Remote::new("192.0.2.10:9", Some("remote_explicit_token"));
+    assert_eq!(
+        remote.token_for_test().map(|token| token.token),
+        Some("remote_explicit_token".to_owned()),
+        "the caller may supply a token explicitly for that destination"
+    );
+}
+
 /// A server started before its first tool call keeps no connection waiting (the app closes one
 /// that shows no token in time), and a call on a connection the app has closed meanwhile goes out
 /// on a new one without an error.
