@@ -59,6 +59,58 @@ fn the_rail_stands_at_the_windows_right_edge_in_both_layouts() {
     }
 }
 
+/// The Assistant's entry is the rail's first row, over a rule of its own, and beside a rail the
+/// application bar has no Assistant button. A press opens the Assistant and the same press
+/// closes it; an item's panel opens beside it and neither closes the other. Where no rail is
+/// drawn and the Assistant can show, the bar keeps its button as before the rail: with the rail
+/// preference off, and in the Render workspace. Home draws neither.
+#[test]
+fn the_assistant_is_the_rails_first_row_and_leaves_the_application_bar() {
+    let press = |h: &mut Harness| {
+        h.step(&json!({"click": {"handle": "rail:assistant"}})).unwrap();
+        h.settle();
+    };
+    for mode in [LayoutMode::Docked, LayoutMode::Floating] {
+        let mut h = window(mode, 1400);
+        let (rail, entry, files) = (rect_of("rail:strip").unwrap(), rect_of("rail:assistant").unwrap(), item(Item::Files));
+        assert!(rail.contains_rect(entry) && entry.size() == files.size(), "{mode:?}: {entry:?} in {rail:?}");
+        let (after_entry, between_modes) = (files.top() - entry.bottom(), item(Item::Simulation).top() - item(Item::Review).bottom());
+        assert!(after_entry > between_modes + 4.0, "{mode:?}: a rule sets the Assistant apart: {after_entry} against {between_modes}");
+        assert!(rect_of("titlebar:assistant").is_none() && rect_of("titlebar:preferences").is_some(), "{mode:?}: the bar has no Assistant button");
+        let name = crate::agent_chat::assistant_tip(&h.app, crate::agent_chat::assistant_mark(&h.app));
+        assert!(h.widget(&name).is_some(), "{mode:?}: the row is named with the Assistant's shortcut and state: {name}");
+
+        press(&mut h);
+        assert!(h.app.agent_chat.open && rect_of("agent_chat:panel").is_some(), "{mode:?}: a press opens the Assistant");
+        click(&mut h, Item::Files);
+        assert!(h.app.agent_chat.open && rect_of("agent_chat:panel").is_some(), "{mode:?}: an item leaves the Assistant open");
+        assert!(open(&h.app) == Some(Item::Files) && rect_of("rail:panel").is_some(), "{mode:?}: its panel opens beside the Assistant");
+        press(&mut h);
+        assert!(!h.app.agent_chat.open && rect_of("agent_chat:panel").is_none(), "{mode:?}: the same press closes the Assistant");
+        assert_eq!(open(&h.app), Some(Item::Files), "{mode:?}: the item's panel stays open");
+
+        h.call("ui.prefs", json!({"right_rail": false}));
+        h.settle();
+        assert!(rect_of("rail:assistant").is_none() && rect_of("titlebar:assistant").is_some(), "{mode:?}: without the rail the bar has its button");
+        h.step(&json!({"click": {"handle": "titlebar:assistant"}})).unwrap();
+        assert!(h.app.agent_chat.open, "{mode:?}: and it opens the Assistant as before");
+    }
+    let mut h = window(LayoutMode::Floating, 1400);
+    h.call("ui.workspace", json!({"workspace": "render"}));
+    h.settle();
+    assert!(rect_of("rail:assistant").is_none() && rect_of("titlebar:assistant").is_some(), "the Render workspace keeps the bar's button");
+    let mut h = window(LayoutMode::Floating, 1400);
+    h.app.home.open = true;
+    h.settle();
+    assert!(rect_of("rail:assistant").is_none() && rect_of("titlebar:assistant").is_none(), "Home draws neither");
+    // With the AI features off the rail starts at Files, and nothing of the Assistant is drawn.
+    let mut h = window(LayoutMode::Floating, 1400);
+    let first = rect_of("rail:assistant").unwrap().top();
+    h.app.preferences.ai_features = false;
+    h.settle();
+    assert!(rect_of("rail:assistant").is_none() && rect_of("titlebar:assistant").is_none() && item(Item::Files).top() == first);
+}
+
 /// An item opens its panel beside the rail, another item replaces it, and the open item closes
 /// it: one panel at a time. The view gives the panel its width and takes it back.
 #[test]
@@ -352,6 +404,11 @@ fn the_names_fit_the_rail_in_every_language_and_right_to_left_lines_fit_the_pane
         };
         let rail = rect_of("rail:strip").unwrap().width();
         assert_eq!(rail, width(&h.ctx), "{language}");
+        let assistant = measure(tr("ui.assistant"), t.font_micro);
+        assert!(
+            assistant <= rail - t.space_12 * 2.0 + 1.0 && rail <= MAX_WIDTH,
+            "{language}: the Assistant's name is {assistant} wide in a rail of {rail}"
+        );
         for item in Item::ALL {
             let name = measure(item.name(), t.font_micro);
             assert!(name + t.space_12 * 2.0 <= MAX_WIDTH, "{language}: {:?} is {name} wide", item.name());
