@@ -23,7 +23,7 @@ use solidcraft_engine::entitlement::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -340,6 +340,9 @@ pub struct CredentialSession {
     /// worker holds the lock across a slow keyring delete. Only a completed cleanup for the
     /// owning generation may clear it.
     revoked: Arc<AtomicBool>,
+    /// Monotonic revocation epoch. A reader that captured it before waiting for the session lock
+    /// must not return authority after it changes, even if a newer cleanup cleared the boolean.
+    epoch: Arc<AtomicU64>,
 }
 
 struct SessionState {
@@ -366,12 +369,16 @@ impl CredentialSession {
                 locked: false,
             })),
             revoked: Arc::new(AtomicBool::new(false)),
+            epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
     /// Fail all credential and scope reads synchronously. This never takes the session lock, so a
     /// caller can revoke on the window thread while a worker holds the lock for keyring IO.
+    /// The epoch advances first, so a reader already waiting on that lock cannot mistake a
+    /// later barrier clear for permission to return an old credential.
     pub fn revoke_in_process(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
         self.revoked.store(true, Ordering::SeqCst);
     }
 
@@ -384,14 +391,38 @@ impl CredentialSession {
         self.revoked.load(Ordering::SeqCst)
     }
 
-    /// The common read gate: check the lock-free barrier first, then the durable tombstone/lock
-    /// under the store lock.
-    fn lock_if_authorized(&self) -> Option<MutexGuard<'_, SessionState>> {
+    /// The common read gate: check the lock-free barrier first, then recheck it and the epoch
+    /// after the session lock is acquired. The returned epoch must also be checked after any
+    /// store IO before returning a credential.
+    fn lock_if_authorized(&self) -> Option<(MutexGuard<'_, SessionState>, u64)> {
         if self.revoked.load(Ordering::SeqCst) {
             return None;
         }
+        let epoch = self.epoch.load(Ordering::SeqCst);
         let state = self.inner.lock().ok()?;
-        authority_usable(&state).then_some(state)
+        if !self.epoch_unchanged(epoch) || !authority_usable(&state) {
+            return None;
+        }
+        Some((state, epoch))
+    }
+
+    fn epoch_unchanged(&self, epoch: u64) -> bool {
+        !self.revoked.load(Ordering::SeqCst) && self.epoch.load(Ordering::SeqCst) == epoch
+    }
+
+    /// Gate a host handoff write. The session lock serializes the write against cleanup, and the
+    /// epoch recheck makes a revoke that happened while waiting fail the write. Cleanup needs the
+    /// same lock, so a write that raced a revoke is deleted before cleanup reports success.
+    fn lock_for_handoff(&self) -> Result<(MutexGuard<'_, SessionState>, u64), Refusal> {
+        if self.revoked.load(Ordering::SeqCst) {
+            return Err(handoff_refusal());
+        }
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let state = self.lock().map_err(|_| handoff_refusal())?;
+        if !self.epoch_unchanged(epoch) || !authority_usable(&state) {
+            return Err(handoff_refusal());
+        }
+        Ok((state, epoch))
     }
 
     pub fn with_keyring() -> Self {
@@ -407,7 +438,8 @@ impl CredentialSession {
     }
 
     pub fn bound_account(&self) -> Option<String> {
-        self.lock_if_authorized().and_then(|state| state.account.clone())
+        let (state, _epoch) = self.lock_if_authorized()?;
+        state.account.clone()
     }
 
     pub fn is_persistent(&self) -> bool {
@@ -421,12 +453,15 @@ impl CredentialSession {
     /// fails closed. Logout, a product-session exchange and switching accounts each change (or
     /// remove) the binding, so a result admitted by an old session cannot commit into a new one.
     pub fn authenticated_scope(&self) -> Option<AuthenticatedHostScope> {
-        let mut state = self.lock_if_authorized()?;
+        let (mut state, epoch) = self.lock_if_authorized()?;
         if state.account.is_none() || state.installation.is_none() {
             adopt_persisted_labels(&mut state)?;
         }
         let (account, installation, _) = bound_scope(&state)?;
         let product = read_secret(&state, PRODUCT_SESSION_KEY)?;
+        if !self.epoch_unchanged(epoch) {
+            return None;
+        }
         let binding = session_binding_digest(&account, &installation, product.expose_secret());
         Some(AuthenticatedHostScope::new(AccountId::new(account), InstallationId::new(installation), HostSessionBinding::new(binding)))
     }
@@ -951,7 +986,7 @@ fn valid_operation(operation: &OperationId) -> bool {
 
 impl WireCredentials for CredentialSession {
     fn product_session(&self) -> Option<Secret> {
-        let state = self.lock_if_authorized()?;
+        let (state, epoch) = self.lock_if_authorized()?;
         let account = state.account.as_deref()?;
         if !safe_token(account, MAX_ACCOUNT_BYTES) {
             return None;
@@ -959,11 +994,12 @@ impl WireCredentials for CredentialSession {
         if state.store.get(ACCOUNT_KEY).ok().flatten().as_deref() != Some(account) {
             return None;
         }
-        read_secret(&state, PRODUCT_SESSION_KEY)
+        let secret = read_secret(&state, PRODUCT_SESSION_KEY);
+        self.epoch_unchanged(epoch).then_some(secret).flatten()
     }
 
     fn installation_credential(&self) -> Option<Secret> {
-        let state = self.lock_if_authorized()?;
+        let (state, epoch) = self.lock_if_authorized()?;
         let account = state.account.as_deref()?;
         let installation = state.installation.as_deref()?;
         if !safe_token(account, MAX_ACCOUNT_BYTES) || !safe_token(installation, MAX_IDENTIFIER_BYTES) {
@@ -975,67 +1011,84 @@ impl WireCredentials for CredentialSession {
         if state.store.get(INSTALLATION_ID_KEY).ok().flatten().as_deref() != Some(installation) {
             return None;
         }
-        read_secret(&state, INSTALLATION_CREDENTIAL_KEY)
+        let secret = read_secret(&state, INSTALLATION_CREDENTIAL_KEY);
+        self.epoch_unchanged(epoch).then_some(secret).flatten()
     }
 
     fn settlement_credential(&self, operation: &OperationId) -> Option<Secret> {
-        let state = self.lock_if_authorized()?;
+        let (state, epoch) = self.lock_if_authorized()?;
         let (_, _, digest) = bound_scope(&state)?;
         if !valid_operation(operation) {
             return None;
         }
-        read_secret(&state, &operation_key(&digest, operation, "settlement"))
+        let secret = read_secret(&state, &operation_key(&digest, operation, "settlement"));
+        self.epoch_unchanged(epoch).then_some(secret).flatten()
     }
 
     fn execution_session_proof(&self, operation: &OperationId) -> Option<Secret> {
-        let state = self.lock_if_authorized()?;
+        let (state, epoch) = self.lock_if_authorized()?;
         let (_, _, digest) = bound_scope(&state)?;
         if !valid_operation(operation) {
             return None;
         }
-        read_secret(&state, &operation_key(&digest, operation, "proof"))
+        let secret = read_secret(&state, &operation_key(&digest, operation, "proof"));
+        self.epoch_unchanged(epoch).then_some(secret).flatten()
     }
 
     fn initial_lease_proof(&self, authorization: &GrantId) -> Option<Secret> {
-        let state = self.lock_if_authorized()?;
+        let (state, epoch) = self.lock_if_authorized()?;
         let (_, _, digest) = bound_scope(&state)?;
         if !safe_token(authorization.as_str(), MAX_IDENTIFIER_BYTES) {
             return None;
         }
-        read_secret(&state, &lease_key(&digest, authorization))
+        let secret = read_secret(&state, &lease_key(&digest, authorization));
+        self.epoch_unchanged(epoch).then_some(secret).flatten()
     }
 }
 
 impl CredentialHandoff for CredentialSession {
     fn initial_lease_proof(&mut self, authorization: &GrantId, _capability: Capability, proof: Secret) -> Result<(), Refusal> {
-        let mut state = self.inner.lock().map_err(|_| handoff_refusal())?;
+        let (mut state, epoch) = self.lock_for_handoff()?;
         let (_, _, digest) = bound_scope(&state).ok_or_else(handoff_refusal)?;
         if !safe_token(authorization.as_str(), MAX_IDENTIFIER_BYTES) {
             return Err(handoff_refusal());
         }
-        set_secret(&mut state, &lease_key(&digest, authorization), proof.expose_secret()).map_err(|_| handoff_refusal())
+        let result = set_secret(&mut state, &lease_key(&digest, authorization), proof.expose_secret()).map_err(|_| handoff_refusal());
+        if result.is_ok() && !self.epoch_unchanged(epoch) {
+            return Err(handoff_refusal());
+        }
+        result
     }
 
     fn execution_session_proof(&mut self, _capability: Capability, operation: &OperationId, proof: Secret) -> Result<(), Refusal> {
-        let mut state = self.inner.lock().map_err(|_| handoff_refusal())?;
+        let (mut state, epoch) = self.lock_for_handoff()?;
         let (_, _, digest) = bound_scope(&state).ok_or_else(handoff_refusal)?;
         if !valid_operation(operation) {
             return Err(handoff_refusal());
         }
-        set_secret(&mut state, &operation_key(&digest, operation, "proof"), proof.expose_secret()).map_err(|_| handoff_refusal())
+        let result = set_secret(&mut state, &operation_key(&digest, operation, "proof"), proof.expose_secret()).map_err(|_| handoff_refusal());
+        if result.is_ok() && !self.epoch_unchanged(epoch) {
+            return Err(handoff_refusal());
+        }
+        result
     }
 
     fn settlement_credential(&mut self, operation: &OperationId, credential: Secret) -> Result<(), Refusal> {
-        let mut state = self.inner.lock().map_err(|_| handoff_refusal())?;
+        let (mut state, epoch) = self.lock_for_handoff()?;
         let (_, _, digest) = bound_scope(&state).ok_or_else(handoff_refusal)?;
         if !valid_operation(operation) {
             return Err(handoff_refusal());
         }
-        set_secret(&mut state, &operation_key(&digest, operation, "settlement"), credential.expose_secret()).map_err(|_| handoff_refusal())
+        let result =
+            set_secret(&mut state, &operation_key(&digest, operation, "settlement"), credential.expose_secret()).map_err(|_| handoff_refusal());
+        if result.is_ok() && !self.epoch_unchanged(epoch) {
+            return Err(handoff_refusal());
+        }
+        result
     }
 
     fn installation_credential(&mut self, installation_id: &str, credential: Secret) -> Result<(), Refusal> {
-        let mut state = self.inner.lock().map_err(|_| handoff_refusal())?;
+        let (mut state, epoch) = self.lock_for_handoff()?;
         if state.locked || state.account.is_none() {
             return Err(handoff_refusal());
         }
@@ -1063,6 +1116,10 @@ impl CredentialHandoff for CredentialSession {
             let _ = store_failure(&mut state, error);
             return Err(handoff_refusal());
         }
-        set_secret(&mut state, INSTALLATION_CREDENTIAL_KEY, credential.expose_secret()).map_err(|_| handoff_refusal())
+        let result = set_secret(&mut state, INSTALLATION_CREDENTIAL_KEY, credential.expose_secret()).map_err(|_| handoff_refusal());
+        if result.is_ok() && !self.epoch_unchanged(epoch) {
+            return Err(handoff_refusal());
+        }
+        result
     }
 }
