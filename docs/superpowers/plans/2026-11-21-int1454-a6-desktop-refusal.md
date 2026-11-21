@@ -29,7 +29,17 @@
 
 **Files:** `apps/solidcraft/src/control_server.rs`, existing test module in the same file; `crates/engine/src/control_auth.rs` only if needed to reuse the existing shared refusal constant.
 
-- [ ] Add an in-process behavioral RED at the disposal/admission seam with scripted bounded I/O: exact existing reply and write-side close before cleanup, no dispatch, and immediate release of the served-slot claim. Independently pin deadline/byte limit, I/O failure, and nonblocking full handoff using synthetic fixtures. Record exact source, selected tests and exits.
-- [ ] Implement the smallest refusal-only change. Keep one worker per listener and a one-item handoff, one 500 ms absolute budget and the existing `MAX_LINE + 1` byte ceiling. Reuse existing refusal I/O where practical without altering unauthorized behavior. Stop if preserving the contract requires an A2 migration or a new public behavior.
-- [ ] Run the new and existing relevant desktop tests, targeted Clippy and format. Prefer remote CI if compiling the app exceeds local budget. Use ordinary checks; do not add an unreviewed workflow or claim unexecuted tests passed.
+- [x] Add an in-process behavioral RED at the disposal/admission seam with scripted bounded I/O: exact existing reply and write-side close before cleanup, no dispatch, and immediate release of the served-slot claim. Independently pin deadline/byte limit, I/O failure, and nonblocking full handoff using synthetic fixtures. Record exact source, selected tests and exits.
+  - Round 1: exact RED scaffold preserved (`target/int1454-a6-evidence/red-scaffold.patch`), including the distinct `MAX_LINE + 1` ceiling and per-write deadline recomputation failures.
+- [x] Implement the smallest refusal-only change. Keep one worker per listener and a one-item handoff, one 500 ms absolute budget and the existing `MAX_LINE + 1` byte ceiling. Reuse existing refusal I/O where practical without altering unauthorized behavior. Stop if preserving the contract requires an A2 migration or a new public behavior.
+  - Round 1: connection-limit drain is `MAX_LINE + 1`; unauthorized drain remains 64 KiB; absolute write deadline is recomputed on every partial write.
+- [x] Run the new and existing relevant desktop tests, targeted Clippy and format. Prefer remote CI if compiling the app exceeds local budget. Use ordinary checks; do not add an unreviewed workflow or claim unexecuted tests passed.
+  - Round 1: 23/23 scoped tests, targeted Clippy and rustfmt pass locally; full/CI and Windows NOT_RUN.
 - [ ] Commit and push the owned task branch checkpoint, preserve command output, and request independent Spec and Quality review before integration. Keep A2 residuals and final candidate SHA evidence separate.
+  - Round 0 commit `b70da3901b0eed054566322e20069d4b12e4e3e0`; round-1 commit and push recorded in `target/int1454-a6-evidence/report.md`. Independent review remains NOT_RUN.
+
+### Round 1 review status
+
+Round 0 was reviewed at `b70da3901b0eed054566322e20069d4b12e4e3e0`: Spec FAIL, Quality
+CONCERNS. Round 1 addresses F1-F6 in the same scoped desktop file. Independent Spec/Quality
+review and integration are still open; scoped local checks are not desktop acceptance.
