@@ -460,6 +460,9 @@ struct DesktopAccountPort {
     cleanup: Arc<Mutex<CleanupStatus>>,
     workers: Vec<std::thread::JoinHandle<()>>,
     login_attempt: u64,
+    /// Whether a product session was already active when this attempt began; cancelling removes
+    /// only what the attempt itself wrote, never a pre-existing session.
+    session_before_login: bool,
     login_status: Arc<Mutex<LoginStatus>>,
     persist_gate: Arc<Mutex<()>>,
     login_worker: Option<std::thread::JoinHandle<()>>,
@@ -480,6 +483,7 @@ impl DesktopAccountPort {
             cleanup: Arc::new(Mutex::new(CleanupStatus::default())),
             workers: Vec::new(),
             login_attempt: 0,
+            session_before_login: false,
             login_status: Arc::new(Mutex::new(LoginStatus::default())),
             persist_gate: Arc::new(Mutex::new(())),
             login_worker: None,
@@ -717,6 +721,7 @@ impl AccountPort for DesktopAccountPort {
         let config = self.runtime.config.clone().ok_or_else(|| account_unavailable("no configured product-session verification origin"))?;
 
         let _gate = self.persist_gate.lock();
+        self.session_before_login = self.runtime.credentials.product_session_active();
         self.login_attempt = self.login_attempt.wrapping_add(1);
         let attempt = self.login_attempt;
         match self.login_status.lock() {
@@ -761,6 +766,18 @@ impl AccountPort for DesktopAccountPort {
 
     fn cancel_sign_in(&mut self) {
         self.invalidate_login();
+        // If the worker finished just before this click, the attempted login is still canceled:
+        // remove what it wrote rather than leave an abandoned session active.
+        if !self.session_before_login && self.runtime.credentials.product_session_active() {
+            if self.runtime.credentials.sign_out().is_ok() {
+                self.logout_pending = false;
+                self.view = AccountView::signed_out();
+            } else {
+                self.logout_pending = true;
+                self.view = AccountView::unavailable();
+            }
+            return;
+        }
         self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
     }
 
@@ -1424,6 +1441,21 @@ mod tests {
         assert_eq!(exchange.calls.load(Ordering::SeqCst), 0, "a canceled attempt never reached verification");
         assert!(!port.runtime.credentials.product_session_active());
         assert_eq!(port.runtime.credentials.provider_account(), None);
+        assert!(!port.view().signed_in);
+    }
+
+    #[test]
+    fn cancel_after_a_worker_finish_removes_the_attempts_session() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange { calls: Arc::new(AtomicUsize::new(0)) };
+        let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
+        let mut port = login_port(browser, runner, &store);
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, true);
+        AccountPort::cancel_sign_in(&mut port);
+        assert!(!port.runtime.credentials.product_session_active(), "an abandoned verified attempt stayed active");
+        assert!(port.runtime.credentials.provider_account().is_none());
         assert!(!port.view().signed_in);
     }
 
