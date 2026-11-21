@@ -142,7 +142,7 @@ logic**, adapted into IntCAD's fork (537 upstream-changed files; 63 also changed
 | U18 | plugin UI | Install/approve/menus/slots | Metadata list only | MIT/Apache | A3 | **Blocked** (no plugin runtime) |
 | U19 | 43 commits, render workspace | Live/prepare/quality/displayed/surface-import panes | 16 files, lacks 5 panes | MIT/Apache | D3 | **Adopted** (adapt; largest surface) |
 | U20 | `16f3b939b` | egui/eframe 0.36 → 0.37 | 0.36 | MIT/Apache | vendor re-base | **Adopted** (prerequisite for wholesale backports) |
-| U21 | 0 commits, `space-mouse` | — | Identical to fork | MIT/Apache | — | **Not Applicable** |
+| U21 | 0 scoped commits, `crates/space-mouse` | No change in `06749ac4..e151d5ea` under this crate path | The crate exists at the fork, frozen upstream, and `db0b8dd35`; all three have tree `63b48659bacbb1d41f95751920dcda97b0a18e35`. | MIT/Apache | — | **Not Applicable** for this unchanged crate; no claim about integration changes outside its path. |
 | U22 | font asset | Korean UI face (OFL) | Missing | OFL 1.1 | — | **Adopted** (asset, row first) |
 
 **Backend migrated, UI not exposed** (recorded, not counted as complete): snap points, silhouettes,
