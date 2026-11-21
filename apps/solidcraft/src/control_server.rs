@@ -4,7 +4,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, channel, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -17,6 +17,12 @@ use solidcraft_ui_egui::control::{DESIGN_WATCH, DesignWatch, Subscriber};
 
 /// Connections served at once, so a flood must not be able to spawn threads without end.
 const MAX_CONNECTIONS: usize = 16;
+/// How long a refused connection has for its reply and cleanup, from the moment it is refused.
+/// One absolute deadline covers the write and the drain; nothing extends it.
+const REFUSAL_BUDGET: Duration = Duration::from_millis(500);
+/// Bytes of what a refused client already sent that are read and dropped before closing, so a
+/// reset cannot overtake the refusal.
+const REFUSAL_DRAIN_BYTES: u64 = 64 * 1024;
 /// Lines that are not JSON before the connection is closed, so garbage cannot loop forever.
 const MAX_BAD_LINES: usize = 8;
 /// How long a subscribed connection waits after a `design.changed` line before the next: what
@@ -135,24 +141,165 @@ fn listen_on_listener(listener: TcpListener, token: String, tx: Sender<ControlRe
         }
     }
     let token = std::sync::Arc::new(token);
+    let refusals = Refusals::start();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            if OPEN.fetch_add(1, Ordering::Relaxed) >= MAX_CONNECTIONS {
-                OPEN.fetch_sub(1, Ordering::Relaxed);
-                let mut refused = stream;
-                let _ = send(&mut refused, &json!({"ok": false, "error": "too many connections"}));
-                continue;
-            }
-            let tx = tx.clone();
-            let ctx = ctx.clone();
-            let token = token.clone();
-            std::thread::spawn(move || {
-                serve(stream, &token, tx, ctx, patient);
-                OPEN.fetch_sub(1, Ordering::Relaxed);
-            });
+            route(
+                stream,
+                &OPEN,
+                MAX_CONNECTIONS,
+                |stream| {
+                    let tx = tx.clone();
+                    let ctx = ctx.clone();
+                    let token = token.clone();
+                    std::thread::spawn(move || {
+                        serve(stream, &token, tx, ctx, patient);
+                        OPEN.fetch_sub(1, Ordering::Relaxed);
+                    });
+                },
+                |stream| refusals.hand_off(stream),
+            );
         }
     });
     Some(port)
+}
+
+/// One accepted connection's place: a free served seat, or the limit's refusal.
+enum Admission {
+    Serve,
+    Refuse,
+}
+
+/// Take one of `max` served seats for an accepted connection. A refusal never holds a seat: it
+/// gives its increment back before it returns, so disposal cannot keep a new admission waiting.
+fn take_seat(open: &AtomicUsize, max: usize) -> Admission {
+    if open.fetch_add(1, Ordering::Relaxed) >= max {
+        open.fetch_sub(1, Ordering::Relaxed);
+        Admission::Refuse
+    } else {
+        Admission::Serve
+    }
+}
+
+/// Route one accepted connection: a served seat dispatches it, and a refusal goes to disposal.
+/// A refused connection is never dispatched, and neither route waits.
+fn route<C>(stream: C, open: &AtomicUsize, max: usize, serve: impl FnOnce(C), refuse: impl FnOnce(C)) {
+    match take_seat(open, max) {
+        Admission::Serve => serve(stream),
+        Admission::Refuse => refuse(stream),
+    }
+}
+
+/// The reply a connection past [`MAX_CONNECTIONS`] gets.
+fn too_many_connections() -> Value {
+    json!({"ok": false, "error": "too many connections"})
+}
+
+/// What is left of an absolute deadline; `None` once it has passed.
+fn time_left(deadline: Instant) -> Option<Duration> {
+    deadline.checked_duration_since(Instant::now()).filter(|left| !left.is_zero())
+}
+
+/// The socket work of one refusal, apart from admission, so a test can script it in process.
+trait RefusalIo: Send {
+    /// Allow the next write to block for at most `left`.
+    fn set_write_timeout(&mut self, left: Duration);
+    /// Write the refusal line.
+    fn write_reply(&mut self, reply: &Value) -> std::io::Result<()>;
+    /// End what this side sends, before any request still arriving is read.
+    fn close_write(&mut self);
+    /// Read and drop up to `max` bytes of what the client already sent, inside `deadline`.
+    fn drain(&mut self, deadline: Instant, max: u64);
+}
+
+/// Reply to and close one refused connection inside `deadline`. The deadline is absolute and set
+/// before the refusal is handed off, so waiting in the worker's slot does not reset it: the write
+/// gets only what is left, and the drain shares the same instant. A write failure still closes the
+/// write side and drains, so the client reads the reply rather than a reset.
+fn refuse_within(io: &mut impl RefusalIo, reply: &Value, deadline: Instant) {
+    let Some(left) = time_left(deadline) else { return };
+    io.set_write_timeout(left);
+    let _ = io.write_reply(reply);
+    io.close_write();
+    io.drain(deadline, REFUSAL_DRAIN_BYTES);
+}
+
+/// Read and drop up to `max` bytes of a refused client's request: the drain's byte ceiling.
+fn drain_refused(reader: &mut impl std::io::Read, max: u64) -> u64 {
+    let mut bounded = std::io::Read::take(reader, max);
+    std::io::copy(&mut bounded, &mut std::io::sink()).unwrap_or(0)
+}
+
+/// One connection past the limit: its socket, to be replied to and closed inside the deadline the
+/// refusal job carries.
+struct SocketRefusal {
+    stream: TcpStream,
+}
+
+impl RefusalIo for SocketRefusal {
+    fn set_write_timeout(&mut self, left: Duration) {
+        let _ = self.stream.set_write_timeout(Some(left));
+    }
+
+    fn write_reply(&mut self, reply: &Value) -> std::io::Result<()> {
+        send(&mut self.stream, reply)
+    }
+
+    fn close_write(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Write);
+    }
+
+    fn drain(&mut self, deadline: Instant, max: u64) {
+        let Ok(read) = self.stream.try_clone() else { return };
+        let mut reader = BufReader::new(ClientInput { socket: read, deadline: Some(deadline) });
+        drain_refused(&mut reader, max);
+    }
+}
+
+/// What the listener's refusal worker does with one refused connection.
+type RefusalJob = Box<dyn FnOnce() + Send>;
+
+/// A listener's one refusal worker and the single waiting slot for a refused connection: the
+/// worker is fixed for the listener's life, and `hand_off` never waits, so a busy or absent
+/// worker cannot hold up acceptance or add a thread.
+struct Refusals {
+    worker: Option<SyncSender<RefusalJob>>,
+}
+
+impl Refusals {
+    /// Start the listener's one refusal worker. Without a thread, every refusal is closed at once,
+    /// still without holding up acceptance.
+    fn start() -> Self {
+        let (worker, jobs) = sync_channel::<RefusalJob>(1);
+        let started = std::thread::Builder::new()
+            .name("control-refusal".into())
+            .spawn(move || {
+                while let Ok(job) = jobs.recv() {
+                    job();
+                }
+            })
+            .is_ok();
+        Refusals { worker: started.then_some(worker) }
+    }
+
+    /// Offer `job` without waiting. `false` when the worker's one slot is taken or there is no
+    /// worker: the caller fails closed instead of holding the listener.
+    fn hand_off_job(&self, job: RefusalJob) -> bool {
+        match self.worker.as_ref() {
+            Some(worker) => worker.try_send(job).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Refuse `stream` on the listener's worker, with one absolute deadline that starts here,
+    /// before the handoff; waiting in the slot does not reset it.
+    fn hand_off(&self, stream: TcpStream) {
+        let deadline = Instant::now() + REFUSAL_BUDGET;
+        self.hand_off_job(Box::new(move || {
+            let mut io = SocketRefusal { stream };
+            refuse_within(&mut io, &too_many_connections(), deadline);
+        }));
+    }
 }
 
 /// One line without its newline, or `None` at the end of the stream. A client that sends
@@ -233,8 +380,8 @@ fn refuse(out: &mut TcpStream, reader: &mut BufReader<ClientInput>) {
     use std::io::Read;
     let _ = send(out, &unauthorized());
     let _ = out.shutdown(std::net::Shutdown::Write);
-    reader.get_mut().deadline = Some(Instant::now() + Duration::from_millis(500));
-    let _ = std::io::copy(&mut reader.by_ref().take(64 * 1024), &mut std::io::sink());
+    reader.get_mut().deadline = Some(Instant::now() + REFUSAL_BUDGET);
+    let _ = std::io::copy(&mut reader.by_ref().take(REFUSAL_DRAIN_BYTES), &mut std::io::sink());
 }
 
 /// What a client sends. Until it shows the token, all of its reads share one deadline, so neither
@@ -1398,5 +1545,162 @@ mod tests {
         assert_eq!(out.writes, 1);
         assert_eq!(out.bytes.last(), Some(&b'\n'));
         assert_eq!(serde_json::from_slice::<Value>(&out.bytes).unwrap(), reply);
+    }
+
+    /// A refused connection gives its served-seat increment back at once: it holds no seat, and
+    /// the route that refuses it never dispatches it.
+    #[test]
+    fn a_refused_connection_is_disposed_without_a_served_seat_or_dispatch() {
+        let open = AtomicUsize::new(1);
+        let served = Arc::new(AtomicUsize::new(0));
+        let disposed = Arc::new(AtomicUsize::new(0));
+        let (s, d) = (served.clone(), disposed.clone());
+        route(
+            7u8,
+            &open,
+            1,
+            move |_| {
+                s.fetch_add(1, Ordering::Relaxed);
+            },
+            move |n| d.store(usize::from(n), Ordering::Relaxed),
+        );
+        assert_eq!(served.load(Ordering::Relaxed), 0, "a refused connection is never dispatched");
+        assert_eq!(disposed.load(Ordering::Relaxed), 7, "it goes to disposal");
+        assert_eq!(open.load(Ordering::Relaxed), 1, "the refused seat is released at once");
+    }
+
+    /// The reply and cleanup of a refusal share one absolute deadline: the exact existing reply
+    /// first, then the end of what is sent, then the drain. A scripted write failure still closes
+    /// and drains, and a deadline that has passed writes nothing.
+    #[test]
+    fn a_refusal_writes_then_closes_before_a_bounded_drain() {
+        #[derive(Default)]
+        struct Scripted {
+            order: Vec<&'static str>,
+            reply: Option<Value>,
+            timeout: Option<Duration>,
+            drain: Option<(Instant, u64)>,
+            fail_write: bool,
+        }
+        impl RefusalIo for Scripted {
+            fn set_write_timeout(&mut self, left: Duration) {
+                self.timeout = Some(left);
+            }
+            fn write_reply(&mut self, reply: &Value) -> std::io::Result<()> {
+                self.order.push("reply");
+                self.reply = Some(reply.clone());
+                if self.fail_write { Err(std::io::Error::other("scripted write failure")) } else { Ok(()) }
+            }
+            fn close_write(&mut self) {
+                self.order.push("close");
+            }
+            fn drain(&mut self, deadline: Instant, max: u64) {
+                self.order.push("drain");
+                self.drain = Some((deadline, max));
+            }
+        }
+
+        let before = Instant::now();
+        let deadline = before + REFUSAL_BUDGET;
+        let mut io = Scripted::default();
+        refuse_within(&mut io, &too_many_connections(), deadline);
+        assert_eq!(io.order, ["reply", "close", "drain"]);
+        assert_eq!(io.reply, Some(json!({"ok": false, "error": "too many connections"})), "the existing reply is unchanged");
+        assert_eq!(io.drain.map(|(at, _)| at), Some(deadline), "the drain shares the absolute deadline");
+        assert_eq!(io.drain.map(|(_, max)| max), Some(REFUSAL_DRAIN_BYTES));
+        let left = io.timeout.unwrap();
+        assert!(left <= REFUSAL_BUDGET && left >= REFUSAL_BUDGET.saturating_sub(before.elapsed()), "{left:?} is not what was left of the one budget");
+
+        let mut io = Scripted { fail_write: true, ..Default::default() };
+        refuse_within(&mut io, &too_many_connections(), Instant::now() + REFUSAL_BUDGET);
+        assert_eq!(io.order, ["reply", "close", "drain"], "a failed reply still closes the write side and drains");
+
+        // A refusal that waited in the worker's slot keeps the deadline set before the handoff:
+        // once it passes, nothing is written and the connection is only closed.
+        let deadline = Instant::now() + Duration::from_millis(10);
+        std::thread::sleep(Duration::from_millis(40));
+        let mut io = Scripted::default();
+        refuse_within(&mut io, &too_many_connections(), deadline);
+        assert!(io.order.is_empty(), "a refusal past its deadline is only closed");
+    }
+
+    /// The drain reads at most its byte ceiling from a request that was already on its way.
+    #[test]
+    fn a_refusal_drains_only_up_to_its_byte_ceiling() {
+        for len in [0u64, 1, REFUSAL_DRAIN_BYTES, REFUSAL_DRAIN_BYTES + 100] {
+            let mut reader = std::io::Cursor::new(vec![b'x'; len as usize]);
+            assert_eq!(drain_refused(&mut reader, REFUSAL_DRAIN_BYTES), REFUSAL_DRAIN_BYTES.min(len));
+        }
+    }
+
+    /// A refusal handoff never waits for the reply: a scripted job that sleeps does not delay the
+    /// accepting thread, because the listener's one worker delivers it.
+    #[test]
+    fn a_refusal_handoff_does_not_wait_for_the_reply() {
+        let refusals = Refusals::start();
+        let job: RefusalJob = Box::new(|| std::thread::sleep(Duration::from_millis(400)));
+        let started = Instant::now();
+        assert!(refusals.hand_off_job(job), "the fixed worker takes this refusal");
+        assert!(started.elapsed() < Duration::from_millis(200), "handoff waited for the reply: {:?}", started.elapsed());
+    }
+
+    /// The worker is fixed: a busy one lets one refusal wait, refuses the next at once (closing
+    /// it), and both accepted jobs run on that same worker thread.
+    #[test]
+    fn a_full_refusal_slot_closes_the_next_at_once_without_another_worker() {
+        struct Mark(Arc<AtomicBool>);
+        impl Drop for Mark {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+
+        let refusals = Refusals::start();
+        let (first_tx, first_rx) = channel::<()>();
+        let (second_tx, second_rx) = channel::<()>();
+        let threads = Arc::new(Mutex::new(Vec::new()));
+        let ran = Arc::new(AtomicUsize::new(0));
+        let first = {
+            let (threads, ran) = (threads.clone(), ran.clone());
+            Box::new(move || {
+                threads.lock().unwrap().push(std::thread::current().id());
+                ran.fetch_add(1, Ordering::Relaxed);
+                let _ = first_rx.recv();
+            }) as RefusalJob
+        };
+        assert!(refusals.hand_off_job(first));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ran.load(Ordering::Relaxed) < 1 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(ran.load(Ordering::Relaxed), 1, "the worker takes the first refusal");
+        let second = {
+            let (threads, ran) = (threads.clone(), ran.clone());
+            Box::new(move || {
+                threads.lock().unwrap().push(std::thread::current().id());
+                ran.fetch_add(1, Ordering::Relaxed);
+                let _ = second_rx.recv();
+            }) as RefusalJob
+        };
+        assert!(refusals.hand_off_job(second), "the one slot holds a second refusal while the worker is busy");
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mark = Mark(dropped.clone());
+        let third: RefusalJob = Box::new(move || {
+            let _mark = mark;
+        });
+        let started = Instant::now();
+        assert!(!refusals.hand_off_job(third), "the full worker refuses rather than queues");
+        assert!(started.elapsed() < Duration::from_millis(100), "a full handoff waited: {:?}", started.elapsed());
+        assert!(dropped.load(Ordering::Relaxed), "the refused connection is closed at once");
+        let _ = first_tx.send(());
+        let _ = second_tx.send(());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ran.load(Ordering::Relaxed) < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(ran.load(Ordering::Relaxed), 2, "the waiting refusal is delivered after the first");
+        let ids = threads.lock().unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], ids[1], "one fixed worker delivers both refusals");
     }
 }
