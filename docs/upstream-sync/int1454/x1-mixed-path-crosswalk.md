@@ -51,6 +51,11 @@ counts were one for each producer (exit `0`). No GPU, Cargo test suite,
 Windows checkout, or integration PR was run or changed.
 
 Local receipts: `/tmp/opencode/int1454-wgsl.XVXlq6/{crlf,lf}/run.{log,exit}`.
+For either variant, with `d` set to the receipt directory and `mode` set to
+`crlf` or `lf`, compile the saved probe with
+`rustc "$d/$mode/probe.rs" -o "$d/$mode/probe"` (Rust 1.99.1), then run
+`"$d/$mode/probe"`. The probe reads the variant's ten adjacent shader files
+via `include_str!`.
 Treat the LF rule as a candidate portability change for separate approval;
 retain the existing assertions and confirm the native GPU test before
 claiming Windows parity.
