@@ -13,6 +13,7 @@ import unittest
 import hashlib
 import contextlib
 import io
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import main_merge  # noqa: E402
@@ -214,11 +215,29 @@ elif args[:2] == ['nextest', 'run']:
     sys.exit(int(os.environ.get('TEST_EXIT', '0')))
 elif args[:2] == ['xtask', 'known-failing']:
     sys.exit(int(os.environ.get('GRADER_EXIT', '0')))
+elif args[0] == 'check':
+    root = pathlib.Path.cwd()
+    assert args == ['check', '--workspace', '--all-targets', '--locked']
+    assert root.name == 'solidcore' and root.parent != pathlib.Path(os.environ['TEST_CHECKOUT'])
+    assert not (root / 'untracked').exists() and not (root.parent / 'README.md').exists()
+    assert (root / 'Cargo.toml').read_text() == 'committed kernel manifest'
+    assert (root / 'Cargo.lock').read_text() == 'committed kernel lock'
+    assert (root / 'toolchain-ready').exists()
+    assert not {'RUSTUP_TOOLCHAIN', 'CARGO_TARGET_DIR'} & os.environ.keys()
+    sys.exit(int(os.environ.get('KERNEL_EXIT', '0')))
 else:
     sys.exit(97)
 ''')
         cargo.chmod(0o755)
+        rustup = self.bin / "rustup"
+        rustup.write_text(f"#!{sys.executable}\n" + '''import pathlib, sys
+assert sys.argv[1:] == ['toolchain', 'install']
+assert pathlib.Path('rust-toolchain.toml').read_text() == '[toolchain]\\nchannel = "fixture"\\n'
+pathlib.Path('toolchain-ready').touch()
+''')
+        rustup.chmod(0o755)
         os.environ.update(PATH=str(self.bin) + os.pathsep + os.environ['PATH'], TEST_METADATA=json.dumps(self.meta),
+                          TEST_CHECKOUT=str(self.root),
                           GITHUB_EVENT_NAME="pull_request", GITHUB_OUTPUT=str(self.root / "outputs"))
         self.plan_file = self.root / "plan.json"
 
@@ -267,6 +286,77 @@ else:
         with self.assertRaisesRegex(ValueError, "checkout SHA"):
             main_merge.execute_workflow(self.plan_file, "rust", self.root / "evidence/rust")
         self.assertFalse((self.root / "evidence/rust/commands.json").exists())
+
+    def kernel_source(self):
+        (self.root / "solidcore").mkdir()
+        self.source = self.repo.commit("kernel", **{
+            "solidcore/Cargo.toml": "committed kernel manifest",
+            "solidcore/Cargo.lock": "committed kernel lock",
+            "solidcore/rust-toolchain.toml": '[toolchain]\nchannel = "fixture"\n',
+        })
+
+    def test_kernel_export_selection_covers_kernel_inputs_and_its_ci_adapter(self):
+        for path in ("solidcore/crates/record/src/lib.rs", "solidcore/Cargo.toml",
+                     "solidcore/Cargo.lock", "solidcore/.cargo/config.toml", "solidcore/rust-toolchain.toml",
+                     "scripts/ci/main_merge.py"):
+            with self.subTest(path=path):
+                self.assertEqual(self.plan([path])["jobs"].get("kernel-export", {}).get("decision"), "run")
+        for path in ("docs/kernel-integration.md", "crates/base/src/lib.rs", "Cargo.lock",
+                     ".github/workflows/pages.yml"):
+            with self.subTest(path=path):
+                self.assertEqual(self.plan([path])["jobs"].get("kernel-export", {}).get("decision"), "not_applicable")
+        self.assertEqual(self.plan(["README.md"], release=True)["jobs"]["kernel-export"]["decision"], "run")
+
+    def test_kernel_export_uses_committed_subtree_and_captures_cargo_exit(self):
+        self.kernel_source()
+        self.plan(["scripts/ci/main_merge.py"])
+        self.repo.write("solidcore/Cargo.toml", "staged change")
+        self.repo.git("add", "solidcore/Cargo.toml")
+        self.repo.write("solidcore/untracked", "not part of the selected commit")
+        os.environ.update(RUSTUP_TOOLCHAIN="root-override", CARGO_TARGET_DIR="root-target")
+        out = self.root / "evidence/kernel-export"
+        main_merge.execute_workflow(self.plan_file, "kernel-export", out)
+        receipt = json.loads((out / "receipt.json").read_text())
+        self.assertEqual(receipt["sourceRevision"], self.source)
+        self.assertEqual(receipt["planDigest"], hashlib.sha256(self.plan_file.read_bytes()).hexdigest())
+        self.assertEqual(receipt["commands"][-1],
+                         {"argv": ["cargo", "check", "--workspace", "--all-targets", "--locked"], "exitCode": 0})
+        os.environ["KERNEL_EXIT"] = "42"
+        with self.assertRaisesRegex(ValueError, "nonzero"):
+            main_merge.execute_workflow(self.plan_file, "kernel-export", out)
+        self.assertEqual(json.loads((out / "commands.json").read_text())[-1]["exitCode"], 42)
+        self.assertFalse((out / "receipt.json").exists())
+
+    def test_kernel_export_does_not_run_cargo_if_archive_fails(self):
+        self.plan(["scripts/ci/main_merge.py"])  # No solidcore in the selected commit.
+        out = self.root / "evidence/kernel-export"
+        with self.assertRaises(subprocess.CalledProcessError):
+            main_merge.execute_workflow(self.plan_file, "kernel-export", out)
+        self.assertFalse((out / "commands.json").exists())
+        self.assertFalse((out / "receipt.json").exists())
+
+    def test_kernel_export_rejects_revision_movement_before_or_during_archive(self):
+        self.kernel_source()
+        selected = self.source
+        self.plan(["scripts/ci/main_merge.py"])
+        other = self.repo.commit("new checkout", **{"README.md": "changed\n"})
+        out = self.root / "evidence/kernel-export"
+        with self.assertRaisesRegex(ValueError, "actual checkout SHA"):
+            main_merge.execute_workflow(self.plan_file, "kernel-export", out)
+        self.repo.git("update-ref", "HEAD", selected)
+        run = subprocess.run
+
+        def move_head_after_archive(argv, *args, **kwargs):
+            result = run(argv, *args, **kwargs)
+            if argv[:2] == ["git", "archive"]:
+                run(["git", "update-ref", "HEAD", other], check=True)
+            return result
+
+        with mock.patch.object(subprocess, "run", side_effect=move_head_after_archive):
+            with self.assertRaisesRegex(ValueError, "actual checkout SHA"):
+                main_merge.execute_workflow(self.plan_file, "kernel-export", out)
+        self.assertFalse((out / "commands.json").exists())
+        self.assertFalse((out / "receipt.json").exists())
 
     def test_packages_commands_are_real_packaging_regressions(self):
         commands = main_merge.packages_commands()
@@ -391,8 +481,8 @@ else:
                 self.assertEqual(json.loads((out / "commands.json").read_text())[0]["exitCode"], 1)
                 self.assertFalse((out / "receipt.json").exists())
 
-    def foundation_evidence(self):
-        self.plan(["README.md"])
+    def foundation_evidence(self, paths=None):
+        self.plan(paths if paths is not None else ["README.md"])
         self.policy_event()
         main_merge.execute_workflow(self.plan_file, "pr-policy", self.root / "receipts/pr-policy")
         # The repo consumer is intentionally a small actual command fixture here;
@@ -411,6 +501,28 @@ else:
         with contextlib.redirect_stdout(output):
             status = main_merge.aggregate_workflow(self.plan_file, needs_file, self.root / "receipts")
         return status, output.getvalue()
+
+    def test_aggregate_requires_successful_kernel_check_not_a_placeholder(self):
+        self.kernel_source()
+        self.foundation_evidence(["scripts/ci/main_merge.py"])
+        self.needs["kernel-export"] = {"result": "success"}
+        status, output = self.aggregate()
+        self.assertEqual(status, 1, output)
+        self.assertIn("kernel-export: missing receipt", output)
+        out = self.root / "receipts/kernel-export"
+        main_merge.execute_workflow(self.plan_file, "kernel-export", out)
+        receipt_path = out / "receipt.json"
+        receipt = json.loads(receipt_path.read_text())
+        status, output = self.aggregate()
+        self.assertEqual(status, 0, output)
+        self.needs["kernel-export"]["result"] = "failure"
+        self.assertEqual(self.aggregate()[0], 1)
+        self.needs["kernel-export"]["result"] = "success"
+        for commands in (receipt["commands"][:-1], [{"argv": ["true"], "exitCode": 0}],
+                         receipt["commands"][:-1] + [{"argv": receipt["commands"][-1]["argv"], "exitCode": 42}]):
+            with self.subTest(commands=commands):
+                receipt_path.write_text(json.dumps({**receipt, "commands": commands}))
+                self.assertEqual(self.aggregate()[0], 1)
 
     def test_aggregate_accepts_explicit_host_na_but_not_skips_or_missing_receipts(self):
         self.foundation_evidence()
