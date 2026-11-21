@@ -17,6 +17,8 @@ pub const CONTROL_REQUEST_FILE: &str = "crates/ui-egui/src/control.rs";
 pub const TRUSTED_CONSTRUCTORS: &[&str] = &[
     "trusted_acp",
     "trusted_bridge",
+    "trusted_bridge_forwarded",
+    "trusted_bridge_helper",
     "trusted_cli_dfm",
     "trusted_control",
     "trusted_external_ui",
@@ -243,6 +245,8 @@ mod tests {
             fn production() {
                 let _ = ControlRequest::trusted_gui("engine.execute", json!({}));
                 let _ = ControlRequest::trusted_control("engine.execute", json!({}));
+                let _ = ControlRequest::trusted_bridge_forwarded("engine.execute", json!({}), trusted, None, None);
+                let _ = ControlRequest::trusted_bridge_helper("engine.execute", json!({}), "measure");
             }
             "#,
             false,
