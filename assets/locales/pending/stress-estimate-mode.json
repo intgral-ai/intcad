@@ -1,0 +1,34 @@
+{
+  "en": {
+    "ui.agent_chat_skill_stress_estimate": "Stress estimate",
+    "ui.agent_chat_skill_stress_estimate_tip": "Estimate a part's stress and deflection under the loads you describe. The agent gets the whole stress-estimate workflow with your message, and each solve waits for you to allow it."
+  },
+  "ar": {
+    "ui.agent_chat_skill_stress_estimate": "تقدير الإجهاد",
+    "ui.agent_chat_skill_stress_estimate_tip": "قدّر إجهاد القطعة وانحرافها تحت الأحمال التي تصفها. يتلقى الوكيل خطوات تقدير الإجهاد كاملة مع رسالتك، وينتظر كل حلّ حتى تسمح به."
+  },
+  "de": {
+    "ui.agent_chat_skill_stress_estimate": "Spannungsabschätzung",
+    "ui.agent_chat_skill_stress_estimate_tip": "Spannung und Durchbiegung eines Teils unter den beschriebenen Lasten abschätzen. Der Agent erhält mit deiner Nachricht den ganzen Ablauf der Spannungsabschätzung, und jede Berechnung wartet, bis du sie erlaubst."
+  },
+  "he": {
+    "ui.agent_chat_skill_stress_estimate": "הערכת מאמצים",
+    "ui.agent_chat_skill_stress_estimate_tip": "הערכת המאמצים והשקיעה של חלק תחת העומסים שתיארת. הסוכן מקבל עם ההודעה את כל שלבי הערכת המאמצים, וכל פתרון ממתין עד שתתיר אותו."
+  },
+  "ja": {
+    "ui.agent_chat_skill_stress_estimate": "応力の概算",
+    "ui.agent_chat_skill_stress_estimate_tip": "説明した荷重での部品の応力とたわみを概算します。メッセージと一緒に応力概算の手順全体がエージェントに渡り、各計算は許可するまで待ちます。"
+  },
+  "ko": {
+    "ui.agent_chat_skill_stress_estimate": "응력 추정",
+    "ui.agent_chat_skill_stress_estimate_tip": "설명한 하중에서 부품의 응력과 처짐을 추정합니다. 메시지와 함께 응력 추정 절차 전체가 에이전트에 전달되며, 각 계산은 허용할 때까지 기다립니다."
+  },
+  "vi": {
+    "ui.agent_chat_skill_stress_estimate": "Ước tính ứng suất",
+    "ui.agent_chat_skill_stress_estimate_tip": "Ước tính ứng suất và độ võng của chi tiết dưới các tải bạn mô tả. Tác tử nhận toàn bộ quy trình ước tính ứng suất cùng tin nhắn của bạn, và mỗi lần giải đều chờ bạn cho phép."
+  },
+  "zh": {
+    "ui.agent_chat_skill_stress_estimate": "应力估算",
+    "ui.agent_chat_skill_stress_estimate_tip": "按你描述的载荷估算零件的应力和变形。完整的应力估算流程会随你的消息发给智能体，每次求解都要等你允许。"
+  }
+}
