@@ -10,6 +10,7 @@ pub mod formats;
 pub mod materials;
 pub mod model;
 pub mod probe;
+pub mod report_words;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

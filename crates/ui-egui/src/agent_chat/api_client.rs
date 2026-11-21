@@ -4599,6 +4599,58 @@ mod tests {
         b.shutdown(true);
     }
 
+    /// The stress answer check (#201) on the direct API path: after a turn that solved a stress
+    /// estimate, the endpoint's answer is read where the turn ends. A verdict, or no share of
+    /// yield, gets the warning under it; an answer that follows the rules gets none.
+    #[test]
+    fn a_direct_endpoints_stress_answer_is_checked_when_its_turn_ends() {
+        use super::super::tests::{STRESS_FACTOR, STRESS_GOOD, STRESS_GOOD_ZH, STRESS_ZH_VERDICT, after_answer, ask_and_allow_stress, stress_cube};
+        let _shown = super::super::stress_answer::shown_lock();
+        let cases = [(STRESS_FACTOR, true), (STRESS_ZH_VERDICT, true), (STRESS_GOOD, false), (STRESS_GOOD_ZH, false)];
+        let answers: std::collections::VecDeque<Value> =
+            cases.iter().map(|(a, _)| json!({"choices": [{"message": {"role": "assistant", "content": a}}]})).collect();
+        let answers = std::sync::Mutex::new(answers);
+        let http: HttpFn = Arc::new(move |r: &HttpRequest| {
+            if r.method == "GET" {
+                return Ok((200, b"{\"data\":[]}".to_vec()));
+            }
+            let a = answers.lock().unwrap().pop_front().unwrap_or(json!({}));
+            Ok((200, a.to_string().into_bytes()))
+        });
+        let cfg = direct_config(Protocol::OpenAi, "http://localhost:1/v1", "m", None, http, "");
+        let start = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        app.agent_chat.backend = Some(Box::new(ApiBackend::start(cfg, start).unwrap()));
+        app.agent_chat.state = Some(super::super::State::Starting);
+        let (tx, rx) = channel();
+        app.agent_chat.tools_rx = Some(rx);
+        let ctx = crate::fonts::test_context();
+        let until = |app: &mut crate::SolveApp, what: &str, done: &dyn Fn(&crate::SolveApp) -> bool| {
+            let t = std::time::Instant::now();
+            while !done(app) {
+                assert!(t.elapsed() < Duration::from_secs(30), "timed out waiting for {what}");
+                super::super::poll(app, &ctx);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        until(&mut app, "the endpoint to be ready", &|a| a.agent_chat.state() == super::super::State::Ready);
+        stress_cube(&mut app, false);
+        for (answer, warned) in cases {
+            super::super::send(&mut app, &ctx, "How much stress is in the bracket?".into());
+            ask_and_allow_stress(&mut app, &tx, false);
+            super::super::stress_answer::show_solved(&app.session.document_id);
+            until(&mut app, "the turn to end", &|a| a.agent_chat.state() == super::super::State::Ready && a.agent_chat.turn.is_none());
+            let (shown, notices) = after_answer(&app);
+            assert_eq!(shown, answer);
+            let expected: Vec<String> = super::super::stress_answer::warning(answer).into_iter().collect();
+            assert_eq!(notices, expected, "{answer}");
+            assert_eq!(!notices.is_empty(), warned, "{answer}");
+        }
+        if let Some(mut b) = app.agent_chat.backend.take() {
+            b.shutdown(true);
+        }
+    }
+
     /// Cancel while a model request is in flight ends the turn at once (the request is
     /// abandoned, its late answer dropped), leaves no half-finished round in the history and
     /// the next message goes through.
