@@ -54,8 +54,9 @@ Local receipts: `/tmp/opencode/int1454-wgsl.XVXlq6/{crlf,lf}/run.{log,exit}`.
 For either variant, with `d` set to the receipt directory and `mode` set to
 `crlf` or `lf`, compile the saved probe with
 `rustc "$d/$mode/probe.rs" -o "$d/$mode/probe"` (Rust 1.99.1), then run
-`"$d/$mode/probe"`. The probe reads the variant's ten adjacent shader files
-via `include_str!`.
+`"$d/$mode/probe"`. The probe embeds the variant's ten adjacent shader files
+at compile time via `include_str!`; the saved run logs do not record the
+compiler command.
 Treat the LF rule as a candidate portability change for separate approval;
 retain the existing assertions and confirm the native GPU test before
 claiming Windows parity.
