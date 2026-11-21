@@ -26,6 +26,10 @@ receipt and the B3 standalone check do not close any root Cargo policy
 decision. No dependency, source allowance, advisory exception, or licence
 policy is changed by this crosswalk.
 
+The [target-specific OpenPGP resolution](b6-openpgp-resolved-graph.md)
+records the distinct consumer and feature evidence for the two advisory
+exceptions. Neither exception is approved by that evidence.
+
 Reproduce blob IDs with `git rev-parse <pin>:<path>`, parse the TOML at each
 pin with `git show <pin>:<path>` and `tomllib`, and count `[[package]]`
 records by `source`. Policy equality compares parsed TOML, not comments.
