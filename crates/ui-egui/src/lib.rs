@@ -1234,6 +1234,9 @@ impl SolveApp {
 
     /// Run a command programmatically (JSON parameters, no dialogs).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        // One spelling for every caller (menus, control channel, tests): the comparisons below
+        // and the engine execute the registered id, whatever case the caller used.
+        let id = solidcraft_engine::resolve_command_id(id).unwrap_or(id);
         if solidcraft_engine::panels::commands::is_command(id) {
             return self.run_panel_command(id, &params).map_err(solidcraft_engine::panels::commands::error_text);
         }
