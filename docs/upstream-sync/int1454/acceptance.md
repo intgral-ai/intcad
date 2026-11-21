@@ -740,4 +740,10 @@ The five `cargo test -p solidcraft --bin intcad --profile ci --locked` selection
 - Job log SHA-256 `f7f55263ba5fb6634a613405a1a048a1b0e0dfb9b00f2b4d54e178f2ac70aa5e`.
 - Runner-reported executable SHA-256 `78d2b9a05a6fa866853ebc2ed0f4044f77bb2d4e7dac321d175d3e4f3304742b`. The archive contains the hash receipt, not the executable or screenshots; no independent executable rehash is claimed.
 
-This is isolated hosted Windows evidence, not a full Windows VM E2E run, a real desktop TCP limit-refusal check, combined-candidate CI, or landed-`develop` evidence. Keep those gates open and do not integrate the diagnostic workflow.
+This is isolated hosted Windows evidence, not a full Windows VM E2E run, a Windows TCP limit-refusal check, combined-candidate CI, or landed-`develop` evidence. Keep those gates open and do not integrate the diagnostic workflow.
+
+### 11.17 A6 isolated Linux desktop TCP acceptance
+
+- Product source `581e606f0e30f3404b1bc9cd786a44bc015537ea`, clean. Local Ubuntu 24.04 build produced a direct desktop binary; build and deployment each exited `0`. Build manifest, recomputed host binary, and recomputed deployed binary agree on SHA-256 `ad6f54323258ae93c17ddd9c0d973adf1e9a1f3e3a9d9122aa9b2f5fe1c6cef0`.
+- In a dedicated Ubuntu 24.04.5 LTS VM, 16 authenticated simultaneous read-only clients succeeded; client 17 received the exact `too many connections` response and clean EOF; an admitted client remained usable; new admission resumed after disconnection. The guest-local check exited `0`. Log SHA-256 `9e56039cf8bc60379daa69595c756db8dd3ed051e974816af91a0cb8ad4a3c59`. Raw logs and script are retained locally under `/tmp/opencode/int1454-a6-real-tcp/`; VM shut down.
+- This covers normal-client Linux loopback refusal on the isolated product SHA. It is not Windows TCP parity, full platform E2E, combined CI, evidence on `develop`, or independent merge approval.
