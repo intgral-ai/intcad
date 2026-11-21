@@ -784,10 +784,16 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui, area: Rect) {
     ui.add_space(t.space_8);
     if let Some(error) = app.dfm_review.error.clone() {
         crate::ui_kit::text(ui, &error, crate::ui_kit::Text::Error(&error));
-        if error.starts_with("AUTH_REQUIRED") {
-            crate::account::show_inline_sign_in(app, ui, "account.sign_in_for_review", "review:sign_in");
-        }
         ui.add_space(t.space_8);
+    }
+    // A signed-out desktop is offered sign-in independently of which refusal the check produced.
+    // The stop-bound and authorization checks above are unchanged.
+    let signed_out = {
+        let view = app.account.view();
+        app.account.is_installed() && !view.signed_in && view.sign_in_visible
+    };
+    if signed_out {
+        crate::account::show_inline_sign_in(app, ui, "account.sign_in_for_review", "review:sign_in");
     }
     let Some(card) = app.dfm_review.card.clone() else {
         if !app.dfm_review.running {

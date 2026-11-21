@@ -456,6 +456,22 @@ fn show(h: &mut Harness, card: Card) {
 
 /// With no report yet the panel offers the check itself, without the Assistant: a press starts
 /// one run of the host's manual entry, and the panel says so while it runs.
+/// A signed-out desktop is offered sign-in even when Review's own stop-bound refusal is
+/// `UNSAFE_TO_START`; the prompt does not change that refusal or admit work.
+#[test]
+fn signed_out_review_shows_a_sign_in_prompt_without_changing_the_stop_bound() {
+    let mut h = window(LayoutMode::Docked);
+    h.app.account = crate::account::State::with_port(Box::new(crate::account::tests::FakeAccountPort::signed_out(Default::default())));
+    h.app.dfm_review.error = Some("UNSAFE_TO_START: this Review path has no verified safe-stop bound".into());
+    h.settle();
+    assert!(rect_of("review:sign_in").is_some(), "the signed-out Review prompt is not reachable");
+    h.step(&json!({"click": {"handle": "review:sign_in"}})).expect("the sign-in prompt");
+    h.frames(1);
+    h.app.account.process_actions();
+    assert!(h.app.account.view().signed_in, "the prompt dispatched the explicit account action");
+    assert_eq!(h.app.dfm_review.error.as_deref(), Some("UNSAFE_TO_START: this Review path has no verified safe-stop bound"));
+}
+
 #[test]
 fn a_project_with_no_report_offers_the_check() {
     let h = window(LayoutMode::Docked);

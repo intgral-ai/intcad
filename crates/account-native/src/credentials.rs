@@ -452,6 +452,18 @@ impl CredentialSession {
         state.account.clone()
     }
 
+    /// The account label of a persisted, active product session for display only. Unlike
+    /// [`Self::bound_account`] this does not require an installation binding; it never proves
+    /// `AuthenticatedHostScope` or authorizes controlled work.
+    pub fn display_account(&self) -> Option<String> {
+        let (state, epoch) = self.lock_if_authorized()?;
+        let account = state.store.get(ACCOUNT_KEY).ok().flatten()?;
+        if !safe_token(&account, MAX_ACCOUNT_BYTES) || read_secret(&state, PRODUCT_SESSION_KEY).is_none() {
+            return None;
+        }
+        self.epoch_unchanged(epoch).then_some(account)
+    }
+
     pub fn is_persistent(&self) -> bool {
         self.inner.lock().map(|state| state.store.persistent()).unwrap_or(false)
     }

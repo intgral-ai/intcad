@@ -33,11 +33,14 @@ native OS-protected store. Passwords, keyring data and service tokens never ente
 bundle or Web storage.
 
 The desktop wires an explicit UI sign-in to the native device-code worker and the reviewed
-server-verified exchange. The WorkOS public client id and bare HTTPS product origin come only
-from `DesktopAccountConfig`; no reviewed values ship, so sign-in refuses before a request. The
-worker never opens a browser, and a browser is launched only by a separate explicit click at the
-provider-issued HTTPS verification address. No settlement, billing or execution authority is
-enabled; those remain gated by the surrounding tasks in the plan.
+server-verified exchange. The WorkOS public client id, exact AuthKit verification origin and bare
+HTTPS product origin come only from compile-time [desktop build configuration](desktop-configuration.md);
+trusted release values are not read from runtime settings or responses, and no reviewed values
+ship in this build. Missing or invalid configuration refuses before a request. The worker never
+opens a browser, and a browser is launched only by a separate explicit click at the
+provider-issued verification address after its exact configured origin is checked again. A
+verified identity may clear a sign-out marker, but installation proof, settlement, billing and
+execution authority remain gated by the surrounding tasks in the plan.
 
 ## Closure guard
 

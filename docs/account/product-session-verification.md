@@ -61,15 +61,19 @@ The exchange is explicit:
   attempt, a background worker polls it, and the provider session is offered to
   `ServerVerifiedProductSession` before anything is written. A verified result is persisted with
   `CredentialSession::persist_verified_login`; a provider-only or rejected result writes nothing.
-- The worker's attempt id is checked before and after verification and again under the persistence
-  gate, so cancel, sign-out, account switch, shutdown and late replies cannot install a stale
-  session. `State::poll` adopts the worker snapshot on the host logic step, never on a paint pass.
+- The worker's attempt id is checked before and after verification and again when the final
+  write is published, so cancel, sign-out, account switch, shutdown and late replies cannot
+  install a stale session. Instants a worker does write after losing the generation race remove
+  that attempt's own write on its worker thread. `State::poll` adopts each terminal snapshot once
+  on the host logic step, never on a paint pass.
 - The browser is launched only by a separate explicit "Sign in in browser" action, only at the
-  HTTPS verification address from the current provider prompt; sign-in itself never opens one.
-- The desktop ships no reviewed WorkOS client id or product service origin. `DesktopAccountConfig`
-  accepts only explicit values through `WorkOsPublicClient::new` and `WireConnection::new`; with
-  no configuration, `sign_in` refuses before any request. No environment heuristic, token field,
-  response value or arbitrary URL is accepted.
+  HTTPS verification address from the current provider prompt and only when that address has the
+  same exact configured AuthKit origin; sign-in itself never opens one.
+- The desktop ships no reviewed WorkOS client id, AuthKit verification origin or product service
+  origin. [Desktop build configuration](desktop-configuration.md) compiles in only explicit
+  values through `WorkOsPublicClient::new` and `WireConnection::new`; with any missing or
+  malformed value, `sign_in` refuses before any request. No runtime setting, environment
+  heuristic, token field, response value or arbitrary URL is accepted.
 - The CLI still configures no product service origin and no shipped provider sign-in; `sign_in`
   still refuses and no production billing, commit or MCP authority is installed.
 - No token is sent to any origin other than the caller-configured `WireConnection`.
@@ -97,20 +101,22 @@ live, staging or production verification.
 
 The following are required together; the client seam exists, but no reviewed values ship:
 
-- a **trusted configured product service origin and WorkOS public client id**, supplied by
-  reviewed configuration rather than an environment heuristic, token field or response value;
+- a **trusted build-time product service origin, WorkOS public client id and exact AuthKit
+  verification origin**, supplied by a reviewed release build rather than an environment
+  heuristic, token field, runtime setting or response value;
 - a **native HTTPS transport with redirects disabled** (the existing production `ureq` transport
   sets `https_only`, `max_redirects(0)` and platform certificates) and tests that exercise it
   without a live service;
-- **startup tombstone recovery**: a durable sign-out marker may be cleared only after a fresh
-  provider login is verified against the configured origin and the new product session is bound
-  to the account/installation; a marker alone never restores authority;
+- **startup tombstone recovery boundary**: a fresh provider login verified against the
+  configured origin may replace the identity and clear the durable sign-out marker, but only an
+  installation-bound product session may restore `AuthenticatedHostScope`; the marker alone never
+  restores authority, and identity without installation proof never enables controlled work;
 - **installation bootstrap**: `POST /v1/installations` with the activated product bearer and a
   provable host scope, followed by durable installation credential storage, so a later
   `AuthenticatedHostScope` can be proven;
-- token expiry/refresh handling, revocation revalidation and an installation bootstrap for the
-  desktop flow. The explicit device-code worker and browser action are wired, but no production
-  credential has been exercised.
+- token expiry/refresh handling and revocation revalidation for the desktop flow. The explicit
+  device-code worker and browser action are wired, but no production credential has been
+  exercised.
 
 ## Explicit non-goals
 

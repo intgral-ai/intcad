@@ -8,7 +8,7 @@ or production service was used.
 
 | Item | Value |
 | --- | --- |
-| Client commit | `4fb4859` (`feat(account): wire explicit desktop sign-in to verified product session`), plus the cancel-race fix and evidence commit on top of it |
+| Client commit | Round 1 fix on top of `959d0c5`; base Task 1 code `4fb4859` |
 | Base | `ad9ab83f8` |
 | Branch | `feat/int1497-desktop-entry` |
 | Worktree state | clean; these evidence changes are committed on the task branch |
@@ -26,15 +26,16 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
 | Frozen rev3 embedded bytes match client `contracts/pin.json` | **PASS** (earlier Task 13 evidence) | `contract-pin.md` |
 | Frozen `contract_vectors` (offline) | **NOT_RUN** in Task 1 | requires the external frozen artifacts; unchanged by this task |
 | `solidcraft-account-native` library tests (offline) | **PASS**, 101 passed / 0 failed / 1 ignored | `cargo test --offline --locked -p solidcraft-account-native --lib` |
-| Desktop account tests (`apps/solidcraft`) | **PASS**, 20 passed / 0 failed | `cargo test --offline --locked -p solidcraft --bin intcad account::tests` |
+| Desktop account tests (`apps/solidcraft`) | **PASS**, 29 passed / 0 failed | `cargo test --offline --locked -p solidcraft --bin intcad account::tests` |
 | Account UI tests (`solidcraft-ui-egui`) | **PASS**, 22 passed / 0 failed | `cargo test --offline --locked -p solidcraft-ui-egui --lib account::` |
+| Production web shell sign-in prompt and Review prompt reachability | **PASS**, 1 each | focused UI tests for the native web-view strip and an `UNSAFE_TO_START` Review refusal |
 | English/complete-catalog coverage for new messages | **PASS** | `... i18n::tests::every_complete_catalog_carries_every_english_message --exact` |
 | Focused clippy (`-D warnings`) for native, UI and desktop crates | **PASS** | `cargo clippy ... --all-targets -- -D warnings` |
 | `cargo xtask lists` | **PASS** | pending locale file folds and catalogs stay sorted |
 | `cargo xtask layers` | **PASS**, no layering violations | native-only closure guard passed |
-| `solidcraft-ui-egui` wasm library check | **PASS**, 0 errors (9 pre-existing warnings) | `cargo check ... --target wasm32-unknown-unknown --lib` |
-| Full `solidcraft-ui-egui` library suite | **FAILED**, 5091 passed / 58 failed | 56 `TexturesDelta` drop panics and 2 agent-discovery child-process failures; two representative failures reproduced at base `ad9ab83f8` (see Limits) |
-| Full desktop app test binary | **FAILED**, 169 passed / 2 failed | both are the same pre-existing `TexturesDelta` drop panic signature |
+| `solidcraft-ui-egui` wasm library check | **PASS**, 0 errors (existing warnings) | `cargo check ... --target wasm32-unknown-unknown --lib` |
+| Full `solidcraft-ui-egui` library suite | **FAILED**, same pre-existing `TexturesDelta`/agent-discovery signatures | representative failures reproduced at base `ad9ab83f8` (see Limits) |
+| Full desktop app test binary | **FAILED**, 177 passed / 3 failed | two `TexturesDelta` drop-panic failures and one control-server timing failure that passes alone; not caused by the account edit |
 | Linux direct-binary package build and install | **NOT_RUN** | no package built in this bounded checkpoint |
 | Live WorkOS device-code completion and product verification | **NOT_RUN** | no production/provider credential, service or remote write |
 | No-auto-browser / explicit-click behavior on a real desktop | **NOT_RUN** | covered by scripted seams only; no GUI session |
@@ -60,14 +61,16 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
   capability stop bound is reported because none was measured.
 - `docs/account/capability-budget.md` therefore keeps every capability **UNVERIFIED**;
   `docs/account/entry-matrix.md` keeps its intended-gate wording.
-- Existing production authority remains disabled: no reviewed WorkOS client id or product origin
-  ships, no installation bootstrap exists, and there is no real keychain validation,
-  refresh/revocation handling or settlement authority.
+- Existing production authority remains disabled: no trusted build-time WorkOS client id, AuthKit
+  origin or product origin is set in this build, no installation bootstrap exists, and there is no
+  real keychain validation, refresh/revocation handling or settlement authority. The
+  [build configuration](desktop-configuration.md) seam and its fail-closed validation are tested
+  with synthetic values only.
 
 ## Remaining gates
 
-1. Reviewed WorkOS client id and product HTTPS origin in desktop configuration, then a real
-   device-code completion with the exact configured origin.
+1. Reviewed WorkOS client id, AuthKit verification origin and product HTTPS origin set by the
+   trusted release builder, then a real device-code completion with the exact configured origins.
 2. Installation bootstrap and startup tombstone recovery for a real desktop install.
 3. Linux direct-binary packaging and the full account flow matrix on a real install.
 4. Windows MSI packaging, Credential Manager behavior and durability/ACL checks.
