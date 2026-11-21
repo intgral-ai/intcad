@@ -12,7 +12,9 @@
  *   - a turn in which the model asks for a tool of an MCP server handed over in `session/new`;
  *   - a command and a file write whose permission requests are refused;
  *   - a turn cancelled while a permission request is open, and one cancelled while the answer
- *     streams.
+ *     streams;
+ *   - a session that lists the skills of every set the agent carries (agent/skills.mjs), as
+ *     commands and in what the model is told, and a model that reads each one's SKILL.md.
  * A refused or cancelled turn must leave nothing behind: the command's marker file is nowhere, no
  * file of the project folder changed, and the same session answers the next message. The allowed
  * command and the allowed file write are what show that a marker would be there otherwise.
@@ -46,8 +48,10 @@ import { once } from "node:events";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { SKILL_SETS } from "../agent/skills.mjs";
 
 const self = fileURLToPath(import.meta.url);
 export const MARK = "intcad-smoke";
@@ -91,12 +95,14 @@ const textOf = (message) => (typeof message?.content === "string" ? message.cont
  *   "measure the part"                                  asks for the MCP server's `measure_part`;
  *   "answer slowly, then run the command: <command>"    holds the answer open before the command;
  *   "hold the answer open"                              holds a text-only answer open;
- *   a tool's result                                     says whether the result had MARK in it;
+ *   "activate the skill: <name>"                        asks for Mastra's `skill` tool with that name;
+ *   a tool's result                                     says whether the result had MARK in it, or
+ *                                                       else the first heading (`# …`) it had;
  *   anything else                                       a plain sentence.
  * `keep(file, value)` is told every request, for a run that keeps its raw output.
  */
 export function modelService({ keep = () => {}, status = () => 200 } = {}) {
-  const seen = { requests: 0 };
+  const seen = { requests: 0, bodies: [] };
   let heldResponse;
   const server = http.createServer((request, response) => {
     let body = "";
@@ -110,6 +116,7 @@ export function modelService({ keep = () => {}, status = () => 200 } = {}) {
         // an empty request is answered like any other
       }
       keep("model-requests.jsonl", { n: seen.requests, url: request.url, body: wanted });
+      seen.bodies.push(wanted);
       const refused = status(request.url);
       if (refused !== 200) {
         response.writeHead(refused, { "content-type": "application/json" });
@@ -140,7 +147,8 @@ export function modelService({ keep = () => {}, status = () => 200 } = {}) {
       const messages = wanted.messages ?? [];
       const last = messages[messages.length - 1] ?? {};
       if (last.role === "tool") {
-        say(textOf(last).includes(MARK) || JSON.stringify(last.content ?? "").includes(MARK) ? `The tool answered with ${MARK}.` : "The tool answered without the expected text.");
+        const heading = /^# (.+)$/mu.exec(textOf(last));
+        say(textOf(last).includes(MARK) || JSON.stringify(last.content ?? "").includes(MARK) ? `The tool answered with ${MARK}.` : heading ? `The tool answered with the heading "${heading[1].trim()}".` : "The tool answered without the expected text.");
         return;
       }
       const tools = (wanted.tools ?? []).map((tool) => tool.function ?? tool);
@@ -149,9 +157,11 @@ export function modelService({ keep = () => {}, status = () => 200 } = {}) {
       const slow = /answer slowly, then run the command: ([^\n]+)/u.exec(asked);
       const command = slow ?? /run the command: ([^\n]+)/u.exec(asked);
       const write = /write the file: ([^\n]+)/u.exec(asked);
-      // Mastra Code's own names for its tools, as it offers them (SDK 1.19.1).
+      const skill = /activate the skill: ([^\s]+)/u.exec(asked);
+      // Mastra Code's own names for its tools, as it offers them (SDK 1.19.1), and Mastra's for skills.
       const commandTool = find(/^execute_command$/u);
       const writeTool = find(/^write_file$/u);
+      const skillTool = find(/^skill$/u);
       if ((slow && commandTool) || asked === "hold the answer open") {
         heldResponse = response;
         response.writeHead(200, { "content-type": "text/event-stream" });
@@ -160,13 +170,13 @@ export function modelService({ keep = () => {}, status = () => 200 } = {}) {
         // Only the client can end this response before teardown.
         return;
       }
-      const [tool, args] = command && commandTool ? [commandTool, { command: command[1].trim() }] : write && writeTool ? [writeTool, { path: write[1].trim(), content: MARK }] : /measure the part/u.test(asked) && find(/measure_part/u) ? [find(/measure_part/u), { unit: "mm" }] : [];
+      const [tool, args] = command && commandTool ? [commandTool, { command: command[1].trim() }] : write && writeTool ? [writeTool, { path: write[1].trim(), content: MARK }] : skill && skillTool ? [skillTool, { name: skill[1] }] : /measure the part/u.test(asked) && find(/measure_part/u) ? [find(/measure_part/u), { unit: "mm" }] : [];
       if (tool) {
         response.writeHead(200, { "content-type": "text/event-stream" });
         call(tool, args);
         return;
       }
-      say(command || write || /measure the part/u.test(asked) ? "No such tool was offered." : `Hello from the stand-in model (request ${seen.requests}).`);
+      say(command || write || skill || /measure the part/u.test(asked) ? "No such tool was offered." : `Hello from the stand-in model (request ${seen.requests}).`);
     });
   });
   const waitForHeldClose = async (ms) => {
@@ -435,7 +445,7 @@ async function main(args) {
         return { stop: reply.stopReason, askedStandIn: service.seen.requests > before, ...turnOf(agent.notes, from) };
       };
       const before = listing(project);
-      out.ok = await fn({ out, prompt, sendUntil, agent, service, sessionId: session.sessionId, project, unchanged: () => listing(project) === before, marker: (file) => findFile(join(work, slug), file) });
+      out.ok = await fn({ out, prompt, sendUntil, agent, service, sessionId: session.sessionId, project, data, unchanged: () => listing(project) === before, marker: (file) => findFile(join(work, slug), file) });
     } catch (error) {
       out.ok = false;
       out.failed = String(error.message).slice(0, 300);
@@ -485,6 +495,35 @@ async function main(args) {
     const turn = Object.assign(out, await prompt("measure the part"));
     out.serverSawCalls = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").length : 0;
     return turn.stop === "end_turn" && turn.askedStandIn && out.serverSawCalls === 1 && turn.answer.includes(MARK);
+  });
+
+  // The skills come from the package's copies, or from the repository when the entry is the
+  // repository's own; what the agent installed in its home must be those files.
+  const packaged = join(dirname(entry), "..", "skills");
+  const original = (set, skill) => (existsSync(packaged) ? join(packaged, set.name, skill, "SKILL.md") : join(dirname(entry), "..", "..", "..", ...set.from.split("/"), skill, "SKILL.md"));
+  await run("the skill sets are listed and each SKILL.md is read", {}, async ({ out, prompt, agent, service, data }) => {
+    const wanted = SKILL_SETS.flatMap((set) => set.skills.map((skill) => ({ set, skill })));
+    // As commands: Mastra Code sends the session's skills as `skill/<name>` after the session opens.
+    const listed = await agent.waitFor((message) => message.params?.update?.sessionUpdate === "available_commands_update", 30000).catch(() => null);
+    const commands = (listed?.params?.update?.availableCommands ?? []).map((command) => command.name);
+    out.commands = commands.filter((name) => name.startsWith("skill/"));
+    // In what the model is told: a request of the first turn names every skill.
+    const asked = service.seen.requests;
+    const first = await prompt("hi");
+    const told = service.seen.bodies.slice(asked).map((body) => JSON.stringify(body)).join("\n");
+    out.toldModel = wanted.filter(({ skill }) => told.includes(skill)).map(({ skill }) => skill);
+    out.read = [];
+    let all = first.stop === "end_turn";
+    for (const { set, skill } of wanted) {
+      const installed = join(data, "home", ".agents", "skills", skill, "SKILL.md");
+      const same = existsSync(installed) && existsSync(original(set, skill)) && readFileSync(installed, "utf8") === readFileSync(original(set, skill), "utf8");
+      const heading = /^# (.+)$/mu.exec(existsSync(installed) ? readFileSync(installed, "utf8") : "")?.[1]?.trim() ?? "";
+      const turn = await prompt(`activate the skill: ${skill}`);
+      const read = turn.stop === "end_turn" && turn.tools.length === 1 && heading !== "" && turn.answer.includes(heading.slice(0, 60));
+      out.read.push({ skill, installedAsPackaged: same, read, permissionsAsked: turn.asked });
+      all &&= same && read && commands.includes(`skill/${skill}`) && out.toldModel.includes(skill);
+    }
+    return all;
   });
 
   await run("a refused command does not run", { permission: refuse }, async (context) => {
