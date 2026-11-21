@@ -49,9 +49,10 @@ evidence and independent integration review remain NOT_RUN.
 Round 2 review at `55a464cbb1be2cc535960856f1e9b1df02ab0412`: Spec PASS; evidence correction
 only. Round 3 adds synthetic clock/I/O coverage for (a) a successful reply consuming the
 budget and leaving no drain, (b) in-progress cleanup stopping on a sub-millisecond remainder,
-and (c) cleanup stopping on a read-timeout configuration error. It extracts the existing read
-policy into a small generic seam without changing production behavior; no defect was
-demonstrated, so there is no behavior fix. The report wording for the earlier initial-guard-only
+and (c) cleanup stopping on a read-timeout configuration error. The limit-refusal deadline,
+timeout floor, timeout-error stop and byte ceiling are preserved. The read-ahead implementation
+changes from `io::copy` over `Take` to a loop that caps each read to the remaining byte allowance.
+The unauthorized drain is unchanged. The report wording for the earlier initial-guard-only
 test is corrected. Q1/Q4 real-platform evidence and independent integration remain NOT_RUN.
 
 Round 3 review: evidence correction. Round 4 corrects the test-coverage claim: the earlier
@@ -62,6 +63,9 @@ limit argument through the existing `RefusalIo` seam, and keeps the independent 
 64 KiB test. The report now states the helpers are separate with different read-ahead
 semantics. Production behavior is unchanged. Q1/Q4 real-platform evidence and independent
 integration remain NOT_RUN.
+
+Round 5 fixes the clock in the existing limit-ceiling argument test so elapsed time cannot
+affect it. No production code changes. Real TCP, Windows and full CI are NOT_RUN.
 
 Round 0 was reviewed at `b70da3901b0eed054566322e20069d4b12e4e3e0`: Spec FAIL, Quality
 CONCERNS. Round 1 addressed F1-F6 in the same scoped desktop file. Independent Spec/Quality

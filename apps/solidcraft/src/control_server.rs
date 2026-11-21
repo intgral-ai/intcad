@@ -1835,9 +1835,10 @@ mod tests {
     /// to its drain through the existing `RefusalIo` seam.
     #[test]
     fn the_limit_refusal_drain_uses_the_max_line_ceiling() {
-        let deadline = Instant::now() + REFUSAL_BUDGET;
+        let start = Instant::now();
+        let deadline = start + REFUSAL_BUDGET;
         let mut io = Scripted::default();
-        let mut now = Instant::now;
+        let mut now = || start;
         refuse_within_with(&mut io, &too_many_connections(), deadline, &mut now);
         assert_eq!(io.drain, Some((deadline, LIMIT_REFUSAL_DRAIN_BYTES)), "the limit path passes its own ceiling");
         assert_eq!(LIMIT_REFUSAL_DRAIN_BYTES, MAX_LINE as u64 + 1);
