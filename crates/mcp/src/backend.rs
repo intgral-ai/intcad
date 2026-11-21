@@ -56,6 +56,16 @@ pub trait Backend {
     fn tool_context(&self, _tool: &str) -> Option<crate::ToolCallContext> {
         None
     }
+    /// Whether this backend is an authenticated local control channel whose host owns charged
+    /// admission and settlement (the running app through [`Remote`]).
+    ///
+    /// Only a composition root that trusts that channel may use
+    /// [`Server::with_authenticated_bridge`](crate::Server::with_authenticated_bridge). A source
+    /// label, tool argument or request field never answers this; it is a property of the backend
+    /// the host built. The default is `false`, so a headless or unknown backend stays closed.
+    fn forwards_to_authenticated_host(&self) -> bool {
+        false
+    }
     /// Told by the host which logical operation (if any) this tool call belongs to.
     ///
     /// `helper` is `Some(tool_name)` for the published free-helper catalog and
@@ -949,6 +959,12 @@ impl Backend for Remote {
             )
         }
     }
+
+    /// The running app owns charged admission and settlement at its control seam. A connection
+    /// without a valid launch token is refused there, so this channel never stands in for one.
+    fn forwards_to_authenticated_host(&self) -> bool {
+        true
+    }
 }
 
 /// An in-process headless session (no window); renders with the CPU rasterizer.
@@ -1228,6 +1244,19 @@ impl Auto {
 }
 
 impl Backend for Auto {
+    /// Look for the app before the host decides whether this is an authenticated bridge call.
+    /// The server asks this after `begin_tool_call`, so a charged call can be forwarded once the
+    /// app is found while the headless session still has no work of its own.
+    fn begin_tool_call(&mut self, _context: Option<&crate::ToolCallContext>, _helper: Option<&str>) {
+        if self.remote.is_none() {
+            self.look_for_app();
+        }
+    }
+
+    fn forwards_to_authenticated_host(&self) -> bool {
+        self.remote.is_some()
+    }
+
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         refuse_legacy_guard(&params)?;
         if self.remote.is_none() {

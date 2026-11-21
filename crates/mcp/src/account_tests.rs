@@ -651,6 +651,7 @@ struct ContextBackend {
     headless: Headless,
     context: Option<ToolCallContext>,
     calls: std::rc::Rc<std::cell::Cell<usize>>,
+    authenticated_host: bool,
 }
 
 impl Backend for ContextBackend {
@@ -666,6 +667,9 @@ impl Backend for ContextBackend {
     }
     fn tool_context(&self, _tool: &str) -> Option<ToolCallContext> {
         self.context.clone()
+    }
+    fn forwards_to_authenticated_host(&self) -> bool {
+        self.authenticated_host
     }
 }
 
@@ -683,7 +687,12 @@ fn server_call(server: &mut crate::Server, name: &str, args: Value) -> Value {
 
 fn context_backend(context: Option<ToolCallContext>) -> (ContextBackend, std::rc::Rc<std::cell::Cell<usize>>) {
     let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-    (ContextBackend { headless: Headless::default(), context, calls: std::rc::Rc::clone(&calls) }, calls)
+    (ContextBackend { headless: Headless::default(), context, calls: std::rc::Rc::clone(&calls), authenticated_host: false }, calls)
+}
+
+fn bridge_backend(authenticated_host: bool) -> (ContextBackend, std::rc::Rc<std::cell::Cell<usize>>) {
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    (ContextBackend { headless: Headless::default(), context: None, calls: std::rc::Rc::clone(&calls), authenticated_host }, calls)
 }
 
 fn shared_billing() -> (SharedBilling, std::rc::Rc<std::cell::RefCell<CountingBilling>>) {
@@ -790,6 +799,25 @@ fn default_server_still_serves_a_free_helper() {
     let result = server_call(&mut server, "skill_reference", json!({"skill":"solidcraft-modeling"}));
     assert_ne!(result["isError"], true, "{result}");
     assert_eq!(calls.get(), 0);
+}
+
+#[test]
+fn authenticated_bridge_forwards_a_charged_tool_to_its_host_authority() {
+    let (backend, calls) = bridge_backend(true);
+    let mut server = crate::Server::with_authenticated_bridge(Box::new(backend));
+    let result = server_call(&mut server, "measure", json!({}));
+    assert_ne!(result["isError"], true, "{result}");
+    assert_eq!(calls.get(), 1, "the app control channel receives the charged call once");
+}
+
+#[test]
+fn authenticated_bridge_refuses_a_backend_that_does_not_declare_it() {
+    let (backend, calls) = bridge_backend(false);
+    let mut server = crate::Server::with_authenticated_bridge(Box::new(backend));
+    let result = server_call(&mut server, "measure", json!({}));
+    assert_eq!(result["isError"], true, "{result}");
+    assert_eq!(result["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE");
+    assert_eq!(calls.get(), 0, "an unmarked backend is never trusted as an app authority");
 }
 
 struct RemoteRejectBackend {
