@@ -12,6 +12,7 @@
 //! session's authority immediately.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
 use solidcraft_account_native::{CredentialSession, FileOperationStore};
@@ -23,6 +24,9 @@ use solidcraft_ui_egui::account::{AccountPort, AccountView, DeleteAccountGuide, 
 #[derive(Clone, Debug)]
 pub struct AccountStartup {
     secure_store: bool,
+    /// A durable sign-out marker is present, or its state could not be read. Either way startup
+    /// refuses to restore or admit anything until a reviewed sign-in path clears it.
+    logout_pending: bool,
     restored: Option<AuthenticatedHostScope>,
 }
 
@@ -89,7 +93,10 @@ impl AccountRuntime {
     /// work on the window's thread.
     pub fn startup(&self) -> AccountStartup {
         let secure_store = self.credentials.is_persistent();
-        AccountStartup { secure_store, restored: self.restored_with_store(secure_store) }
+        // An unreadable tombstone is treated as present: revocation/safety cannot be confirmed.
+        let logout_pending = self.credentials.logout_pending().unwrap_or(true);
+        let restored = if logout_pending { None } else { self.restored_with_store(secure_store) };
+        AccountStartup { secure_store, logout_pending, restored }
     }
 
     fn restored_with_store(&self, secure_store: bool) -> Option<AuthenticatedHostScope> {
@@ -117,17 +124,6 @@ impl AccountRuntime {
         let clock = self.clock.take()?;
         let scope = self.authenticated_scope()?;
         Some((scope, service, clock))
-    }
-
-    /// Clear the in-memory session and deny every later credential read. A failed delete leaves
-    /// the session locked instead of keeping the old authority usable.
-    fn sign_out(&mut self) -> Result<(), Refusal> {
-        self.credentials.sign_out().map_err(|_| account_unavailable("the account session could not be cleared"))
-    }
-
-    /// Sign out the old account before any new account work can begin.
-    fn switch_account(&mut self) -> Result<(), Refusal> {
-        self.credentials.sign_out().map_err(|_| account_unavailable("the old account session could not be cleared"))
     }
 }
 
@@ -163,21 +159,112 @@ impl MonotonicClock for SystemMonotonicClock {
 /// No method opens the network or starts a provider flow. Sign-in is an explicit action and still
 /// fails closed until a documented product-session exchange exists. The view is cached; the
 /// render path never calls the port.
+#[derive(Default)]
+struct CleanupStatus {
+    /// The latest revocation generation whose durable cleanup has not finished.
+    pending: Option<u64>,
+    /// The latest generation's cleanup error; the session stays fail-closed until a reviewed
+    /// sign-in path can repair it.
+    error: Option<Refusal>,
+}
+
 struct DesktopAccountPort {
     runtime: AccountRuntime,
     view: AccountView,
     lifecycle: Option<LifecycleEvent>,
+    /// `true` until a reviewed sign-in path has cleared a durable logout marker. It keeps the
+    /// failed-cleanup identity fail-closed across this process too.
+    logout_pending: bool,
+    secure_store: bool,
+    generation: u64,
+    cleanup: Arc<Mutex<CleanupStatus>>,
+    workers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl DesktopAccountPort {
     fn new(runtime: AccountRuntime, startup: &AccountStartup) -> Self {
         let view = current_view(startup);
-        Self { runtime, view, lifecycle: None }
+        Self {
+            runtime,
+            view,
+            lifecycle: None,
+            logout_pending: startup.logout_pending,
+            secure_store: startup.secure_store,
+            generation: 0,
+            cleanup: Arc::new(Mutex::new(CleanupStatus::default())),
+            workers: Vec::new(),
+        }
+    }
+
+    /// Refuse account work while a durable sign-out is unconfirmed, a cleanup is running or its
+    /// latest generation failed. An unreadable status is itself a refusal.
+    fn cleanup_confirmed(&self) -> Result<(), Refusal> {
+        if self.logout_pending {
+            return Err(account_unavailable("a previous sign-out is not yet confirmed"));
+        }
+        let status = self.cleanup.lock().map_err(|_| account_unavailable("the account cleanup state is unavailable"))?;
+        if status.pending.is_some() {
+            return Err(account_unavailable("the sign-out cleanup is still running"));
+        }
+        if let Some(error) = &status.error {
+            return Err(error.clone());
+        }
+        Ok(())
+    }
+
+    /// Revoke authority in this process immediately and run the durable tombstone + delete on a
+    /// worker. The worker's result is applied only for its own generation, so a late result from
+    /// an older switch can never clear a newer cleanup state.
+    fn revoke(&mut self, event: LifecycleEvent) -> Result<(), Refusal> {
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        if let Ok(mut status) = self.cleanup.lock() {
+            status.pending = Some(generation);
+            status.error = None;
+        } else {
+            return Err(account_unavailable("the account cleanup state is unavailable"));
+        }
+        self.lifecycle = Some(event);
+        self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
+
+        let credentials = self.runtime.credentials.clone();
+        let cleanup = Arc::clone(&self.cleanup);
+        let worker = std::thread::Builder::new().name("intcad-account-cleanup".into()).spawn(move || {
+            let result = credentials.sign_out();
+            if let Ok(mut status) = cleanup.lock()
+                && status.pending == Some(generation)
+            {
+                status.pending = None;
+                status.error = result.err().map(|_| account_unavailable("the account session cleanup did not complete"));
+            }
+        });
+        match worker {
+            Ok(handle) => {
+                self.workers.push(handle);
+                Ok(())
+            }
+            // The in-process authority is already revoked. The durable marker was never written,
+            // so this process stays fail-closed and the caller sees the error; cross-process
+            // suppression cannot be claimed when the worker cannot start.
+            Err(_) => {
+                if let Ok(mut status) = self.cleanup.lock() {
+                    status.error = Some(account_unavailable("the sign-out cleanup could not start"));
+                }
+                Err(account_unavailable("the sign-out cleanup could not start"))
+            }
+        }
+    }
+
+    fn join_workers(&mut self) {
+        let workers = std::mem::take(&mut self.workers);
+        for worker in workers {
+            let _ = worker.join();
+        }
     }
 }
 
 fn current_view(startup: &AccountStartup) -> AccountView {
-    if !startup.secure_store {
+    if !startup.secure_store || startup.logout_pending {
         return AccountView::unavailable();
     }
     match startup.restored.as_ref() {
@@ -204,7 +291,8 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn refresh_status(&mut self) -> Result<AccountView, Refusal> {
-        if !self.runtime.credentials.is_persistent() {
+        self.cleanup_confirmed()?;
+        if !self.secure_store {
             self.view = AccountView::unavailable();
             return Ok(self.view.clone());
         }
@@ -219,24 +307,18 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn sign_in(&mut self) -> Result<(), Refusal> {
+        self.cleanup_confirmed()?;
         // A provider token is not a product session. Do not start device authorization from a
         // normal UI action while no reviewed ProductSessionExchange exists.
         Err(account_unavailable("no documented product-session exchange is configured"))
     }
 
     fn sign_out(&mut self) -> Result<(), Refusal> {
-        // Raise the event before the durable delete: even a failed delete leaves the credential
-        // session locked, and the app must close the old authority now rather than after one more
-        // request. A storage refusal is still returned to the panel.
-        self.lifecycle = Some(LifecycleEvent::SignedOut);
-        self.view = if self.runtime.credentials.is_persistent() { AccountView::signed_out() } else { AccountView::unavailable() };
-        self.runtime.sign_out()
+        self.revoke(LifecycleEvent::SignedOut)
     }
 
     fn switch_account(&mut self) -> Result<(), Refusal> {
-        self.lifecycle = Some(LifecycleEvent::AccountSwitched);
-        self.view = if self.runtime.credentials.is_persistent() { AccountView::signed_out() } else { AccountView::unavailable() };
-        self.runtime.switch_account()
+        self.revoke(LifecycleEvent::AccountSwitched)
     }
 
     fn delete_account_guide(&self) -> DeleteAccountGuide {
@@ -258,6 +340,10 @@ impl AccountPort for DesktopAccountPort {
     fn take_lifecycle_event(&mut self) -> Option<LifecycleEvent> {
         self.lifecycle.take()
     }
+
+    fn shutdown(&mut self) {
+        self.join_workers();
+    }
 }
 
 /// Install the desktop account runtime into the app.
@@ -273,6 +359,8 @@ pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: Account
     if let Some((scope, service, clock)) = runtime.take_commit_authority() {
         app.install_commit_authority(scope, service, clock);
         solidcraft_engine::note!("account: authenticated commit authority installed for the restored session");
+    } else if startup.logout_pending {
+        solidcraft_engine::note!("account: a previous sign-out is not confirmed; restore and controlled authority stay closed");
     } else if startup.restored.is_some() {
         solidcraft_engine::note!("account: session restored from the secure store; controlled authority stays closed");
     } else {
@@ -286,28 +374,61 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc::{Receiver, channel};
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use serde_json::json;
     use solidcraft_account_native::{
-        CredentialHandoff, CredentialSession, NoPersistentStore, ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession,
-        Secret,
+        CredentialHandoff, CredentialSession, MemorySession, NoPersistentStore, ProductExchangeError, ProductSession, ProductSessionExchange,
+        ProviderSession, Secret,
     };
     use solidcraft_engine::entitlement::{
-        Admission, BillingResult, Capability, CredentialError, CredentialStore, EntryCategory, Grant, OperationId, Refusal, RefusalCode,
+        Admission, BillingResult, Capability, CredentialError, CredentialErrorCode, CredentialStore, EntryCategory, Grant, OperationId, Refusal,
+        RefusalCode,
     };
     use solidcraft_ui_egui::account::{AccountPort, Action};
     use solidcraft_ui_egui::control;
 
     use super::*;
 
-    #[derive(Clone, Default)]
+    fn store_error() -> CredentialError {
+        CredentialError { code: CredentialErrorCode::Unavailable, message: "inert test store failure".into() }
+    }
+
+    #[derive(Clone)]
     struct TestStore {
         entries: Arc<Mutex<BTreeMap<String, String>>>,
+        fail_delete: Arc<AtomicBool>,
+        fail_get: Arc<AtomicBool>,
+        block_delete: Arc<Mutex<Option<Receiver<()>>>>,
+    }
+
+    impl Default for TestStore {
+        fn default() -> Self {
+            Self {
+                entries: Arc::new(Mutex::new(BTreeMap::new())),
+                fail_delete: Arc::new(AtomicBool::new(false)),
+                fail_get: Arc::new(AtomicBool::new(false)),
+                block_delete: Arc::new(Mutex::new(None)),
+            }
+        }
+    }
+
+    impl TestStore {
+        /// Make the first delete wait until the test releases it, so the worker's off-thread
+        /// order is observable.
+        fn block_next_delete(&self, gate: Receiver<()>) {
+            *self.block_delete.lock().unwrap() = Some(gate);
+        }
     }
 
     impl CredentialStore for TestStore {
         fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
+            if self.fail_get.load(Ordering::SeqCst) {
+                return Err(store_error());
+            }
             Ok(self.entries.lock().unwrap().get(key).cloned())
         }
 
@@ -317,6 +438,13 @@ mod tests {
         }
 
         fn delete(&mut self, key: &str) -> Result<(), CredentialError> {
+            let gate = self.block_delete.lock().unwrap().take();
+            if let Some(gate) = gate {
+                let _ = gate.recv();
+            }
+            if self.fail_delete.load(Ordering::SeqCst) {
+                return Err(store_error());
+            }
             self.entries.lock().unwrap().remove(key);
             Ok(())
         }
@@ -340,6 +468,17 @@ mod tests {
         session.activate_product_session(&TestExchange).unwrap();
         session.installation_credential("installation_desktop", Secret::new("installation_credential")).unwrap();
         session
+    }
+
+    fn wait_for_cleanup(port: &DesktopAccountPort) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if port.cleanup.lock().unwrap().pending.is_none() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(port.cleanup.lock().unwrap().pending.is_none(), "cleanup worker did not finish");
     }
 
     fn active_session() -> CredentialSession {
@@ -382,6 +521,55 @@ mod tests {
     }
 
     #[test]
+    fn an_active_memory_session_is_never_restored_across_processes() {
+        let memory = MemorySession::default();
+        let mut session = CredentialSession::new(Box::new(memory.clone()));
+        session.complete_provider_login("provider_account", "provider_token").unwrap();
+        session.activate_product_session(&TestExchange).unwrap();
+        session.installation_credential("installation_memory", Secret::new("installation_credential")).unwrap();
+        assert!(session.authenticated_scope().is_some(), "the in-memory session is usable now");
+
+        let restarted = AccountRuntime::with_session(CredentialSession::new(Box::new(memory)));
+        let startup = restarted.startup();
+        assert!(!startup.secure_store, "memory is not a secure store");
+        assert!(startup.restored.is_none(), "an in-memory session must not survive a restart");
+        assert!(restarted.restored_session().is_none());
+    }
+
+    #[test]
+    fn failed_delete_keeps_a_durable_tombstone_and_restart_fails_closed() {
+        let store = TestStore::default();
+        let session = activate_session(&store);
+        assert!(session.authenticated_scope().is_some());
+        store.fail_delete.store(true, Ordering::SeqCst);
+        assert_eq!(session.sign_out().unwrap_err().code, CredentialErrorCode::Unavailable);
+        assert!(session.logout_pending().unwrap(), "the tombstone was written before the failed delete");
+
+        let restarted = AccountRuntime::with_session(CredentialSession::new(Box::new(store.clone())));
+        let startup = restarted.startup();
+        assert!(startup.logout_pending, "startup sees the unconfirmed sign-out");
+        assert!(startup.restored.is_none());
+        assert!(restarted.restored_session().is_none());
+
+        // Once the inert store is healthy, the marker still suppresses restore until a reviewed
+        // sign-in path clears it.
+        store.fail_delete.store(false, Ordering::SeqCst);
+        assert!(AccountRuntime::with_session(CredentialSession::new(Box::new(store))).restored_session().is_none());
+    }
+
+    #[test]
+    fn an_unreadable_sign_out_marker_fails_startup_closed() {
+        let store = TestStore::default();
+        let session = activate_session(&store);
+        assert!(session.authenticated_scope().is_some());
+        store.fail_get.store(true, Ordering::SeqCst);
+        let runtime = AccountRuntime::with_session(CredentialSession::new(Box::new(store)));
+        let startup = runtime.startup();
+        assert!(startup.logout_pending, "an unreadable safety marker is treated as unsafe");
+        assert!(startup.restored.is_none());
+    }
+
+    #[test]
     fn a_persisted_provider_login_alone_never_restores_a_scope() {
         let store = TestStore::default();
         let session = CredentialSession::new(Box::new(store.clone()));
@@ -402,11 +590,33 @@ mod tests {
             } else {
                 port.switch_account().unwrap();
             }
+            wait_for_cleanup(&port);
             assert!(port.runtime.authenticated_scope().is_none(), "the old session binding is gone");
             assert!(!port.view().signed_in);
             assert_eq!(port.take_lifecycle_event(), Some(expected));
             assert_eq!(port.take_lifecycle_event(), None, "one sign-out raises one event");
         }
+    }
+
+    #[test]
+    fn sign_out_revokes_authority_immediately_and_cleanup_runs_off_thread() {
+        let store = TestStore::default();
+        let (gate_tx, gate_rx) = channel();
+        let runtime = AccountRuntime::with_session(activate_session(&store));
+        store.block_next_delete(gate_rx);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+
+        port.sign_out().unwrap();
+        assert_eq!(port.take_lifecycle_event(), Some(LifecycleEvent::SignedOut));
+        assert!(!port.view().signed_in, "authority is revoked before the worker finishes");
+        assert!(port.cleanup.lock().unwrap().pending.is_some(), "the worker is waiting on the inert delete");
+
+        gate_tx.send(()).unwrap();
+        wait_for_cleanup(&port);
+        assert!(port.cleanup.lock().unwrap().error.is_none(), "cleanup completed");
+        port.shutdown();
+        assert!(!port.logout_pending, "the startup gate was already clear");
     }
 
     #[test]

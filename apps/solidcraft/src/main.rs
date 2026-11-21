@@ -326,6 +326,9 @@ impl eframe::App for App {
         // credential store keeps the session for the next start; only in-memory scheduling and
         // the commit gate are closed here.
         self.solve.end_controlled_session();
+        // A sign-out cleanup still running on its worker finishes before the process leaves, so
+        // its durable tombstone/delete result is not lost on a normal exit.
+        self.solve.account.shutdown();
         // The Assistant's web view is a child of the window: it goes while the window is there.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         self.assistant_web.close();
@@ -906,6 +909,14 @@ fn adopt_legacy_settings() {
     }
 }
 
+/// Open the account runtime only after legacy settings adoption has run. The account ledger's
+/// `open` creates its directory, which would otherwise make a fresh settings folder non-fresh
+/// and drop the previous release's `app.ron`.
+fn prepare_account_runtime(settings: Option<&std::path::Path>, migrate: impl FnOnce()) -> account::AccountRuntime {
+    migrate();
+    account::AccountRuntime::desktop(settings)
+}
+
 fn adopt_settings(
     current: &std::path::Path,
     old_flatpak: &[std::path::PathBuf],
@@ -1077,13 +1088,16 @@ fn main() -> eframe::Result {
     solidcraft_engine::timing::profile_from_env();
     // Validate before legacy adoption, crash markers or any user preference read.
     let settings = settings_dir().map_err(|error| eframe::Error::AppCreation(error.into()))?;
-    // Before the window exists: probe the platform credential store and open the durable ledger
-    // off the UI thread. A missing secure store restores nothing and authorizes nothing.
-    let account_runtime = account::AccountRuntime::desktop(settings.as_deref());
+    // Legacy settings must be adopted before this runtime creates anything under the settings
+    // folder: creating the account ledger first makes the folder look non-fresh and silently
+    // drops the previous release's app.ron. The probe and ledger open still happen before the
+    // window exists, off the UI thread.
+    let account_runtime = prepare_account_runtime(settings.as_deref(), || {
+        if std::env::var_os("SOLIDCRAFT_SETTINGS_DIR").is_none() {
+            adopt_legacy_settings();
+        }
+    });
     let account_startup = account_runtime.startup();
-    if std::env::var_os("SOLIDCRAFT_SETTINGS_DIR").is_none() {
-        adopt_legacy_settings();
-    }
     let mut safe_mode = startup::env_on(std::env::var(startup::SAFE_MODE_ENV).ok().as_deref());
     let mut control_port: Option<u16> = solidcraft_engine::geom::env::var("CONTROL_PORT").and_then(|p| p.parse().ok());
     let mut files = Vec::new();
@@ -2396,6 +2410,29 @@ mod msaa_tests {
         super::adopt_settings(&current, &[], &legacy, Some(&legacy_eframe)).unwrap();
         assert_eq!(std::fs::read_to_string(current.join("app.ron")).unwrap(), "(mine)");
         assert!(!current.join("graphics.json").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn account_ledger_opens_only_after_legacy_settings_migration() {
+        let d = std::env::temp_dir().join(format!("solidcraft-account-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (current, legacy, legacy_eframe) = (d.join("solidcraft"), d.join("solvecraft"), d.join("ai.storyteller.solvecraft"));
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::create_dir_all(&legacy_eframe).unwrap();
+        std::fs::write(legacy.join("graphics.json"), r#"{"msaa":8}"#).unwrap();
+        std::fs::write(legacy_eframe.join("app.ron"), "(previous release settings)").unwrap();
+        assert!(!current.exists());
+
+        let runtime = super::prepare_account_runtime(Some(&current), || {
+            super::adopt_settings(&current, &[], &legacy, Some(&legacy_eframe)).unwrap();
+        });
+        // The migration saw a fresh folder and copied app.ron; only afterwards did the runtime
+        // create the ledger directory.
+        assert_eq!(std::fs::read_to_string(current.join("app.ron")).unwrap(), "(previous release settings)");
+        assert!(current.join("graphics.json").is_file());
+        assert!(current.join("account").is_dir(), "the runtime opened its ledger after migration");
+        drop(runtime);
         let _ = std::fs::remove_dir_all(&d);
     }
 
