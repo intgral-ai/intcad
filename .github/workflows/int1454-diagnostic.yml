@@ -66,6 +66,11 @@ jobs:
         run: |
           set -o pipefail
           cargo test -p solidcraft-kernel --lib swapped_history_maps_every_origin_back --locked -- --nocapture 2>&1 | tee evidence/kernel-history.log
+      - name: Section role analytic priority
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test -p solidcraft-doc --lib section_roles_keep_analytic_ambiguity_over_a_matching_spline_span --locked -- --nocapture 2>&1 | tee evidence/section-roles.log
       - name: Free-form role sources
         if: always()
         run: |
