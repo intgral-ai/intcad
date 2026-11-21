@@ -12,7 +12,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::Value;
 use solidcraft_engine::entitlement::{CredentialError, CredentialErrorCode, Refusal, RefusalCode};
 
 use crate::credentials::{CredentialSession, MAX_ACCOUNT_BYTES, ProviderLogin, auth_unavailable, has_control, safe_token, unavailable};
@@ -221,11 +221,10 @@ impl<T: DeviceCodeTransport> DeviceCodeFlow<T> {
         if self.pending.is_some() || self.authorized.is_some() {
             return Err(auth_unavailable("a device sign-in is already in progress"));
         }
-        let body =
-            serde_json::to_vec(&json!({"client_id": self.client.client_id})).map_err(|_| auth_unavailable("the sign-in request is unavailable"))?;
+        let body = format!("client_id={}", form_encode(&self.client.client_id));
         let (status, body) = self
             .transport
-            .post(WORKOS_DEVICE_AUTHORIZATION_URL, "application/json", &body)
+            .post(WORKOS_DEVICE_AUTHORIZATION_URL, "application/x-www-form-urlencoded", body.as_bytes())
             .map_err(|_| auth_unavailable("the sign-in service is unavailable"))?;
         if !(200..300).contains(&status) {
             return Err(auth_unavailable("the sign-in service rejected the request"));

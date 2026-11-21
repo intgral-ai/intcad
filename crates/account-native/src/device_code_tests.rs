@@ -157,9 +157,8 @@ fn device_code_polls_the_documented_workos_flow_and_completes_into_memory() {
     let requests = transport.requests();
     assert_eq!(requests.len(), 4);
     assert_eq!(requests[0].0, WORKOS_DEVICE_AUTHORIZATION_URL);
-    assert_eq!(requests[0].1, "application/json");
-    let device_request: Value = serde_json::from_slice(&requests[0].2).unwrap();
-    assert_eq!(device_request, json!({"client_id": "client_test"}));
+    assert_eq!(requests[0].1, "application/x-www-form-urlencoded");
+    assert_eq!(requests[0].2, b"client_id=client_test");
     assert_eq!(requests[1].0, WORKOS_TOKEN_URL);
     assert_eq!(requests[1].1, "application/x-www-form-urlencoded");
     let form = String::from_utf8(requests[1].2.clone()).unwrap();
