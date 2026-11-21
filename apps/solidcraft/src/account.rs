@@ -4,12 +4,13 @@
 //! budget and the monotonic clock, and installs the UI account port. It never opens a dialog or
 //! the network on a render pass.
 //!
-//! Fail closed: while no documented `ProductSessionExchange` and no authenticated durable
-//! settlement adapter exist, the desktop does **not** install production billing or commit
-//! authority and does not turn a WorkOS provider token into an Intcad product session. Ordinary
-//! CAD stays free and anonymous; controlled entries keep their existing default refusal. A secure
-//! store is probed before any session is restored, and sign-out or account switch ends the old
-//! session's authority immediately.
+//! Fail closed: a documented server-verified `ProductSessionExchange` exists in `account-native`,
+//! but this build configures no product service origin and no shipped UI action completes a
+//! WorkOS provider sign-in. The desktop therefore does **not** install production billing or
+//! commit authority and never promotes a provider token implicitly. Ordinary CAD stays free and
+//! anonymous; controlled entries keep their existing default refusal. A secure store is probed
+//! before any session is restored, and sign-out or account switch ends the old session's
+//! authority immediately.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -329,9 +330,10 @@ impl AccountPort for DesktopAccountPort {
 
     fn sign_in(&mut self) -> Result<(), Refusal> {
         self.cleanup_confirmed()?;
-        // A provider token is not a product session. Do not start device authorization from a
-        // normal UI action while no reviewed ProductSessionExchange exists.
-        Err(account_unavailable("no documented product-session exchange is configured"))
+        // A provider token is not a product session. This build configures no product service
+        // origin and no shipped provider flow, so a normal UI action cannot reach the reviewed
+        // server-verified exchange either.
+        Err(account_unavailable("no configured product-session verification origin"))
     }
 
     fn sign_out(&mut self) -> Result<(), Refusal> {

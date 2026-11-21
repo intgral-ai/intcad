@@ -162,6 +162,12 @@ pub struct WireRequest {
 }
 
 impl WireRequest {
+    /// Build one request from the host composition. New call sites must take the URL from a
+    /// validated [`WireConnection`] and must not put a credential in the URL.
+    pub(crate) fn new(method: &'static str, url: String, headers: Vec<(String, String)>, body: Option<Vec<u8>>) -> Self {
+        Self { method, url, headers, body }
+    }
+
     pub fn method(&self) -> &'static str {
         self.method
     }
@@ -355,7 +361,7 @@ impl WireConnection {
         &self.client_version
     }
 
-    fn url(&self, path: &str) -> String {
+    pub(crate) fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
     }
 }

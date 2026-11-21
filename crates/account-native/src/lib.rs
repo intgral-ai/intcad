@@ -12,6 +12,7 @@ mod credentials;
 mod device_code;
 mod http;
 mod ledger;
+mod session_verification;
 
 #[cfg(test)]
 mod credentials_tests;
@@ -21,6 +22,8 @@ mod device_code_tests;
 mod http_tests;
 #[cfg(test)]
 mod ledger_tests;
+#[cfg(test)]
+mod session_verification_tests;
 
 pub use contract::{ContractArtifacts, ContractPin, VerifiedContract};
 pub use credentials::{
@@ -36,6 +39,7 @@ pub use http::{
     TransportFailure, WireConnection, WireCredentials, WireRequest, WireResponse,
 };
 pub use ledger::{FileOperationStore, InMemoryOperationStore};
+pub use session_verification::ServerVerifiedProductSession;
 pub use solidcraft_engine::entitlement::{
     AuthenticatedHostScope, Capability, EntryCategory, FreshIntent, OperationId, OperationRecord, OperationStatus, OperationStore,
     OperationStoreError, RetryDecision, RetryMapping, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, TransportCorrelation,

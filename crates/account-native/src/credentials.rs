@@ -13,8 +13,10 @@
 //! Provider and product credentials are deliberately separate. A completed WorkOS provider login
 //! is stored under `provider/…` and is never returned as the `Authorization: Bearer` product
 //! session. Only a typed [`ProductSession`] returned by a trusted [`ProductSessionExchange`] can
-//! activate `auth/product_session`; the default [`BlockedProductExchange`] keeps the live exchange
-//! path absent until a documented protocol is reviewed.
+//! activate `auth/product_session`. The default [`BlockedProductExchange`] keeps the live path
+//! absent; the reviewed server-verified scheme is
+//! [`crate::ServerVerifiedProductSession`], which activates only after the configured product
+//! service confirms the WorkOS token through the frozen status contract.
 
 use sha2::{Digest, Sha256};
 use solidcraft_engine::entitlement::{
@@ -305,7 +307,8 @@ pub enum ProductExchangeError {
 }
 
 /// The narrow, typed product-session exchange seam. A real implementation must use a documented,
-/// reviewed exchange; this crate ships only [`BlockedProductExchange`] and scripted test doubles.
+/// reviewed exchange; this crate ships only [`BlockedProductExchange`],
+/// [`crate::ServerVerifiedProductSession`] and scripted test doubles.
 pub trait ProductSessionExchange {
     fn exchange(&self, provider: &ProviderSession) -> Result<ProductSession, ProductExchangeError>;
 }

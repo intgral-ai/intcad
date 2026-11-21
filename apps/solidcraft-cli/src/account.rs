@@ -10,11 +10,13 @@
 //! **Transport is not authority:** a reachable app control port, a valid launch token, a TCP
 //! connection, a header or a request field never authorizes a charged MCP tool.
 //!
-//! - Every charged call is denied before dispatch in production. There is no approved
-//!   product-session exchange, reviewed production [`BillingPort`], durable operation/intent
-//!   lifecycle or verified MCP safe-stop budget yet, and no reviewed authenticated protocol
-//!   proves that a bridged app may settle a charged call. The shipped CLI passes a
-//!   non-persistent session, so it has no host scope; `Server::new` keeps its default refusal.
+//! - Every charged call is denied before dispatch in production. A documented server-verified
+//!   product-session exchange exists, but the shipped CLI configures no product service origin
+//!   and no explicit provider sign-in command, and there is no reviewed production
+//!   [`BillingPort`], durable operation/intent lifecycle or verified MCP safe-stop budget. No
+//!   reviewed authenticated protocol proves that a bridged app may settle a charged call. The
+//!   shipped CLI passes a non-persistent session, so it has no host scope; `Server::new` keeps
+//!   its default refusal.
 //! - A GUI-bridged call may use the app for uncharged tool transport, but charged calls remain
 //!   closed; the CLI never bills a remote call locally.
 //! - `McpAccount::authorized` is a local test-only static-window composition seam. It proves
@@ -22,8 +24,9 @@
 //!   not be used to enable production. Static/synthetic host scopes and test grants never
 //!   authorize production.
 //!
-//! The remaining live interface is explicit. Headless metering still needs an approved
-//! `ProductSessionExchange`, a reviewed [`BillingPort`] over the native account adapter, a
+//! The remaining live interface is explicit. Headless metering still needs a configured product
+//! service origin plus an explicit provider sign-in that reaches the reviewed
+//! `ServerVerifiedProductSession`, a reviewed [`BillingPort`] over the native account adapter, a
 //! durable operation/intent store, a verified MCP safe-stop budget and a live authority
 //! revalidation at dispatch/commit (not a fixed window captured at startup). GUI bridging
 //! additionally needs a reviewed authenticated protocol that proves the app's authority and
