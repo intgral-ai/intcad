@@ -23,8 +23,34 @@ The candidate `db0b8dd35` retains the pre-sync `0fd92bea2` root `.gitignore`
 | Ignore root `/node_modules/` | B6: preserve the IntCAD rule. The remaining upstream-only `.gitignore` delta is a plugin-example comment, not another pattern. |
 | Pin the icon discovery list to LF | B8 / CD-6: candidate pins `assets/icons/ui/design/requested_icons.txt`; upstream pins its own `crates/look/` path. Keep the IntCAD path; no brand import. |
 | Pin `*.wat` to LF | A3 / CD-5: upstream has six tracked plugin fixtures; candidate has zero tracked `.wat` files. Do not import the rule as a plugin migration deliverable while the plugin host is deferred. |
-| Pin `*.wgsl` to LF | B6 / U3: **open**. Candidate has 20 tracked WGSL files, including shaders loaded via `include_str!`. `git check-attr --source=db0b8dd35` reports `eol: unspecified` for the tessellation shader, while frozen upstream reports `eol: lf`. This establishes a checkout-policy difference, not a Windows failure. Evaluate separately on a CRLF checkout with existing shader tests before proposing a rule. |
+| Pin `*.wgsl` to LF | B6 / U3: **open**. Candidate has 20 tracked WGSL files, including shaders loaded via `include_str!`. `git check-attr --source=db0b8dd35` reports `eol: unspecified` for the tessellation shader, while frozen upstream reports `eol: lf`. The focused probe below reproduces a candidate assertion failure under CRLF; the native Windows GPU test still needs verification. |
 | Mark `solidcore/**` as `linguist-vendored` | B6 / K0: upstream-only GitHub language statistics rule. Candidate does not set it. Any adoption is separate from CD-7, licence coverage, and building the nested workspace. |
 
 No Git configuration, checkouts, or product files were changed; no shader
 test or Windows run is claimed.
+
+### Focused WGSL line-ending probe
+
+Upstream commit `98fdb6ef3` introduced the WGSL LF rule for multiline
+assertions. At `db0b8dd35`, `crates/gpu/src/path/volume_tests.rs` test
+`gpu_volume_signed_primary_preserves_old_perspective_lens_none_and_zero_bytes`
+matches two exact multiline literals against a shader assembled by
+`path_shader!` in `crates/gpu/src/path/mod.rs`. The exact test name is absent
+at `1b7255797` (the parent of current `develop` `79bf25d89`; #203 changed
+only two CI/test scripts). This probe does not establish a current
+`develop` failure.
+
+On Linux, Git's checkout filters (`git --attr-source=<pin> -c core.autocrlf=true
+cat-file --filters db0b8dd35:<path>`) supplied the same ten candidate shader
+blobs under either candidate or frozen-upstream attributes. A disposable
+Rust 1.99.1 probe used the candidate's shader assembly macro and its two
+unchanged match-count assertions. With candidate attributes `volume.wgsl`
+had 143 CRLF lines, both counts were zero for the first producer, and the
+probe exited `101`. With upstream attributes it had 143 LF lines, and both
+counts were one for each producer (exit `0`). No GPU, Cargo test suite,
+Windows checkout, or integration PR was run or changed.
+
+Local receipts: `/tmp/opencode/int1454-wgsl.XVXlq6/{crlf,lf}/run.{log,exit}`.
+Treat the LF rule as a candidate portability change for separate approval;
+retain the existing assertions and confirm the native GPU test before
+claiming Windows parity.
