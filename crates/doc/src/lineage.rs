@@ -364,7 +364,14 @@ impl SectionRoles<'_> {
         for (k, (sketch, loops)) in self.sections.iter().enumerate() {
             let curves = crate::config::ExactSketchCurves::new(sketch);
             for seg in loops.iter().flat_map(|lp| &lp.segs) {
-                let role = curves.find_along(seg).map(|id| if k == 0 { format!("side:{id}") } else { format!("side:s{k}.{id}") });
+                // INT-1454: a loft wall swept from a conic section is a whole exact free-form
+                // segment, which `find_along` never reports (it only knows lines and arcs). Both
+                // matchers fail closed on ambiguity or an unmatched segment. Temporary Doc
+                // adjustment; retire with the upstream fix (docs/superpowers/plans/2026-11-20-int1454-union-doc-naming.md).
+                let role = curves
+                    .find_along(seg)
+                    .or_else(|| curves.find_free_form(seg))
+                    .map(|id| if k == 0 { format!("side:{id}") } else { format!("side:s{k}.{id}") });
                 segments.push((k, role));
             }
         }

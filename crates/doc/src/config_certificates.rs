@@ -1048,8 +1048,8 @@ mod tests {
     /// direction, and stays ambiguous for a segment two curves share or an unmatched part.
     #[test]
     fn free_form_role_sources_are_exact_and_ambiguous_or_unmatched_segments_refuse() {
-        use solidcraft_sketch::CurveKind;
         use solidcore_record::Vec2;
+        use solidcraft_sketch::CurveKind;
         let mut source = solidcraft_sketch::Sketch::new();
         let c = source.add_point(Vec2::ZERO, None).unwrap();
         let m = source.add_point(Vec2::new(10., 0.), None).unwrap();
