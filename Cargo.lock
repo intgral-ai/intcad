@@ -5062,6 +5062,7 @@ dependencies = [
  "solidcraft-3dx-client",
  "solidcraft-engine",
  "solidcraft-gpu",
+ "solidcraft-mcp",
  "solidcraft-space-mouse",
  "solidcraft-ui-egui",
  "ureq",
