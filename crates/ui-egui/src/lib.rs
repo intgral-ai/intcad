@@ -803,6 +803,9 @@ pub struct SolveApp {
     pub account: account::State,
     /// Host-injected billing authority for controlled entries; `None` fails closed.
     pub(crate) billing: Option<Box<dyn solidcraft_engine::entitlement::BillingPort + Send>>,
+    /// Host-injected durable journal for Review run-to-operation identity. `None` keeps the
+    /// current process's mapping only; the desktop composition root installs the real ledger.
+    pub(crate) review_store: Option<Box<dyn solidcraft_engine::entitlement::OperationStore + Send>>,
     /// Safe-stop bounds per controlled capability and entry; unverified until measured.
     pub(crate) budget: solidcraft_engine::entitlement::BudgetTable,
     /// The host-authenticated account/installation/session the commit gate can prove now.
@@ -1006,6 +1009,7 @@ impl SolveApp {
             home: home::HomeState::default(),
             account: account::State::default(),
             billing: None,
+            review_store: None,
             budget: solidcraft_engine::entitlement::BudgetTable::unverified_default(),
             commit_scope: None,
             commit_account: None,
@@ -1040,6 +1044,19 @@ impl SolveApp {
     ) {
         self.billing = Some(billing);
         self.budget = budget;
+    }
+
+    /// Install the host's durable Review run-to-operation journal. It records identity only; the
+    /// Review panel still needs the installed billing authority and a verified bound to charge.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn install_review_store(&mut self, store: Box<dyn solidcraft_engine::entitlement::OperationStore + Send>) {
+        self.review_store = Some(store);
+    }
+
+    /// The browser has no durable journal; the Review panel is unavailable there anyway.
+    #[cfg(target_arch = "wasm32")]
+    pub fn install_review_store(&mut self, store: Box<dyn solidcraft_engine::entitlement::OperationStore + Send>) {
+        drop(store);
     }
 
     /// Install the host's current authenticated identity, account status and monotonic clock for

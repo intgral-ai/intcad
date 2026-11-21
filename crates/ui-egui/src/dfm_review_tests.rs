@@ -1,10 +1,162 @@
 //! The Review panel's own behaviour: the check entry, the report it shows, a row that chooses a
 //! finding, and the card dragged onto the Assistant as an attachment.
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use crate::dfm_chat::{Card, Finding, Measure, Requirement};
 use crate::scenario::{Harness, rect_of};
 use crate::shell::LayoutMode;
 use serde_json::json;
+use solidcraft_engine::entitlement::{
+    AccountId, AuthenticatedHostScope, BillingPort, BillingResult, BudgetTable, Capability, EntryCategory, FreshIntent, Grant, GrantId,
+    MonotonicInstant, OperationId, OperationRecord, OperationStore, OperationStoreError, Refusal, RefusalCode, RetryDecision, RetryScopeKey,
+    ReviewOperation, RunId, SaveOutcome, TransportCorrelation,
+};
+
+#[derive(Clone, Default)]
+struct CountingBilling {
+    admits: Arc<Mutex<usize>>,
+    commits: Arc<Mutex<usize>>,
+    releases: Arc<Mutex<usize>>,
+    committed: Arc<Mutex<Vec<OperationId>>>,
+}
+
+impl CountingBilling {
+    fn admits(&self) -> usize {
+        *self.admits.lock().expect("count")
+    }
+
+    fn commits(&self) -> usize {
+        *self.commits.lock().expect("count")
+    }
+
+    fn releases(&self) -> usize {
+        *self.releases.lock().expect("count")
+    }
+
+    fn committed_operations(&self) -> Vec<OperationId> {
+        self.committed.lock().expect("count").clone()
+    }
+}
+
+impl BillingPort for CountingBilling {
+    fn admit(&mut self, operation: &OperationId, capability: Capability, _entry: EntryCategory) -> Result<Grant, Refusal> {
+        *self.admits.lock().expect("count") += 1;
+        Ok(Grant::from_server(GrantId::new(format!("grant_test_{}", operation.as_str())), capability, MonotonicInstant::from_millis(60_000)))
+    }
+
+    fn commit(&mut self, operation: &OperationId, result: BillingResult) -> Result<BillingResult, Refusal> {
+        *self.commits.lock().expect("count") += 1;
+        self.committed.lock().expect("count").push(operation.clone());
+        Ok(result)
+    }
+
+    fn release(&mut self, _operation: &OperationId, _reason: RefusalCode) -> Result<(), Refusal> {
+        *self.releases.lock().expect("count") += 1;
+        Ok(())
+    }
+}
+
+/// A local durable-journal double: review mappings and operation rows only. It never ships and
+/// never performs file or network IO.
+#[derive(Clone, Default)]
+struct ReviewLedger {
+    reviews: Arc<Mutex<BTreeMap<String, OperationId>>>,
+    records: Arc<Mutex<BTreeMap<String, OperationRecord>>>,
+}
+
+impl ReviewLedger {
+    fn insert_record(&self, operation: OperationId) {
+        let record = OperationRecord::held(operation.clone(), AccountId::new("review-account"), Capability::Review, EntryCategory::ReviewPanel, 0);
+        self.records.lock().expect("records").insert(operation.as_str().to_string(), record);
+    }
+
+    fn operation_for(&self, run: &str) -> Option<OperationId> {
+        self.reviews.lock().expect("reviews").get(run).cloned()
+    }
+}
+
+struct LedgerHandle(ReviewLedger);
+
+impl OperationStore for LedgerHandle {
+    fn save_new(&mut self, record: &OperationRecord) -> Result<SaveOutcome, OperationStoreError> {
+        self.0.records.lock().expect("records").insert(record.operation.as_str().to_string(), record.clone());
+        Ok(SaveOutcome::Saved)
+    }
+
+    fn load(&self, operation: &OperationId) -> Result<Option<OperationRecord>, OperationStoreError> {
+        Ok(self.0.records.lock().expect("records").get(operation.as_str()).cloned())
+    }
+
+    fn mark_started(&mut self, _operation: &OperationId, _started_at_ms: u64) -> Result<(), OperationStoreError> {
+        Ok(())
+    }
+
+    fn mark_terminal(
+        &mut self,
+        _operation: &OperationId,
+        _status: solidcraft_engine::entitlement::OperationStatus,
+    ) -> Result<(), OperationStoreError> {
+        Ok(())
+    }
+
+    fn persist_intent(
+        &mut self,
+        _scope: &AuthenticatedHostScope,
+        _correlation: &TransportCorrelation,
+        _capability: Capability,
+        _entry: EntryCategory,
+    ) -> Result<OperationRecord, SaveOutcome> {
+        Err(SaveOutcome::Conflict)
+    }
+
+    fn persist_fresh_intent(
+        &mut self,
+        _intent: &FreshIntent,
+        _capability: Capability,
+        _entry: EntryCategory,
+    ) -> Result<OperationRecord, SaveOutcome> {
+        Err(SaveOutcome::Conflict)
+    }
+
+    fn lookup_original_retry(&self, _key: &RetryScopeKey) -> RetryDecision {
+        RetryDecision::Unknown
+    }
+
+    fn record_review(&mut self, review: &ReviewOperation) -> Result<(), OperationStoreError> {
+        if !self.0.records.lock().expect("records").contains_key(review.operation_id.as_str()) {
+            return Err(OperationStoreError::UnknownOperation);
+        }
+        self.0.reviews.lock().expect("reviews").insert(review.run_id.as_str().to_string(), review.operation_id.clone());
+        Ok(())
+    }
+
+    fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError> {
+        Ok(self.0.reviews.lock().expect("reviews").get(run_id.as_str()).cloned())
+    }
+}
+
+fn install(app: &mut crate::SolveApp, billing: &CountingBilling, ledger: &ReviewLedger) {
+    let mut budget = BudgetTable::unverified_default();
+    budget.set_verified(Capability::Review, EntryCategory::ReviewPanel, Duration::from_secs(30));
+    app.install_billing(Box::new(billing.clone()), budget);
+    app.install_review_store(Box::new(LedgerHandle(ledger.clone())));
+}
+
+fn begin_with_record(h: &mut Harness, billing: &CountingBilling, ledger: &ReviewLedger) -> OperationId {
+    install(&mut h.app, billing, ledger);
+    let operation = crate::dfm_review::begin_review(&mut h.app).expect("the Review press is admitted");
+    ledger.insert_record(operation.clone());
+    operation
+}
+
+fn card_for(run: &str) -> Card {
+    let mut value = card();
+    value.run_id = run.into();
+    value
+}
 
 fn window(mode: LayoutMode) -> Harness {
     let mut h = Harness::new();
@@ -171,4 +323,113 @@ fn a_card_dropped_elsewhere_leaves_no_attachment() {
     h.settle();
     assert!(h.app.dfm_review.dragging.is_none(), "the drag ended");
     assert!(h.app.agent_chat.attachments.is_empty(), "{:?}", h.app.agent_chat.attachments);
+}
+
+/// A Review press mints and admits one operation. A second press while that operation has no
+/// confirmed settlement does not admit another one.
+#[test]
+fn review_panel_press_is_one_operation() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    install(&mut h.app, &billing, &ledger);
+    let first = crate::dfm_review::begin_review(&mut h.app).expect("the first press is admitted");
+    let second = crate::dfm_review::begin_review(&mut h.app);
+    assert!(second.unwrap_err().starts_with("UNSAFE_TO_START:"), "a second press waits for settlement");
+    assert_eq!(billing.admits(), 1, "one press is one admission");
+    assert_eq!(billing.commits(), 0);
+    ledger.insert_record(first);
+    crate::dfm_review::release_unstarted(&mut h.app, RefusalCode::UnsafeToStart).expect("clean up the hold");
+    assert_eq!(billing.releases(), 1);
+}
+
+/// A finished report with zero violations still commits exactly once.
+#[test]
+fn review_panel_zero_violation_report_commits_once() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    begin_with_record(&mut h, &billing, &ledger);
+    crate::dfm_review::bind_review_run(&mut h.app, "run-zero").expect("the run is bound");
+    crate::dfm_review::settle_review_run(&mut h.app, "run-zero", true).expect("the report settles");
+    assert_eq!(billing.commits(), 1);
+    assert_eq!(billing.releases(), 0);
+    assert_eq!(ledger.operation_for("run-zero"), h.app.dfm_review.operation.clone());
+}
+
+/// An incomplete or failed check releases its hold and never charges.
+#[test]
+fn review_panel_failure_does_not_charge() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    begin_with_record(&mut h, &billing, &ledger);
+    crate::dfm_review::bind_review_run(&mut h.app, "run-failed").expect("the run is bound");
+    crate::dfm_review::settle_review_run(&mut h.app, "run-failed", false).expect("the hold is released");
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(billing.releases(), 1, "the held admission is released exactly once");
+}
+
+/// Cancelling before a report releases the hold once.
+#[test]
+fn review_cancel_without_report_releases() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    begin_with_record(&mut h, &billing, &ledger);
+    crate::dfm_review::cancel(&mut h.app);
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(billing.releases(), 1);
+    // A later attempt to settle the same cancelled check must not release it again.
+    crate::dfm_review::release_unstarted(&mut h.app, RefusalCode::UnsafeToStart).expect("already settled");
+    assert_eq!(billing.releases(), 1);
+}
+
+/// Attaching the same report to the Assistant is a read, not a second Review check. The same run
+/// keeps one operation and one charge.
+#[test]
+fn review_report_attached_to_assistant_is_not_recharged() {
+    let mut h = Harness::new();
+    h.app.agent_chat.open = true;
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    begin_with_record(&mut h, &billing, &ledger);
+    crate::dfm_review::bind_review_run(&mut h.app, "run-charged").expect("the run is bound");
+    crate::dfm_review::settle_review_run(&mut h.app, "run-charged", true).expect("the report settles");
+    assert_eq!(billing.commits(), 1);
+
+    show(&mut h, card_for("run-charged"));
+    let file = crate::dfm_review::attachment(&mut h.app, "run-charged").expect("the report can be attached");
+    assert_eq!(file.report_run(), Some("run-charged"));
+    // The settlement seam is still idempotent for the same run.
+    crate::dfm_review::settle_review_run(&mut h.app, "run-charged", true).expect("a repeat is a no-op");
+    assert_eq!(billing.commits(), 1, "attachment or reload does not recharge");
+    assert_eq!(billing.releases(), 0);
+}
+
+/// The durable run-to-operation mapping survives a new window: recovery settles the original
+/// operation id and never mints or reruns a second check.
+#[test]
+fn review_run_operation_survives_restart() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let mut first = Harness::new();
+    let operation = begin_with_record(&mut first, &billing, &ledger);
+    crate::dfm_review::bind_review_run(&mut first.app, "run-restart").expect("the run is bound before settlement");
+
+    // A new window sees no panel state but the same durable ledger.
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    crate::dfm_review::settle_review_run(&mut restarted.app, "run-restart", true).expect("recovery settles the original operation");
+    assert_eq!(billing.commits(), 1);
+    assert_eq!(billing.committed_operations(), vec![operation], "recovery keeps the original id");
+    assert_eq!(ledger.operation_for("run-restart"), Some(billing.committed_operations()[0].clone()));
+}
+
+#[test]
+fn review_without_authority_never_starts() {
+    let mut h = Harness::new();
+    let error = crate::dfm_review::begin_review(&mut h.app).unwrap_err();
+    assert!(error.starts_with("UNSAFE_TO_START:"), "{error}");
+    assert!(h.app.dfm_review.operation.is_none(), "no operation is minted without a verified bound");
 }

@@ -1665,6 +1665,7 @@ pub(crate) fn running_dfm(_app: &SolveApp) -> Option<String> {
 /// idle with nothing finished.
 pub(crate) struct DfmState {
     pub running: bool,
+    pub active_run: Option<String>,
     pub last_run: Option<String>,
     pub error: Option<String>,
 }
@@ -1672,12 +1673,12 @@ pub(crate) struct DfmState {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn dfm_state() -> DfmState {
     let status = solidcraft_engine::dfm::service::status();
-    DfmState { running: status.running, last_run: status.last_run, error: status.error }
+    DfmState { running: status.running, active_run: status.active_run, last_run: status.last_run, error: status.error }
 }
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn dfm_state() -> DfmState {
-    DfmState { running: false, last_run: None, error: None }
+    DfmState { running: false, active_run: None, last_run: None, error: None }
 }
 
 /// The last finished check of this session, if one finished: what the Review panel shows its own

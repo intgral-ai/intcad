@@ -248,7 +248,7 @@ fn async_native_refusal(req: &ControlRequest) -> Option<Refusal> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn mint_operation() -> Option<OperationId> {
+pub(crate) fn mint_operation() -> Option<OperationId> {
     let mut entropy = [0_u8; 16];
     getrandom::fill(&mut entropy).ok()?;
     OperationId::mint_from_entropy(&entropy).ok()
@@ -256,7 +256,7 @@ fn mint_operation() -> Option<OperationId> {
 
 /// The browser never creates a controlled entry, and has no host entropy to mint one with.
 #[cfg(target_arch = "wasm32")]
-fn mint_operation() -> Option<OperationId> {
+pub(crate) fn mint_operation() -> Option<OperationId> {
     None
 }
 
