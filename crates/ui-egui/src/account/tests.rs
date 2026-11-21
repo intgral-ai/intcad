@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use egui::Pos2;
 use solidcraft_engine::entitlement::{AuthenticatedHostScope, Refusal, RefusalCode};
 
-use super::panel::ChipTone;
+use super::panel::{ChipTone, chip_label, chip_tone};
 use super::*;
 
 pub(crate) struct FakeAccountPort {
@@ -112,6 +112,138 @@ impl AccountPort for FakeAccountPort {
     }
 }
 
+/// An explicit device-flow fake with shared state, so a test can complete or fail the worker
+/// between logic ticks without another browser, network or credential.
+#[derive(Clone)]
+pub(crate) struct FlowPort {
+    state: Arc<Mutex<FlowAccount>>,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+pub(crate) struct FlowAccount {
+    pub(crate) view: AccountView,
+    pub(crate) challenge: Option<DeviceCode>,
+    pub(crate) notice: Option<Refusal>,
+    pub(crate) opens: usize,
+    pub(crate) sign_ins: usize,
+    pub(crate) fail_sign_in: bool,
+    lifecycle: Option<LifecycleEvent>,
+}
+
+impl FlowPort {
+    pub(crate) fn signed_out(challenge: Option<DeviceCode>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(FlowAccount {
+                view: AccountView::signed_out(),
+                challenge,
+                notice: None,
+                opens: 0,
+                sign_ins: 0,
+                fail_sign_in: false,
+                lifecycle: None,
+            })),
+            calls: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn log(&self, name: &str) {
+        if let Ok(mut calls) = self.calls.lock() {
+            calls.push(name.to_string());
+        }
+    }
+
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().map(|calls| calls.clone()).unwrap_or_default()
+    }
+
+    fn with_state<T>(&self, read: impl FnOnce(&FlowAccount) -> T) -> Option<T> {
+        self.state.lock().ok().map(|state| read(&state))
+    }
+
+    fn change(&self, edit: impl FnOnce(&mut FlowAccount)) {
+        if let Ok(mut state) = self.state.lock() {
+            edit(&mut state);
+        }
+    }
+}
+
+impl AccountPort for FlowPort {
+    fn view(&self) -> AccountView {
+        self.log("view");
+        self.with_state(|state| state.view.clone()).unwrap_or_else(AccountView::unavailable)
+    }
+
+    fn refresh_status(&mut self) -> Result<AccountView, Refusal> {
+        self.log("refresh_status");
+        Ok(self.view())
+    }
+
+    fn sign_in(&mut self) -> Result<(), Refusal> {
+        self.log("sign_in");
+        let fail = self.with_state(|state| state.fail_sign_in).unwrap_or(true);
+        if fail {
+            let refusal = Refusal::new(RefusalCode::AuthUnavailable, "the test sign-in failed");
+            self.change(|state| state.notice = Some(refusal));
+            return Err(Refusal::new(RefusalCode::AuthUnavailable, "the test sign-in failed"));
+        }
+        self.change(|state| state.sign_ins += 1);
+        Ok(())
+    }
+
+    fn sign_out(&mut self) -> Result<(), Refusal> {
+        self.log("sign_out");
+        self.change(|state| {
+            state.view = AccountView::signed_out();
+            state.challenge = None;
+            state.lifecycle = Some(LifecycleEvent::SignedOut);
+        });
+        Ok(())
+    }
+
+    fn switch_account(&mut self) -> Result<(), Refusal> {
+        self.log("switch_account");
+        self.change(|state| {
+            state.view = AccountView::signed_out();
+            state.challenge = None;
+            state.lifecycle = Some(LifecycleEvent::AccountSwitched);
+        });
+        Ok(())
+    }
+
+    fn delete_account_guide(&self) -> DeleteAccountGuide {
+        DeleteAccountGuide { help_url: "", steps: &[] }
+    }
+
+    fn begin_device_code(&self) -> Result<DeviceCode, Refusal> {
+        self.log("begin_device_code");
+        self.with_state(|state| state.challenge.clone())
+            .flatten()
+            .ok_or_else(|| Refusal::new(RefusalCode::AuthRequired, "the sign-in prompt is not ready"))
+    }
+
+    fn open_verification(&mut self) -> Result<(), Refusal> {
+        self.log("open_verification");
+        let available = self.with_state(|state| state.challenge.is_some()).unwrap_or(false);
+        if !available {
+            return Err(Refusal::new(RefusalCode::AuthRequired, "no sign-in is waiting for browser approval"));
+        }
+        self.change(|state| state.opens += 1);
+        Ok(())
+    }
+
+    fn take_sign_in_notice(&mut self) -> Option<Refusal> {
+        self.state.lock().ok().and_then(|mut state| state.notice.take())
+    }
+
+    fn own_model_view(&self) -> Option<OwnModelView> {
+        None
+    }
+
+    fn take_lifecycle_event(&mut self) -> Option<LifecycleEvent> {
+        self.state.lock().ok().and_then(|mut state| state.lifecycle.take())
+    }
+}
+
 /// A signed-in, unknown-quota port for the shared application-bar regression test.
 pub(crate) fn signed_in_unknown_port() -> Box<dyn AccountPort> {
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -160,7 +292,7 @@ fn ui_calls_only_authorized_account_port_methods() {
     state.process_actions();
     assert!(state.view().signed_in);
     let calls = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
-    assert_eq!(calls, vec!["view", "sign_in", "view"]);
+    assert_eq!(calls, vec!["view", "sign_in", "view", "view"]);
 }
 
 #[test]
@@ -198,7 +330,7 @@ fn clicking_sign_in_enqueues_and_processes_outside_a_frame() {
 
     harness.app.account.process_actions();
     let log = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
-    assert_eq!(log, vec!["sign_in", "view"]);
+    assert_eq!(log, vec!["sign_in", "view", "view"]);
     assert!(harness.app.account.view().signed_in);
 }
 
@@ -478,7 +610,237 @@ fn render_chip(mut app: crate::SolveApp, view: AccountView) -> Vec<String> {
     let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 700.0))), ..Default::default() };
     crate::scenario::clear_handles();
     let output = crate::test_support::frame(&ctx, input, |ui| {
-        crate::account::status_chip(&app, ui, egui::Rect::from_min_size(Pos2::new(700.0, 8.0), egui::vec2(90.0, 18.0)));
+        crate::account::status_chip(&mut app, ui, egui::Rect::from_min_size(Pos2::new(700.0, 8.0), egui::vec2(90.0, 18.0)));
     });
     crate::test_support::text_shapes(&output).map(|shape| shape.galley.text().to_string()).collect()
+}
+
+fn future_device_code(after_seconds: u64) -> DeviceCode {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0);
+    DeviceCode {
+        user_code: "BCDF-GHJK".into(),
+        verification_uri: "https://auth.example/device".into(),
+        expires_at: Timestamp(now.saturating_add(after_seconds)),
+    }
+}
+
+fn start_flow(flow: &FlowPort) -> State {
+    let mut state = State::with_port(Box::new(flow.clone()));
+    state.request(Action::SignIn);
+    state.process_actions();
+    state
+}
+
+fn joined(texts: &[(String, Pos2)]) -> String {
+    texts.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join("\n").to_lowercase()
+}
+
+#[test]
+fn the_permanent_toolbar_entry_says_sign_in_when_signed_out() {
+    let app = crate::test_support::sample_app();
+    let signed_out = AccountView::signed_out();
+    assert_eq!(chip_label(&app, &signed_out).as_deref(), Some("Sign in"));
+    assert_eq!(chip_tone(&signed_out), ChipTone::Neutral);
+    let texts = render_chip(crate::test_support::sample_app(), signed_out);
+    assert!(texts.iter().any(|text| text == "Sign in"), "{texts:?}");
+}
+
+#[test]
+fn the_shared_toolbar_account_menu_offers_login_and_queues_one_sign_in() {
+    let flow = FlowPort::signed_out(None);
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = State::with_port(Box::new(flow.clone()));
+    harness.frames(3);
+    assert!(crate::scenario::handle_at("titlebar:account_status").is_some());
+    crate::test_support::click(&mut harness, "titlebar:account_status");
+    assert!(harness.widget("Sign in").is_some(), "handles: {:?}", crate::scenario::handles(""));
+    assert_eq!(harness.app.account.pending_action(), None);
+    crate::test_support::click(&mut harness, "account:sign_in");
+    assert_eq!(harness.app.account.pending_action(), Some(Action::SignIn));
+    assert_eq!(flow.with_state(|state| state.opens), Some(0), "the menu never opens a browser");
+    harness.app.account.process_actions();
+    assert_eq!(flow.calls().iter().filter(|call| call.as_str() == "sign_in").count(), 1);
+}
+
+#[test]
+fn the_cached_challenge_shows_progress_code_and_expiry_without_a_port_call_in_paint() {
+    let flow = FlowPort::signed_out(Some(future_device_code(300)));
+    let state = start_flow(&flow);
+    assert_eq!(state.sign_in_status(), SignInStatus::Waiting);
+    assert!(state.sign_in_waiting());
+    assert!(state.challenge().is_some());
+    let calls = flow.calls();
+    let mut app = crate::test_support::sample_app();
+    app.account = state;
+    let texts = render(&mut app);
+    let text = joined(&texts);
+    assert!(text.contains("waiting for approval"), "{texts:?}");
+    assert!(text.contains("bcdf-ghjk"), "{texts:?}");
+    assert!(text.contains("expires in"), "{texts:?}");
+    assert_eq!(flow.calls(), calls, "a paint pass called the account port");
+    assert_eq!(flow.with_state(|state| state.opens), Some(0));
+}
+
+#[test]
+fn one_explicit_browser_click_queues_and_opens_exactly_once_but_rendering_never_opens() {
+    let flow = FlowPort::signed_out(Some(future_device_code(300)));
+    let state = start_flow(&flow);
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = true;
+    harness.app.account = state;
+    harness.frames(3);
+    let calls = flow.calls();
+    assert!(crate::scenario::handle_at("account:open_browser").is_some());
+    assert!(!calls.iter().any(|call| call == "open_verification"), "a frame opened the browser: {calls:?}");
+    crate::test_support::click(&mut harness, "account:open_browser");
+    assert_eq!(harness.app.account.pending_action(), Some(Action::OpenVerification));
+    assert_eq!(flow.with_state(|state| state.opens), Some(0), "a rendered click opened the browser before processing");
+    harness.app.account.process_actions();
+    let calls = flow.calls();
+    assert_eq!(flow.with_state(|state| state.opens), Some(1), "{calls:?}");
+    assert_eq!(calls.iter().filter(|call| call.as_str() == "open_verification").count(), 1, "{calls:?}");
+}
+
+#[test]
+fn start_and_refusal_never_open_a_browser_and_a_failure_offers_a_retry() {
+    let flow = FlowPort::signed_out(Some(future_device_code(300)));
+    let state = start_flow(&flow);
+    assert_eq!(flow.with_state(|state| state.opens), Some(0));
+    let mut app = crate::test_support::sample_app();
+    app.account = state;
+    let text = joined(&render(&mut app));
+    assert!(text.contains("bcdf-ghjk"), "a started flow shows its challenge: {text}");
+    assert_eq!(flow.with_state(|state| state.opens), Some(0));
+
+    let flow = FlowPort::signed_out(Some(future_device_code(300)));
+    flow.change(|state| state.fail_sign_in = true);
+    let state = start_flow(&flow);
+    assert_eq!(state.sign_in_status(), SignInStatus::Failed);
+    assert!(state.challenge().is_none(), "a failed flow kept its challenge");
+    let mut app = crate::test_support::sample_app();
+    app.account = state;
+    let text = joined(&render(&mut app));
+    assert!(text.contains("try sign-in again"), "{text}");
+    assert!(!text.contains("bcdf-ghjk"), "a failed flow showed its old code: {text}");
+    assert_eq!(flow.with_state(|state| state.opens), Some(0), "a refusal opened a browser");
+}
+
+#[test]
+fn completion_and_failure_clear_the_old_prompt_and_only_an_explicit_retry_starts_again() {
+    let flow = FlowPort::signed_out(Some(future_device_code(300)));
+    let mut state = start_flow(&flow);
+    assert_eq!(state.sign_in_status(), SignInStatus::Waiting);
+    flow.change(|state| state.view = signed_in_view());
+    state.process_actions();
+    assert!(state.view().signed_in);
+    assert!(state.challenge().is_none(), "the completed flow kept a stale prompt");
+    assert_eq!(state.sign_in_status(), SignInStatus::Idle);
+    assert!(!state.sign_in_waiting());
+    let mut app = crate::test_support::sample_app();
+    app.account = state;
+    let text = joined(&render(&mut app));
+    assert!(!text.contains("bcdf-ghjk"), "the completed flow kept its old code: {text}");
+    assert_eq!(flow.with_state(|state| state.opens), Some(0));
+
+    let flow = FlowPort::signed_out(Some(future_device_code(300)));
+    flow.change(|state| state.fail_sign_in = true);
+    let mut state = start_flow(&flow);
+    assert_eq!(state.sign_in_status(), SignInStatus::Failed);
+    let count_sign_ins = || flow.calls().iter().filter(|call| call.as_str() == "sign_in").count();
+    assert_eq!(count_sign_ins(), 1);
+    state.process_actions();
+    assert_eq!(count_sign_ins(), 1, "a refusal replayed sign-in by itself");
+    flow.change(|state| state.fail_sign_in = false);
+    state.request(Action::SignIn);
+    state.process_actions();
+    assert_eq!(count_sign_ins(), 2, "the explicit retry starts one new flow");
+    assert_eq!(state.sign_in_status(), SignInStatus::Waiting);
+    assert_eq!(flow.with_state(|state| state.opens), Some(0), "a retry opened a browser");
+}
+
+#[test]
+fn an_expired_challenge_hides_the_code_and_offers_a_localized_retry() {
+    let flow = FlowPort::signed_out(Some(DeviceCode {
+        user_code: "BCDF-GHJK".into(),
+        verification_uri: "https://auth.example/device".into(),
+        expires_at: Timestamp(0),
+    }));
+    let state = start_flow(&flow);
+    assert!(state.sign_in_expired());
+    assert!(!state.sign_in_waiting(), "an expired code keeps the window waking");
+    let mut app = crate::test_support::sample_app();
+    app.account = state;
+    let text = joined(&render(&mut app));
+    assert!(text.contains("sign-in code expired"), "{text}");
+    assert!(text.contains("try sign-in again"), "{text}");
+    assert!(!text.contains("bcdf-ghjk"), "the expired code stayed visible: {text}");
+    assert_eq!(flow.with_state(|state| state.opens), Some(0));
+}
+
+#[test]
+fn the_ai_chat_panel_shows_the_product_prompt() {
+    let flow = FlowPort::signed_out(None);
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.agent_chat.open = true;
+    harness.app.account = State::with_port(Box::new(flow));
+    harness.frames(3);
+    assert!(crate::scenario::handle_at("account:chat_sign_in").is_some(), "handles: {:?}", crate::scenario::handles("account:"));
+    assert!(harness.widget("Sign in").is_some(), "the product prompt has a visible sign-in action");
+}
+
+#[test]
+fn the_web_assistant_keeps_the_product_prompt_above_the_page() {
+    let flow = FlowPort::signed_out(None);
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.agent_chat.open = true;
+    harness.app.agent_chat.web_host = true;
+    harness.app.account = State::with_port(Box::new(flow));
+    harness.frames(3);
+    assert!(crate::scenario::handle_at("account:chat_sign_in").is_some(), "handles: {:?}", crate::scenario::handles("account:"));
+    let prompt = crate::scenario::rect_of("account:chat_sign_in")
+        .or_else(|| crate::scenario::handle_at("account:chat_sign_in").map(|p| egui::Rect::from_center_size(p, egui::Vec2::ZERO)));
+    if let (Some(prompt), Some(web)) = (prompt, crate::scenario::rect_of("agent_chat:web")) {
+        assert!(!prompt.intersects(web), "the product prompt covers the Assistant page");
+    }
+}
+
+#[test]
+fn ai_chat_and_review_prompts_are_product_account_context_not_model_auth() {
+    let mut chat = crate::test_support::sample_app();
+    chat.account = State::with_port(Box::new(FlowPort::signed_out(None)));
+    let texts = render_prompt(&mut chat, PromptContext::Chat);
+    let text = joined(&texts);
+    assert!(text.contains("use ai chat"), "{texts:?}");
+    assert!(text.contains("model's own sign-in stays separate"), "{texts:?}");
+    assert!(text.contains("sign in"), "{texts:?}");
+
+    let mut review = crate::test_support::sample_app();
+    review.account = State::with_port(Box::new(FlowPort::signed_out(None)));
+    let texts = render_prompt(&mut review, PromptContext::Review);
+    let text = joined(&texts);
+    assert!(text.contains("run review checks"), "{texts:?}");
+    assert!(!text.contains("model's own sign-in"), "{texts:?}");
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut signed_in = crate::test_support::sample_app();
+    signed_in.account = State::with_port(Box::new(FakeAccountPort::with_view(signed_in_view(), calls)));
+    let texts = render_prompt(&mut signed_in, PromptContext::Chat);
+    assert!(texts.is_empty(), "a signed-in account shows no sign-in prompt: {texts:?}");
+
+    let mut unavailable = crate::test_support::sample_app();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    unavailable.account = State::with_port(Box::new(FakeAccountPort::with_view(AccountView::unavailable(), calls)));
+    let texts = render_prompt(&mut unavailable, PromptContext::Review);
+    assert!(texts.is_empty(), "an unavailable build offers no product sign-in: {texts:?}");
+}
+
+fn render_prompt(app: &mut crate::SolveApp, context: PromptContext) -> Vec<(String, Pos2)> {
+    let ctx = crate::fonts::test_context();
+    let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 700.0))), ..Default::default() };
+    crate::scenario::clear_handles();
+    let output = crate::test_support::frame(&ctx, input, |ui| {
+        crate::account::show_product_prompt(app, ui, context);
+    });
+    crate::test_support::text_shapes(&output).map(|shape| (shape.galley.text().to_string(), shape.pos)).collect()
 }

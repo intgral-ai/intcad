@@ -775,6 +775,11 @@ fn body(app: &mut SolveApp, ui: &mut egui::Ui, left: bool) {
         if app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
             refresh(app, ui.ctx());
         }
+        // The page owns the conversation and its model sign-in. The product account is the
+        // app's own entry, so it stays above the page and never becomes model authentication.
+        if crate::account::show_product_prompt(app, ui, crate::account::PromptContext::Chat) {
+            ui.add_space(Tokens::get().space_8);
+        }
         let mut rect = ui.available_rect_before_wrap();
         ui.allocate_rect(rect, Sense::hover());
         // Floating, the strip at the panel's inner edge stays the app's: it is what one drags to
@@ -846,6 +851,10 @@ fn desktop_body(app: &mut SolveApp, ui: &mut egui::Ui) {
         .max_height(ui.available_height() / 3.0)
         .auto_shrink([false, true])
         .show(ui, |ui| picker(app, ui));
+    // The product account is separate from the selected agent/model's own authentication.
+    if crate::account::show_product_prompt(app, ui, crate::account::PromptContext::Chat) {
+        ui.add_space(crate::theme::Tokens::get().space_8);
+    }
     if state == State::NeedsAuth {
         inset(ui, |ui| auth_box(app, ui));
     }

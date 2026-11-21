@@ -732,11 +732,16 @@ fn publish_device_prompt(shared: &Arc<Mutex<SignInShared>>, prompt: &DeviceCodeP
         shared.prompt = Some(code);
         shared.browser_uri = Some(browser_uri);
         shared.phase = SignInPhase::WaitingForApproval;
+        shared.notice = None;
     }
 }
 
 fn apply_sign_in_result(shared: &Arc<Mutex<SignInShared>>, cancel: &SignInCancellation, result: Result<ProductLogin, Refusal>) {
     if let Ok(mut shared) = shared.lock() {
+        // Every terminal phase retires the challenge, so a later panel or refresh never shows a
+        // stale code or offers a browser action for a flow that already ended.
+        shared.prompt = None;
+        shared.browser_uri = None;
         if cancel.is_cancelled() {
             shared.phase = SignInPhase::Cancelled;
             return;
@@ -1634,6 +1639,8 @@ mod tests {
         assert!(port.runtime.credentials.authenticated_scope().is_none(), "no installation binding, so controlled authority stays closed");
         assert_eq!(port.view().tool_blocked, Some(RefusalCode::AuthUnavailable));
         assert_eq!(product.requests().len(), 1, "the product service verifies the provider token once");
+        assert_eq!(port.begin_device_code().unwrap_err().code, RefusalCode::AuthRequired, "a completed flow retires its prompt");
+        assert!(opener.urls().len() == 1, "only the explicit action opened the browser");
 
         // Recognizing the completed flow is cached: refreshing never replays the exchange.
         let view = port.refresh_status().unwrap();
@@ -1659,6 +1666,9 @@ mod tests {
         wait_until("the origin refusal", || port.take_sign_in_notice().is_some());
         assert!(!port.view().signed_in);
         assert!(opener.urls().is_empty(), "an untrusted origin is never opened");
+        assert_eq!(port.begin_device_code().unwrap_err().code, RefusalCode::AuthRequired, "a refused flow keeps no prompt");
+        assert_eq!(port.open_verification().unwrap_err().code, RefusalCode::AuthRequired, "a refused flow opens no browser");
+        assert!(opener.urls().is_empty());
         assert_eq!(device.requests().len(), 1, "only the authorization request is sent");
         assert_eq!(device.requests()[0], solidcraft_account_native::WORKOS_DEVICE_AUTHORIZATION_URL);
         port.shutdown();

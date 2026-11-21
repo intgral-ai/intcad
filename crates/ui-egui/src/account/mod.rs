@@ -14,7 +14,7 @@ pub(crate) mod tests;
 use solidcraft_engine::entitlement::{Refusal, RefusalCode};
 
 pub(crate) use panel::status_chip_width;
-pub use panel::{show_summary, status_chip};
+pub use panel::{PromptContext, show_product_prompt, show_summary, status_chip};
 
 /// A point in time for a device-code login, in seconds since the Unix epoch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -29,6 +29,30 @@ pub enum Action {
     SignIn,
     SignOut,
     SwitchAccount,
+    /// Open the trusted verification page in the system browser. Only a click enqueues it, and
+    /// only [`State::process_actions`] calls the port's reviewed browser seam.
+    OpenVerification,
+}
+
+/// Where a cached device-code sign-in has reached. The panel reads this, never the port.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SignInStatus {
+    /// No explicit sign-in is running.
+    #[default]
+    Idle,
+    /// The worker was started; the prompt is not readable yet.
+    Starting,
+    /// The browser prompt is cached and may be opened by one explicit action.
+    Waiting,
+    /// The worker reported a refusal. A new explicit action may try again.
+    Failed,
+}
+
+impl SignInStatus {
+    /// The worker still needs the UI to wake and read its cached state.
+    pub fn waiting_for_worker(self) -> bool {
+        matches!(self, Self::Starting | Self::Waiting)
+    }
 }
 
 /// A host event that ends the authority of the account session that admitted controlled work.
@@ -120,6 +144,12 @@ impl AccountView {
     pub fn no_credits(&self) -> bool {
         self.available == Some(0) || matches!(self.tool_blocked, Some(RefusalCode::CreditsExhausted))
     }
+
+    /// This build offers a product sign-in and the person is not signed in yet. Contextual
+    /// product prompts read this instead of matching refusal text from a paid action.
+    pub fn product_sign_in_required(&self) -> bool {
+        !self.signed_in && self.sign_in_visible
+    }
 }
 
 /// The only seam between the account UI and the host.
@@ -208,6 +238,10 @@ pub struct State {
     /// Explicit actions awaiting [`State::process_actions`] outside a frame.
     pending: Vec<Action>,
     notice: Option<Refusal>,
+    /// The latest device-code prompt, cached outside paint so every panel shows one challenge.
+    challenge: Option<DeviceCode>,
+    /// Where the cached device-code sign-in is; paint reads this and never the port.
+    sign_in: SignInStatus,
 }
 
 impl Default for AccountView {
@@ -215,6 +249,10 @@ impl Default for AccountView {
     fn default() -> Self {
         Self::unavailable()
     }
+}
+
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// Adopt a successful explicit action's fresh view and guidance, or keep its refusal.
@@ -241,7 +279,7 @@ impl State {
     pub fn with_port(port: Box<dyn AccountPort>) -> Self {
         let view = port.view();
         let guide = port.delete_account_guide();
-        Self { port: Some(port), view, guide: Some(guide), pending: Vec::new(), notice: None }
+        Self { port: Some(port), view, guide: Some(guide), pending: Vec::new(), notice: None, challenge: None, sign_in: SignInStatus::Idle }
     }
 
     /// The browser stays anonymous and offline even if a desktop composition root is reused.
@@ -259,6 +297,8 @@ impl State {
         self.port = Some(port);
         self.pending.clear();
         self.notice = None;
+        self.challenge = None;
+        self.sign_in = SignInStatus::Idle;
     }
 
     /// No web build may install an account port, even through a shared host entry point.
@@ -296,6 +336,11 @@ impl State {
 
     /// Run every queued action on the port, outside a frame. Task 11 must make the network work
     /// asynchronous: this call may block the host loop, never the window thread's paint pass.
+    ///
+    /// The host calls this once per logic tick. It also adopts the port's cached view and drains
+    /// one asynchronous notice, so a completed, failed or retired worker becomes visible without
+    /// any paint pass calling the port. A caller schedules a bounded wake while
+    /// [`State::sign_in_waiting`] says a worker is still running.
     pub fn process_actions(&mut self) {
         let actions = std::mem::take(&mut self.pending);
         let Some(port) = self.port.as_mut() else { return };
@@ -312,17 +357,90 @@ impl State {
                 Action::SignIn => {
                     let result = port.sign_in();
                     apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
+                    self.challenge = None;
+                    self.sign_in = if self.notice.is_none() && !self.view.signed_in { SignInStatus::Starting } else { SignInStatus::Idle };
                 }
                 Action::SignOut => {
                     let result = port.sign_out();
                     apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
+                    self.challenge = None;
+                    self.sign_in = SignInStatus::Idle;
                 }
                 Action::SwitchAccount => {
                     let result = port.switch_account();
                     apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
+                    self.challenge = None;
+                    self.sign_in = SignInStatus::Idle;
                 }
+                Action::OpenVerification => match port.open_verification() {
+                    Ok(()) => self.notice = None,
+                    Err(refusal) => self.notice = Some(refusal),
+                },
             }
         }
+        self.sync_sign_in();
+    }
+
+    /// Read the port's cached view and latest device prompt outside a frame. No method here
+    /// starts a network request or opens a browser: the worker already owns them, and only
+    /// [`Action::OpenVerification`] calls the reviewed browser seam.
+    fn sync_sign_in(&mut self) {
+        let Some(port) = self.port.as_mut() else { return };
+        self.view = port.view();
+        self.guide = Some(port.delete_account_guide());
+        if self.view.signed_in {
+            // A completed flow retires its prompt at once. A cached prompt from an older
+            // attempt is never shown beside the signed-in account.
+            self.challenge = None;
+            self.sign_in = SignInStatus::Idle;
+            return;
+        }
+        if let Some(refusal) = port.take_sign_in_notice() {
+            self.notice = Some(refusal);
+            self.challenge = None;
+            self.sign_in = SignInStatus::Failed;
+            return;
+        }
+        if !self.sign_in.waiting_for_worker() {
+            return;
+        }
+        match port.begin_device_code() {
+            Ok(challenge) => {
+                self.challenge = Some(challenge);
+                self.sign_in = SignInStatus::Waiting;
+            }
+            Err(refusal) if refusal.code == RefusalCode::AuthRequired => {
+                // The prompt is not readable yet, or the code has passed its deadline. Keep
+                // the progress state until the worker reports its terminal result.
+            }
+            Err(refusal) => {
+                self.notice = Some(refusal);
+                self.challenge = None;
+                self.sign_in = SignInStatus::Failed;
+            }
+        }
+    }
+
+    /// The cached device prompt, if a waiting sign-in has one.
+    pub fn challenge(&self) -> Option<&DeviceCode> {
+        self.challenge.as_ref()
+    }
+
+    /// Where the cached device sign-in is, for progress and retry labels.
+    pub fn sign_in_status(&self) -> SignInStatus {
+        self.sign_in
+    }
+
+    /// The cached code has passed its own deadline, so a browser action is no longer possible even
+    /// if the worker has not reported its terminal result yet.
+    pub fn sign_in_expired(&self) -> bool {
+        self.challenge.as_ref().is_some_and(|challenge| challenge.expires_at <= Timestamp(now_seconds()))
+    }
+
+    /// A worker is still running, so the host should wake the window within a bounded interval
+    /// and read its cached state again. False after success, refusal, cancellation or expiry.
+    pub fn sign_in_waiting(&self) -> bool {
+        self.sign_in.waiting_for_worker() && !self.sign_in_expired()
     }
 
     /// Drain the host's end-of-session event after [`State::process_actions`], never from a
