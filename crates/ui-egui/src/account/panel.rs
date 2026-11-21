@@ -280,6 +280,7 @@ pub(crate) fn compact_menu_entry(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let label = format!("{}…", app.tr("account.title"));
     let entry = crate::ui_kit::Menu::button(ui, label, |ui| show_menu(app, ui));
     crate::scenario::publish_handle("account:overflow", entry.response.rect.center());
+    crate::scenario::publish_rect("account:overflow", entry.response.rect);
     entry.inner == Some(true)
 }
 

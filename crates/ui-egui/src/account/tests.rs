@@ -695,6 +695,30 @@ fn below_900_the_file_menu_offers_the_same_sign_in_without_home() {
 }
 
 #[test]
+fn a_700_by_600_window_keeps_the_compact_account_row_on_screen_and_actionable() {
+    let flow = FlowPort::signed_out(None);
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = State::with_port(Box::new(flow));
+    harness.call("ui.resize", json!({"width":700.0,"height":600.0}));
+    harness.frames(3);
+    assert!(crate::scenario::handle_at("titlebar:account_status").is_none(), "the chip needs 900 px");
+    crate::test_support::click(&mut harness, "appbar:file");
+    let screen = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(700.0, 600.0));
+    let label = compact_account_label();
+    let at = harness.widget(&label).expect("the compact account row is drawn");
+    let row = crate::scenario::rect_of("account:overflow").expect("the drawn row reports its own rect");
+    assert!(screen.contains_rect(row), "the account row is clipped at 700x600: {row:?}");
+    assert!((at[1] as f32) < 600.0, "the account row's text is below the window: {at:?}");
+    harness.step(&json!({"widget": label})).unwrap();
+    harness.frames(3);
+    let sign_in = crate::scenario::rect_of("account:sign_in").expect("the shared menu offers sign-in");
+    assert!(screen.contains_rect(sign_in), "the compact menu's sign-in is clipped: {sign_in:?}");
+    crate::test_support::click(&mut harness, "account:sign_in");
+    assert_eq!(harness.app.account.pending_action(), Some(Action::SignIn));
+}
+
+#[test]
 fn the_normal_width_chip_stays_the_only_account_entry() {
     let flow = FlowPort::signed_out(None);
     let mut harness = crate::scenario::Harness::new();

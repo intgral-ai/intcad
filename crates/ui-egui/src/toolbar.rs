@@ -784,6 +784,15 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     crate::context_menu::list_row(ui, &crate::context_menu::Item::action(label, label, icon).key(key).on_if(enabled)).is_some()
                 };
                 let item = |ui: &mut egui::Ui, label: &str, key: &str, icon: &str| item_if(ui, label, key, icon, true);
+                // Without room for the caption chip, the File menu keeps the permanent account
+                // entry. It comes first so a short window still shows it; it opens the same
+                // shared menu, so every account action stays in one place.
+                if compact_account {
+                    if crate::account::compact_menu_entry(app, ui) {
+                        close = true;
+                    }
+                    ui.separator();
+                }
                 // Insert, Save and Export act on the design, which Home hides.
                 let shown = design_shown(app);
                 if item(ui, app.tr("ui.new_design"), "Ctrl+N", "new") {
@@ -895,11 +904,6 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     close = true;
                 }
                 ui.separator();
-                // Without room for the caption chip, the File menu keeps the permanent account
-                // entry: the same shared menu, so every account action stays in one place.
-                if compact_account && crate::account::compact_menu_entry(app, ui) {
-                    close = true;
-                }
                 // The browser can install SolidCraft as an app (`install`): only while it offers to.
                 if let Some(offer) = crate::install::offered(app)
                     && crate::context_menu::button(ui, crate::i18n::tr("install.menu"), "new")
