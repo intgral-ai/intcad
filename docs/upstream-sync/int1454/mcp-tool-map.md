@@ -70,6 +70,8 @@ The candidate MCP wrapper owns `solidcraft_mcp_server::Server<Agent>` (`crates/m
 
 No runtime contract pass is claimed here. The historical MCP-connect receipt in [acceptance](acceptance.md) is on a different workflow/source pair; §5a does not supply a source-pinned verdict for this entire MCP surface. The remaining tool-by-tool schema, output, side-effect and caller classifications and final-SHA verification remain open.
 
+The [21-tool candidate contract audit](mcp-cd2-contract-audit.md) inventories the existing tools and identifies observable changes. It does not approve those changes or replace runtime verification.
+
 ## Callers to update with any tool change
 
 `crates/mcp/src/server.rs` (dispatch), `crates/ui-egui/src/agent_chat` (bridge and gate method
