@@ -286,3 +286,48 @@ fn two_pieces_told_apart_by_one_blend_both_answer_to_a_stored_name() {
     assert_eq!(answering.len(), 2, "{:?}", names.faces);
     assert!(crate::name_lookup::locate_face_on_body(&state, Some("Body1"), stored, Vec3::new(5., 0., 4.)).is_none(), "two faces answer");
 }
+
+/// INT-1454: `SectionRoles` must prefer exact analytic evidence and ask the free-form matcher
+/// only when no analytic curve runs along the segment. Two overlapping analytic lines are
+/// ambiguous; a degree-1 spline over the same span must not break that tie.
+#[test]
+fn section_roles_keep_analytic_ambiguity_over_a_matching_spline_span() {
+    use crate::SolvedSketch;
+    use crate::lineage::SectionRoles;
+    use solidcore_record::{Loop2, Plane, Seg2, Vec2};
+    use solidcraft_kernel::history::{Change, FaceOrigin, FaceProv, History};
+    use solidcraft_sketch::{CurveKind, Sketch};
+
+    let mut source = Sketch::new();
+    source.add_line(Vec2::ZERO, Vec2::new(10., 0.), None, None, Some("l1")).unwrap();
+    source.add_line(Vec2::new(2., 0.), Vec2::new(8., 0.), None, None, Some("l2")).unwrap();
+    let a = source.add_point(Vec2::new(2., 0.), None).unwrap();
+    let b = source.add_point(Vec2::new(8., 0.), None).unwrap();
+    source
+        .add_curve(CurveKind::Spline { pts: vec![a, b], control: true, degree: 1, periodic: false, nurbs: None, handles: Vec::new() }, Some("span"))
+        .unwrap();
+    let report = solidcraft_sketch::solve(&mut source);
+    let sketch = SolvedSketch {
+        feature: 1,
+        name: "sections".into(),
+        plane: Plane::XY,
+        sketch: source,
+        report,
+        profiles: Vec::new(),
+        profiles_3d: Vec::new(),
+        ends: Default::default(),
+    };
+    let loop2 =
+        Loop2 { segs: vec![Seg2::Line { a: Vec2::new(2., 0.), b: Vec2::new(8., 0.) }, Seg2::Line { a: Vec2::new(8., 0.), b: Vec2::new(10., 0.) }] };
+    let history = History {
+        operands: 0,
+        faces: vec![
+            FaceProv { origins: vec![FaceOrigin::Profile { segment: 0 }], change: Change::Generated },
+            FaceProv { origins: vec![FaceOrigin::Profile { segment: 1 }], change: Change::Generated },
+        ],
+        edges: Vec::new(),
+    };
+    let roles = SectionRoles { sections: vec![(&sketch, vec![&loop2])] }.of(&history);
+    assert_eq!(roles[0], Vec::<String>::new(), "two lines run along segment 0; the matching spline must not decide it");
+    assert_eq!(roles[1], vec!["side:l1".to_string()], "one analytic line still names segment 1");
+}

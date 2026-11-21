@@ -1045,7 +1045,8 @@ mod tests {
 
     /// INT-1454: a loft wall swept from an ellipse is a whole exact conic, which `find_along`
     /// never reports (it only knows lines and arcs). `find_free_form` certifies it in either
-    /// direction, and stays ambiguous for a segment two curves share or an unmatched part.
+    /// direction, and stays ambiguous for a segment two curves share or a segment that is not a
+    /// whole exact piece of one curve.
     #[test]
     fn free_form_role_sources_are_exact_and_ambiguous_or_unmatched_segments_refuse() {
         use solidcore_record::Vec2;

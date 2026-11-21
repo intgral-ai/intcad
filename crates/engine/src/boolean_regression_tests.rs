@@ -2240,7 +2240,35 @@ fn front_triangle_pre_join_loft_wall_identities_are_exact_and_resolve() {
             assert_eq!(solidcraft_doc::naming::face_name_at_body(body, point).as_deref(), Some(*name), "{body_name} {name} resolves back to itself");
         }
     };
-    check(&front_triangle(), "FrontTriangle", &["F6:side:e1", "F11:side:e1"]);
+    let target = front_triangle();
+    check(&target, "FrontTriangle", &["F6:side:e1", "F11:side:e1"]);
+    // Pin the whole pre-join name list: recovering roles must not silently retarget any stored
+    // reference, not only the two formerly unverified walls.
+    let names = solidcraft_doc::naming::face_names(target.model.state().body("FrontTriangle").expect("the pre-join body"));
+    assert_eq!(
+        names.iter().map(String::as_str).collect::<Vec<_>>(),
+        [
+            "F15:side:c1",
+            "F7:side",
+            "F6:end",
+            "F6:start#[F22:side:a3]",
+            "F7:top",
+            "F7:bottom",
+            "F11:side:e1",
+            "F15:end",
+            "F15:start",
+            "F6:start#[F22:side:a4]",
+            "F6:side:e1",
+            "F22:side:l4",
+            "F22:side:a1",
+            "F22:side:l1",
+            "F22:side:a2",
+            "F22:side:l2",
+            "F22:side:a3",
+            "F22:side:l3",
+            "F22:side:a4",
+        ]
+    );
     check(&front_triangle_tool(5.0), "Body1", &[]);
 }
 
