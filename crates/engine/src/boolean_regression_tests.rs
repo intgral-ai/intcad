@@ -2465,6 +2465,252 @@ fn front_triangle_join_survives_edit_undo_replay_and_save() {
     check(&reopened, joined_volume, &target_body, &tool5_body);
 }
 
+/// INT-1454: the fallback union splits `F15:start` into four pieces. The old qualifier named
+/// them with mesh/order ordinals, and a design saved then refers to a piece by that text. An
+/// exact replacement must keep the four historical names bound to the same siblings, with the
+/// archived asymmetric map: the corner-bearing piece is `#1` in the `a1/n1` pair but `#2` in the
+/// `a2/n2` pair. This follows each saved reference through a dependent sketch, a 5.0 → 5.1 →
+/// 5.0 edit, and a format-58 cold save/reopen/recompute, checking the actual sibling by exact
+/// B-rep endpoint incidence rather than a pick point or the printed face number.
+#[test]
+fn front_triangle_split_siblings_keep_persisted_downstream_references() {
+    use solidcraft_doc::{FeatureKind, ModelBody, PlaneRef, naming};
+    use std::collections::{BTreeMap, BTreeSet};
+
+    fn node(list: [&str; 2]) -> BTreeSet<String> {
+        list.into_iter().map(str::to_string).collect()
+    }
+    fn with_corner(base: &BTreeSet<String>) -> BTreeSet<String> {
+        let mut out = base.clone();
+        out.insert("F15:side:c1".into());
+        out.insert("F28:side:a2".into());
+        out
+    }
+    let b1 = node(["F22:side:a1", "F28:side:n1"]);
+    let b2 = node(["F22:side:a2", "F28:side:n2"]);
+    let expected: BTreeMap<&'static str, Vec<BTreeSet<String>>> = [
+        ("F15:start#[F22:side:a1,F28:side:n1]#1", vec![b1.clone(), with_corner(&b1)]),
+        ("F15:start#[F22:side:a1,F28:side:n1]#2", vec![b1.clone(), b1.clone()]),
+        ("F15:start#[F22:side:a2,F28:side:n2]#1", vec![b2.clone(), b2.clone()]),
+        ("F15:start#[F22:side:a2,F28:side:n2]#2", vec![b2.clone(), with_corner(&b2)]),
+    ]
+    .into_iter()
+    .collect();
+
+    /// The two boundary vertices of `face`, each as the exact names of the other faces incident
+    /// there. Any incident face not exactly named (or named twice) is an error, not a guess.
+    fn signature(body: &ModelBody, face: usize) -> Result<Vec<BTreeSet<String>>, String> {
+        let names = naming::face_names(body);
+        let label = |index: usize| -> Result<String, String> {
+            let name = names.get(index).cloned().ok_or_else(|| format!("no name for incident face {index}"))?;
+            if !naming::face_name_exact(body, index) {
+                return Err(format!("incident face {index} (`{name}`) is not certified exact"));
+            }
+            if names.iter().filter(|other| other.as_str() == name.as_str()).count() != 1 {
+                return Err(format!("incident face name `{name}` is not unique"));
+            }
+            Ok(name)
+        };
+        let record = body.body.record();
+        let mut endpoints = BTreeSet::new();
+        for edge in &record.edges {
+            if edge.uses.iter().any(|use_| use_.face as usize == face) {
+                endpoints.extend(edge.vertices.iter().copied());
+            }
+        }
+        let mut key = Vec::with_capacity(endpoints.len());
+        for vertex in endpoints {
+            let mut incident = BTreeSet::new();
+            for edge in &record.edges {
+                if edge.vertices.contains(&vertex) {
+                    for use_ in &edge.uses {
+                        let index = use_.face as usize;
+                        if index != face {
+                            incident.insert(label(index)?);
+                        }
+                    }
+                }
+            }
+            key.push(incident);
+        }
+        key.sort();
+        Ok(key)
+    }
+
+    /// The four saved references: the historical name, the point stored with it, and the face it
+    /// found when the design was made (the index is only evidence, never the identity).
+    fn build_refs(s: &Session, expected: &BTreeMap<&'static str, Vec<BTreeSet<String>>>) -> Vec<(String, solidcore_record::Vec3, usize)> {
+        let state = s.model.state();
+        let body = state.body("FrontTriangle").expect("the joined body");
+        let mut refs = Vec::new();
+        for name in expected.keys().copied() {
+            let at = naming::named_face_point(&state, Some("FrontTriangle"), name)
+                .unwrap_or_else(|error| panic!("setup: the historical name `{name}` has no face: {error}"));
+            let hit =
+                naming::locate_face(&state, name, at).unwrap_or_else(|| panic!("setup: the historical name `{name}` does not resolve to a face"));
+            assert_eq!(state.bodies[hit.body].name, "FrontTriangle", "setup: `{name}` resolves on another body");
+            assert_eq!(naming::face_names(body).get(hit.face).map(String::as_str), Some(name), "setup: `{name}` resolves to another name");
+            refs.push((name.to_string(), at, hit.face));
+        }
+        refs
+    }
+
+    fn install(s: &mut Session, refs: &[(String, solidcore_record::Vec3, usize)]) -> Vec<u64> {
+        let mut ids = Vec::new();
+        for (name, at, index) in refs {
+            let plane = {
+                let state = s.model.state();
+                let body = state.body("FrontTriangle").expect("the joined body");
+                body.body.planar_face(*index).unwrap_or_else(|| panic!("setup: `{name}` is not a planar face"))
+            };
+            let id = s
+                .doc_mut()
+                .add_feature(
+                    FeatureKind::Sketch {
+                        plane: PlaneRef::Face { plane, at: *at, name: Some(name.clone()), anchor: None },
+                        sketch: solidcraft_sketch::Sketch::new(),
+                    },
+                    Some(&format!("Saved reference {index}")),
+                )
+                .unwrap_or_else(|error| panic!("setup: cannot persist the reference `{name}`: {error}"));
+            ids.push(id);
+        }
+        s.refresh();
+        ids
+    }
+
+    fn persisted_face_names(doc: &solidcraft_doc::Document, ids: &[u64]) -> BTreeSet<String> {
+        doc.features
+            .iter()
+            .filter(|feature| ids.contains(&feature.id))
+            .filter_map(|feature| {
+                let FeatureKind::Sketch { plane, .. } = &feature.kind else { return None };
+                match plane {
+                    PlaneRef::Face { name: Some(name), .. } => Some(name.clone()),
+                    PlaneRef::Face { name: None, anchor: Some(anchor), .. } => Some(anchor.target.name.clone()),
+                    _ => None,
+                }
+            })
+            .collect()
+    }
+
+    fn check_refs(
+        s: &Session,
+        command: &str,
+        state_label: &str,
+        refs: &[(String, solidcore_record::Vec3, usize)],
+        expected: &BTreeMap<&'static str, Vec<BTreeSet<String>>>,
+        sketch_ids: &[u64],
+        failures: &mut Vec<String>,
+    ) {
+        let state = s.model.state();
+        let Some(body) = state.body("FrontTriangle") else {
+            failures.push(format!("{command} {state_label}: the joined body is gone"));
+            return;
+        };
+        let names = naming::face_names(body);
+        for (name, at, made_on) in refs {
+            let Some(hit) = naming::locate_face(&state, name, *at) else {
+                failures.push(format!("{command} {state_label}: the persisted reference `{name}` (made on face {made_on}) finds no face"));
+                continue;
+            };
+            let found_body = &state.bodies[hit.body];
+            let found = names.get(hit.face).cloned().unwrap_or_default();
+            let exact = naming::face_name_exact(found_body, hit.face);
+            let key = signature(found_body, hit.face);
+            let wanted = expected.get(name.as_str());
+            eprintln!(
+                "INT-1454 {command} {state_label}: `{name}` -> {} face {} `{found}` verified={} on_point={} signature={key:?}",
+                found_body.name, hit.face, hit.verified, hit.on_point
+            );
+            if found_body.name != "FrontTriangle" || found != *name {
+                failures.push(format!("{command} {state_label}: the persisted reference `{name}` retargeted to `{found}` on `{}`", found_body.name));
+            }
+            if !hit.verified || !exact {
+                failures.push(format!(
+                    "{command} {state_label}: the persisted reference `{name}` found `{found}` on face {} but the sibling is not certified exact (hit.verified={}, face_name_exact={exact})",
+                    hit.face, hit.verified
+                ));
+            }
+            // Endpoint order is not part of the archived map: both are sets, in no order.
+            let wanted = wanted.cloned().map(|mut wanted| {
+                wanted.sort();
+                wanted
+            });
+            match (key, wanted) {
+                (Ok(key), Some(wanted)) if key == wanted => {}
+                (Ok(key), Some(wanted)) => failures.push(format!(
+                    "{command} {state_label}: the persisted reference `{name}` reaches the wrong sibling on face {}: incidence {key:?}, archived {wanted:?}",
+                    hit.face
+                )),
+                (Ok(_), None) => failures.push(format!("{command} {state_label}: `{name}` is not in the archived map")),
+                (Err(error), _) => failures.push(format!("{command} {state_label}: the persisted reference `{name}` cannot be checked by exact incidence: {error}")),
+            }
+        }
+        for id in sketch_ids {
+            match s.model.results.iter().find(|result| result.id == *id) {
+                Some(result) if result.error.is_some() => failures.push(format!(
+                    "{command} {state_label}: the dependent sketch F{id} `{}` failed: {}",
+                    result.name,
+                    result.error.as_deref().unwrap_or_default()
+                )),
+                Some(_) => {}
+                None => failures.push(format!("{command} {state_label}: the dependent sketch F{id} has no evaluation result")),
+            }
+        }
+    }
+
+    assert_eq!(solidcraft_doc::format::FORMAT, 58, "this regression exercises the format-58 cold container");
+    let mut failures = Vec::new();
+    for (command, params) in [
+        ("solid.extrude", json!({"face": FRONT_TRIANGLE_FACE, "distance": 5.0, "operation": "join"})),
+        ("solid.press_pull", json!({"face": FRONT_TRIANGLE_FACE, "distance": 5.0})),
+    ] {
+        let mut s = front_triangle();
+        let reply = s.execute(command, &params).unwrap_or_else(|error| panic!("setup: {command}: {error}"));
+        let feature =
+            reply.get("feature").and_then(Value::as_u64).or_else(|| s.doc.features.last().map(|feature| feature.id)).expect("the join feature");
+        assert_eq!(feature, 28, "{command}: the join is feature 28");
+        assert_eq!(s.model.state().bodies.len(), 1, "{command}: setup joins to one body");
+
+        let refs = build_refs(&s, &expected);
+        let names: BTreeSet<_> = refs.iter().map(|(name, ..)| name.as_str()).collect();
+        assert_eq!(names, expected.keys().copied().collect::<BTreeSet<_>>(), "{command}: setup has the four historical sibling names");
+        let sketch_ids = install(&mut s, &refs);
+        assert_eq!(
+            persisted_face_names(s.doc.as_ref(), &sketch_ids),
+            expected.keys().copied().map(str::to_string).collect(),
+            "{command}: setup persists the four face names"
+        );
+
+        check_refs(&s, command, "5.0", &refs, &expected, &sketch_ids, &mut failures);
+        s.execute("timeline.edit", &json!({"feature": feature, "set": {"extent.distance": "5.1 mm"}}))
+            .unwrap_or_else(|error| panic!("setup: {command} edit to 5.1: {error}"));
+        check_refs(&s, command, "5.1", &refs, &expected, &sketch_ids, &mut failures);
+        s.execute("timeline.edit", &json!({"feature": feature, "set": {"extent.distance": "5.0 mm"}}))
+            .unwrap_or_else(|error| panic!("setup: {command} edit back to 5.0: {error}"));
+        check_refs(&s, command, "5.0 again", &refs, &expected, &sketch_ids, &mut failures);
+
+        let bytes = solidcraft_io::write_design_container(s.doc.as_ref()).unwrap_or_else(|error| panic!("setup: {command} save: {error}"));
+        let saved = solidcraft_io::read_design(&bytes).unwrap_or_else(|error| panic!("setup: {command} reopen: {error}"));
+        assert_eq!(
+            persisted_face_names(&saved, &sketch_ids),
+            expected.keys().copied().map(str::to_string).collect(),
+            "{command}: setup saved the four face names"
+        );
+        let mut reopened = Session { doc: std::sync::Arc::new(saved), ..Session::default() };
+        reopened.refresh();
+        check_refs(&reopened, command, "format-58 cold reopen", &refs, &expected, &sketch_ids, &mut failures);
+    }
+
+    assert!(
+        failures.is_empty(),
+        "INT-1454: persisted downstream face references must keep exact certified siblings; {} problem(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
 #[test]
 fn front_triangle_original_order_audit_and_other_operations() {
     use solidcraft_kernel::{BoolOp, boolean, boolean_original_order};
