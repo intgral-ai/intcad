@@ -1,0 +1,65 @@
+# Temporary INT-1454 Windows-only evidence lane. Do not integrate.
+name: INT-1454 A6 Windows diagnostic
+
+on:
+  push:
+    branches: [diag/int1454-a6-wincheck]
+    paths: [.github/workflows/int1454-diagnostic.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: A6 Windows native and startup
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      A6_SOURCE: 581e606f0e30f3404b1bc9cd786a44bc015537ea
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 581e606f0e30f3404b1bc9cd786a44bc015537ea
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Bind source and toolchain
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force evidence | Out-Null
+          $source = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $source -ne $env:A6_SOURCE) { throw "Unexpected checkout" }
+          $dirty = git status --porcelain
+          if ($LASTEXITCODE -ne 0 -or $dirty) { throw "Checkout is not clean" }
+          @("source=$source", "workflow=$env:GITHUB_SHA", "attempt=$env:GITHUB_RUN_ATTEMPT", "ImageOS=$env:ImageOS", "ImageVersion=$env:ImageVersion", (rustc --version), (cargo --version)) | Set-Content evidence/source.txt
+      - name: Native startup checks and scoped A6 behavior
+        shell: pwsh
+        run: |
+          foreach ($filter in @(
+            "startup::tests", "native_crash::tests", "native_frame::tests",
+            "control_server::tests::refusal_owners_share_one_worker_and_one_bounded_queue",
+            "control_server::tests::the_limit_refusal_drain_uses_the_max_line_ceiling"
+          )) {
+            $log = "evidence/" + $filter.Replace(":", "_") + ".log"
+            cargo test -p solidcraft --bin intcad --profile ci --locked -- $filter 2>&1 | Tee-Object -FilePath $log
+            $code = $LASTEXITCODE
+            "exit=$code" | Add-Content $log
+            if ($code -ne 0) { exit $code }
+            if (-not (Select-String -Quiet -Path $log -Pattern 'test result: ok\. [1-9][0-9]* passed')) { throw "No passing tests selected: $filter" }
+          }
+      - name: Build desktop app and exercise startup
+        shell: pwsh
+        run: |
+          cargo build -p solidcraft --profile ci --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-FileHash -Algorithm SHA256 target/ci/intcad.exe | Format-List | Out-File evidence/binary-sha256.txt
+          & tools/windows-startup-smoke.ps1 -Exe target/ci/intcad.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & tools/windows-resize-smoke.ps1 -Exe target/ci/intcad.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: int1454-a6-windows-evidence
+          path: evidence/
+          if-no-files-found: error
