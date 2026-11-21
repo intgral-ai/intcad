@@ -18,7 +18,8 @@
 
 use sha2::{Digest, Sha256};
 use solidcraft_engine::entitlement::{
-    AuthenticatedHostScope, Capability, CredentialError, CredentialErrorCode, CredentialStore, GrantId, OperationId, Refusal, RefusalCode,
+    AccountId, AuthenticatedHostScope, Capability, CredentialError, CredentialErrorCode, CredentialStore, GrantId, HostSessionBinding,
+    InstallationId, OperationId, Refusal, RefusalCode,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -375,6 +376,26 @@ impl CredentialSession {
 
     pub fn is_persistent(&self) -> bool {
         self.inner.lock().map(|state| state.store.persistent()).unwrap_or(false)
+    }
+
+    /// The host's provable account, installation and session binding, or `None`.
+    ///
+    /// The binding is an opaque digest of the active product session and the persisted account and
+    /// installation. A provider-only login never produces a scope, and a missing persisted label
+    /// fails closed. Logout, a product-session exchange and switching accounts each change (or
+    /// remove) the binding, so a result admitted by an old session cannot commit into a new one.
+    pub fn authenticated_scope(&self) -> Option<AuthenticatedHostScope> {
+        let mut state = self.inner.lock().ok()?;
+        if state.locked {
+            return None;
+        }
+        if state.account.is_none() || state.installation.is_none() {
+            adopt_persisted_labels(&mut state)?;
+        }
+        let (account, installation, _) = bound_scope(&state)?;
+        let product = read_secret(&state, PRODUCT_SESSION_KEY)?;
+        let binding = session_binding_digest(&account, &installation, product.expose_secret());
+        Some(AuthenticatedHostScope::new(AccountId::new(account), InstallationId::new(installation), HostSessionBinding::new(binding)))
     }
 
     pub fn bind_scope(&self, scope: &AuthenticatedHostScope) -> Result<(), CredentialError> {
@@ -754,6 +775,21 @@ fn read_secret(state: &SessionState, key: &str) -> Option<Secret> {
     }
 }
 
+/// Adopt the account and installation labels a previous process persisted under the active
+/// product session. This is a restart path only: nothing is written and a provider-only session
+/// has no product secret, so it cannot synthesize a scope.
+fn adopt_persisted_labels(state: &mut SessionState) -> Option<()> {
+    let account = state.store.get(ACCOUNT_KEY).ok().flatten()?;
+    let installation = state.store.get(INSTALLATION_ID_KEY).ok().flatten()?;
+    if !safe_token(&account, MAX_ACCOUNT_BYTES) || !safe_token(&installation, MAX_IDENTIFIER_BYTES) {
+        return None;
+    }
+    read_secret(state, PRODUCT_SESSION_KEY)?;
+    state.account = Some(account);
+    state.installation = Some(installation);
+    Some(())
+}
+
 fn bound_scope(state: &SessionState) -> Option<(String, String, String)> {
     if state.locked {
         return None;
@@ -771,6 +807,25 @@ fn bound_scope(state: &SessionState) -> Option<(String, String, String)> {
     }
     let digest = scope_digest(&account, &installation);
     Some((account, installation, digest))
+}
+
+/// An opaque binding for the exact active product session. The product secret is never logged:
+/// the digest only distinguishes sessions that share an account and installation.
+fn session_binding_digest(account: &str, installation: &str, product_session: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(account.as_bytes());
+    hasher.update([0]);
+    hasher.update(installation.as_bytes());
+    hasher.update([0]);
+    hasher.update(product_session.as_bytes());
+    let digest = hasher.finalize();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        out.push(HEX[usize::from(byte >> 4)] as char);
+        out.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    out
 }
 
 fn scope_digest(account: &str, installation: &str) -> String {
