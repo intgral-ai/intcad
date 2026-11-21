@@ -3392,6 +3392,71 @@ pub(crate) fn cancel_unfinished(app: &mut SolveApp) -> bool {
     true
 }
 
+/// Which owner may act on Delete/Backspace in this input batch.
+///
+/// The shortcut pass runs before layout and sees the previous frame's focus. Only a release inside
+/// Files is evidence of a completed Files click; a button press alone is not a focus change. A
+/// Files release before the key keeps the key for Files unless any outside button follows it: a
+/// held press makes the target uncertain and must never authorize CAD deletion. Files buttons
+/// after the key retire it so the later Files handler cannot retarget. Without Files involvement,
+/// settled CAD keeps its Delete. Returns (retire both owners, leave the key for Files).
+fn destructive_ownership(panel: Option<egui::Rect>, files_keys: bool, ctx: &egui::Context) -> (bool, bool) {
+    use egui::{Event, Key};
+    let Some(panel) = panel else { return (false, false) };
+    let (files_buttons, files_releases, outside_buttons, keys) = ctx.input(|i| {
+        let mut files_buttons = Vec::new();
+        let mut files_releases = Vec::new();
+        let mut outside_buttons = Vec::new();
+        let mut keys = Vec::new();
+        for (index, event) in i.events.iter().enumerate() {
+            match event {
+                Event::PointerButton { pos, pressed, .. } => {
+                    if panel.contains(*pos) {
+                        files_buttons.push(index);
+                        if !pressed {
+                            files_releases.push(index);
+                        }
+                    } else {
+                        outside_buttons.push(index);
+                    }
+                }
+                Event::Key { key: Key::Delete | Key::Backspace, pressed: true, .. } => keys.push(index),
+                _ => {}
+            }
+        }
+        (files_buttons, files_releases, outside_buttons, keys)
+    });
+    let pointer_any = !files_buttons.is_empty() || !outside_buttons.is_empty();
+    let mut retire = false;
+    let mut to_files = false;
+    for key in keys {
+        let last_release = files_releases.iter().filter(|index| **index < key).max().copied();
+        if files_buttons.iter().any(|index| *index > key) {
+            // A later Files button can retarget the key in the later Files handler.
+            retire = true;
+        } else if let Some(release) = last_release {
+            // An outside button after the Files release makes ownership uncertain; it must not
+            // authorize CAD deletion (it may be a held press, not a completed click).
+            if outside_buttons.iter().any(|index| *index > release && *index < key) {
+                retire = true;
+            } else {
+                to_files = true;
+            }
+        } else if !pointer_any {
+            // Settled Files without pointer input keeps its accepted behavior; settled CAD is
+            // left to CAD.
+            if files_keys {
+                to_files = true;
+            }
+        } else if files_keys || files_buttons.iter().any(|index| *index < key) {
+            // Files may be taking or losing focus, but no Files release completed: uncertain.
+            retire = true;
+        }
+        // No Files involvement: CAD keeps its settled Delete.
+    }
+    (retire, to_files)
+}
+
 /// Global keyboard shortcuts (when no text field has focus).
 pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     crate::viewport_status::reconcile(app, ctx);
@@ -3412,9 +3477,12 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     // File is a custom Area, so it must claim Escape before the underlying editors and
-    // sketch shortcuts. Clear raw events too: egui may replay them on a layout pass.
+    // sketch shortcuts. A file question or the shortcut recorder has first refusal.
+    // Clear raw events too: egui may replay them on a layout pass.
     let file_menu_id = egui::Id::new("sc_file_menu");
-    if !app.native_file_menu
+    if app.file_tree.modal.is_none()
+        && !crate::keymap::capturing(app)
+        && !app.native_file_menu
         && ctx.data(|d| d.get_temp::<bool>(file_menu_id).unwrap_or(false))
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
@@ -3447,7 +3515,9 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
             return;
         }
     }
-    if crate::params_dialog::cancel_on_escape(app, ctx) {
+    // A file question is above the nonmodal Parameters editor. All earlier file-menu and
+    // shortcut-recorder first-refusal handlers still run in their established order.
+    if app.file_tree.modal.is_none() && crate::params_dialog::cancel_on_escape(app, ctx) {
         return;
     }
     // A dimension value that is taking the keyboard: letters belong to it (a parameter name
@@ -3488,6 +3558,12 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
         }
         return;
     }
+    // Frame-entry ownership survives an editor closing or a layout re-pass, but gates only
+    // application key dispatch: reconciliation and Escape first-refusal above must still run.
+    if app.file_tree.modal.is_some() || app.clipboard_input.entry_keyboard_owned {
+        app.viewport.key_hold = None;
+        return;
+    }
     // A quick chord can press and release all modifiers in one frame. Dispatch each key
     // with its own modifiers, not the final frame state (an unbound Ctrl+Shift+A is not A).
     let keys: Vec<_> = ctx.input(|i| {
@@ -3498,17 +3574,39 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
             )
             .collect()
     });
-    // A theme pasted on the Interface page is a theme, not copied components (#8226).
-    crate::prefs::take_theme_paste(app, ctx);
     // Home hides the design: only New, Open and Preferences work there.
     let shown = design_shown(app);
-    if shown {
-        crate::edit_clipboard::handle(app, ctx);
-    } else {
-        crate::edit_clipboard::flush(app, ctx);
+    // The Files tree can have the keyboard only while it is the open panel and the window is wide
+    // enough to draw its body. A content width below the panel-plus-view minimum cannot fit; above
+    // it, the last frame's drawn panel is the pre-layout evidence.
+    let files_rail = crate::right_rail::shown(app) && crate::right_rail::open(app) == Some(crate::right_rail::Item::Files);
+    let files_fit = ctx.content_rect().width() >= crate::right_rail::MIN_VIEW + crate::right_rail::MIN_PANEL;
+    let files_panel = if files_rail && files_fit { app.shell.right_rail_panel } else { None };
+    let files_keys = app.file_tree.focused && files_panel.is_some();
+    // Ordered button events decide destructive ownership; the final pointer may have moved away.
+    let (retire_destructive, destructive_to_files) = destructive_ownership(files_panel, files_keys, ctx);
+    if retire_destructive {
+        // Retire both the effective and replay copies so the later Files handler cannot retarget.
+        ctx.input_mut(|i| {
+            let keep = |event: &egui::Event| !matches!(event, egui::Event::Key { key: egui::Key::Delete | egui::Key::Backspace, .. });
+            i.events.retain(keep);
+            i.raw.events.retain(keep);
+        });
     }
+    // Only clipboard mutation waits for current widget/dialog ownership in `finish_input`.
     for (k, repeat, mods) in keys {
         use egui::Key;
+        // Delete and Backspace are destructive. While Files owns the keys, or a click can move
+        // them into or out of Files in this same batch, neither owner may receive them from the
+        // stale pre-layout focus.
+        if matches!(k, Key::Delete | Key::Backspace) && (retire_destructive || destructive_to_files) {
+            continue;
+        }
+        // A click in the Files tree gives it the keyboard until a click lands elsewhere: the keys
+        // it acts on are for the files, not also for the design or the view.
+        if files_keys && crate::file_tree::takes_key(k, mods) {
+            continue;
+        }
         // Only Esc pressed twice in a row finishes a sketch: any other key in between resets it.
         if k != Key::Escape {
             app.last_escape = None;

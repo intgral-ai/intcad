@@ -175,6 +175,7 @@ mod extrude_edit_tests;
 mod extrude_preview;
 mod file_load;
 mod file_picker;
+pub(crate) mod file_tree;
 pub(crate) mod frame_watch;
 #[cfg(test)]
 mod history_off_thread_tests;
@@ -593,6 +594,8 @@ pub struct SolveApp {
     pub gesture: mouse_gesture::State,
     /// Browser tree state (reveal, groups being edited, occurrence moves).
     pub tree: browser::TreeState,
+    /// The Files panel: one local folder as a tree, the designs it opens, and file operations.
+    pub(crate) file_tree: file_tree::FileTree,
     /// A saved design copied for insertion into another open document.
     pub linked_design_clipboard: Option<String>,
     /// The S box (command search at the cursor): recent and pinned commands.
@@ -659,6 +662,7 @@ pub struct SolveApp {
     /// Text a copy left for the system clipboard, written on the next frame (so a paste event
     /// follows: the window system sends one only while the clipboard holds text).
     pub(crate) clipboard_text: Option<String>,
+    pub(crate) clipboard_input: edit_clipboard::InputBatch,
     /// Component placements copied with Copy (by path): Paste places new instances of them in
     /// the active component, Paste New (Ctrl+Shift+V) independent copies.
     pub copied_placements: Vec<Vec<u64>>,
@@ -881,6 +885,7 @@ impl SolveApp {
             menu: context_menu::MenuState::default(),
             gesture: mouse_gesture::State::default(),
             tree,
+            file_tree: file_tree::FileTree::new(),
             linked_design_clipboard: None,
             sbox: shortcut_box::ShortcutBox::default(),
             keymap: keymap::Keymap::default(),
@@ -914,6 +919,7 @@ impl SolveApp {
             last_command: None,
             copied_bodies: Vec::new(),
             clipboard_text: None,
+            clipboard_input: edit_clipboard::InputBatch::default(),
             copied_placements: Vec::new(),
             cut: Default::default(),
             clipboard_stamp: 0,
@@ -2988,6 +2994,7 @@ impl SolveApp {
         let _language = crate::i18n::scope(&self.preferences.language);
         self.frame_clock.record(ctx.input(|i| f64::from(i.unstable_dt)));
         panel_runtime::tick_app(self);
+        crate::file_tree::drain_documents(self, ctx);
         // Sleep/wake often skips frames without a device-lost signal; refresh egui GPU textures
         // when the frame clock jumps so the chrome is not stuck blank (#8749).
         let frame_time = ctx.input(|i| i.time);
@@ -3055,6 +3062,7 @@ impl SolveApp {
         issue_report::tick(self, ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
+        edit_clipboard::begin_input(self, ctx);
         if self.issue_report.draft.is_none() && self.file_picker.is_none() {
             // Completion owns its keys before either CAD shortcuts or text editors see them.
             if !keymap::capturing(self) {
@@ -3177,6 +3185,7 @@ impl SolveApp {
         if self.file_picker.is_none() {
             issue_report::show(self, ui.ctx());
         }
+        edit_clipboard::finish_input(self, ui.ctx());
         if !self.home.open {
             agent_cursor::paint(self, ui.ctx());
         }

@@ -379,7 +379,7 @@ fn an_empty_panel_shows_one_centred_block() {
     let mut h = window(LayoutMode::Floating, 1400);
     // Review lists the DFM check's findings instead of an empty block: its own empty state is
     // the check's entry, tested with the panel in `dfm_review_tests`.
-    for item in Item::ALL.into_iter().filter(|item| *item != Item::Review) {
+    for item in Item::ALL.into_iter().filter(|item| !matches!(item, Item::Review | Item::Files)) {
         h.call("ui.prefs", json!({"right_rail_open": item.id()}));
         h.settle();
         let panel = rect_of("rail:panel").unwrap();
@@ -388,8 +388,13 @@ fn an_empty_panel_shows_one_centred_block() {
         let centre = f64::from(panel.center().x);
         assert!((x - centre).abs() <= 1.0 && (note_x - centre).abs() <= 1.0, "{item:?}: centred across the panel: {x} {note_x} {centre}");
         assert!(note_y > y && (y - f64::from(panel.center().y)).abs() < 60.0, "{item:?}: in the panel's middle: {y} {note_y} {panel:?}");
-        for other in Item::ALL.into_iter().filter(|other| *other != item && *other != Item::Review) {
+        for other in Item::ALL.into_iter().filter(|other| *other != item && !matches!(other, Item::Review | Item::Files)) {
             assert!(h.widget(other.empty()).is_none() && h.widget(other.note()).is_none(), "{item:?}: nothing of {other:?}");
         }
     }
+    // Files has a state of its own: with no folder chosen it offers one.
+    h.call("ui.prefs", json!({"right_rail_open": "files"}));
+    h.settle();
+    assert!(rect_of("files:empty").is_some() && rect_of("files_open_folder").is_some(), "Files offers a folder");
+    assert!(h.widget(Item::Files.empty()).is_none(), "the old empty block is not drawn over it");
 }

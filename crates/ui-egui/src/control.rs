@@ -37,6 +37,8 @@
 //! - `ui.confirm {accept?}`: the Delete confirmation (without `accept`: what it lists)
 //! - `ui.shortcut {command, key?, slot?, replace?}`: a command's keys, or bind one ("" clears)
 //! - `ui.help {item?: about|updates|shortcuts|report}`: the Help menu; returns the version and diagnostics
+//! - `ui.files {root?, show_hidden?, refresh?, open?, locate?}`: the Files panel's folder and its
+//!   visible rows; `root` is a folder path or null
 //! - `ui.prefs {...}`: the preferences (default_units, nav, zoom_reverse, orbit_around, msaa,
 //!   length_decimals, angle_decimals); returns them all
 //! - `ui.capture {action?: capture|revert|cancel}`: the Capture Position question
@@ -1386,6 +1388,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             },
             None => ok(json!({"question": app.tree.capture_prompt, "pending_moves": app.session.pending_moves.len()})),
         },
+        "ui.files" => wrap(crate::file_tree::control(app, p)),
         "ui.prefs" => wrap(crate::prefs::control(app, p)),
         "ui.agent_chat" => wrap(crate::agent_chat::control(app, ctx, p)),
         "ui.help" => match s("item") {

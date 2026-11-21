@@ -291,12 +291,24 @@ fn panel(app: &mut SolveApp, ui: &mut egui::Ui, item: Item) {
     let t = Tokens::get();
     let full = ui.max_rect();
     let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER.min(full.height())));
-    let title = egui::UiBuilder::new().max_rect(header.shrink2(vec2(t.space_16, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center));
-    ui.scope_builder(title, |ui| ui_kit::text(ui, item.title(), ui_kit::Text::Heading(item.id())));
+    // Files is named after the folder it browses; the other panels keep their own name.
+    let title = if item == Item::Files {
+        app.file_tree
+            .root()
+            .and_then(|root| root.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| item.title().to_string())
+    } else {
+        item.title().to_string()
+    };
+    let header_ui = egui::UiBuilder::new().max_rect(header.shrink2(vec2(t.space_16, 0.0))).layout(egui::Layout::left_to_right(egui::Align::Center));
+    ui.scope_builder(header_ui, |ui| ui_kit::text(ui, &title, ui_kit::Text::Heading(item.id())));
     ui.painter().hline(full.x_range(), header.bottom() - 0.5, t.primary_border(t.border));
     let body = Rect::from_min_max(pos2(full.left(), header.bottom()), full.max);
     if item == Item::Review {
         crate::dfm_review::panel(app, ui, body);
+    } else if item == Item::Files {
+        crate::file_tree::panel(app, ui, body);
     } else {
         empty(ui, body, item);
     }
