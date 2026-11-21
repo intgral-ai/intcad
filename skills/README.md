@@ -6,6 +6,7 @@ description that tell the agent when to load it, and an optional supporting refe
 
 The modelling documents are built into SolidCraft: its MCP server's `skill_reference` tool returns them, so an
 agent without file access (such as the one in SolidCraft's own chat) can still read a skill's reference.
+Intcad's built-in agent also carries modeling, editing, checking and mechanisms as files, the `modelling-skills` set (`packages/mastra-runtime/agent/skills.mjs`): its package check fails when the packaged copy is not this folder as it is, so a change here needs a new agent package. Keep each SKILL.md's `name` equal to its folder and its description under 1,024 characters, or Mastra Code skips it.
 The contributor skills (everything except modeling, editing, checking and mechanisms) are for repository work and are not embedded in that tool. `AGENTS.md` routes to them; `cargo xtask skills` fails when its table and this folder disagree or a file, `cargo xtask` command or skill they name is gone.
 
 | Skill | Loads when the agent |
