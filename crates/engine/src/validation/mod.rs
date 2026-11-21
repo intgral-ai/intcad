@@ -31,8 +31,8 @@ pub use error::{ErrorCode, ValidationError, WireError};
 pub use keys::{SubmissionKey, generate as generate_submission_key, run_id as generate_run_id, uuid_v4};
 pub use profile::{
     CheckProfile, CheckRequirement, MAX_CHECKS, MAX_REQUIREMENTS, MeasurementRequirement, NATIVE_BASIC_ID, NATIVE_BASIC_VERSION,
-    ParameterRequirement, ProfileRef, measurement_requirements, native_basic_profile, parameter_requirements, profile_digest, profile_ref,
-    task_profile, validate_profile, verify_profile_ref,
+    ParameterRequirement, ProfileRef, has_dfm_check, measurement_requirements, native_basic_profile, parameter_requirements, profile_digest,
+    profile_ref, task_profile, validate_profile, verify_profile_ref,
 };
 pub use report::{
     ArtifactRef, CancelResult, CheckResult, CheckState, ReportResult, RunStatus, RunnerIdentity, SubmitResult, ValidationReport, ValidationState,
@@ -68,11 +68,18 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use store::{AdmissionRecord, RECORD_SCHEMA, StateRecord, Store, SubmissionRecord, WorkerRecord};
+use store::{AdmissionRecord, ControlledRecord, RECORD_SCHEMA, StateRecord, Store, SubmissionRecord, WorkerRecord};
 
 use crate::schema::snapshot::CandidateRef;
 
 type Result<T> = std::result::Result<T, ValidationError>;
+
+/// Host-reserved identity and measured stop for one controlled submission.
+struct ControlledSubmission<'a> {
+    run_id: &'a str,
+    operation_id: &'a str,
+    stop_at_ms: u64,
+}
 
 /// A monotonic-enough wall clock, injectable so expiry and deadlines are deterministic in tests.
 pub trait Clock: Send + Sync {
@@ -307,6 +314,46 @@ impl ValidationPort {
 
     /// `submit` with the original turn/session owner binding.
     pub fn submit_for(&self, candidate: &CandidateRef, profile: &ProfileRef, request_id: &str, owner: &str) -> Result<SubmitResult> {
+        self.submit_inner(candidate, profile, request_id, owner, None)
+    }
+
+    /// Submit one controlled job under a host-reserved run id and a durable operation marker.
+    ///
+    /// The marker is written before the queued state, so no ordinary pump can ever claim this run,
+    /// including after a crash and restart. The marker names the host operation and the measured
+    /// safe stop; only [`Self::start_controlled_run`] with the same operation and a live stop may
+    /// execute it. A replay with another reserved run id, or an expired stop, is refused.
+    #[allow(clippy::too_many_arguments)]
+    pub fn submit_controlled_for(
+        &self,
+        candidate: &CandidateRef,
+        profile: &ProfileRef,
+        request_id: &str,
+        owner: &str,
+        run_id: &str,
+        operation_id: &str,
+        stop_at_ms: u64,
+    ) -> Result<SubmitResult> {
+        if !keys::valid_run_id(run_id) {
+            return Err(ValidationError::invalid_request("the reserved run id is not a host run identity"));
+        }
+        if operation_id.is_empty() || operation_id.len() > 128 {
+            return Err(ValidationError::invalid_request("the controlled operation id is invalid"));
+        }
+        if self.clock.now_ms() >= stop_at_ms {
+            return Err(ValidationError::request_expired("the controlled safe-stop bound has already passed"));
+        }
+        self.submit_inner(candidate, profile, request_id, owner, Some(ControlledSubmission { run_id, operation_id, stop_at_ms }))
+    }
+
+    fn submit_inner(
+        &self,
+        candidate: &CandidateRef,
+        profile: &ProfileRef,
+        request_id: &str,
+        owner: &str,
+        controlled: Option<ControlledSubmission<'_>>,
+    ) -> Result<SubmitResult> {
         let _guard = self.admit.lock().map_err(|_| ValidationError::internal("validation admission lock was poisoned"))?;
         let now = self.clock.now_ms();
         let key = SubmissionKey::parse(request_id, now)?;
@@ -326,6 +373,11 @@ impl ValidationPort {
             if submission.owner != owner {
                 return Err(ValidationError::invalid_request("this submission key belongs to another owner"));
             }
+            if let Some(controlled) = controlled.as_ref()
+                && submission.run_id != controlled.run_id
+            {
+                return Err(ValidationError::idempotency_conflict("this submission key was used with another reserved run id"));
+            }
             return self.resume_submission(&key, &submission, profile, now);
         }
         // A crash between admission and the key file must not create a second job.
@@ -335,6 +387,11 @@ impl ValidationPort {
             }
             if admission.owner != owner {
                 return Err(ValidationError::invalid_request("this submission key belongs to another owner"));
+            }
+            if let Some(controlled) = controlled.as_ref()
+                && run_id != controlled.run_id
+            {
+                return Err(ValidationError::idempotency_conflict("this submission key was used with another reserved run id"));
             }
             let record = SubmissionRecord {
                 schema_version: RECORD_SCHEMA.into(),
@@ -365,7 +422,22 @@ impl ValidationPort {
             return Err(ValidationError::invalid_candidate("the runner engine version does not match the captured candidate manifest"));
         }
         self.enforce_admission(now)?;
-        let run_id = keys::run_id(now);
+        let run_id = match controlled.as_ref() {
+            Some(controlled) => {
+                if self.store.admission_path(controlled.run_id).is_file() {
+                    return Err(ValidationError::idempotency_conflict("the reserved run id already exists"));
+                }
+                let record = ControlledRecord {
+                    schema_version: RECORD_SCHEMA.into(),
+                    run_id: controlled.run_id.into(),
+                    operation_id: controlled.operation_id.into(),
+                    stop_at_ms: controlled.stop_at_ms,
+                };
+                self.store.write_json_new(&self.store.controlled_path(controlled.run_id), &record)?;
+                controlled.run_id.to_string()
+            }
+            None => keys::run_id(now),
+        };
         let record = SubmissionRecord {
             schema_version: RECORD_SCHEMA.into(),
             submission_key: key.text.clone(),
@@ -674,9 +746,19 @@ impl ValidationPort {
         Ok(CancelResult { run_id: run_id.into(), state: state.state })
     }
 
-    /// Run every queued job to a terminal state with the configured runner (the CLI's scheduler).
+    /// Run every unclassified queued job to a terminal state with the configured runner. The
+    /// free GUI DFM service uses this; controlled runs are never claimed.
     pub fn pump(&self) -> Result<()> {
         while let Some(job) = self.start_next()? {
+            self.run_claimed_with_stop(&job, None)?;
+        }
+        Ok(())
+    }
+
+    /// Run only free, non-DFM queued work. Ordinary CLI validation uses this so a pre-existing
+    /// DFM job (or controlled job) in the shared store is never executed by a free invocation.
+    pub fn pump_free(&self) -> Result<()> {
+        while let Some(job) = self.start_next_free()? {
             self.run_claimed_with_stop(&job, None)?;
         }
         Ok(())
@@ -698,23 +780,40 @@ impl ValidationPort {
         Ok(())
     }
 
-    /// Claim the oldest queued job and persist its worker identity. `None` when no worker slot or
-    /// no queued job is available.
+    /// Claim the oldest unclassified queued job and persist its worker identity. `None` when no
+    /// worker slot or no queued job is available. Controlled runs are excluded.
     pub fn start_next(&self) -> Result<Option<RunJob>> {
-        self.claim_queued(None)
+        self.claim_queued(None, false)
     }
 
-    /// Claim one exact queued run, or `None` when it is not queued, another worker owns it or no
-    /// worker slot is available.
+    /// Claim the oldest free, non-DFM job. Ordinary CLI validation uses this and can never run a
+    /// DFM or controlled job left by another entry.
+    pub fn start_next_free(&self) -> Result<Option<RunJob>> {
+        self.claim_queued(None, true)
+    }
+
+    /// Claim one exact controlled queued run. The durable marker must name the same operation
+    /// and the measured stop must still be ahead of the host clock; otherwise the run is never
+    /// executed and the caller releases its hold.
     ///
-    /// A controlled host names the run it admitted; it must not claim unrelated queued work with
-    /// [`Self::start_next`] and then run it under another operation's authority. This method
-    /// repairs only the named run's own queue problems and never executes a different run.
-    pub fn start_run(&self, run_id: &str) -> Result<Option<RunJob>> {
-        self.claim_queued(Some(run_id))
+    /// An ordinary [`Self::start_next`] never claims a controlled run, a `dfm.*` profile or a
+    /// run whose marker survived a crash, so old free paths cannot execute controlled work.
+    pub fn start_controlled_run(&self, run_id: &str, operation_id: &str) -> Result<Option<RunJob>> {
+        let marker_path = self.store.controlled_path(run_id);
+        let marker: ControlledRecord = self
+            .store
+            .read_json(&marker_path, 1 << 20)
+            .map_err(|_| ValidationError::not_ready("this run has no durable controlled classification; a free path may not claim it"))?;
+        if marker.run_id != run_id || marker.operation_id != operation_id {
+            return Err(ValidationError::idempotency_conflict("this controlled run belongs to another operation"));
+        }
+        if self.clock.now_ms() >= marker.stop_at_ms {
+            return Err(ValidationError::request_expired("the controlled safe-stop bound has passed"));
+        }
+        self.claim_queued(Some(run_id), false)
     }
 
-    fn claim_queued(&self, only: Option<&str>) -> Result<Option<RunJob>> {
+    fn claim_queued(&self, only: Option<&str>, free_only: bool) -> Result<Option<RunJob>> {
         let _guard = self.commit.lock().map_err(|_| ValidationError::internal("validation commit lock was poisoned"))?;
         let (_, running) = self.counts()?;
         if running >= self.limits.workers {
@@ -732,6 +831,17 @@ impl ValidationPort {
             };
             if state.state != ValidationState::Queued {
                 continue;
+            }
+            if only.is_none() {
+                if self.store.controlled_path(&run_id).is_file() {
+                    continue;
+                }
+                if free_only
+                    && let Ok(profile) = self.store.read_profile(&run_id)
+                    && has_dfm_check(&profile)
+                {
+                    continue;
+                }
             }
             let admission = self.load_admission(&run_id)?;
             queued.push((admission.created_at_ms, run_id));

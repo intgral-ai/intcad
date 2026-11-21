@@ -16,7 +16,8 @@ use solidcraft_engine::entitlement::{
 use solidcraft_engine::schema::snapshot::CandidateRef;
 use solidcraft_engine::validation::{
     CheckProfile, Limits, LiveDocument, LocalRunner, ProfileRef, RunControl, RunJob, Runner, RunnerIdentity, RunnerOutcome, SkillValidationRequest,
-    SystemClock, ValidationPort, ValidationState, native_basic_profile, now_ms, profile_ref, text_to_cad_profile_ref, validate_skill_snapshot,
+    SystemClock, ValidationPort, ValidationState, generate_run_id, native_basic_profile, now_ms, profile_ref, text_to_cad_profile_ref,
+    validate_skill_snapshot,
 };
 
 /// `validate`'s lines in the top-level usage.
@@ -241,23 +242,47 @@ pub fn run_controlled_check(
     };
     let grant = billing.admit(operation, Capability::Dfm, EntryCategory::CliDfm).map_err(|error| coded_refusal(error.code, error.message))?;
     drop(grant); // A grant is execution authority, not a value the CLI stores or logs.
+    let now = now_ms();
+    let stop_at_ms = now.saturating_add(duration_ms(bound));
+    let reserved_run = generate_run_id(now);
 
     enum Claimed {
         Ran(String),
         Replayed(String, ValidationState),
     }
 
+    let mut executed = false;
+    let mut uncertain = false;
     let run = (|| -> Result<Claimed, String> {
         let reference = port.register_profile(profile).map_err(|error| format!("PROFILE_UNSUPPORTED: {error}"))?;
-        let submitted = port.submit_for(candidate, &reference, request_id, owner).map_err(|error| error.to_string())?;
+        let submitted = port
+            .submit_controlled_for(candidate, &reference, request_id, owner, &reserved_run, operation.as_str(), stop_at_ms)
+            .map_err(|error| error.to_string())?;
+        if submitted.run_id != reserved_run {
+            return Err(coded_refusal(RefusalCode::OperationConflict, "the controlled run identity does not match the reservation"));
+        }
         if submitted.state.is_terminal() {
             // The durable run already exists. This invocation produced nothing and must not charge.
             return Ok(Claimed::Replayed(submitted.run_id, submitted.state));
         }
-        let Some(job) = port.start_run(&submitted.run_id).map_err(|error| error.to_string())? else {
-            return Err(coded_refusal(RefusalCode::UnsafeToStart, "the admitted run could not be claimed by this host; it was not executed"));
+        let claimed = port.start_controlled_run(&submitted.run_id, operation.as_str()).map_err(|error| error.to_string())?;
+        let Some(job) = claimed else {
+            let state = port.status(&submitted.run_id).map_err(|error| error.to_string())?.state;
+            return match state {
+                ValidationState::Queued => {
+                    Err(coded_refusal(RefusalCode::UnsafeToStart, "the admitted run could not be claimed by this host; it was not executed"))
+                }
+                ValidationState::Running => {
+                    uncertain = true;
+                    Err(coded_refusal(
+                        RefusalCode::AuthUnavailable,
+                        "another worker owns the admitted run; its outcome is not proven and its hold is kept",
+                    ))
+                }
+                _ => Ok(Claimed::Replayed(submitted.run_id, state)),
+            };
         };
-        let stop_at_ms = now_ms().saturating_add(duration_ms(bound));
+        executed = true;
         port.run_claimed_with_stop(&job, Some(stop_at_ms)).map_err(|error| error.to_string())?;
         Ok(Claimed::Ran(submitted.run_id))
     })();
@@ -275,6 +300,13 @@ pub fn run_controlled_check(
             settle_check(billing, operation, false)?;
             Ok(ControlledCheck { run_id, state, report_produced: false })
         }
+        Err(error) if executed || uncertain => Err(coded_refusal(
+            RefusalCode::AuthUnavailable,
+            format!(
+                "the controlled check may have started but its result is not proven; keep operation {} and settle it, never rerun it: {error}",
+                operation.as_str()
+            ),
+        )),
         Err(error) => {
             settle_check(billing, operation, false)?;
             Err(error)
@@ -374,7 +406,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             }
             let reference = port.register_profile(profile).map_err(|error| error.to_string())?;
             let submitted = port.submit_for(&request.candidate, &reference, &request.request_id, owner).map_err(|error| error.to_string())?;
-            port.pump().map_err(|error| error.to_string())?;
+            port.pump_free().map_err(|error| error.to_string())?;
             let status = port.status(&submitted.run_id).map_err(|error| error.to_string())?;
             print_json(&serde_json::to_value(status).map_err(|error| error.to_string())?, output(args))
         }
