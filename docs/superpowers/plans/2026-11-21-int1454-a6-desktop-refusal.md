@@ -4,11 +4,17 @@
 
 **Goal:** Let the desktop deliver its existing connection-limit refusal without holding up admissions.
 
-**Architecture:** Keep the desktop server, its two listener entry points and their shared admission counter. Use one fixed disposal worker per listener, with bounded, nonblocking admission to that worker. Only disposal handles refused connections; normal authenticated dispatch is unchanged.
+**Architecture:** Keep the desktop server, its two listener entry points and their shared admission counter. Use one fixed process-wide disposal worker and one waiting slot shared by both listeners, with bounded, nonblocking admission to it. Only disposal handles refused connections; normal authenticated dispatch is unchanged.
 
 **Tech Stack:** Rust 1.99.1, desktop Rust test module, existing CI.
 
 **Spec:** INT-1454 SEC-3/A6 and CD-3/CD-4. This is refusal-delivery parity, not A2 shared-server adoption.
+
+## L3 amendment: bound disposal across conversations
+
+L3 found that the per-listener worker design is not process-bounded: conversations can create additional detached listeners and closing a tab does not end their accept loops. Supersede the per-listener worker/queue sizing below with one process-wide worker and one waiting slot. Initialize it outside the accept loop and do not restart on each offer or listener creation. Keep refused jobs bound to the original absolute deadline and keep handoff nonblocking and fail-closed when the shared slot is busy or unavailable.
+
+Do not change listener ownership, tab teardown, token files, or A2 wiring as part of A6. Sharing disposal means listeners compete for the same waiting slot; the saturated path already has no orderly-close guarantee. Test the bound with multiple independent synthetic listener/conversation owners and their teardown, not real network traffic. Keep desktop TCP, Windows, and full CI as separate acceptance gates.
 
 ## Global Constraints
 
@@ -31,8 +37,8 @@
 
 - [x] Add an in-process behavioral RED at the disposal/admission seam with scripted bounded I/O: exact existing reply and write-side close before cleanup, no dispatch, and immediate release of the served-slot claim. Independently pin deadline/byte limit, I/O failure, and nonblocking full handoff using synthetic fixtures. Record exact source, selected tests and exits.
   - Round 1: exact RED scaffold preserved (`target/int1454-a6-evidence/red-scaffold.patch`), including the distinct `MAX_LINE + 1` ceiling and per-write deadline recomputation failures.
-- [x] Implement the smallest refusal-only change. Keep one worker per listener and a one-item handoff, one 500 ms absolute budget and the existing `MAX_LINE + 1` byte ceiling. Reuse existing refusal I/O where practical without altering unauthorized behavior. Stop if preserving the contract requires an A2 migration or a new public behavior.
-  - Round 1: connection-limit drain is `MAX_LINE + 1`; unauthorized drain remains 64 KiB; absolute write deadline is recomputed on every partial write.
+- [x] Implement the smallest refusal-only change. Keep a one-item handoff, one 500 ms absolute budget and the existing `MAX_LINE + 1` byte ceiling. Reuse existing refusal I/O where practical without altering unauthorized behavior. Stop if preserving the contract requires an A2 migration or a new public behavior.
+  - Round 1: connection-limit drain is `MAX_LINE + 1`; unauthorized drain remains 64 KiB; absolute write deadline is recomputed on every partial write. Round 1 sized one worker per listener; the L3 amendment above supersedes that with one process-wide worker and waiting slot, initialized outside the accept loops.
 - [x] Run the new and existing relevant desktop tests, targeted Clippy and format. Prefer remote CI if compiling the app exceeds local budget. Use ordinary checks; do not add an unreviewed workflow or claim unexecuted tests passed.
   - Round 1: 23/23 scoped tests, targeted Clippy and rustfmt pass locally; full/CI and Windows NOT_RUN.
 - [ ] Commit and push the owned task branch checkpoint, preserve command output, and request independent Spec and Quality review before integration. Keep A2 residuals and final candidate SHA evidence separate.
@@ -66,6 +72,19 @@ integration remain NOT_RUN.
 
 Round 5 fixes the clock in the existing limit-ceiling argument test so elapsed time cannot
 affect it. No production code changes. Real TCP, Windows and full CI are NOT_RUN.
+
+Round 6 applies the L3 amendment. The behavioral RED showed two independent synthetic
+listener/conversation owners running their refusals on different worker threads
+(`ThreadId(3)` vs `ThreadId(4)`). The implementation replaces the per-listener `Refusals`
+worker with one process-wide `OnceLock` worker and one `sync_channel(1)` waiting slot,
+initialized before the accept loops in both entry points. Listeners take cheap
+`RefusalOwner` handles that share that queue and never start or stop a worker. The new
+test drives two owners through one worker, rejects a third refusal while the slot is full
+without starting a worker, drops owner handles without starting or stopping one, and shows
+a surviving owner still reaches the same worker. The deadline-before-handoff, nonblocking
+fail-closed handoff, reply, auth/unauthorized behavior, loopback, defaults, 16-connection
+cap and listener ownership/API are unchanged. Scoped results: 32/32 control-server tests,
+targeted Clippy and rustfmt pass locally. Real TCP, Windows and full CI remain NOT_RUN.
 
 Round 0 was reviewed at `b70da3901b0eed054566322e20069d4b12e4e3e0`: Spec FAIL, Quality
 CONCERNS. Round 1 addressed F1-F6 in the same scoped desktop file. Independent Spec/Quality

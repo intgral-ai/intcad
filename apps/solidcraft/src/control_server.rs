@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, channel, sync_channel};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -40,6 +40,8 @@ const EVENT_GAP: Duration = Duration::from_millis(100);
 const TOKEN_WAIT: Duration = Duration::from_secs(5);
 
 static OPEN: AtomicUsize = AtomicUsize::new(0);
+/// The process's one refusal worker and waiting slot, started before any listener accepts.
+static REFUSALS: Refusals = Refusals::new();
 /// The token files this launch wrote (its control port, the agent chat's endpoint) and the
 /// token in each, removed when the app ends unless another launch has written the file since.
 static TOKEN_FILES: std::sync::Mutex<Vec<(std::path::PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
@@ -78,6 +80,7 @@ pub fn start(listen_on: control_auth::Listen, ctx: egui::Context) -> Receiver<Co
             };
             match listener {
                 Ok(l) => {
+                    REFUSALS.start();
                     if let Some(port) = listen_on_listener(l, token.clone(), tx, ctx, false) {
                         if matches!(listen_on, control_auth::Listen::Default) {
                             solidcraft_engine::note!(
@@ -119,6 +122,7 @@ pub fn listen_agent(tx: Sender<ControlRequest>, ctx: egui::Context) -> Option<u1
             return None;
         }
     };
+    REFUSALS.start();
     listen_on_listener(listener, token, tx, ctx, true)
 }
 
@@ -147,7 +151,7 @@ fn listen_on_listener(listener: TcpListener, token: String, tx: Sender<ControlRe
         }
     }
     let token = std::sync::Arc::new(token);
-    let refusals = Refusals::start();
+    let refusals = REFUSALS.owner();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             route(
@@ -362,34 +366,63 @@ impl RefusalIo for SocketRefusal {
     }
 }
 
-/// What the listener's refusal worker does with one refused connection.
+/// What the process's one refusal worker does with one refused connection.
 type RefusalJob = Box<dyn FnOnce() + Send>;
 
-/// A listener's one refusal worker and the single waiting slot for a refused connection: the
-/// worker is fixed for the listener's life, and `hand_off` never waits, so a busy or absent
-/// worker cannot hold up acceptance or add a thread.
+/// The process's refusal disposal: one worker and one waiting slot, started once outside any
+/// accept loop. Every listener and conversation takes a cheap [`RefusalOwner`] handle instead of
+/// starting a worker of its own, so extra listeners add no threads or queues.
 struct Refusals {
-    worker: Option<SyncSender<RefusalJob>>,
+    worker: OnceLock<Option<SyncSender<RefusalJob>>>,
+    #[cfg(test)]
+    starts: AtomicUsize,
 }
 
 impl Refusals {
-    /// Start the listener's one refusal worker. Without a thread, every refusal is closed at once,
-    /// still without holding up acceptance.
-    fn start() -> Self {
-        let (worker, jobs) = sync_channel::<RefusalJob>(1);
-        let started = std::thread::Builder::new()
-            .name("control-refusal".into())
-            .spawn(move || {
-                while let Ok(job) = jobs.recv() {
-                    job();
-                }
-            })
-            .is_ok();
-        Refusals { worker: started.then_some(worker) }
+    const fn new() -> Self {
+        Self {
+            worker: OnceLock::new(),
+            #[cfg(test)]
+            starts: AtomicUsize::new(0),
+        }
     }
 
-    /// Offer `job` without waiting. `false` when the worker's one slot is taken or there is no
-    /// worker: the caller fails closed instead of holding the listener.
+    /// Start the process's one refusal worker. A second call is a no-op. Without a worker, every
+    /// refusal fails closed rather than retrying on each offer or listener creation.
+    fn start(&self) {
+        self.worker.get_or_init(|| {
+            #[cfg(test)]
+            self.starts.fetch_add(1, Ordering::Relaxed);
+            let (worker, jobs) = sync_channel::<RefusalJob>(1);
+            std::thread::Builder::new()
+                .name("control-refusal".into())
+                .spawn(move || {
+                    while let Ok(job) = jobs.recv() {
+                        job();
+                    }
+                })
+                .ok()
+                .map(|_| worker)
+        });
+    }
+
+    /// A listener's or conversation's disposal handle. Taking or dropping it never starts or
+    /// stops the process worker; the shared waiting slot stays the same for every owner.
+    fn owner(&self) -> RefusalOwner {
+        RefusalOwner { worker: self.worker.get().and_then(|worker| worker.clone()) }
+    }
+}
+
+/// One listener's or conversation's share of the process refusal worker, cheap to take and drop.
+#[derive(Clone)]
+struct RefusalOwner {
+    worker: Option<SyncSender<RefusalJob>>,
+}
+
+impl RefusalOwner {
+    /// Offer `job` without waiting. `false` when the process queue's one waiting slot is taken,
+    /// the worker is absent, or it has ended: the caller fails closed instead of holding the
+    /// listener.
     fn hand_off_job(&self, job: RefusalJob) -> bool {
         match self.worker.as_ref() {
             Some(worker) => worker.try_send(job).is_ok(),
@@ -397,8 +430,8 @@ impl Refusals {
         }
     }
 
-    /// Refuse `stream` on the listener's worker, with one absolute deadline that starts here,
-    /// before the handoff; waiting in the slot does not reset it.
+    /// Refuse `stream` on the process worker, with one absolute deadline that starts here, before
+    /// the handoff; waiting in the shared slot does not reset it.
     fn hand_off(&self, stream: TcpStream) {
         let deadline = Instant::now() + REFUSAL_BUDGET;
         self.hand_off_job(Box::new(move || {
@@ -2000,7 +2033,9 @@ mod tests {
     /// accepting thread. A watchdog, not an elapsed threshold, decides.
     #[test]
     fn a_refusal_handoff_does_not_wait_for_the_reply() {
-        let refusals = Refusals::start();
+        let refusals = Refusals::new();
+        refusals.start();
+        let owner = refusals.owner();
         let (started_tx, started_rx) = channel::<()>();
         let (release_tx, release_rx) = channel::<()>();
         let job: RefusalJob = Box::new(move || {
@@ -2009,7 +2044,7 @@ mod tests {
         });
         let (done_tx, done_rx) = channel::<()>();
         let handoff = std::thread::spawn(move || {
-            refusals.hand_off_job(job);
+            owner.hand_off_job(job);
             let _ = done_tx.send(());
         });
         started_rx.recv_timeout(Duration::from_secs(5)).expect("the worker takes the refusal");
@@ -2022,7 +2057,10 @@ mod tests {
     /// once (its connection closed), and both accepted jobs run on that same worker thread.
     #[test]
     fn a_full_refusal_slot_closes_the_next_at_once_without_another_worker() {
-        let refusals = Arc::new(Refusals::start());
+        let queue = Refusals::new();
+        queue.start();
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1);
+        let refusals = queue.owner();
         let (first_tx, first_rx) = channel::<()>();
         let (second_tx, second_rx) = channel::<()>();
         let (first_started_tx, first_started_rx) = channel::<()>();
@@ -2064,6 +2102,7 @@ mod tests {
         assert!(!done_rx.recv_timeout(Duration::from_secs(5)).expect("the full handoff returned"), "the full worker refuses rather than queues");
         handoff.join().unwrap();
         assert!(dropped.load(Ordering::Relaxed), "the refused connection is closed at once");
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1, "a full slot starts no worker");
         let _ = first_tx.send(());
         let _ = second_tx.send(());
         let guard = Instant::now() + Duration::from_secs(5);
@@ -2080,7 +2119,7 @@ mod tests {
     /// than queuing it or waiting.
     #[test]
     fn a_refusal_with_no_worker_or_a_closed_worker_fails_closed() {
-        let absent = Refusals { worker: None };
+        let absent = Refusals::new().owner();
         let dropped = Arc::new(AtomicBool::new(false));
         let mark = Mark(dropped.clone());
         let job: RefusalJob = Box::new(move || {
@@ -2091,7 +2130,7 @@ mod tests {
 
         let (worker, jobs) = sync_channel::<RefusalJob>(1);
         drop(jobs);
-        let closed = Refusals { worker: Some(worker) };
+        let closed = RefusalOwner { worker: Some(worker) };
         let dropped = Arc::new(AtomicBool::new(false));
         let mark = Mark(dropped.clone());
         let job: RefusalJob = Box::new(move || {
@@ -2101,11 +2140,87 @@ mod tests {
         assert!(dropped.load(Ordering::Relaxed), "the refused connection is closed at once");
     }
 
+    /// Independent listener/conversation owners share the process's one refusal worker and one
+    /// waiting slot: taking or dropping a handle starts no worker, a rejection starts no worker,
+    /// and a surviving owner still reaches the same worker after another owner is torn down.
+    #[test]
+    fn refusal_owners_share_one_worker_and_one_bounded_queue() {
+        let queue = Refusals::new();
+        let early = queue.owner();
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 0, "taking an owner does not initialize");
+        assert!(!early.hand_off_job(Box::new(|| {})), "an owner before initialization fails closed");
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 0, "a refusal does not initialize");
+
+        queue.start();
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1);
+        let first_owner = queue.owner();
+        let second_owner = queue.owner();
+        queue.start();
+        let later_owner = queue.owner();
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1, "repeated listener initialization keeps one worker");
+
+        let (first_started_tx, first_started_rx) = channel::<()>();
+        let (release_tx, release_rx) = channel::<()>();
+        let threads = Arc::new(Mutex::new(Vec::new()));
+        let first = {
+            let threads = threads.clone();
+            Box::new(move || {
+                threads.lock().unwrap().push(std::thread::current().id());
+                let _ = first_started_tx.send(());
+                let _ = release_rx.recv();
+            }) as RefusalJob
+        };
+        assert!(first_owner.hand_off_job(first));
+        first_started_rx.recv_timeout(Duration::from_secs(5)).expect("the shared worker takes the first refusal");
+
+        let second = {
+            let threads = threads.clone();
+            Box::new(move || {
+                threads.lock().unwrap().push(std::thread::current().id());
+            }) as RefusalJob
+        };
+        assert!(second_owner.hand_off_job(second), "one shared waiting slot holds the second refusal");
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mark = Mark(dropped.clone());
+        let rejected: RefusalJob = Box::new(move || {
+            let _mark = mark;
+        });
+        assert!(!second_owner.hand_off_job(rejected), "the shared slot rejects the next refusal");
+        assert!(dropped.load(Ordering::Relaxed), "the rejected refusal is closed at once");
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1, "a rejection starts no worker");
+
+        drop(first_owner);
+        drop(later_owner);
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1, "owner teardown starts or stops no worker");
+
+        let _ = release_tx.send(());
+        let guard = Instant::now() + Duration::from_secs(5);
+        while threads.lock().unwrap().len() < 2 && Instant::now() < guard {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let ids = threads.lock().unwrap();
+        assert_eq!(ids.len(), 2, "the queued refusal is delivered after the first");
+        assert_eq!(ids[0], ids[1], "one worker delivers both owners' refusals");
+        let worker_id = ids[0];
+        drop(ids);
+
+        let (later_tx, later_rx) = channel::<std::thread::ThreadId>();
+        let later: RefusalJob = Box::new(move || {
+            let _ = later_tx.send(std::thread::current().id());
+        });
+        assert!(second_owner.hand_off_job(later), "a surviving owner still reaches the shared worker");
+        let later_id = later_rx.recv_timeout(Duration::from_secs(5)).expect("the surviving owner's refusal runs");
+        assert_eq!(later_id, worker_id, "the surviving owner stays on the one worker");
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1, "owner teardown added no worker");
+    }
+
     /// A refusal queued while the worker is busy keeps the deadline set before the handoff: once
     /// it passes it writes nothing, and the worker delivers it without extending the budget.
     #[test]
     fn a_queued_refusal_expires_without_extending_its_deadline() {
-        let refusals = Arc::new(Refusals::start());
+        let queue = Refusals::new();
+        queue.start();
+        let refusals = queue.owner();
         let (first_started_tx, first_started_rx) = channel::<()>();
         let (release_tx, release_rx) = channel::<()>();
         let first: RefusalJob = Box::new(move || {
