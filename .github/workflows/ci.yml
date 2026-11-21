@@ -476,6 +476,29 @@ jobs:
           path: evidence/
           if-no-files-found: error
 
+  kernel-export:
+    name: Standalone solidcore workspace check
+    needs: changes
+    if: fromJSON(needs.changes.outputs.plan || '{}').jobs.kernel-export.decision == 'run'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: selection-plan
+          path: selection
+      - run: scripts/ci/build-jobs.sh
+      - run: python3 -I scripts/ci/main_merge.py execute --plan selection/plan.json --job kernel-export --out evidence/kernel-export
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: evidence-kernel-export
+          path: evidence/
+          if-no-files-found: error
+
   # No #5 bundle, #15 verifier CLI or #7 runtime is present on this branch.
   # Their Task 1 decisions/obligations are evaluated by ci, not successful stub jobs.
   # A present/required but unwired owner consumer fails for missing job/receipt.
@@ -832,7 +855,7 @@ jobs:
 
   ci:
     name: ci
-    needs: [changes, repo, web-offline, pr-policy, artifact-policy, clippy, contract-rust, runtime, contract-ts, integration, packages, rust, wasm, dependency-advisories, build-tests, property-tests, action-matrix, action-matrix-determinism, doc-tests, oracle, windows-fxc, windows-startup, riscv64-gates]
+    needs: [changes, repo, web-offline, pr-policy, artifact-policy, clippy, contract-rust, runtime, contract-ts, integration, packages, rust, wasm, kernel-export, dependency-advisories, build-tests, property-tests, action-matrix, action-matrix-determinism, doc-tests, oracle, windows-fxc, windows-startup, riscv64-gates]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

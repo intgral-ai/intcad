@@ -50,6 +50,9 @@ NIGHTLY_WORKFLOW = ".github/workflows/native-baseline.yml"
 WEB_OFFLINE_PREFIXES = ("apps/solidcraft-web/", "packaging/web/")
 WEB_OFFLINE_FILES = (".github/workflows/pages.yml", "xtask/src/main.rs",
                      "xtask/src/web_offline.rs", "xtask/src/web_offline_test.rs")
+KERNEL_EXPORT_INPUTS = frozenset((".github/workflows/ci.yml", ".gitattributes",
+                                  "scripts/ci/main_merge.py", "scripts/ci/plan.py", "scripts/ci/affected.py",
+                                  "scripts/ci/gate.py", "scripts/ci/build-jobs.sh"))
 # Only these reviewed metadata/owning utility inputs are payload-free. Unknown
 # packaging paths still require the real package consumers, never a prefix waiver.
 PACKAGING_FOUNDATION = frozenset(("packaging/mastra/policy.json", "packaging/mastra/source-records.json",
@@ -270,6 +273,11 @@ def make_plan(meta: dict, paths: list[str], inventory: dict, *, source_revision:
                              reason="always" if pr else "no_relevant_change", missingInputs=[])
     decide("rust", bool(rust_packages) or rust_full)
     decide("wasm", bool(rust_packages) or rust_full)
+    # The standalone build consumes the full exported subtree, not root Cargo
+    # inputs or the application workspace's reverse dependency graph.
+    decide("kernel-export", full or release_required or any(
+        path == "solidcore" or path.startswith("solidcore/") or path in KERNEL_EXPORT_INPUTS
+        for path in paths))
     # The offline/update check runs on full/release validation, and on the web app,
     # its packaging, the harness implementation and its Pages caller. Shared CI
     # inputs (rust_full) run it too, because its job definition can change there.

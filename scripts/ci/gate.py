@@ -23,7 +23,10 @@ import xml.etree.ElementTree as ET
 # Runtime/contract-ts consume Node's own reports; their evidence is the real
 # npm argv/exit codes, not a fabricated nextest listing.
 TEST_JOBS = frozenset(("rust", "contract-rust"))
-COMMAND_JOBS = frozenset(("repo", "pr-policy", "wasm", "web-offline", "artifact-policy", "runtime", "contract-ts", "integration", "packages"))
+COMMAND_JOBS = frozenset(("repo", "pr-policy", "wasm", "web-offline", "artifact-policy", "runtime", "contract-ts",
+                          "integration", "packages", "kernel-export"))
+KERNEL_EXPORT_COMMANDS = (("rustup", "toolchain", "install"),
+                          ("cargo", "check", "--workspace", "--all-targets", "--locked"))
 JOBS = TEST_JOBS | COMMAND_JOBS
 ROOT = Path(__file__).resolve().parents[2]
 KNOWN_FAILING = ROOT / "tests/KNOWN_FAILING_TESTS"
@@ -254,6 +257,9 @@ def validate_commands(commands, job, tests, junit=None):
     if job in COMMAND_JOBS:
         require(tests is None, "command-only job must have tests=null")
         require(all(c["exitCode"] == 0 for c in commands), "command exit is nonzero")
+        if job == "kernel-export":
+            require(tuple(tuple(c["argv"]) for c in commands) == KERNEL_EXPORT_COMMANDS,
+                    "kernel-export requires the toolchain install and locked workspace all-targets check")
         return
     require(isinstance(tests, dict), "test-bearing job requires test evidence")
     listings = [i for i, c in enumerate(commands) if c["argv"][:3] == ["cargo", "nextest", "list"]]

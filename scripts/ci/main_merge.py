@@ -13,6 +13,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
 import urllib.request
 
@@ -137,7 +139,7 @@ def native_commands(plan, *, full):
             ["cargo", "xtask", "known-failing", "--junit", "target/nextest/ci/junit.xml"]]
 
 
-def capture_commands(argvs, out):
+def capture_commands(argvs, out, *, cwd=None, env=None):
     """Capture real subprocess exit/argv; a log or failed command is never a receipt."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
@@ -146,20 +148,20 @@ def capture_commands(argvs, out):
     commands = []
     measurements = []
     for index, argv in enumerate(argvs):
-        started, disk_before = time.monotonic(), shutil.disk_usage(".").free
+        started, disk_before = time.monotonic(), shutil.disk_usage(cwd or ".").free
         print("EXEC " + json.dumps(argv), flush=True)
         # Native listing stdout must remain exact JSON, not a merged diagnostic log.
         listing = argv[:3] == ["cargo", "nextest", "list"]
         target = out / ("selection.json" if listing else f"command-{index}.log")
         with target.open("wb") as stdout, (out / f"command-{index}.stderr").open("wb") as stderr:
             try:
-                status = subprocess.run(argv, stdout=stdout, stderr=stderr, check=False).returncode
+                status = subprocess.run(argv, cwd=cwd, env=env, stdout=stdout, stderr=stderr, check=False).returncode
             except OSError as error:
                 stderr.write(str(error).encode())
                 status = 127
         commands.append(dict(argv=argv, exitCode=status))
         measurements.append(dict(commandIndex=index, elapsedSeconds=time.monotonic() - started,
-                                 diskFreeBefore=disk_before, diskFreeAfter=shutil.disk_usage(".").free))
+                                 diskFreeBefore=disk_before, diskFreeAfter=shutil.disk_usage(cwd or ".").free))
         (out / "resources.json").write_text(json.dumps(measurements, indent=2) + "\n", encoding="utf-8")
         (out / "commands.json").write_text(json.dumps(commands, indent=2) + "\n", encoding="utf-8")
         if not listing:
@@ -336,14 +338,46 @@ def wasm_commands():
              *[a for package in packages for a in ("-p", package)]]]
 
 
+def capture_kernel_export(plan, out):
+    """Check the selected Git tree outside the application Cargo workspace."""
+    with tempfile.TemporaryDirectory(prefix="kernel-export-") as directory:
+        temp = Path(directory).resolve()
+        gate.require(not temp.is_relative_to(Path.cwd()), "kernel export must be outside the checkout")
+        archive_path = temp / "kernel.tar"
+        argv = ["git", "archive", "--format=tar", plan["sourceRevision"], "--", "solidcore"]
+        print("EXPORT " + json.dumps(argv), flush=True)
+        with archive_path.open("wb") as stream:
+            subprocess.run(argv, stdout=stream, check=True)
+        check_revision(plan)
+        kernel = temp / "solidcore"
+        try:
+            with tarfile.open(archive_path) as archive:
+                archive.extractall(temp, filter="data")
+        except tarfile.TarError as error:
+            raise ValueError(f"kernel export extraction failed: {error}") from error
+        for name in ("Cargo.toml", "Cargo.lock", "rust-toolchain.toml"):
+            gate.require((kernel / name).is_file(), f"kernel export missing {name}")
+        check_revision(plan)
+        # Do not inherit root workspace choices. Rustup reads the exported
+        # rust-toolchain.toml; Cargo reads the exported .cargo/config.toml.
+        env = os.environ.copy()
+        env.pop("RUSTUP_TOOLCHAIN", None)
+        env.pop("CARGO_TARGET_DIR", None)
+        return capture_commands([list(argv) for argv in gate.KERNEL_EXPORT_COMMANDS], out, cwd=kernel, env=env)
+
+
 def execute_workflow(plan_file, job, out, *, full=False):
+    out = Path(out)
+    if job == "kernel-export":
+        (out / "receipt.json").unlink(missing_ok=True)
     raw = Path(plan_file).read_bytes()
     plan = gate.BoundPlan(raw)
     check_revision(plan)
     gate.require(plan["jobs"][job]["decision"] == "run", job + " is not selected")
-    out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    if job == "repo":
+    if job == "kernel-export":
+        argvs = None  # Export and run in its own temporary workspace below.
+    elif job == "repo":
         argvs = repository_commands(full=full or plan["scope"] == "full" or plan["releaseRequired"])
     elif job == "pr-policy":
         # Event fields go through JSON, never executable shell interpolation.
@@ -378,7 +412,7 @@ def execute_workflow(plan_file, job, out, *, full=False):
         junit = Path("target/nextest/ci/junit.xml")
         junit.unlink(missing_ok=True)
         selection = out / "selection.json"
-    commands = capture_commands(argvs, out)
+    commands = capture_kernel_export(plan, out) if job == "kernel-export" else capture_commands(argvs, out)
     if junit and junit.exists():
         (out / "junit.xml").write_bytes(junit.read_bytes())
     receipt = gate.record_receipt(raw, job, commands, selection, junit,

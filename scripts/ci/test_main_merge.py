@@ -298,7 +298,7 @@ pathlib.Path('toolchain-ready').touch()
     def test_kernel_export_selection_covers_kernel_inputs_and_its_ci_adapter(self):
         for path in ("solidcore/crates/record/src/lib.rs", "solidcore/Cargo.toml",
                      "solidcore/Cargo.lock", "solidcore/.cargo/config.toml", "solidcore/rust-toolchain.toml",
-                     "scripts/ci/main_merge.py"):
+                     "scripts/ci/main_merge.py", "scripts/ci/build-jobs.sh", "scripts/ci/affected.py", ".gitattributes"):
             with self.subTest(path=path):
                 self.assertEqual(self.plan([path])["jobs"].get("kernel-export", {}).get("decision"), "run")
         for path in ("docs/kernel-integration.md", "crates/base/src/lib.rs", "Cargo.lock",
@@ -333,6 +333,16 @@ pathlib.Path('toolchain-ready').touch()
         with self.assertRaises(subprocess.CalledProcessError):
             main_merge.execute_workflow(self.plan_file, "kernel-export", out)
         self.assertFalse((out / "commands.json").exists())
+        self.assertFalse((out / "receipt.json").exists())
+
+    def test_failed_kernel_export_never_leaves_an_old_receipt(self):
+        self.kernel_source()
+        self.plan(["scripts/ci/main_merge.py"])
+        out = self.root / "evidence/kernel-export"
+        main_merge.execute_workflow(self.plan_file, "kernel-export", out)
+        self.plan_file.write_text("{}")
+        with self.assertRaisesRegex(ValueError, "invalid plan version"):
+            main_merge.execute_workflow(self.plan_file, "kernel-export", out)
         self.assertFalse((out / "receipt.json").exists())
 
     def test_kernel_export_rejects_revision_movement_before_or_during_archive(self):
@@ -558,6 +568,7 @@ pathlib.Path('toolchain-ready').touch()
         self.assertIn("riscv64-gates", output)
 
     def test_full_validation_requires_platform_heavy_and_random_property_jobs(self):
+        self.kernel_source()
         self.foundation_evidence()
         value = main_merge.applicability.make_plan(self.meta, ["crates/base/src/lib.rs"],
                     main_merge.applicability.detect_inventory(self.root, []), source_revision=self.source,
@@ -571,10 +582,12 @@ pathlib.Path('toolchain-ready').touch()
             receipt = main_merge.gate.record_receipt(self.plan_file.read_bytes(), job, commands, None, None, set())
             (out / "receipt.json").write_text(json.dumps(receipt))
         main_merge.execute_workflow(self.plan_file, "pr-policy", self.root / "receipts/pr-policy")
-        extras = ["rust", "wasm", "web-offline", "clippy", "doc-tests", "oracle", "windows-fxc", "windows-startup",
-                  "property-tests", "build-tests", "action-matrix", "action-matrix-determinism", "dependency-advisories"]
+        main_merge.execute_workflow(self.plan_file, "kernel-export", self.root / "receipts/kernel-export")
+        extras = ["rust", "wasm", "web-offline", "kernel-export", "clippy", "doc-tests", "oracle", "windows-fxc", "windows-startup",
+                   "property-tests", "build-tests", "action-matrix", "action-matrix-determinism", "dependency-advisories"]
         self.needs.update({job: {"result": "success"} for job in extras})
-        self.assertEqual(self.aggregate()[0], 0)
+        status, output = self.aggregate()
+        self.assertEqual(status, 0, output)
         for job in extras:
             with self.subTest(job=job):
                 self.needs[job]["result"] = "skipped"

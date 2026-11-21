@@ -751,6 +751,14 @@ class ForkWorkflowContract(unittest.TestCase):
         self.assertNotIn("main_merge.py --base", self.workflow)
         self.assertNotIn("carried", self.workflow)
 
+    def test_kernel_export_is_a_selected_dependency_of_ci_with_an_evidence_artifact(self):
+        job = self.job("kernel-export")
+        self.assertIn("jobs.kernel-export.decision == 'run'", job)
+        self.assertIn("name: selection-plan", job)
+        self.assertIn("main_merge.py execute --plan selection/plan.json --job kernel-export --out evidence/kernel-export", job)
+        self.assertIn("name: evidence-kernel-export", job)
+        self.assertRegex(self.job("ci"), r"(?m)^    needs: \[[^\n]*\bkernel-export\b")
+
     def test_fork_native_uses_standard_runners_and_read_only_tokens(self):
         self.assertNotIn("blacksmith", self.workflow.lower())
         for path in sorted((self.root / ".github/workflows").glob("*.yml")):
