@@ -21,6 +21,9 @@ import main_merge  # noqa: E402
 class PendingFormatCleanup(unittest.TestCase):
     def test_cleanup_attempts_preserve_the_format_check_status(self):
         root = Path(__file__).resolve().parents[2]
+        # The throwaway repository must not inherit signing or other Git configuration.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_CONFIG")}
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         for failures, check_status, attempts in [(0, 0, 1), (2, 0, 3), (10, 0, 10), (10, 37, 10)]:
             with self.subTest(failures=failures, check_status=check_status), tempfile.TemporaryDirectory() as temp:
                 scratch = Path(temp)
@@ -49,7 +52,7 @@ cp() {
                     ["bash", "scripts/test-format-pending.sh"],
                     cwd=root,
                     env=dict(
-                        os.environ, BASH_ENV=str(startup), TMPDIR=temp, CLEANUP_EVENTS=str(events),
+                        env, BASH_ENV=str(startup), TMPDIR=temp, CLEANUP_EVENTS=str(events),
                         CLEANUP_FAILURES=str(failures), CHECK_STATUS=str(check_status),
                     ),
                     capture_output=True,
