@@ -2220,6 +2220,30 @@ fn unverified_names(body: &solidcraft_doc::ModelBody) -> Vec<(usize, String)> {
     (0..names.len()).filter(|&i| !solidcraft_doc::naming::face_name_exact(body, i)).map(|i| (i, names.get(i).cloned().unwrap_or_default())).collect()
 }
 
+/// INT-1454: before any join, the two loft walls the strict run reported as unverified must
+/// already carry exact names from the conic sections that swept them, and a stored reference to
+/// each must find the same face. This is the Doc role gap, not the split siblings.
+#[test]
+fn front_triangle_pre_join_loft_wall_identities_are_exact_and_resolve() {
+    let check = |session: &Session, body_name: &str, pinned: &[&str]| {
+        let state = session.model.state();
+        let body = state.body(body_name).expect("the pre-join body");
+        let unverified = unverified_names(body);
+        assert!(unverified.is_empty(), "{body_name} before the join: {unverified:?}");
+        for name in pinned {
+            let names = solidcraft_doc::naming::face_names(body);
+            let mut found = names.iter().enumerate().filter(|(_, n)| n.as_str() == *name).map(|(i, _)| i);
+            let index = found.next().unwrap_or_else(|| panic!("{body_name} has no face named {name}"));
+            assert!(found.next().is_none(), "{body_name} names more than one face {name}");
+            assert!(solidcraft_doc::naming::face_name_exact(body, index), "{body_name} {name} is not exact");
+            let point = solidcraft_doc::naming::named_face_point(&state, Some(body_name), name).expect("the stored name finds its face");
+            assert_eq!(solidcraft_doc::naming::face_name_at_body(body, point).as_deref(), Some(*name), "{body_name} {name} resolves back to itself");
+        }
+    };
+    check(&front_triangle(), "FrontTriangle", &["F6:side:e1", "F11:side:e1"]);
+    check(&front_triangle_tool(5.0), "Body1", &[]);
+}
+
 /// The approved strict invariant: every result face name is exact. If this refuses, the
 /// fallback must not be accepted; the panic lists the pre-join state for the report.
 fn assert_front_triangle_names_exact(body: &solidcraft_doc::ModelBody, target_unverified: &[(usize, String)], tool_unverified: &[(usize, String)]) {

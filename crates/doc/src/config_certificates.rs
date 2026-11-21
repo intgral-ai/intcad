@@ -1043,6 +1043,32 @@ mod tests {
         assert_eq!(ExactSketchCurves::new(&moved).find(&partial), None);
     }
 
+    /// INT-1454: a loft wall swept from an ellipse is a whole exact conic, which `find_along`
+    /// never reports (it only knows lines and arcs). `find_free_form` certifies it in either
+    /// direction, and stays ambiguous for a segment two curves share or an unmatched part.
+    #[test]
+    fn free_form_role_sources_are_exact_and_ambiguous_or_unmatched_segments_refuse() {
+        use solidcraft_sketch::CurveKind;
+        use solidcore_record::Vec2;
+        let mut source = solidcraft_sketch::Sketch::new();
+        let c = source.add_point(Vec2::ZERO, None).unwrap();
+        let m = source.add_point(Vec2::new(10., 0.), None).unwrap();
+        source.add_curve(CurveKind::Ellipse { c, m, r: 4. }, Some("e1")).unwrap();
+        let sketch = solved(source);
+        let exact = sketch.sketch.exact_segs(0).expect("an ellipse's four exact conics");
+        let curves = ExactSketchCurves::new(&sketch);
+        assert_eq!(curves.find_along(&exact[0]), None, "a conic is not an analytic line or arc");
+        assert_eq!(curves.find_free_form(&exact[0]).as_deref(), Some("e1"));
+        assert_eq!(curves.find_free_form(&exact[1].reversed()).as_deref(), Some("e1"), "either direction of the whole segment");
+        let Seg2::Conic { a, apex, b, w } = exact[0] else { panic!("an ellipse is made of conics") };
+        assert_eq!(curves.find_free_form(&Seg2::Conic { a, apex, b: b + Vec2::new(0.1, 0.), w }), None, "a changed segment is not the exact one");
+        let mut twice = sketch.clone();
+        let c2 = twice.sketch.add_point(Vec2::ZERO, None).unwrap();
+        let m2 = twice.sketch.add_point(Vec2::new(10., 0.), None).unwrap();
+        twice.sketch.add_curve(CurveKind::Ellipse { c: c2, m: m2, r: 4. }, Some("e2")).unwrap();
+        assert_eq!(ExactSketchCurves::new(&twice).find_free_form(&exact[0]), None, "two curves over one exact segment stay ambiguous");
+    }
+
     #[test]
     fn a_curve_drawn_over_a_projected_boundary_is_the_source() {
         use solidcore_record::Vec2;
