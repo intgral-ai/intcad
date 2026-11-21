@@ -373,14 +373,12 @@ impl CredentialSession {
         }
     }
 
-    /// Fail all credential and scope reads synchronously. This never takes the session lock, so a
-    /// caller can revoke on the window thread while a worker holds the lock for keyring IO.
-    /// The epoch advances first, so a reader already waiting on that lock cannot mistake a
-    /// later barrier clear for permission to return an old credential.
+    /// Fail all credential, scope and handoff operations synchronously. This never takes the
+    /// session lock, so a caller can revoke on the window thread while a worker holds the lock
+    /// for keyring IO. The barrier closes before the epoch advances, so no reader can load the
+    /// new epoch while the boolean is still open; the new epoch then invalidates readers and
+    /// writers that captured an older one before waiting on the session lock.
     pub fn revoke_in_process(&self) {
-        // The barrier closes first so a new reader cannot capture the new epoch and slip
-        // through before the boolean is published; the epoch then invalidates readers that
-        // passed the pre-check before this call.
         self.revoked.store(true, Ordering::SeqCst);
         self.epoch.fetch_add(1, Ordering::SeqCst);
     }

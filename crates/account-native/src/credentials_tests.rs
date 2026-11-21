@@ -245,6 +245,43 @@ fn account_switch_that_cannot_delete_old_credentials_fails_closed() {
     assert_eq!(session.bound_account().as_deref(), None);
     let mut handoff = session.clone();
     assert!(!CredentialHandoff::settlement_credential(&mut handoff, &operation(), crate::http::Secret::new("new_SECRET")).is_ok());
+
+    // The failed delete leaves the old bearer in the store, but the durable sign-out marker
+    // written before the first delete keeps a fresh process from restoring or handing it off.
+    assert!(store.contains_key(PRODUCT_SESSION_KEY), "the failed delete deliberately leaves the old bearer");
+    store.take_calls();
+    let fresh = CredentialSession::new(Box::new(store.clone()));
+    assert!(fresh.logout_pending().unwrap());
+    assert!(WireCredentials::product_session(&fresh).is_none());
+    assert!(fresh.authenticated_scope().is_none());
+    assert_eq!(fresh.bound_account().as_deref(), None);
+    let mut fresh_handoff = fresh.clone();
+    assert!(!CredentialHandoff::settlement_credential(&mut fresh_handoff, &operation(), crate::http::Secret::new("new_SECRET")).is_ok());
+    assert!(
+        store.take_calls().iter().all(|call| !matches!(call, Call::Set(_) | Call::Delete(_))),
+        "the fresh process must refuse the handoff without writing to the inert store"
+    );
+}
+
+#[test]
+fn a_revoked_session_refuses_handoff_writes_without_touching_the_store() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_one", "product_one_SECRET");
+    session.bind_scope(&scope("acct_one", "inst_one")).unwrap();
+    store.take_calls();
+
+    session.revoke_in_process();
+    let mut handoff = session.clone();
+    for refusal in [
+        CredentialHandoff::initial_lease_proof(&mut handoff, &grant(), Capability::Chat, crate::http::Secret::new("proof_SECRET")),
+        CredentialHandoff::execution_session_proof(&mut handoff, Capability::Chat, &operation(), crate::http::Secret::new("operation_SECRET")),
+        CredentialHandoff::settlement_credential(&mut handoff, &operation(), crate::http::Secret::new("settlement_SECRET")),
+        CredentialHandoff::installation_credential(&mut handoff, "inst_one", crate::http::Secret::new("install_SECRET")),
+    ] {
+        assert_eq!(refusal.unwrap_err().code, RefusalCode::AuthUnavailable);
+    }
+    assert!(store.take_calls().is_empty(), "a revoked session must refuse before any store write or read");
 }
 
 #[test]
