@@ -20,6 +20,7 @@ pub mod crash;
 pub mod dfm;
 pub mod easyprint;
 pub mod factory_data;
+pub mod fea;
 pub mod frames;
 pub mod fuzz;
 pub mod licences;

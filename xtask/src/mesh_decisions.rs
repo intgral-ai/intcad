@@ -45,6 +45,7 @@ pub const SKIPPED_MODULES: &[(&str, &str)] = &[
     ("crates/engine/src/cmd/view_dxf_meshes.rs", "a drawing's view lines from display meshes"),
     ("crates/engine/src/cmd/view_dxf_scene.rs", "a drawing's hidden-line occlusion over display meshes"),
     ("crates/engine/src/cosmetic_threads.rs", "cosmetic thread hatching drawn on the displayed triangles"),
+    ("crates/engine/src/fea", "a stress estimate: the analysis mesh's loads and its colour map, never a model decision"),
     ("crates/engine/src/fuzz.rs", "the fuzz harness, which frames what it built"),
     ("crates/engine/src/product_scene.rs", "the scene a rendered picture draws"),
     ("crates/engine/src/render_jobs.rs", "rendered pictures"),
