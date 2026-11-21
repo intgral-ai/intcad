@@ -225,28 +225,23 @@ fn external(app: &mut SolveApp, ui: &mut egui::Ui) {
         let message =
             if change.missing { trf("ui.files_missing_on_disk", &[("name", &name)]) } else { trf("ui.files_changed_on_disk", &[("name", &name)]) };
         let mut action = None;
-        egui::Frame::NONE
-            .fill(t.warning.gamma_multiply(0.12))
-            .corner_radius(t.radius_sm)
-            .inner_margin(egui::Margin::symmetric(t.space_6 as i8, t.space_4 as i8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui_kit::text(ui, &message, ui_kit::Text::Note(&message));
-                if change.dirty {
-                    ui_kit::text(ui, tr("ui.files_changed_dirty"), ui_kit::Text::Note(tr("ui.files_changed_dirty")));
+        ui_kit::banner(ui, ui_kit::AssistantTone::Warning, |ui| {
+            ui_kit::text(ui, &message, ui_kit::Text::Note(&message));
+            if change.dirty {
+                ui_kit::text(ui, tr("ui.files_changed_dirty"), ui_kit::Text::Note(tr("ui.files_changed_dirty")));
+            }
+            ui.horizontal_wrapped(|ui| {
+                if !change.missing && ui_kit::button(ui, tr("ui.files_reload"), Button::Small).clicked() {
+                    action = Some(0);
                 }
-                ui.horizontal(|ui| {
-                    if !change.missing && ui_kit::button(ui, tr("ui.files_reload"), Button::Small).clicked() {
-                        action = Some(0);
-                    }
-                    if ui_kit::button(ui, tr("ui.files_save_as"), Button::Small).clicked() {
-                        action = Some(1);
-                    }
-                    if ui_kit::button(ui, tr("ui.files_keep"), Button::Ghost).clicked() {
-                        action = Some(2);
-                    }
-                });
+                if ui_kit::button(ui, tr("ui.files_save_as"), Button::Small).clicked() {
+                    action = Some(1);
+                }
+                if ui_kit::button(ui, tr("ui.files_keep"), Button::Ghost).clicked() {
+                    action = Some(2);
+                }
             });
+        });
         match action {
             Some(0) => crate::file_tree::reload(app, &change.path, change.dirty),
             Some(1) => save_as_open(app, &change.path),
@@ -483,7 +478,7 @@ fn row_ui(
     let left = rect.left() + (row.depth as f32) * INDENT + t.space_4;
     let fold = Rect::from_center_size(pos2(left + FOLD / 2.0, rect.center().y), vec2(FOLD, FOLD));
     if is_dir {
-        paint_fold(ui.painter(), fold, row.expanded, dim);
+        ui_kit::disclosure(ui.painter(), fold.center(), row.expanded, dim);
         let fold_response = ui.interact(fold, egui::Id::new(("files_fold", &row.path)), Sense::click());
         if fold_response.clicked() {
             app.file_tree.focused = true;
@@ -1162,16 +1157,6 @@ fn edit_depth(parent: &std::path::Path, visible: &[std::path::PathBuf]) -> usize
     // A folder's children stand one level in. The rows are walked depth first, so the parent's
     // nesting is counted from the visible folders that hold it.
     visible.iter().filter(|p| parent.starts_with(p)).count()
-}
-
-fn paint_fold(painter: &egui::Painter, rect: Rect, open: bool, ink: Color32) {
-    let c = rect.center();
-    let points = if open {
-        vec![pos2(c.x - 3.5, c.y - 2.0), pos2(c.x + 3.5, c.y - 2.0), pos2(c.x, c.y + 2.5)]
-    } else {
-        vec![pos2(c.x - 2.0, c.y - 3.5), pos2(c.x + 2.5, c.y), pos2(c.x - 2.0, c.y + 3.5)]
-    };
-    painter.add(egui::Shape::convex_polygon(points, ink, Stroke::NONE));
 }
 
 fn paint_folder(painter: &egui::Painter, rect: Rect, ink: Color32) {
