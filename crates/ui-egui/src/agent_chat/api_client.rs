@@ -239,9 +239,9 @@ impl ChatBackend for ApiBackend {
     fn answer_permission(&mut self, _key: u64, _option: Option<&str>) {}
     fn authenticate(&mut self, _method: &str) {}
     /// Direct/BYOK runs the Beta skill path, but the panel must not claim verification until a
-    /// real credential-backed turn is recorded.
-    fn skill_support(&self, _skill: super::skill::Skill) -> super::backend::SkillSupport {
-        super::backend::SkillSupport::Unverified
+    /// real credential-backed turn is recorded; Stress estimate only adds its note.
+    fn skill_support(&self, skill: super::skill::Skill) -> super::backend::SkillSupport {
+        skill.support_as_text()
     }
     fn pid(&self) -> Option<u32> {
         self.mcp.as_ref().and_then(ProcessHandle::pid)

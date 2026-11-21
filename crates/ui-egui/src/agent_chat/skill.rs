@@ -13,8 +13,13 @@ use crate::i18n::{format as trf, tr};
 pub const TEXT_TO_CAD_ID: &str = "text-to-cad";
 /// The Anatomy skill id.
 pub const ANATOMY_ID: &str = "anatomy";
-/// The descriptor version both Beta built-ins share.
+/// The Stress estimate skill id.
+pub const STRESS_ESTIMATE_ID: &str = "stress-estimate";
+/// The descriptor version the built-ins share.
 pub const VERSION: &str = "0.1.0";
+/// The stress-estimate workflow, `solidcraft-analysis`'s SKILL.md, embedded whole: the Stress
+/// estimate note carries it, so every agent has it in its first message (decision 24, #200).
+pub const STRESS_WORKFLOW: &str = include_str!("../../../../skills/solidcraft-analysis/SKILL.md");
 
 /// What the selected backend can prove for a skill.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -36,16 +41,19 @@ pub enum Skill {
     Plain,
     TextToCad,
     Anatomy,
+    /// What the Stress button selects: the stress-estimate workflow goes with the message.
+    StressEstimate,
 }
 
 impl Skill {
-    pub const ALL: [Skill; 3] = [Skill::Plain, Skill::TextToCad, Skill::Anatomy];
+    pub const ALL: [Skill; 4] = [Skill::Plain, Skill::TextToCad, Skill::Anatomy, Skill::StressEstimate];
 
     pub fn id(self) -> &'static str {
         match self {
             Skill::Plain => "plain",
             Skill::TextToCad => TEXT_TO_CAD_ID,
             Skill::Anatomy => ANATOMY_ID,
+            Skill::StressEstimate => STRESS_ESTIMATE_ID,
         }
     }
 
@@ -53,7 +61,7 @@ impl Skill {
     pub fn version(self) -> &'static str {
         match self {
             Skill::Plain => "",
-            Skill::TextToCad | Skill::Anatomy => VERSION,
+            Skill::TextToCad | Skill::Anatomy | Skill::StressEstimate => VERSION,
         }
     }
 
@@ -62,6 +70,7 @@ impl Skill {
             Skill::Plain => "ui.agent_chat_skill_plain",
             Skill::TextToCad => "ui.agent_chat_skill_text_to_cad",
             Skill::Anatomy => "ui.agent_chat_skill_anatomy",
+            Skill::StressEstimate => "ui.agent_chat_skill_stress_estimate",
         })
     }
 
@@ -70,10 +79,14 @@ impl Skill {
             Skill::Plain => "ui.agent_chat_skill_plain_tip",
             Skill::TextToCad => "ui.agent_chat_skill_text_to_cad_tip",
             Skill::Anatomy => "ui.agent_chat_skill_anatomy_tip",
+            Skill::StressEstimate => "ui.agent_chat_skill_stress_estimate_tip",
         })
     }
 
     /// Anatomy is read-only for the whole turn. Text-to-CAD writes only through the existing gate.
+    /// Stress estimate writes through the gate too: its workflow changes the design for another
+    /// thickness or shape and runs the setup again, and its solve needs the gate's Allow, which a
+    /// read-only turn refuses before the gate.
     pub fn read_only(self) -> bool {
         self == Skill::Anatomy
     }
@@ -94,6 +107,10 @@ impl Skill {
                  selection using the host facts and exact measurements supplied. Do not change geometry, \
                  parameters, feature history or undo. Only object names the host supplies are clickable; \
                  never invent a clickable target. State missing feature history or assembly information honestly."
+            )),
+            Skill::StressEstimate => Some(format!(
+                "[Host skill {STRESS_ESTIMATE_ID} v{VERSION}] Follow the stress-estimate workflow, \
+                 solidcraft-analysis's SKILL.md, given here in full:\n{STRESS_WORKFLOW}"
             )),
         }
     }
@@ -118,6 +135,25 @@ impl Skill {
                 "inspect.clearance",
                 "inspect.interference",
             ],
+            // A stress estimate changes nothing in the design; its solve still asks at the gate.
+            Skill::StressEstimate => &[
+                "list_commands",
+                "describe_command",
+                "inspect_design",
+                "measure",
+                "body_topology",
+                "check_parameters",
+                "screenshot",
+                "skill_reference",
+                "engine.commands",
+                "engine.describe",
+                "document.inspect",
+                "document.revision",
+                "inspect.measure",
+                "model.faces",
+                "inspect.stress_estimate",
+                "inspect.stress_estimate.show",
+            ],
         }
     }
 
@@ -125,7 +161,7 @@ impl Skill {
     pub fn allowed_write_tools(self) -> &'static [&'static str] {
         match self {
             Skill::Plain | Skill::Anatomy => &[],
-            Skill::TextToCad => &["execute", "batch", "set_parameter", "engine.execute", "engine.batch"],
+            Skill::TextToCad | Skill::StressEstimate => &["execute", "batch", "set_parameter", "engine.execute", "engine.batch"],
         }
     }
 
@@ -145,6 +181,17 @@ impl Skill {
             Skill::Plain => "plain-chat-unchanged",
             Skill::TextToCad => "beta-text-to-cad-l-bracket-5-to-8-mm",
             Skill::Anatomy => "beta-anatomy-cover-base-click",
+            Skill::StressEstimate => "stress-estimate-workflow-in-the-first-message",
+        }
+    }
+
+    /// What a backend that sends the message's text unchanged (an ACP agent, a direct
+    /// connection) can claim. Stress estimate only adds its note, and the host's tests check that
+    /// the note reaches both in full; the other skills stay unverified until a real turn is recorded.
+    pub fn support_as_text(self) -> SkillSupport {
+        match self {
+            Skill::StressEstimate => SkillSupport::Supported,
+            Skill::Plain | Skill::TextToCad | Skill::Anatomy => SkillSupport::Unverified,
         }
     }
 
@@ -162,6 +209,15 @@ impl Skill {
             "readOnly": self.read_only(),
             "builtin": true,
         })
+    }
+}
+
+/// Select `skill` for the chat's next message, as the Stress button does, unless the connected
+/// backend refuses built-in skills: then the chat keeps its mode, and the message still goes.
+/// With no backend yet the skill is selected; the send refuses it if the backend can't run it.
+pub fn select(chat: &mut super::AgentChat, skill: Skill) {
+    if chat.backend.as_ref().is_none_or(|backend| backend.skill_support(skill) != SkillSupport::Unsupported) {
+        chat.skill = skill;
     }
 }
 
@@ -264,6 +320,28 @@ mod tests {
         assert_eq!(Skill::TextToCad.capabilities()["validation"], true);
         assert_eq!(Skill::Anatomy.acceptance(), "beta-anatomy-cover-base-click");
         assert_eq!(Skill::TextToCad.descriptor()["acceptance"], "beta-text-to-cad-l-bracket-5-to-8-mm");
+    }
+
+    #[test]
+    fn the_stress_estimate_note_carries_the_whole_workflow_and_its_solve_still_asks() {
+        let skill = Skill::StressEstimate;
+        assert_eq!(skill.id(), STRESS_ESTIMATE_ID);
+        assert_eq!(skill.version(), VERSION);
+        assert!(Skill::ALL.contains(&skill));
+        let note = skill.prompt_note().expect("a note");
+        assert!(note.starts_with("[Host skill stress-estimate v0.1.0]"), "{note}");
+        assert!(note.ends_with(STRESS_WORKFLOW), "SKILL.md, whole and last");
+        assert!(STRESS_WORKFLOW.contains("name: solidcraft-analysis") && STRESS_WORKFLOW.contains("## Not available yet"));
+        // Not read-only: a read-only turn refuses an Ask before the gate, and the solve is one.
+        assert!(!skill.read_only());
+        assert!(skill.allowed_read_tools().contains(&"inspect.stress_estimate"));
+        assert_eq!(skill.allowed_write_tools(), Skill::TextToCad.allowed_write_tools());
+        assert_eq!(skill.capabilities()["validation"], false, "the host claims no validation of a stress answer");
+        assert_eq!(skill.descriptor()["acceptance"], "stress-estimate-workflow-in-the-first-message");
+        assert_eq!(skill.support_as_text(), SkillSupport::Supported);
+        for other in [Skill::Plain, Skill::TextToCad, Skill::Anatomy] {
+            assert_eq!(other.support_as_text(), SkillSupport::Unverified, "{other:?}");
+        }
     }
 
     #[test]

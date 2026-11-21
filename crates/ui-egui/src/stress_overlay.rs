@@ -207,8 +207,11 @@ pub(crate) fn approval(app: &SolveApp, method: &str, params: &serde_json::Value)
 }
 
 /// Open the chat with a request to start from: the ribbon's and the palette's Stress Estimate.
+/// It selects the Stress estimate mode, whose note gives the agent the workflow (#200), unless
+/// the connected backend refuses built-in skills; then the chat stays as it was.
 pub(crate) fn ask_in_chat(app: &mut SolveApp) {
     app.agent_chat.open = true;
+    crate::agent_chat::skill::select(&mut app.agent_chat, crate::agent_chat::skill::Skill::StressEstimate);
     let starter = app.tr("ui.stress_estimate_starter").to_string();
     if app.agent_chat.input.trim().is_empty() {
         app.agent_chat.input = starter.clone();

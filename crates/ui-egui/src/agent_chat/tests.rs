@@ -185,6 +185,40 @@ pub(super) mod direct_integration {
         physical_workers_exited(&app, "task8-original");
     }
 
+    /// #200: after the Stress button, the first request to a direct connection carries
+    /// solidcraft-analysis's SKILL.md in full in its user message, with the starter text.
+    #[test]
+    fn after_the_stress_button_a_direct_connections_first_request_carries_the_whole_workflow() {
+        use backend::Secrets;
+        let keys = Arc::new(Keys::default());
+        keys.set("task8-original", KEY_A).unwrap();
+        let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let seen = Arc::clone(&bodies);
+        let http: backend::HttpFn = Arc::new(move |r| {
+            if r.method == "GET" {
+                return Ok((200, br#"{"data":[]}"#.to_vec()));
+            }
+            seen.lock().unwrap().push(serde_json::from_slice(r.body.as_deref().unwrap_or(b"null")).unwrap_or(Value::Null));
+            Ok((200, answer().to_string().into_bytes()))
+        });
+        let (mut app, ctx) = app(http, keys);
+        connected(&mut app, &ctx);
+        crate::stress_overlay::ask_in_chat(&mut app);
+        assert_eq!(app.agent_chat.skill, skill::Skill::StressEstimate);
+        let starter = app.agent_chat.input.clone();
+        send(&mut app, &ctx, starter.clone());
+        until(&mut app, &ctx, |a| a.agent_chat.state() != State::Busy);
+        let bodies = bodies.lock().unwrap();
+        let first = bodies.first().expect("a model request");
+        let user: Vec<String> =
+            first["messages"].as_array().into_iter().flatten().filter(|m| m["role"] == "user").map(|m| strings_in(m).concat()).collect();
+        assert!(user.iter().any(|text| text.contains(SKILL_MD) && text.contains(&starter)), "{first}");
+        assert!(
+            app.agent_chat.items.iter().any(|item| matches!(item, Item::Skill { support: skill::SkillSupport::Supported, .. })),
+            "the turn is bound to the mode and not marked unverified"
+        );
+    }
+
     #[test]
     fn direct_chat_and_host_ai_share_physical_http_caps_across_windows() {
         use backend::Secrets;
@@ -15386,6 +15420,159 @@ fn a_skill_turn_freezes_the_current_selection_labels() {
     let binding = app.agent_chat.skill_binding.as_ref().expect("a frozen binding");
     assert!(binding.selection.iter().any(|label| label == "Plate"), "{:?}", binding.selection);
     assert!(!binding.is_stale(&app.session.document_stamp().document_id, app.session.document_stamp().revision));
+}
+
+/// The stress-estimate workflow, read here on its own so the tests check the file, not the copy
+/// the mode embeds.
+const SKILL_MD: &str = include_str!("../../../../skills/solidcraft-analysis/SKILL.md");
+
+/// Every string inside `v`, depth first.
+fn strings_in(v: &Value) -> Vec<String> {
+    match v {
+        Value::String(s) => vec![s.clone()],
+        Value::Array(items) => items.iter().flat_map(strings_in).collect(),
+        Value::Object(map) => map.values().flat_map(strings_in).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// #200: the Stress button selects the Stress estimate mode and keeps its starter text; a
+/// backend that refuses built-in skills keeps plain Chat, so the button still works there.
+#[test]
+fn the_stress_button_selects_the_stress_estimate_mode_where_it_can_run() {
+    let (mut app, _script, _ctx) = app_with_script();
+    crate::stress_overlay::ask_in_chat(&mut app);
+    assert!(app.agent_chat.open);
+    assert_eq!(app.agent_chat.skill, skill::Skill::StressEstimate);
+    assert_eq!(app.agent_chat.input, tr("ui.stress_estimate_starter"));
+    assert_eq!(app.agent_chat.skill.title(), tr("ui.agent_chat_skill_stress_estimate"));
+
+    let script = Script { support: skill::SkillSupport::Unsupported, ..Default::default() };
+    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.agent_chat.backend = Some(Box::new(script));
+    app.agent_chat.state = Some(State::Ready);
+    crate::stress_overlay::ask_in_chat(&mut app);
+    assert_eq!(app.agent_chat.skill, skill::Skill::Plain, "a backend that refuses skills keeps plain Chat");
+    assert_eq!(app.agent_chat.input, tr("ui.stress_estimate_starter"));
+}
+
+/// #200: a Stress estimate turn is not read-only. Its dry run runs without asking, its solve
+/// reaches the gate's Allow card with the setup on it, and a design change reaches the gate
+/// instead of being refused before it.
+#[test]
+fn a_stress_estimate_turn_asks_before_the_solve_and_lets_changes_reach_the_gate() {
+    let (mut app, script, ctx) = app_with_script();
+    app.session.execute("solid.box", &json!({"length": 100, "width": 20, "height": 5, "body_name": "Bar"})).unwrap();
+    let faces = app.session.execute("model.faces", &json!({"body": "Bar"})).unwrap();
+    let end = |sign: f64| {
+        faces["faces"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|f| f["plane_normal"][0].as_f64().is_some_and(|n| n * sign > 0.99))
+            .find_map(|f| f["index"].as_u64())
+            .unwrap_or_else(|| panic!("no end face facing {sign} X: {faces}"))
+    };
+    let (root, tip) = (end(-1.0), end(1.0));
+    crate::stress_overlay::ask_in_chat(&mut app);
+    send(&mut app, &ctx, "held at one end, 10 N down at the other, 6061-T6".into());
+    let prompts = script.prompts();
+    assert!(
+        prompts.last().is_some_and(|parts| parts.iter().any(|part| matches!(part, PromptPart::Text(text) if text.contains(SKILL_MD)))),
+        "the turn's message carries the workflow"
+    );
+    let estimate = |dry: bool| {
+        let mut p = json!({"loads": [{"face": tip, "force": [0, 0, -10]}], "supports": [{"face": root}], "material": "6061-T6"});
+        if dry {
+            p["dry_run"] = json!(true);
+        }
+        ControlRequest::new("engine.execute", json!({"command": "inspect.stress_estimate", "params": p}))
+    };
+    let (dry, _dry_reply) = estimate(true);
+    let (solve, solve_reply) = estimate(false);
+    let (change, change_reply) = ControlRequest::new("engine.execute", json!({"command": "solid.box", "params": {"length": 1}}));
+    let (tx, rx) = channel();
+    for request in [dry, solve, change] {
+        tx.send(request).unwrap();
+    }
+    app.agent_chat.tools_rx = Some(rx);
+    pump_tools(&mut app);
+    assert!(
+        app.control_held.iter().any(|req| req.params.pointer("/params/dry_run") == Some(&json!(true))),
+        "the dry run went to execution without asking"
+    );
+    assert!(
+        app.agent_chat.items.iter().any(|item| matches!(item, Item::Approval { title, answer: None, .. } if title.contains("gmsh"))),
+        "the solve waits on the Allow card"
+    );
+    assert!(solve_reply.try_recv().is_err(), "the solve is held, not refused");
+    assert!(change_reply.try_recv().is_err(), "the change is not refused before the gate");
+    assert!(
+        app.control_held.iter().any(|req| req.params["command"] == "solid.box"),
+        "in the default permission mode the change goes on to execution"
+    );
+    let read_only = tr("ui.agent_chat_skill_read_only");
+    assert!(!app.agent_chat.items.iter().any(|item| matches!(item, Item::Notice { text, .. } if text == read_only)));
+}
+
+/// #200: with a real ACP agent process, the first message after the Stress button carries
+/// solidcraft-analysis's SKILL.md in full, ahead of the starter text, and the turn is not marked
+/// unverified.
+#[cfg(unix)]
+#[test]
+fn after_the_stress_button_an_acp_agents_first_message_carries_the_whole_workflow() {
+    let dir = std::env::temp_dir().join(format!("sc-agent-chat-stress-mode-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("received.log");
+    let script = r#"
+log="$1"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "$log"
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"fake","version":"1"}}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s1"}}\n' "$id" ;;
+    *'"method":"session/prompt"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id" ;;
+  esac
+done
+"#;
+    let argv = vec!["sh".to_string(), "-c".to_string(), script.to_string(), "fake-agent".to_string(), log.to_string_lossy().into_owned()];
+    let start = backend::StartContext { cwd: dir.clone(), bridge: None, tools: None, wake: Box::new(|| {}) };
+    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.agent_chat.backend = Some(Box::new(acp_client::AcpBackend::start(&argv, start).unwrap()));
+    app.agent_chat.state = Some(State::Starting);
+    let ctx = crate::fonts::test_context();
+    let until = |app: &mut SolveApp, what: &str, done: &dyn Fn(&SolveApp) -> bool| {
+        let t = std::time::Instant::now();
+        while !done(app) {
+            assert!(t.elapsed() < std::time::Duration::from_secs(60), "timed out waiting for {what}");
+            poll(app, &ctx);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    until(&mut app, "the agent to be ready", &|a| a.agent_chat.state() == State::Ready);
+    crate::stress_overlay::ask_in_chat(&mut app);
+    assert_eq!(app.agent_chat.skill, skill::Skill::StressEstimate);
+    let starter = app.agent_chat.input.clone();
+    send(&mut app, &ctx, starter.clone());
+    until(&mut app, "the turn to end", &|a| a.agent_chat.state() == State::Ready);
+    let prompts: Vec<String> = std::fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|v| v["method"] == "session/prompt")
+        .map(|v| strings_in(&v["params"]["prompt"]).concat())
+        .collect();
+    let first = prompts.first().expect("a session/prompt");
+    let (workflow, asked) = (first.find(SKILL_MD), first.find(&starter));
+    assert!(workflow.is_some(), "the first message carries SKILL.md in full: {first}");
+    assert!(workflow < asked, "the workflow comes before the user's words: {first}");
+    assert!(
+        app.agent_chat.items.iter().any(|item| matches!(item, Item::Skill { support: skill::SkillSupport::Supported, .. })),
+        "the turn is bound to the mode and not marked unverified"
+    );
+    disconnect(&mut app);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn app_with_cover_and_base() -> crate::scenario::Harness {
