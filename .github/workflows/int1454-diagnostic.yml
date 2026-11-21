@@ -66,6 +66,21 @@ jobs:
         run: |
           set -o pipefail
           cargo test -p solidcraft-kernel --lib swapped_history_maps_every_origin_back --locked -- --nocapture 2>&1 | tee evidence/kernel-history.log
+      - name: Free-form role sources
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test -p solidcraft-doc --lib free_form_role_sources_are_exact_and_ambiguous_or_unmatched_segments_refuse --locked -- --nocapture 2>&1 | tee evidence/free-form.log
+      - name: Pre-join loft wall identities
+        if: always()
+        run: |
+          set -o pipefail
+          cargo test -p solidcraft-engine --lib front_triangle_pre_join_loft_wall_identities_are_exact_and_resolve --locked -- --nocapture 2>&1 | tee evidence/pre-join-identity.log
+      - name: Doc Clippy
+        if: always()
+        run: |
+          set -o pipefail
+          cargo clippy -p solidcraft-doc --lib --locked -- -D warnings 2>&1 | tee evidence/clippy-doc.log
       - name: Kernel and engine Clippy
         if: always()
         run: |
