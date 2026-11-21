@@ -12,14 +12,16 @@
 //! message. The attachment names the run it came from, and the message reads that run at send
 //! time, so a newer check does not replace what the person chose to send.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
 use egui::{Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
 use serde_json::Value;
 use solidcraft_engine::entitlement::{
-    BillingResult, Capability, EntryCategory, OperationId, OperationStatus, OperationStoreError, RefusalCode, ReviewOperation, RunId, SaveOutcome,
-    SettlementIntent, UnsettledOperation, UpperBound,
+    BillingResult, OperationId, OperationStatus, OperationStoreError, RefusalCode, RunId, SaveOutcome, SettlementIntent,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use solidcraft_engine::entitlement::{Capability, EntryCategory, ReviewOperation, UnsettledOperation, UpperBound};
 
 use crate::SolveApp;
 use crate::dfm_chat::Card;
@@ -121,6 +123,7 @@ fn coded(code: RefusalCode, message: impl std::fmt::Display) -> String {
     format!("{}: {message}", refusal_name(code))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn verified_review_bound(app: &SolveApp) -> Result<Duration, String> {
     match app.budget.bound(Capability::Review, EntryCategory::ReviewPanel) {
         UpperBound::Verified(bound) => Ok(bound),
@@ -130,6 +133,7 @@ fn verified_review_bound(app: &SolveApp) -> Result<Duration, String> {
 
 /// Why a Review press cannot start. This is checked before any operation is admitted, so a
 /// missing authority or durable journal never reaches an execution path.
+#[cfg(not(target_arch = "wasm32"))]
 fn authority_error(app: &SolveApp) -> Option<String> {
     if let Err(error) = verified_review_bound(app) {
         return Some(error);
@@ -156,6 +160,7 @@ fn unverified_recovery_refusal(app: &SolveApp) -> Option<String> {
 
 /// The host's exact Review identity: a free-looking latest run or the service's active run is
 /// never used to infer this operation.
+#[cfg(not(target_arch = "wasm32"))]
 fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(String, u64), String> {
     if let Some(error) = unverified_recovery_refusal(app) {
         return Err(error);
@@ -528,6 +533,7 @@ pub(crate) fn surface_uncertain(app: &mut SolveApp) -> String {
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn release_unstarted(app: &mut SolveApp, reason: RefusalCode) -> Result<(), String> {
     if app.dfm_review.settled {
         return Ok(());
@@ -563,6 +569,7 @@ pub fn start(app: &mut SolveApp) {
 
 /// Prepare the durable mapping and then dispatch exactly the reserved run. A service failure
 /// before dispatch is proven no-effect: its one hold is released and no second operation is minted.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn start_with_operation(app: &mut SolveApp, operation: OperationId) -> Result<(), String> {
     let (run, stop_at_ms) = prepare_review_with(app, operation.clone())?;
     let reservation = solidcraft_engine::dfm::run::Reservation { run_id: run, operation_id: operation.as_str().to_string(), stop_at_ms };
@@ -579,6 +586,13 @@ pub(crate) fn start_with_operation(app: &mut SolveApp, operation: OperationId) -
             Err(coded(RefusalCode::UnsafeToStart, format!("the Review check did not start: {error}")))
         }
     }
+}
+
+/// The browser has no background DFM worker or project store. Keep this entry fail-closed even
+/// if a future caller reaches it without the panel's `available()` check.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn start_with_operation(_app: &mut SolveApp, _operation: OperationId) -> Result<(), String> {
+    Err(coded(RefusalCode::AuthUnavailable, "Review checks are unavailable in the browser"))
 }
 
 /// Stop the live check. The hold is not released here: a worker that already finished may have
