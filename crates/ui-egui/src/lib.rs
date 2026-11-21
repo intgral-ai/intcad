@@ -1088,6 +1088,26 @@ impl SolveApp {
         std::mem::take(&mut self.pending_settlements)
     }
 
+    /// Close the current account session's authority without touching work already committed.
+    ///
+    /// Sign-out, an account switch and app exit call this: new controlled work is refused, queued
+    /// admissions become stale, and results admitted by the old session cannot commit. Settlement
+    /// recovery stays behind under its original operation id; nothing is rerun.
+    pub fn end_controlled_session(&mut self) {
+        self.clear_commit_authority();
+        crate::execution_guard::invalidate_context(self);
+    }
+
+    /// Apply an account lifecycle event raised by the injected port, outside a frame.
+    ///
+    /// The port reports only an explicit sign-out or switch; an ordinary status refresh, chat or
+    /// GUI click never closes authority.
+    pub fn drain_account_lifecycle(&mut self) {
+        if self.account.take_lifecycle_event().is_some() {
+            self.end_controlled_session();
+        }
+    }
+
     /// The browser has no commit authority: keep ordinary free CAD and refuse controlled commits.
     #[cfg(target_arch = "wasm32")]
     pub fn install_commit_authority(

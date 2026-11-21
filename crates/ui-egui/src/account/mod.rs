@@ -31,6 +31,16 @@ pub enum Action {
     SwitchAccount,
 }
 
+/// A host event that ends the authority of the account session that admitted controlled work.
+///
+/// The desktop composition root raises it after an explicit sign-out or account switch. The app
+/// then clears commit authority and invalidates queued admissions before a new session can run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LifecycleEvent {
+    SignedOut,
+    AccountSwitched,
+}
+
 /// Guidance for deleting an account by hand: where to ask and the steps to follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeleteAccountGuide {
@@ -126,6 +136,15 @@ pub trait AccountPort: Send + Sync {
     fn delete_account_guide(&self) -> DeleteAccountGuide;
     fn begin_device_code(&self) -> Result<DeviceCode, Refusal>;
     fn own_model_view(&self) -> Option<OwnModelView>;
+
+    /// Take the host event that ends the old session's authority, if one occurred.
+    ///
+    /// The default is no event, so a port that never signs out needs no extra method. The desktop
+    /// composition root reports sign-out and account switch here; the app drains it outside a
+    /// frame and closes the old authority before another action runs.
+    fn take_lifecycle_event(&mut self) -> Option<LifecycleEvent> {
+        None
+    }
 }
 
 /// Browser and other no-account fallback: no keyring, HTTP, login action or quota.
@@ -290,6 +309,21 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Drain the host's end-of-session event after [`State::process_actions`], never from a
+    /// frame. `None` means the current account session still owns any authority it admitted.
+    ///
+    /// The host reports the event before it finishes deleting stored credentials, so a failed
+    /// delete still closes authority. Re-reading the port's view here keeps the panel truthful
+    /// even when the action itself surfaced a storage refusal.
+    pub fn take_lifecycle_event(&mut self) -> Option<LifecycleEvent> {
+        let event = self.port.as_mut()?.take_lifecycle_event()?;
+        if let Some(port) = self.port.as_ref() {
+            self.view = port.view();
+            self.guide = Some(port.delete_account_guide());
+        }
+        Some(event)
     }
 
     pub fn delete_account_guide(&self) -> Option<DeleteAccountGuide> {

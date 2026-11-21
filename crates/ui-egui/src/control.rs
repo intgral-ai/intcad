@@ -261,6 +261,12 @@ pub(crate) fn mint_operation() -> Option<OperationId> {
 }
 
 impl ControlRequest {
+    /// Where the host constructed this request. The value is set only by a named constructor and
+    /// is never read from wire parameters, so a diagnostic or test needs no mutable access.
+    pub fn entry_category(&self) -> EntryCategory {
+        self.entry
+    }
+
     fn pending(entry: EntryCategory, method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
         let operation = entry_capability(entry).and_then(|_| mint_operation());
         let (tx, rx) = std::sync::mpsc::channel();

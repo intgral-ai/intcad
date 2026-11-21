@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use egui::Pos2;
-use solidcraft_engine::entitlement::{Refusal, RefusalCode};
+use solidcraft_engine::entitlement::{AuthenticatedHostScope, Refusal, RefusalCode};
 
 use super::panel::ChipTone;
 use super::*;
@@ -13,6 +13,7 @@ pub(crate) struct FakeAccountPort {
     guide: DeleteAccountGuide,
     switch_label: Option<&'static str>,
     switch_guide: Option<&'static str>,
+    lifecycle: Option<LifecycleEvent>,
     calls: Arc<Mutex<Vec<String>>>,
 }
 
@@ -27,12 +28,13 @@ impl FakeAccountPort {
             guide: DeleteAccountGuide { help_url: "https://example.invalid/account/delete", steps: &["Confirm the request."] },
             switch_label: None,
             switch_guide: None,
+            lifecycle: None,
             calls,
         }
     }
 
     fn with_guide(view: AccountView, guide: DeleteAccountGuide, calls: Arc<Mutex<Vec<String>>>) -> Self {
-        Self { view, guide, switch_label: None, switch_guide: None, calls }
+        Self { view, guide, switch_label: None, switch_guide: None, lifecycle: None, calls }
     }
 
     fn log(&self, name: &str) {
@@ -66,11 +68,13 @@ impl AccountPort for FakeAccountPort {
     fn sign_out(&mut self) -> Result<(), Refusal> {
         self.log("sign_out");
         self.view = AccountView::signed_out();
+        self.lifecycle = Some(LifecycleEvent::SignedOut);
         Ok(())
     }
 
     fn switch_account(&mut self) -> Result<(), Refusal> {
         self.log("switch_account");
+        self.lifecycle = Some(LifecycleEvent::AccountSwitched);
         if let Some(label) = self.switch_label {
             self.view.signed_in = true;
             self.view.sign_in_visible = false;
@@ -101,6 +105,10 @@ impl AccountPort for FakeAccountPort {
     fn own_model_view(&self) -> Option<OwnModelView> {
         self.log("own_model_view");
         None
+    }
+
+    fn take_lifecycle_event(&mut self) -> Option<LifecycleEvent> {
+        self.lifecycle.take()
     }
 }
 
@@ -321,6 +329,111 @@ fn switching_refreshes_status_and_delete_guidance_without_stale_text() {
     let joined = texts.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join("\n");
     assert!(!joined.contains("alice@example.com"), "the old account text survived: {texts:?}");
     assert!(joined.contains("bob@example.com"), "{texts:?}");
+}
+
+struct TestCommitAccount;
+
+impl solidcraft_engine::entitlement::AccountService for TestCommitAccount {
+    fn status(&self) -> Result<solidcraft_engine::entitlement::Availability, Refusal> {
+        Ok(solidcraft_engine::entitlement::Availability {
+            online: true,
+            version_supported: true,
+            model_available: true,
+            balance: 10,
+            held: 0,
+            reasons: Vec::new(),
+        })
+    }
+
+    fn authorize(
+        &mut self,
+        _scope: &AuthenticatedHostScope,
+        _capability: solidcraft_engine::entitlement::Capability,
+    ) -> Result<solidcraft_engine::entitlement::Grant, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "test authority"))
+    }
+
+    fn begin(
+        &mut self,
+        _scope: &AuthenticatedHostScope,
+        _operation: &solidcraft_engine::entitlement::OperationId,
+        _capability: solidcraft_engine::entitlement::Capability,
+        _entry: solidcraft_engine::entitlement::EntryCategory,
+    ) -> Result<solidcraft_engine::entitlement::Admission, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "test authority"))
+    }
+
+    fn finalize(
+        &mut self,
+        _scope: &AuthenticatedHostScope,
+        _operation: &solidcraft_engine::entitlement::OperationId,
+        _result: solidcraft_engine::entitlement::BillingResult,
+    ) -> Result<solidcraft_engine::entitlement::OperationStatus, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "test authority"))
+    }
+
+    fn operation(
+        &self,
+        _scope: &AuthenticatedHostScope,
+        _operation: &solidcraft_engine::entitlement::OperationId,
+    ) -> Result<solidcraft_engine::entitlement::OperationStatus, Refusal> {
+        Ok(solidcraft_engine::entitlement::OperationStatus::Held)
+    }
+}
+
+struct TestCommitClock;
+
+impl solidcraft_engine::entitlement::MonotonicClock for TestCommitClock {
+    fn now(&self) -> solidcraft_engine::entitlement::MonotonicInstant {
+        solidcraft_engine::entitlement::MonotonicInstant::from_millis(0)
+    }
+
+    fn wall_now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::UNIX_EPOCH
+    }
+}
+
+fn install_test_commit_authority(app: &mut crate::SolveApp) {
+    app.install_commit_authority(
+        AuthenticatedHostScope::new(
+            solidcraft_engine::entitlement::AccountId::new("alice"),
+            solidcraft_engine::entitlement::InstallationId::new("installation"),
+            solidcraft_engine::entitlement::HostSessionBinding::new("session"),
+        ),
+        Box::new(TestCommitAccount),
+        Box::new(TestCommitClock),
+    );
+}
+
+#[test]
+fn sign_out_and_switch_end_the_old_sessions_authority() {
+    for action in [Action::SignOut, Action::SwitchAccount] {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut app = crate::test_support::sample_app();
+        app.account = State::with_port(Box::new(FakeAccountPort::with_view(signed_in_view(), calls)));
+        install_test_commit_authority(&mut app);
+        app.account.request(action);
+        app.account.process_actions();
+        assert!(!app.account.view().signed_in, "the port's new signed-out view is shown");
+        app.drain_account_lifecycle();
+        assert!(app.commit_scope.is_none(), "{action:?} left the old scope");
+        assert!(app.commit_account.is_none(), "{action:?} left the old account status");
+        assert!(app.commit_clock.is_none(), "{action:?} left the old clock");
+    }
+}
+
+#[test]
+fn an_ordinary_refresh_keeps_the_current_sessions_authority() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut app = crate::test_support::sample_app();
+    app.account = State::with_port(Box::new(FakeAccountPort::with_view(signed_in_view(), calls)));
+    install_test_commit_authority(&mut app);
+    app.account.request(Action::RefreshStatus);
+    app.account.process_actions();
+    app.drain_account_lifecycle();
+    assert!(app.commit_scope.is_some(), "a status refresh is not a sign-out");
+    assert!(app.commit_account.is_some());
+    assert!(app.commit_clock.is_some());
 }
 
 #[test]
