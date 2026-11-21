@@ -500,6 +500,32 @@ impl OperationRecord {
     }
 }
 
+/// One non-terminal row found in the durable journal, classified against the scope asking for it.
+///
+/// The classification is read-only recovery information. It never grants execution authority and
+/// never proves that a remote settlement completed; the caller must not rerun the engineering
+/// operation or release a hold from it alone.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnsettledOperation {
+    /// A durable mapping proves this exact account, installation and session binding admitted the
+    /// row. The original operation id may be resumed for settlement, but never re-executed.
+    Owned(OperationRecord),
+    /// No durable mapping proves the original scope. A current session must not adopt, settle or
+    /// release the row.
+    Unproven(OperationRecord),
+    /// A durable mapping exists, but for another account, installation or session binding.
+    Foreign(OperationRecord),
+}
+
+impl UnsettledOperation {
+    /// The stored row, whichever classification applies.
+    pub fn record(&self) -> &OperationRecord {
+        match self {
+            Self::Owned(record) | Self::Unproven(record) | Self::Foreign(record) => record,
+        }
+    }
+}
+
 /// A persisted run-to-operation identity. Task 7/10 reuse this one type; they must not define a
 /// second mapping.
 #[derive(Clone, Debug, PartialEq, Eq)]

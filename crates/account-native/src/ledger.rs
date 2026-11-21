@@ -11,7 +11,7 @@
 //! A corrupt mapping or review marker makes the affected ledger fail closed; there is no automatic
 //! repair, quarantine or tombstone. Recovery is an explicit operator action outside this crate.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::hash::{BuildHasher, Hash, Hasher};
 use std::io::Write;
@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use solidcraft_engine::entitlement::{
     AccountId, AuthenticatedHostScope, BillingResult, Capability, EntryCategory, FreshIntent, GrantId, OperationId, OperationRecord, OperationStatus,
     OperationStore, OperationStoreError, RefusalCode, RetryDecision, RetryMapping, RetryScopeKey, ReviewOperation, RunId, SaveOutcome,
-    SettlementIntent, TransportCorrelation,
+    SettlementIntent, TransportCorrelation, UnsettledOperation,
 };
 
 const MAPPINGS_DIR: &str = "mappings";
@@ -405,6 +405,85 @@ impl FileOperationStore {
             Ok(_) | Err(_) => RetryDecision::Unknown,
         }
     }
+
+    /// Non-terminal base rows plus rows that exist only inside a durable mapping. It never
+    /// synthesises a row and never treats the file set as authority.
+    fn unsettled_rows(&self, scope: Option<&AuthenticatedHostScope>) -> Result<Vec<UnsettledOperation>, LedgerError> {
+        let mut operations = BTreeSet::new();
+        let entries = match fs::read_dir(self.records_dir()) {
+            Ok(entries) => entries.collect::<Result<Vec<_>, _>>()?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(LedgerError::Io(error)),
+        };
+        for entry in entries {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
+            let Some(stem) = name.strip_suffix(".json") else { continue };
+            if stem.ends_with(".started") || stem.ends_with(".terminal") || stem.ends_with(".review") || stem.ends_with(".settlement-intent") {
+                continue;
+            }
+            // A stray file that is not an operation id is not a durable row. Ignore it rather than
+            // letting arbitrary names into recovery.
+            let Ok(operation) = OperationId::parse(stem) else { continue };
+            operations.insert(operation);
+        }
+
+        let mut bindings: BTreeMap<OperationId, Vec<PersistedMapping>> = BTreeMap::new();
+        let mappings = match fs::read_dir(self.mappings_dir()) {
+            Ok(entries) => entries.collect::<Result<Vec<_>, _>>()?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(LedgerError::Io(error)),
+        };
+        for entry in mappings {
+            let path = entry.path();
+            if !is_json_file(&path) {
+                continue;
+            }
+            let Some(mapping) = read_mapping(&path)? else { continue };
+            if mapping.record.operation != mapping.operation {
+                return Err(LedgerError::Corrupt);
+            }
+            let operation = OperationId::parse(&mapping.operation).map_err(|_| LedgerError::Corrupt)?;
+            operations.insert(operation.clone());
+            bindings.entry(operation).or_default().push(mapping);
+        }
+
+        let scope_digest = scope.map(|scope| digest(&[scope.session_binding().as_str()]));
+        let mut rows = Vec::new();
+        for operation in operations {
+            let Some(record) = self.load_and_apply_markers(&operation)? else { continue };
+            if record.status.is_terminal() {
+                continue;
+            }
+            let row = match (scope, bindings.get(&operation)) {
+                (None, _) => UnsettledOperation::Unproven(record),
+                (Some(_), None) => UnsettledOperation::Unproven(record),
+                (Some(_), Some(list)) if list.is_empty() => UnsettledOperation::Unproven(record),
+                (Some(scope), Some(list)) => {
+                    let mut any_match = false;
+                    let mut any_mismatch = false;
+                    for binding in list {
+                        let same = binding.account == scope.account().as_str()
+                            && binding.installation == scope.installation().as_str()
+                            && scope_digest.as_deref() == Some(binding.session_binding_digest.as_str());
+                        if same {
+                            any_match = true;
+                        } else {
+                            any_mismatch = true;
+                        }
+                    }
+                    if any_match && any_mismatch {
+                        // One row admitted under two different scopes is not a recoverable
+                        // disposition; fail closed instead of picking one.
+                        return Err(LedgerError::Corrupt);
+                    }
+                    if any_match { UnsettledOperation::Owned(record) } else { UnsettledOperation::Foreign(record) }
+                }
+            };
+            rows.push(row);
+        }
+        Ok(rows)
+    }
 }
 
 impl OperationStore for FileOperationStore {
@@ -559,6 +638,10 @@ impl OperationStore for FileOperationStore {
             Some(persisted) => settlement_from_persisted(persisted).map(Some).ok_or(OperationStoreError::Unavailable),
             None => Ok(None),
         }
+    }
+
+    fn unsettled_operations(&self, scope: Option<&AuthenticatedHostScope>) -> Result<Vec<UnsettledOperation>, OperationStoreError> {
+        self.unsettled_rows(scope).map_err(|_| OperationStoreError::Unavailable)
     }
 }
 
@@ -785,6 +868,40 @@ impl OperationStore for InMemoryOperationStore {
 
     fn settlement_intent(&self, operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
         Ok(self.settlements.get(operation).copied())
+    }
+
+    fn unsettled_operations(&self, scope: Option<&AuthenticatedHostScope>) -> Result<Vec<UnsettledOperation>, OperationStoreError> {
+        let mut rows = Vec::new();
+        for record in self.records.values() {
+            if record.status.is_terminal() {
+                continue;
+            }
+            rows.push(match scope {
+                None => UnsettledOperation::Unproven(record.clone()),
+                Some(scope) => {
+                    let mut any_match = false;
+                    let mut any_mismatch = false;
+                    for mapping in self.mappings.values().filter(|mapping| mapping.operation == record.operation) {
+                        if mapping.scope.host_scope == *scope {
+                            any_match = true;
+                        } else {
+                            any_mismatch = true;
+                        }
+                    }
+                    if any_match && any_mismatch {
+                        return Err(OperationStoreError::Unavailable);
+                    }
+                    if any_match {
+                        UnsettledOperation::Owned(record.clone())
+                    } else if any_mismatch {
+                        UnsettledOperation::Foreign(record.clone())
+                    } else {
+                        UnsettledOperation::Unproven(record.clone())
+                    }
+                }
+            });
+        }
+        Ok(rows)
     }
 }
 

@@ -18,7 +18,7 @@ use egui::{Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
 use serde_json::Value;
 use solidcraft_engine::entitlement::{
     BillingResult, Capability, EntryCategory, OperationId, OperationStatus, OperationStoreError, RefusalCode, ReviewOperation, RunId, SaveOutcome,
-    SettlementIntent, UpperBound,
+    SettlementIntent, UnsettledOperation, UpperBound,
 };
 
 use crate::SolveApp;
@@ -68,6 +68,9 @@ pub struct State {
     /// Whether this operation has already committed or released. A settled operation is never
     /// settled again, even if the same report is attached to the Assistant.
     pub(crate) settled: bool,
+    /// A recovered row whose original scope could not be proven is kept for the original session.
+    /// The current session may neither settle nor release it.
+    pub(crate) settlement_blocked: bool,
 }
 
 impl State {
@@ -79,7 +82,8 @@ impl State {
         let mapped_run = self.mapped_run.take();
         let settled = self.settled;
         let cancelling = self.cancelling;
-        *self = Self { operation, mapped_run, settled, cancelling, ..Self::default() };
+        let settlement_blocked = self.settlement_blocked;
+        *self = Self { operation, mapped_run, settled, cancelling, settlement_blocked, ..Self::default() };
     }
 }
 
@@ -136,6 +140,17 @@ fn authority_error(app: &SolveApp) -> Option<String> {
 /// The host's exact Review identity: a free-looking latest run or the service's active run is
 /// never used to infer this operation.
 fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(String, u64), String> {
+    if app.dfm_review.settlement_blocked
+        && let Some(previous) = app.dfm_review.operation.as_ref()
+    {
+        return Err(coded(
+            RefusalCode::AuthUnavailable,
+            format!(
+                "Review operation {} belongs to another or unprovable account scope; it is kept for the original session and may not be settled or replaced here",
+                previous.as_str()
+            ),
+        ));
+    }
     if !app.dfm_review.settled
         && let Some(previous) = app.dfm_review.operation.as_ref()
     {
@@ -189,6 +204,7 @@ fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(St
     app.dfm_review.mapped_run = Some(run.clone());
     app.dfm_review.settled = false;
     app.dfm_review.cancelling = false;
+    app.dfm_review.settlement_blocked = false;
     Ok((run, stop_at_ms))
 }
 
@@ -196,6 +212,15 @@ fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(St
 /// A terminal row finishes without another call; an existing intent without a terminal row is an
 /// ambiguous earlier attempt and is surfaced, never repeated.
 fn apply_settlement(app: &mut SolveApp, operation: &OperationId, intent: SettlementIntent) -> Result<(), String> {
+    if app.dfm_review.settlement_blocked {
+        return Err(coded(
+            RefusalCode::AuthUnavailable,
+            format!(
+                "Review operation {} is kept under another or unprovable account scope; this session may not settle or release it",
+                operation.as_str()
+            ),
+        ));
+    }
     if let Some(store) = app.review_store.as_ref() {
         match store.load(operation) {
             Ok(Some(record)) if record.status.is_terminal() => {
@@ -309,14 +334,77 @@ pub(crate) fn settle_review_run(app: &mut SolveApp, run: &str, produced: bool) -
     apply_settlement(app, &operation, intent)
 }
 
-/// After a restart, find a controlled Review run from the project's durable submitted/run records
-/// and its store mapping. It settles that exact run once; it never reruns or replaces it.
+/// After a restart, recover the durable disposition of the one controlled Review operation.
+///
+/// A row whose original scope cannot be proven is bound to its original id and blocks a fresh
+/// check; this session neither settles nor releases it. An owned row with an exact run settles
+/// through the ordinary Review path once and is never rerun. Several unresolved rows are never
+/// collapsed into a guessed target.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn resume_review(app: &mut SolveApp) {
     if !available() || app.dfm_review.running || app.dfm_review.operation.is_some() {
         return;
     }
     let Some(store) = app.review_store.as_ref() else { return };
+    let rows = match store.unsettled_operations(app.commit_scope.as_ref()) {
+        Ok(rows) => rows,
+        Err(error) => {
+            app.dfm_review.error =
+                Some(coded(RefusalCode::AuthUnavailable, format!("the Review ledger could not list unresolved operations: {error:?}")));
+            return;
+        }
+    };
+    let review_rows: Vec<UnsettledOperation> = rows
+        .into_iter()
+        .filter(|row| {
+            let record = row.record();
+            record.capability == Capability::Review && record.entry == EntryCategory::ReviewPanel
+        })
+        .collect();
+    if let Some(first) = review_rows.first() {
+        bind_recovered(app, first);
+        if review_rows.len() > 1 {
+            app.dfm_review.settlement_blocked = true;
+            let operation = first.record().operation.as_str().to_string();
+            app.dfm_review.error = Some(coded(
+                RefusalCode::AuthUnavailable,
+                format!(
+                    "{} unresolved Review operations are kept; refusing to choose between them and keeping {} under its original id",
+                    review_rows.len(),
+                    operation
+                ),
+            ));
+            return;
+        }
+        match first {
+            UnsettledOperation::Unproven(record) => {
+                app.dfm_review.error = Some(coded(
+                    RefusalCode::AuthUnavailable,
+                    format!(
+                        "Review operation {} has no durable account-scope binding; it is kept unreleased and may not be settled or rerun by this session",
+                        record.operation.as_str()
+                    ),
+                ));
+            }
+            UnsettledOperation::Foreign(record) => {
+                app.dfm_review.error = Some(coded(
+                    RefusalCode::AuthUnavailable,
+                    format!(
+                        "Review operation {} belongs to another account, installation or session; it is kept for the original session and may not be settled or rerun here",
+                        record.operation.as_str()
+                    ),
+                ));
+            }
+            UnsettledOperation::Owned(record) => match record.review_run_id.as_ref() {
+                Some(run) => settle_recovered_run(app, run.as_str()),
+                None => app.dfm_review.error = Some(surface_uncertain(app)),
+            },
+        }
+        return;
+    }
+
+    // No non-terminal Review row remains. The project's durable run records can still show an
+    // already terminal operation; it is skipped, never reopened.
     let Some(path) = app.session.path.as_deref() else { return };
     let Ok(Some(project)) = solidcraft_engine::project::Project::of(std::path::Path::new(path)) else { return };
     let run_store = solidcraft_engine::dfm::run::RunStore::new(project.root());
@@ -348,31 +436,53 @@ pub(crate) fn resume_review(app: &mut SolveApp) {
         return;
     }
     let Some((run, operation)) = mapped else { return };
-    // A terminal row is already settled; skip it rather than reopening it as pending work.
     match store.load(&operation) {
         Ok(Some(record)) if record.status.is_terminal() => {
             app.dfm_review.settled = true;
-            return;
         }
-        Ok(Some(_)) => {}
+        Ok(Some(_)) => {
+            // The inventory above should have classified this row. Keep it fail-closed rather than
+            // settle a row whose scope was never checked.
+            app.dfm_review.operation = Some(operation.clone());
+            app.dfm_review.mapped_run = Some(run.clone());
+            app.dfm_review.settled = false;
+            app.dfm_review.settlement_blocked = true;
+            app.dfm_review.error = Some(coded(
+                RefusalCode::AuthUnavailable,
+                format!("Review operation {} remains unresolved but was not classified by the durable inventory; it is kept", operation.as_str()),
+            ));
+        }
         Ok(None) => {
             app.dfm_review.error = Some(coded(RefusalCode::AuthUnavailable, format!("Review operation {} has no durable row", operation.as_str())));
-            return;
         }
         Err(error) => {
             app.dfm_review.error = Some(coded(RefusalCode::AuthUnavailable, format!("the Review ledger is unavailable: {error:?}")));
-            return;
         }
     }
-    app.dfm_review.operation = Some(operation);
-    app.dfm_review.mapped_run = Some(run.clone());
+}
+
+/// Bind a recovered row to its durable original identity. The panel keeps it visible so no code
+/// path can mint a replacement operation while the disposition is unresolved.
+#[cfg(not(target_arch = "wasm32"))]
+fn bind_recovered(app: &mut SolveApp, row: &UnsettledOperation) {
+    let record = row.record();
+    app.dfm_review.operation = Some(record.operation.clone());
+    app.dfm_review.mapped_run = record.review_run_id.as_ref().map(|run| run.as_str().to_owned());
     app.dfm_review.settled = false;
-    let card = crate::dfm_chat::refresh_run(app, Some(&run));
+    app.dfm_review.settlement_blocked = !matches!(row, UnsettledOperation::Owned(_));
+}
+
+/// Settle an owned recovered run with the same evidence rules as a live poll. Missing terminal
+/// evidence surfaces the original operation for later recovery; it is never released from an
+/// uncertain outcome.
+#[cfg(not(target_arch = "wasm32"))]
+fn settle_recovered_run(app: &mut SolveApp, run: &str) {
+    let card = crate::dfm_chat::refresh_run(app, Some(run));
     let produced = card.report_produced;
     let settle = if matches!(card.outcome.as_deref(), Some("cancelled" | "failed")) && !produced {
-        settle_review_run(app, &run, false)
+        settle_review_run(app, run, false)
     } else if produced {
-        settle_review_run(app, &run, true)
+        settle_review_run(app, run, true)
     } else {
         app.dfm_review.error = Some(surface_uncertain(app));
         return;

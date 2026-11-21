@@ -528,6 +528,12 @@ impl OperationStore for ReviewStore {
     fn settlement_intent(&self, _operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
         Ok(None)
     }
+    fn unsettled_operations(
+        &self,
+        _scope: Option<&AuthenticatedHostScope>,
+    ) -> Result<Vec<solidcraft_engine::entitlement::UnsettledOperation>, OperationStoreError> {
+        Ok(Vec::new())
+    }
 }
 
 #[test]

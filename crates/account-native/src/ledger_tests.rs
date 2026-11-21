@@ -7,7 +7,7 @@ use super::*;
 use solidcraft_engine::entitlement::{
     AccountId, AuthenticatedHostScope, BillingResult, Capability, EntryCategory, HostSessionBinding, InstallationId, OperationId, OperationRecord,
     OperationStatus, OperationStore, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, SettlementIntent,
-    TransportCorrelation,
+    TransportCorrelation, UnsettledOperation,
 };
 
 struct TempStore {
@@ -61,6 +61,14 @@ fn scope() -> AuthenticatedHostScope {
         AccountId::new("acct_example_0001"),
         InstallationId::new("inst_example_0001"),
         HostSessionBinding::new("test_session_binding"),
+    )
+}
+
+fn other_scope() -> AuthenticatedHostScope {
+    AuthenticatedHostScope::new(
+        AccountId::new("acct_example_0001"),
+        InstallationId::new("inst_example_0001"),
+        HostSessionBinding::new("other_session_binding"),
     )
 }
 
@@ -724,4 +732,63 @@ fn settlement_intent_creation_has_one_winner_under_competition() {
         SaveOutcome::Conflict => 2,
     });
     assert_eq!(outcomes, vec![SaveOutcome::Saved, SaveOutcome::Existing], "exactly one caller owns the first settlement");
+}
+
+/// A started row that exists only in a durable mapping is still discoverable after a reopen, keeps
+/// its original operation id and is classified against the exact admitting scope.
+#[test]
+fn unsettled_inventory_classifies_a_mapping_only_row_after_reopen() {
+    let mut store = TempStore::new("unsettled-inventory");
+    let scope = scope();
+    let correlation = correlation("req_unsettled_0001");
+    let record = store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    let operation = record.operation.clone();
+    store.mark_started(&operation, 2_000).unwrap();
+    let mut reopened = store.reopen();
+
+    let owned = reopened.unsettled_operations(Some(&scope)).unwrap();
+    assert_eq!(owned.len(), 1, "{owned:?}");
+    match &owned[0] {
+        UnsettledOperation::Owned(record) => {
+            assert_eq!(record.operation, operation, "the original id survives the reopen");
+            assert_eq!(record.status, OperationStatus::Pending);
+            assert_eq!(record.started_at_ms, 2_000);
+        }
+        other => panic!("expected the admitting scope: {other:?}"),
+    }
+    let foreign = reopened.unsettled_operations(Some(&other_scope())).unwrap();
+    assert!(matches!(foreign.as_slice(), [UnsettledOperation::Foreign(record)] if record.operation == operation));
+    let absent = reopened.unsettled_operations(None).unwrap();
+    assert!(matches!(absent.as_slice(), [UnsettledOperation::Unproven(record)] if record.operation == operation));
+
+    reopened.mark_terminal(&operation, OperationStatus::Charged).unwrap();
+    assert!(reopened.unsettled_operations(Some(&scope)).unwrap().is_empty(), "a terminal row is not pending recovery");
+}
+
+/// A row saved without a retry mapping has no provable original scope, even though its account
+/// field is readable.
+#[test]
+fn unsettled_inventory_refuses_a_bare_row_without_scope_proof() {
+    let mut store = TempStore::new("unsettled-bare");
+    let record = held_record("op_unsettled_bare_0001");
+    store.save_new(&record).unwrap();
+    let rows = store.unsettled_operations(Some(&scope())).unwrap();
+    assert!(matches!(rows.as_slice(), [UnsettledOperation::Unproven(row)] if row.operation == record.operation));
+}
+
+/// A corrupt mapping cannot turn recovery into a guessed disposition.
+#[test]
+fn unsettled_inventory_fails_closed_on_a_corrupt_mapping() {
+    let mut store = TempStore::new("unsettled-corrupt");
+    let scope = scope();
+    let correlation = correlation("req_unsettled_corrupt_0001");
+    store.persist_intent(&scope, &correlation, Capability::Mcp, EntryCategory::HeadlessMcp).unwrap();
+    let mapping_path = std::fs::read_dir(store.root().join("mappings"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|extension| extension == "json"))
+        .unwrap();
+    std::fs::write(mapping_path, b"{broken").unwrap();
+    assert_eq!(store.reopen().unsettled_operations(Some(&scope)), Err(OperationStoreError::Unavailable));
 }

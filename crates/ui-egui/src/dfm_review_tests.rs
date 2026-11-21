@@ -12,8 +12,8 @@ use serde_json::json;
 use solidcraft_engine::dfm::run::{RunMeta, RunOutcome, RunStore};
 use solidcraft_engine::entitlement::{
     AccountId, AuthenticatedHostScope, BillingPort, BillingResult, BudgetTable, Capability, EntryCategory, FreshIntent, Grant, GrantId,
-    MonotonicInstant, OperationId, OperationRecord, OperationStore, OperationStoreError, Refusal, RefusalCode, RetryDecision, RetryScopeKey,
-    ReviewOperation, RunId, SaveOutcome, SettlementIntent, TransportCorrelation,
+    HostSessionBinding, InstallationId, MonotonicClock, MonotonicInstant, OperationId, OperationRecord, OperationStore, OperationStoreError, Refusal,
+    RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, SettlementIntent, TransportCorrelation, UnsettledOperation,
 };
 
 #[derive(Clone, Default)]
@@ -66,6 +66,8 @@ impl BillingPort for CountingBilling {
 struct ReviewLedger {
     reviews: Arc<Mutex<BTreeMap<String, OperationId>>>,
     records: Arc<Mutex<BTreeMap<String, OperationRecord>>>,
+    /// The durable scope binding each operation was admitted under, when the test gives it one.
+    scopes: Arc<Mutex<BTreeMap<String, AuthenticatedHostScope>>>,
     intents: Arc<Mutex<BTreeMap<String, SettlementIntent>>>,
     fail_intent: Arc<Mutex<bool>>,
     fail_terminal: Arc<Mutex<bool>>,
@@ -75,8 +77,31 @@ struct ReviewLedger {
 
 impl ReviewLedger {
     fn insert_record(&self, operation: OperationId) {
+        self.insert_record_for_scope(operation, review_scope());
+    }
+
+    fn insert_record_for_scope(&self, operation: OperationId, scope: AuthenticatedHostScope) {
         let record = OperationRecord::held(operation.clone(), AccountId::new("review-account"), Capability::Review, EntryCategory::ReviewPanel, 0);
         self.records.lock().expect("records").insert(operation.as_str().to_string(), record);
+        self.scopes.lock().expect("scopes").insert(operation.as_str().to_string(), scope);
+    }
+
+    fn insert_unmapped_record(&self, operation: OperationId) {
+        let record = OperationRecord::held(operation.clone(), AccountId::new("review-account"), Capability::Review, EntryCategory::ReviewPanel, 0);
+        self.records.lock().expect("records").insert(operation.as_str().to_string(), record);
+    }
+
+    fn set_status(&self, operation: &OperationId, status: solidcraft_engine::entitlement::OperationStatus) {
+        if let Some(record) = self.records.lock().expect("records").get_mut(operation.as_str()) {
+            record.status = status;
+        }
+    }
+
+    fn bind_run(&self, run: &str, operation: &OperationId) {
+        self.reviews.lock().expect("reviews").insert(run.to_string(), operation.clone());
+        if let Some(record) = self.records.lock().expect("records").get_mut(operation.as_str()) {
+            record.review_run_id = Some(RunId::new(run));
+        }
     }
 
     fn operation_for(&self, run: &str) -> Option<OperationId> {
@@ -135,7 +160,14 @@ impl OperationStore for LedgerHandle {
         Ok(self.0.records.lock().expect("records").get(operation.as_str()).cloned())
     }
 
-    fn mark_started(&mut self, _operation: &OperationId, _started_at_ms: u64) -> Result<(), OperationStoreError> {
+    fn mark_started(&mut self, operation: &OperationId, started_at_ms: u64) -> Result<(), OperationStoreError> {
+        let mut records = self.0.records.lock().expect("records");
+        let record = records.get_mut(operation.as_str()).ok_or(OperationStoreError::UnknownOperation)?;
+        if record.status.is_terminal() {
+            return Err(OperationStoreError::TerminalState);
+        }
+        record.status = solidcraft_engine::entitlement::OperationStatus::Pending;
+        record.started_at_ms = started_at_ms;
         Ok(())
     }
 
@@ -179,9 +211,15 @@ impl OperationStore for LedgerHandle {
         if *self.0.fail_mapping.lock().expect("flag") {
             return Err(OperationStoreError::Unavailable);
         }
-        if !self.0.records.lock().expect("records").contains_key(review.operation_id.as_str()) {
-            return Err(OperationStoreError::UnknownOperation);
+        let operation = review.operation_id.as_str().to_string();
+        let mut records = self.0.records.lock().expect("records");
+        let record = records.get_mut(&operation).ok_or(OperationStoreError::UnknownOperation)?;
+        match &record.review_run_id {
+            Some(existing) if existing != &review.run_id => return Err(OperationStoreError::InvalidState),
+            Some(_) => {}
+            None => record.review_run_id = Some(review.run_id.clone()),
         }
+        drop(records);
         self.0.reviews.lock().expect("reviews").insert(review.run_id.as_str().to_string(), review.operation_id.clone());
         Ok(())
     }
@@ -217,6 +255,96 @@ impl OperationStore for LedgerHandle {
     fn settlement_intent(&self, operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
         Ok(self.0.intents.lock().expect("intents").get(operation.as_str()).copied())
     }
+
+    fn unsettled_operations(&self, scope: Option<&AuthenticatedHostScope>) -> Result<Vec<UnsettledOperation>, OperationStoreError> {
+        if *self.0.fail_lookup.lock().expect("flag") {
+            return Err(OperationStoreError::Unavailable);
+        }
+        let records = self.0.records.lock().expect("records");
+        let scopes = self.0.scopes.lock().expect("scopes");
+        let mut rows = Vec::new();
+        for record in records.values() {
+            if record.status.is_terminal() {
+                continue;
+            }
+            rows.push(match scope {
+                None => UnsettledOperation::Unproven(record.clone()),
+                Some(scope) => match scopes.get(record.operation.as_str()) {
+                    None => UnsettledOperation::Unproven(record.clone()),
+                    Some(bound) if bound == scope => UnsettledOperation::Owned(record.clone()),
+                    Some(_) => UnsettledOperation::Foreign(record.clone()),
+                },
+            });
+        }
+        Ok(rows)
+    }
+}
+
+fn review_scope() -> AuthenticatedHostScope {
+    AuthenticatedHostScope::new(
+        AccountId::new("review-account"),
+        InstallationId::new("review-installation"),
+        HostSessionBinding::new("review-session"),
+    )
+}
+
+fn other_scope() -> AuthenticatedHostScope {
+    AuthenticatedHostScope::new(
+        AccountId::new("review-account"),
+        InstallationId::new("review-installation"),
+        HostSessionBinding::new("other-session"),
+    )
+}
+
+struct RecoveryAccount;
+
+impl solidcraft_engine::entitlement::AccountService for RecoveryAccount {
+    fn status(&self) -> Result<solidcraft_engine::entitlement::Availability, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "test recovery authority"))
+    }
+
+    fn authorize(&mut self, _scope: &AuthenticatedHostScope, _capability: Capability) -> Result<Grant, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "test recovery authority"))
+    }
+
+    fn begin(
+        &mut self,
+        _scope: &AuthenticatedHostScope,
+        _operation: &OperationId,
+        _capability: Capability,
+        _entry: EntryCategory,
+    ) -> Result<solidcraft_engine::entitlement::Admission, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "test recovery authority"))
+    }
+
+    fn finalize(
+        &mut self,
+        _scope: &AuthenticatedHostScope,
+        _operation: &OperationId,
+        _result: BillingResult,
+    ) -> Result<solidcraft_engine::entitlement::OperationStatus, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "test recovery authority"))
+    }
+
+    fn operation(
+        &self,
+        _scope: &AuthenticatedHostScope,
+        _operation: &OperationId,
+    ) -> Result<solidcraft_engine::entitlement::OperationStatus, Refusal> {
+        Ok(solidcraft_engine::entitlement::OperationStatus::Held)
+    }
+}
+
+struct RecoveryClock;
+
+impl MonotonicClock for RecoveryClock {
+    fn now(&self) -> MonotonicInstant {
+        MonotonicInstant::from_millis(0)
+    }
+
+    fn wall_now(&self) -> SystemTime {
+        SystemTime::UNIX_EPOCH
+    }
 }
 
 fn install(app: &mut crate::SolveApp, billing: &CountingBilling, ledger: &ReviewLedger) {
@@ -224,6 +352,7 @@ fn install(app: &mut crate::SolveApp, billing: &CountingBilling, ledger: &Review
     budget.set_verified(Capability::Review, EntryCategory::ReviewPanel, Duration::from_secs(30));
     app.install_billing(Box::new(billing.clone()), budget);
     app.install_review_store(Box::new(LedgerHandle(ledger.clone())));
+    app.install_commit_authority(review_scope(), Box::new(RecoveryAccount), Box::new(RecoveryClock));
 }
 
 fn begin_with_record(h: &mut Harness, billing: &CountingBilling, ledger: &ReviewLedger) -> (OperationId, String) {
@@ -900,4 +1029,134 @@ fn review_startup_skips_a_terminal_row() {
     assert!(restarted.app.dfm_review.settled);
     assert_eq!(billing.releases(), 0, "a terminal row is not settled again");
     assert!(restarted.app.dfm_review.error.is_none());
+}
+
+/// A started row with no exact run is bound to its original id and blocks a fresh check. It is
+/// never replayed, released or charged.
+#[test]
+fn review_startup_blocks_a_pending_operation_without_a_run() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let operation = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record(operation.clone());
+    ledger.set_status(&operation, solidcraft_engine::entitlement::OperationStatus::Pending);
+
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    crate::dfm_review::resume_review(&mut restarted.app);
+    assert_eq!(restarted.app.dfm_review.operation.as_ref(), Some(&operation), "the original id is kept, not replaced");
+    assert!(
+        restarted.app.dfm_review.error.as_deref().is_some_and(|error| error.contains(operation.as_str())),
+        "{:?}",
+        restarted.app.dfm_review.error
+    );
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(billing.releases(), 0, "an uncertain started row is never released blindly");
+    assert!(!restarted.app.dfm_review.running, "startup never reruns the engineering operation");
+
+    let fresh = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record(fresh.clone());
+    let error = crate::dfm_review::prepare_review_with(&mut restarted.app, fresh).unwrap_err();
+    assert!(error.starts_with("UNSAFE_TO_START:"), "{error}");
+    assert_eq!(billing.admits(), 0, "a fresh press admits nothing while the original row is unsettled");
+}
+
+/// A durable row admitted by another account or session is not settled, released or adopted by
+/// the current one.
+#[test]
+fn review_startup_refuses_a_foreign_pending_operation() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let operation = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record_for_scope(operation.clone(), other_scope());
+    ledger.set_status(&operation, solidcraft_engine::entitlement::OperationStatus::Pending);
+
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    crate::dfm_review::resume_review(&mut restarted.app);
+    assert_eq!(restarted.app.dfm_review.operation.as_ref(), Some(&operation));
+    assert!(restarted.app.dfm_review.settlement_blocked);
+    let error = restarted.app.dfm_review.error.clone().expect("the mismatch is visible");
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert!(error.contains("another account"), "{error}");
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(billing.releases(), 0);
+
+    let fresh = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record(fresh.clone());
+    let error = crate::dfm_review::prepare_review_with(&mut restarted.app, fresh).unwrap_err();
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "a foreign row blocks settlement: {error}");
+    assert_eq!(billing.admits(), 0);
+}
+
+/// A row with no durable scope binding cannot be adopted by any current session, even when its
+/// exact run has terminal evidence.
+#[test]
+fn review_startup_refuses_an_unproven_pending_operation_even_with_a_stopped_run() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let operation = crate::control::mint_operation().expect("host entropy");
+    let run = "run-unproven-0001";
+    ledger.insert_unmapped_record(operation.clone());
+    ledger.set_status(&operation, solidcraft_engine::entitlement::OperationStatus::Pending);
+    ledger.bind_run(run, &operation);
+
+    let mut restarted = Harness::new();
+    let scratch = ProjectScratch::new("startup-unproven");
+    let root = project_session(&mut restarted, &scratch);
+    stopped_run(&root, run, RunOutcome::Cancelled);
+    install(&mut restarted.app, &billing, &ledger);
+    crate::dfm_review::resume_review(&mut restarted.app);
+    assert_eq!(restarted.app.dfm_review.operation.as_ref(), Some(&operation));
+    assert!(restarted.app.dfm_review.settlement_blocked);
+    let error = restarted.app.dfm_review.error.clone().expect("the missing binding is visible");
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert!(error.contains("no durable account-scope binding"), "{error}");
+    assert_eq!(billing.releases(), 0, "terminal evidence alone never releases another scope's hold");
+    assert_eq!(billing.commits(), 0);
+}
+
+/// Two unresolved Review operations are never collapsed into one guessed recovery target.
+#[test]
+fn review_startup_never_chooses_between_multiple_pending_operations() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let first = crate::control::mint_operation().expect("host entropy");
+    let second = crate::control::mint_operation().expect("host entropy");
+    for operation in [&first, &second] {
+        ledger.insert_record(operation.clone());
+        ledger.set_status(operation, solidcraft_engine::entitlement::OperationStatus::Pending);
+    }
+
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    crate::dfm_review::resume_review(&mut restarted.app);
+    assert!(restarted.app.dfm_review.settlement_blocked);
+    assert!(restarted.app.dfm_review.operation.is_some(), "a row is kept visible so no new run starts");
+    let error = restarted.app.dfm_review.error.clone().expect("the ambiguity is visible");
+    assert!(error.contains("2 unresolved Review operations"), "{error}");
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(billing.releases(), 0);
+}
+
+/// A pending row proven to belong to this exact scope still settles through the existing Review
+/// behavior, once, without rerunning.
+#[test]
+fn review_startup_settles_a_pending_run_in_the_matching_scope() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let mut first = Harness::new();
+    let (operation, run) = begin_with_record(&mut first, &billing, &ledger);
+    ledger.set_status(&operation, solidcraft_engine::entitlement::OperationStatus::Pending);
+    let scratch = ProjectScratch::new("startup-pending-owned");
+    let root = project_session(&mut first, &scratch);
+    stopped_run(&root, &run, RunOutcome::Cancelled);
+
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    restarted.app.session.path = first.app.session.path.clone();
+    crate::dfm_review::resume_review(&mut restarted.app);
+    assert_eq!(billing.releases(), 1, "the original pending operation settles once");
+    assert!(restarted.app.dfm_review.settled);
+    assert!(!restarted.app.dfm_review.running, "settlement never reruns the check");
 }

@@ -10,7 +10,7 @@ use super::types::RetryMapping;
 use super::types::{
     Admission, AuthenticatedHostScope, Availability, BillingResult, Capability, CredentialError, EntryCategory, FreshIntent, Grant, OperationId,
     OperationRecord, OperationStatus, OperationStoreError, Refusal, RefusalCode, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome,
-    SettlementIntent, TransportCorrelation,
+    SettlementIntent, TransportCorrelation, UnsettledOperation,
 };
 
 pub trait AccountService {
@@ -68,6 +68,12 @@ pub trait OperationStore {
     fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<SaveOutcome, OperationStoreError>;
     /// The settlement intent recorded for this operation, or `None`.
     fn settlement_intent(&self, operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError>;
+    /// Every non-terminal row the journal can still find, classified against `scope`.
+    ///
+    /// Recovery reads this inventory; it never turns a row into execution authority. `None` means
+    /// no authenticated host scope is available, so no row can be proven to belong to the caller.
+    /// A read error is [`OperationStoreError::Unavailable`] and must fail closed.
+    fn unsettled_operations(&self, scope: Option<&AuthenticatedHostScope>) -> Result<Vec<UnsettledOperation>, OperationStoreError>;
 }
 
 pub trait CredentialStore {
@@ -318,6 +324,30 @@ impl OperationStore for InMemoryOperationStore {
 
     fn settlement_intent(&self, operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
         Ok(self.settlements.get(operation).copied())
+    }
+
+    fn unsettled_operations(&self, scope: Option<&AuthenticatedHostScope>) -> Result<Vec<UnsettledOperation>, OperationStoreError> {
+        let mut rows = Vec::new();
+        for record in self.records.values() {
+            if record.status.is_terminal() {
+                continue;
+            }
+            rows.push(match scope {
+                None => UnsettledOperation::Unproven(record.clone()),
+                Some(scope) => {
+                    let mut same = None;
+                    for mapping in self.mappings.values().filter(|mapping| mapping.operation == record.operation) {
+                        same = Some(same.unwrap_or(true) && mapping.scope.host_scope == *scope);
+                    }
+                    match same {
+                        None => UnsettledOperation::Unproven(record.clone()),
+                        Some(true) => UnsettledOperation::Owned(record.clone()),
+                        Some(false) => UnsettledOperation::Foreign(record.clone()),
+                    }
+                }
+            });
+        }
+        Ok(rows)
     }
 }
 
