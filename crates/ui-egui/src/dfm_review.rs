@@ -17,7 +17,7 @@ use std::time::Duration;
 use egui::{Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
 use serde_json::Value;
 use solidcraft_engine::entitlement::{
-    BillingResult, Capability, EntryCategory, OperationId, OperationStatus, OperationStoreError, RefusalCode, ReviewOperation, RunId,
+    BillingResult, Capability, EntryCategory, OperationId, OperationStatus, OperationStoreError, RefusalCode, ReviewOperation, RunId, SaveOutcome,
     SettlementIntent, UpperBound,
 };
 
@@ -175,10 +175,15 @@ fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(St
         None => Ok(()),
     };
     if let Err(error) = recorded {
-        if let Some(billing) = app.billing.as_mut() {
-            let _ = billing.release(&operation, RefusalCode::UnsafeToStart);
-        }
-        return Err(coded(RefusalCode::AuthUnavailable, format!("the Review mapping could not be persisted before dispatch: {error:?}")));
+        // The run was never dispatched, so the one hold is proven unstarted. Route that release
+        // through the same durable original-ID intent/terminal path as every other settlement;
+        // never send a bare release wire call that a restart could repeat.
+        let release = apply_settlement(app, &operation, SettlementIntent::Release(RefusalCode::UnsafeToStart));
+        let recovery = match release {
+            Ok(()) => "the hold was released durably under the original operation".to_string(),
+            Err(release_error) => format!("the release is not confirmed; keep operation {} for recovery: {release_error}", operation.as_str()),
+        };
+        return Err(coded(RefusalCode::AuthUnavailable, format!("the Review mapping could not be persisted before dispatch: {error:?}; {recovery}")));
     }
     app.dfm_review.operation = Some(operation);
     app.dfm_review.mapped_run = Some(run.clone());
@@ -210,35 +215,32 @@ fn apply_settlement(app: &mut SolveApp, operation: &OperationId, intent: Settlem
         }
     }
     if let Some(store) = app.review_store.as_mut() {
-        match store.settlement_intent(operation) {
-            Ok(Some(previous)) if previous == intent => {
+        match store.record_settlement_intent(operation, intent) {
+            Ok(SaveOutcome::Saved) => {}
+            Ok(SaveOutcome::Existing) => {
                 return Err(coded(
                     RefusalCode::AuthUnavailable,
                     format!(
-                        "operation {} already has a settlement intent; an earlier wire call may have completed. Query/resume under the same id and never repeat it blindly",
+                        "operation {} already has a settlement claim, even for the same intent; an earlier wire call may have completed. Query/resume under the same id and never repeat it blindly",
                         operation.as_str()
                     ),
                 ));
             }
-            Ok(Some(_)) => {
+            Ok(SaveOutcome::Conflict) => {
                 return Err(coded(
                     RefusalCode::AuthUnavailable,
-                    format!(
-                        "operation {} has a different settlement intent; refuse rather than charge or release another action",
-                        operation.as_str()
-                    ),
+                    format!("operation {} could not claim its settlement intent; refuse rather than wire an ambiguous action", operation.as_str()),
                 ));
             }
-            Ok(None) => {
-                store.record_settlement_intent(operation, intent).map_err(|error| {
-                    coded(
-                        RefusalCode::AuthUnavailable,
-                        format!("operation {} could not persist its settlement intent; no wire call was made: {error:?}", operation.as_str()),
-                    )
-                })?;
+            Err(OperationStoreError::TerminalState) => {
+                app.dfm_review.settled = true;
+                return Ok(());
             }
             Err(error) => {
-                return Err(coded(RefusalCode::AuthUnavailable, format!("the Review ledger could not read a settlement intent: {error:?}")));
+                return Err(coded(
+                    RefusalCode::AuthUnavailable,
+                    format!("operation {} could not persist its settlement intent; no wire call was made: {error:?}", operation.as_str()),
+                ));
             }
         }
     }
@@ -330,11 +332,38 @@ pub(crate) fn resume_review(app: &mut SolveApp) {
             }
         }
     }
-    let Some((run, operation)) =
-        candidates.into_iter().find_map(|run| store.review_operation(&RunId::new(&run)).ok().flatten().map(|operation| (run, operation)))
-    else {
+    // Bounded current-project resumption. Scanning multiple pending controlled runs across
+    // projects and choosing the right one is an explicit Task 11 lifecycle gate.
+    let mut lookup_error = None;
+    let mapped = candidates.into_iter().find_map(|run| match store.review_operation(&RunId::new(&run)) {
+        Ok(Some(operation)) => Some((run, operation)),
+        Ok(None) => None,
+        Err(error) => {
+            lookup_error = Some(error);
+            None
+        }
+    });
+    if let Some(error) = lookup_error {
+        app.dfm_review.error = Some(coded(RefusalCode::AuthUnavailable, format!("the Review ledger could not scan mapped runs: {error:?}")));
         return;
-    };
+    }
+    let Some((run, operation)) = mapped else { return };
+    // A terminal row is already settled; skip it rather than reopening it as pending work.
+    match store.load(&operation) {
+        Ok(Some(record)) if record.status.is_terminal() => {
+            app.dfm_review.settled = true;
+            return;
+        }
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            app.dfm_review.error = Some(coded(RefusalCode::AuthUnavailable, format!("Review operation {} has no durable row", operation.as_str())));
+            return;
+        }
+        Err(error) => {
+            app.dfm_review.error = Some(coded(RefusalCode::AuthUnavailable, format!("the Review ledger is unavailable: {error:?}")));
+            return;
+        }
+    }
     app.dfm_review.operation = Some(operation);
     app.dfm_review.mapped_run = Some(run.clone());
     app.dfm_review.settled = false;

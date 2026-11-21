@@ -686,11 +686,42 @@ fn settlement_intent_is_durable_and_write_once() {
     let commit = SettlementIntent::Commit(BillingResult::Succeeded);
     store.record_settlement_intent(&record.operation, commit).unwrap();
     assert_eq!(store.reopen().settlement_intent(&record.operation).unwrap(), Some(commit));
-    assert_eq!(store.record_settlement_intent(&record.operation, commit), Ok(()));
+    assert_eq!(store.record_settlement_intent(&record.operation, commit), Ok(SaveOutcome::Existing));
     assert_eq!(
         store.record_settlement_intent(&record.operation, SettlementIntent::Release(RefusalCode::UnsafeToStart)),
         Err(OperationStoreError::InvalidState)
     );
     store.mark_terminal(&record.operation, OperationStatus::Charged).unwrap();
     assert_eq!(store.record_settlement_intent(&record.operation, commit), Err(OperationStoreError::TerminalState));
+}
+
+#[test]
+fn settlement_intent_creation_has_one_winner_under_competition() {
+    use std::sync::{Arc, Barrier};
+    let mut temp = TempStore::new("settlement-competition");
+    let record = held_record("op_settlement_competition_0001");
+    temp.save_new(&record).unwrap();
+    let root = temp.root.clone();
+    let barrier = Arc::new(Barrier::new(2));
+    let mut handles = Vec::new();
+    for _ in 0..2 {
+        let root = root.clone();
+        let barrier = Arc::clone(&barrier);
+        let operation = record.operation.clone();
+        handles.push(std::thread::spawn(move || {
+            let mut store = FileOperationStore::open(root).expect("open ledger");
+            barrier.wait();
+            store.record_settlement_intent(&operation, SettlementIntent::Commit(BillingResult::Succeeded))
+        }));
+    }
+    let mut outcomes = Vec::new();
+    for handle in handles {
+        outcomes.push(handle.join().expect("thread").expect("intent call"));
+    }
+    outcomes.sort_by_key(|outcome| match outcome {
+        SaveOutcome::Saved => 0,
+        SaveOutcome::Existing => 1,
+        SaveOutcome::Conflict => 2,
+    });
+    assert_eq!(outcomes, vec![SaveOutcome::Saved, SaveOutcome::Existing], "exactly one caller owns the first settlement");
 }

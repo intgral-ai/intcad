@@ -60,10 +60,12 @@ pub trait OperationStore {
     fn lookup_original_retry(&self, key: &RetryScopeKey) -> RetryDecision;
     fn record_review(&mut self, review: &ReviewOperation) -> Result<(), OperationStoreError>;
     fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError>;
-    /// Persist one settlement intent before the host's first settlement wire call. The same
-    /// operation may repeat the same intent after a crash; a different intent or a terminal row
-    /// is refused. The record never grants execution authority.
-    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError>;
+    /// Atomically create the settlement-intent claim before the host's first settlement wire call.
+    ///
+    /// `Saved` means this caller now owns the one settlement attempt. `Existing` means another
+    /// attempt (even with the same intent) already claimed it; the caller must not wire again.
+    /// A terminal row or a different intent is refused. The record never grants execution authority.
+    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<SaveOutcome, OperationStoreError>;
     /// The settlement intent recorded for this operation, or `None`.
     fn settlement_intent(&self, operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError>;
 }
@@ -299,16 +301,17 @@ impl OperationStore for InMemoryOperationStore {
         Ok(self.reviews.get(run_id).cloned())
     }
 
-    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError> {
+    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<SaveOutcome, OperationStoreError> {
         let record = self.records.get(operation).ok_or(OperationStoreError::UnknownOperation)?;
         if record.status.is_terminal() {
             return Err(OperationStoreError::TerminalState);
         }
         match self.settlements.get(operation) {
             Some(existing) if existing != &intent => Err(OperationStoreError::InvalidState),
-            _ => {
+            Some(_) => Ok(SaveOutcome::Existing),
+            None => {
                 self.settlements.insert(operation.clone(), intent);
-                Ok(())
+                Ok(SaveOutcome::Saved)
             }
         }
     }

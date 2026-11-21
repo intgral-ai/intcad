@@ -69,6 +69,8 @@ struct ReviewLedger {
     intents: Arc<Mutex<BTreeMap<String, SettlementIntent>>>,
     fail_intent: Arc<Mutex<bool>>,
     fail_terminal: Arc<Mutex<bool>>,
+    fail_mapping: Arc<Mutex<bool>>,
+    fail_lookup: Arc<Mutex<bool>>,
 }
 
 impl ReviewLedger {
@@ -89,12 +91,35 @@ impl ReviewLedger {
         self.records.lock().expect("records").get(operation.as_str()).map(|record| record.status)
     }
 
+    fn set_terminal(&self, operation: &OperationId, status: solidcraft_engine::entitlement::OperationStatus) {
+        if let Some(record) = self.records.lock().expect("records").get_mut(operation.as_str()) {
+            record.status = status;
+        }
+    }
+
     fn fail_next_intent(&self, fail: bool) {
         *self.fail_intent.lock().expect("flag") = fail;
     }
 
     fn fail_next_terminal(&self, fail: bool) {
         *self.fail_terminal.lock().expect("flag") = fail;
+    }
+
+    fn fail_next_mapping(&self, fail: bool) {
+        *self.fail_mapping.lock().expect("flag") = fail;
+    }
+
+    fn fail_next_lookup(&self, fail: bool) {
+        *self.fail_lookup.lock().expect("flag") = fail;
+    }
+
+    fn record_settlement_intent_claim(&self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError> {
+        let mut intents = self.intents.lock().expect("intents");
+        if intents.get(operation.as_str()).is_some() {
+            return Err(OperationStoreError::InvalidState);
+        }
+        intents.insert(operation.as_str().to_string(), intent);
+        Ok(())
     }
 }
 
@@ -151,6 +176,9 @@ impl OperationStore for LedgerHandle {
     }
 
     fn record_review(&mut self, review: &ReviewOperation) -> Result<(), OperationStoreError> {
+        if *self.0.fail_mapping.lock().expect("flag") {
+            return Err(OperationStoreError::Unavailable);
+        }
         if !self.0.records.lock().expect("records").contains_key(review.operation_id.as_str()) {
             return Err(OperationStoreError::UnknownOperation);
         }
@@ -159,10 +187,13 @@ impl OperationStore for LedgerHandle {
     }
 
     fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError> {
+        if *self.0.fail_lookup.lock().expect("flag") {
+            return Err(OperationStoreError::Unavailable);
+        }
         Ok(self.0.reviews.lock().expect("reviews").get(run_id.as_str()).cloned())
     }
 
-    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError> {
+    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<SaveOutcome, OperationStoreError> {
         if *self.0.fail_intent.lock().expect("flag") {
             return Err(OperationStoreError::Unavailable);
         }
@@ -175,9 +206,10 @@ impl OperationStore for LedgerHandle {
         let mut intents = self.0.intents.lock().expect("intents");
         match intents.get(operation.as_str()) {
             Some(existing) if existing != &intent => Err(OperationStoreError::InvalidState),
-            _ => {
+            Some(_) => Ok(SaveOutcome::Existing),
+            None => {
                 intents.insert(operation.as_str().to_string(), intent);
-                Ok(())
+                Ok(SaveOutcome::Saved)
             }
         }
     }
@@ -786,4 +818,86 @@ fn review_startup_charges_a_superseded_complete_run() {
     assert_eq!(billing.commits(), 1, "a durable superseded report is charged once");
     assert_eq!(billing.releases(), 0);
     assert!(!restarted.app.dfm_review.running);
+}
+
+/// A mapping-write failure after admission is still a proven-unstarted release, but it must go
+/// through the durable original-ID intent and terminal row, never a bare release wire call.
+#[test]
+fn review_mapping_failure_releases_through_durable_intent() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    install(&mut h.app, &billing, &ledger);
+    let operation = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record(operation.clone());
+    ledger.fail_next_mapping(true);
+    let error = crate::dfm_review::prepare_review_with(&mut h.app, operation.clone()).unwrap_err();
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert_eq!(billing.admits(), 1);
+    assert_eq!(billing.releases(), 1);
+    assert_eq!(billing.commits(), 0);
+    assert_eq!(ledger.intent_for(&operation), Some(SettlementIntent::Release(RefusalCode::UnsafeToStart)));
+    assert_eq!(ledger.status_for(&operation), Some(solidcraft_engine::entitlement::OperationStatus::Released));
+    assert!(h.app.dfm_review.mapped_run.is_none(), "no mapping survived the failure");
+}
+
+/// An existing settlement claim—even with the identical intent—is not rewired.
+#[test]
+fn review_existing_settlement_claim_is_not_rewired() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let (_operation, run) = begin_with_record(&mut h, &billing, &ledger);
+    let operation = h.app.dfm_review.operation.clone().expect("operation");
+    // Pretend an earlier process claimed the same intent and stopped before the terminal row.
+    ledger.record_settlement_intent_claim(&operation, SettlementIntent::Commit(BillingResult::Succeeded)).expect("claim");
+    let error = crate::dfm_review::settle_review_run(&mut h.app, &run, true).unwrap_err();
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert_eq!(billing.commits(), 0, "an existing claim owns the only settlement attempt");
+    assert_eq!(billing.releases(), 0);
+}
+
+/// A ledger lookup error during startup is visible, not silently treated as "no pending run".
+#[test]
+fn review_startup_ledger_error_is_visible() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let mut first = Harness::new();
+    let (_operation, run) = begin_with_record(&mut first, &billing, &ledger);
+    let scratch = ProjectScratch::new("startup-error");
+    let root = project_session(&mut first, &scratch);
+    stopped_run(&root, &run, RunOutcome::Cancelled);
+
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    restarted.app.session.path = first.app.session.path.clone();
+    ledger.fail_next_lookup(true);
+    crate::dfm_review::resume_review(&mut restarted.app);
+    assert!(
+        restarted.app.dfm_review.error.as_deref().is_some_and(|error| error.starts_with("AUTH_UNAVAILABLE:")),
+        "{:?}",
+        restarted.app.dfm_review.error
+    );
+    assert_eq!(billing.releases(), 0, "a ledger error never releases or charges");
+}
+
+/// Startup skips an already terminal row without reopening it as pending work.
+#[test]
+fn review_startup_skips_a_terminal_row() {
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let mut first = Harness::new();
+    let (operation, run) = begin_with_record(&mut first, &billing, &ledger);
+    let scratch = ProjectScratch::new("startup-terminal");
+    let root = project_session(&mut first, &scratch);
+    stopped_run(&root, &run, RunOutcome::Cancelled);
+    ledger.set_terminal(&operation, solidcraft_engine::entitlement::OperationStatus::Released);
+
+    let mut restarted = Harness::new();
+    install(&mut restarted.app, &billing, &ledger);
+    restarted.app.session.path = first.app.session.path.clone();
+    crate::dfm_review::resume_review(&mut restarted.app);
+    assert!(restarted.app.dfm_review.settled);
+    assert_eq!(billing.releases(), 0, "a terminal row is not settled again");
+    assert!(restarted.app.dfm_review.error.is_none());
 }

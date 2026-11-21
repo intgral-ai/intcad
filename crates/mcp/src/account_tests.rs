@@ -522,8 +522,8 @@ impl OperationStore for ReviewStore {
     fn review_operation(&self, run_id: &RunId) -> Result<Option<OperationId>, OperationStoreError> {
         Ok(self.reviews.get(run_id).cloned())
     }
-    fn record_settlement_intent(&mut self, _operation: &OperationId, _intent: SettlementIntent) -> Result<(), OperationStoreError> {
-        Ok(())
+    fn record_settlement_intent(&mut self, _operation: &OperationId, _intent: SettlementIntent) -> Result<SaveOutcome, OperationStoreError> {
+        Ok(SaveOutcome::Saved)
     }
     fn settlement_intent(&self, _operation: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
         Ok(None)

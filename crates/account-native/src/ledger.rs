@@ -531,7 +531,7 @@ impl OperationStore for FileOperationStore {
         }
     }
 
-    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError> {
+    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<SaveOutcome, OperationStoreError> {
         let Some(record) = self.load_and_apply_markers(operation).map_err(|_| OperationStoreError::Unavailable)? else {
             return Err(OperationStoreError::UnknownOperation);
         };
@@ -542,9 +542,9 @@ impl OperationStore for FileOperationStore {
         let persisted = persisted_settlement(intent);
         let bytes = serde_json::to_vec(&persisted).map_err(|_| OperationStoreError::Unavailable)?;
         match publish_create_only(&path, &bytes) {
-            Ok(true) => Ok(()),
+            Ok(true) => Ok(SaveOutcome::Saved),
             Ok(false) => match read_json::<PersistedSettlementIntent>(&path).map_err(|_| OperationStoreError::Unavailable)? {
-                Some(existing) if settlement_from_persisted(existing.clone()) == Some(intent) => Ok(()),
+                Some(existing) if settlement_from_persisted(existing.clone()) == Some(intent) => Ok(SaveOutcome::Existing),
                 Some(_) => Err(OperationStoreError::InvalidState),
                 None => Err(OperationStoreError::Unavailable),
             },
@@ -768,16 +768,17 @@ impl OperationStore for InMemoryOperationStore {
         Ok(self.reviews.get(run_id).cloned())
     }
 
-    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<(), OperationStoreError> {
+    fn record_settlement_intent(&mut self, operation: &OperationId, intent: SettlementIntent) -> Result<SaveOutcome, OperationStoreError> {
         let record = self.records.get(operation).ok_or(OperationStoreError::UnknownOperation)?;
         if record.status.is_terminal() {
             return Err(OperationStoreError::TerminalState);
         }
         match self.settlements.get(operation) {
             Some(existing) if existing != &intent => Err(OperationStoreError::InvalidState),
-            _ => {
+            Some(_) => Ok(SaveOutcome::Existing),
+            None => {
                 self.settlements.insert(operation.clone(), intent);
-                Ok(())
+                Ok(SaveOutcome::Saved)
             }
         }
     }

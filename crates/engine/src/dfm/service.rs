@@ -86,6 +86,11 @@ struct Last {
 struct Shared {
     cancel: AtomicBool,
     running: AtomicBool,
+    /// True while the active/live job is a controlled Review run. A free start must not replace
+    /// it, and a controlled start never replaces any active run.
+    controlled_active: AtomicBool,
+    /// Serializes the active-state check, the synchronous reservation and the queue send.
+    start_gate: Mutex<()>,
     active: Mutex<Option<String>>,
     last: Mutex<Option<Last>>,
     error: Mutex<Option<String>>,
@@ -152,6 +157,9 @@ fn worker(rx: Receiver<Job>, shared: Arc<Shared>) {
         if let Ok(mut revision) = shared.started_revision.lock() {
             *revision = None;
         }
+        if job.reservation.is_some() {
+            shared.controlled_active.store(false, Ordering::Release);
+        }
         shared.running.store(false, Ordering::Release);
     }
 }
@@ -208,6 +216,29 @@ fn internal(message: impl Into<String>) -> EngineError {
     EngineError::Internal("dfm service".into(), message.into())
 }
 
+/// What a start may do with the currently active job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StartPlan {
+    Start,
+    ReplaceFree,
+}
+
+/// A controlled request never replaces an active job. A free request may replace an ordinary
+/// free check but never an active controlled run. Keeping this pure makes the rule deterministic
+/// and testable; the service guards the check-and-send with `start_gate`.
+pub(super) fn start_plan(active: bool, active_controlled: bool, requested_controlled: bool) -> Result<StartPlan, &'static str> {
+    if !active {
+        return Ok(StartPlan::Start);
+    }
+    if active_controlled {
+        return Err("an active controlled Review run is never replaced by a free or controlled check");
+    }
+    if requested_controlled {
+        return Err("a controlled Review check never replaces an active check");
+    }
+    Ok(StartPlan::ReplaceFree)
+}
+
 fn open_project(session: &Session) -> Result<Project, EngineError> {
     let path = session.path.as_deref().ok_or_else(|| internal("the open design is not saved in a project"))?;
     Project::of(std::path::Path::new(path))
@@ -257,18 +288,29 @@ fn start_with_reservation(session: &mut Session, reservation: Option<Reservation
         started_at: timestamp(crate::validation::now_ms()),
     };
     let (tx, shared) = service()?;
-    let replaces_running = shared.running.load(Ordering::Acquire);
-    if replaces_running && reservation.is_some() {
-        // A free manual check may replace the previous check. A controlled run carries a billed
-        // operation and a durable mapping, so it must never be silently replaced or cancelled by
-        // a second press; the caller refuses instead.
-        return Err(internal("a controlled Review check is already running; a new controlled run may not replace it"));
+    let requested_controlled = reservation.is_some();
+    let (replaces_running, gate) = {
+        // The gate makes "read active state then send" one critical section. Mark the reservation
+        // before sending, so a concurrent start cannot observe an idle service and queue a
+        // second replacement in the window before the worker wakes.
+        let gate = shared.start_gate.lock().map_err(|_| internal("the DFM start gate is poisoned"))?;
+        let plan = start_plan(shared.running.load(Ordering::Acquire), shared.controlled_active.load(Ordering::Acquire), requested_controlled)
+            .map_err(internal)?;
+        let replaces = matches!(plan, StartPlan::ReplaceFree);
+        if replaces {
+            cancel_shared(&shared);
+        }
+        shared.controlled_active.store(requested_controlled, Ordering::Release);
+        shared.running.store(true, Ordering::Release);
+        (replaces, gate)
+    };
+    let send = tx.send(Job { request, candidates: crate::cmd::candidate_store_root(), store: validation_store_root(), reservation });
+    drop(gate);
+    if send.is_err() {
+        shared.controlled_active.store(false, Ordering::Release);
+        shared.running.store(false, Ordering::Release);
+        return Err(internal("the DFM worker is not running"));
     }
-    if replaces_running {
-        cancel_shared(&shared);
-    }
-    tx.send(Job { request, candidates: crate::cmd::candidate_store_root(), store: validation_store_root(), reservation })
-        .map_err(|_| internal("the DFM worker is not running"))?;
     Ok(CheckTicket {
         project_id: frozen.project_id,
         project_name: frozen.project_name,

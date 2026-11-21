@@ -88,3 +88,14 @@ fn a_manual_check_without_ai_writes_a_report_that_inspect_reopens() {
 
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn controlled_starts_never_replace_an_active_controlled_run() {
+    use super::service::{StartPlan, start_plan};
+    assert_eq!(start_plan(false, false, true), Ok(StartPlan::Start));
+    assert_eq!(start_plan(false, false, false), Ok(StartPlan::Start));
+    assert_eq!(start_plan(true, false, false), Ok(StartPlan::ReplaceFree));
+    assert!(start_plan(true, true, false).is_err(), "a free start never replaces an active controlled run");
+    assert!(start_plan(true, true, true).is_err(), "a controlled start never replaces an active controlled run");
+    assert!(start_plan(true, false, true).is_err(), "a controlled start never replaces an active free run");
+}
