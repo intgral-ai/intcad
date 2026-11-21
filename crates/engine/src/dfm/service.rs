@@ -74,6 +74,9 @@ struct Job {
     store: Option<PathBuf>,
     /// A controlled Review run: exact host run identity, billed operation and measured stop.
     reservation: Option<Reservation>,
+    /// The queue ownership this job was sent under. A stale job or stale completion must not
+    /// touch a newer reservation.
+    generation: JobGeneration,
 }
 
 struct Last {
@@ -82,15 +85,76 @@ struct Last {
     reason: Option<String>,
 }
 
+/// One queued or running job's ownership generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct JobGeneration(u64);
+
+#[derive(Clone, Copy)]
+struct OwnedJob {
+    generation: JobGeneration,
+    controlled: bool,
+}
+
+/// Queue-aware ownership book. A reservation exists before the send and stays until the worker
+/// that owns that generation finishes. A stale worker cannot clear a newer reservation because
+/// only the current generation may transition to idle.
+#[derive(Default)]
+pub(super) struct JobBook {
+    next: u64,
+    current: Option<OwnedJob>,
+}
+
+impl JobBook {
+    pub(super) fn reserve(&mut self, requested_controlled: bool) -> Result<(JobGeneration, bool), &'static str> {
+        let active = self.current.is_some();
+        let active_controlled = self.current.is_some_and(|job| job.controlled);
+        let plan = start_plan(active, active_controlled, requested_controlled)?;
+        self.next = self.next.saturating_add(1);
+        let generation = JobGeneration(self.next);
+        self.current = Some(OwnedJob { generation, controlled: requested_controlled });
+        Ok((generation, matches!(plan, StartPlan::ReplaceFree)))
+    }
+
+    pub(super) fn begin(&self, generation: JobGeneration) -> bool {
+        self.current.is_some_and(|job| job.generation == generation)
+    }
+
+    pub(super) fn finish(&mut self, generation: JobGeneration) -> bool {
+        if self.current.is_some_and(|job| job.generation == generation) {
+            self.current = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn rollback(&mut self, generation: JobGeneration) {
+        if self.current.is_some_and(|job| job.generation == generation) {
+            self.current = None;
+        }
+    }
+
+    fn is_idle(&self) -> bool {
+        self.current.is_none()
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_running(&self) -> bool {
+        self.current.is_some()
+    }
+    #[cfg(test)]
+    pub(super) fn is_idle_for_test(&self) -> bool {
+        self.is_idle()
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     cancel: AtomicBool,
+    /// A status mirror updated only by [JobBook] owners; stale completions leave it alone.
     running: AtomicBool,
-    /// True while the active/live job is a controlled Review run. A free start must not replace
-    /// it, and a controlled start never replaces any active run.
-    controlled_active: AtomicBool,
-    /// Serializes the active-state check, the synchronous reservation and the queue send.
-    start_gate: Mutex<()>,
+    /// Serializes queue ownership; the same lock covers reserve, send, worker begin and finish.
+    book: Mutex<JobBook>,
     active: Mutex<Option<String>>,
     last: Mutex<Option<Last>>,
     error: Mutex<Option<String>>,
@@ -130,13 +194,9 @@ fn service() -> Result<(Sender<Job>, Arc<Shared>), EngineError> {
 
 fn worker(rx: Receiver<Job>, shared: Arc<Shared>) {
     while let Ok(job) = rx.recv() {
-        shared.running.store(true, Ordering::Release);
-        shared.cancel.store(false, Ordering::Release);
-        if let Ok(mut revision) = shared.started_revision.lock() {
-            *revision = Some(job.request.candidate.source.revision.clone());
-        }
-        if let Ok(mut error) = shared.error.lock() {
-            *error = None;
+        if !worker_begin(&shared, job.generation, &job.request.candidate.source.revision) {
+            // A newer start invalidated this queued job; it must not run or touch newer state.
+            continue;
         }
         let result = run_job(&job, &shared);
         let last = match result {
@@ -148,20 +208,48 @@ fn worker(rx: Receiver<Job>, shared: Arc<Shared>) {
                 Last { run_id: String::new(), outcome: RunOutcome::Failed, reason: Some(message) }
             }
         };
-        if let Ok(mut last_slot) = shared.last.lock() {
-            *last_slot = Some(last);
-        }
-        if let Ok(mut active) = shared.active.lock() {
-            *active = None;
-        }
-        if let Ok(mut revision) = shared.started_revision.lock() {
-            *revision = None;
-        }
-        if job.reservation.is_some() {
-            shared.controlled_active.store(false, Ordering::Release);
-        }
-        shared.running.store(false, Ordering::Release);
+        worker_end(&shared, job.generation, last);
     }
+}
+
+fn worker_begin(shared: &Shared, generation: JobGeneration, revision: &str) -> bool {
+    // Keep the book lock across the initial state writes. A concurrent start cannot reserve a
+    // newer generation until this owner has finished publishing its own start.
+    let Ok(book) = shared.book.lock() else { return false };
+    if !book.begin(generation) {
+        return false;
+    }
+    shared.cancel.store(false, Ordering::Release);
+    if let Ok(mut slot) = shared.started_revision.lock() {
+        *slot = Some(revision.to_string());
+    }
+    if let Ok(mut error) = shared.error.lock() {
+        *error = None;
+    }
+    shared.running.store(true, Ordering::Release);
+    drop(book);
+    true
+}
+
+fn worker_end(shared: &Shared, generation: JobGeneration, last: Last) {
+    // Keep the book lock across the completion writes too. A new reservation waits; once this
+    // owner clears its own generation, that reservation's state is the one that remains.
+    let Ok(mut book) = shared.book.lock() else { return };
+    if !book.finish(generation) {
+        // Stale completion: a newer reservation owns the queue/status. Never clear or overwrite it.
+        return;
+    }
+    if let Ok(mut last_slot) = shared.last.lock() {
+        *last_slot = Some(last);
+    }
+    if let Ok(mut active) = shared.active.lock() {
+        *active = None;
+    }
+    if let Ok(mut revision) = shared.started_revision.lock() {
+        *revision = None;
+    }
+    shared.running.store(false, Ordering::Release);
+    drop(book);
 }
 
 fn run_job(job: &Job, shared: &Arc<Shared>) -> Result<RunResult, String> {
@@ -289,28 +377,25 @@ fn start_with_reservation(session: &mut Session, reservation: Option<Reservation
     };
     let (tx, shared) = service()?;
     let requested_controlled = reservation.is_some();
-    let (replaces_running, gate) = {
-        // The gate makes "read active state then send" one critical section. Mark the reservation
-        // before sending, so a concurrent start cannot observe an idle service and queue a
-        // second replacement in the window before the worker wakes.
-        let gate = shared.start_gate.lock().map_err(|_| internal("the DFM start gate is poisoned"))?;
-        let plan = start_plan(shared.running.load(Ordering::Acquire), shared.controlled_active.load(Ordering::Acquire), requested_controlled)
-            .map_err(internal)?;
-        let replaces = matches!(plan, StartPlan::ReplaceFree);
-        if replaces {
-            cancel_shared(&shared);
-        }
-        shared.controlled_active.store(requested_controlled, Ordering::Release);
-        shared.running.store(true, Ordering::Release);
-        (replaces, gate)
-    };
-    let send = tx.send(Job { request, candidates: crate::cmd::candidate_store_root(), store: validation_store_root(), reservation });
-    drop(gate);
+    let mut book = shared.book.lock().map_err(|_| internal("the DFM queue book is poisoned"))?;
+    let (generation, replaces_running) = book.reserve(requested_controlled).map_err(internal)?;
+    if replaces_running {
+        cancel_shared(&shared);
+    }
+    // Mark the queue active before the send. The worker can only begin this exact generation,
+    // and a concurrent start blocks on the same book lock until the send has happened.
+    shared.running.store(true, Ordering::Release);
+    let send = tx.send(Job { request, candidates: crate::cmd::candidate_store_root(), store: validation_store_root(), reservation, generation });
     if send.is_err() {
-        shared.controlled_active.store(false, Ordering::Release);
-        shared.running.store(false, Ordering::Release);
+        // Send failure rolls back only this generation; a newer reservation (none can exist while
+        // the book is held) would never be cleared by this caller.
+        book.rollback(generation);
+        if book.is_idle() {
+            shared.running.store(false, Ordering::Release);
+        }
         return Err(internal("the DFM worker is not running"));
     }
+    drop(book);
     Ok(CheckTicket {
         project_id: frozen.project_id,
         project_name: frozen.project_name,

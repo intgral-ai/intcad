@@ -99,3 +99,41 @@ fn controlled_starts_never_replace_an_active_controlled_run() {
     assert!(start_plan(true, true, true).is_err(), "a controlled start never replaces an active controlled run");
     assert!(start_plan(true, false, true).is_err(), "a controlled start never replaces an active free run");
 }
+
+/// The queue book, used by the real start/send and worker begin/finish paths, keeps generation
+/// ownership: a stale worker cannot clear a newer reservation, and controlled ownership blocks
+/// free or controlled replacement until its own generation finishes.
+#[test]
+fn job_book_keeps_generation_ownership_under_stale_completion() {
+    use super::service::JobBook;
+    let mut book = JobBook::default();
+    let (first, replaces) = book.reserve(false).expect("first free reservation");
+    assert!(!replaces);
+    assert!(book.begin(first));
+
+    // A free replacement reserves a newer generation before its send; the old generation is now
+    // stale and cannot clear the new reservation when it finishes.
+    let (second, replaces) = book.reserve(false).expect("free replacement");
+    assert!(replaces);
+    assert!(book.begin(second));
+    assert!(!book.finish(first), "a stale completion is ignored");
+    assert!(book.is_running(), "the newer reservation still owns the queue");
+
+    assert!(book.finish(second));
+    assert!(book.is_idle_for_test());
+
+    // Controlled ownership refuses both free and controlled replacement, whether queued or
+    // already begun by the worker.
+    let (controlled, replaces) = book.reserve(true).expect("controlled reservation");
+    assert!(!replaces);
+    assert!(book.begin(controlled));
+    assert!(book.reserve(false).is_err(), "free start cannot replace a queued/running controlled job");
+    assert!(book.reserve(true).is_err(), "controlled start cannot replace an active controlled job");
+    assert!(book.finish(controlled));
+    assert!(book.is_idle_for_test());
+
+    // Send failure rolls back only the generation it created.
+    let (mine, _) = book.reserve(false).expect("own reservation");
+    book.rollback(mine);
+    assert!(book.is_idle_for_test());
+}
