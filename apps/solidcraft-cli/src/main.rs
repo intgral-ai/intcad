@@ -45,7 +45,8 @@ mod profiling;
 mod recipe;
 mod render;
 mod spatial;
-mod validation;
+
+use solidcraft_cli::validation;
 
 use std::process::ExitCode;
 

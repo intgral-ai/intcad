@@ -194,6 +194,33 @@ fn a_claimed_job_exposes_the_host_safe_stop_seam() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[test]
+fn a_controlled_host_claims_only_the_run_it_admitted() {
+    let root = scratch("host-exact-claim");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let first = write_candidate(&candidates, "cand-exact-claim-a", analytic_design());
+    let second = write_candidate(&candidates, "cand-exact-claim-b", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    let reference = port.register_profile(profile.clone()).unwrap();
+    let first_run = port.submit(&first, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    let second_run = port.submit(&second, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    assert_eq!(port.status(&first_run.run_id).unwrap().state, ValidationState::Queued);
+    assert_eq!(port.status(&second_run.run_id).unwrap().state, ValidationState::Queued);
+
+    let job = port.start_run(&second_run.run_id).unwrap().expect("the named run is claimed");
+    assert_eq!(job.run_id, second_run.run_id);
+    assert_eq!(port.status(&first_run.run_id).unwrap().state, ValidationState::Queued, "unrelated queued work is not claimed");
+    assert_eq!(port.status(&second_run.run_id).unwrap().state, ValidationState::Running);
+
+    port.run_claimed_with_stop(&job, Some(clock.now_ms().saturating_add(500))).unwrap();
+    assert_eq!(port.status(&second_run.run_id).unwrap().state, ValidationState::Passed);
+    assert_eq!(port.status(&first_run.run_id).unwrap().state, ValidationState::Queued);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn runner_with(checks: Vec<CheckOutcome>) -> Arc<dyn Runner> {
     Arc::new(FixedRunner { identity: LocalRunner::identity(), outcome: RunnerOutcome::Finished { started_at_ms: 1, finished_at_ms: 2, checks } })
 }

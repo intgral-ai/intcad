@@ -701,6 +701,20 @@ impl ValidationPort {
     /// Claim the oldest queued job and persist its worker identity. `None` when no worker slot or
     /// no queued job is available.
     pub fn start_next(&self) -> Result<Option<RunJob>> {
+        self.claim_queued(None)
+    }
+
+    /// Claim one exact queued run, or `None` when it is not queued, another worker owns it or no
+    /// worker slot is available.
+    ///
+    /// A controlled host names the run it admitted; it must not claim unrelated queued work with
+    /// [`Self::start_next`] and then run it under another operation's authority. This method
+    /// repairs only the named run's own queue problems and never executes a different run.
+    pub fn start_run(&self, run_id: &str) -> Result<Option<RunJob>> {
+        self.claim_queued(Some(run_id))
+    }
+
+    fn claim_queued(&self, only: Option<&str>) -> Result<Option<RunJob>> {
         let _guard = self.commit.lock().map_err(|_| ValidationError::internal("validation commit lock was poisoned"))?;
         let (_, running) = self.counts()?;
         if running >= self.limits.workers {
@@ -709,6 +723,9 @@ impl ValidationPort {
         let now = self.clock.now_ms();
         let mut queued: Vec<(u64, String)> = Vec::new();
         for run_id in self.store.run_ids() {
+            if only.is_some_and(|only| only != run_id) {
+                continue;
+            }
             let state = match self.load_state(&run_id) {
                 Ok(state) => state,
                 Err(_) => continue,
@@ -721,6 +738,9 @@ impl ValidationPort {
         }
         queued.sort();
         for (_, run_id) in queued {
+            if only.is_some_and(|only| only != run_id) {
+                continue;
+            }
             let state = match self.load_state(&run_id) {
                 Ok(state) => state,
                 Err(_) => continue,
