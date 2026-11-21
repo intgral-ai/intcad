@@ -419,7 +419,7 @@ fn eval_cfg(pred: &str) -> Option<bool> {
                 Some(true) => {}
             }
         }
-        return Some(!unknown);
+        return if unknown { None } else { Some(true) };
     }
     if let Some(inner) = cfg_call(pred, "any") {
         let mut unknown = false;
@@ -675,6 +675,61 @@ mod tests {
             if root == "solidcraft-engine" && dep == "ureq")),
             "{v:?}"
         );
+    }
+
+    #[test]
+    fn target_filter_is_conservative_for_unknown_and_nested_conditions() {
+        // The guard must keep an edge selected when any conjunct is unknown: it may be wider than
+        // cargo, never narrower.
+        let unknown_conjunct = [
+            cc("solidcraft-web", &[("unknown-shim", Normal, Some("cfg(all(target_arch = \"wasm32\", target_feature = \"simd128\"))"))]),
+            cc("unknown-shim", &[("keyring", Normal, None)]),
+            cc("keyring", &[]),
+        ];
+        let v = closure_check(&unknown_conjunct);
+        assert!(
+            v.iter().any(|v| matches!(v, Violation::ForbiddenClosure { root, dep, target: ClosureTarget::Wasm }
+                if root == "solidcraft-web" && dep == "keyring")),
+            "unknown conjunct was dropped instead of retained: {v:?}"
+        );
+
+        // A known false conjunct still excludes the edge.
+        let known_false = [
+            cc("solidcraft-web", &[("false-shim", Normal, Some("cfg(all(target_arch = \"wasm32\", target_os = \"windows\"))"))]),
+            cc("false-shim", &[("keyring", Normal, None)]),
+            cc("keyring", &[]),
+        ];
+        assert!(closure_check(&known_false).is_empty(), "{:?}", closure_check(&known_false));
+
+        // Unknown inside a nested `all` also survives an outer `any` with a false alternative.
+        let nested_unknown = [
+            cc(
+                "solidcraft-web",
+                &[("nested-shim", Normal, Some("cfg(any(target_os = \"linux\", all(target_arch = \"wasm32\", target_feature = \"simd128\")))"))],
+            ),
+            cc("nested-shim", &[("keyring", Normal, None)]),
+            cc("keyring", &[]),
+        ];
+        let v = closure_check(&nested_unknown);
+        assert!(
+            v.iter().any(|v| matches!(v, Violation::ForbiddenClosure { root, dep, target: ClosureTarget::Wasm }
+                if root == "solidcraft-web" && dep == "keyring")),
+            "nested unknown conjunct was dropped: {v:?}"
+        );
+
+        // Build edges are followed; dev edges are not.
+        let build = [
+            cc("solidcraft-web", &[("build-shim", Build, Some("cfg(target_arch = \"wasm32\")"))]),
+            cc("build-shim", &[("keyring", Normal, None)]),
+            cc("keyring", &[]),
+        ];
+        assert!(!closure_check(&build).is_empty(), "build edge was not followed");
+        let dev = [
+            cc("solidcraft-web", &[("dev-shim", Dev, Some("cfg(target_arch = \"wasm32\")"))]),
+            cc("dev-shim", &[("keyring", Normal, None)]),
+            cc("keyring", &[]),
+        ];
+        assert!(closure_check(&dev).is_empty(), "dev edge must not be followed");
     }
 
     #[test]
