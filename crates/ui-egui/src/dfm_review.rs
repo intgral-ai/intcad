@@ -12,9 +12,13 @@
 //! message. The attachment names the run it came from, and the message reads that run at send
 //! time, so a newer check does not replace what the person chose to send.
 
+use std::time::Duration;
+
 use egui::{Color32, Rect, RichText, Sense, Stroke, pos2, vec2};
 use serde_json::Value;
-use solidcraft_engine::entitlement::{BillingResult, Capability, EntryCategory, OperationId, RefusalCode, ReviewOperation, RunId};
+use solidcraft_engine::entitlement::{
+    BillingResult, Capability, EntryCategory, OperationId, OperationStatus, OperationStoreError, RefusalCode, ReviewOperation, RunId, UpperBound,
+};
 
 use crate::SolveApp;
 use crate::dfm_chat::Card;
@@ -36,8 +40,10 @@ pub struct State {
     pub card: Option<Card>,
     /// The run the card shows.
     pub run: Option<String>,
-    /// A check this panel started is still running.
+    /// A check this panel started is still running or being stopped.
     pub running: bool,
+    /// The person asked to stop the exact run; its report still decides commit versus release.
+    pub cancelling: bool,
     /// Why the check could not run or did not finish.
     pub error: Option<String>,
     /// When the panel last asked for the report, in the frame clock's seconds.
@@ -47,9 +53,7 @@ pub struct State {
     /// Where the pointer last was while the report was dragged: the release frame may not carry a
     /// position when the drop lands on the Assistant's web view.
     drag_at: Option<egui::Pos2>,
-    /// The run that was latest when this panel's check started, to tell its own result apart.
-    started_from: Option<String>,
-    /// The design whose latest report the panel has looked for, so opening it again does not.
+    /// The design whose report the panel has looked for, so opening it again does not.
     document: Option<String>,
     /// Polls in a row where the service was idle and no new run had appeared yet: the worker may
     /// not have picked the job up, and a check that never records is told as a failure later.
@@ -73,7 +77,8 @@ impl State {
         let operation = self.operation.take();
         let mapped_run = self.mapped_run.take();
         let settled = self.settled;
-        *self = Self { operation, mapped_run, settled, ..Self::default() };
+        let cancelling = self.cancelling;
+        *self = Self { operation, mapped_run, settled, cancelling, ..Self::default() };
     }
 }
 
@@ -105,31 +110,55 @@ fn coded(code: RefusalCode, message: impl std::fmt::Display) -> String {
     format!("{}: {message}", refusal_name(code))
 }
 
-/// Why a Review press cannot start. This is checked before any operation is minted, so a missing
-/// authority never reaches an execution path and never runs a check unbilled.
+fn verified_review_bound(app: &SolveApp) -> Result<Duration, String> {
+    match app.budget.bound(Capability::Review, EntryCategory::ReviewPanel) {
+        UpperBound::Verified(bound) => Ok(bound),
+        UpperBound::Unverified => Err(coded(RefusalCode::UnsafeToStart, "this Review path has no verified safe-stop bound")),
+    }
+}
+
+/// Why a Review press cannot start. This is checked before any operation is admitted, so a
+/// missing authority or durable journal never reaches an execution path.
 fn authority_error(app: &SolveApp) -> Option<String> {
-    if !app.budget.is_verified(Capability::Review, EntryCategory::ReviewPanel) {
-        return Some(coded(RefusalCode::UnsafeToStart, "this Review path has no verified safe-stop bound"));
+    if let Err(error) = verified_review_bound(app) {
+        return Some(error);
     }
     if app.billing.is_none() {
         return Some(coded(RefusalCode::AuthUnavailable, "no host billing authority is installed for the Review panel"));
     }
+    if app.review_store.is_none() {
+        return Some(coded(RefusalCode::AuthUnavailable, "no durable Review journal is installed; the run cannot be bound before dispatch"));
+    }
     None
 }
 
-/// Mint and admit one logical operation for a Review press. A previous press that never settled
-/// blocks a new one instead of risking a second charge for the same work.
-pub(crate) fn begin_review(app: &mut SolveApp) -> Result<OperationId, String> {
+/// The host's exact Review identity: a free-looking latest run or the service's active run is
+/// never used to infer this operation.
+fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(String, u64), String> {
     if !app.dfm_review.settled
-        && let Some(operation) = app.dfm_review.operation.as_ref()
+        && let Some(previous) = app.dfm_review.operation.as_ref()
     {
-        return Err(coded(RefusalCode::UnsafeToStart, format!("the previous Review operation {} has no confirmed settlement", operation.as_str())));
+        return Err(coded(RefusalCode::UnsafeToStart, format!("the previous Review operation {} has no confirmed settlement", previous.as_str())));
     }
     if let Some(error) = authority_error(app) {
         return Err(error);
     }
-    let operation = crate::control::mint_operation()
-        .ok_or_else(|| coded(RefusalCode::AuthUnavailable, "the host could not mint an operation for the Review check"))?;
+    let bound = verified_review_bound(app)?;
+    let store = app
+        .review_store
+        .as_ref()
+        .ok_or_else(|| coded(RefusalCode::AuthUnavailable, "no durable Review journal is installed; the run cannot be bound before dispatch"))?;
+    match store.load(&operation) {
+        Ok(Some(record)) if !record.status.is_terminal() => {}
+        Ok(Some(_)) => return Err(coded(RefusalCode::OperationFinalized, "the Review operation is already terminal")),
+        Ok(None) => {
+            return Err(coded(
+                RefusalCode::AuthUnavailable,
+                format!("the Review operation {} has no durable row; it cannot be bound before dispatch", operation.as_str()),
+            ));
+        }
+        Err(error) => return Err(coded(RefusalCode::AuthUnavailable, format!("the Review ledger is unavailable: {error:?}"))),
+    }
     let grant = app
         .billing
         .as_mut()
@@ -137,45 +166,37 @@ pub(crate) fn begin_review(app: &mut SolveApp) -> Result<OperationId, String> {
         .admit(&operation, Capability::Review, EntryCategory::ReviewPanel)
         .map_err(|error| coded(error.code, error.message))?;
     drop(grant); // Execution authority, never a value the panel stores or logs.
-    app.dfm_review.operation = Some(operation.clone());
-    app.dfm_review.mapped_run = None;
+    let now = solidcraft_engine::validation::now_ms();
+    let stop_at_ms = now.saturating_add(u64::try_from(bound.as_millis()).unwrap_or(u64::MAX));
+    let run = solidcraft_engine::validation::generate_run_id(now);
+    let recorded = match app.review_store.as_mut() {
+        Some(store) => store.record_review(&ReviewOperation::new(RunId::new(&run), operation.clone())),
+        None => Ok(()),
+    };
+    if let Err(error) = recorded {
+        if let Some(billing) = app.billing.as_mut() {
+            let _ = billing.release(&operation, RefusalCode::UnsafeToStart);
+        }
+        return Err(coded(RefusalCode::AuthUnavailable, format!("the Review mapping could not be persisted before dispatch: {error:?}")));
+    }
+    app.dfm_review.operation = Some(operation);
+    app.dfm_review.mapped_run = Some(run.clone());
     app.dfm_review.settled = false;
-    Ok(operation)
+    app.dfm_review.cancelling = false;
+    Ok((run, stop_at_ms))
 }
 
-/// Persist the run-to-operation identity before any settlement. The mapping is the only durable
-/// way a restart can settle the original operation instead of minting a new one or re-running.
-pub(crate) fn bind_review_run(app: &mut SolveApp, run: &str) -> Result<(), String> {
-    let Some(operation) = app.dfm_review.operation.clone() else { return Ok(()) };
-    if run.is_empty() {
-        return Err(coded(RefusalCode::UnsafeToStart, "the Review check has no run identity to bind"));
-    }
-    if app.dfm_review.mapped_run.as_deref() == Some(run) {
-        return Ok(());
-    }
-    if let Some(store) = app.review_store.as_mut() {
-        store
-            .record_review(&ReviewOperation::new(RunId::new(run), operation.clone()))
-            .map_err(|error| coded(RefusalCode::AuthUnavailable, format!("the Review ledger could not record this run: {error:?}")))?;
-    }
-    app.dfm_review.mapped_run = Some(run.to_string());
-    Ok(())
-}
-
-/// Settle one Review run once. `produced` is true only when the panel read a finished check's
-/// report (violations or not). A cancelled, failed or unreadable check releases its hold.
-///
-/// The mapping is checked first. On restart the state may be gone but the durable mapping names
-/// the original operation; a terminal ledger row is never settled again.
+/// Settle one exact Review run once. `produced` must come from that run's own report, never from
+/// the newest run or an active-run inference. A terminal ledger row is never settled again.
 pub(crate) fn settle_review_run(app: &mut SolveApp, run: &str, produced: bool) -> Result<(), String> {
     if app.dfm_review.settled {
         return Ok(());
     }
+    if app.dfm_review.mapped_run.as_deref() != Some(run) && app.dfm_review.operation.is_some() {
+        return Err(coded(RefusalCode::UnsafeToStart, "the Review settlement names another run"));
+    }
     let operation = match app.dfm_review.operation.clone() {
-        Some(operation) => {
-            bind_review_run(app, run)?;
-            operation
-        }
+        Some(operation) => operation,
         None => {
             let Some(store) = app.review_store.as_ref() else { return Ok(()) };
             match store.review_operation(&RunId::new(run)) {
@@ -218,6 +239,22 @@ pub(crate) fn settle_review_run(app: &mut SolveApp, run: &str, produced: bool) -
     };
     match outcome {
         Ok(()) => {
+            // Persist the terminal row under the same operation id. A restart must see that this
+            // logical operation is already settled, not infer a second charge from a report.
+            let terminal = if produced { OperationStatus::Charged } else { OperationStatus::Released };
+            if let Some(store) = app.review_store.as_mut()
+                && let Err(error) = store.mark_terminal(&operation, terminal)
+                && error != OperationStoreError::TerminalState
+            {
+                app.dfm_review.settled = true;
+                return Err(coded(
+                    RefusalCode::AuthUnavailable,
+                    format!(
+                        "operation {} settled but its terminal ledger row was not written; do not settle it again: {error:?}",
+                        operation.as_str()
+                    ),
+                ));
+            }
             app.dfm_review.settled = true;
             Ok(())
         }
@@ -226,6 +263,16 @@ pub(crate) fn settle_review_run(app: &mut SolveApp, run: &str, produced: bool) -
             format!("the Review result was handled but settlement of operation {} was not confirmed; do not run it again", operation.as_str()),
         )),
     }
+}
+
+/// Surface a held Review operation whose exact run has no terminal evidence. It is never released
+/// from an uncertain outcome; the host must resume settlement under the original id.
+pub(crate) fn surface_uncertain(app: &mut SolveApp) -> String {
+    let operation = app.dfm_review.operation.as_ref().map(|operation| operation.as_str().to_string()).unwrap_or_default();
+    coded(
+        RefusalCode::AuthUnavailable,
+        format!("the Review run has no terminal report; keep operation {operation} for settlement recovery and do not rerun it"),
+    )
 }
 
 fn release_unstarted(app: &mut SolveApp, reason: RefusalCode) -> Result<(), String> {
@@ -256,37 +303,46 @@ pub fn start(app: &mut SolveApp) {
         // One press is one logical operation; a second click while it runs starts nothing.
         return;
     }
-    if let Err(error) = begin_review(app) {
+    let operation = match crate::control::mint_operation() {
+        Some(operation) => operation,
+        None => {
+            app.dfm_review.error = Some(coded(RefusalCode::AuthUnavailable, "the host could not mint an operation for the Review check"));
+            return;
+        }
+    };
+    if let Err(error) = start_with_operation(app, operation) {
         app.dfm_review.error = Some(error);
-        return;
-    }
-    // What was latest is read before the job is submitted: a fast check can finish before this
-    // frame ends, and its own run is then the one to show.
-    let was = crate::agent_chat::last_dfm_run();
-    app.dfm_review.started_from = was;
-    if crate::agent_chat::run_dfm(app) {
-        app.dfm_review.running = true;
-        app.dfm_review.polled = 0.0;
-        app.dfm_review.quiet = 0;
-        app.dfm_review.error = None;
-    } else {
-        let release = release_unstarted(app, RefusalCode::UnsafeToStart);
-        app.dfm_review.error = Some(match release {
-            Ok(()) => tr("ui.dfm_review_start_failed").to_string(),
-            Err(error) => error,
-        });
     }
 }
 
-/// Stop the live check. Its record can never take `latest` back, so the panel keeps the report it
-/// already shows. A cancelled check produced no report and releases its hold once.
+/// Prepare the durable mapping and then dispatch exactly the reserved run. A service failure
+/// before dispatch is proven no-effect: its one hold is released and no second operation is minted.
+pub(crate) fn start_with_operation(app: &mut SolveApp, operation: OperationId) -> Result<(), String> {
+    let (run, stop_at_ms) = prepare_review_with(app, operation.clone())?;
+    let reservation = solidcraft_engine::dfm::run::Reservation { run_id: run, operation_id: operation.as_str().to_string(), stop_at_ms };
+    match solidcraft_engine::dfm::service::start_reserved(&mut app.session, reservation) {
+        Ok(_) => {
+            app.dfm_review.running = true;
+            app.dfm_review.cancelling = false;
+            app.dfm_review.polled = 0.0;
+            app.dfm_review.quiet = 0;
+            Ok(())
+        }
+        Err(error) => {
+            release_unstarted(app, RefusalCode::UnsafeToStart)?;
+            Err(coded(RefusalCode::UnsafeToStart, format!("the Review check did not start: {error}")))
+        }
+    }
+}
+
+/// Stop the live check. The hold is not released here: a worker that already finished may have
+/// produced a report, so the exact run's terminal evidence decides commit versus release.
 pub fn cancel(app: &mut SolveApp) {
     if available() {
         crate::agent_chat::cancel_dfm(app);
     }
-    app.dfm_review.running = false;
-    if let Err(error) = release_unstarted(app, RefusalCode::UnsafeToStart) {
-        app.dfm_review.error = Some(error);
+    if app.dfm_review.running {
+        app.dfm_review.cancelling = true;
     }
 }
 
@@ -317,65 +373,52 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     }
     app.dfm_review.polled = now;
     ctx.request_repaint();
-    let status = crate::agent_chat::dfm_state();
-    if status.running {
-        // The worker names its run as soon as the validation job exists. Bind it before the
-        // result can settle, so a restart can find the original operation.
-        if let Some(run) = status.active_run.as_deref()
-            && let Err(error) = bind_review_run(app, run)
-        {
-            app.dfm_review.running = false;
-            app.dfm_review.error = Some(error);
-            return;
-        }
-        app.dfm_review.quiet = 0;
-        return;
-    }
-    // The run this press submitted is the one the service names once it finishes; before that,
-    // and while the worker has not picked the job up, the service is idle with the old run.
-    let finished = status.last_run.filter(|run| !run.is_empty() && Some(run) != app.dfm_review.started_from.as_ref());
-    let Some(finished) = finished else {
-        if let Some(error) = status.error {
-            app.dfm_review.running = false;
-            let settle = app
-                .dfm_review
-                .mapped_run
-                .clone()
-                .or_else(|| status.active_run.clone())
-                .map(|run| settle_review_run(app, &run, false))
-                .unwrap_or_else(|| release_unstarted(app, RefusalCode::UnsafeToStart));
-            app.dfm_review.error = Some(settle.err().unwrap_or(error));
-            return;
-        }
-        app.dfm_review.quiet = app.dfm_review.quiet.saturating_add(1);
-        if app.dfm_review.quiet < 5 {
-            // Give the worker its moment before calling the check lost.
-            return;
-        }
+    let Some(run) = app.dfm_review.mapped_run.clone() else {
         app.dfm_review.running = false;
-        let settle = app
-            .dfm_review
-            .mapped_run
-            .clone()
-            .map(|run| settle_review_run(app, &run, false))
-            .unwrap_or_else(|| release_unstarted(app, RefusalCode::UnsafeToStart));
-        app.dfm_review.error = Some(settle.err().unwrap_or_else(|| tr("ui.dfm_review_did_not_finish").to_string()));
+        app.dfm_review.error = Some(coded(RefusalCode::AuthUnavailable, "the Review run identity is missing; no result can be settled"));
         return;
     };
-    app.dfm_review.running = false;
-    if let Err(error) = bind_review_run(app, &finished) {
-        app.dfm_review.error = Some(error);
-        return;
+    // Read only the exact reserved run. The service's `last_run` and `active_run` are diagnostics,
+    // never this operation's identity.
+    let card = crate::dfm_chat::refresh_run(app, Some(&run));
+    match card.outcome.as_deref() {
+        Some("current") if card.available => {
+            let settle = settle_review_run(app, &run, true);
+            app.dfm_review.running = false;
+            app.dfm_review.cancelling = false;
+            app.dfm_review.error = settle.err();
+            adopt(app, card);
+        }
+        Some("cancelled" | "superseded" | "failed") => {
+            let settle = settle_review_run(app, &run, false);
+            app.dfm_review.running = false;
+            app.dfm_review.cancelling = false;
+            app.dfm_review.error = settle.err().or_else(|| Some(tr("ui.dfm_review_did_not_finish").to_string()));
+        }
+        _ if card.available && card.status == "done" => {
+            let settle = settle_review_run(app, &run, true);
+            app.dfm_review.running = false;
+            app.dfm_review.cancelling = false;
+            app.dfm_review.error = settle.err();
+            adopt(app, card);
+        }
+        _ => {
+            // No terminal evidence yet. While the service runs or the person has asked to stop,
+            // keep waiting for that exact run. Never release a hold from an idle service alone.
+            let status = crate::agent_chat::dfm_state();
+            if status.running || app.dfm_review.cancelling {
+                app.dfm_review.quiet = 0;
+                return;
+            }
+            app.dfm_review.quiet = app.dfm_review.quiet.saturating_add(1);
+            if app.dfm_review.quiet < 5 {
+                return;
+            }
+            app.dfm_review.running = false;
+            app.dfm_review.cancelling = false;
+            app.dfm_review.error = Some(surface_uncertain(app));
+        }
     }
-    let card = crate::dfm_chat::refresh_run(app, Some(&finished));
-    let produced = card.status == "done" && card.available && card.run_id == finished;
-    let settle = settle_review_run(app, &finished, produced);
-    if card.status == "error" || !card.available {
-        app.dfm_review.error = settle.err().or_else(|| card.error.clone()).or_else(|| Some(tr("ui.dfm_review_unreadable").to_string()));
-        return;
-    }
-    app.dfm_review.error = settle.err();
-    adopt(app, card);
 }
 
 /// Show `card` and let the viewport draw its marks, so a row and a label address one finding.

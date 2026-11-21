@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::dfm::compile::{RunInput, SheetRef};
-use crate::dfm::run::{Freshness, RunOutcome, RunRequest, RunResult, RunStore, freshness, run_once};
+use crate::dfm::run::{Freshness, Reservation, RunOutcome, RunRequest, RunResult, RunStore, freshness, run_once_reserved};
 use crate::project::Project;
 use crate::schema::snapshot::CandidateRef;
 use crate::validation::{ValidationPort, timestamp};
@@ -72,6 +72,8 @@ struct Job {
     /// not depend on thread-local or later host state.
     candidates: Option<PathBuf>,
     store: Option<PathBuf>,
+    /// A controlled Review run: exact host run identity, billed operation and measured stop.
+    reservation: Option<Reservation>,
 }
 
 struct Last {
@@ -172,7 +174,7 @@ fn run_job(job: &Job, shared: &Arc<Shared>) -> Result<RunResult, String> {
             *active = Some(run_id.to_string());
         }
     };
-    run_once(&port, &job.request, &shared.cancel, &on_submitted).map_err(|error| error.to_string())
+    run_once_reserved(&port, &job.request, &shared.cancel, &on_submitted, job.reservation.as_ref()).map_err(|error| error.to_string())
 }
 
 /// The validation store root a check uses unless a host chooses another.
@@ -213,8 +215,24 @@ fn open_project(session: &Session) -> Result<Project, EngineError> {
         .ok_or_else(|| internal("the open design is not in a project; make or open a project first"))
 }
 
-/// Capture the snapshot and freeze the project in one operation, then queue the check.
+/// Capture the snapshot and freeze the project in one operation, then queue a free check.
 pub fn start(session: &mut Session) -> Result<CheckTicket, EngineError> {
+    start_with_reservation(session, None)
+}
+
+/// Queue one controlled Review check under the host's exact reservation. The host persists the
+/// run-to-operation mapping before calling; the worker submits and claims only that run.
+pub fn start_reserved(session: &mut Session, reservation: Reservation) -> Result<CheckTicket, EngineError> {
+    if reservation.run_id.is_empty() || reservation.operation_id.is_empty() {
+        return Err(internal("the controlled Review reservation has no run or operation identity"));
+    }
+    if crate::validation::now_ms() >= reservation.stop_at_ms {
+        return Err(internal("the controlled Review safe-stop bound has already passed"));
+    }
+    start_with_reservation(session, Some(reservation))
+}
+
+fn start_with_reservation(session: &mut Session, reservation: Option<Reservation>) -> Result<CheckTicket, EngineError> {
     let project = open_project(session)?;
     let frozen = project.freeze().map_err(|error| internal(error.to_string()))?;
     let captured = session.execute("document.snapshot.capture", &json!({}))?;
@@ -243,7 +261,7 @@ pub fn start(session: &mut Session) -> Result<CheckTicket, EngineError> {
     if replaces_running {
         cancel_shared(&shared);
     }
-    tx.send(Job { request, candidates: crate::cmd::candidate_store_root(), store: validation_store_root() })
+    tx.send(Job { request, candidates: crate::cmd::candidate_store_root(), store: validation_store_root(), reservation })
         .map_err(|_| internal("the DFM worker is not running"))?;
     Ok(CheckTicket {
         project_id: frozen.project_id,

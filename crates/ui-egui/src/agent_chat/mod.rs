@@ -1665,32 +1665,16 @@ pub(crate) fn running_dfm(_app: &SolveApp) -> Option<String> {
 /// idle with nothing finished.
 pub(crate) struct DfmState {
     pub running: bool,
-    pub active_run: Option<String>,
-    pub last_run: Option<String>,
-    pub error: Option<String>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn dfm_state() -> DfmState {
-    let status = solidcraft_engine::dfm::service::status();
-    DfmState { running: status.running, active_run: status.active_run, last_run: status.last_run, error: status.error }
+    DfmState { running: solidcraft_engine::dfm::service::status().running }
 }
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn dfm_state() -> DfmState {
-    DfmState { running: false, active_run: None, last_run: None, error: None }
-}
-
-/// The last finished check of this session, if one finished: what the Review panel shows its own
-/// run against, to tell a new report from the one that stood there before.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn last_dfm_run() -> Option<String> {
-    solidcraft_engine::dfm::service::status().last_run
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn last_dfm_run() -> Option<String> {
-    None
+    DfmState { running: false }
 }
 
 /// Put a ready attachment on the next message and open the Assistant, so the person sees the chip
