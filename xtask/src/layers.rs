@@ -5,6 +5,9 @@
 //! The rule engine works on a small, metadata-independent model so it can be
 //! unit-tested; `from_metadata` builds that model from `cargo metadata`.
 
+use std::fs;
+use std::path::Path;
+
 use serde_json::Value;
 
 /// Where a workspace crate sits.
@@ -279,6 +282,125 @@ pub fn describe(class: Option<Class>) -> String {
     }
 }
 
+// Standalone manifest rule adapted from upstream SolidCraft
+// 17daee946c339487c5393f0c03aaa9dcb8ca6652, xtask/src/layers.rs (MIT OR Apache-2.0).
+const STANDALONE_RULE: &str = "solidcore must build on its own; see solidcore/docs/layers.md";
+
+/// Check relative components without resolving dependencies. A path may reach the
+/// vendor root, but it may never step above it (even to re-enter it later).
+fn stays_inside_solidcore(depth: usize, path: &str) -> bool {
+    // Reject both Unix and Windows roots/prefixes, regardless of the host OS.
+    let bytes = path.as_bytes();
+    if path.starts_with(['/', '\\']) || matches!(bytes, [drive, b':', ..] if drive.is_ascii_alphabetic()) {
+        return false;
+    }
+    fn contained<'a>(mut depth: usize, parts: impl Iterator<Item = &'a str>) -> bool {
+        for part in parts {
+            match part {
+                "" | "." => {}
+                ".." if depth == 0 => return false,
+                ".." => depth -= 1,
+                _ => depth += 1,
+            }
+        }
+        true
+    }
+    // A backslash separates components on Windows but can be literal on Unix.
+    contained(depth, path.split(['/', '\\'])) && contained(depth, path.split('/'))
+}
+
+/// Dependency entries in package, workspace and target tables, plus Cargo overrides.
+fn manifest_dep_entries<'a>(doc: &'a toml::Table) -> Vec<(String, &'a str, &'a toml::Value)> {
+    const KINDS: [&str; 5] = ["dependencies", "dev-dependencies", "build-dependencies", "dev_dependencies", "build_dependencies"];
+    let mut out = Vec::new();
+    let mut add = |section: String, table: Option<&'a toml::Value>| {
+        for (key, spec) in table.and_then(toml::Value::as_table).into_iter().flatten() {
+            out.push((section.clone(), key.as_str(), spec));
+        }
+    };
+    for kind in KINDS {
+        add(kind.into(), doc.get(kind));
+        add(format!("workspace.{kind}"), doc.get("workspace").and_then(|w| w.get(kind)));
+    }
+    for (target, table) in doc.get("target").and_then(toml::Value::as_table).into_iter().flatten() {
+        for kind in KINDS {
+            add(format!("target.{target}.{kind}"), table.get(kind));
+        }
+    }
+    for (source, table) in doc.get("patch").and_then(toml::Value::as_table).into_iter().flatten() {
+        add(format!("patch.{source}"), Some(table));
+    }
+    add("replace".into(), doc.get("replace"));
+    out
+}
+
+fn application_package(name: &str) -> bool {
+    name.starts_with("solidcraft-") || matches!(name, "solidcraft" | "intcad" | "intcad-cli")
+}
+
+fn inspect_manifest(file: &Path, label: &str, depth: usize, errors: &mut Vec<String>) -> Result<(), String> {
+    let inspection_error = |e| format!("{label}: {e}; {STANDALONE_RULE}");
+    if !fs::symlink_metadata(file).map_err(inspection_error)?.is_file() {
+        return Err(format!("{label}: expected a regular manifest file; {STANDALONE_RULE}"));
+    }
+    let text = fs::read_to_string(file).map_err(inspection_error)?;
+    let doc = match text.parse::<toml::Table>() {
+        Ok(doc) => doc,
+        Err(e) => {
+            errors.push(format!("{label}: cannot parse the manifest ({e}); {STANDALONE_RULE}"));
+            return Ok(());
+        }
+    };
+    for (section, key, spec) in manifest_dep_entries(&doc) {
+        // A replace key is a package ID, optionally qualified as URL#name:version.
+        let name = if section == "replace" { key.rsplit('#').next().unwrap_or(key).split([':', '@']).next().unwrap_or(key) } else { key };
+        let package = spec.get("package").and_then(toml::Value::as_str).unwrap_or(name);
+        if application_package(name) || application_package(package) {
+            errors.push(format!("{label}: [{section}] dependency `{key}` refers to application package `{package}`; {STANDALONE_RULE}"));
+        }
+        if let Some(path) = spec.get("path").and_then(toml::Value::as_str)
+            && !stays_inside_solidcore(depth, path)
+        {
+            errors.push(format!("{label}: [{section}] dependency `{key}` has rooted or escaping path `{path}`; {STANDALONE_RULE}"));
+        }
+    }
+    Ok(())
+}
+
+/// Inspect the vendored manifests independently of root Cargo metadata.
+pub fn check_solidcore_manifests(root: &Path) -> Result<Vec<String>, String> {
+    fn walk(dir: &Path, label: &str, depth: usize, errors: &mut Vec<String>) -> Result<(), String> {
+        let inspection_error = |e| format!("{label}: {e}; {STANDALONE_RULE}");
+        let mut entries = fs::read_dir(dir).map_err(inspection_error)?.collect::<Result<Vec<_>, _>>().map_err(inspection_error)?;
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            let name = entry.file_name();
+            let child = format!("{label}/{}", name.to_string_lossy());
+            if name == "Cargo.toml" {
+                if depth != 0 {
+                    inspect_manifest(&entry.path(), &child, depth, errors)?;
+                }
+            } else if !matches!(name.to_str(), Some("target" | "upstream" | ".git" | "node_modules"))
+                && entry.file_type().map_err(|e| format!("{child}: {e}; {STANDALONE_RULE}"))?.is_dir()
+            {
+                walk(&entry.path(), &child, depth + 1, errors)?;
+            }
+        }
+        Ok(())
+    }
+
+    let dir = root.join("solidcore");
+    if !fs::symlink_metadata(&dir).map_err(|e| format!("solidcore/: {e}; {STANDALONE_RULE}"))?.is_dir() {
+        return Err(format!("solidcore/: expected the vendored directory; {STANDALONE_RULE}"));
+    }
+    let mut errors = Vec::new();
+    inspect_manifest(&dir.join("Cargo.toml"), "solidcore/Cargo.toml", 0, &mut errors)?;
+    walk(&dir, "solidcore", 0, &mut errors)?;
+    errors.sort();
+    errors.dedup();
+    Ok(errors)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,11 +497,6 @@ mod tests {
         assert!(check(&g).is_empty());
     }
 
-    // RED scaffold: represent the current absence of any standalone check.
-    fn check_solidcore_manifests(_: &std::path::Path) -> Result<Vec<String>, String> {
-        Ok(Vec::new())
-    }
-
     struct Fixture(std::path::PathBuf);
 
     impl Fixture {
@@ -433,6 +550,7 @@ mod tests {
             "../../../crates/geom",
             "../../../solidcore/crates/local",
             r"..\..\..\crates\geom",
+            r"a\b/../../../../outside",
             "/crates/geom",
             r"\crates\geom",
             r"\\server\share\geom",
@@ -441,10 +559,7 @@ mod tests {
         ] {
             tree.write("solidcore/crates/local/Cargo.toml", format!("[dependencies]\nleak.path = '{path}'"));
             let errors = check_solidcore_manifests(&tree.0).unwrap();
-            assert!(
-                matches!(&errors[..], [e] if e.contains("solidcore/crates/local/Cargo.toml") && e.contains(path)),
-                "{path}: {errors:?}"
-            );
+            assert!(matches!(&errors[..], [e] if e.contains("solidcore/crates/local/Cargo.toml") && e.contains(path)), "{path}: {errors:?}");
         }
     }
 

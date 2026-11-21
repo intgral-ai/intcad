@@ -263,6 +263,22 @@ fn cmd_action_matrix(bless: bool, results: Option<&str>, from: Option<&str>) -> 
 }
 
 fn cmd_layers() -> Result<(), String> {
+    let standalone = layers::check_solidcore_manifests(&root()).and_then(|violations| {
+        if violations.is_empty() {
+            println!("OK: solidcore manifests have no standalone violations.");
+            Ok(())
+        } else {
+            Err(violations.join("\n"))
+        }
+    });
+    match (cmd_root_layers(), standalone) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(e), Ok(())) | (Ok(()), Err(e)) => Err(e),
+        (Err(root), Err(standalone)) => Err(format!("{root}\n{standalone}")),
+    }
+}
+
+fn cmd_root_layers() -> Result<(), String> {
     let crates = layers::from_metadata(&metadata()?)?;
     println!("Dependency layering (plan/architecture.md §3)\n");
     println!("{:<28} {:<14} workspace deps", "crate", "layer");
