@@ -550,13 +550,15 @@ jobs:
           # This runner is Apple silicon: its own Node builds the arm64 folder. The Intel folder's
           # Node comes from the same pinned release, checked against nodejs.org's checksums, so the
           # folder carries an x86_64 Node rather than this machine's.
-          curl -fsSL -o "$RUNNER_TEMP/node-arm64.tar.xz" "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/node-v${{ env.NODE_VERSION }}-darwin-arm64.tar.xz"
-          curl -fsSL -o "$RUNNER_TEMP/node-x64.tar.xz" "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/node-v${{ env.NODE_VERSION }}-darwin-x64.tar.xz"
+          for arch in arm64 x64; do
+            name="node-v${{ env.NODE_VERSION }}-darwin-$arch.tar.xz"
+            curl -fsSL -o "$RUNNER_TEMP/$name" "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/$name"
+          done
           curl -fsSL -o "$RUNNER_TEMP/SHASUMS256.txt" "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/SHASUMS256.txt"
           (cd "$RUNNER_TEMP" && grep -E 'node-v${{ env.NODE_VERSION }}-darwin-(arm64|x64).tar.xz$' SHASUMS256.txt | shasum -a 256 -c -)
           mkdir -p "$RUNNER_TEMP/node-arm64" "$RUNNER_TEMP/node-x64"
-          tar -xJf "$RUNNER_TEMP/node-arm64.tar.xz" -C "$RUNNER_TEMP/node-arm64" --strip-components 1
-          tar -xJf "$RUNNER_TEMP/node-x64.tar.xz" -C "$RUNNER_TEMP/node-x64" --strip-components 1
+          tar -xJf "$RUNNER_TEMP/node-v${{ env.NODE_VERSION }}-darwin-arm64.tar.xz" -C "$RUNNER_TEMP/node-arm64" --strip-components 1
+          tar -xJf "$RUNNER_TEMP/node-v${{ env.NODE_VERSION }}-darwin-x64.tar.xz" -C "$RUNNER_TEMP/node-x64" --strip-components 1
           node packages/mastra-runtime/scripts/agent-package.mjs build --target aarch64-apple-darwin \
             --out "$RUNNER_TEMP/mastra-agent/aarch64-apple-darwin" --node "$RUNNER_TEMP/node-arm64/bin/node"
           node packages/mastra-runtime/scripts/agent-package.mjs build --target x86_64-apple-darwin \

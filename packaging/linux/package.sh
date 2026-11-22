@@ -153,6 +153,11 @@ has() { case " $FORMATS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 if has tar; then
   mkdir -p "$WORK/tar"
   cp -R "$STAGE/usr" "$WORK/tar/$BASENAME"
+  # A tarball is unpacked by the person who downloads it, into a folder of their own, and the
+  # repacks built from it (Flatpak, Arch, Snap) extract and rewrite their copies. It therefore
+  # carries the ordinary 755/644 modes; the installed packages made below keep the agent's
+  # read-only modes, and the AppImage's squashfs is read-only by construction.
+  chmod -R u+w "$WORK/tar/$BASENAME"
   tar -C "$WORK/tar" -czf "$DIST/$BASENAME.tar.gz" "$BASENAME"
   echo "wrote $DIST/$BASENAME.tar.gz"
 fi
