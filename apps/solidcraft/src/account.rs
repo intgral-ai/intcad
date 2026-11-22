@@ -748,20 +748,51 @@ fn restart_binding_unchanged(credentials: &CredentialSession, binding: &RestartB
     Some(scope)
 }
 
-/// A monotonic clock for the runtime. It counts this process's elapsed time; suspend handling and
-/// a wall-clock diagnostic are deliberately separate from admission until a reviewed adapter
-/// installs real commit authority.
+/// Linux account deadlines share the suspend-inclusive boot epoch. Other platforms retain a
+/// process-relative clock for the existing account paths; it is not approved for lease renewal.
 struct SystemMonotonicClock {
+    #[cfg(not(target_os = "linux"))]
     start: Instant,
+    #[cfg(target_os = "linux")]
+    failed: AtomicBool,
 }
 
 impl SystemMonotonicClock {
     fn new() -> Self {
-        Self { start: Instant::now() }
+        Self {
+            #[cfg(not(target_os = "linux"))]
+            start: Instant::now(),
+            #[cfg(target_os = "linux")]
+            failed: AtomicBool::new(false),
+        }
     }
 }
 
 impl MonotonicClock for SystemMonotonicClock {
+    #[cfg(target_os = "linux")]
+    fn now(&self) -> MonotonicInstant {
+        // Never fall back to a different epoch on a clock error. At the saturated value
+        // no half-open deadline (including one constructed from this reading) is live.
+        let expired = MonotonicInstant::from_millis(0).saturating_add(Duration::MAX);
+        if self.failed.load(Ordering::SeqCst) {
+            return expired;
+        }
+        let sample = rustix::time::clock_gettime_dynamic(rustix::time::DynamicClockId::Boottime).ok().and_then(|time| {
+            let seconds = u64::try_from(time.tv_sec).ok()?;
+            let nanos = u32::try_from(time.tv_nsec).ok().filter(|nanos| *nanos < 1_000_000_000)?;
+            Some(MonotonicInstant::from_millis(0).saturating_add(Duration::new(seconds, nanos)))
+        });
+        if let Some(sample) = sample {
+            if !self.failed.load(Ordering::SeqCst) {
+                return sample;
+            }
+        } else {
+            self.failed.store(true, Ordering::SeqCst);
+        }
+        expired
+    }
+
+    #[cfg(not(target_os = "linux"))]
     fn now(&self) -> MonotonicInstant {
         MonotonicInstant::from_millis(self.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
     }
@@ -1309,6 +1340,17 @@ pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: Account
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_account_clock_reads_the_suspend_inclusive_boot_epoch() {
+        let uptime = std::fs::read_to_string("/proc/uptime").unwrap();
+        let boot_seconds: f64 = uptime.split_whitespace().next().unwrap().parse().unwrap();
+        let first = SystemMonotonicClock::new().now();
+        let second = SystemMonotonicClock::new().now();
+        assert!(first.as_duration().as_secs_f64() >= boot_seconds, "{first:?} must use the OS boot epoch ({boot_seconds}s)");
+        assert!(second >= first, "independent runtime clocks must share a monotonic epoch");
+    }
 
     use std::collections::{BTreeMap, VecDeque};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -2421,14 +2463,10 @@ mod tests {
         install(&mut app, runtime, startup);
         let mut budget = BudgetTable::unverified_default();
         budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(1));
-        struct Billing;
+        struct Billing(MonotonicInstant);
         impl solidcraft_engine::entitlement::BillingPort for Billing {
             fn admit(&mut self, _: &OperationId, capability: Capability, _: EntryCategory) -> Result<Grant, Refusal> {
-                Ok(Grant::from_server(
-                    solidcraft_engine::entitlement::GrantId::new("grant_registration_fixture"),
-                    capability,
-                    MonotonicInstant::from_millis(60_000),
-                ))
+                Ok(Grant::from_server(solidcraft_engine::entitlement::GrantId::new("grant_registration_fixture"), capability, self.0))
             }
             fn commit(&mut self, _: &OperationId, result: BillingResult) -> Result<BillingResult, Refusal> {
                 Ok(result)
@@ -2437,17 +2475,122 @@ mod tests {
                 Ok(())
             }
         }
-        app.install_billing(Box::new(Billing), budget);
+        let clock = SystemMonotonicClock::new();
+        app.install_billing(Box::new(Billing(clock.now().saturating_add(Duration::from_secs(60)))), budget);
         app.install_commit_authority(
             scope,
             Box::new(RenewalTestAuthority { on_third_lookup: Box::new(|| {}), lookups: AtomicUsize::new(0) }),
-            Box::new(SystemMonotonicClock::new()),
+            Box::new(clock),
         );
         let control::Outcome::Done(reply) = control::handle(&mut app, &egui::Context::default(), &mut request) else {
             panic!("expected a synchronous inspection");
         };
         assert_eq!(reply["ok"], true, "a failed worker start does not extend or void the original lease: {reply}");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn direct_control_admission_starts_a_worker_that_rejects_a_reply_after_suspend() {
+        use solidcraft_engine::entitlement::{ConservativeDeadline, GrantId};
+        use std::sync::atomic::AtomicU64;
+
+        #[derive(Clone)]
+        struct Clock(Arc<AtomicU64>);
+        impl MonotonicClock for Clock {
+            fn now(&self) -> MonotonicInstant {
+                MonotonicInstant::from_millis(self.0.load(Ordering::SeqCst))
+            }
+            fn wall_now(&self) -> SystemTime {
+                UNIX_EPOCH
+            }
+        }
+        struct Billing(Grant, Arc<AtomicUsize>);
+        impl solidcraft_engine::entitlement::BillingPort for Billing {
+            fn admit(&mut self, _: &OperationId, _: Capability, _: EntryCategory) -> Result<Grant, Refusal> {
+                Ok(self.0.clone())
+            }
+            fn commit(&mut self, _: &OperationId, result: BillingResult) -> Result<BillingResult, Refusal> {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                Ok(result)
+            }
+            fn release(&mut self, _: &OperationId, _: RefusalCode) -> Result<(), Refusal> {
+                Ok(())
+            }
+        }
+        for (received_at, accepted) in [(21_000, true), (60_001, false)] {
+            let time = Arc::new(AtomicU64::new(0));
+            let clock = Clock(time.clone());
+            let mut session = active_session();
+            let scope = session.authenticated_scope().unwrap();
+            let (mut request, _) = solidcraft_ui_egui::ControlRequest::trusted_control("document.inspect", json!({}));
+            let operation = request.operation().unwrap().clone();
+            CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("admitted_proof")).unwrap();
+            let grant = Grant::from_server(GrantId::new("grant_admitted_fixture"), Capability::Control, MonotonicInstant::from_millis(60_000));
+            let body = json!({
+                "authorization_id":grant.id().as_str(), "operation_id":operation.as_str(),
+                "capability":"control", "renewed":true, "remaining_seconds":60, "renew_after_seconds":20,
+                "execution_session_proof":null, "expires_at":"2026-01-01T00:01:20.000Z"
+            });
+            let mut wire = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, body.to_string().into_bytes()))]);
+            let reply_time = time.clone();
+            wire.on_send(move || reply_time.store(received_at, Ordering::SeqCst));
+            let worker = Arc::new(Mutex::new(None::<std::thread::JoinHandle<()>>));
+            let worker_slot = worker.clone();
+            let worker_wire = wire.clone();
+            let worker_clock = clock.clone();
+            let mut runtime = AccountRuntime::with_session(session);
+            runtime.control_renewal_factory = Some(Box::new(move |session, scope, operation, grant| {
+                let wire = worker_wire.clone();
+                let clock = worker_clock.clone();
+                let sent_time = clock.0.clone();
+                let mut first = true;
+                let mut job = ControlRenewalJob::spawn(
+                    session,
+                    scope,
+                    operation,
+                    grant,
+                    ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(60)),
+                    Duration::from_secs(20),
+                    move || (wire, WireConnection::new("https://product.invalid", "1.0.0").unwrap(), Box::new(clock)),
+                    move |wait, _| {
+                        if !std::mem::take(&mut first) {
+                            return false;
+                        }
+                        assert_eq!(wait, Duration::from_secs(20));
+                        sent_time.store(20_000, Ordering::SeqCst);
+                        true
+                    },
+                )?;
+                *worker_slot.lock().unwrap() = job.worker.take();
+                Ok(job)
+            }));
+            let startup = runtime.startup();
+            let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+            install(&mut app, runtime, startup);
+            let mut budget = BudgetTable::unverified_default();
+            budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(1));
+            let commits = Arc::new(AtomicUsize::new(0));
+            app.install_billing(Box::new(Billing(grant, commits.clone())), budget);
+            app.install_commit_authority(
+                scope,
+                Box::new(RenewalTestAuthority {
+                    on_third_lookup: Box::new(move || {
+                        worker.lock().unwrap().take().unwrap().join().unwrap();
+                        time.store(65_000, Ordering::SeqCst);
+                    }),
+                    lookups: AtomicUsize::new(0),
+                }),
+                Box::new(clock),
+            );
+            let control::Outcome::Done(reply) = control::handle(&mut app, &egui::Context::default(), &mut request) else {
+                panic!("expected a synchronous inspection");
+            };
+            assert_eq!(reply["ok"], accepted, "{reply}");
+            assert_eq!(commits.load(Ordering::SeqCst), usize::from(accepted));
+            let requests = wire.requests();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].header("X-Execution-Session-Proof"), Some("admitted_proof"));
+        }
     }
 
     #[test]

@@ -1044,7 +1044,6 @@ fn authority_refusal_with(app: &SolveApp, req: &ControlRequest, admission: &Admi
         }
         None => {}
     }
-    let now = clock.now();
     let availability = match account.status() {
         Ok(availability) => availability,
         Err(_) => return Some(Refusal::new(RefusalCode::AuthUnavailable, "the current account status is unavailable")),
@@ -1062,14 +1061,6 @@ fn authority_refusal_with(app: &SolveApp, req: &ControlRequest, admission: &Admi
         Ok(required) => required,
         Err(refusal) => return Some(refusal),
     };
-    let Some(bound) = authorization_bound(app, req, admission) else {
-        return Some(Refusal::new(RefusalCode::UnsafeToStart, "this controlled operation has no measured authorization bound"));
-    };
-    // Starting a step needs the whole measured bound. Retaining a finished result only needs a
-    // live, unexpired cutoff; `CommitGate` below checks the latter.
-    if require_start_budget && let Err(refusal) = remaining_covers(Some(bound), now, required) {
-        return Some(refusal);
-    }
     // The durable ledger state is the authority for "this operation may still commit". A host
     // that cannot report it keeps the controlled path closed rather than guessing.
     let status = match account.operation(scope, operation) {
@@ -1079,6 +1070,18 @@ fn authority_refusal_with(app: &SolveApp, req: &ControlRequest, admission: &Admi
     let Some(capability) = entry_capability(req.entry) else {
         return Some(Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"));
     };
+    if let Some(refusal) = app.account.renewal_refusal(scope, operation) {
+        return Some(refusal);
+    }
+    // Account and ledger reads can take us across a deadline (including while suspended).
+    // Read the current cutoff and clock after those reads, at the actual dispatch/commit gate.
+    let Some(bound) = authorization_bound(app, req, admission) else {
+        return Some(Refusal::new(RefusalCode::UnsafeToStart, "this controlled operation has no measured authorization bound"));
+    };
+    let now = clock.now();
+    if require_start_budget && let Err(refusal) = remaining_covers(Some(bound), now, required) {
+        return Some(refusal);
+    }
     let mut gate = CommitGate::new(operation, capability, req.entry)
         .with_current_scope(scope)
         .with_availability(&availability)
