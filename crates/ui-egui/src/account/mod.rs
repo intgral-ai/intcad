@@ -158,6 +158,15 @@ impl AccountView {
 /// window thread; network and keyring work belongs to the host, never to the render path. No
 /// method accepts an account, origin or trust flag from the caller.
 pub trait AccountPort: Send + Sync {
+    fn renewed_control_cutoff(
+        &self,
+        _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+        _operation: &solidcraft_engine::entitlement::OperationId,
+        _grant: &solidcraft_engine::entitlement::Grant,
+    ) -> Option<solidcraft_engine::entitlement::MonotonicInstant> {
+        None
+    }
+
     fn renewal_refusal(
         &self,
         _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
@@ -515,6 +524,15 @@ impl State {
         operation: &solidcraft_engine::entitlement::OperationId,
     ) -> Option<Refusal> {
         self.port.as_ref()?.renewal_refusal(scope, operation).map(|code| Refusal::new(code, "the operation's renewal was refused"))
+    }
+
+    pub(crate) fn renewed_control_cutoff(
+        &self,
+        scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+        operation: &solidcraft_engine::entitlement::OperationId,
+        grant: &solidcraft_engine::entitlement::Grant,
+    ) -> Option<solidcraft_engine::entitlement::MonotonicInstant> {
+        self.port.as_ref()?.renewed_control_cutoff(scope, operation, grant)
     }
 
     pub fn delete_account_guide(&self) -> Option<DeleteAccountGuide> {

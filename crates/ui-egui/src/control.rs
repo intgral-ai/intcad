@@ -840,15 +840,22 @@ fn host_authority(app: &SolveApp) -> Option<(&AuthenticatedHostScope, &dyn Accou
 }
 
 /// The earlier of the request's measured window and the server grant's expiry.
-fn authorization_bound<'a>(req: &'a ControlRequest, admission: &'a Admission) -> Option<AuthorizationBound<'a>> {
-    let grant = match admission {
-        Admission::NewlyAdmitted { grant, .. } => Some(grant),
+fn authorization_bound<'a>(app: &SolveApp, req: &'a ControlRequest, admission: &'a Admission) -> Option<AuthorizationBound<'a>> {
+    let expires_at = match admission {
+        Admission::NewlyAdmitted { operation, grant } => {
+            let renewed = if req.entry == EntryCategory::DirectControl && grant.capability() == Capability::Control {
+                app.commit_scope.as_ref().and_then(|scope| app.account.renewed_control_cutoff(scope, operation, grant))
+            } else {
+                None
+            };
+            Some(renewed.unwrap_or_else(|| grant.expires_at()))
+        }
         _ => None,
     };
-    match (req.deadline.as_ref(), grant) {
-        (Some(deadline), Some(grant)) if grant.expires_at() < deadline.expires_at() => Some(AuthorizationBound::ExpiresAt(grant.expires_at())),
+    match (req.deadline.as_ref(), expires_at) {
+        (Some(deadline), Some(expiry)) if expiry < deadline.expires_at() => Some(AuthorizationBound::ExpiresAt(expiry)),
         (Some(deadline), _) => Some(AuthorizationBound::Deadline(deadline)),
-        (None, Some(grant)) => Some(AuthorizationBound::ExpiresAt(grant.expires_at())),
+        (None, Some(expiry)) => Some(AuthorizationBound::ExpiresAt(expiry)),
         (None, None) => None,
     }
 }
@@ -1035,7 +1042,7 @@ fn authority_refusal_with(app: &SolveApp, req: &ControlRequest, admission: &Admi
         Ok(required) => required,
         Err(refusal) => return Some(refusal),
     };
-    let Some(bound) = authorization_bound(req, admission) else {
+    let Some(bound) = authorization_bound(app, req, admission) else {
         return Some(Refusal::new(RefusalCode::UnsafeToStart, "this controlled operation has no measured authorization bound"));
     };
     // Starting a step needs the whole measured bound. Retaining a finished result only needs a
@@ -1641,7 +1648,7 @@ fn controlled_batch(app: &mut SolveApp, steps: &[Value], p: &Value, req: &Contro
         }
     };
     let total = step_bound.saturating_mul(u32::try_from(steps.len()).unwrap_or(u32::MAX));
-    let Some(bound) = authorization_bound(req, admission) else {
+    let Some(bound) = authorization_bound(app, req, admission) else {
         req.local_no_effect.store(true, Ordering::Relaxed);
         return admission_refusal(&Refusal::new(RefusalCode::UnsafeToStart, "this checked batch has no measured authorization bound"));
     };
@@ -1662,7 +1669,7 @@ fn controlled_batch(app: &mut SolveApp, steps: &[Value], p: &Value, req: &Contro
         if let Some(refusal) = authority_refusal(app, req, admission) {
             return Err(refusal.message);
         }
-        let Some(bound) = authorization_bound(req, admission) else { return Err("no measured authorization bound".into()) };
+        let Some(bound) = authorization_bound(app, req, admission) else { return Err("no measured authorization bound".into()) };
         let Some(clock) = app.commit_clock.as_deref() else { return Err("the host has no clock".into()) };
         let now = clock.now();
         let Some(remaining) = bound.remaining(now) else { return Err("the authorization expired".into()) };
