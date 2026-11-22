@@ -244,6 +244,22 @@ each stage compare `measure` with them. Prefer one `batch` over many small calls
 the chat, and each message allows a limited number of changes. Don't use shell or file tools: work through the Intcad tools. \
 Keep answers short.";
 
+/// The sentence of [`SYSTEM_NOTE`] that keeps an agent off its own shell and file tools.
+pub const NO_FILE_TOOLS: &str = "Don't use shell or file tools: work through the Intcad tools.";
+
+/// What the built-in agent is told in its place when it is handed a project (INT-1473): its file
+/// tools reach the project folder, so they are for the project's files, and the design is still
+/// built and checked only through Intcad's tools. It says nothing against the shell: the built-in
+/// agent keeps it (asking before each command), decided on 2026-11-22.
+pub const PROJECT_FILE_TOOLS: &str = "Use file tools only for the files of the project folder that the project brief names. \
+Build, change, measure and check the design only through the Intcad tools.";
+
+/// `note` ([`system_note`]) for a session handed a project folder: [`NO_FILE_TOOLS`] becomes
+/// [`PROJECT_FILE_TOOLS`], the custom instructions after it stay as they are.
+pub fn project_note(note: &str) -> String {
+    note.replacen(NO_FILE_TOOLS, PROJECT_FILE_TOOLS, 1)
+}
+
 /// The most of the user's custom instructions (#8220) a session gets, in characters: the
 /// Preferences field takes no more, and a longer text from an edited settings file is cut here.
 pub const INSTRUCTIONS_LIMIT: usize = 4000;
@@ -275,8 +291,10 @@ pub const CLAUDE_DISALLOWED_TOOLS: &[&str] =
 
 /// The `session/new` parameters. `init` is the agent's `initialize` reply: agents read the system
 /// note from different places (#9811), and the standard field may only go to an agent offering it.
-/// `note` is the system note ([`system_note`]).
-pub fn session_new_params(cwd: &std::path::Path, bridge: Option<&McpBridge>, init: &Value, note: &str) -> Value {
+/// `note` is the system note ([`system_note`]). `project`, for the built-in agent only, is the
+/// project folder the session may work in (INT-1473), sent as `_meta.intcad.project`; the session's
+/// own folder stays `cwd`.
+pub fn session_new_params(cwd: &std::path::Path, bridge: Option<&McpBridge>, init: &Value, note: &str, project: Option<&std::path::Path>) -> Value {
     let servers: Vec<Value> = bridge.map(McpBridge::to_json).into_iter().collect();
     let mut meta = json!({
         // The Claude adapter's own key, for its versions without the standard field.
@@ -290,6 +308,11 @@ pub fn session_new_params(cwd: &std::path::Path, bridge: Option<&McpBridge>, ini
         && let Some(meta) = meta.as_object_mut()
     {
         meta.insert("antigravity".into(), json!({"systemPrompt": {"append": note}}));
+    }
+    if let Some(project) = project
+        && let Some(meta) = meta.as_object_mut()
+    {
+        meta.insert("intcad".into(), json!({"project": project.to_string_lossy()}));
     }
     let mut params = json!({
         "cwd": cwd.to_string_lossy(),
@@ -939,7 +962,7 @@ mod tests {
     #[test]
     fn the_session_gets_the_bridged_mcp_server_without_a_token_or_any_path() {
         let b = McpBridge { cli: "/opt/solidcraft/intcad-cli".into(), port: 41234 };
-        let p = session_new_params(std::path::Path::new("/home/u/designs"), Some(&b), &json!({}), SYSTEM_NOTE);
+        let p = session_new_params(std::path::Path::new("/home/u/designs"), Some(&b), &json!({}), SYSTEM_NOTE, None);
         let s = &p["mcpServers"][0];
         assert_eq!(s["name"], BRIDGE_NAME);
         assert_eq!(s["args"], json!(["mcp", "--connect", "127.0.0.1:41234"]));
@@ -953,7 +976,7 @@ mod tests {
         assert!(folder.is_some(), "the app has a folder for its token files");
         assert_eq!(s["env"], json!([{"name": "SOLIDCRAFT_CONTROL_DIR", "value": folder}]));
         assert!(p["_meta"]["claudeCode"]["options"]["disallowedTools"].as_array().is_some_and(|t| t.iter().any(|x| x == "Bash")));
-        assert_eq!(session_new_params(std::path::Path::new("/tmp"), None, &json!({}), SYSTEM_NOTE)["mcpServers"], json!([]));
+        assert_eq!(session_new_params(std::path::Path::new("/tmp"), None, &json!({}), SYSTEM_NOTE, None)["mcpServers"], json!([]));
     }
 
     /// #9811: the note goes by the routes an agent's `initialize` reply offers, and the standard
@@ -962,7 +985,7 @@ mod tests {
     fn the_system_note_takes_every_route_the_agent_offers() {
         // With the user's custom instructions (#8220), which go wherever the note goes.
         let note = system_note("Sketch on XZ with explicit plane vectors.");
-        let params = |init: Value| session_new_params(std::path::Path::new("/tmp"), None, &init, &note);
+        let params = |init: Value| session_new_params(std::path::Path::new("/tmp"), None, &init, &note, None);
         let standard = json!({"mode": "append", "content": [{"type": "text", "text": note}]});
 
         let offers_standard = params(json!({"agentCapabilities": {"sessionCapabilities": {"systemPrompt": {}}}}));
@@ -1004,6 +1027,26 @@ mod tests {
         assert_eq!(note.chars().filter(|c| *c == 'ż').count(), INSTRUCTIONS_LIMIT);
     }
 
+    /// INT-1473: a session handed a project names its folder under `_meta.intcad` and keeps its
+    /// own folder as `cwd`; its note lets file tools reach the project and still keeps the shell
+    /// and the design's tools as they were. A session without one gets neither.
+    #[test]
+    fn a_session_handed_a_project_names_it_and_its_note_says_what_file_tools_are_for() {
+        let work = std::path::Path::new("/data/agent-chat/work");
+        let project = std::path::Path::new("/home/u/bracket");
+        let p = session_new_params(work, None, &json!({}), SYSTEM_NOTE, Some(project));
+        assert_eq!(p["_meta"]["intcad"]["project"], "/home/u/bracket");
+        assert_eq!(p["cwd"], "/data/agent-chat/work");
+        assert!(session_new_params(work, None, &json!({}), SYSTEM_NOTE, None)["_meta"].get("intcad").is_none());
+
+        assert!(SYSTEM_NOTE.contains(NO_FILE_TOOLS), "the sentence the project note replaces is in the note");
+        let note = project_note(&system_note("Use M3 screws."));
+        assert!(!note.contains(NO_FILE_TOOLS) && note.contains(PROJECT_FILE_TOOLS), "{note}");
+        assert!(note.contains("only through the Intcad tools") && !note.to_lowercase().contains("shell"), "the shell is neither offered nor forbidden: {note}");
+        assert!(note.ends_with("preferences:\nUse M3 screws."), "the custom instructions stay last: {note}");
+        assert_eq!(project_note(PROPOSAL_NOTE), PROPOSAL_NOTE, "a note without the sentence is left alone");
+    }
+
     /// #5546: an agent started through `wsl.exe` gets the session's paths as WSL shows them.
     #[test]
     fn an_agent_inside_wsl_gets_wsl_paths() {
@@ -1024,7 +1067,7 @@ mod tests {
         assert_eq!(wsl(r"\\server\share\x"), r"\\server\share\x");
 
         let b = McpBridge { cli: r"C:\Program Files\Intcad\intcad-cli.exe".into(), port: 41234 };
-        let p = session_new_params(&wsl_path(std::path::Path::new(r"C:\Users\u\work")), Some(&b.in_wsl()), &json!({}), SYSTEM_NOTE);
+        let p = session_new_params(&wsl_path(std::path::Path::new(r"C:\Users\u\work")), Some(&b.in_wsl()), &json!({}), SYSTEM_NOTE, None);
         assert_eq!(p["cwd"], "/mnt/c/Users/u/work");
         assert_eq!(p["mcpServers"][0]["command"], "/mnt/c/Program Files/Intcad/intcad-cli.exe");
         assert_eq!(p["mcpServers"][0]["args"], json!(["mcp", "--connect", "127.0.0.1:41234"]));

@@ -69,6 +69,9 @@ pub struct AcpBackend {
     initialized: bool,
     /// The `setup` given before `initialize` was answered: it goes right after.
     setup: Option<connections::Request>,
+    /// The project folder the next session may work in ([`ChatBackend::set_project`]). Only the
+    /// built-in agent is handed it.
+    project: Option<std::path::PathBuf>,
 }
 
 impl AcpBackend {
@@ -118,6 +121,7 @@ impl AcpBackend {
             built_in: false,
             initialized: false,
             setup: None,
+            project: None,
         };
         b.request(Pending::Initialize, "initialize", acp::initialize_params(env!("CARGO_PKG_VERSION")));
         Ok(b)
@@ -141,7 +145,11 @@ impl AcpBackend {
     fn new_session(&mut self) {
         self.config_pending = None;
         self.pending.retain(|_, request| *request != Pending::SetConfig);
-        let params = acp::session_new_params(&self.cwd, self.bridge.as_ref(), &self.init, &self.note);
+        // INT-1473: the built-in agent's file tools reach a project it is handed, and its note
+        // says what they are for. Any other agent's session is as it was.
+        let project = self.project.as_deref().filter(|_| self.built_in);
+        let note = if project.is_some() { acp::project_note(&self.note) } else { self.note.clone() };
+        let params = acp::session_new_params(&self.cwd, self.bridge.as_ref(), &self.init, &note, project);
         self.request(Pending::SessionNew, "session/new", params);
     }
 
@@ -390,6 +398,12 @@ impl ChatBackend for AcpBackend {
         self.note = acp::system_note(text);
     }
 
+    fn set_project(&mut self, root: Option<&std::path::Path>) {
+        if self.project.as_deref() != root {
+            self.project = root.map(std::path::Path::to_path_buf);
+        }
+    }
+
     fn answer_permission(&mut self, key: u64, option: Option<&str>) {
         if let Some(rpc) = self.permissions.remove(&key) {
             self.proc.send(&acp::permission_reply(rpc, option));
@@ -483,7 +497,7 @@ pub fn test_agent(argv: &[String], cwd: &std::path::Path) -> Result<String, Test
     let init = wait_for(&p, 1);
     let session_cwd = if acp::runs_in_wsl(argv) { acp::wsl_path(cwd) } else { cwd.to_path_buf() };
     let result = init.and_then(|v| {
-        p.send(&acp::request(2, "session/new", acp::session_new_params(&session_cwd, None, &v, acp::SYSTEM_NOTE)));
+        p.send(&acp::request(2, "session/new", acp::session_new_params(&session_cwd, None, &v, acp::SYSTEM_NOTE, None)));
         wait_for(&p, 2).map(|_| {
             let who = acp::agent_info(&v);
             crate::i18n::format("ui.ai_test_acp_ok", &[("agent", if who.is_empty() { "?" } else { &who })])
@@ -819,6 +833,71 @@ mod tests {
         );
         other.shutdown(true);
         assert!(!ENV_REMOVE.contains(&"SOLIDCRAFT_MASTRA_SDK") && !ENV_REMOVE.contains(&DATA_DIR_ENV), "{ENV_REMOVE:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// INT-1473, on the wire: the built-in agent handed a project names it in `session/new`
+    /// (`_meta.intcad.project`, the session's own folder staying `cwd`) and its note says what file
+    /// tools are for. Once the project is taken back, and for any other agent handed one, the
+    /// session is opened as before: no project and the note that keeps file tools off.
+    #[test]
+    fn only_the_built_in_agent_is_handed_its_project_and_only_while_it_has_one() {
+        let dir = std::env::temp_dir().join(format!("intcad-builtin-project-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("bracket");
+        // A fake agent that writes down every line it is sent, in the file named by `$0`.
+        let agent = |log: &std::path::Path| {
+            let script = r#"while IFS= read -r line; do printf '%s\n' "$line" >> "$0"; done"#;
+            ["sh".to_string(), "-c".to_string(), script.to_string(), log.to_string_lossy().into_owned()]
+        };
+        let ctx = || StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        // The parameters of the `session/new` with this id, as the agent read them.
+        let session_new = |log: &std::path::Path, id: u64| -> Value {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let text = std::fs::read_to_string(log).unwrap_or_default();
+                let sent = text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|v| v["method"] == "session/new" && v["id"] == id);
+                if let Some(request) = sent {
+                    return request["params"].clone();
+                }
+                assert!(Instant::now() < deadline, "the agent was sent no session/new {id}: {text}");
+                std::thread::yield_now();
+            }
+        };
+        let note = |params: &Value| params["_meta"]["systemPrompt"]["append"].as_str().unwrap_or_default().to_string();
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+
+        let log = dir.join("built-in");
+        let mut backend = AcpBackend::start_builtin(&agent(&log), ctx(), &dir).unwrap();
+        backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut Vec::new());
+        backend.set_project(Some(project.as_path()));
+        ChatBackend::new_session(&mut backend);
+        let handed = session_new(&log, backend.next_id);
+        assert_eq!(handed["_meta"]["intcad"]["project"], json!(project.to_string_lossy()), "{handed}");
+        assert_eq!(handed["cwd"], cwd.as_str(), "the session's own folder stays the work folder");
+        let handed_note = note(&handed);
+        assert!(handed_note.contains(acp::PROJECT_FILE_TOOLS) && !handed_note.contains(acp::NO_FILE_TOOLS), "{handed_note}");
+
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"s1"})) }, &mut Vec::new());
+        backend.set_project(None);
+        ChatBackend::new_session(&mut backend);
+        let taken_back = session_new(&log, backend.next_id);
+        assert!(taken_back["_meta"].get("intcad").is_none(), "{taken_back}");
+        let taken_back_note = note(&taken_back);
+        assert!(taken_back_note.contains(acp::NO_FILE_TOOLS) && !taken_back_note.contains(acp::PROJECT_FILE_TOOLS), "{taken_back_note}");
+        backend.shutdown(true);
+
+        // Any other agent opens its session as soon as `initialize` is answered: a project it
+        // was given before goes nowhere.
+        let log = dir.join("other");
+        let mut other = AcpBackend::start(&agent(&log), ctx()).unwrap();
+        other.set_project(Some(project.as_path()));
+        other.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut Vec::new());
+        let ignored = session_new(&log, other.next_id);
+        assert!(ignored["_meta"].get("intcad").is_none(), "{ignored}");
+        let ignored_note = note(&ignored);
+        assert!(ignored_note.contains(acp::NO_FILE_TOOLS) && !ignored_note.contains(acp::PROJECT_FILE_TOOLS), "{ignored_note}");
+        other.shutdown(true);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

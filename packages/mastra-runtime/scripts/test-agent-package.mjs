@@ -8,7 +8,9 @@
  *   of the SDK than the one the agent's own follows; with `--read-only`, when a file can be written;
  * - it fails when a skill of a set is missing, its stamp is missing or names other skills, a copy
  *   was changed after the build, a file a copy does not carry or a folder of no set is there, and
- *   when the repository's folder has changed since the build (`--skills-root` stands for it);
+ *   when the repository's folder has changed since the build (`--skills-root` stands for it); for
+ *   both sets, the modelling skills from `skills/` and the context skill from
+ *   `packages/mastra-runtime/agent-skills/`, and a problem in one set is reported against it alone;
  * - the scan finds a key-shaped text (also one lying across two reads), a private key with its
  *   key material, a stored sign-in, a database and an agent's own folder, and names the file and
  *   the kind without printing what it found;
@@ -135,6 +137,10 @@ const breaks = [
   ["a hidden file in a skill", ({ root }) => write(root, "skills/modelling-skills/solidcraft-checking/scripts/.cache", "x\n"), "scripts/.cache is not a file a copy carries"],
   ["a skill folder of no set", ({ root }) => write(root, "skills/modelling-skills/solidcraft-ui/SKILL.md", "---\nname: solidcraft-ui\n---\n"), "solidcraft-ui is not one of the set's skills"],
   ["a set the agent does not carry", ({ root }) => write(root, "skills/other-skills/skill-set.json", "{}\n"), "skills/other-skills is not a skill set the agent carries"],
+  ["the context set missing", ({ root }) => rmSync(join(root, "skills/context-skills"), { recursive: true }), "missing: skills/context-skills/skill-set.json"],
+  ["the context skill missing", ({ root }) => rmSync(join(root, "skills/context-skills/intcad-context"), { recursive: true }), "skill missing from the package: skills/context-skills/intcad-context"],
+  ["the context skill's SKILL.md changed after the build", ({ root }) => appendFileSync(join(root, "skills/context-skills/intcad-context/SKILL.md"), "\nchanged\n"), "skills/context-skills/intcad-context is not what its stamp says: SKILL.md differs"],
+  ["a modelling skill copied into the context set", ({ root }) => cpSync(join(root, "skills/modelling-skills/solidcraft-modeling"), join(root, "skills/context-skills/solidcraft-modeling"), { recursive: true }), "skills/context-skills/solidcraft-modeling is not one of the set's skills"],
   [
     "a stamp that names another skill",
     ({ root }) => {
@@ -151,14 +157,23 @@ for (const [name, change, said] of breaks) {
   change(made);
   const checked = checkFolder(made.root);
   expect(checked.code === 1 && checked.report?.problems?.some((problem) => problem.includes(said)), `the check must fail on ${name} and say "${said}": ${JSON.stringify(checked.report?.problems)}`);
+  // A problem in one set is that set's: the other set's copy is not reported with it.
+  const set = /skills\/(modelling-skills|context-skills)/u.exec(said)?.[1];
+  const other = set === "context-skills" ? "modelling-skills" : set === "modelling-skills" ? "context-skills" : null;
+  if (other && name !== "no skill sets at all") expect(!checked.report?.problems?.some((problem) => problem.includes(other)), `a break in ${set} must not be reported against ${other} (${name}): ${JSON.stringify(checked.report?.problems)}`);
 }
 
 // 2b. The repository's skills changed after the package was built: the copy is stale. A copy of
 // the repository's skill folders stands for the repository, so the repository is not touched.
+// The context skill's folder is not under `skills/`: it is found where its set says it is.
+const CONTEXT_FROM = "packages/mastra-runtime/agent-skills";
 const stale = [
-  ["a SKILL.md changed in the repository", (skills) => appendFileSync(join(skills, "solidcraft-modeling/SKILL.md"), "\nlater\n"), "skills/modelling-skills/solidcraft-modeling is stale against skills/solidcraft-modeling: SKILL.md differs"],
-  ["a file added in the repository", (skills) => write(skills, "solidcraft-checking/reference/more.md", "more\n"), "is stale against skills/solidcraft-checking: reference/more.md missing"],
-  ["a skill gone from the repository", (skills) => rmSync(join(skills, "solidcraft-editing"), { recursive: true }), "the repository has no skills/solidcraft-editing"],
+  ["a SKILL.md changed in the repository", (repository) => appendFileSync(join(repository, "skills/solidcraft-modeling/SKILL.md"), "\nlater\n"), "skills/modelling-skills/solidcraft-modeling is stale against skills/solidcraft-modeling: SKILL.md differs"],
+  ["a file added in the repository", (repository) => write(repository, "skills/solidcraft-checking/reference/more.md", "more\n"), "is stale against skills/solidcraft-checking: reference/more.md missing"],
+  ["a skill gone from the repository", (repository) => rmSync(join(repository, "skills/solidcraft-editing"), { recursive: true }), "the repository has no skills/solidcraft-editing"],
+  ["the context skill changed in the repository", (repository) => appendFileSync(join(repository, CONTEXT_FROM, "intcad-context/SKILL.md"), "\nlater\n"), `skills/context-skills/intcad-context is stale against ${CONTEXT_FROM}/intcad-context: SKILL.md differs`],
+  ["a file added to the context skill in the repository", (repository) => write(repository, `${CONTEXT_FROM}/intcad-context/reference.md`, "more\n"), `is stale against ${CONTEXT_FROM}/intcad-context: reference.md missing`],
+  ["the context skill gone from the repository", (repository) => rmSync(join(repository, CONTEXT_FROM, "intcad-context"), { recursive: true }), `the repository has no ${CONTEXT_FROM}/intcad-context`],
 ];
 {
   const { root } = folder();
@@ -166,11 +181,12 @@ const stale = [
   for (const set of SKILL_SETS) for (const skill of set.skills) cpSync(join(repoRoot, set.from, skill), join(fresh, set.from, skill), { recursive: true });
   const same = checkFolder(root, TARGET, "--skills-root", fresh);
   expect(same.code === 0, `a package built from the repository as it is must pass: ${JSON.stringify(same.report?.problems)}`);
-  expect(/^sha256:[0-9a-f]{64}$/u.test(same.report?.skills?.["modelling-skills"] ?? ""), "the report must give the set's version");
+  for (const set of SKILL_SETS) expect(/^sha256:[0-9a-f]{64}$/u.test(same.report?.skills?.[set.name] ?? ""), `the report must give ${set.name}'s version`);
+  expect(JSON.stringify(Object.keys(same.report?.skills ?? {}).sort()) === JSON.stringify(["context-skills", "modelling-skills"]), `the report must give both sets: ${JSON.stringify(same.report?.skills)}`);
   for (const [name, change, said] of stale) {
     const later = join(work, `repository-${++count}`);
     cpSync(fresh, later, { recursive: true });
-    change(join(later, "skills"));
+    change(later);
     const checked = checkFolder(root, TARGET, "--skills-root", later);
     expect(checked.code === 1 && checked.report?.problems?.some((problem) => problem.includes(said)), `the check must fail on ${name} and say "${said}": ${JSON.stringify(checked.report?.problems)}`);
   }

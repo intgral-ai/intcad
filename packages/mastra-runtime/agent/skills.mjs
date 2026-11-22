@@ -28,6 +28,13 @@ export const SKILL_SETS = [
     from: "skills",
     skills: ["solidcraft-checking", "solidcraft-editing", "solidcraft-mechanisms", "solidcraft-modeling"],
   },
+  // INT-1473: how the built-in agent works from the project brief (agent/brief.mjs). Written for
+  // this agent alone, so it lives beside it, not with the repository's contributor skills.
+  {
+    name: "context-skills",
+    from: "packages/mastra-runtime/agent-skills",
+    skills: ["intcad-context"],
+  },
 ];
 
 /** The stamp beside a set's copies in the package. */

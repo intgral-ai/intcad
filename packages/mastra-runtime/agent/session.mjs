@@ -13,6 +13,103 @@
 // not for `false`, so the build checks that the SDK's file is still the one this was written
 // against (`../agent-package/adapted-from.json`, checked by `scripts/agent-package.mjs`). When
 // that check fails after a new version of the SDK, compare its builder with this one again.
+//
+// And for INT-1473, two things the app hands over in `session/new` reach Mastra:
+// - The app's note (`_meta.systemPrompt.append`, or the standard `systemPrompt`) becomes Mastra
+//   Code's host instructions. Without this the built-in agent never saw it.
+// - A project folder (`_meta.intcad.project`) is returned as `project`, for agent.mjs to add to the
+//   folders the file tools may reach (`sandboxAllowedPaths`, on the session's thread: one set in
+//   `initialState` is gone once Mastra Code opens that thread), and its brief (brief.mjs) follows
+//   the note. The session's own folder
+//   stays the app's empty one, so Mastra Code reads none of the project's agent files, MCP
+//   servers, hooks or skills: those it takes only from the session's folder and its home.
+
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+
+import { projectBrief, projectRoot } from "./brief.mjs";
+import { permissionRules } from "./reads.mjs";
+
+/**
+ * The folder a session works in: a new, empty one of its own under `<data>/sessions/`, named
+ * after this process, removed when the session is cleaned up (when the app closes its connection
+ * to the agent; New chat leaves the old session open). The app names one folder for every session
+ * (`agent-chat/work`), and Mastra Code reads agent files (`AGENTS.md`), MCP servers (`.mcp.json`)
+ * and hooks from a session's folder. In a shared folder, one file put there would be loaded, or
+ * run, by every later session; and sessions of one folder share one memory, so `recall` in one
+ * would read another's. (The file tools do not reach the folder at all: fence.mjs.) Run by hand,
+ * without a data folder, the session works in the folder it is given.
+ */
+export function sessionFolder(given, data = process.env.MASTRA_APP_DATA_DIR) {
+  if (!data) return { folder: given, remove: () => {} };
+  const root = join(data, "sessions");
+  mkdirSync(root, { recursive: true });
+  const folder = mkdtempSync(join(root, `s-${process.pid}-`));
+  return { folder, remove: () => rmSync(folder, { recursive: true, force: true, maxRetries: 3 }) };
+}
+
+/**
+ * Removes the session folders an agent that is no longer running left behind (it was stopped
+ * before it cleaned up). A folder names the process that made it; one of a process still running
+ * is left alone. Never throws.
+ */
+export function sweepSessionFolders(data, alive = isRunning) {
+  const root = join(data, "sessions");
+  let entries = [];
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const removed = [];
+  for (const entry of entries) {
+    const pid = /^s-(\d+)-/u.exec(entry.name)?.[1];
+    if (!entry.isDirectory() || !pid || Number(pid) === process.pid || alive(Number(pid))) continue;
+    try {
+      rmSync(join(root, entry.name), { recursive: true, force: true, maxRetries: 3 });
+      removed.push(entry.name);
+    } catch {
+      // still held by the system: a later start tries again
+    }
+  }
+  return removed;
+}
+
+function isRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+/** The longest note taken from the app, in characters: its note and custom instructions are far shorter. */
+const NOTE_LIMIT = 16000;
+
+/** The app's note for the session, from whichever route it took; empty when it sent none. */
+export function noteOf(request) {
+  const meta = request?._meta?.systemPrompt?.append;
+  const standard = Array.isArray(request?.systemPrompt?.content)
+    ? request.systemPrompt.content.filter(part => part?.type === "text" && typeof part.text === "string").map(part => part.text).join("\n")
+    : "";
+  const note = typeof meta === "string" && meta.trim() ? meta : standard;
+  return note.trim().slice(0, NOTE_LIMIT);
+}
+
+/** What every session of the built-in agent is told after the app's note. */
+export const LANGUAGE = "Answer in the language the user writes in.";
+
+/**
+ * What the app hands a session over its own: the note, and the project folder with its brief, or
+ * null. The instructions are the note, then `LANGUAGE`, then the brief.
+ */
+export function hostOf(request) {
+  const note = noteOf(request);
+  const project = projectRoot(request?._meta?.intcad?.project);
+  const brief = project ? projectBrief(project) : "";
+  return { project, instructions: [note, LANGUAGE, brief].filter(Boolean).join("\n\n") };
+}
 
 /**
  * `sdk` is what the entry loaded from Mastra Code: `createMastraCode`, `loadSettings`,
@@ -33,27 +130,42 @@ export function sessionBuilder(sdk) {
       return [server.name, config];
     });
     const settings = sdk.loadSettings();
-    const result = await sdk.createMastraCode({
-      cwd: request.cwd,
-      initialState: { projectPath: request.cwd, yolo: false, permissionRules: { categories: {}, tools: { ask_user: 'deny' } } },
-      mcpServers: Object.fromEntries(servers),
-      // ACP clients can answer permission requests, but have no free-text tool response method.
-      disabledTools: ['ask_user'],
-      planApprovalStartsGoal: false,
-      unixSocketPubSub: false,
-      disableMcp: false,
-      disableHooks: false,
-      // Project environment files must not mutate other ACP sessions.
-      disableEnvFile: true,
-      subagents: sdk.resolveSubagentsSetting(settings.preferences.subagentsEnabled),
-      // Intcad's difference: no vector store, so no embedding model.
-      vector: false,
-    });
+    const host = hostOf(request);
+    // Intcad's: the session's own new folder (sessionFolder), not the one the app named.
+    const own = sessionFolder(request.cwd);
+    let result;
+    try {
+      result = await sdk.createMastraCode({
+        cwd: own.folder,
+        initialState: { projectPath: own.folder, yolo: false, permissionRules: permissionRules(host.project) },
+        ...(host.instructions ? { hostInstructions: host.instructions } : {}),
+        mcpServers: Object.fromEntries(servers),
+        // ACP clients can answer permission requests, but have no free-text tool response method.
+        // Intcad's: no `request_access` either. Its card names no folder, and after three clicks
+        // any folder of the computer was open to the file tools (INT-1473: files only in the project).
+        disabledTools: ['ask_user', 'request_access'],
+        planApprovalStartsGoal: false,
+        unixSocketPubSub: false,
+        disableMcp: false,
+        // Intcad's: no hooks. Intcad configures none, and a hook is a command run without asking.
+        disableHooks: true,
+        // Project environment files must not mutate other ACP sessions.
+        disableEnvFile: true,
+        subagents: sdk.resolveSubagentsSetting(settings.preferences.subagentsEnabled),
+        // Intcad's difference: no vector store, so no embedding model.
+        vector: false,
+      });
+    } catch (error) {
+      own.remove();
+      throw error;
+    }
     let cleanupPromise;
     const runtime = {
       controller: result.controller,
       session: result.session,
       modes: result.controller.listModes(),
+      // The project folder this session was handed (INT-1473), or null.
+      project: host.project,
       getSkills: async () => (await result.controller.resolveWorkspace({ session: result.session }))?.skills,
       getThinkingLevel: () => result.session.state.get().thinkingLevel ?? sdk.resolveDefaultThinkingLevel(settings, result.session.mode.get()).level,
       cleanup: () => (cleanupPromise ??= (async () => {
@@ -84,7 +196,15 @@ export function sessionBuilder(sdk) {
           Promise.resolve().then(() => result.controller.stopIntervals()),
         ]);
         await Promise.resolve().then(() => result.signalsPubSub?.close?.()).catch(() => {});
-        await result.storage.close();
+        try {
+          await result.storage.close();
+        } finally {
+          try {
+            own.remove();
+          } catch (error) {
+            process.stderr.write(`[intcad] a session's folder stays behind: ${error}\n`);
+          }
+        }
       })()),
     };
     try {

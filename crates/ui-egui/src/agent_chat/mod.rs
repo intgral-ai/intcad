@@ -426,6 +426,9 @@ pub struct AgentChat {
     tool_pictures: Vec<(String, Picture)>,
     /// The folder the agent was started in: its own files are those inside it.
     work_dir: Option<std::path::PathBuf>,
+    /// The project folder the built-in agent's next session is handed ([`handed_project`]), with
+    /// the shown design's path and the Files panel's folder it was worked out from.
+    project: Option<(Option<String>, Option<std::path::PathBuf>, Option<std::path::PathBuf>)>,
     /// The files tool calls read that get a card ([`read_file`]), by the call's id, oldest first;
     /// the newest [`MAX_TOOL_FILES`] are kept.
     tool_files: Vec<(String, std::path::PathBuf, read_file::Act)>,
@@ -1273,6 +1276,36 @@ pub(crate) fn find_cli() -> Option<std::path::PathBuf> {
         .and_then(|e| e.parent().map(|d| d.join(name)))
         .filter(|p| p.is_file())
         .or_else(|| discover::find_in("intcad-cli", &discover::search_dirs()))
+}
+
+/// The project folder the built-in agent may work in (INT-1473): the Files panel's folder, when it
+/// is the project the shown design belongs to (the nearest folder at or above the design that
+/// holds `.intcad/project.toml`). A design in no project, a panel on another folder or on none,
+/// hands over nothing, and the agent works as it did before.
+pub(crate) fn handed_project(design: Option<&str>, files_root: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    let root = files_root?;
+    let project = solidcraft_engine::project::Project::locate(std::path::Path::new(design?))?;
+    let same = |a: &std::path::Path, b: &std::path::Path| match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    };
+    same(&project, root).then_some(project)
+}
+
+/// Keep the backend's project ([`ChatBackend::set_project`]) on what the window shows now. Worked
+/// out again only when the design or the Files panel's folder changes.
+fn follow_project(app: &mut SolveApp) {
+    let (design, files) = (app.session.path.clone(), app.file_tree.root().map(std::path::Path::to_path_buf));
+    let chat = &mut app.agent_chat;
+    let stale = chat.project.as_ref().is_none_or(|(d, f, _)| *d != design || *f != files);
+    if stale {
+        let root = handed_project(design.as_deref(), files.as_deref());
+        chat.project = Some((design, files, root));
+    }
+    let root = chat.project.as_ref().and_then(|(_, _, root)| root.clone());
+    if let Some(backend) = chat.backend.as_mut() {
+        backend.set_project(root.as_deref());
+    }
 }
 
 /// The agent's working folder: an empty folder of SolidCraft's own, so an agent's own file tools
@@ -2842,6 +2875,7 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(backend) = app.agent_chat.backend.as_mut() {
         backend.set_document(&stamp.document_id, stamp.revision);
     }
+    follow_project(app);
     connections::poll(app, ctx);
     let events = app.agent_chat.backend.as_mut().map(|b| b.poll()).unwrap_or_default();
     for e in events {

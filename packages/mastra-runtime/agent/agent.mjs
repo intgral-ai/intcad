@@ -1,6 +1,7 @@
 // Mastra Code's ACP agent with what Intcad adds: the connection methods, a model list a person can
 // read (only models one can talk to, newest first), sessions that follow a sign-in or sign-out
-// without being opened again, and a reason on a turn that fails.
+// without being opened again, a reason on a turn that fails, and no card for the app's commands
+// that only read.
 //
 // `Base` is Mastra Code's `MastraCodeAcpAgent`. It is passed in so this file imports nothing of
 // Mastra's and the tests can stand in for it.
@@ -8,6 +9,7 @@
 import { METHODS } from './connections.mjs';
 import { classifyFailure } from './problems.mjs';
 import { isChatModel, newestFirst, orderModelOptions } from './models.mjs';
+import { askingOnlyWhenNeeded } from './reads.mjs';
 
 const INVALID_PARAMS = -32602;
 const METHOD_NOT_FOUND = -32601;
@@ -23,6 +25,11 @@ const BUSY = -32000;
  */
 export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns }) {
   return class IntcadAgent extends Base {
+    /** The app's `execute` with a command that only reads runs without a card (reads.mjs). */
+    constructor(connection, ...rest) {
+      super(askingOnlyWhenNeeded(connection), ...rest);
+    }
+
     /** The sign-ins are offered on the Connections page, through the methods below, not as ACP sign-in methods. */
     async initialize(request) {
       const response = await super.initialize(request);
@@ -62,6 +69,10 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       const response = await super.newSession(request);
       const entry = this.sessions.get(response.sessionId);
       if (!entry) return response;
+      // INT-1473: the project folder the app handed over (session.mjs) is where the file tools may
+      // also go. Set here, on the session's own thread: Mastra Code opens a new thread for the
+      // session after building it, and the thread starts with no such folder of its own.
+      if (entry.project) await entry.session.state.set({ sandboxAllowedPaths: [entry.project] });
       await this.#settle(entry, true);
       return { ...response, configOptions: this.configOptions(entry), ...(response.models ? { models: { ...response.models, currentModelId: entry.session.model.get() ?? '' } } : {}) };
     }
