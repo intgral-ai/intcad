@@ -87,17 +87,26 @@ OFFLINE="sandbox-exec -f $SANDBOX"
 
 # macOS ships bash 3.2: do not expand an empty array under `set -u`.
 run_assistant_check() {
-  local evidence="$1" prefix="$2"
-  if [ "${SOLIDCRAFT_MACOS_SCREEN:-0}" = 1 ]; then
-    python3 "$ROOT/packaging/assistant-check.py" --run-with "$prefix" --exe "$EXE" \
-      --evidence "$evidence" --screen
+  local evidence="$1" prefix="$2" screen=() agent=()
+  # A release app carries the built-in agent: the installed copy must start it out of the app.
+  if [ -f "$(dirname "$EXE")/../Resources/mastra-agent/agent.json" ] ||
+     [ -f "$(dirname "$EXE")/../Resources/mastra-agent/aarch64-apple-darwin/agent.json" ] ||
+     [ -f "$(dirname "$EXE")/../Resources/mastra-agent/x86_64-apple-darwin/agent.json" ]; then
+    agent=(--built-in-agent)
+  fi
+  [ "${SOLIDCRAFT_MACOS_SCREEN:-0}" = 1 ] && screen=(--screen)
+  # macOS ships bash 3.2: an empty array under `set -u` is written out only when it has a member.
+  if [ ${#agent[@]} -eq 0 ] && [ ${#screen[@]} -eq 0 ]; then
+    python3 "$ROOT/packaging/assistant-check.py" --run-with "$prefix" --exe "$EXE" --evidence "$evidence"
+  elif [ ${#agent[@]} -eq 0 ]; then
+    python3 "$ROOT/packaging/assistant-check.py" --run-with "$prefix" --exe "$EXE" --evidence "$evidence" "${screen[@]}"
+  elif [ ${#screen[@]} -eq 0 ]; then
+    python3 "$ROOT/packaging/assistant-check.py" --run-with "$prefix" --exe "$EXE" --evidence "$evidence" "${agent[@]}"
   else
-    python3 "$ROOT/packaging/assistant-check.py" --run-with "$prefix" --exe "$EXE" \
-      --evidence "$evidence"
+    python3 "$ROOT/packaging/assistant-check.py" --run-with "$prefix" --exe "$EXE" --evidence "$evidence" "${screen[@]}" "${agent[@]}"
   fi
 }
 
-echo "==> the Assistant in the installed app"
 run_assistant_check "$EVIDENCE/native" "$OFFLINE"
 
 # The other half of a universal file, where this machine can run it.

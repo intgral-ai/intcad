@@ -11,7 +11,9 @@
 #        packaging/macos/package.sh --build-only <rust-target>
 #
 # --with-mastra-agent (or SOLIDCRAFT_WITH_MASTRA_AGENT=1) puts the built-in agent's folder into
-# the app, for a test package: --arch aarch64 only. docs/mastra-packaging.md says how it is built.
+# the app. A universal app carries one folder per CPU (Contents/Resources/mastra-agent/<target>),
+# built beforehand for that target; a single-architecture app carries one folder. Release packages
+# carry it, and docs/mastra-packaging.md says how it is built.
 #
 # --build-only builds just that target (aarch64-apple-darwin or x86_64-apple-darwin) and stops,
 # so the release workflow can build the two halves of the universal binary on separate runners;
@@ -104,8 +106,13 @@ case "$ARCH" in
   *) echo "unknown --arch $ARCH" >&2; exit 2 ;;
 esac
 
-if [ "$WITH_MASTRA_AGENT" = 1 ] && [ "$ARCH" != aarch64 ] && [ -z "$BUILD_ONLY" ]; then
-  echo "--with-mastra-agent is for --arch aarch64: the agent's folder is built for one CPU, and only Apple silicon is offered" >&2; exit 2
+if [ "$WITH_MASTRA_AGENT" = 1 ] && [ "$ARCH" = universal ] && [ -z "$BUILD_ONLY" ]; then
+  for variable in SOLIDCRAFT_MASTRA_AGENT_DIR_AARCH64 SOLIDCRAFT_MASTRA_AGENT_DIR_X86_64; do
+    if [ -z "${!variable:-}" ]; then
+      echo "error: $variable is not set; a universal app needs the agent's folder for both CPUs" >&2
+      exit 2
+    fi
+  done
 fi
 if [ -n "$BUILD_ONLY" ] && [ "$SKIP_BUILD" = 1 ]; then
   echo "--skip-build and --build-only exclude each other" >&2; exit 2
@@ -216,14 +223,41 @@ else
   warn "the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)"
 fi
 
-# ---- Built-in agent (opt-in, for test packages) -------------------------------------------------
-# Its own folder beside `mastra/`: the app starts the Node in it with agent/main.mjs when no
-# environment variable names an agent. stage-agent.sh checks the folder before copying it.
+# ---- Built-in agent -----------------------------------------------------------------------------
+# Its own folder beside `mastra/`: the app starts the Node in it with agent/main.mjs, and finds a
+# universal app's copy for its own CPU under `mastra-agent/<target>`. stage-agent.sh checks each
+# folder before copying it, and its own check, not this script, decides whether it may ship.
 AGENT_DIR="$APP/Contents/Resources/mastra-agent"
+stage_agent() {
+  local target="$1" dest="$2" from="${SOLIDCRAFT_MASTRA_AGENT_DIR:-}"
+  # A universal app's two folders are named one per CPU; a single one may name either.
+  if [ "$ARCH" = universal ]; then
+    case "$target" in
+      aarch64-apple-darwin) from="${SOLIDCRAFT_MASTRA_AGENT_DIR_AARCH64:-$from}" ;;
+      x86_64-apple-darwin) from="${SOLIDCRAFT_MASTRA_AGENT_DIR_X86_64:-$from}" ;;
+    esac
+  fi
+  "$SCRIPT_DIR/../mastra/stage-agent.sh" --target "$target" --dest "$dest" ${from:+--from "$from"}
+}
 if [ "$WITH_MASTRA_AGENT" = 1 ]; then
-  "$SCRIPT_DIR/../mastra/stage-agent.sh" --target "${TARGETS[0]}" --dest "$AGENT_DIR"
-  cp "$AGENT_DIR/licenses/THIRD-PARTY-LICENSES.txt" "$APP/Contents/Resources/Licenses/MASTRA-AGENT-THIRD-PARTY-LICENSES.txt"
-  cp "$AGENT_DIR/licenses/NODE-LICENSE.txt" "$APP/Contents/Resources/Licenses/MASTRA-AGENT-NODE-LICENSE.txt"
+  if [ "$ARCH" = universal ]; then
+    stage_agent aarch64-apple-darwin "$AGENT_DIR/aarch64-apple-darwin"
+    stage_agent x86_64-apple-darwin "$AGENT_DIR/x86_64-apple-darwin"
+  else
+    stage_agent "${TARGETS[0]}" "$AGENT_DIR"
+  fi
+  mkdir -p "$APP/Contents/Resources/Licenses"
+  # The licences of what ships: one copy per set, when both CPUs carry the same set.
+  agent_licences="$(find "$AGENT_DIR" -path '*/licenses/THIRD-PARTY-LICENSES.txt' -print | sort | xargs -I{} shasum -a 256 {} | awk '{print $1}' | sort -u | wc -l | tr -d ' ')"
+  if [ "$agent_licences" != 1 ]; then
+    echo "error: the agent folders do not carry the same third-party licence texts" >&2
+    exit 1
+  fi
+  first="$(find "$AGENT_DIR" -path '*/licenses/THIRD-PARTY-LICENSES.txt' -print | sort | head -n 1)"
+  cp "$first" "$APP/Contents/Resources/Licenses/MASTRA-AGENT-THIRD-PARTY-LICENSES.txt"
+  cp "$(dirname "$first")/NODE-LICENSE.txt" "$APP/Contents/Resources/Licenses/MASTRA-AGENT-NODE-LICENSE.txt"
+else
+  warn "the built-in agent is not bundled (--with-mastra-agent); a release package carries it"
 fi
 
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" "$ROOT/assets/platforms/macos/Info.plist.in" >"$APP/Contents/Info.plist"
@@ -241,10 +275,12 @@ if [ -d "$APP/Contents/Resources/mastra" ]; then
 fi
 # The built-in agent's Node, and the native libraries its packages load, are nested code too.
 if [ -d "$AGENT_DIR" ]; then
-  find "$AGENT_DIR/node_modules" -type f \( -name '*.node' -o -name '*.dylib' \) -print0 | while IFS= read -r -d '' library; do
+  find "$AGENT_DIR" -path '*/node_modules/*' -type f \( -name '*.node' -o -name '*.dylib' \) -print0 | while IFS= read -r -d '' library; do
     sign_code "$library"
   done
-  sign_code "$AGENT_DIR/node" "$MACOS_BUNDLE_ID.mastra-agent-node" "$SCRIPT_DIR/node-entitlements.plist"
+  find "$AGENT_DIR" -type f -name node -print0 | while IFS= read -r -d '' node_program; do
+    sign_code "$node_program" "$MACOS_BUNDLE_ID.mastra-agent-node" "$SCRIPT_DIR/node-entitlements.plist"
+  done
   # Nothing in the folder may be written once it is in the app: the agent keeps what it writes
   # in the user's data folder, and a signed app must not change its own contents.
   chmod -R a-w "$AGENT_DIR"
@@ -332,9 +368,22 @@ if [ "$WITH_MASTRA" = 1 ]; then
   esac
 fi
 if [ "$WITH_MASTRA_AGENT" = 1 ]; then
-  # The agent's folder as the image carries it, checked again, and run once against stand-ins.
-  node "$ROOT/packages/mastra-runtime/scripts/agent-package.mjs" check --read-only --target "${TARGETS[0]}" "$MNT/Intcad.app/Contents/Resources/mastra-agent"
-  node "$ROOT/packages/mastra-runtime/scripts/agent-smoke.mjs" "$MNT/Intcad.app/Contents/Resources/mastra-agent"
+  # The agent's folder as the image carries it: each CPU's copy checked again, and the copy this
+  # machine can run started once against stand-ins. A universal app runs its own CPU's copy.
+  if [ "$ARCH" = universal ]; then
+    for target in "${TARGETS[@]}"; do
+      node "$ROOT/packages/mastra-runtime/scripts/agent-package.mjs" check --read-only --target "$target" \
+        "$MNT/Intcad.app/Contents/Resources/mastra-agent/$target"
+    done
+    case "$(uname -m)" in
+      arm64) host=aarch64-apple-darwin ;;
+      *) host=x86_64-apple-darwin ;;
+    esac
+    node "$ROOT/packages/mastra-runtime/scripts/agent-smoke.mjs" "$MNT/Intcad.app/Contents/Resources/mastra-agent/$host"
+  else
+    node "$ROOT/packages/mastra-runtime/scripts/agent-package.mjs" check --read-only --target "${TARGETS[0]}" "$MNT/Intcad.app/Contents/Resources/mastra-agent"
+    node "$ROOT/packages/mastra-runtime/scripts/agent-smoke.mjs" "$MNT/Intcad.app/Contents/Resources/mastra-agent"
+  fi
 fi
 # Not --strict: the mounted HFS volume adds Finder info, which strict verification rejects.
 codesign --verify --deep --verbose=2 "$MNT/Intcad.app"

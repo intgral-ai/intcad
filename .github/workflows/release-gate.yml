@@ -21,6 +21,12 @@ permissions:
   contents: read
   actions: read
 
+# What the release packages carry. `mastra-agent`: every supported package ships the built-in
+# agent; `native`: none does. The gate checks the declaration against the built installers'
+# own bytes, so this is the one place to change when a release changes what it ships.
+env:
+  SOLIDCRAFT_DISTRIBUTION: "mastra-agent"
+
 concurrency:
   # Never cancel a running candidate from this gate.  The reusable ci/rig
   # workflows use their own caller/ref-scoped groups, so they do not collide
@@ -334,11 +340,12 @@ jobs:
                   contents[identity] = data
               except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
                   problems.append('package contents: ' + str(error))
-          # #14/#15 (the Mastra installed runtime) are not applicable only when
-          # the workflow declares native distribution AND the built installers
-          # prove it: every canonical package inspected, no runtime markers, and
-          # the digests match build.json. A declaration or a name cannot substitute.
-          problems.extend(content.problems(sha, descriptors, contents))
+          # The distribution is decided from what the installers really carry. A release
+          # declares `mastra-agent` (the built-in agent in every supported package) or
+          # `native`; either way every canonical package must have been inspected, the
+          # digests must match build.json, and the legacy workflow runtime stays refused.
+          # A declaration, an environment flag or a file name cannot substitute.
+          problems.extend(content.problems(sha, descriptors, contents, os.environ['SOLIDCRAFT_DISTRIBUTION']))
           for problem in problems:
               print('FAIL: ' + problem)
           sys.exit(1 if problems else 0)
