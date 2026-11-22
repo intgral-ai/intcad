@@ -2239,6 +2239,121 @@ mod tests {
     }
 
     #[test]
+    fn startup_settlement_lock_survives_process_contention_and_releases_on_exit() {
+        use solidcraft_engine::entitlement::{TransportCorrelation, UnsettledOperation};
+        use std::process::{Child, Command, Stdio};
+
+        const ROOT: &str = "INTCAD_TEST_SETTLEMENT_PROCESS_ROOT";
+        const ROLE: &str = "INTCAD_TEST_SETTLEMENT_PROCESS_ROLE";
+        let store = TestStore::default();
+        let mut session = activate_session(&store);
+        let scope = session.authenticated_scope().unwrap();
+        if let Some(root) = std::env::var_os(ROOT) {
+            let role = std::env::var(ROLE).unwrap();
+            let ledger = FileOperationStore::open(root).unwrap();
+            let rows = ledger.unsettled_operations(Some(&scope)).unwrap();
+            assert_eq!(rows.len(), 5);
+            for row in &rows {
+                let UnsettledOperation::Owned(record) = row else { panic!("expected an owned fixture row") };
+                CredentialHandoff::settlement_credential(&mut session, &record.operation, Secret::new("fixture_settlement")).unwrap();
+            }
+            let mut responses = vec![Ok(WireResponse::new(200, status_body_for(scope.account().as_str()).to_string().into_bytes()))];
+            responses.extend((0..5).map(|_| Err(TransportFailure::Timeout)));
+            let mut product = ScriptedProduct::scripted(responses);
+            if role == "holder" {
+                let ready = ledger.root().join("holder-ready");
+                let calls = AtomicUsize::new(0);
+                product.on_send(move || {
+                    if calls.fetch_add(1, Ordering::SeqCst) == 4 {
+                        // The fourth finalize has reached the transport, after the cursor write.
+                        std::fs::write(&ready, []).unwrap();
+                        let _ = std::io::Read::read(&mut std::io::stdin(), &mut [0u8]);
+                    }
+                });
+            }
+            let opener = RecordingOpener::default();
+            let mut runtime = restart_runtime(session, product.clone(), &opener);
+            runtime.ledger = Some(ledger);
+            let startup = runtime.startup();
+            let mut port = DesktopAccountPort::new(runtime, &startup);
+            if role == "holder" {
+                port.join_workers();
+                panic!("holder must be terminated while its fourth finalize is in flight");
+            }
+            wait_for_restart(&port);
+            assert!(port.view().signed_in);
+            port.shutdown();
+            let requests = product.requests();
+            assert_eq!(requests[0].url(), "https://api.example/v1/status");
+            let expected: &[usize] = match role.as_str() {
+                "contender" => &[],
+                "successor" => &[4, 0, 1, 2],
+                _ => panic!("unexpected process completion for role {role}"),
+            };
+            assert_eq!(requests.len(), 1 + expected.len(), "{role}: unexpected finalize count");
+            for (request, index) in requests[1..].iter().zip(expected) {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(request.url(), format!("https://api.example/v1/operations/{}/finalize", rows[*index].record().operation.as_str()));
+            }
+            return;
+        }
+
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        struct Holder(Child);
+        impl Drop for Holder {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let path = std::env::temp_dir().join(format!("intcad-settlement-process-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        let scratch = Scratch(path);
+        let mut ledger = FileOperationStore::open(&scratch.0).unwrap();
+        let intent = SettlementIntent::Commit(BillingResult::Succeeded);
+        let mut operations = std::array::from_fn::<_, 5, _>(|i| {
+            let row = ledger
+                .persist_intent(&scope, &TransportCorrelation::new(format!("process_backlog_{i}")), Capability::Review, EntryCategory::ReviewPanel)
+                .unwrap();
+            ledger.record_settlement_intent(&row.operation, intent).unwrap();
+            row.operation
+        });
+        operations.sort();
+
+        let child = |role: &str| {
+            let mut cmd = Command::new(std::env::current_exe().unwrap());
+            cmd.args(["--exact", "account::tests::startup_settlement_lock_survives_process_contention_and_releases_on_exit"]);
+            cmd.env(ROOT, &scratch.0).env(ROLE, role);
+            cmd
+        };
+        let verify_child = |role: &str| {
+            let output = child(role).output().unwrap();
+            assert!(output.status.success(), "{role}: {}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"), "{role}: child test did not run");
+        };
+        let mut holder = Holder(child("holder").stdin(Stdio::piped()).spawn().unwrap());
+        wait_until("holder process enters its fourth finalize", || scratch.0.join("holder-ready").is_file());
+        assert_eq!(ledger.settlement_cursor(&scope).as_ref(), Some(&operations[3]));
+        verify_child("contender");
+        assert_eq!(ledger.settlement_cursor(&scope).as_ref(), Some(&operations[3]), "contender must not modify the persisted cursor");
+
+        // Exit without unwinding: the kernel must release the lock, not a Rust cleanup hook.
+        holder.0.kill().unwrap();
+        assert!(!holder.0.wait().unwrap().success());
+        verify_child("successor");
+        assert_eq!(ledger.settlement_cursor(&scope).as_ref(), Some(&operations[2]));
+        for operation in &operations {
+            assert_eq!(ledger.load(operation).unwrap().unwrap().status, OperationStatus::Held);
+            assert_eq!(ledger.settlement_intent(operation).unwrap(), Some(intent));
+        }
+    }
+
+    #[test]
     fn switching_accounts_during_startup_finalize_discards_the_receipt_and_stops_recovery() {
         use solidcraft_engine::entitlement::TransportCorrelation;
 
