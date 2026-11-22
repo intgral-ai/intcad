@@ -790,6 +790,14 @@ impl RestartVerifier {
             solidcraft_engine::note!("account: startup settlement could not open the ledger");
             return;
         };
+        let _recovery_lock = match ledger.try_lock_settlement_recovery(&binding.scope) {
+            Ok(Some(lock)) => lock,
+            Ok(None) => return,
+            Err(_) => {
+                solidcraft_engine::note!("account: startup settlement could not lock the recovery pass");
+                return;
+            }
+        };
         let Ok(mut rows) = ledger.unsettled_operations(Some(&binding.scope)) else {
             solidcraft_engine::note!("account: startup settlement could not verify the ledger inventory");
             return;
@@ -2164,13 +2172,47 @@ mod tests {
         for (launch, expected) in [[0, 1, 2, 3], [4, 0, 1, 2], [3, 4, 0, 1]].into_iter().enumerate() {
             let mut responses = vec![Ok(WireResponse::new(200, status_body_for(scope.account().as_str()).to_string().into_bytes()))];
             responses.extend((0..5).map(|_| Err(TransportFailure::Timeout)));
-            let product = ScriptedProduct::scripted(responses);
+            let mut product = ScriptedProduct::scripted(responses);
+            let (entered_tx, entered_rx) = channel();
+            let (release_tx, release_rx) = channel();
+            if launch == 0 {
+                let release_rx = Mutex::new(release_rx);
+                let sends = AtomicUsize::new(0);
+                product.on_send(move || {
+                    if sends.fetch_add(1, Ordering::SeqCst) == 1 {
+                        entered_tx.send(()).unwrap();
+                        let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(10));
+                    }
+                });
+            }
             let opener = RecordingOpener::default();
             let mut runtime = restart_runtime(CredentialSession::new(Box::new(store.clone())), product.clone(), &opener);
             runtime.ledger = Some(FileOperationStore::open(&scratch.0).unwrap());
             let startup = runtime.startup();
             let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
             install(&mut app, runtime, startup);
+            if launch == 0 {
+                entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                let competing = ScriptedProduct::scripted(vec![
+                    Ok(WireResponse::new(200, status_body_for(scope.account().as_str()).to_string().into_bytes())),
+                    Err(TransportFailure::Timeout),
+                ]);
+                let mut runtime = restart_runtime(CredentialSession::new(Box::new(store.clone())), competing.clone(), &opener);
+                let shared_ledger = FileOperationStore::open(&scratch.0).unwrap();
+                runtime.ledger = Some(FileOperationStore::open(&scratch.0).unwrap());
+                let cursor_before = shared_ledger.settlement_cursor(&scope);
+                let startup = runtime.startup();
+                let mut port = DesktopAccountPort::new(runtime, &startup);
+                wait_for_restart(&port);
+                assert!(port.view().signed_in);
+                let requests = competing.requests();
+                let cursor_after = shared_ledger.settlement_cursor(&scope);
+                release_tx.send(()).unwrap();
+                port.shutdown();
+                assert_eq!(requests.len(), 1, "overlapping startup must not send finalize");
+                assert_eq!(requests[0].url(), "https://api.example/v1/status");
+                assert_eq!(cursor_after, cursor_before, "overlapping startup must not move the cursor");
+            }
             wait_until("startup settlement completes", || {
                 app.account.process_actions();
                 app.account.view().signed_in

@@ -114,6 +114,26 @@ impl FileOperationStore {
         self.root.join(format!("settlement-cursor-{key}"))
     }
 
+    /// Try to own this scope's startup recovery pass. Keep the handle alive
+    /// across cursor reads and writes. Never remove the lock file: another
+    /// process may already have opened it, and closing releases the OS lock.
+    pub fn try_lock_settlement_recovery(&self, scope: &AuthenticatedHostScope) -> std::io::Result<Option<fs::File>> {
+        let path = self.settlement_cursor_path(scope).with_extension("lock");
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(file)),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(error)) => Err(error),
+        }
+    }
+
     /// Read a scheduling hint, never proof of scope or settlement. An absent or
     /// invalid hint starts a new scan.
     pub fn settlement_cursor(&self, scope: &AuthenticatedHostScope) -> Option<OperationId> {
