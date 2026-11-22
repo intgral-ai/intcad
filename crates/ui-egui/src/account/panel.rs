@@ -9,7 +9,7 @@ use crate::SolveApp;
 use crate::theme::Tokens;
 use crate::ui_kit::{BackingTooltipExt as _, Button, Container, FileView, Menu, Surface, Text, button, text};
 
-use super::{AccountView, Action, DeviceCode, SignInStatus, Timestamp};
+use super::{AccountView, Action, SignInState};
 
 /// The product-account context an in-place prompt belongs to. Model authentication is a separate
 /// provider concern and never uses this prompt.
@@ -26,14 +26,13 @@ impl PromptContext {
             Self::Review => "account.review_prompt",
         }
     }
-}
 
-fn wall_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
-}
-
-fn challenge_expired(challenge: &DeviceCode, now: u64) -> bool {
-    challenge.expires_at <= Timestamp(now)
+    fn handle(self) -> &'static str {
+        match self {
+            Self::Chat => "agent_chat:sign_in",
+            Self::Review => "review:sign_in",
+        }
+    }
 }
 
 /// How the caption chip reads: neutral for unknown or settling state, green for a usable balance,
@@ -61,8 +60,6 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let pending = app.account.pending_action();
     let title = app.tr("account.title").to_string();
     let signed_out = app.tr("account.signed_out").to_string();
-    let sign_in_label = app.tr("account.sign_in").to_string();
-    let sign_in_status = app.account.sign_in_status();
     let signed_in = app.tr("account.signed_in").to_string();
     let unknown = app.tr("account.credits_unknown").to_string();
     let zero = app.tr("account.zero_credits").to_string();
@@ -72,16 +69,16 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let unavailable = app.tr("account.unavailable").to_string();
     let sign_out_label = app.tr("account.sign_out").to_string();
     let switch_label = app.tr("account.switch_account").to_string();
-    let signing_in = app.tr("account.signing_in").to_string();
     let signing_out = app.tr("account.signing_out").to_string();
     let switching = app.tr("account.switching").to_string();
     let action_pending = app.tr("account.action_pending").to_string();
+    let chat_review_sign_in = app.tr("account.chat_review_sign_in").to_string();
     let blocked = view
         .tool_blocked
         .filter(|code| !matches!(code, RefusalCode::CreditsExhausted | RefusalCode::CreditsHeld))
         .map(|code| refusal_text(app, code));
     let notice = notice.map(|refusal| refusal_text(app, refusal.code));
-    let mut sign_in_clicked = false;
+    let mut retry_sign_out_clicked = false;
     let mut sign_out_clicked = false;
     let mut switch_clicked = false;
 
@@ -116,13 +113,12 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
             let enabled = pending.is_none();
             ui.horizontal(|ui| {
                 let label = if pending == Some(Action::SignOut) { &signing_out } else { &sign_out_label };
-                let options = if enabled { Button::Small } else { Button::Enabled(false) };
-                let response = button(ui, label, options);
+                let response = ui.add_enabled_ui(enabled, |ui| button(ui, label, Button::Small)).inner;
                 publish("account:sign_out", &response);
                 sign_out_clicked = response.clicked();
                 ui.add_space(t.space_8);
                 let label = if pending == Some(Action::SwitchAccount) { &switching } else { &switch_label };
-                let response = button(ui, label, options);
+                let response = ui.add_enabled_ui(enabled, |ui| button(ui, label, Button::Small)).inner;
                 publish("account:switch_account", &response);
                 switch_clicked = response.clicked();
             });
@@ -138,23 +134,12 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
                     FileView::detail(ui, app.tr(step));
                 }
             }
+        } else if needs_sign_out_attention(&view) {
+            retry_sign_out_clicked = sign_out_controls(app, ui, &view);
         } else if view.sign_in_visible {
             FileView::detail(ui, &signed_out);
-            challenge_controls(app, ui, ChallengeStyle::Summary);
-            let expired = app.account.sign_in_expired();
-            let sign_in_running = sign_in_status.waiting_for_worker() && !expired;
-            let retry = sign_in_status == SignInStatus::Failed || expired;
-            let label = if sign_in_running {
-                &signing_in
-            } else if retry {
-                app.tr("account.sign_in_retry")
-            } else {
-                &sign_in_label
-            };
-            let options = if pending.is_none() && !sign_in_running { Button::Primary } else { Button::Enabled(false) };
-            let response = button(ui, label, options);
-            publish("account:sign_in", &response);
-            sign_in_clicked = response.clicked();
+            FileView::detail(ui, &chat_review_sign_in);
+            sign_in_controls(app, ui, &view, "account:sign_in", "account:sign_in_browser", "account:sign_in_cancel");
             if pending.is_some() {
                 FileView::detail(ui, &action_pending);
             }
@@ -173,8 +158,8 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
         });
     }
 
-    if sign_in_clicked {
-        app.account.request(Action::SignIn);
+    if retry_sign_out_clicked {
+        app.account.request(Action::SignOut);
     }
     if sign_out_clicked {
         app.account.request(Action::SignOut);
@@ -189,6 +174,9 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
 /// account support says "Sign in"; a signed-in account reports its credit state.
 pub(crate) fn chip_label(app: &SolveApp, view: &AccountView) -> Option<String> {
     if !view.signed_in {
+        if needs_sign_out_attention(view) {
+            return Some(app.tr("account.title").to_string());
+        }
         return view.sign_in_visible.then(|| app.tr("account.sign_in").to_string());
     }
     Some(match view.available {
@@ -261,13 +249,13 @@ pub fn status_chip(app: &mut SolveApp, ui: &Ui, slot: Rect) {
 }
 
 /// Whether this build offers the permanent account entry at all: an installed port and either a
-/// signed-in account or an explicit sign-in action. Unavailable and browser builds show neither.
+/// signed-in account, an explicit sign-in action or sign-out cleanup.
 pub(crate) fn menu_available(app: &SolveApp) -> bool {
     if !app.account.is_installed() {
         return false;
     }
     let view = app.account.view();
-    view.signed_in || view.sign_in_visible
+    view.signed_in || view.sign_in_visible || needs_sign_out_attention(view)
 }
 
 /// The File menu's compact fallback when the caption chip lacks room. It opens the same
@@ -291,12 +279,11 @@ pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let view = app.account.view().clone();
     let notice = app.account.notice().cloned();
     let pending = app.account.pending_action();
-    let sign_in = app.account.sign_in_status();
     ui.set_min_width(t.space_24 * 8.0);
     let title = app.tr("account.title").to_string();
     crate::ui_kit::text(ui, &title, Text::Heading("account_menu_title"));
     ui.add_space(t.space_6);
-    let mut sign_in_clicked = false;
+    let mut sign_in_action = false;
     let mut sign_out_clicked = false;
     let mut switch_clicked = false;
     if view.signed_in {
@@ -329,23 +316,12 @@ pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
             publish("account:switch_account", &switch);
             switch_clicked = switch.clicked();
         });
+    } else if needs_sign_out_attention(&view) {
+        sign_out_clicked = sign_out_controls(app, ui, &view);
     } else if view.sign_in_visible {
         let signed_out = app.tr("account.signed_out").to_string();
         crate::ui_kit::text(ui, &signed_out, Text::Note("account_menu_signed_out"));
-        challenge_controls(app, ui, ChallengeStyle::Inline);
-        let expired = app.account.sign_in_expired();
-        let running = sign_in.waiting_for_worker() && !expired;
-        let label = if running {
-            app.tr("account.signing_in")
-        } else if sign_in == SignInStatus::Failed || expired {
-            app.tr("account.sign_in_retry")
-        } else {
-            app.tr("account.sign_in")
-        };
-        let options = if pending.is_none() && !running { Button::Primary } else { Button::Enabled(false) };
-        let response = button(ui, label, options);
-        publish("account:sign_in", &response);
-        sign_in_clicked = response.clicked();
+        sign_in_action = sign_in_controls(app, ui, &view, "account:sign_in", "account:sign_in_browser", "account:sign_in_cancel");
     } else {
         let unavailable = app.tr("account.unavailable").to_string();
         crate::ui_kit::text(ui, &unavailable, Text::Note("account_menu_unavailable"));
@@ -358,121 +334,42 @@ pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
         let waiting = app.tr("account.action_pending").to_string();
         crate::ui_kit::text(ui, &waiting, Text::Note("account_menu_pending"));
     }
-    if sign_in_clicked {
-        app.account.request(Action::SignIn);
-    }
     if sign_out_clicked {
         app.account.request(Action::SignOut);
     }
     if switch_clicked {
         app.account.request(Action::SwitchAccount);
     }
-    sign_in_clicked || sign_out_clicked || switch_clicked
+    sign_in_action || sign_out_clicked || switch_clicked
 }
 
-/// The shared device challenge, shown by the Home summary, the account menu and the contextual
-/// AI Chat and Review prompts. It reads the cached prompt and status only.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ChallengeStyle {
-    Summary,
-    Inline,
+fn needs_sign_out_attention(view: &AccountView) -> bool {
+    view.sign_out_pending || view.sign_out_recovery || view.sign_out_error.is_some()
 }
 
-fn challenge_controls(app: &mut SolveApp, ui: &mut Ui, style: ChallengeStyle) {
-    let status = app.account.sign_in_status();
-    let challenge = app.account.challenge().cloned();
-    let t = Tokens::get();
-    if status == SignInStatus::Starting && challenge.is_none() {
-        let progress = app.tr("account.signing_in").to_string();
-        detail_line(ui, style, &progress, false);
-        return;
+fn sign_out_controls(app: &SolveApp, ui: &mut Ui, view: &AccountView) -> bool {
+    if view.sign_out_pending {
+        FileView::detail(ui, app.tr("account.signing_out"));
+        return false;
     }
-    // A prompt is only current while the cached phase says a browser approval is waiting. A
-    // completed, failed, retired or retried flow never leaves its old code visible.
-    let Some(challenge) = challenge.filter(|_| status == SignInStatus::Waiting) else { return };
-    let progress = app.tr("account.sign_in_waiting").to_string();
-    detail_line(ui, style, &progress, false);
-    let now = wall_seconds();
-    let expired = challenge_expired(&challenge, now);
-    if expired {
-        let expired = app.tr("account.sign_in_expired").to_string();
-        detail_line(ui, style, &expired, false);
+    let (label, handle) = if view.sign_out_recovery {
+        FileView::detail(ui, app.tr("account.sign_out_recovery"));
+        ("account.finish_sign_out", "account:finish_sign_out")
+    } else if let Some(code) = view.sign_out_error {
+        text(ui, &refusal_text(app, code), Text::Error("account_sign_out_error"));
+        ("account.retry_sign_out", "account:retry_sign_out")
     } else {
-        let code = crate::i18n::format("account.sign_in_code", &[("code", &challenge.user_code)]);
-        detail_line(ui, style, &code, true);
-        let remaining = challenge.expires_at.0.saturating_sub(now);
-        let minutes = remaining.div_ceil(60).max(1).to_string();
-        let expires = crate::i18n::format("account.sign_in_expires", &[("minutes", &minutes)]);
-        detail_line(ui, style, &expires, false);
-    }
-    let label = app.tr("account.sign_in_open_browser").to_string();
-    let options = if expired { Button::Enabled(false) } else { Button::Small };
-    let response = button(ui, &label, options);
-    publish("account:open_browser", &response);
-    if response.clicked() && !expired {
-        app.account.request(Action::OpenVerification);
-    }
-    if style == ChallengeStyle::Inline {
-        ui.add_space(t.space_4);
-    }
-}
-
-fn detail_line(ui: &mut Ui, style: ChallengeStyle, message: &str, mono: bool) {
-    match (style, mono) {
-        (ChallengeStyle::Summary, _) => {
-            FileView::detail(ui, message);
-        }
-        (ChallengeStyle::Inline, true) => {
-            crate::ui_kit::text(ui, message, Text::MonoNote("account_sign_in_code"));
-        }
-        (ChallengeStyle::Inline, false) => {
-            crate::ui_kit::text(ui, message, Text::Note("account_sign_in_status"));
-        }
-    }
+        return false;
+    };
+    let response = ui.add_enabled_ui(app.account.pending_action().is_none(), |ui| button(ui, app.tr(label), Button::Primary)).inner;
+    publish(handle, &response);
+    response.clicked()
 }
 
 /// An in-place product-account prompt for AI Chat or Review. It never replaces or speaks for the
 /// selected agent/model's own authentication.
 pub fn show_product_prompt(app: &mut SolveApp, ui: &mut Ui, context: PromptContext) -> bool {
-    if !app.account.is_installed() {
-        return false;
-    }
-    let view = app.account.view().clone();
-    if !view.product_sign_in_required() {
-        return false;
-    }
-    let t = Tokens::get();
-    let title = app.tr("account.title").to_string();
-    let message = app.tr(context.message()).to_string();
-    let notice = app.account.notice().cloned();
-    let status = app.account.sign_in_status();
-    let pending = app.account.pending_action();
-    let mut sign_in_clicked = false;
-    FileView::section(ui, &title, t.space_8, |ui| {
-        FileView::detail(ui, &message);
-        challenge_controls(app, ui, ChallengeStyle::Summary);
-        let expired = app.account.sign_in_expired();
-        let running = status.waiting_for_worker() && !expired;
-        let label = if running {
-            app.tr("account.signing_in")
-        } else if status == SignInStatus::Failed || expired {
-            app.tr("account.sign_in_retry")
-        } else {
-            app.tr("account.sign_in")
-        };
-        let options = if pending.is_none() && !running { Button::Small } else { Button::Enabled(false) };
-        let response = button(ui, label, options);
-        publish(if context == PromptContext::Chat { "account:chat_sign_in" } else { "account:review_sign_in" }, &response);
-        sign_in_clicked = response.clicked();
-        if let Some(notice) = notice {
-            let message = refusal_text(app, notice.code);
-            text(ui, &message, Text::Error("account_context_notice"));
-        }
-    });
-    if sign_in_clicked {
-        app.account.request(Action::SignIn);
-    }
-    true
+    show_inline_sign_in(app, ui, context.message(), context.handle())
 }
 
 /// Hover text for the chip, with the same single explanation rule as the start page.
@@ -500,6 +397,97 @@ fn chip_tip(app: &SolveApp, view: &AccountView) -> String {
         tip.push_str(app.tr("account.chat_unavailable"));
     }
     tip
+}
+
+/// The provider code, verification address and the two separate explicit actions. Shared by the
+/// account menu and the Chat/Review inline prompts so both surfaces can finish the same flow.
+/// The browser action is requested only on the platform gesture that activated this button; an
+/// app-injected press, a mixed gesture, or a replayed synthetic key cannot launch it.
+fn waiting_sign_in_controls(app: &mut SolveApp, ui: &mut Ui, view: &AccountView, browser_handle: &str, cancel_handle: &str) -> bool {
+    let t = Tokens::get();
+    if let Some(code) = &view.sign_in_prompt {
+        FileView::detail(ui, &crate::i18n::format("account.sign_in_code", &[("code", &code.user_code)]));
+        FileView::detail(ui, &crate::i18n::format("account.sign_in_address", &[("url", &code.verification_uri)]));
+        // Informational only; the host owns expiry, including eligibility to launch the browser.
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+        if let Some(remaining) = code.expires_at.0.checked_sub(now).filter(|remaining| *remaining > 0) {
+            let minutes = remaining.div_ceil(60).to_string();
+            FileView::detail(ui, &crate::i18n::format("account.sign_in_expires", &[("minutes", &minutes)]));
+        }
+    }
+    let action = ui
+        .add_enabled_ui(app.account.pending_action().is_none(), |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let mut action = None;
+                if view.sign_in_prompt.is_some() {
+                    let response = button(ui, app.tr("account.sign_in_browser"), Button::Primary);
+                    publish(browser_handle, &response);
+                    if app.trusted_click(&response) {
+                        action = Some(Action::OpenSignInBrowser);
+                    }
+                    ui.add_space(t.space_8);
+                }
+                let response = button(ui, app.tr("account.sign_in_cancel"), Button::Normal);
+                publish(cancel_handle, &response);
+                if response.clicked() { Some(Action::CancelSignIn) } else { action }
+            })
+            .inner
+        })
+        .inner;
+    if let Some(action) = action {
+        app.account.request(action);
+    }
+    action.is_some()
+}
+
+/// A local, in-place sign-in prompt for a refusal surface such as Chat or Review. It only
+/// enqueues the same explicit action the account menu uses; it never opens a browser itself.
+/// While a login waits it shows the same code, verification address, browser and cancel controls
+/// as the account menu, so the surface that refused the operation can complete the flow.
+/// `handle` must be unique on the surface so scripted UI checks can address the button.
+pub fn show_inline_sign_in(app: &mut SolveApp, ui: &mut Ui, message_id: &str, handle: &str) -> bool {
+    if !app.account.is_installed() || !app.account.view().product_sign_in_required() {
+        return false;
+    }
+    let view = app.account.view().clone();
+    FileView::detail(ui, app.tr(message_id));
+    sign_in_controls(app, ui, &view, handle, &format!("{handle}:browser"), &format!("{handle}:cancel"));
+    if let Some(notice) = app.account.notice() {
+        text(ui, &refusal_text(app, notice.code), Text::Error("account_context_notice"));
+    }
+    ui.add_space(Tokens::get().space_4);
+    true
+}
+
+fn sign_in_controls(app: &mut SolveApp, ui: &mut Ui, view: &AccountView, handle: &str, browser_handle: &str, cancel_handle: &str) -> bool {
+    let pending = app.account.pending_action();
+    let label = match view.sign_in_state {
+        SignInState::Starting => {
+            FileView::detail(ui, app.tr("account.sign_in_starting"));
+            return false;
+        }
+        SignInState::Waiting => {
+            FileView::detail(ui, app.tr("account.sign_in_waiting"));
+            return waiting_sign_in_controls(app, ui, view, browser_handle, cancel_handle);
+        }
+        SignInState::Expired | SignInState::Failed => {
+            let text = if view.sign_in_state == SignInState::Expired {
+                app.tr("account.sign_in_expired").to_string()
+            } else {
+                view.sign_in_error.map(|code| refusal_text(app, code)).unwrap_or_else(|| app.tr("account.sign_in_failed").to_string())
+            };
+            FileView::detail(ui, &text);
+            "account.sign_in_retry"
+        }
+        SignInState::Idle if pending == Some(Action::SignIn) => "account.signing_in",
+        SignInState::Idle => "account.sign_in",
+    };
+    let response = ui.add_enabled_ui(pending.is_none(), |ui| button(ui, app.tr(label), Button::Primary)).inner;
+    publish(handle, &response);
+    if response.clicked() {
+        app.account.request(Action::SignIn);
+    }
+    response.clicked()
 }
 
 fn publish(name: &str, response: &egui::Response) {

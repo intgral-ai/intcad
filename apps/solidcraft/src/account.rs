@@ -4,358 +4,53 @@
 //! budget and the monotonic clock, and installs the UI account port. It never opens a dialog or
 //! the network on a render pass.
 //!
-//! Fail closed: a documented server-verified `ProductSessionExchange` exists in `account-native`
-//! and the desktop can run it from an explicit sign-in, but this build configures no product
-//! service origin, WorkOS client id or AuthKit origin unless the host supplies all three. No
-//! shipped UI action completes a provider sign-in implicitly, no browser opens without an explicit
-//! browser action, and a completed flow activates only after the configured product service
-//! verifies it and issues one installation binding. The desktop installs no production billing or
-//! commit authority and never promotes a provider token implicitly. Ordinary CAD stays free and
-//! anonymous; controlled entries keep their existing default refusal. A secure store is probed
-//! before any session is restored, and sign-out or account switch ends the old session's
-//! authority immediately.
+//! Fail closed: the desktop wires an explicit sign-in action to the existing WorkOS device-code
+//! flow and the reviewed `ServerVerifiedProductSession`, but this build ships no reviewed WorkOS
+//! client id or product service origin. `DesktopAccountConfig` is the only source of those
+//! values; without it the action refuses before any request. Even a verified session installs no
+//! production billing or commit authority and never promotes a provider token implicitly.
+//! Ordinary CAD stays free and anonymous; controlled entries keep their existing default refusal.
+//! A secure store is probed before any session is restored, and sign-out, account switch or
+//! cancellation ends the current attempt's authority immediately.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use solidcraft_account_native::{
-    BootstrapPlatform, CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodePrompt, DeviceCodeTransport, FileOperationStore,
-    FixedCredentials, HttpAccountService, ProductLogin, Secret, ServerVerifiedProductSession, Transport, UreqDeviceCodeTransport, UreqTransport,
-    WireConnection, WireCredentials, WorkOsPublicClient,
+    BootstrapPlatform, CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodeTransport, FileOperationStore, FixedCredentials,
+    HttpAccountService, ProductExchangeError, ProductSessionExchange, Secret, ServerVerifiedProductSession, Transport, UreqDeviceCodeTransport,
+    UreqTransport, WireConnection, WireCredentials, WorkOsPublicClient,
 };
 use solidcraft_engine::entitlement::{
-    AccountService, AuthenticatedHostScope, BillingResult, BudgetTable, MonotonicClock, MonotonicInstant, OperationStore, Refusal, RefusalCode,
-    SettlementIntent, UnsettledOperation,
+    AccountService, AuthenticatedHostScope, BillingResult, BudgetTable, CredentialErrorCode, MonotonicClock, MonotonicInstant, OperationStore,
+    Refusal, RefusalCode, SettlementIntent, UnsettledOperation,
 };
 use solidcraft_ui_egui::SolveApp;
-use solidcraft_ui_egui::account::{AccountPort, AccountView, DeleteAccountGuide, DeviceCode, LifecycleEvent, OwnModelView, State, Timestamp};
+use solidcraft_ui_egui::account::{
+    AccountPort, AccountView, DeleteAccountGuide, DeviceCode, LifecycleEvent, OwnModelView, SignInState, State, Timestamp,
+};
 
-/// Explicit desktop sign-in configuration. Every value comes from the host; no origin is ever
-/// derived from a token, a response field or a guessed default, and no secret is baked in.
-#[derive(Clone, Debug)]
-struct SignInConfig {
-    client: WorkOsPublicClient,
-    authkit: AuthKitOrigin,
-    product: WireConnection,
-}
-
-impl SignInConfig {
-    fn new(client_id: &str, authkit_origin: &str, product_origin: &str, client_version: &str) -> Result<Self, Refusal> {
-        let client = WorkOsPublicClient::new(client_id).ok_or_else(|| account_unavailable("no WorkOS public client id is configured"))?;
-        let authkit = AuthKitOrigin::new(authkit_origin).ok_or_else(|| account_unavailable("no trusted HTTPS AuthKit origin is configured"))?;
-        let product = WireConnection::new(product_origin, client_version)
-            .map_err(|_| account_unavailable("no trusted HTTPS product service origin is configured"))?;
-        Ok(Self { client, authkit, product })
-    }
-
-    /// The production source is three explicit host-provided values. A missing or malformed value
-    /// leaves sign-in unavailable rather than falling back to any built-in address.
-    fn from_environment() -> Option<Self> {
-        let client_id = std::env::var("INTCAD_WORKOS_CLIENT_ID").ok()?;
-        let authkit = std::env::var("INTCAD_AUTHKIT_ORIGIN").ok()?;
-        let product = std::env::var("INTCAD_PRODUCT_SERVICE_ORIGIN").ok()?;
-        Self::new(client_id.trim(), authkit.trim(), product.trim(), env!("CARGO_PKG_VERSION")).ok()
-    }
-}
-
-/// A normalized HTTPS origin that a WorkOS verification page must match exactly.
-///
-/// WorkOS returns the address of its own hosted page. The desktop trusts it only when its scheme,
-/// host and port equal the configured AuthKit origin; a path, query or fragment on the response
-/// does not change the origin.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct AuthKitOrigin {
-    origin: String,
-}
-
-impl AuthKitOrigin {
-    fn new(raw: &str) -> Option<Self> {
-        let raw = raw.trim();
-        // Configuration names an origin only, with no path, query or fragment. The returned
-        // verification page may of course carry a path; `matches` compares origins alone.
-        let rest = raw.strip_prefix("https://")?;
-        let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-        if !(rest.len() == authority_end || rest.get(authority_end..) == Some("/")) {
-            return None;
-        }
-        normalized_https_origin(raw).map(|origin| Self { origin })
-    }
-
-    fn matches(&self, uri: &str) -> bool {
-        normalized_https_origin(uri).is_some_and(|origin| origin == self.origin)
-    }
-}
-
-/// Parse only `https://host[:port]` (or that followed by `/`, `?` or `#`) and return a normalized
-/// lowercase origin. Userinfo, plain HTTP, control bytes and empty hosts are rejected.
-fn normalized_https_origin(raw: &str) -> Option<String> {
-    let rest = raw.strip_prefix("https://")?;
-    if rest.is_empty() || rest.chars().any(|character| character.is_control() || character.is_whitespace() || matches!(character, '\\' | '@')) {
-        return None;
-    }
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    if authority.is_empty() || authority.len() > 255 {
-        return None;
-    }
-    let authority = authority.to_ascii_lowercase();
-    let authority = authority.strip_suffix(":443").unwrap_or(&authority);
-    let host = authority.split(':').next().unwrap_or_default();
-    if host.is_empty() || !host.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-') {
-        return None;
-    }
-    if let Some((host_part, port)) = authority.rsplit_once(':') {
-        if host_part.is_empty() || host_part.contains(':') || port.is_empty() || port.len() > 5 || !port.bytes().all(|byte| byte.is_ascii_digit()) {
-            return None;
-        }
-        port.parse::<u16>().ok().filter(|port| *port != 0)?;
-    }
-    Some(format!("https://{authority}"))
-}
-
-/// A cancellation flag that wakes the worker immediately, so no sign-in keeps polling for its
-/// server interval after the user switches accounts or closes the session.
 #[derive(Clone, Default)]
-struct SignInCancellation {
-    state: Arc<CancelState>,
-}
-
-#[derive(Default)]
-struct CancelState {
-    cancelled: AtomicBool,
-    lock: Mutex<()>,
-    wake: Condvar,
-}
-
-impl SignInCancellation {
+struct RestartCancellation(Arc<AtomicBool>);
+impl RestartCancellation {
     fn cancel(&self) {
-        self.state.cancelled.store(true, Ordering::SeqCst);
-        self.state.wake.notify_all();
+        self.0.store(true, Ordering::SeqCst);
     }
-
     fn is_cancelled(&self) -> bool {
-        self.state.cancelled.load(Ordering::SeqCst)
-    }
-
-    /// Wait for the interval or a cancellation, whichever comes first. Returns `false` on cancel.
-    fn wait(&self, interval: Duration) -> bool {
-        if self.is_cancelled() {
-            return false;
-        }
-        let mut guard = match self.state.lock.lock() {
-            Ok(guard) => guard,
-            Err(error) => error.into_inner(),
-        };
-        let now = Instant::now();
-        let deadline = now.checked_add(interval).unwrap_or(now);
-        loop {
-            if self.is_cancelled() {
-                return false;
-            }
-            let now = Instant::now();
-            let remaining = deadline.saturating_duration_since(now);
-            if remaining.is_zero() {
-                return true;
-            }
-            let waited = match self.state.wake.wait_timeout(guard, remaining) {
-                Ok(waited) => waited,
-                Err(error) => error.into_inner(),
-            };
-            guard = waited.0;
-            if waited.1.timed_out() {
-                return !self.is_cancelled();
-            }
-        }
+        self.0.load(Ordering::SeqCst)
     }
 }
 
-/// The worker's only time source. Tests supply a virtual clock; production waits on the
-/// cancellation-aware condition variable.
-trait SignInTiming: Send + Sync {
-    fn now(&self) -> Duration;
-    fn wait(&self, interval: Duration, cancel: &SignInCancellation) -> bool;
-}
-
-struct SystemSignInTiming {
-    start: Instant,
-}
-
-impl SystemSignInTiming {
-    fn new() -> Self {
-        Self { start: Instant::now() }
-    }
-}
-
-impl SignInTiming for SystemSignInTiming {
-    fn now(&self) -> Duration {
-        self.start.elapsed()
-    }
-
-    fn wait(&self, interval: Duration, cancel: &SignInCancellation) -> bool {
-        cancel.wait(interval)
-    }
-}
-
-fn auth_required(message: &'static str) -> Refusal {
-    Refusal::new(RefusalCode::AuthRequired, message)
-}
-
-fn wall_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
-}
-
-/// Drive one explicit WorkOS device-code login through to a verified product session.
-///
-/// Only this function sends sign-in requests: it starts the documented device authorization,
-/// shows the prompt for an explicit browser action, polls on the server's interval and slow-down
-/// backoff until the user approves or the code's lifetime ends, then stores the provider login and
-/// asks the configured product service to verify it. Cancellation is checked before every request
-/// and before either credential write, so a late result after sign-out or account switch writes
-/// nothing. The caller never replays a request that already completed.
-fn drive_device_sign_in<D, P>(
-    flow: &mut DeviceCodeFlow<D>,
-    authkit: &AuthKitOrigin,
-    product: &WireConnection,
-    transport: P,
-    timing: &dyn SignInTiming,
-    cancel: &SignInCancellation,
-    publish: &mut dyn FnMut(&DeviceCodePrompt),
-) -> Result<ProductLogin, Refusal>
-where
-    D: DeviceCodeTransport,
-    P: Transport,
-{
-    let started_at = timing.now();
-    let prompt = flow.start()?;
-    if !authkit.matches(prompt.verification_uri()) || prompt.verification_uri_complete().is_some_and(|uri| !authkit.matches(uri)) {
-        return Err(account_unavailable("the sign-in service returned an untrusted verification address"));
-    }
-    let deadline = started_at.saturating_add(prompt.expires_in());
-    publish(&prompt);
-    let mut interval = prompt.interval();
-    loop {
-        if cancel.is_cancelled() {
-            return Err(auth_required("the sign-in was cancelled"));
-        }
-        if timing.now() >= deadline {
-            return Err(auth_required("the sign-in code expired"));
-        }
-        if !timing.wait(interval, cancel) {
-            return Err(auth_required("the sign-in was cancelled"));
-        }
-        if timing.now() >= deadline {
-            return Err(auth_required("the sign-in code expired"));
-        }
-        match flow.poll()? {
-            DeviceCodePoll::Pending { interval: next } | DeviceCodePoll::SlowDown { interval: next } => interval = next,
-            DeviceCodePoll::Authorized => break,
-            DeviceCodePoll::Denied => return Err(auth_required("the sign-in was denied in the browser")),
-            DeviceCodePoll::Expired => return Err(auth_required("the sign-in code expired")),
-            DeviceCodePoll::Failed(_) => return Err(auth_required("the sign-in service rejected the request")),
-        }
-        if cancel.is_cancelled() {
-            return Err(auth_required("the sign-in was cancelled"));
-        }
-    }
-    // The browser approval may have arrived just as the session was retired. Check before the
-    // provider write, and again before the product exchange, so a cancelled worker stops here.
-    if cancel.is_cancelled() {
-        return Err(auth_required("the sign-in was cancelled"));
-    }
-    flow.complete()?;
-    if cancel.is_cancelled() {
-        return Err(auth_required("the sign-in was cancelled"));
-    }
-    let exchange = ServerVerifiedProductSession::new(&transport, product.clone());
-    let login =
-        flow.session().activate_product_session(&exchange).map_err(|_| account_unavailable("the product service did not verify the sign-in"))?;
-    // The product service has verified the exact WorkOS session. Only now does the desktop ask
-    // the same trusted origin to issue its first installation identity. No account or installation
-    // scope is invented before that response, and a malformed or failed bootstrap refuses the
-    // sign-in rather than leaving a partially bound session.
-    if cancel.is_cancelled() {
-        return Err(auth_required("the sign-in was cancelled"));
-    }
-    let session = flow.session().clone();
-    let mut account = HttpAccountService::with_transport(
-        &transport,
-        product.clone(),
-        Box::new(session.clone()),
-        Box::new(session),
-        Box::new(SystemMonotonicClock::new()),
-    );
-    account
-        .bootstrap_first_installation(current_bootstrap_platform(), None)
-        .map_err(|_| account_unavailable("the installation could not be bound"))?;
-    Ok(login)
-}
-
-fn current_bootstrap_platform() -> BootstrapPlatform {
-    if cfg!(target_os = "windows") {
-        BootstrapPlatform::Windows
-    } else if cfg!(target_os = "macos") {
-        BootstrapPlatform::Macos
-    } else {
-        BootstrapPlatform::Linux
-    }
-}
-
-/// Open one validated verification page in the system browser. Only an explicit browser action
-/// calls this; no prompt, refusal or noninteractive path opens a browser by itself.
-fn open_system_browser(url: &str) -> Result<(), String> {
-    let mut command = if cfg!(target_os = "windows") {
-        // `rundll32` takes the URL as data, with no shell string to split or interpolate.
-        std::process::Command::new("rundll32.exe")
-    } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open")
-    } else {
-        std::process::Command::new("xdg-open")
-    };
-    if cfg!(target_os = "windows") {
-        command.args(["url.dll,FileProtocolHandler", url]);
-    } else {
-        command.arg(url);
-    }
-    command.spawn().map(|_| ()).map_err(|error| error.to_string())
-}
-
-type DeviceTransportFactory = Arc<dyn Fn() -> Box<dyn DeviceCodeTransport + Send + Sync> + Send + Sync>;
 type ProductTransportFactory = Arc<dyn Fn() -> Box<dyn Transport + Send + Sync> + Send + Sync>;
-type BrowserOpener = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
+#[cfg(test)]
+use legacy_device_tests::{BrowserOpener, DeviceTransportFactory, SignInConfig, SignInTiming};
 /// A restart check is one startup decision, so it gets its own short bounds instead of the
 /// 30-second limit the full sign-in flow allows. A slow or offline service must not hold launch.
 const RESTART_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 const RESTART_STATUS_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SignInPhase {
-    Starting,
-    WaitingForApproval,
-    SignedIn,
-    Failed,
-    Cancelled,
-}
-
-struct SignInShared {
-    phase: SignInPhase,
-    prompt: Option<DeviceCode>,
-    browser_uri: Option<String>,
-    account: Option<String>,
-    notice: Option<Refusal>,
-}
-
-impl Default for SignInShared {
-    fn default() -> Self {
-        Self { phase: SignInPhase::Starting, prompt: None, browser_uri: None, account: None, notice: None }
-    }
-}
-
-struct SignInJob {
-    cancel: SignInCancellation,
-    shared: Arc<Mutex<SignInShared>>,
-}
 
 #[derive(Default)]
 struct RestartShared {
@@ -368,25 +63,8 @@ struct RestartShared {
 /// One bounded background restart check. It holds only presentation state; nothing here can
 /// install commit authority.
 struct RestartJob {
-    cancel: SignInCancellation,
+    cancel: RestartCancellation,
     shared: Arc<Mutex<RestartShared>>,
-}
-
-/// A signed-in view after a completed device flow and installation bootstrap. Controlled
-/// authority stays closed: this checkpoint installs no account service, so chat and billed tools
-/// are still unavailable even though the product session and installation are bound.
-fn signed_in_view(account: &str) -> AccountView {
-    AccountView {
-        signed_in: true,
-        sign_in_visible: false,
-        account_label: Some(account.to_owned()),
-        available: None,
-        held: 0,
-        settling: false,
-        chat_available: false,
-        tool_blocked: Some(RefusalCode::AuthUnavailable),
-        own_model_label: None,
-    }
 }
 
 /// The exact local facts a restart may try to verify: the account/installation/session scope plus
@@ -402,22 +80,590 @@ struct RestartBinding {
     generation: u64,
 }
 
+#[cfg(test)]
+mod legacy_device_tests {
+    use super::*;
+    use solidcraft_account_native::{DeviceCodePrompt, ProductLogin};
+    /// Explicit desktop sign-in configuration. Every value comes from the host; no origin is ever
+    /// derived from a token, a response field or a guessed default, and no secret is baked in.
+    #[derive(Clone, Debug)]
+    pub(super) struct SignInConfig {
+        pub(super) client: WorkOsPublicClient,
+        pub(super) authkit: AuthKitOrigin,
+        pub(super) product: WireConnection,
+    }
+
+    impl SignInConfig {
+        pub(super) fn new(client_id: &str, authkit_origin: &str, product_origin: &str, client_version: &str) -> Result<Self, Refusal> {
+            let client = WorkOsPublicClient::new(client_id).ok_or_else(|| account_unavailable("no WorkOS public client id is configured"))?;
+            let authkit = AuthKitOrigin::new(authkit_origin).ok_or_else(|| account_unavailable("no trusted HTTPS AuthKit origin is configured"))?;
+            let product = WireConnection::new(product_origin, client_version)
+                .map_err(|_| account_unavailable("no trusted HTTPS product service origin is configured"))?;
+            Ok(Self { client, authkit, product })
+        }
+    }
+
+    /// A normalized HTTPS origin that a WorkOS verification page must match exactly.
+    ///
+    /// WorkOS returns the address of its own hosted page. The desktop trusts it only when its scheme,
+    /// host and port equal the configured AuthKit origin; a path, query or fragment on the response
+    /// does not change the origin.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(super) struct AuthKitOrigin {
+        pub(super) origin: String,
+    }
+
+    impl AuthKitOrigin {
+        pub(super) fn new(raw: &str) -> Option<Self> {
+            let raw = raw.trim();
+            // Configuration names an origin only, with no path, query or fragment. The returned
+            // verification page may of course carry a path; `matches` compares origins alone.
+            let rest = raw.strip_prefix("https://")?;
+            let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+            if !(rest.len() == authority_end || rest.get(authority_end..) == Some("/")) {
+                return None;
+            }
+            normalized_https_origin(raw).map(|origin| Self { origin })
+        }
+
+        pub(super) fn matches(&self, uri: &str) -> bool {
+            normalized_https_origin(uri).is_some_and(|origin| origin == self.origin)
+        }
+    }
+
+    /// Parse only `https://host[:port]` (or that followed by `/`, `?` or `#`) and return a normalized
+    /// lowercase origin. Userinfo, plain HTTP, control bytes and empty hosts are rejected.
+    pub(super) fn normalized_https_origin(raw: &str) -> Option<String> {
+        let rest = raw.strip_prefix("https://")?;
+        if rest.is_empty() || rest.chars().any(|character| character.is_control() || character.is_whitespace() || matches!(character, '\\' | '@')) {
+            return None;
+        }
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+        if authority.is_empty() || authority.len() > 255 {
+            return None;
+        }
+        let authority = authority.to_ascii_lowercase();
+        let authority = authority.strip_suffix(":443").unwrap_or(&authority);
+        let host = authority.split(':').next().unwrap_or_default();
+        if host.is_empty() || !host.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-') {
+            return None;
+        }
+        if let Some((host_part, port)) = authority.rsplit_once(':') {
+            if host_part.is_empty() || host_part.contains(':') || port.is_empty() || port.len() > 5 || !port.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return None;
+            }
+            port.parse::<u16>().ok().filter(|port| *port != 0)?;
+        }
+        Some(format!("https://{authority}"))
+    }
+
+    /// A cancellation flag that wakes the worker immediately, so no sign-in keeps polling for its
+    /// server interval after the user switches accounts or closes the session.
+    #[derive(Clone, Default)]
+    pub(super) struct SignInCancellation {
+        cancelled: Arc<AtomicBool>,
+    }
+
+    impl SignInCancellation {
+        pub(super) fn cancel(&self) {
+            self.cancelled.store(true, Ordering::SeqCst);
+        }
+
+        pub(super) fn is_cancelled(&self) -> bool {
+            self.cancelled.load(Ordering::SeqCst)
+        }
+    }
+
+    /// The worker's only time source. Tests supply a virtual clock; production waits on the
+    /// cancellation-aware condition variable.
+    pub(super) trait SignInTiming: Send + Sync {
+        fn now(&self) -> Duration;
+        fn wait(&self, interval: Duration, cancel: &SignInCancellation) -> bool;
+    }
+
+    pub(super) fn auth_required(message: &'static str) -> Refusal {
+        Refusal::new(RefusalCode::AuthRequired, message)
+    }
+
+    /// Drive one explicit WorkOS device-code login through to a verified product session.
+    ///
+    /// Only this function sends sign-in requests: it starts the documented device authorization,
+    /// shows the prompt for an explicit browser action, polls on the server's interval and slow-down
+    /// backoff until the user approves or the code's lifetime ends, then stores the provider login and
+    /// asks the configured product service to verify it. Cancellation is checked before every request
+    /// and before either credential write, so a late result after sign-out or account switch writes
+    /// nothing. The caller never replays a request that already completed.
+    pub(super) fn drive_device_sign_in<D, P>(
+        flow: &mut DeviceCodeFlow<D>,
+        authkit: &AuthKitOrigin,
+        product: &WireConnection,
+        transport: P,
+        timing: &dyn SignInTiming,
+        cancel: &SignInCancellation,
+        publish: &mut dyn FnMut(&DeviceCodePrompt),
+    ) -> Result<ProductLogin, Refusal>
+    where
+        D: DeviceCodeTransport,
+        P: Transport,
+    {
+        let started_at = timing.now();
+        let prompt = flow.start()?;
+        if !authkit.matches(prompt.verification_uri()) || prompt.verification_uri_complete().is_some_and(|uri| !authkit.matches(uri)) {
+            return Err(account_unavailable("the sign-in service returned an untrusted verification address"));
+        }
+        let deadline = started_at.saturating_add(prompt.expires_in());
+        publish(&prompt);
+        let mut interval = prompt.interval();
+        loop {
+            if cancel.is_cancelled() {
+                return Err(auth_required("the sign-in was cancelled"));
+            }
+            if timing.now() >= deadline {
+                return Err(auth_required("the sign-in code expired"));
+            }
+            if !timing.wait(interval, cancel) {
+                return Err(auth_required("the sign-in was cancelled"));
+            }
+            if timing.now() >= deadline {
+                return Err(auth_required("the sign-in code expired"));
+            }
+            match flow.poll()? {
+                DeviceCodePoll::Pending { interval: next } | DeviceCodePoll::SlowDown { interval: next } => interval = next,
+                DeviceCodePoll::Authorized => break,
+                DeviceCodePoll::Denied => return Err(auth_required("the sign-in was denied in the browser")),
+                DeviceCodePoll::Expired => return Err(auth_required("the sign-in code expired")),
+                DeviceCodePoll::Failed(_) => return Err(auth_required("the sign-in service rejected the request")),
+            }
+            if cancel.is_cancelled() {
+                return Err(auth_required("the sign-in was cancelled"));
+            }
+        }
+        // The browser approval may have arrived just as the session was retired. Check before the
+        // provider write, and again before the product exchange, so a cancelled worker stops here.
+        if cancel.is_cancelled() {
+            return Err(auth_required("the sign-in was cancelled"));
+        }
+        flow.complete()?;
+        if cancel.is_cancelled() {
+            return Err(auth_required("the sign-in was cancelled"));
+        }
+        let exchange = ServerVerifiedProductSession::new(&transport, product.clone());
+        let login =
+            flow.session().activate_product_session(&exchange).map_err(|_| account_unavailable("the product service did not verify the sign-in"))?;
+        // The product service has verified the exact WorkOS session. Only now does the desktop ask
+        // the same trusted origin to issue its first installation identity. No account or installation
+        // scope is invented before that response, and a malformed or failed bootstrap refuses the
+        // sign-in rather than leaving a partially bound session.
+        if cancel.is_cancelled() {
+            return Err(auth_required("the sign-in was cancelled"));
+        }
+        let session = flow.session().clone();
+        let mut account = HttpAccountService::with_transport(
+            &transport,
+            product.clone(),
+            Box::new(session.clone()),
+            Box::new(session),
+            Box::new(SystemMonotonicClock::new()),
+        );
+        account
+            .bootstrap_first_installation(current_bootstrap_platform(), None)
+            .map_err(|_| account_unavailable("the installation could not be bound"))?;
+        Ok(login)
+    }
+
+    pub(super) fn current_bootstrap_platform() -> BootstrapPlatform {
+        if cfg!(target_os = "windows") {
+            BootstrapPlatform::Windows
+        } else if cfg!(target_os = "macos") {
+            BootstrapPlatform::Macos
+        } else {
+            BootstrapPlatform::Linux
+        }
+    }
+
+    pub(super) type DeviceTransportFactory = Arc<dyn Fn() -> Box<dyn DeviceCodeTransport + Send + Sync> + Send + Sync>;
+    pub(super) type BrowserOpener = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+}
+
+/// The durable sign-out state read once before the window exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartupLogout {
+    /// No marker: ordinary signed-out or signed-in restore rules apply.
+    Clear,
+    /// A marker is readable and present. No prior identity or authority may be restored; the UI
+    /// offers a recovery action that finishes the durable cleanup.
+    ReadableTombstone,
+    /// The marker or the secure store could not be read. Nothing is offered and every account
+    /// action stays closed.
+    Unreadable,
+}
+
 /// Account facts read once before the window exists.
 #[derive(Clone, Debug)]
 pub struct AccountStartup {
     secure_store: bool,
-    /// A durable sign-out marker is present, or its state could not be read. Either way startup
-    /// refuses to restore or admit anything until a reviewed sign-in path clears it.
-    logout_pending: bool,
-    /// Complete local credentials found at startup. They are not a session until an online status
-    /// check accepts them.
+    /// A readable durable sign-out marker, or an unreadable safety state. Either way startup
+    /// refuses to restore or admit anything until cleanup or a reviewed sign-in clears it.
+    logout: StartupLogout,
     candidate: Option<AuthenticatedHostScope>,
-    /// The exact pair whose bounded online check runs after the window exists. Startup never does
-    /// that network read synchronously, so a candidate stays signed out until the check finishes.
     restart: Option<RestartBinding>,
-    /// A local candidate that a synchronous in-process check accepted. No current startup path
-    /// sets this; the bounded background check below is presentation only and must not fill it.
     restored: Option<AuthenticatedHostScope>,
+}
+
+impl AccountStartup {
+    #[cfg(test)]
+    fn logout_pending(&self) -> bool {
+        self.logout != StartupLogout::Clear
+    }
+}
+
+/// The reviewed values a desktop provider sign-in needs. Neither value comes from an environment
+/// heuristic, a token field or a server response: the WorkOS public client id and the bare HTTPS
+/// product origin are supplied by explicit configuration, and malformed values refuse to load.
+#[derive(Clone)]
+pub struct DesktopAccountConfig {
+    client: WorkOsPublicClient,
+    product: WireConnection,
+    verification_origin: String,
+}
+
+impl DesktopAccountConfig {
+    /// The only constructor: all three values must be explicit. No reviewed production values
+    /// ship in this build, so `trusted_desktop_config` passes `None`; tests and a trusted release
+    /// builder can use this seam without inventing a runtime or environment fallback.
+    pub fn new(workos_public_client_id: &str, product_https_origin: &str, authkit_verification_origin: &str) -> Option<Self> {
+        let client = WorkOsPublicClient::new(workos_public_client_id)?;
+        let product = WireConnection::new(product_https_origin, env!("CARGO_PKG_VERSION")).ok()?;
+        let verification = WireConnection::new(authkit_verification_origin, env!("CARGO_PKG_VERSION")).ok()?;
+        Some(Self { client, product, verification_origin: verification.base_url().to_owned() })
+    }
+}
+
+/// The build-time account configuration for a trusted release. The release builder supplies the
+/// public WorkOS client id, the exact AuthKit verification origin and the exact product HTTPS
+/// origin as build environment values. They are compiled in, cannot be changed from preferences,
+/// MCP, a design file or a server response, and a missing or malformed value fails closed before
+/// any request or browser launch. Local builds normally have none of them.
+pub fn trusted_desktop_config() -> Option<DesktopAccountConfig> {
+    config_from_build_values(
+        option_env!("INTCAD_WORKOS_PUBLIC_CLIENT_ID"),
+        option_env!("INTCAD_AUTHKIT_VERIFICATION_ORIGIN"),
+        option_env!("INTCAD_PRODUCT_HTTPS_ORIGIN"),
+    )
+}
+
+fn config_from_build_values(client: Option<&str>, authkit: Option<&str>, product: Option<&str>) -> Option<DesktopAccountConfig> {
+    DesktopAccountConfig::new(client?, product?, authkit?)
+}
+
+/// The browser seam. The production launcher starts the system browser only for the exact
+/// provider-issued HTTPS verification address of the current attempt.
+pub trait BrowserLauncher: Send + Sync {
+    /// `allowed_origin` is supplied by the host configuration; the launcher repeats the exact
+    /// check rather than trusting its caller to have done so.
+    fn open(&self, url: &str, allowed_origin: &str) -> Result<(), Refusal>;
+}
+
+struct SystemBrowserLauncher;
+
+impl BrowserLauncher for SystemBrowserLauncher {
+    fn open(&self, url: &str, allowed_origin: &str) -> Result<(), Refusal> {
+        if !trusted_browser_url(url, allowed_origin) {
+            return Err(Refusal::new(RefusalCode::AuthUnavailable, "the sign-in page is not the configured HTTPS origin"));
+        }
+        #[cfg(target_os = "windows")]
+        let mut command = {
+            let mut command = std::process::Command::new("rundll32.exe");
+            command.args(["url.dll,FileProtocolHandler", url]);
+            command
+        };
+        #[cfg(target_os = "macos")]
+        let mut command = {
+            let mut command = std::process::Command::new("open");
+            command.arg(url);
+            command
+        };
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let mut command = {
+            let mut command = std::process::Command::new("xdg-open");
+            command.arg(url);
+            command
+        };
+        command.spawn().map_err(|_| Refusal::new(RefusalCode::AuthUnavailable, "the system browser could not be started"))?;
+        Ok(())
+    }
+}
+
+/// The exact `https://host[:port]` origin of a URL, or `None` when the URL is malformed or not
+/// HTTPS. Credentials, whitespace, control characters and backslashes are refused.
+fn https_origin(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://")?;
+    if rest.is_empty() || url.len() > 2048 || url.bytes().any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace() || byte == b'\\') {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    Some(format!("https://{authority}"))
+}
+
+/// Only the configured provider verification origin may reach the system browser. The address
+/// still comes from the current device-code prompt, never from a caller.
+fn trusted_browser_url(url: &str, allowed_origin: &str) -> bool {
+    https_origin(url).is_some_and(|origin| origin == allowed_origin)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LoginPhase {
+    Idle,
+    Starting,
+    Waiting,
+    Done,
+    Expired,
+    Failed(RefusalCode),
+}
+
+struct LoginStatus {
+    attempt: u64,
+    phase: LoginPhase,
+    prompt: Option<DeviceCode>,
+    account: Option<String>,
+}
+
+impl Default for LoginStatus {
+    fn default() -> Self {
+        Self { attempt: 0, phase: LoginPhase::Idle, prompt: None, account: None }
+    }
+}
+
+struct LoginTask {
+    attempt: u64,
+    client: WorkOsPublicClient,
+    connection: WireConnection,
+    verification_origin: String,
+    credentials: CredentialSession,
+    status: Arc<Mutex<LoginStatus>>,
+    persist_gate: Arc<Mutex<()>>,
+    bootstrap_transport: Option<Box<dyn Transport + Send + Sync>>,
+}
+
+type LoginWait = dyn Fn(Duration, Instant, &dyn Fn() -> bool) -> bool + Sync;
+
+/// Canceled attempts may still be inside one bounded provider request. Keep a small fixed number
+/// of their handles so retry never joins a live worker on the window thread.
+const MAX_LOGIN_WORKERS: usize = 4;
+
+type LoginRunner = Arc<dyn Fn(LoginTask) -> Result<std::thread::JoinHandle<()>, Refusal> + Send + Sync>;
+
+fn production_login_runner() -> LoginRunner {
+    Arc::new(|mut task| {
+        task.bootstrap_transport = Some(Box::new(UreqTransport::new()));
+        std::thread::Builder::new()
+            .name("intcad-account-login".into())
+            .spawn(move || {
+                let exchange = ServerVerifiedProductSession::new(UreqTransport::new(), task.connection.clone());
+                run_login(task, UreqDeviceCodeTransport::new(), &exchange, &interruptible_wait);
+            })
+            .map_err(|_| Refusal::new(RefusalCode::AuthUnavailable, "the sign-in worker could not start"))
+    })
+}
+
+/// Wait the provider's full interval, waking at most every 100 ms only to observe cancellation.
+/// The endpoint is never polled before the provider's `interval` or `slow_down` interval elapsed.
+fn interruptible_wait(duration: Duration, _deadline: Instant, canceled: &dyn Fn() -> bool) -> bool {
+    let started = Instant::now();
+    loop {
+        if canceled() {
+            return false;
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= duration {
+            return true;
+        }
+        std::thread::sleep((duration - elapsed).min(Duration::from_millis(100)));
+    }
+}
+
+/// Poll one explicit device-code attempt off the window thread. Network work never holds the
+/// attempt fence; only the final credential write does, together with cancellation.
+fn run_login<T: DeviceCodeTransport>(task: LoginTask, transport: T, exchange: &dyn ProductSessionExchange, wait: &LoginWait) {
+    let LoginTask { attempt, client, connection, verification_origin, credentials, status, persist_gate, bootstrap_transport } = task;
+    let mut flow = DeviceCodeFlow::new(client, transport, credentials.clone(), DeviceCodeMode::Explicit);
+    let prompt = match flow.start() {
+        Ok(prompt) => prompt,
+        Err(error) => {
+            finish(&status, attempt, LoginPhase::Failed(error.code), None);
+            return;
+        }
+    };
+    if !trusted_browser_url(prompt.verification_uri(), &verification_origin)
+        || prompt.verification_uri_complete().is_some_and(|url| !trusted_browser_url(url, &verification_origin))
+    {
+        // The provider returned an address outside the configured AuthKit origin. Never publish
+        // it to the UI or launch it.
+        finish(&status, attempt, LoginPhase::Failed(RefusalCode::AuthUnavailable), None);
+        return;
+    }
+    let expires_at = Timestamp(unix_seconds().saturating_add(prompt.expires_in().as_secs()));
+    let code = DeviceCode {
+        user_code: prompt.user_code().to_owned(),
+        verification_uri: prompt.verification_uri_complete().unwrap_or_else(|| prompt.verification_uri()).to_owned(),
+        expires_at,
+    };
+    if !publish(&status, attempt, LoginPhase::Waiting, Some(code)) {
+        return;
+    }
+
+    let deadline = Instant::now().checked_add(prompt.expires_in());
+    let mut interval = prompt.interval();
+    loop {
+        if !current(&status, attempt) {
+            return;
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            finish(&status, attempt, LoginPhase::Expired, None);
+            return;
+        }
+        let now = Instant::now();
+        let interval_end = now.checked_add(interval).unwrap_or(now);
+        let wait_until = deadline.map_or(interval_end, |expires| expires.min(interval_end));
+        let duration = wait_until.saturating_duration_since(now);
+        let canceled = || !current(&status, attempt);
+        if !wait(duration, wait_until, &canceled) {
+            return;
+        }
+        if !current(&status, attempt) {
+            return;
+        }
+        if deadline.is_some_and(|expires| Instant::now() >= expires) {
+            finish(&status, attempt, LoginPhase::Expired, None);
+            return;
+        }
+        let poll = match flow.poll() {
+            Ok(poll) => poll,
+            Err(error) => {
+                finish(&status, attempt, LoginPhase::Failed(error.code), None);
+                return;
+            }
+        };
+        match poll {
+            DeviceCodePoll::Pending { interval: returned } => interval = returned,
+            DeviceCodePoll::SlowDown { interval: returned } => interval = returned,
+            DeviceCodePoll::Authorized => break,
+            DeviceCodePoll::Denied => {
+                finish(&status, attempt, LoginPhase::Failed(RefusalCode::AuthRequired), None);
+                return;
+            }
+            DeviceCodePoll::Expired => {
+                finish(&status, attempt, LoginPhase::Expired, None);
+                return;
+            }
+            DeviceCodePoll::Failed(_) => {
+                finish(&status, attempt, LoginPhase::Failed(RefusalCode::AuthUnavailable), None);
+                return;
+            }
+        }
+    }
+
+    if !current(&status, attempt) {
+        return;
+    }
+    let provider = match flow.authorized_provider() {
+        Ok(provider) => provider,
+        Err(error) => {
+            finish(&status, attempt, LoginPhase::Failed(error.code), None);
+            return;
+        }
+    };
+    let product = match exchange.exchange(&provider) {
+        Ok(product) => product,
+        Err(ProductExchangeError::Rejected) => {
+            finish(&status, attempt, LoginPhase::Failed(RefusalCode::AuthRequired), None);
+            return;
+        }
+        Err(ProductExchangeError::NotConfigured | ProductExchangeError::Unavailable) => {
+            finish(&status, attempt, LoginPhase::Failed(RefusalCode::AuthUnavailable), None);
+            return;
+        }
+    };
+    if !current(&status, attempt) {
+        return;
+    }
+    let installation = if let Some(transport) = bootstrap_transport {
+        let client = HttpAccountService::with_transport(
+            transport,
+            connection,
+            Box::new(FixedCredentials::none()),
+            Box::new(credentials.clone()),
+            Box::new(SystemMonotonicClock::new()),
+        );
+        let platform = if cfg!(target_os = "windows") {
+            BootstrapPlatform::Windows
+        } else if cfg!(target_os = "macos") {
+            BootstrapPlatform::Macos
+        } else {
+            BootstrapPlatform::Linux
+        };
+        match client.request_first_installation(product.product_session(), platform, None) {
+            Ok(result) => Some(result),
+            Err(error) => {
+                finish(&status, attempt, LoginPhase::Failed(error.code), None);
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    // The exchange above is network work. The write and a cancel or sign-out serialize here, so
+    // a stale attempt either sees the new generation or is deleted by the new cleanup.
+    let _gate = match persist_gate.lock() {
+        Ok(gate) => gate,
+        Err(_) => return,
+    };
+    if !current(&status, attempt) {
+        return;
+    }
+    let generation_current = || current(&status, attempt) && !credentials.is_revoked();
+    match credentials.persist_verified_login_with_installation(&provider, &product, installation, attempt, &generation_current) {
+        Ok(login) => finish(&status, attempt, LoginPhase::Done, Some(login.account_id)),
+        Err(error) => {
+            let code = match error.code {
+                CredentialErrorCode::NoPersistentCredential => RefusalCode::AuthRequired,
+                _ => RefusalCode::AuthUnavailable,
+            };
+            finish(&status, attempt, LoginPhase::Failed(code), None);
+        }
+    }
+}
+
+fn current(status: &Arc<Mutex<LoginStatus>>, attempt: u64) -> bool {
+    status.lock().map(|status| status.attempt == attempt).unwrap_or(false)
+}
+
+fn publish(status: &Arc<Mutex<LoginStatus>>, attempt: u64, phase: LoginPhase, prompt: Option<DeviceCode>) -> bool {
+    let Ok(mut status) = status.lock() else { return false };
+    if status.attempt != attempt {
+        return false;
+    }
+    status.phase = phase;
+    status.prompt = prompt;
+    true
+}
+
+fn finish(status: &Arc<Mutex<LoginStatus>>, attempt: u64, phase: LoginPhase, account: Option<String>) {
+    let Ok(mut status) = status.lock() else { return };
+    if status.attempt != attempt {
+        return;
+    }
+    status.phase = phase;
+    status.prompt = None;
+    status.account = account;
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0)
 }
 
 /// One operation's background renewal checkpoint. The window reads only a cached result.
@@ -564,20 +810,32 @@ pub struct AccountRuntime {
     control_renewal: Option<ControlRenewalJob>,
     control_renewal_factory: Option<ControlRenewalFactory>,
     control_renewal_source: Option<ControlRenewalSource>,
-    /// Explicit device sign-in settings, absent unless the host supplied all three trusted values.
-    sign_in: Option<SignInConfig>,
-    /// Test-injected transports. Production creates the documented HTTPS transports per job.
-    sign_in_device: Option<DeviceTransportFactory>,
-    sign_in_product: Option<ProductTransportFactory>,
-    sign_in_timing: Option<Arc<dyn SignInTiming>>,
-    sign_in_opener: Option<BrowserOpener>,
+    config: Option<DesktopAccountConfig>,
+    restart_transport: Option<ProductTransportFactory>,
+    // Keep the per-user keyring lock even when the operation ledger uses an overridden path.
+    _keyring_lock: Option<std::fs::File>,
+    #[cfg(test)]
+    login_seams: Option<(Arc<dyn BrowserLauncher>, LoginRunner)>,
 }
 
 impl AccountRuntime {
     /// The production desktop runtime: the operating-system credential store and the durable
     /// ledger under the settings folder. Both are optional; a missing one fails closed.
     pub fn desktop(settings: Option<&Path>) -> Self {
-        let credentials = crate::keyring_store::account_credential_session();
+        Self::desktop_with_config(settings, trusted_desktop_config())
+    }
+
+    /// The production desktop runtime with explicit trusted account configuration. A missing
+    /// configuration keeps the same anonymous CAD and leaves the explicit sign-in refused.
+    fn desktop_with_config(settings: Option<&Path>, config: Option<DesktopAccountConfig>) -> Self {
+        let keyring_lock = eframe::storage_dir(crate::SETTINGS_FOLDER)
+            .and_then(|directory| crate::keyring_store::try_lock_account_namespace(&directory).ok().flatten());
+        let credentials = if keyring_lock.is_some() {
+            crate::keyring_store::account_credential_session()
+        } else {
+            solidcraft_engine::note!("account: another desktop holds the secure store, or its lock is unavailable");
+            CredentialSession::new(Box::new(solidcraft_account_native::NoPersistentStore))
+        };
         let ledger = settings.and_then(|directory| match FileOperationStore::open(directory.join("account")) {
             Ok(store) => Some(store),
             Err(error) => {
@@ -585,22 +843,20 @@ impl AccountRuntime {
                 None
             }
         });
-        let mut runtime = Self::new(credentials, ledger);
-        if let Some(sign_in) = SignInConfig::from_environment() {
+        let mut runtime = Self::new(credentials, ledger, config);
+        runtime._keyring_lock = keyring_lock;
+        #[cfg(target_os = "linux")]
+        if let Some(config) = &runtime.config {
             // This installs transport and timing only. Without controlled admission
             // authority there is no grant and no worker or HTTPS request starts.
-            #[cfg(target_os = "linux")]
-            {
-                runtime.control_renewal_source = Some(ControlRenewalSource {
-                    connection: sign_in.product.clone(),
-                    transport: Arc::new(|| Box::new(UreqTransport::with_limits(Duration::from_secs(5), Duration::from_secs(3)))),
-                    clock: Arc::new(|| Box::new(SystemMonotonicClock::new())),
-                    wait: Arc::new(native_renewal_wait),
-                });
-            }
-            runtime.sign_in = Some(sign_in);
-            runtime.sign_in_opener = Some(Arc::new(open_system_browser));
-        } else {
+            runtime.control_renewal_source = Some(ControlRenewalSource {
+                connection: config.product.clone(),
+                transport: Arc::new(|| Box::new(UreqTransport::with_limits(Duration::from_secs(5), Duration::from_secs(3)))),
+                clock: Arc::new(|| Box::new(SystemMonotonicClock::new())),
+                wait: Arc::new(native_renewal_wait),
+            });
+        }
+        if runtime.config.is_none() {
             solidcraft_engine::note!("account: no complete WorkOS/AuthKit/product origin configuration; sign-in stays unavailable");
         }
         runtime
@@ -609,16 +865,22 @@ impl AccountRuntime {
     /// A test-only runtime over a caller-supplied credential store.
     #[cfg(test)]
     pub fn with_store<S: solidcraft_engine::entitlement::CredentialStore + Send + 'static>(store: S) -> Self {
-        Self::new(CredentialSession::new(Box::new(store)), None)
+        Self::new(CredentialSession::new(Box::new(store)), None, None)
     }
 
     /// A test-only runtime over an already composed credential session.
     #[cfg(test)]
     pub fn with_session(credentials: CredentialSession) -> Self {
-        Self::new(credentials, None)
+        Self::new(credentials, None, None)
     }
 
-    fn new(credentials: CredentialSession, ledger: Option<FileOperationStore>) -> Self {
+    /// A test-only runtime with the explicit trusted configuration and a composed session.
+    #[cfg(test)]
+    pub fn with_session_config(credentials: CredentialSession, config: DesktopAccountConfig) -> Self {
+        Self::new(credentials, None, Some(config))
+    }
+
+    fn new(credentials: CredentialSession, ledger: Option<FileOperationStore>, config: Option<DesktopAccountConfig>) -> Self {
         Self {
             credentials,
             ledger,
@@ -628,30 +890,40 @@ impl AccountRuntime {
             control_renewal: None,
             control_renewal_factory: None,
             control_renewal_source: None,
-            sign_in: None,
-            sign_in_device: None,
-            sign_in_product: None,
-            sign_in_timing: None,
-            sign_in_opener: None,
+            config,
+            restart_transport: None,
+            _keyring_lock: None,
+            #[cfg(test)]
+            login_seams: None,
         }
     }
 
-    /// Test-only injection: fresh transport factories, a virtual clock and an inert browser
-    /// opener, so orchestration tests never touch a network, a credential or a real browser.
     #[cfg(test)]
     fn with_sign_in_harness(
         mut self,
         config: SignInConfig,
         device: DeviceTransportFactory,
         product: ProductTransportFactory,
-        timing: Arc<dyn SignInTiming>,
+        _timing: Arc<dyn SignInTiming>,
         opener: BrowserOpener,
     ) -> Self {
-        self.sign_in = Some(config);
-        self.sign_in_device = Some(device);
-        self.sign_in_product = Some(product);
-        self.sign_in_timing = Some(timing);
-        self.sign_in_opener = Some(opener);
+        struct TestBrowser(BrowserOpener);
+        impl BrowserLauncher for TestBrowser {
+            fn open(&self, url: &str, _: &str) -> Result<(), Refusal> {
+                (self.0)(url).map_err(|_| account_unavailable("test browser failed"))
+            }
+        }
+        self.config = Some(DesktopAccountConfig { client: config.client, product: config.product, verification_origin: config.authkit.origin });
+        self.restart_transport = Some(product.clone());
+        self.login_seams = Some((
+            Arc::new(TestBrowser(opener)),
+            Arc::new(move |mut task| {
+                let device = device();
+                let exchange = ServerVerifiedProductSession::new(product(), task.connection.clone());
+                task.bootstrap_transport = Some(product());
+                Ok(std::thread::spawn(move || run_login(task, device, &exchange, &|_, _, canceled| !canceled())))
+            }),
+        ));
         self
     }
 
@@ -670,14 +942,16 @@ impl AccountRuntime {
     /// stays closed unless a separately reviewed account service is installed synchronously.
     pub fn startup(&self) -> AccountStartup {
         let secure_store = self.credentials.is_persistent();
-        // An unreadable tombstone is treated as present: revocation/safety cannot be confirmed.
-        let logout_pending = self.credentials.logout_pending().unwrap_or(true);
-        let restart = (!logout_pending).then(|| self.restart_binding(secure_store)).flatten();
+        // A present marker is recoverable when it is readable; an unreadable one keeps the
+        // process fully closed because revocation/safety cannot be confirmed.
+        let logout = match self.credentials.logout_pending() {
+            Ok(true) => StartupLogout::ReadableTombstone,
+            Ok(false) => StartupLogout::Clear,
+            Err(_) => StartupLogout::Unreadable,
+        };
+        let restart = (logout == StartupLogout::Clear).then(|| self.restart_binding(secure_store)).flatten();
         let candidate = restart.as_ref().map(|binding| binding.scope.clone());
-        if candidate.is_some() {
-            solidcraft_engine::note!("account: a complete local pair is a restart candidate; the bounded online check stays off the window thread");
-        }
-        AccountStartup { secure_store, logout_pending, candidate, restart, restored: None }
+        AccountStartup { secure_store, logout, candidate, restart, restored: None }
     }
 
     /// Capture the complete persisted pair and its revocation generation. A missing installation
@@ -707,9 +981,9 @@ impl AccountRuntime {
     /// configuration means no check can run and the candidate stays signed out.
     fn restart_verifier(&self) -> Option<RestartVerifier> {
         Some(RestartVerifier {
-            product: self.sign_in.as_ref()?.product.clone(),
+            product: self.config.as_ref()?.product.clone(),
             credentials: self.credentials.clone(),
-            transport: self.sign_in_product.clone(),
+            transport: self.restart_transport.clone(),
             ledger_root: self.ledger.as_ref().map(|ledger| ledger.root().to_path_buf()),
         })
     }
@@ -760,7 +1034,7 @@ impl RestartVerifier {
     /// Ask the configured service whether the exact local bearer belongs to the expected account.
     /// Only a 200 snapshot for that account, followed by an unchanged pair and revocation
     /// generation, yields a presentable scope. This check never writes credentials or opens a browser.
-    fn verify(&self, binding: &RestartBinding, cancel: &SignInCancellation) -> Option<AuthenticatedHostScope> {
+    fn verify(&self, binding: &RestartBinding, cancel: &RestartCancellation) -> Option<AuthenticatedHostScope> {
         if cancel.is_cancelled() {
             return None;
         }
@@ -780,7 +1054,7 @@ impl RestartVerifier {
 
     /// Replay durable intent only. The original settlement credential is deliberately the
     /// only credential supplied to this adapter, and a refusal leaves the row unresolved.
-    fn recover_settlement(&self, binding: &RestartBinding, cancel: &SignInCancellation) {
+    fn recover_settlement(&self, binding: &RestartBinding, cancel: &RestartCancellation) {
         const MAX_FINALIZE_ATTEMPTS: usize = 4;
         let Some(root) = &self.ledger_root else { return };
         if cancel.is_cancelled() {
@@ -944,6 +1218,8 @@ impl MonotonicClock for SystemMonotonicClock {
 struct CleanupStatus {
     /// The latest revocation generation whose durable cleanup has not finished.
     pending: Option<u64>,
+    /// The owning generation's cleanup finished successfully and has not been adopted by `poll`.
+    completed: bool,
     /// The latest generation's cleanup error; the session stays fail-closed until a reviewed
     /// sign-in path can repair it.
     error: Option<Refusal>,
@@ -953,19 +1229,24 @@ struct DesktopAccountPort {
     runtime: AccountRuntime,
     view: AccountView,
     lifecycle: Option<LifecycleEvent>,
-    /// `true` until a reviewed sign-in path has cleared a durable logout marker. It keeps the
-    /// failed-cleanup identity fail-closed across this process too.
-    logout_pending: bool,
+    /// `true` until a reviewed sign-in path or confirmed cleanup has cleared a durable logout
+    /// marker. It keeps the failed-cleanup identity fail-closed across this process too.
+    logout: StartupLogout,
     secure_store: bool,
     generation: u64,
     cleanup: Arc<Mutex<CleanupStatus>>,
-    /// One explicit device sign-in at a time. The worker owns the network; this only holds the
-    /// cancellation flag and the state the window may read.
-    sign_in: Option<SignInJob>,
     /// The bounded restart check, if a complete persisted pair was captured at startup. It fills
     /// presentation only and is retired by any explicit sign-in, sign-out, switch or shutdown.
     restart: Option<RestartJob>,
     workers: Vec<std::thread::JoinHandle<()>>,
+    login_attempt: u64,
+    login_status: Arc<Mutex<LoginStatus>>,
+    /// Held by the worker for staging, promotion and the final commit marker. Cancel and sign-out
+    /// try-lock it: a cancel during promotion is refused without waiting on keyring IO.
+    persist_gate: Arc<Mutex<()>>,
+    login_workers: Vec<std::thread::JoinHandle<()>>,
+    browser: Arc<dyn BrowserLauncher>,
+    runner: LoginRunner,
 }
 
 impl DesktopAccountPort {
@@ -981,14 +1262,24 @@ impl DesktopAccountPort {
             runtime,
             view,
             lifecycle: None,
-            logout_pending: startup.logout_pending,
+            logout: startup.logout,
             secure_store: startup.secure_store,
             generation: 0,
             cleanup: Arc::new(Mutex::new(CleanupStatus::default())),
-            sign_in: None,
             restart: None,
             workers: Vec::new(),
+            login_attempt: 0,
+            login_status: Arc::new(Mutex::new(LoginStatus::default())),
+            persist_gate: Arc::new(Mutex::new(())),
+            login_workers: Vec::new(),
+            browser: Arc::new(SystemBrowserLauncher),
+            runner: production_login_runner(),
         };
+        #[cfg(test)]
+        if let Some((browser, runner)) = port.runtime.login_seams.take() {
+            port.browser = browser;
+            port.runner = runner;
+        }
         if let Some(binding) = startup.restart.clone() {
             port.start_restart(binding);
         }
@@ -1003,7 +1294,7 @@ impl DesktopAccountPort {
             return;
         };
         let shared = Arc::new(Mutex::new(RestartShared::default()));
-        let cancel = SignInCancellation::default();
+        let cancel = RestartCancellation::default();
         let worker_shared = Arc::clone(&shared);
         let worker_cancel = cancel.clone();
         let worker = std::thread::Builder::new().name("intcad-account-restart".into()).spawn(move || {
@@ -1040,14 +1331,6 @@ impl DesktopAccountPort {
         }
     }
 
-    /// Stop a device worker without waiting on its network request. The session's revocation
-    /// barrier makes a late result write nothing, and the handle is joined on shutdown.
-    fn cancel_sign_in(&mut self) {
-        if let Some(job) = self.sign_in.take() {
-            job.cancel.cancel();
-        }
-    }
-
     /// Retire the restart check without waiting on its network request. The shared result is
     /// marked done and its cached account cleared immediately; a reply that lands after this
     /// retirement is dropped rather than publishing beside a newer explicit attempt.
@@ -1061,10 +1344,6 @@ impl DesktopAccountPort {
         }
     }
 
-    fn completed_sign_in_account(&self) -> Option<String> {
-        self.sign_in.as_ref()?.shared.lock().ok()?.account.clone()
-    }
-
     fn verified_restart_account(&self) -> Option<String> {
         self.restart.as_ref()?.shared.lock().ok()?.account.clone()
     }
@@ -1073,10 +1352,130 @@ impl DesktopAccountPort {
         self.restart.as_ref().is_some_and(|job| job.shared.lock().is_ok_and(|shared| !shared.done))
     }
 
+    #[cfg(test)]
+    fn with_seams(mut self, browser: Arc<dyn BrowserLauncher>, runner: LoginRunner) -> Self {
+        self.browser = browser;
+        self.runner = runner;
+        self
+    }
+
+    fn login_pending(&self) -> bool {
+        self.view.sign_in_state.pending()
+    }
+
+    /// Rerun finished handles only. A live canceled worker stays in the bounded list; no UI path
+    /// joins it.
+    fn reap_login_workers(&mut self) {
+        let mut live = Vec::with_capacity(self.login_workers.len());
+        for worker in std::mem::take(&mut self.login_workers) {
+            if worker.is_finished() {
+                let _ = worker.join();
+            } else {
+                live.push(worker);
+            }
+        }
+        self.login_workers = live;
+    }
+
+    fn retired_login_workers(&mut self) -> usize {
+        self.reap_login_workers();
+        self.login_workers.len()
+    }
+
+    /// Advance the generation without taking the persistence gate, so cancel and retry never wait
+    /// on a keyring write. A worker that already entered its final write observes the changed
+    /// generation and removes its own attempt write off the window thread.
+    fn invalidate_login(&mut self) {
+        self.login_attempt = self.login_attempt.wrapping_add(1);
+        if let Ok(mut status) = self.login_status.lock() {
+            *status = LoginStatus::default();
+            status.attempt = self.login_attempt;
+        }
+        self.view.sign_in_state = SignInState::Idle;
+        self.view.sign_in_prompt = None;
+        self.view.sign_in_error = None;
+    }
+
+    fn poll_login(&mut self) -> Option<AccountView> {
+        self.reap_login_workers();
+        let mut status = self.login_status.lock().ok()?;
+        if status.attempt != self.login_attempt {
+            return None;
+        }
+        let terminal = match status.phase {
+            LoginPhase::Idle => return None,
+            LoginPhase::Starting => {
+                self.view.sign_in_state = SignInState::Starting;
+                self.view.sign_in_prompt = None;
+                self.view.sign_in_error = None;
+                None
+            }
+            LoginPhase::Waiting => {
+                self.view.sign_in_state = SignInState::Waiting;
+                self.view.sign_in_prompt = status.prompt.clone();
+                self.view.sign_in_error = None;
+                None
+            }
+            LoginPhase::Done => {
+                let account = status.account.clone()?;
+                self.logout = StartupLogout::Clear;
+                // The product status verified the session, but this build installs no account
+                // service or model authority, so Chat and controlled entries keep their existing
+                // refusal until a reviewed adapter exists.
+                self.view = signed_in_view(account);
+                Some(())
+            }
+            LoginPhase::Expired => {
+                self.view = AccountView { sign_in_state: SignInState::Expired, ..AccountView::signed_out() };
+                Some(())
+            }
+            LoginPhase::Failed(code) => {
+                self.view = AccountView { sign_in_state: SignInState::Failed, sign_in_error: Some(code), ..AccountView::signed_out() };
+                Some(())
+            }
+        };
+        if terminal.is_some() {
+            // A terminal snapshot is adopted once. A later sign-out must not be resurrected by a
+            // stale worker result.
+            status.phase = LoginPhase::Idle;
+            status.prompt = None;
+            status.account = None;
+        }
+        Some(self.view.clone())
+    }
+
+    fn poll_cleanup(&mut self) -> Option<AccountView> {
+        let (pending, error, completed) = {
+            let mut status = self.cleanup.lock().ok()?;
+            let completed = if status.pending.is_some() || status.error.is_some() {
+                false
+            } else if status.completed {
+                status.completed = false;
+                true
+            } else {
+                // A startup recovery view or a pending action is not changed until its own worker
+                // reports. An unreadable startup state has no cleanup to adopt.
+                return None;
+            };
+            (status.pending.is_some(), status.error.as_ref().map(|refusal| refusal.code), completed)
+        };
+        if completed && self.secure_store {
+            // The worker deleted the marker only after the old authority was gone. This is the one
+            // place a readable startup tombstone becomes ordinary signed-out state.
+            self.logout = StartupLogout::Clear;
+        }
+        self.view = if self.secure_store && !pending && error.is_none() && completed {
+            AccountView::signed_out()
+        } else {
+            AccountView { sign_out_pending: pending, sign_out_error: error, ..AccountView::unavailable() }
+        };
+        Some(self.view.clone())
+    }
+
     /// Refuse account work while a durable sign-out is unconfirmed, a cleanup is running or its
     /// latest generation failed. An unreadable status is itself a refusal.
     fn cleanup_confirmed(&self) -> Result<(), Refusal> {
-        if self.logout_pending {
+        if self.logout != StartupLogout::Clear {
             return Err(account_unavailable("a previous sign-out is not yet confirmed"));
         }
         let status = self.cleanup.lock().map_err(|_| account_unavailable("the account cleanup state is unavailable"))?;
@@ -1096,36 +1495,58 @@ impl DesktopAccountPort {
     /// worker. The worker's result is applied only for its own generation, so a late result from
     /// an older switch can never clear a newer cleanup state.
     fn revoke(&mut self, event: LifecycleEvent) -> Result<(), Refusal> {
-        self.retire_control_renewal();
-        // A running device flow or restart check belongs to the session being retired. Cancel
-        // both before the generation barrier is published, so no later result can write for the
-        // old session.
-        self.cancel_restart();
-        self.cancel_sign_in();
+        if !self.secure_store {
+            return Err(account_unavailable("no secure credential store is available"));
+        }
+        if self.logout == StartupLogout::Unreadable {
+            return Err(account_unavailable("the account storage state cannot be read"));
+        }
+        let gate_holder = Arc::clone(&self.persist_gate);
+        let gate = match gate_holder.try_lock() {
+            Ok(gate) => gate,
+            Err(_) => {
+                return Err(account_unavailable("the sign-in is completing; sign out again after it finishes"));
+            }
+        };
         // Publish the new generation and set the barrier in the same short lock. A finishing
         // older worker takes that lock before clearing anything, so it can never clear a newer
         // barrier between generation publication and its own stale-result check. No keyring IO
         // happens while this lock is held.
-        let mut status = match self.cleanup.lock() {
+        let cleanup = Arc::clone(&self.cleanup);
+        let mut status = match cleanup.lock() {
             Ok(status) => status,
             Err(_) => {
                 self.runtime.credentials.revoke_in_process();
+                self.cancel_restart();
+                self.retire_control_renewal();
+                self.invalidate_login();
                 self.lifecycle = Some(event);
-                self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
-                return Err(account_unavailable("the account cleanup state is unavailable"));
+                let error = account_unavailable("the account cleanup state is unavailable");
+                self.view = AccountView { sign_out_error: Some(error.code), ..AccountView::unavailable() };
+                return Err(error);
             }
         };
+        if status.pending.is_some() {
+            return Err(account_unavailable("a sign-out is already pending; wait for it to finish or try again"));
+        }
+        // Authority is revoked in this process now. The durable tombstone and delete run on one
+        // worker; this action does not claim durable completion until that worker confirms its
+        // own generation. No keyring write or delete happens on the window thread.
         self.runtime.credentials.revoke_in_process();
+        self.cancel_restart();
+        self.retire_control_renewal();
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         status.pending = Some(generation);
+        status.completed = false;
         status.error = None;
         drop(status);
+        self.invalidate_login();
+        drop(gate);
         self.lifecycle = Some(event);
-        self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
+        self.view = AccountView { sign_out_pending: true, ..AccountView::unavailable() };
 
         let credentials = self.runtime.credentials.clone();
-        let cleanup = Arc::clone(&self.cleanup);
         let worker = std::thread::Builder::new().name("intcad-account-cleanup".into()).spawn(move || {
             let result = credentials.sign_out_keeping_revocation();
             if let Ok(mut status) = cleanup.lock()
@@ -1136,6 +1557,7 @@ impl DesktopAccountPort {
                     // Only the owning generation may lift the barrier.
                     credentials.end_revocation();
                     status.error = None;
+                    status.completed = true;
                 } else {
                     status.error = Some(account_unavailable("the account session cleanup did not complete"));
                 }
@@ -1150,144 +1572,84 @@ impl DesktopAccountPort {
             // never written, so the status says cleanup never started (not that it is pending),
             // and this process stays fail-closed; cross-process suppression cannot be claimed.
             Err(_) => {
+                let error = account_unavailable("the sign-out cleanup could not start");
+                self.view.sign_out_pending = false;
+                self.view.sign_out_error = Some(error.code);
                 if let Ok(mut status) = self.cleanup.lock() {
                     status.pending = None;
-                    status.error = Some(account_unavailable("the sign-out cleanup could not start"));
+                    status.completed = false;
+                    status.error = Some(error.clone());
                 }
-                Err(account_unavailable("the sign-out cleanup could not start"))
+                Err(error)
             }
         }
     }
 
     fn join_workers(&mut self) {
+        // Exit-only serialization: wait for an in-progress promotion to become the documented
+        // winner before invalidating the generation. Never invalidate first and then accept a
+        // commit that was already inside the gate.
+        let gate_holder = Arc::clone(&self.persist_gate);
+        let gate = gate_holder.lock();
+        self.invalidate_login();
+        drop(gate);
+        let login_workers = std::mem::take(&mut self.login_workers);
+        for worker in login_workers {
+            let _ = worker.join();
+        }
         let workers = std::mem::take(&mut self.workers);
         for worker in workers {
             let _ = worker.join();
         }
     }
-
-    /// Start one explicit device flow on its own worker and return at once. The prompt becomes
-    /// readable through [`AccountPort::begin_device_code`]; only an explicit browser action opens
-    /// it. No request is sent before this call succeeds its configuration and sign-out gates.
-    fn start_sign_in(&mut self) -> Result<(), Refusal> {
-        self.cleanup_confirmed()?;
-        if !self.secure_store {
-            return Err(account_unavailable("no secure credential store is available"));
-        }
-        let Some(config) = self.runtime.sign_in.clone() else {
-            return Err(account_unavailable("no configured sign-in service origins"));
-        };
-        if let Some(job) = self.sign_in.as_ref() {
-            let phase = job.shared.lock().map_err(|_| account_unavailable("the sign-in state is unavailable"))?.phase;
-            match phase {
-                SignInPhase::Starting | SignInPhase::WaitingForApproval => {
-                    return Err(account_unavailable("a sign-in is already in progress"));
-                }
-                SignInPhase::SignedIn => {
-                    return Err(account_unavailable("the account is already signed in"));
-                }
-                // A refused or cancelled flow may be retried by a new explicit action. It is
-                // never replayed: the old worker is dropped and a new device authorization starts.
-                SignInPhase::Failed | SignInPhase::Cancelled => self.cancel_sign_in(),
-            }
-        }
-        // The explicit sign-in becomes the current attempt; an older bounded restart result may
-        // not land beside it, even if it carries the same pair.
-        self.cancel_restart();
-        let device_factory = self.runtime.sign_in_device.clone();
-        let product_factory = self.runtime.sign_in_product.clone();
-        let timing = self.runtime.sign_in_timing.clone();
-        let session = self.runtime.credentials.clone();
-        let shared = Arc::new(Mutex::new(SignInShared::default()));
-        let cancel = SignInCancellation::default();
-        let worker_shared = Arc::clone(&shared);
-        let worker_cancel = cancel.clone();
-        let worker = std::thread::Builder::new().name("intcad-account-sign-in".into()).spawn(move || {
-            let device: Box<dyn DeviceCodeTransport + Send + Sync> = match device_factory.as_ref() {
-                Some(factory) => factory(),
-                None => Box::new(UreqDeviceCodeTransport::new()),
-            };
-            let product_transport: Box<dyn Transport + Send + Sync> = match product_factory.as_ref() {
-                Some(factory) => factory(),
-                None => Box::new(UreqTransport::new()),
-            };
-            let timing: Arc<dyn SignInTiming> = timing.unwrap_or_else(|| Arc::new(SystemSignInTiming::new()));
-            let mut flow = DeviceCodeFlow::new(config.client, device, session, DeviceCodeMode::Explicit);
-            let mut publish = |prompt: &DeviceCodePrompt| publish_device_prompt(&worker_shared, prompt);
-            let result = drive_device_sign_in(&mut flow, &config.authkit, &config.product, product_transport, &*timing, &worker_cancel, &mut publish);
-            apply_sign_in_result(&worker_shared, &worker_cancel, result);
-        });
-        match worker {
-            Ok(handle) => {
-                self.workers.push(handle);
-                self.sign_in = Some(SignInJob { cancel, shared });
-                Ok(())
-            }
-            Err(_) => Err(account_unavailable("the sign-in worker could not start")),
-        }
-    }
 }
 
-fn publish_device_prompt(shared: &Arc<Mutex<SignInShared>>, prompt: &DeviceCodePrompt) {
-    let expires_at = wall_seconds().saturating_add(prompt.expires_in().as_secs());
-    let code = DeviceCode {
-        user_code: prompt.user_code().to_owned(),
-        verification_uri: prompt.verification_uri().to_owned(),
-        expires_at: Timestamp(expires_at),
-    };
-    let browser_uri = prompt.verification_uri_complete().unwrap_or_else(|| prompt.verification_uri()).to_owned();
-    if let Ok(mut shared) = shared.lock() {
-        shared.prompt = Some(code);
-        shared.browser_uri = Some(browser_uri);
-        shared.phase = SignInPhase::WaitingForApproval;
-        shared.notice = None;
-    }
-}
-
-fn apply_sign_in_result(shared: &Arc<Mutex<SignInShared>>, cancel: &SignInCancellation, result: Result<ProductLogin, Refusal>) {
-    if let Ok(mut shared) = shared.lock() {
-        // Every terminal phase retires the challenge, so a later panel or refresh never shows a
-        // stale code or offers a browser action for a flow that already ended.
-        shared.prompt = None;
-        shared.browser_uri = None;
-        if cancel.is_cancelled() {
-            shared.phase = SignInPhase::Cancelled;
-            return;
-        }
-        match result {
-            Ok(login) => {
-                shared.account = Some(login.account_id);
-                shared.phase = SignInPhase::SignedIn;
-                shared.notice = None;
-            }
-            Err(refusal) => {
-                shared.phase = SignInPhase::Failed;
-                shared.notice = Some(refusal);
-            }
-        }
+fn signed_in_view(account: String) -> AccountView {
+    AccountView {
+        signed_in: true,
+        sign_in_visible: false,
+        sign_in_state: SignInState::Idle,
+        sign_in_prompt: None,
+        sign_in_error: None,
+        sign_out_pending: false,
+        sign_out_recovery: false,
+        sign_out_error: None,
+        account_label: Some(account),
+        available: None,
+        held: 0,
+        settling: false,
+        // An authenticated account still needs an online status and a model to say chat is
+        // available; without a reviewed account service this task cannot prove either.
+        chat_available: false,
+        tool_blocked: Some(RefusalCode::AuthUnavailable),
+        own_model_label: None,
     }
 }
 
 fn current_view(startup: &AccountStartup) -> AccountView {
-    if !startup.secure_store || startup.logout_pending {
+    if !startup.secure_store {
         return AccountView::unavailable();
     }
-    match startup.restored.as_ref() {
-        Some(scope) => AccountView {
-            signed_in: true,
-            sign_in_visible: false,
-            account_label: Some(scope.account().as_str().to_owned()),
-            available: None,
-            held: 0,
-            settling: false,
-            // An authenticated account still needs an online status and a model to say chat is
-            // available; without a reviewed account service this task cannot prove either.
-            chat_available: false,
-            tool_blocked: Some(RefusalCode::AuthUnavailable),
-            own_model_label: None,
-        },
-        None => AccountView::signed_out(),
+    match startup.logout {
+        // An unreadable store or marker cannot prove that recovery is possible: no action at all.
+        StartupLogout::Unreadable => return AccountView::unavailable(),
+        // A readable marker is recoverable, but the previous identity and authority stay gone.
+        StartupLogout::ReadableTombstone => {
+            return AccountView { sign_out_recovery: true, ..AccountView::unavailable() };
+        }
+        StartupLogout::Clear => {}
     }
+    if let Some(scope) = startup.restored.as_ref() {
+        return signed_in_view(scope.account().as_str().to_owned());
+    }
+    AccountView::signed_out()
+}
+
+/// While a provider attempt or a durable sign-out cleanup is pending, an idle window cannot rely
+/// on unrelated input to poll the worker. Ask the host to repaint after a bounded interval so a
+/// prompt, expiry, completion or confirmation reaches the screen; return `None` once idle.
+pub fn poll_repaint_after(view: &AccountView) -> Option<Duration> {
+    (view.sign_in_state.pending() || view.sign_out_pending).then_some(Duration::from_secs(1))
 }
 
 impl AccountPort for DesktopAccountPort {
@@ -1355,11 +1717,8 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn view(&self) -> AccountView {
-        if let Some(account) = self.completed_sign_in_account() {
-            return signed_in_view(&account);
-        }
         if let Some(account) = self.verified_restart_account() {
-            return signed_in_view(&account);
+            return signed_in_view(account);
         }
         self.view.clone()
     }
@@ -1369,7 +1728,7 @@ impl AccountPort for DesktopAccountPort {
         // A completed device flow or an online-verified restart is recognized from cached worker
         // state. Neither is replayed or exchanged again; this process still installs no account
         // service, so the snapshot stays the one the check produced.
-        if self.completed_sign_in_account().is_some() || self.verified_restart_account().is_some() {
+        if self.view.signed_in || self.verified_restart_account().is_some() {
             return Ok(self.view());
         }
         if !self.secure_store {
@@ -1387,7 +1746,121 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn sign_in(&mut self) -> Result<(), Refusal> {
-        self.start_sign_in()
+        if self.logout != StartupLogout::Clear {
+            return Err(account_unavailable("previous sign-out must be confirmed before signing in"));
+        }
+        if self.restart_waiting() {
+            return Err(account_unavailable("the previous session is still being checked or settled"));
+        }
+        if self.login_pending() {
+            return Err(account_unavailable("a sign-in is already in progress"));
+        }
+        if self.view().signed_in {
+            // Lifecycle rule: a new provider login never replaces an active account implicitly.
+            return Err(account_unavailable("sign out or switch account before signing in again"));
+        }
+        if !self.secure_store {
+            return Err(account_unavailable("no secure credential store is available"));
+        }
+        if let Ok(mut status) = self.cleanup.lock() {
+            if status.pending.is_some() {
+                return Err(account_unavailable("the sign-out cleanup is still running"));
+            }
+            if let Some(error) = &status.error {
+                return Err(error.clone());
+            }
+            // A new attempt supersedes an unadopted cleanup confirmation, so the later poll can
+            // never overwrite the signed-in view with the previous sign-out.
+            status.completed = false;
+        } else {
+            return Err(account_unavailable("the account cleanup state is unavailable"));
+        }
+        if self.runtime.credentials.is_revoked() {
+            return Err(account_unavailable("the account authority is revoked"));
+        }
+        let config = self.runtime.config.clone().ok_or_else(|| account_unavailable("no configured product-session verification origin"))?;
+        if self.retired_login_workers() >= MAX_LOGIN_WORKERS {
+            return Err(account_unavailable("previous sign-in workers are still finishing"));
+        }
+
+        self.cancel_restart();
+        self.login_attempt = self.login_attempt.wrapping_add(1);
+        let attempt = self.login_attempt;
+        match self.login_status.lock() {
+            Ok(mut status) => {
+                *status = LoginStatus { attempt, phase: LoginPhase::Starting, prompt: None, account: None };
+            }
+            Err(_) => return Err(account_unavailable("the sign-in state is unavailable")),
+        }
+        self.view = AccountView { sign_in_state: SignInState::Starting, ..AccountView::signed_out() };
+
+        let task = LoginTask {
+            attempt,
+            client: config.client,
+            connection: config.product,
+            verification_origin: config.verification_origin,
+            credentials: self.runtime.credentials.clone(),
+            status: Arc::clone(&self.login_status),
+            persist_gate: Arc::clone(&self.persist_gate),
+            bootstrap_transport: None,
+        };
+        match (self.runner)(task) {
+            Ok(worker) => {
+                self.login_workers.push(worker);
+                Ok(())
+            }
+            Err(error) => {
+                // A failed spawn is not a pending login and must not leave the menu in Starting.
+                self.invalidate_login();
+                self.view = AccountView::signed_out();
+                Err(error)
+            }
+        }
+    }
+
+    fn open_sign_in_browser(&mut self) -> Result<(), Refusal> {
+        let config = self.runtime.config.as_ref().ok_or_else(|| account_unavailable("no configured sign-in verification origin"))?;
+        let prompt = self.begin_device_code()?;
+        if prompt.expires_at.0 <= unix_seconds() {
+            return Err(Refusal::new(RefusalCode::AuthRequired, "the sign-in code expired"));
+        }
+        let url = prompt.verification_uri.as_str();
+        // Re-check the exact configured origin at the launch boundary, not only when the prompt
+        // was published.
+        if !trusted_browser_url(url, &config.verification_origin) {
+            return Err(Refusal::new(RefusalCode::AuthUnavailable, "the sign-in page is not the configured verification origin"));
+        }
+        self.browser.open(url, &config.verification_origin)
+    }
+
+    fn cancel_sign_in(&mut self) -> Result<(), Refusal> {
+        if self.view.sign_out_pending || self.view.sign_out_error.is_some() {
+            return Err(account_unavailable("sign-out cleanup has not been confirmed"));
+        }
+        let gate_holder = Arc::clone(&self.persist_gate);
+        let gate = match gate_holder.try_lock() {
+            Ok(gate) => gate,
+            Err(_) => {
+                // Promotion owns the gate from its first staged write through the commit marker.
+                // Cancelling now is refused, not reported as success and not waited for.
+                return Err(account_unavailable("the sign-in is completing; it can no longer be canceled"));
+            }
+        };
+        let completed = self.view.signed_in || self.login_status.lock().map(|status| status.phase == LoginPhase::Done).unwrap_or(false);
+        if completed {
+            return Err(account_unavailable("the sign-in has completed; sign out instead"));
+        }
+        self.invalidate_login();
+        self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
+        drop(gate);
+        Ok(())
+    }
+
+    fn poll(&mut self) -> Option<AccountView> {
+        if let Some(view) = self.poll_login() {
+            return Some(view);
+        }
+        self.poll_cleanup().or_else(|| self.verified_restart_account().map(signed_in_view))
     }
 
     fn sign_out(&mut self) -> Result<(), Refusal> {
@@ -1405,43 +1878,12 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn begin_device_code(&self) -> Result<DeviceCode, Refusal> {
-        let Some(job) = self.sign_in.as_ref() else {
-            return Err(Refusal::new(RefusalCode::AuthRequired, "an explicit sign-in command is required"));
-        };
-        let shared = job.shared.lock().map_err(|_| account_unavailable("the sign-in state is unavailable"))?;
-        shared.prompt.clone().ok_or_else(|| auth_required("the sign-in prompt is not ready"))
-    }
-
-    fn open_verification(&mut self) -> Result<(), Refusal> {
-        let Some(job) = self.sign_in.as_ref() else {
-            return Err(auth_required("start a sign-in first"));
-        };
-        let (phase, browser_uri, prompt_expires) = {
-            let shared = job.shared.lock().map_err(|_| account_unavailable("the sign-in state is unavailable"))?;
-            (shared.phase, shared.browser_uri.clone(), shared.prompt.as_ref().map(|prompt| prompt.expires_at.0))
-        };
-        if phase != SignInPhase::WaitingForApproval {
-            return Err(auth_required("no sign-in is waiting for browser approval"));
-        }
-        let Some(browser_uri) = browser_uri else {
-            return Err(auth_required("the sign-in prompt is not ready"));
-        };
-        if prompt_expires.is_some_and(|expires_at| expires_at <= wall_seconds()) {
-            return Err(auth_required("the sign-in code expired"));
-        }
-        // The worker validated the response; the explicit action rechecks it against the same
-        // configured origin because a browser is opened only here.
-        if !self.runtime.sign_in.as_ref().is_some_and(|config| config.authkit.matches(&browser_uri)) {
-            return Err(account_unavailable("the verification address is not trusted"));
-        }
-        let Some(opener) = self.runtime.sign_in_opener.clone() else {
-            return Err(account_unavailable("no system browser opener is installed"));
-        };
-        opener(&browser_uri).map_err(|_| account_unavailable("the system browser could not be opened"))
-    }
-
-    fn take_sign_in_notice(&mut self) -> Option<Refusal> {
-        self.sign_in.as_ref()?.shared.lock().ok()?.notice.take()
+        let status = self.login_status.lock().map_err(|_| account_unavailable("the sign-in state is unavailable"))?;
+        status
+            .prompt
+            .clone()
+            .filter(|_| status.attempt == self.login_attempt && status.phase == LoginPhase::Waiting)
+            .ok_or_else(|| Refusal::new(RefusalCode::AuthRequired, "no current sign-in verification address"))
     }
 
     fn own_model_view(&self) -> Option<OwnModelView> {
@@ -1478,11 +1920,15 @@ impl AccountPort for DesktopAccountPort {
 pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: AccountStartup) {
     if let Some((scope, service, clock)) = runtime.take_commit_authority(&startup) {
         app.install_commit_authority(scope, service, clock);
-        solidcraft_engine::note!("account: authenticated commit authority installed for an explicit synchronous session");
-    } else if startup.logout_pending {
-        solidcraft_engine::note!("account: a previous sign-out is not confirmed; restore and controlled authority stay closed");
+        solidcraft_engine::note!("account: authenticated commit authority installed for the restored session");
+    } else if startup.logout == StartupLogout::ReadableTombstone {
+        solidcraft_engine::note!(
+            "account: a readable sign-out marker is present; recovery is offered and no prior identity or authority is restored"
+        );
+    } else if startup.logout == StartupLogout::Unreadable {
+        solidcraft_engine::note!("account: the sign-out state could not be read; account restore and actions stay closed");
     } else if startup.candidate.is_some() {
-        solidcraft_engine::note!("account: local restart candidate stays signed out until its bounded online check finishes; authority stays closed");
+        solidcraft_engine::note!("account: local restart candidate stays signed out until its bounded online check finishes");
     } else {
         solidcraft_engine::note!("account: no account session restored; CAD stays anonymous and offline");
     }
@@ -1516,10 +1962,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use serde_json::json;
+    use serde_json::{Value, json};
     use solidcraft_account_native::{
-        CredentialHandoff, CredentialSession, DeviceCodeTransport, MemorySession, NoPersistentStore, ProductExchangeError, ProductLogin,
-        ProductSession, ProductSessionExchange, ProviderSession, Secret, Transport, TransportFailure, WireCredentials, WireRequest, WireResponse,
+        CredentialHandoff, CredentialSession, DeviceCodePrompt, DeviceCodeTransport, MemorySession, NoPersistentStore, ProductExchangeError,
+        ProductLogin, ProductSession, ProductSessionExchange, ProviderSession, Secret, Transport, TransportFailure, WireCredentials, WireRequest,
+        WireResponse,
     };
     use solidcraft_engine::entitlement::{
         AccountId, AccountService, Admission, Availability, BillingResult, Capability, CredentialError, CredentialErrorCode, CredentialStore,
@@ -1528,6 +1975,7 @@ mod tests {
     use solidcraft_ui_egui::account::{AccountPort, Action};
     use solidcraft_ui_egui::control;
 
+    use super::legacy_device_tests::*;
     use super::*;
 
     fn store_error() -> CredentialError {
@@ -1541,8 +1989,14 @@ mod tests {
         fail_get: Arc<AtomicBool>,
         block_delete: Arc<Mutex<VecDeque<Receiver<()>>>>,
         block_get: Arc<Mutex<Option<Receiver<()>>>>,
+        block_set: Arc<Mutex<Option<(String, Receiver<()>)>>>,
+        fail_set: Arc<Mutex<Option<String>>>,
+        persistent: Arc<AtomicBool>,
+        set_calls: Arc<AtomicUsize>,
+        delete_calls: Arc<AtomicUsize>,
         delete_waiting: Arc<AtomicUsize>,
         get_waiting: Arc<AtomicUsize>,
+        set_waiting: Arc<AtomicUsize>,
     }
 
     impl Default for TestStore {
@@ -1553,8 +2007,14 @@ mod tests {
                 fail_get: Arc::new(AtomicBool::new(false)),
                 block_delete: Arc::new(Mutex::new(VecDeque::new())),
                 block_get: Arc::new(Mutex::new(None)),
+                block_set: Arc::new(Mutex::new(None)),
+                fail_set: Arc::new(Mutex::new(None)),
+                persistent: Arc::new(AtomicBool::new(true)),
+                set_calls: Arc::new(AtomicUsize::new(0)),
+                delete_calls: Arc::new(AtomicUsize::new(0)),
                 delete_waiting: Arc::new(AtomicUsize::new(0)),
                 get_waiting: Arc::new(AtomicUsize::new(0)),
+                set_waiting: Arc::new(AtomicUsize::new(0)),
             }
         }
     }
@@ -1569,6 +2029,33 @@ mod tests {
         /// Make the next read wait while this store's session lock is held.
         fn block_next_get(&self, gate: Receiver<()>) {
             *self.block_get.lock().unwrap() = Some(gate);
+        }
+
+        /// Make the next write of `key` wait until the test releases it.
+        fn block_next_set(&self, key: &str, gate: Receiver<()>) {
+            *self.block_set.lock().unwrap() = Some((key.to_owned(), gate));
+        }
+
+        /// Fail writes of `key` while set; clear with `None` to allow a retry.
+        fn set_fail_key(&self, key: Option<&str>) {
+            *self.fail_set.lock().unwrap() = key.map(str::to_owned);
+        }
+
+        /// Model a failed secure-store probe without changing what is readable.
+        fn set_persistent(&self, persistent: bool) {
+            self.persistent.store(persistent, Ordering::SeqCst);
+        }
+
+        fn mutation_count(&self) -> usize {
+            self.set_calls.load(Ordering::SeqCst) + self.delete_calls.load(Ordering::SeqCst)
+        }
+
+        fn wait_until_set_blocked(&self) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.set_waiting.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(self.set_waiting.load(Ordering::SeqCst) > 0, "the staged/commit write was never reached");
         }
     }
 
@@ -1586,11 +2073,28 @@ mod tests {
         }
 
         fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
+            self.set_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_set.lock().unwrap().as_deref() == Some(key) {
+                return Err(store_error());
+            }
+            let gate = {
+                let mut blocked = self.block_set.lock().unwrap();
+                match blocked.as_ref() {
+                    Some((expected, _)) if expected == key => blocked.take().map(|(_, gate)| gate),
+                    _ => None,
+                }
+            };
+            if let Some(gate) = gate {
+                self.set_waiting.fetch_add(1, Ordering::SeqCst);
+                let _ = gate.recv();
+                self.set_waiting.fetch_sub(1, Ordering::SeqCst);
+            }
             self.entries.lock().unwrap().insert(key.to_owned(), secret.to_owned());
             Ok(())
         }
 
         fn delete(&mut self, key: &str) -> Result<(), CredentialError> {
+            self.delete_calls.fetch_add(1, Ordering::SeqCst);
             let gate = self.block_delete.lock().unwrap().pop_front();
             if let Some(gate) = gate {
                 self.delete_waiting.fetch_add(1, Ordering::SeqCst);
@@ -1604,7 +2108,7 @@ mod tests {
         }
 
         fn persistent(&self) -> bool {
-            true
+            self.persistent.load(Ordering::SeqCst)
         }
     }
 
@@ -2610,14 +3114,10 @@ mod tests {
     }
 
     #[test]
-    fn an_explicit_sign_in_retires_the_restart_check_and_drops_its_late_reply() {
+    fn explicit_sign_in_cannot_replace_credentials_during_restart_check() {
         let (gate_tx, gate_rx) = channel();
         let device = ScriptedDevice::scripted(vec![(200, device_body()), (200, token_body())]);
-        let product = ScriptedProduct::scripted(vec![
-            Ok(WireResponse::new(200, status_body().to_string().into_bytes())),
-            Ok(WireResponse::new(201, installation_body().to_string().into_bytes())),
-            Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes())),
-        ]);
+        let product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes()))]);
         let gated = GatedStatusProduct::hold_first_status(product.clone(), gate_rx);
         let device_factory: DeviceTransportFactory = {
             let device = device.clone();
@@ -2640,16 +3140,15 @@ mod tests {
         let mut port = DesktopAccountPort::new(runtime, &startup);
 
         wait_for_counter(&gated.entered, 1);
-        port.sign_in().unwrap();
-        wait_until("the explicit sign-in", || port.completed_sign_in_account().is_some());
-        assert_eq!(port.view().account_label.as_deref(), Some("acct_product_0001"));
-        assert!(!port.startup_waiting(), "retirement marks the old check done before its network returns");
+        assert_eq!(port.sign_in().unwrap_err().code, RefusalCode::AuthUnavailable);
+        assert!(port.startup_waiting(), "sign-in must not retire the old check");
+        assert!(device.requests().is_empty());
 
         gate_tx.send(()).unwrap();
+        wait_for_restart(&port);
+        assert_eq!(port.view().account_label.as_deref(), Some("acct_desktop_0001"));
         port.shutdown();
-        assert!(port.verified_restart_account().is_none(), "a late restart reply is dropped after an explicit sign-in");
-        assert_eq!(port.view().account_label.as_deref(), Some("acct_product_0001"), "the completed sign-in stays current");
-        assert_eq!(product.requests().len(), 3, "the late status read is consumed once and never replayed");
+        assert_eq!(product.requests().len(), 1, "only the original status read is allowed");
         assert!(opener.urls().is_empty());
     }
 
@@ -2739,7 +3238,8 @@ mod tests {
 
         let restarted = AccountRuntime::with_session(CredentialSession::new(Box::new(store.clone())));
         let startup = restarted.startup();
-        assert!(startup.logout_pending, "startup sees the unconfirmed sign-out");
+        assert!(startup.logout_pending(), "startup sees the unconfirmed sign-out");
+        assert_eq!(startup.logout, StartupLogout::ReadableTombstone);
         assert!(startup.candidate.is_none());
         assert!(startup.restored.is_none());
 
@@ -2747,7 +3247,7 @@ mod tests {
         // sign-in path clears it.
         store.fail_delete.store(false, Ordering::SeqCst);
         let startup = AccountRuntime::with_session(CredentialSession::new(Box::new(store))).startup();
-        assert!(startup.logout_pending);
+        assert!(startup.logout_pending());
         assert!(startup.candidate.is_none());
         assert!(startup.restored.is_none());
     }
@@ -2760,8 +3260,98 @@ mod tests {
         store.fail_get.store(true, Ordering::SeqCst);
         let runtime = AccountRuntime::with_session(CredentialSession::new(Box::new(store)));
         let startup = runtime.startup();
-        assert!(startup.logout_pending, "an unreadable safety marker is treated as unsafe");
+        assert!(startup.logout_pending(), "an unreadable safety marker is treated as unsafe");
+        assert_eq!(startup.logout, StartupLogout::Unreadable);
         assert!(startup.restored.is_none());
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        let view = port.view();
+        assert!(!view.sign_out_recovery, "unreadable storage must not expose recovery");
+        assert!(!view.sign_in_visible, "unreadable storage must stay closed");
+        assert!(port.sign_out().is_err(), "no write may be attempted when storage is unreadable");
+    }
+
+    #[test]
+    fn a_failed_store_probe_refuses_sign_out_and_switch_without_mutating_storage() {
+        let store = TestStore::default();
+        let session = activate_session(&store);
+        store.fail_delete.store(true, Ordering::SeqCst);
+        assert_eq!(session.sign_out().unwrap_err().code, CredentialErrorCode::Unavailable);
+        assert!(session.logout_pending().unwrap(), "a readable marker remains");
+        store.fail_delete.store(false, Ordering::SeqCst);
+        // The probe failed: storage is usable for reads, but this process may not write or spawn.
+        store.set_persistent(false);
+
+        let entries = store.entries.lock().unwrap().clone();
+        let mutations = store.mutation_count();
+        for action in [LifecycleEvent::SignedOut, LifecycleEvent::AccountSwitched] {
+            let runtime = AccountRuntime::with_session(CredentialSession::new(Box::new(store.clone())));
+            let startup = runtime.startup();
+            assert!(!startup.secure_store, "the failed probe is visible at startup");
+            assert_eq!(startup.logout, StartupLogout::ReadableTombstone, "the marker is still readable");
+            let mut port = DesktopAccountPort::new(runtime, &startup);
+            assert!(!port.view().sign_out_recovery, "a failed probe must not offer recovery");
+            assert!(!port.view().sign_in_visible, "a failed probe must not offer sign-in");
+            let before = port.view().clone();
+            let refused = match action {
+                LifecycleEvent::SignedOut => port.sign_out(),
+                LifecycleEvent::AccountSwitched => port.switch_account(),
+            };
+            assert!(refused.is_err(), "{action:?} must fail closed without a secure store");
+            assert_eq!(port.view(), before, "{action:?} changed the view");
+            assert!(port.lifecycle.is_none(), "{action:?} raised a lifecycle event");
+            assert!(port.workers.is_empty(), "{action:?} spawned cleanup");
+            assert!(!port.runtime.credentials.is_revoked(), "{action:?} revoked authority");
+            assert!(port.cleanup.lock().unwrap().pending.is_none(), "{action:?} started cleanup");
+            assert_eq!(store.mutation_count(), mutations, "{action:?} wrote or deleted storage");
+            assert_eq!(*store.entries.lock().unwrap(), entries, "{action:?} changed stored entries");
+        }
+    }
+
+    #[test]
+    fn a_readable_startup_tombstone_offers_recovery_and_clears_only_after_confirmed_cleanup() {
+        let store = TestStore::default();
+        let session = activate_session(&store);
+        store.fail_delete.store(true, Ordering::SeqCst);
+        assert_eq!(session.sign_out().unwrap_err().code, CredentialErrorCode::Unavailable);
+
+        let runtime = AccountRuntime::with_session(CredentialSession::new(Box::new(store.clone())));
+        let startup = runtime.startup();
+        assert_eq!(startup.logout, StartupLogout::ReadableTombstone);
+        assert!(startup.restored.is_none(), "the marker suppressed identity restore");
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        assert!(port.view().sign_out_recovery, "a readable tombstone must offer recovery");
+        assert!(!port.view().sign_in_visible, "no sign-in before the marker is cleared");
+        assert!(!port.view().signed_in, "no prior identity is restored");
+        assert!(port.runtime.authenticated_scope().is_none(), "no prior authority is restored");
+
+        store.fail_delete.store(false, Ordering::SeqCst);
+        port.sign_out().unwrap();
+        assert!(port.view().sign_out_pending, "the recovery action starts one cleanup");
+        wait_for_cleanup(&port);
+        let view = port.poll().expect("the recovery cleanup is adopted once");
+        assert!(!view.sign_out_recovery);
+        assert!(!view.sign_out_pending);
+        assert!(view.sign_in_visible, "confirmed cleanup returns to ordinary signed-out state");
+        assert_eq!(port.logout, StartupLogout::Clear);
+        assert!(!port.runtime.credentials.logout_pending().unwrap(), "the durable marker is gone");
+        assert!(port.runtime.authenticated_scope().is_none(), "recovery never revives authority");
+        port.shutdown();
+    }
+
+    #[test]
+    fn poll_repaint_is_bounded_to_pending_worker_states() {
+        assert_eq!(poll_repaint_after(&AccountView::signed_out()), None, "an idle window must not schedule frames");
+        assert_eq!(poll_repaint_after(&signed_in_view("alice".into())), None);
+        assert_eq!(poll_repaint_after(&AccountView { sign_in_state: SignInState::Expired, ..AccountView::signed_out() }), None);
+        assert_eq!(poll_repaint_after(&AccountView { sign_in_state: SignInState::Failed, ..AccountView::signed_out() }), None);
+        for state in [SignInState::Starting, SignInState::Waiting] {
+            let view = AccountView { sign_in_state: state, ..AccountView::signed_out() };
+            assert_eq!(poll_repaint_after(&view), Some(Duration::from_secs(1)), "{state:?} needs a bounded poll");
+        }
+        let pending = AccountView { sign_out_pending: true, ..AccountView::unavailable() };
+        assert_eq!(poll_repaint_after(&pending), Some(Duration::from_secs(1)), "sign-out completion needs a bounded poll");
+        let recovery = AccountView { sign_out_recovery: true, ..AccountView::unavailable() };
+        assert_eq!(poll_repaint_after(&recovery), None, "recovery waits for a person, not a worker");
     }
 
     #[test]
@@ -2788,7 +3378,16 @@ mod tests {
             } else {
                 port.switch_account().unwrap();
             }
+            let first = port.view();
+            assert!(first.sign_out_pending, "{action:?} must show pending before the first poll");
+            assert!(!first.signed_in);
+            assert!(!first.sign_in_visible);
+            assert_eq!(first.account_label, None);
+            assert_eq!(first.sign_out_error, None);
             wait_for_cleanup(&port);
+            let confirmed = port.poll().expect("confirmed cleanup updates the pending view");
+            assert!(!confirmed.sign_out_pending);
+            assert!(confirmed.sign_in_visible);
             assert!(port.runtime.authenticated_scope().is_none(), "the old session binding is gone");
             assert!(!port.view().signed_in);
             assert_eq!(port.take_lifecycle_event(), Some(expected));
@@ -2821,36 +3420,85 @@ mod tests {
         assert!(port.cleanup.lock().unwrap().error.is_none(), "cleanup completed");
         assert!(!port.runtime.credentials.is_revoked(), "the owning generation lifted the barrier");
         port.shutdown();
-        assert!(!port.logout_pending, "the startup gate was already clear");
+        assert_eq!(port.logout, StartupLogout::Clear, "the startup gate was already clear");
     }
 
     #[test]
-    fn an_older_cleanup_cannot_clear_the_newer_generation_barrier() {
+    fn a_repeated_sign_out_while_pending_is_refused_without_a_second_worker() {
         let store = TestStore::default();
-        let (gate_one_tx, gate_one_rx) = channel();
-        let (gate_two_tx, gate_two_rx) = channel();
+        let (gate_tx, gate_rx) = channel();
         let runtime = AccountRuntime::with_session(activate_session(&store));
-        store.block_next_delete(gate_one_rx);
+        store.block_next_delete(gate_rx);
         let startup = runtime.startup();
         let mut port = DesktopAccountPort::new(runtime, &startup);
 
         port.sign_out().unwrap();
         wait_for_counter(&store.delete_waiting, 1);
-        store.block_next_delete(gate_two_rx);
-        port.sign_out().unwrap();
-        assert_eq!(port.cleanup.lock().unwrap().pending, Some(2));
+        assert_eq!(port.cleanup.lock().unwrap().pending, Some(1));
         assert!(port.runtime.credentials.is_revoked());
+        let attempt = port.login_attempt;
+        let started = Instant::now();
+        let error = port.sign_out().unwrap_err();
+        assert_eq!(error.code, RefusalCode::AuthUnavailable);
+        assert!(started.elapsed() < Duration::from_millis(100), "a repeated sign-out blocked on keyring IO");
+        assert_eq!(port.cleanup.lock().unwrap().pending, Some(1), "a repeated sign-out started a second worker");
+        assert_eq!(port.login_attempt, attempt, "refusing an action must not advance the login fence");
+        assert_eq!(port.take_lifecycle_event(), Some(LifecycleEvent::SignedOut), "one sign-out raises one event");
+        assert_eq!(port.take_lifecycle_event(), None);
 
-        // Let the older worker finish. It must not clear the newer generation's barrier while
-        // the newer worker waits before its first delete.
-        gate_one_tx.send(()).unwrap();
-        wait_for_counter(&store.delete_waiting, 2);
-        assert!(port.runtime.credentials.is_revoked(), "the older cleanup cleared a newer barrier");
-        assert_eq!(port.cleanup.lock().unwrap().pending, Some(2));
-
-        gate_two_tx.send(()).unwrap();
+        gate_tx.send(()).unwrap();
         wait_for_cleanup(&port);
+        assert!(port.cleanup.lock().unwrap().error.is_none());
         assert!(!port.runtime.credentials.is_revoked(), "the owning generation lifts the barrier");
+        port.shutdown();
+    }
+
+    #[test]
+    fn shutdown_waits_for_a_blocked_promotion_and_accepts_the_serialized_commit() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
+        let (gate_tx, gate_rx) = channel();
+        store.block_next_set("login/commit", gate_rx);
+        let mut port = login_port(browser, runner, &store);
+        port.sign_in().unwrap();
+        store.wait_until_set_blocked();
+        std::thread::scope(|scope| {
+            let shutdown = scope.spawn(|| port.shutdown());
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!shutdown.is_finished(), "shutdown invalidated the generation before the promotion finished");
+            gate_tx.send(()).unwrap();
+            shutdown.join().unwrap();
+        });
+        assert!(port.runtime.credentials.product_session_active(), "the promotion that won the gate was not a valid commit");
+    }
+
+    #[test]
+    fn a_failed_sign_out_marker_is_surfaced_and_retryable() {
+        let store = TestStore::default();
+        let runtime = AccountRuntime::with_session(activate_session(&store));
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        store.set_fail_key(Some("auth/logout_pending"));
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        let error = port.cleanup.lock().unwrap().error.clone().expect("the failed durable marker is surfaced");
+        assert_eq!(error.code, RefusalCode::AuthUnavailable);
+        let _ = AccountPort::poll(&mut port);
+        assert_eq!(port.view().sign_out_error, Some(RefusalCode::AuthUnavailable));
+        assert!(!port.view().sign_in_visible);
+        assert!(port.cancel_sign_in().is_err(), "cancel cannot replace the cleanup error view");
+        assert_eq!(port.view().sign_out_error, Some(RefusalCode::AuthUnavailable));
+        assert!(port.runtime.credentials.is_revoked(), "the in-process authority stays revoked");
+        assert!(!port.runtime.credentials.logout_pending().unwrap_or(false), "no durable tombstone is claimed");
+
+        store.set_fail_key(None);
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert!(port.cleanup.lock().unwrap().error.is_none());
+        assert!(!port.runtime.credentials.logout_pending().unwrap_or(true), "the retry wrote and cleared the marker");
+        assert!(!port.runtime.credentials.product_session_active());
         port.shutdown();
     }
 
@@ -3444,7 +4092,7 @@ mod tests {
             br#"{"error":{"code":"AUTH_REQUIRED","message":"Authentication or credential is not valid.","retryable":false,"request_id":"req_example_0001"}}"#
                 .to_vec(),
         ))]);
-        let runtime = AccountRuntime::new(session.clone(), Some(ledger));
+        let runtime = AccountRuntime::new(session.clone(), Some(ledger), None);
         let startup = runtime.startup();
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         app.session.path = Some(project.design.to_string_lossy().into_owned());
@@ -3516,9 +4164,11 @@ mod tests {
         // spawning a worker. The scripted result arrives while the clock is still at 20 s.
         app.dfm_review.running = true;
         let ctx = egui::Context::default();
-        let _ = ctx.run_ui(egui::RawInput { time: Some(1.0), ..Default::default() }, |ui| {
+        ctx.run_ui(egui::RawInput { time: Some(1.0), ..Default::default() }, |ui| {
             solidcraft_ui_egui::dfm_review::poll(&mut app, ui.ctx());
-        });
+        })
+        .textures_delta
+        .clear();
         assert!(!app.dfm_review.running, "the late report reached the completion branch");
         assert!(app.dfm_review.error.as_deref().unwrap().starts_with("AUTH_REQUIRED:"));
         assert!(app.dfm_review.card.is_none());
@@ -3639,6 +4289,549 @@ mod tests {
         ));
     }
 
+    #[derive(Default)]
+    struct GateState {
+        started: bool,
+        gate: Option<Receiver<()>>,
+    }
+
+    #[derive(Clone, Default)]
+    struct ScriptedDeviceTransport {
+        state: Arc<Mutex<GateState>>,
+        blocked: bool,
+        token_error: Option<&'static str>,
+    }
+
+    impl ScriptedDeviceTransport {
+        fn blocked(gate: Receiver<()>) -> Self {
+            Self { state: Arc::new(Mutex::new(GateState { gate: Some(gate), ..GateState::default() })), blocked: true, token_error: None }
+        }
+
+        fn expired() -> Self {
+            Self { token_error: Some("expired_token"), ..Self::default() }
+        }
+    }
+
+    impl DeviceCodeTransport for ScriptedDeviceTransport {
+        fn post(&self, _url: &str, _content_type: &str, _body: &[u8]) -> Result<(u16, Vec<u8>), CredentialError> {
+            let mut state = self.state.lock().map_err(|_| store_error())?;
+            if !state.started {
+                state.started = true;
+                return Ok((
+                    200,
+                    json!({
+                        "device_code": "device_code_SECRET_000000000000000000000000",
+                        "user_code": "BCDF-GHJK",
+                        "verification_uri": "https://auth.example/device",
+                        "verification_uri_complete": "https://auth.example/device?user_code=BCDF-GHJK",
+                        "expires_in": 300,
+                        "interval": 1
+                    })
+                    .to_string()
+                    .into_bytes(),
+                ));
+            }
+            if self.blocked {
+                let gate = state.gate.take();
+                drop(state);
+                if let Some(gate) = gate {
+                    let _ = gate.recv();
+                }
+            }
+            if let Some(error) = self.token_error {
+                return Ok((400, json!({"error": error}).to_string().into_bytes()));
+            }
+            Ok((
+                200,
+                json!({
+                    "user": {"id": "user_0001"},
+                    "access_token": "access_token_SECRET_000000000000000000000000"
+                })
+                .to_string()
+                .into_bytes(),
+            ))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct SequenceDeviceTransport {
+        responses: Arc<Mutex<VecDeque<Result<(u16, Vec<u8>), CredentialError>>>>,
+    }
+
+    impl SequenceDeviceTransport {
+        fn with_responses(polls: Vec<(u16, Value)>) -> Self {
+            let mut responses = VecDeque::new();
+            responses.push_back(Ok((
+                200,
+                json!({
+                    "device_code": "device_code_SECRET_000000000000000000000000",
+                    "user_code": "BCDF-GHJK",
+                    "verification_uri": "https://auth.example/device",
+                    "expires_in": 300,
+                    "interval": 1
+                })
+                .to_string()
+                .into_bytes(),
+            )));
+            for (status, poll) in polls {
+                responses.push_back(Ok((status, poll.to_string().into_bytes())));
+            }
+            Self { responses: Arc::new(Mutex::new(responses)) }
+        }
+    }
+
+    impl DeviceCodeTransport for SequenceDeviceTransport {
+        fn post(&self, _url: &str, _content_type: &str, _body: &[u8]) -> Result<(u16, Vec<u8>), CredentialError> {
+            self.responses.lock().map_err(|_| store_error())?.pop_front().unwrap_or_else(|| Err(store_error()))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct ScriptedExchange {
+        calls: Arc<AtomicUsize>,
+        reject_first: bool,
+    }
+
+    impl ScriptedExchange {
+        fn accepting() -> Self {
+            Self { calls: Arc::new(AtomicUsize::new(0)), reject_first: false }
+        }
+
+        fn rejecting_once() -> Self {
+            Self { calls: Arc::new(AtomicUsize::new(0)), reject_first: true }
+        }
+    }
+
+    impl ProductSessionExchange for ScriptedExchange {
+        fn exchange(&self, _provider: &ProviderSession) -> Result<ProductSession, ProductExchangeError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.reject_first && call == 0 {
+                return Err(ProductExchangeError::Rejected);
+            }
+            Ok(ProductSession::from_trusted_exchange("acct_desktop0001", Secret::new("product_session_test_0000000000"), None))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingBrowser {
+        opened: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl BrowserLauncher for RecordingBrowser {
+        fn open(&self, url: &str, allowed_origin: &str) -> Result<(), Refusal> {
+            if !trusted_browser_url(url, allowed_origin) {
+                return Err(account_unavailable("the test browser refused a foreign origin"));
+            }
+            self.opened.lock().map_err(|_| account_unavailable("browser test lock"))?.push(url.to_owned());
+            Ok(())
+        }
+    }
+
+    fn test_config() -> DesktopAccountConfig {
+        DesktopAccountConfig::new("client_test", "https://product.example", "https://auth.example").expect("test configuration")
+    }
+
+    fn foreign_config() -> DesktopAccountConfig {
+        DesktopAccountConfig::new("client_test", "https://product.example", "https://auth.allowed.example").expect("test configuration")
+    }
+
+    fn config_port(config: DesktopAccountConfig, browser: RecordingBrowser, runner: LoginRunner, store: &TestStore) -> DesktopAccountPort {
+        let runtime = AccountRuntime::with_session_config(CredentialSession::new(Box::new(store.clone())), config);
+        let startup = runtime.startup();
+        DesktopAccountPort::new(runtime, &startup).with_seams(Arc::new(browser), runner)
+    }
+
+    fn test_runner(transport: ScriptedDeviceTransport, exchange: ScriptedExchange) -> (LoginRunner, Arc<AtomicUsize>) {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&attempts);
+        let runner: LoginRunner = Arc::new(move |task| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let transport = transport.clone();
+            let exchange = exchange.clone();
+            std::thread::Builder::new()
+                .name("intcad-account-login-test".into())
+                .spawn(move || {
+                    run_login(task, transport, &exchange, &no_wait);
+                })
+                .map_err(|_| account_unavailable("the test sign-in worker could not start"))
+        });
+        (runner, attempts)
+    }
+
+    fn no_wait(_duration: Duration, _deadline: Instant, _canceled: &dyn Fn() -> bool) -> bool {
+        true
+    }
+
+    fn sequence_runner(transports: Vec<ScriptedDeviceTransport>, exchange: ScriptedExchange) -> (LoginRunner, Arc<AtomicUsize>) {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&attempts);
+        let transports = Arc::new(Mutex::new(transports));
+        let runner: LoginRunner = Arc::new(move |task| {
+            let transport = transports.lock().map_err(|_| account_unavailable("test transport lock"))?.remove(0);
+            counter.fetch_add(1, Ordering::SeqCst);
+            let exchange = exchange.clone();
+            std::thread::Builder::new()
+                .name("intcad-account-login-test".into())
+                .spawn(move || {
+                    run_login(task, transport, &exchange, &no_wait);
+                })
+                .map_err(|_| account_unavailable("the test sign-in worker could not start"))
+        });
+        (runner, attempts)
+    }
+
+    fn wait_for_login(port: &mut DesktopAccountPort, signed_in: bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            let _ = AccountPort::poll(port);
+            if port.view().signed_in == signed_in && !port.view().sign_in_state.pending() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the sign-in worker did not reach signed_in={signed_in}");
+    }
+
+    fn login_port(browser: RecordingBrowser, runner: LoginRunner, store: &TestStore) -> DesktopAccountPort {
+        let runtime = AccountRuntime::with_session_config(CredentialSession::new(Box::new(store.clone())), test_config());
+        let startup = runtime.startup();
+        DesktopAccountPort::new(runtime, &startup).with_seams(Arc::new(browser), runner)
+    }
+
+    #[test]
+    fn explicit_sign_in_verifies_the_product_before_persisting_and_never_launches_a_browser() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, attempts) = test_runner(ScriptedDeviceTransport::default(), exchange.clone());
+        let mut port = login_port(browser.clone(), runner, &store);
+
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, true);
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "one explicit action starts one attempt");
+        assert_eq!(exchange.calls.load(Ordering::SeqCst), 1, "the provider was verified once");
+        assert!(browser.opened.lock().unwrap().is_empty(), "sign-in launched a browser without a click");
+        assert!(port.runtime.credentials.product_session_active(), "the verified session was persisted");
+        assert!(port.runtime.credentials.authenticated_scope().is_none(), "no installation authority was invented");
+        assert_eq!(port.view().account_label.as_deref(), Some("acct_desktop0001"));
+        assert!(!port.view().chat_available, "verification alone does not grant chat or execution authority");
+    }
+
+    #[test]
+    fn expired_sign_in_is_explicitly_retryable() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, attempts) = sequence_runner(vec![ScriptedDeviceTransport::expired(), ScriptedDeviceTransport::default()], exchange);
+        let mut port = login_port(browser, runner, &store);
+
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, false);
+        assert_eq!(port.view().sign_in_state, SignInState::Expired);
+
+        // A second explicit click starts a fresh attempt instead of replaying the old one.
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, true);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn canceling_a_waiting_attempt_prevents_late_persistence() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (gate_tx, gate_rx) = channel();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::blocked(gate_rx), exchange.clone());
+        let mut port = login_port(browser, runner, &store);
+
+        port.sign_in().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while port.view().sign_in_prompt.is_none() && Instant::now() < deadline {
+            let _ = AccountPort::poll(&mut port);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(port.view().sign_in_prompt.is_some(), "the provider prompt arrived");
+        port.open_sign_in_browser().unwrap();
+        AccountPort::cancel_sign_in(&mut port).unwrap();
+        gate_tx.send(()).unwrap();
+        port.shutdown();
+
+        assert_eq!(exchange.calls.load(Ordering::SeqCst), 0, "a canceled attempt never reached verification");
+        assert!(!port.runtime.credentials.product_session_active());
+        assert_eq!(port.runtime.credentials.provider_account(), None);
+        assert!(!port.view().signed_in);
+    }
+
+    #[test]
+    fn cancel_after_commit_is_refused_and_sign_out_remains_the_lifecycle_transition() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
+        let mut port = login_port(browser, runner, &store);
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, true);
+        let error = AccountPort::cancel_sign_in(&mut port).unwrap_err();
+        assert_eq!(error.code, RefusalCode::AuthUnavailable, "a completed sign-in was reported as canceled");
+        assert!(port.runtime.credentials.product_session_active(), "the committed session is not deleted");
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert!(!port.runtime.credentials.product_session_active());
+        assert!(!port.view().signed_in);
+    }
+
+    fn authorized_token() -> Value {
+        json!({"user": {"id": "user_0001"}, "access_token": "access_token_SECRET_000000000000000000000000"})
+    }
+
+    fn direct_task(config: &DesktopAccountConfig, store: &TestStore, attempt: u64) -> LoginTask {
+        LoginTask {
+            attempt,
+            client: config.client.clone(),
+            connection: config.product.clone(),
+            verification_origin: config.verification_origin.clone(),
+            credentials: CredentialSession::new(Box::new(store.clone())),
+            status: Arc::new(Mutex::new(LoginStatus { attempt, phase: LoginPhase::Starting, prompt: None, account: None })),
+            persist_gate: Arc::new(Mutex::new(())),
+            bootstrap_transport: None,
+        }
+    }
+
+    #[test]
+    fn provider_slow_down_interval_is_honoured_and_cancellation_is_interruptible() {
+        let store = TestStore::default();
+        let config = test_config();
+        let task = direct_task(&config, &store, 1);
+        let status = Arc::clone(&task.status);
+        let exchange = ScriptedExchange::accepting();
+        let waits = Arc::new(Mutex::new(Vec::<Duration>::new()));
+        let logged = Arc::clone(&waits);
+        let transport = SequenceDeviceTransport::with_responses(vec![
+            (400, json!({"error": "authorization_pending"})),
+            (400, json!({"error": "slow_down"})),
+            (200, authorized_token()),
+        ]);
+        run_login(task, transport, &exchange, &move |duration, _deadline, _canceled| {
+            logged.lock().unwrap().push(duration);
+            true
+        });
+        let waits = waits.lock().unwrap().clone();
+        assert!(waits.iter().all(|duration| *duration >= Duration::from_secs(1)), "polled earlier than the provider interval: {waits:?}");
+        assert!(waits.iter().any(|duration| *duration >= Duration::from_secs(6)), "slow_down was not honoured: {waits:?}");
+        assert!(status.lock().unwrap().phase == LoginPhase::Done);
+        assert!(store.entries.lock().unwrap().contains_key("auth/product_session"));
+    }
+
+    #[test]
+    fn foreign_verification_origin_is_never_published_or_launched() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
+        let mut port = config_port(foreign_config(), browser.clone(), runner, &store);
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, false);
+        assert_eq!(port.view().sign_in_state, SignInState::Failed);
+        assert!(port.view().sign_in_prompt.is_none(), "a foreign provider origin reached the UI");
+        assert!(browser.opened.lock().unwrap().is_empty());
+        assert_eq!(port.open_sign_in_browser().unwrap_err().code, RefusalCode::AuthRequired);
+    }
+
+    #[test]
+    fn rejected_product_verification_can_be_retried_explicitly() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::rejecting_once();
+        let (runner, attempts) = sequence_runner(vec![ScriptedDeviceTransport::default(), ScriptedDeviceTransport::default()], exchange.clone());
+        let mut port = login_port(browser, runner, &store);
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, false);
+        assert_eq!(port.view().sign_in_state, SignInState::Failed);
+        assert!(!port.runtime.credentials.product_session_active());
+
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, true);
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(exchange.calls.load(Ordering::SeqCst), 2);
+        assert!(port.runtime.credentials.product_session_active());
+    }
+
+    macro_rules! joining_runner {
+        ($attempts:expr, $sleep:expr) => {{
+            let counter = Arc::clone($attempts);
+            let runner: LoginRunner = Arc::new(move |task| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                std::thread::Builder::new()
+                    .name("intcad-account-login-joining-test".into())
+                    .spawn(move || {
+                        let _task = task;
+                        std::thread::sleep($sleep);
+                    })
+                    .map_err(|_| account_unavailable("the test sign-in worker could not start"))
+            });
+            runner
+        }};
+    }
+
+    #[test]
+    fn spawn_failure_resets_starting_and_refuses() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let runner: LoginRunner = Arc::new(|_| Err(account_unavailable("spawn refused")));
+        let mut port = config_port(test_config(), browser, runner, &store);
+        assert!(port.sign_in().is_err());
+        assert_eq!(port.view().sign_in_state, SignInState::Idle);
+        assert!(!port.view().signed_in);
+    }
+
+    #[test]
+    fn cancel_and_retry_do_not_join_a_live_worker_or_wait_for_persistence() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let runner = joining_runner!(&attempts, Duration::from_millis(300));
+        let mut port = config_port(test_config(), browser, runner, &store);
+        port.sign_in().unwrap();
+        let started = Instant::now();
+        AccountPort::cancel_sign_in(&mut port).unwrap();
+        assert!(started.elapsed() < Duration::from_millis(100), "cancel blocked on a live worker");
+        let started = Instant::now();
+        port.sign_in().unwrap();
+        assert!(started.elapsed() < Duration::from_millis(100), "retry joined a live worker");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        port.shutdown();
+    }
+
+    #[test]
+    fn a_terminal_snapshot_is_consumed_once_and_does_not_resurrect_a_later_view() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
+        let mut port = login_port(browser, runner, &store);
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, true);
+        assert!(AccountPort::poll(&mut port).is_none(), "the success snapshot was returned twice");
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        let confirmed = port.poll().expect("cleanup confirmation is a separate terminal update");
+        assert!(!confirmed.sign_out_pending);
+        assert!(!confirmed.signed_in, "a stale success resurrected the signed-out view");
+        assert!(port.poll().is_none(), "terminal snapshots are not replayed");
+    }
+
+    #[test]
+    fn readable_tombstone_requires_cleanup_before_sign_in_and_product_only_does_not_restore() {
+        let store = TestStore::default();
+        store.entries.lock().unwrap().insert("auth/logout_pending".into(), "sign_out".into());
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
+        let mut port = login_port(browser, runner, &store);
+        assert_eq!(port.logout, StartupLogout::ReadableTombstone, "the startup marker is present");
+        assert!(port.sign_in().is_err(), "sign-in cannot replace unconfirmed cleanup");
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        port.poll().unwrap();
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, true);
+        assert_eq!(port.logout, StartupLogout::Clear, "a verified identity clears the tombstone");
+        assert!(port.runtime.credentials.product_session_active());
+        assert!(port.runtime.credentials.authenticated_scope().is_none(), "identity is not installation proof");
+        let restarted = AccountRuntime::with_session(CredentialSession::new(Box::new(store)));
+        let startup = restarted.startup();
+        assert!(!startup.logout_pending());
+        assert!(startup.restored.is_none(), "restart does not restore controlled authority without installation proof");
+        assert!(startup.candidate.is_none(), "identity alone is not a restart candidate");
+        assert!(!current_view(&startup).signed_in);
+    }
+
+    #[test]
+    fn trusted_configuration_is_build_time_and_fails_closed() {
+        assert!(config_from_build_values(None, Some("https://auth.example"), Some("https://product.example")).is_none());
+        assert!(config_from_build_values(Some("client_test"), None, Some("https://product.example")).is_none());
+        assert!(config_from_build_values(Some("client_test"), Some("https://auth.example"), None).is_none());
+        let valid = config_from_build_values(Some("client_test"), Some("https://auth.example"), Some("https://product.example"));
+        assert!(valid.is_some(), "explicit complete build values load");
+        assert!(DesktopAccountConfig::new("", "https://product.example", "https://auth.example").is_none());
+        assert!(DesktopAccountConfig::new("client_test", "http://product.example", "https://auth.example").is_none());
+        let wrong_product_path = DesktopAccountConfig::new("client_test", "https://product.example/v1", "https://auth.example");
+        assert!(wrong_product_path.is_none(), "a product origin must be bare");
+        let wrong_auth = DesktopAccountConfig::new("client_test", "https://product.example", "https://auth.example/path");
+        assert!(wrong_auth.is_none(), "an AuthKit origin must be bare");
+        assert!(!trusted_browser_url("http://auth.example/device", "https://auth.example"));
+        assert!(!trusted_browser_url("https://other.example/device", "https://auth.example"));
+        assert!(!trusted_browser_url("https://user@auth.example/device", "https://auth.example"));
+    }
+
+    #[test]
+    fn cancel_during_blocked_persistence_is_refused_without_waiting_or_claiming_success() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
+        let (gate_tx, gate_rx) = channel();
+        store.block_next_set("login/commit", gate_rx);
+        let mut port = login_port(browser, runner, &store);
+        port.sign_in().unwrap();
+        store.wait_until_set_blocked();
+        let started = Instant::now();
+        let error = AccountPort::cancel_sign_in(&mut port).unwrap_err();
+        assert_eq!(error.code, RefusalCode::AuthUnavailable);
+        assert!(started.elapsed() < Duration::from_millis(100), "cancel waited on blocked persistence");
+        gate_tx.send(()).unwrap();
+        wait_for_login(&mut port, true);
+        assert!(port.runtime.credentials.product_session_active(), "the refused cancel did not claim cancellation");
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert!(!port.runtime.credentials.product_session_active());
+    }
+
+    #[test]
+    fn sign_out_during_blocked_persistence_is_refused_then_works_after_commit() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
+        let (gate_tx, gate_rx) = channel();
+        store.block_next_set("login/commit", gate_rx);
+        let mut port = login_port(browser, runner, &store);
+        port.sign_in().unwrap();
+        store.wait_until_set_blocked();
+        let started = Instant::now();
+        let error = port.sign_out().unwrap_err();
+        assert_eq!(error.code, RefusalCode::AuthUnavailable);
+        assert!(started.elapsed() < Duration::from_millis(100), "sign-out waited on blocked persistence");
+        gate_tx.send(()).unwrap();
+        wait_for_login(&mut port, true);
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert!(!port.runtime.credentials.product_session_active(), "the accepted sign-out did not remove the commit");
+        assert!(!port.view().signed_in);
+    }
+
+    #[test]
+    fn signing_out_obsoletes_a_waiting_attempt() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (gate_tx, gate_rx) = channel();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::blocked(gate_rx), exchange.clone());
+        let mut port = login_port(browser, runner, &store);
+        port.sign_in().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while port.view().sign_in_prompt.is_none() && Instant::now() < deadline {
+            let _ = AccountPort::poll(&mut port);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        port.sign_out().unwrap();
+        gate_tx.send(()).unwrap();
+        wait_for_cleanup(&port);
+        port.shutdown();
+        assert_eq!(exchange.calls.load(Ordering::SeqCst), 0);
+        assert!(!port.runtime.credentials.product_session_active());
+    }
+
     #[test]
     fn sign_in_configuration_requires_https_origins_and_clean_values() {
         assert_eq!(SignInConfig::new("", "https://auth.example", "https://api.example", "1.0.0").unwrap_err().code, RefusalCode::AuthUnavailable);
@@ -3676,11 +4869,13 @@ mod tests {
         let mut port = DesktopAccountPort::new(runtime, &startup);
 
         port.sign_in().unwrap();
-        wait_until("the refused origin", || port.take_sign_in_notice().is_some());
+        wait_until("the refused origin", || matches!(port.login_status.lock().unwrap().phase, LoginPhase::Failed(_)));
         assert!(!port.view().signed_in);
 
+        port.poll();
         port.sign_in().unwrap();
-        wait_until("the retried verified sign-in", || port.view().signed_in);
+        wait_until("the retried verified sign-in", || port.login_status.lock().unwrap().phase == LoginPhase::Done);
+        port.poll();
         assert_eq!(device.requests().len(), 3, "the retry starts a new authorization; the old flow is not replayed");
         assert_eq!(product.requests().len(), 2, "the retried verified sign-in also binds one installation");
         assert!(opener.urls().is_empty());
@@ -3698,12 +4893,35 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_refusal_does_not_publish_the_verified_login() {
+        let store = TestStore::default();
+        let session = CredentialSession::new(Box::new(store.clone()));
+        let device = ScriptedDevice::scripted(vec![(200, device_body()), (200, token_body())]);
+        let product = ScriptedProduct::scripted(vec![
+            Ok(WireResponse::new(200, status_body().to_string().into_bytes())),
+            Ok(WireResponse::new(503, b"{}".to_vec())),
+        ]);
+        let runtime = harness_runtime(session, device, product.clone(), Arc::new(VirtualTiming::default()), &RecordingOpener::default());
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        port.sign_in().unwrap();
+        wait_until("installation refusal", || matches!(port.login_status.lock().unwrap().phase, LoginPhase::Failed(_)));
+        port.poll();
+        assert_eq!(product.requests().len(), 2);
+        assert_eq!(port.view().sign_in_state, SignInState::Failed);
+        port.shutdown();
+        let reopened = CredentialSession::new(Box::new(store));
+        assert!(!reopened.product_session_active());
+        assert!(reopened.authenticated_scope().is_none());
+    }
+
+    #[test]
     fn desktop_sign_in_without_configuration_is_refused_before_any_request() {
         let runtime = AccountRuntime::with_session(CredentialSession::new(Box::new(TestStore::default())));
         let startup = runtime.startup();
         let mut port = DesktopAccountPort::new(runtime, &startup);
         assert_eq!(port.sign_in().unwrap_err().code, RefusalCode::AuthUnavailable);
-        assert!(port.sign_in.is_none(), "no worker starts without all three trusted values");
+        assert!(!port.login_pending(), "no worker starts without all three trusted values");
         assert_eq!(port.begin_device_code().unwrap_err().code, RefusalCode::AuthRequired);
     }
 
@@ -3726,7 +4944,7 @@ mod tests {
         assert!(prompt.verification_uri.starts_with("https://auth.example/"));
         assert!(opener.urls().is_empty(), "showing a code never opens a browser");
 
-        port.open_verification().unwrap();
+        port.open_sign_in_browser().unwrap();
         assert_eq!(
             opener.urls(),
             vec!["https://auth.example/device?user_code=BCDF-GHJK".to_owned()],
@@ -3734,9 +4952,10 @@ mod tests {
         );
 
         gate_tx.send(()).unwrap();
-        wait_until("the verified sign-in", || port.view().signed_in);
+        wait_until("the verified sign-in", || port.login_status.lock().unwrap().phase == LoginPhase::Done);
+        port.poll();
         assert_eq!(port.view().account_label.as_deref(), Some("acct_product_0001"));
-        assert_eq!(port.take_sign_in_notice(), None);
+        assert!(port.view().sign_in_error.is_none());
         assert!(port.runtime.credentials.product_session_active(), "a verified product session is recognized");
         let scope = port.runtime.credentials.authenticated_scope().expect("the verified sign-in bound one installation");
         assert_eq!(scope.account().as_str(), "acct_product_0001");
@@ -3767,11 +4986,11 @@ mod tests {
         let mut port = DesktopAccountPort::new(runtime, &startup);
 
         port.sign_in().unwrap();
-        wait_until("the origin refusal", || port.take_sign_in_notice().is_some());
+        wait_until("the origin refusal", || matches!(port.login_status.lock().unwrap().phase, LoginPhase::Failed(_)));
         assert!(!port.view().signed_in);
         assert!(opener.urls().is_empty(), "an untrusted origin is never opened");
         assert_eq!(port.begin_device_code().unwrap_err().code, RefusalCode::AuthRequired, "a refused flow keeps no prompt");
-        assert_eq!(port.open_verification().unwrap_err().code, RefusalCode::AuthRequired, "a refused flow opens no browser");
+        assert_eq!(port.open_sign_in_browser().unwrap_err().code, RefusalCode::AuthRequired, "a refused flow opens no browser");
         assert!(opener.urls().is_empty());
         assert_eq!(device.requests().len(), 1, "only the authorization request is sent");
         assert_eq!(device.requests()[0], solidcraft_account_native::WORKOS_DEVICE_AUTHORIZATION_URL);
@@ -3797,7 +5016,7 @@ mod tests {
         gate_tx.send(()).unwrap();
         port.shutdown();
 
-        assert!(port.sign_in.is_none(), "the retired job is gone");
+        assert!(!port.login_pending(), "the retired job is gone");
         assert!(port.runtime.credentials.provider_account().is_none(), "a late approval must not store provider credentials");
         assert!(!port.runtime.credentials.product_session_active(), "a late approval must not activate a product session");
         assert!(!port.view().signed_in);

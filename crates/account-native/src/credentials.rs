@@ -57,6 +57,17 @@ const REFRESH_TOKEN_KEY: &str = "auth/refresh_token";
 /// after the old authority is fully gone. A present or unreadable marker means startup must not
 /// restore a session or admit controlled work.
 const LOGOUT_KEY: &str = "auth/logout_pending";
+/// The single durable activation commit. No `account/…`, `auth/product_session`, installation or
+/// operation credential is read unless this marker holds a complete, matching identity. Staged
+/// keys are never read directly. Writing this marker last is the documented linearization point;
+/// a crash before it leaves only non-restorable staged/partial values.
+const LOGIN_COMMIT_KEY: &str = "login/commit";
+const LOGIN_STAGE_ACCOUNT_KEY: &str = "login/stage/account";
+const LOGIN_STAGE_PRODUCT_KEY: &str = "login/stage/product_session";
+const LOGIN_STAGE_PROVIDER_ACCOUNT_KEY: &str = "login/stage/provider_account";
+const LOGIN_STAGE_PROVIDER_TOKEN_KEY: &str = "login/stage/provider_token";
+const LOGIN_COMMIT_DONE: &str = "intcad-login/1";
+const LOGIN_COMMIT_REVOKED: &str = "intcad-login/revoked";
 const KEYRING_PROBE_KEY: &str = "intcad/keyring-probe";
 
 pub(crate) fn unavailable() -> CredentialError {
@@ -241,6 +252,12 @@ pub struct ProviderSession {
 }
 
 impl ProviderSession {
+    /// The typed provider handoff from a completed device-code poll. It carries no product
+    /// authority and must be verified by a trusted exchange before anything is persisted.
+    pub(crate) fn from_authorized(account_id: String, access_token: Secret) -> Self {
+        Self { account_id, access_token }
+    }
+
     pub fn account_id(&self) -> &str {
         &self.account_id
     }
@@ -358,7 +375,10 @@ struct SessionState {
     installation: Option<String>,
     /// The WorkOS provider account. It never authorizes an Intcad call by itself.
     provider_account: Option<String>,
-    /// Set after a failed delete or a failed durable write; every read and write then fails closed.
+    /// Blocks credential reads and ordinary mutations during promotion or after a storage
+    /// failure. Sign-out cleanup may still remove credentials but cannot lift a failure lock.
+    /// Only a fresh verified login can replace a failed session: revoke the old commit first,
+    /// then unlock only after the new commit succeeds.
     locked: bool,
 }
 
@@ -460,7 +480,17 @@ impl CredentialSession {
 
     pub fn bound_account(&self) -> Option<String> {
         let (state, _epoch) = self.lock_if_authorized()?;
-        state.account.clone()
+        activation_committed(&state).then_some(state.account.clone()).flatten()
+    }
+
+    /// The account label of a persisted, active product session for display only. Unlike
+    /// [`Self::bound_account`] this does not require an installation binding; it never proves
+    /// `AuthenticatedHostScope` or authorizes controlled work. It still requires the durable
+    /// activation commit, so a staged or partial write is never shown.
+    pub fn display_account(&self) -> Option<String> {
+        let (state, epoch) = self.lock_if_authorized()?;
+        let account = committed_account(&state)?;
+        self.epoch_unchanged(epoch).then_some(account)
     }
 
     pub fn is_persistent(&self) -> bool {
@@ -527,7 +557,10 @@ impl CredentialSession {
             return Err(unavailable());
         }
         let mut state = self.lock()?;
-        if state.account.as_deref() == Some(account) && !state.locked {
+        if state.locked {
+            return Err(unavailable());
+        }
+        if state.account.as_deref() == Some(account) {
             return Ok(());
         }
         // A switch replaces all old authority. Persist the same sign-out tombstone first so a
@@ -539,6 +572,13 @@ impl CredentialSession {
             return Err(store_failure(&mut state, error));
         }
         Ok(())
+    }
+
+    /// Write the durable tombstone without deleting credentials. Desktop sign-out instead
+    /// writes it as part of background cleanup; accepting the request does not write it.
+    pub fn mark_logout_pending(&self) -> Result<(), CredentialError> {
+        let mut state = self.lock()?;
+        mark_logout(&mut state)
     }
 
     /// Mark a durable sign-out before deleting anything. The marker is intentionally written
@@ -615,9 +655,102 @@ impl CredentialSession {
         Ok(ProviderLogin { provider_account_id: provider_account.to_owned() })
     }
 
+    /// Persist a provider login together with the product session a trusted exchange derived from
+    /// it. This is the explicit flow for a live device-code login: verification happens off-thread
+    /// before any credential is written, so a canceled or obsolete attempt leaves the store as it
+    /// was. The caller must have verified the provider session with the configured product origin;
+    /// this method does not exchange, choose an origin or add execution authority.
+    /// Stage, then promote a verified provider/product login. `generation` is the caller's
+    /// attempt id and `current` reports whether that attempt still owns the sign-in. Every value
+    /// is written before the single commit marker; readers ignore all of them until that marker
+    /// is present. Once the old commit is revoked, a crash, cancellation before the new marker,
+    /// or failure staging the new session cannot leave a restorable half-session. A new verified
+    /// attempt may retry after failure; it must start by revoking the old commit again. The caller
+    /// must hold its promotion lock so cancel/sign-out cannot change the generation during writes.
+    pub fn persist_verified_login(
+        &self,
+        provider: &ProviderSession,
+        product: &ProductSession,
+        generation: u64,
+        current: &dyn Fn() -> bool,
+    ) -> Result<ProductLogin, CredentialError> {
+        self.persist_verified_login_with_installation(provider, product, None, generation, current)
+    }
+
+    /// Publish the reviewed installation pair before exposing the new login's commit marker.
+    pub fn persist_verified_login_with_installation(
+        &self,
+        provider: &ProviderSession,
+        product: &ProductSession,
+        installation: Option<crate::http::InstallationBootstrap>,
+        generation: u64,
+        current: &dyn Fn() -> bool,
+    ) -> Result<ProductLogin, CredentialError> {
+        if !safe_token(&provider.account_id, MAX_ACCOUNT_BYTES)
+            || provider.access_token.is_empty()
+            || has_control(provider.access_token.expose_secret())
+        {
+            return Err(unavailable());
+        }
+        let account = product.account_id().to_owned();
+        if !safe_token(&account, MAX_ACCOUNT_BYTES) || product.product_session().is_empty() || has_control(product.product_session().expose_secret())
+        {
+            return Err(unavailable());
+        }
+        if let Some(expires_at) = product.expires_at_unix_seconds() {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0);
+            if expires_at <= now {
+                return Err(unavailable());
+            }
+        }
+
+        let mut state = self.lock()?;
+        if !current() {
+            return Err(attempt_superseded());
+        }
+        state.locked = true;
+        let result = (|| {
+            clear_authority_inner(&mut state)?;
+            stage_provider(&mut state, &provider.account_id, provider.access_token.expose_secret())?;
+            stage_product(&mut state, &account, product.product_session().expose_secret())?;
+            write_provider_login(&mut state, &provider.account_id, provider.access_token.expose_secret())?;
+            write_product_login(&mut state, &account, product.product_session().expose_secret())?;
+            if let Some(installation) = installation {
+                let id = installation.installation_id().to_owned();
+                let credential = installation.into_credential();
+                // The bootstrap decoder checked this opaque value. Write it under this
+                // transaction's lock; the ordinary handoff rejects all writes while locked.
+                state.store.set(INSTALLATION_CREDENTIAL_KEY, credential.expose_secret()).map_err(|error| store_failure(&mut state, error))?;
+                state.store.set(INSTALLATION_ID_KEY, &id).map_err(|error| store_failure(&mut state, error))?;
+                state.installation = Some(id);
+            }
+            if !current() {
+                return Err(attempt_superseded());
+            }
+            commit_marker(&mut state, &account, generation)?;
+            discard_stage(&mut state);
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                state.locked = false;
+                Ok(ProductLogin { account_id: account })
+            }
+            Err(error) => {
+                // This process stays closed even if the initial revocation write itself failed.
+                state.locked = true;
+                Err(error)
+            }
+        }
+    }
+
     /// Activate an Intcad product session only from a typed, trusted exchange result. The provider
     /// token is input to the exchange, never the product bearer. Without a documented exchange the
     /// default [`BlockedProductExchange`] leaves product login inactive.
+    ///
+    /// This is the older test/composition seam: it writes the same durable commit marker but has
+    /// no desktop attempt generation or promotion gate. The shipped desktop uses
+    /// [`Self::persist_verified_login`]; future production callers must use that staged path.
     pub fn activate_product_session(&self, exchange: &dyn ProductSessionExchange) -> Result<ProductLogin, CredentialError> {
         let epoch = self.epoch.load(Ordering::SeqCst);
         if self.revoked.load(Ordering::SeqCst) {
@@ -655,13 +788,27 @@ impl CredentialSession {
             // A provider re-login or logout raced the exchange; fail closed and write nothing.
             return Err(unavailable());
         }
-        clear_product_authority(&mut state)?;
-        let result = write_product_login(&mut state, &account, product.product_session().expose_secret());
-        if result.is_err() {
-            let _ = clear_product_authority(&mut state);
+        state.locked = true;
+        let result = (|| {
+            clear_product_authority_inner(&mut state)?;
+            stage_product(&mut state, &account, product.product_session().expose_secret())?;
+            write_product_login(&mut state, &account, product.product_session().expose_secret())?;
+            // The legacy test/explicit seam has no desktop attempt id; generation 0 is still a
+            // valid durable commit and every reader uses the same marker gate.
+            commit_marker(&mut state, &account, 0)?;
+            discard_stage(&mut state);
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                state.locked = false;
+                Ok(ProductLogin { account_id: account })
+            }
+            Err(error) => {
+                state.locked = true;
+                Err(error)
+            }
         }
-        result?;
-        Ok(ProductLogin { account_id: account })
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, SessionState>, CredentialError> {
@@ -730,6 +877,10 @@ fn provider_required() -> CredentialError {
     CredentialError { code: CredentialErrorCode::Unavailable, message: "a provider sign-in is required".into() }
 }
 
+fn attempt_superseded() -> CredentialError {
+    CredentialError { code: CredentialErrorCode::Unavailable, message: "the sign-in attempt is no longer current".into() }
+}
+
 fn product_exchange_error(error: ProductExchangeError) -> CredentialError {
     let message = match error {
         ProductExchangeError::NotConfigured => "no documented product-session exchange is configured",
@@ -739,13 +890,14 @@ fn product_exchange_error(error: ProductExchangeError) -> CredentialError {
     CredentialError { code: CredentialErrorCode::Unavailable, message: message.into() }
 }
 
-/// Delete every credential and scope label, in authority order. The account/session credential is
-/// removed first; only a fully successful clear unlocks the session.
+/// Delete every credential and scope label, in authority order. A failed clear locks the
+/// session; successful cleanup preserves any pre-existing failure lock.
 fn clear_authority(state: &mut SessionState) -> Result<(), CredentialError> {
+    let was_locked = state.locked;
     state.locked = true;
     let result = clear_authority_inner(state);
     if result.is_ok() {
-        state.locked = false;
+        state.locked = was_locked;
     }
     result
 }
@@ -768,22 +920,77 @@ fn logout_tombstone(state: &SessionState) -> Option<bool> {
     }
 }
 
+/// The account an activation commit proves, when the marker, account label, product secret and
+/// logout state are all present and consistent. No staged key is ever read here.
+fn committed_account(state: &SessionState) -> Option<String> {
+    if state.locked {
+        return None;
+    }
+    let marker = state.store.get(LOGIN_COMMIT_KEY).ok().flatten()?;
+    let rest = marker.strip_prefix(LOGIN_COMMIT_DONE)?.strip_prefix('/')?;
+    let (generation, account) = rest.split_once('/')?;
+    if !generation.bytes().all(|byte| byte.is_ascii_digit()) || !safe_token(account, MAX_ACCOUNT_BYTES) {
+        return None;
+    }
+    let persisted = state.store.get(ACCOUNT_KEY).ok().flatten()?;
+    if persisted != account {
+        return None;
+    }
+    read_secret(state, PRODUCT_SESSION_KEY)?;
+    Some(account.to_owned())
+}
+
+fn activation_committed(state: &SessionState) -> bool {
+    authority_usable(state) && committed_account(state).is_some()
+}
+
+/// The durable linearization point: this single-key write makes all staged/authoritative values
+/// readable at once. Callers write every value before it and never read them before it.
+fn commit_marker(state: &mut SessionState, account: &str, generation: u64) -> Result<(), CredentialError> {
+    state.store.set(LOGIN_COMMIT_KEY, &format!("{LOGIN_COMMIT_DONE}/{generation}/{account}")).map_err(|error| store_failure(state, error))
+}
+
+fn stage_provider(state: &mut SessionState, account: &str, access_token: &str) -> Result<(), CredentialError> {
+    if let Err(error) = state.store.set(LOGIN_STAGE_PROVIDER_ACCOUNT_KEY, account) {
+        return Err(store_failure(state, error));
+    }
+    if let Err(error) = state.store.set(LOGIN_STAGE_PROVIDER_TOKEN_KEY, access_token) {
+        return Err(store_failure(state, error));
+    }
+    Ok(())
+}
+
+fn stage_product(state: &mut SessionState, account: &str, product_session: &str) -> Result<(), CredentialError> {
+    if let Err(error) = state.store.set(LOGIN_STAGE_ACCOUNT_KEY, account) {
+        return Err(store_failure(state, error));
+    }
+    if let Err(error) = state.store.set(LOGIN_STAGE_PRODUCT_KEY, product_session) {
+        return Err(store_failure(state, error));
+    }
+    Ok(())
+}
+
+fn discard_stage(state: &mut SessionState) {
+    for key in [LOGIN_STAGE_ACCOUNT_KEY, LOGIN_STAGE_PRODUCT_KEY, LOGIN_STAGE_PROVIDER_ACCOUNT_KEY, LOGIN_STAGE_PROVIDER_TOKEN_KEY] {
+        let _ = state.store.delete(key);
+    }
+}
+
 fn authority_usable(state: &SessionState) -> bool {
     !state.locked && logout_tombstone(state) == Some(false)
 }
 
-/// Delete only the Intcad product authority; the provider login is kept for the exchange.
-fn clear_product_authority(state: &mut SessionState) -> Result<(), CredentialError> {
-    state.locked = true;
-    let result = clear_product_authority_inner(state);
-    if result.is_ok() {
-        state.locked = false;
-    }
-    result
-}
-
 fn clear_product_authority_inner(state: &mut SessionState) -> Result<(), CredentialError> {
+    // Revoke the commit first: a crash during the deletes leaves every product reader refusing
+    // the old values, rather than restoring a half-cleared session. The product bearer is the
+    // first delete so the highest-authority credential is gone before anything else.
+    if let Err(error) = state.store.set(LOGIN_COMMIT_KEY, LOGIN_COMMIT_REVOKED) {
+        return Err(store_failure(state, error));
+    }
     for key in [PRODUCT_SESSION_KEY, REFRESH_TOKEN_KEY, INSTALLATION_CREDENTIAL_KEY] {
+        state.store.delete(key).map_err(|_| unavailable())?;
+    }
+    for key in [LOGIN_STAGE_ACCOUNT_KEY, LOGIN_STAGE_PRODUCT_KEY, LOGIN_STAGE_PROVIDER_ACCOUNT_KEY, LOGIN_STAGE_PROVIDER_TOKEN_KEY] {
         state.store.delete(key).map_err(|_| unavailable())?;
     }
     let tracked = load_index(state)?;
@@ -793,9 +1000,6 @@ fn clear_product_authority_inner(state: &mut SessionState) -> Result<(), Credent
     for key in [INSTALLATION_ID_KEY, ACCOUNT_KEY, INDEX_KEY] {
         state.store.delete(key).map_err(|_| unavailable())?;
     }
-    // The old authority is fully gone; only now may the sign-out marker disappear. A failed
-    // marker delete leaves it present, which is conservative: startup fails closed.
-    state.store.delete(LOGOUT_KEY).map_err(|_| unavailable())?;
     state.index.clear();
     state.account = None;
     state.installation = None;
@@ -808,6 +1012,8 @@ fn clear_authority_inner(state: &mut SessionState) -> Result<(), CredentialError
         state.store.delete(key).map_err(|_| unavailable())?;
     }
     state.provider_account = None;
+    // The previous provider and product authority must both be gone before clearing recovery.
+    state.store.delete(LOGOUT_KEY).map_err(|_| unavailable())?;
     Ok(())
 }
 
@@ -979,19 +1185,18 @@ fn remove_first_installation(state: &mut SessionState) {
 /// product session. This is a restart path only: nothing is written and a provider-only session
 /// has no product secret, so it cannot synthesize a scope.
 fn adopt_persisted_labels(state: &mut SessionState) -> Option<()> {
-    let account = state.store.get(ACCOUNT_KEY).ok().flatten()?;
+    let account = committed_account(state)?;
     let installation = state.store.get(INSTALLATION_ID_KEY).ok().flatten()?;
-    if !safe_token(&account, MAX_ACCOUNT_BYTES) || !safe_token(&installation, MAX_IDENTIFIER_BYTES) {
+    if !safe_token(&installation, MAX_IDENTIFIER_BYTES) {
         return None;
     }
-    read_secret(state, PRODUCT_SESSION_KEY)?;
     state.account = Some(account);
     state.installation = Some(installation);
     Some(())
 }
 
 fn bound_scope(state: &SessionState) -> Option<(String, String, String)> {
-    if !authority_usable(state) {
+    if !activation_committed(state) {
         return None;
     }
     let account = state.account.clone()?;
@@ -1058,6 +1263,9 @@ fn valid_operation(operation: &OperationId) -> bool {
 impl WireCredentials for CredentialSession {
     fn product_session(&self) -> Option<Secret> {
         let (state, epoch) = self.lock_if_authorized()?;
+        if !activation_committed(&state) {
+            return None;
+        }
         let account = state.account.as_deref()?;
         if !safe_token(account, MAX_ACCOUNT_BYTES) {
             return None;
@@ -1089,6 +1297,9 @@ impl WireCredentials for CredentialSession {
         let (mut state, epoch) = self.lock_if_authorized()?;
         if state.account.is_none() || state.installation.is_none() {
             adopt_persisted_labels(&mut state)?;
+        }
+        if !activation_committed(&state) {
+            return None;
         }
         let account = state.account.as_deref()?;
         let installation = state.installation.as_deref()?;

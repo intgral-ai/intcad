@@ -782,6 +782,21 @@ impl<T: Transport> HttpAccountService<T> {
         if self.credentials.installation_bound() {
             return Err(refusal(RefusalCode::AuthRequired));
         }
+        let installation = self.request_first_installation(&product_session, platform, label)?;
+        self.handoff
+            .first_installation_credential(&product_session, &installation.installation_id, installation.credential.clone())
+            .map_err(|_| unavailable())?;
+        Ok(installation)
+    }
+
+    /// Request the checked installation pair for a verified login that has not yet been published.
+    /// The login worker commits the resulting pair together with the verified session.
+    pub fn request_first_installation(
+        &self,
+        product_session: &Secret,
+        platform: BootstrapPlatform,
+        label: Option<&str>,
+    ) -> Result<InstallationBootstrap, Refusal> {
         if label.is_some_and(|value| value.len() > 128 || value.contains(['\r', '\n'])) {
             return Err(refusal(RefusalCode::AuthRequired));
         }
@@ -797,9 +812,7 @@ impl<T: Transport> HttpAccountService<T> {
             return Err(error_refusal(status, &value));
         }
         let (installation_id, credential, created_at) = validate_installation_bootstrap(&value)?;
-        let credential = Secret::new(credential);
-        self.handoff.first_installation_credential(&product_session, &installation_id, credential.clone()).map_err(|_| unavailable())?;
-        Ok(InstallationBootstrap { installation_id, created_at, credential })
+        Ok(InstallationBootstrap { installation_id, created_at, credential: Secret::new(credential) })
     }
 
     /// POST `/v1/authorizations` to renew an existing operation's lease.

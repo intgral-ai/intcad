@@ -32,8 +32,33 @@ not activate a product session from a provider login alone. Product credentials 
 native OS-protected store. Passwords, keyring data and service tokens never enter the browser
 bundle or Web storage.
 
-At this checkpoint no production sign-in, service origin, settlement authority or UI wiring is
-enabled; those remain gated by the surrounding tasks in the plan.
+The desktop wires an explicit UI sign-in to the native device-code worker and the reviewed
+server-verified exchange. The WorkOS public client id, exact AuthKit verification origin and bare
+HTTPS product origin come only from compile-time [desktop build configuration](desktop-configuration.md);
+trusted release values are not read from runtime settings or responses, and no reviewed values
+ship in this build. Missing or invalid configuration refuses before a request. The worker never
+opens a browser, and a browser is launched only by a separate explicit click at the
+provider-issued verification address after its exact configured origin is checked again. The
+click must also carry platform provenance bound to that button's own gesture: pointer press and
+release must both be platform input with no synthetic event touching the gesture, and a keyboard or
+accessibility activation must be one unambiguous platform event. A logic-only eframe pass keeps
+the unconsumed batch's taint until a real UI pass consumes it: an all-platform batch stays trusted,
+while any unconsumed batch that contained synthetic input fails closed because host pre-hooks may
+have transformed its events. App-injected automation events, including the control channel's
+pointer input or typing replayed after a report capture, fail closed and cannot launch it. Chat and
+Review show the same code,
+address, browser and cancel controls as the account menu, so the surface that refused the
+operation can complete the flow without replaying it. A verified identity is
+staged and only becomes readable at one durable commit marker; identity without installation
+proof, settlement, billing and execution authority remain gated by the surrounding tasks in the
+plan.
+
+Startup reads the durable sign-out marker once. A readable marker offers a recovery action that
+finishes the cleanup; the previous identity and authority stay unrestorable and no sign-in is
+offered until the cleanup confirms. An unreadable marker or storage state stays fully closed: it
+offers neither recovery nor sign-in and refuses account actions without attempting a write. If the
+secure-store probe failed, recovery and sign-in are not offered, and sign-out or account switch
+refuse before any write or cleanup worker starts even when a marker is readable.
 
 ## Closure guard
 

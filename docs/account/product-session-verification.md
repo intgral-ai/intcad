@@ -57,55 +57,83 @@ The exchange is explicit:
 
 - `CredentialSession::complete_provider_login` still never activates a product session.
 - `BlockedProductExchange` remains the default for callers that do not opt in.
-- The desktop starts the documented WorkOS device flow only from an explicit account action. The
-  worker leaves the window thread, shows the returned code, and opens the verification page only
-  when the user explicitly asks for the browser action.
-- The desktop trusts the verification page only when its normalized HTTPS origin equals the
-  configured AuthKit origin, and sends the provider token only to the configured HTTPS product
-  base. Missing or malformed values leave sign-in unavailable; no address is baked in.
-- A completed device flow is recognized only after the product service verifies the provider
-  token and the product session is stored. Refresh reads the cached result and does not replay the
-  exchange.
+- The desktop now has an explicit sign-in worker: one UI click starts one WorkOS device-code
+  attempt, a background worker polls it, and the provider session is offered to
+  `ServerVerifiedProductSession` before anything is written. A verified result is persisted with
+  `CredentialSession::persist_verified_login_with_installation`; a provider-only or rejected result writes nothing.
+- The worker's attempt id is checked before and after verification and again when the final
+  write is published, so cancel, sign-out, account switch, shutdown and late replies cannot
+  install a stale session. A worker that loses the generation race leaves no readable session:
+  promotion first revokes the old commit marker and only writes the new marker after every staged
+  value. There is no compensating-delete path to rely on. `State::poll` adopts each terminal
+  snapshot once on the host logic step, never on a paint pass; while an attempt or cleanup is
+  pending the host asks for a bounded repaint so code, expiry, completion and sign-out reach an
+  idle window without unrelated input.
+- The browser is launched only by a separate explicit "Sign in in browser" action, only at the
+  HTTPS verification address from the current provider prompt and only when that address has the
+  same exact configured AuthKit origin; sign-in itself never opens one. That action also requires
+  platform-provenance activation: app-injected automation input fails closed. Chat and Review
+  inline prompts show the same code, address, browser and cancel controls, with expiry/retry, so
+  a refused surface can finish the flow without replaying the original operation.
+- The desktop ships no reviewed WorkOS client id, AuthKit verification origin or product service
+  origin. [Desktop build configuration](desktop-configuration.md) compiles in only explicit
+  values through `WorkOsPublicClient::new` and `WireConnection::new`; with any missing or
+  malformed value, `sign_in` refuses before any request. No runtime setting, environment
+  heuristic, token field, response value or arbitrary URL is accepted.
+- The CLI still configures no product service origin and no shipped provider sign-in; `sign_in`
+  still refuses and no production billing, commit or MCP authority is installed.
 - No token is sent to any origin other than the caller-configured `WireConnection`.
 
-## Desktop orchestration
+## Durable activation boundary
 
-`apps/solidcraft/src/account.rs` owns one explicit sign-in worker per process:
+The credential store has individual key writes, not a multi-key transaction. The client therefore
+does not treat any staged or partial value as a session:
 
-1. `sign_in` checks the sign-out barrier, the secure store and the complete configuration before
-   starting anything. A missing value returns `AUTH_UNAVAILABLE` with no request.
-2. The worker calls the documented device-authorization endpoint, checks the returned
-   `verification_uri` and optional complete URI against the configured AuthKit origin, and
-   publishes the code for display.
-3. Polling waits the server's interval, follows `slow_down` by increasing it, stops at
-   `expires_in`, and checks cancellation before every request and before each credential write.
-   Cancelling a worker wakes the wait immediately. In the covered fixtures, the in-process
-   barrier and monotonic epoch reject a late write observed after sign-out or account switch.
-   Tests use virtual timing and scripted gates; this is not a real-time scheduling guarantee.
-4. After approval the worker stores the provider login, then calls
-   `ServerVerifiedProductSession` against the configured product origin. The product-service
-   refusal or transport failure leaves the product session inactive; provider success alone never
-   grants authority. Only after that exact status check succeeds does the desktop request one
-   first installation pair from the same configured origin. A refused or malformed bootstrap
-   refuses the sign-in rather than inventing an account or installation scope.
-5. The host reads the cached completed result. A completed view reports the account label but
-   still refuses chat, billed tools and commit authority because no reviewed account service is
-   wired. The persisted installation pair permits a later restart candidate; it does not prove
-   server-side installation validity by itself.
+1. A desktop sign-in worker holds its promotion lock from the first staging write through the
+   commit. Cancel and sign-out try-lock that gate. If promotion is in progress, the UI action is
+   refused without waiting and reports that the sign-in is completing; it never claims a
+   cancellation or sign-out that did not own the durable boundary.
+2. Staged keys under `login/stage/…` are written first, then the provider, account and product
+   keys, and the validated installation pair. None of these are read as authority.
+3. The single `login/commit` key is written last with the attempt generation and account. Its
+   presence, together with the matching account/product/installation values and an absent
+   sign-out marker, is the commit/linearization point. Every reader — product bearer, installation
+   credential, scope, settlement/execution proofs, bound account and display-only identity —
+   requires it.
+4. A crash or storage failure before the commit leaves staged/partial values that every reader
+   ignores. Clearing authority first writes `login/commit` to the revoked value, so even a
+   partially deleted old session is non-restorable once that write succeeds. After a failed
+   commit, credential reads and ordinary writes stay closed. A fresh verified attempt can retry
+   by writing the revoked value again, then committing a new session.
+5. An accepted sign-out revokes authority in process immediately, then runs one async worker that
+   writes the tombstone and deletes under its own generation. The first action view is pending;
+   sign-in is hidden while cleanup is pending or failed. A failure offers a sign-out retry.
+   Repeated requests while pending are refused without a second worker. Sign-out is successful
+   only after the background worker confirms cleanup. Abrupt termination before the durable
+   tombstone is written may leave the prior committed identity restorable. During promotion,
+   sign-out is refused rather than queued.
+6. A completed commit is a completed login; cancel after it is refused and sign-out is the
+   lifecycle transition. Shutdown waits at the exit gateway for an in-progress promotion to
+   finish before invalidating the generation, so a serialized commit winner is not invalidated
+   after the fact. Normal exit joins background account workers and can wait on the OS keyring;
+   there is no bounded exit guarantee. Real OS keyring latency and destructive crash acceptance
+   are unverified. The process does not claim atomic multi-key keyring behavior beyond this
+   single-key commit boundary.
 
-Production configuration is three explicit host values, all required together:
+The production desktop path uses `persist_verified_login_with_installation` with its attempt
+generation and the installation pair returned by the configured product service. The older
+`activate_product_session` method remains a test/composition seam and writes the same commit
+marker; no shipped production caller uses it. Any future production caller must use the staged
+generation path rather than promote provider keys through a marker-exempt path.
 
-- `INTCAD_WORKOS_CLIENT_ID`: the approved WorkOS public client id (never a secret).
-- `INTCAD_AUTHKIT_ORIGIN`: the trusted HTTPS AuthKit origin, for example the hosted domain only.
-- `INTCAD_PRODUCT_SERVICE_ORIGIN`: the trusted HTTPS product service base (host only).
+This is a conservative design and has a UX cost: a cancel or sign-out clicked while the final
+keyring promotion runs is refused with a retry/sign-out message instead of waiting or pretending
+to succeed. A verification that succeeds after cancellation is not activated; a verification that
+already committed finishes as a normal login. An existing credential session written before this
+commit marker was introduced is treated as non-restorable and requires a fresh sign-in.
 
-Tests script both transports, a virtual clock and an inert browser opener. They perform no network
-request, open no browser and use no real credential. Late authorization after cancellation or
-account switch, untrusted origins, slow-down and deadline handling, provider success followed by a
-product refusal, and verified success without a replayed exchange are covered locally under
-virtual time and scripted gates; those fixtures do not claim scheduling or live-latency assurance.
+## Restart presentation and settlement
 
-## Restart presentation checkpoint
 
 `AccountRuntime::startup` treats persisted credentials as a candidate, not an active session. A
 candidate needs the complete stored pair: a provable account/installation/session scope, the exact
@@ -127,7 +155,7 @@ account. After the request, the worker re-reads the scope, bearer, installation 
 revocation generation; any change discards the result. An explicit sign-in, sign-out, account
 switch or GUI shutdown retires the check immediately, marks its shared result done and drops a
 late reply. There is no installation bootstrap or replacement, no browser opening, no operation
-replay and no automatic token refresh on this path.
+re-execution and no automatic token refresh on this path.
 
 The generic `AccountService::status` decoder remains the broader quota/status snapshot. Restart
 narrows only its own presentation decision; it does not narrow the generic status contract. A
@@ -137,14 +165,8 @@ still server-valid, and it installs no billing, commit, MCP or controlled-execut
 Those remain absent until a separately reviewed account service and installation-validity path
 exist.
 
-This checkpoint does not yet:
-
-- prove server-side installation validity or revalidate the installation credential;
-- install a reviewed account service, quota snapshot, billing or commit authority;
-- provide real GUI or staging acceptance for the account entry and prompts (Entry 3 is implemented
-  and covered by local widget tests only);
-- periodically refresh or renew the product session, or poll for revocation after startup;
-- run against a live WorkOS, AuthKit or product deployment.
+For a verified unchanged binding, the restart worker can retry a recorded settlement using the
+original operation ID under a per-scope process lock. It never re-executes the operation.
 
 ## Fail-closed cases covered by local tests
 
@@ -166,6 +188,7 @@ This checkpoint does not yet:
   cached-view read and the wake sample still schedules another wake; retirement by explicit
   sign-in, sign-out, switch or shutdown marks the shared result done immediately and drops a late
   reply.
+- browser launch from app-injected automation input, and an unreadable startup sign-out state.
 
 The positive fixtures also cover a coherent zero balance and a positive held balance. They prove
 only that the consumed arithmetic is accepted; they do not establish credit authority.
@@ -178,40 +201,17 @@ credential. This note does not claim live, staging or production verification.
 
 ## Before production activation
 
-The following are required together. Local implementations are noted where they exist; none is
-verified live in this build:
-
-- a **trusted configured product service origin**, supplied by reviewed configuration rather than
-  an environment heuristic, token field or response value; the desktop reads it from one explicit
-  host variable and validates it as HTTPS with no path prefix (implemented, unverified live);
-- a **native HTTPS transport with redirects disabled** (the existing production `ureq` transport
-  sets `https_only`, `max_redirects(0)` and platform certificates) and tests that exercise it
-  without a live service (implemented; local tests use scripted transports);
-- **startup tombstone recovery**: a durable sign-out marker may be cleared only after a fresh
-  provider login is verified against the configured origin and the new product session is bound
-  to the account/installation; a marker alone never restores authority (not implemented; the
-  desktop still refuses sign-in while a marker is unconfirmed);
-- **installation bootstrap**: `POST /v1/installations` with the activated product bearer and a
-  durable installation credential pair (implemented and covered by local scripted tests; not
-  verified against a live service, and restart does not prove the pair is still server-valid);
-- **bounded restart status check**: one exact-bearer `GET /v1/status` under the same consumed
-  activation predicate as fresh login, run on one native worker after window creation, followed by
-  a local binding/generation recheck and retirement that drops late replies (implemented locally;
-  no live staging evidence);
-- token expiry/refresh handling, revocation polling or periodic renewal/revalidation (not
-  implemented).
-- live WorkOS/AuthKit/product verification with the approved public client id and staging origins
-  (not run; requires the QA configuration named above).
+Before production, verify the trusted build-time origins, hosted device flow, same-installation
+recovery, exactly-once settlement, revocation and OS keychain behavior against the staging
+service. A readable sign-out marker offers cleanup only; an unreadable marker offers neither
+sign-in nor cleanup. No production authority is installed by this checkpoint.
 
 ## Explicit non-goals
 
 This checkpoint does not deliver:
 
-- a baked-in product service origin, WorkOS client id or AuthKit origin (all three are required
-  from the host environment and remain unset in the shipped build);
-- real GUI/staging acceptance of the account entry, prompt expiry/retry presentation or account
-  menu (Entry 3 has local widget coverage only);
-- periodic token refresh, revocation polling, renewal or installation-validity revalidation;
+- a shipped production service origin or WorkOS client id;
+- periodic token refresh or account revocation polling;
 - production billing, settlement, MCP authority or controlled execution;
 - a claim that a successful restart status read proves installation-server validity;
 - real keychains, staging, Windows or wasm validation.

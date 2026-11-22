@@ -1,18 +1,20 @@
 # Account QA evidence
 
-This page separates the original Task 13 contract snapshot from the later Linux desktop
-account-entry run. Neither run used live credentials or a staging or production account service.
+This page preserves the desktop account-entry branch's local test snapshot and the entitlement
+branch's separate Linux guest run. Neither is evidence for the combined revision. Neither used
+live credentials or a staging or production account service.
 
 ## Tested revision and environment
 
 | Item | Value |
 | --- | --- |
-| Client commit | `46cf63a0e9132162d1366df09a3e1ed8dc15ea77` |
-| Branch | `feat/int1497-entitlement` |
-| Worktree state | clean (`git status --porcelain` empty) |
+| Client commit | Final fix on top of `e1b3ebc0e`; base Task 1 code `4fb4859` |
+| Base | `ad9ab83f8` |
+| Branch | `feat/int1497-desktop-entry` |
+| Worktree state | clean after the final fix commit; logs under `.superpowers/` and `/tmp/opencode` |
 | Platform | Linux host (native `x86_64` build of the client crates) |
 | Package type | none; no installer or portable package was built or installed |
-| Target | existing client native `target/` reused; no separate build directory created |
+| Target | this worktree's own native `target/`; no shared or reused build directory |
 
 The server side was read only at `23ab4119ba0652f2d35cc0bda0fc35d8154063d6`, clean and unbuilt.
 Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
@@ -21,35 +23,66 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Frozen rev3 embedded bytes match client `contracts/pin.json` | **PASS** | `contract-pin.md`; `/tmp/opencode/int1497-task13/contract-hashes.log`, `server-sha256sum.log` |
-| `solidcraft-account-native` frozen `contract_vectors` (offline) | **PASS**, 1/0/0, 100 filtered out | `/tmp/opencode/int1497-task13/contract-vectors.log` |
-| `solidcraft-account-native` library tests (offline) | **PASS**, 100 passed / 0 failed / 1 ignored | `/tmp/opencode/int1497-task13/native-lib.log` |
+| Frozen rev3 embedded bytes match client `contracts/pin.json` | **PASS** (earlier Task 13 evidence) | `contract-pin.md` |
+| Frozen `contract_vectors` (offline) | **NOT_RUN** in Task 1 | requires the external frozen artifacts; unchanged by this task |
+| `solidcraft-account-native` library tests (offline) | **PASS**, 108 passed / 0 failed / 1 ignored | `cargo test --offline --locked -p solidcraft-account-native --lib` |
+| Desktop account tests (`apps/solidcraft`) | **PASS**, 35 passed / 0 failed | `cargo test --offline --locked -p solidcraft --bin intcad account::tests` |
+| Account UI tests (`solidcraft-ui-egui`) | **PASS**, 30 passed / 0 failed | `cargo test --offline --locked -p solidcraft-ui-egui --lib account::` |
+| Chat/Review inline code, browser, cancel and retry controls | **PASS** | focused UI account tests; the Chat strip reachability test still passes |
+| Browser launch requires platform-provenance activation | **PASS** | a platform pointer click dispatches; an app-injected control click is refused |
+| Startup recovery for a readable sign-out tombstone | **PASS** | readable marker offers recovery, no identity/authority restored; unreadable storage stays closed |
+| Bounded repaint while a sign-in or sign-out worker is pending | **PASS** | pure scheduling check; no repaint is requested once idle |
+| Production web shell sign-in prompt and Review prompt reachability | **PASS**, 1 each | focused UI tests for the native web-view strip and an `UNSAFE_TO_START` Review refusal |
+| English/complete-catalog coverage for new messages | **PASS** | `... i18n::tests::every_complete_catalog_carries_every_english_message --exact` |
+| Focused clippy (`-D warnings`) for native, UI and desktop crates | **PASS** | `cargo clippy ... --all-targets -- -D warnings` |
+| `cargo xtask lists` | **PASS** | pending locale file folds and catalogs stay sorted |
+| `cargo xtask layers` | **PASS**, no layering violations | native-only closure guard passed |
+| `solidcraft-ui-egui` wasm library check | **PASS**, 0 errors (existing warnings) | `cargo check ... --target wasm32-unknown-unknown --lib` |
+| Full `solidcraft-ui-egui` library suite | **FAILED**, same pre-existing `TexturesDelta`/agent-discovery signatures | representative failures reproduced at base `ad9ab83f8` (see Limits) |
+| Full desktop app test binary | **FAILED**, 184 passed / 2 failed | both are the pre-existing `TexturesDelta` drop-panic signature |
 | Linux direct-binary package build and install | **NOT_RUN** | no package built in this bounded checkpoint |
-| Linux login / logout / account switch / recovery / verification flows | **NOT_RUN** | no configured product service, credential or shipped sign-in flow |
-| Linux headless device-code flow | **NOT_RUN** | no live provider/service or headless account exercise |
-| No-dialog / no-GUI property on headless paths | **NOT_RUN** | no GUI or headless account run performed |
-| Linux real keyring / credential persistence | **NOT_RUN** | scripted transports were used earlier; no OS keychain exercise here |
-| Windows MSI (release or GUI-only) install | **NOT_RUN** | no Windows package or authorized Windows environment used |
-| Windows Credential Manager and account flows | **NOT_RUN** | same; Windows durability/ACL behavior remains unverified |
+| Live WorkOS device-code completion and product verification | **NOT_RUN** | no production/provider credential, service or remote write |
+| No-auto-browser / explicit-click behavior on a real desktop | **NOT_RUN** | covered by scripted seams only; no GUI session |
+| Linux real keyring / credential persistence | **NOT_RUN** | scripted in-memory stores only; no OS keychain exercise here |
+| Windows MSI install, Credential Manager and account flows | **NOT_RUN** | no Windows package or authorized Windows environment used |
 | macOS package install and account flows | **BLOCKED** | no authorized macOS acceptance environment or package |
-| GUI Review panel, credit display and compact-width access | **NOT_RUN** | GUI/visual verification was outside this checkpoint; no clean-base UI claim is made |
-| Measured controlled-operation stop budgets | **NOT_RUN** | no stop-bound measurement was performed |
-| Live account billing, settlement or production authority | **BLOCKED** | deliberately not implemented or configured; no live credentials or service |
+| GUI account menu, Chat/Review prompt layout and compact width | **NOT_RUN** | no clean-base GUI/visual session |
+| Live account billing, settlement or production authority | **BLOCKED** | deliberately not implemented or configured |
 
 ## Limits of this evidence
 
-- The scripted `contract_vectors` run proves the pinned bytes and the adapter's handling of the
-  frozen vectors. It does **not** prove a live server, staging, production billing, settlement,
-  installation credentials or revocation behavior.
-- The library run is Linux-host evidence only. It is not a wasm, Windows, macOS, packaging or GUI
-  result.
+- The new tests use scripted device/product transports and in-memory credential stores. They
+  prove the attempt fence, explicit browser action, platform-provenance refusal of automation,
+  verification-before-persistence, startup tombstone recovery and UI states, not a live provider,
+  server, staging, keychain or production authority.
+- The platform-provenance tests feed a scripted platform pointer event and a scripted
+  control-channel click into the same frame loop. They prove the app's defensive dispatch; they
+  do not claim an OS-level input boundary or an acceptance run on a real desktop.
+- The full UI suite's `TexturesDelta` failures are a harness panic already present at base
+  `ad9ab83f8`: `dialogs_hole::tests::every_dropdown_option_previews_a_different_hole` and
+  `agent_chat::discover::tests::desktop_path_can_start_an_agent_and_its_runtime` were reproduced
+  individually at the base revision with the same signatures. The other failures share those two
+  signatures; they are not caused by this change but were not all rebased individually.
+- The library run is Linux-host evidence only. It is not a Windows, macOS, packaging or GUI
+  result. The wasm check proves the UI library still compiles; it is not a browser run.
 - No package, installer or artifact hash is reported because no package was built. No entry or
   capability stop bound is reported because none was measured.
 - `docs/account/capability-budget.md` therefore keeps every capability **UNVERIFIED**;
-  `docs/account/entry-matrix.md` keeps its intended-gate wording. This checkpoint does not fill
-  either table with planned values or estimates.
-- Existing production authority remains disabled: there is no shipped service origin, sign-in
-  command, real keychain validation, refresh/revocation handling or settlement authority.
+  `docs/account/entry-matrix.md` keeps its intended-gate wording.
+- Existing production authority remains disabled: no trusted build-time WorkOS client id, AuthKit
+  origin or product origin is set in this build, no installation bootstrap exists, and there is no
+  real keychain validation, refresh/revocation handling or settlement authority. The
+  [build configuration](desktop-configuration.md) seam and its fail-closed validation are tested
+  with synthetic values only.
+- The durable activation commit is a single key. Deterministic fake-store tests cover a blocked
+  commit, a failed commit marker, a superseded generation, a tombstone racing a blocked commit,
+  repeated sign-out while pending, a failed sign-out marker and display-only identity. Partial
+  writes are non-restorable; a cancel/sign-out during promotion is refused rather than waited for.
+  An accepted sign-out immediately revokes in-process authority, but only confirmed background
+  cleanup completes sign-out. Abrupt termination before the worker writes the durable tombstone
+  may leave the prior committed identity restorable. Normal exit joins background account
+  workers and may wait on the OS keyring. Real OS keyring latency and destructive crash
+  acceptance are **UNVERIFIED**.
 
 ## Linux desktop account-entry run
 
@@ -73,13 +106,16 @@ guest acceptance result is **BLOCKED**. The guest was stopped after capturing th
 
 ## Remaining gates
 
-1. Full Linux acceptance and account flow matrix on a real install with a persistent credential store.
-2. Windows MSI packaging, Credential Manager behavior and durability/ACL checks.
-3. macOS package and account flow in an authorized environment, or keep the release gate RED.
-4. Real OS keychain integration and live device-code flow without GUI dialogs on programmatic
-   requests.
-5. GUI Review panel and credit-layout verification against a clean baseline revision.
-6. Measured stop budgets for every controlled entry, including waits, queued work and late
+1. Reviewed WorkOS client id, AuthKit verification origin and product HTTPS origin set by the
+   trusted release builder, then a real device-code completion with the exact configured origins.
+2. Installation bootstrap and startup tombstone recovery on a real desktop install (including
+   readable-marker recovery and the unreadable-storage refusal).
+3. Linux direct-binary packaging and the full account flow matrix on a real install.
+4. Windows MSI packaging, Credential Manager behavior and durability/ACL checks.
+5. macOS package and account flow in an authorized environment, or keep the release gate RED.
+6. Real OS keychain integration and GUI account-menu/Chat/Review prompt verification against a
+   clean baseline revision, including no auto browser launch.
+7. Measured stop budgets for every controlled entry, including waits, queued work and late
    results.
-7. Staging/live account authority, settlement, restart recovery and revocation revalidation;
+8. Staging/live account authority, settlement, restart recovery and revocation revalidation;
    none is claimed here.

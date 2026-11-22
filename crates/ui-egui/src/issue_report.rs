@@ -110,11 +110,18 @@ pub struct ReportState {
     pending: Option<Pending>,
     /// A screenshot waiting for the preview being computed (#7171).
     waiting: Option<Waiting>,
-    /// What was typed while a capture hid the report, for the form once it is back.
-    held: Vec<egui::Event>,
+    /// What was typed while a capture hid the report, for the form once it is back. Each event
+    /// keeps its provenance so a replayed synthetic key cannot borrow a platform frame.
+    held: Vec<HeldEvent>,
     /// The report's field that had focus when a capture hid it.
     refocus: Option<egui::Id>,
     cad_focus: Option<egui::Id>,
+}
+
+/// A typed event kept for the form, with whether the platform delivered it.
+struct HeldEvent {
+    event: egui::Event,
+    from_platform: bool,
 }
 
 /// How long a screenshot waits for a preview being computed before it shows it unfinished.
@@ -766,26 +773,42 @@ pub(crate) fn pending(app: &SolveApp) -> bool {
 /// While a capture hides the report, what is typed waits for the form to come back, which gets
 /// its focused field back: a screenshot taken once the preview is done can hide the form while
 /// its user types (#7171).
-pub(crate) fn hold_input(app: &mut SolveApp, raw: &mut egui::RawInput) {
+pub(crate) fn hold_input(app: &mut SolveApp, raw: &mut egui::RawInput, from_platform: &mut Vec<bool>) {
     let state = &mut app.issue_report;
     if state.draft.is_none() {
         state.held.clear();
     } else if state.pending.is_some() {
         let mut kept = Vec::with_capacity(raw.events.len());
-        for event in raw.events.drain(..) {
+        let mut kept_origins = Vec::with_capacity(raw.events.len());
+        for (index, event) in raw.events.drain(..).enumerate() {
+            // A missing origin is untrusted, but the ordinary event is still kept.
+            let origin = from_platform.get(index).copied().unwrap_or(false);
             if typing(&event) {
                 if state.held.len() < MAX_HELD {
-                    state.held.push(event);
+                    state.held.push(HeldEvent { event, from_platform: origin });
                 }
             } else {
                 kept.push(event);
+                kept_origins.push(origin);
             }
         }
         raw.events = kept;
+        *from_platform = kept_origins;
     } else if !state.held.is_empty() {
-        let mut events = std::mem::take(&mut state.held);
-        events.append(&mut raw.events);
+        let held = std::mem::take(&mut state.held);
+        let raw_events = std::mem::take(&mut raw.events);
+        let mut events = Vec::with_capacity(held.len() + raw_events.len());
+        let mut origins = Vec::with_capacity(held.len() + raw_events.len());
+        for held in held {
+            events.push(held.event);
+            origins.push(held.from_platform);
+        }
+        for (index, event) in raw_events.into_iter().enumerate() {
+            origins.push(from_platform.get(index).copied().unwrap_or(false));
+            events.push(event);
+        }
         raw.events = events;
+        *from_platform = origins;
     }
 }
 
@@ -819,7 +842,9 @@ pub(crate) fn tick(app: &mut SolveApp, ctx: &egui::Context) {
                 ctx.input(|i| {
                     for event in i.events.iter().filter(|e| typing(e)) {
                         if state.held.len() < MAX_HELD {
-                            state.held.push(event.clone());
+                            // This path runs after input was classified; the form only needs the
+                            // text. Keep the restored event untrusted, never a free activation.
+                            state.held.push(HeldEvent { event: event.clone(), from_platform: false });
                         }
                     }
                 });
@@ -959,6 +984,36 @@ mod tests {
 
     fn app() -> SolveApp {
         SolveApp::new(Session::default(), Default::default())
+    }
+
+    #[test]
+    fn held_input_keeps_the_provenance_it_was_replayed_from() {
+        let mut app = app();
+        app.issue_report.draft = Some(Draft::new("title".into(), String::new(), 0));
+        let key = |key, pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+        app.issue_report.held = vec![
+            HeldEvent { event: key(egui::Key::Enter, true), from_platform: false },
+            HeldEvent { event: key(egui::Key::Space, true), from_platform: true },
+        ];
+        let mut raw = egui::RawInput { events: vec![key(egui::Key::Tab, true)], ..Default::default() };
+        let mut origins = vec![true];
+        hold_input(&mut app, &mut raw, &mut origins);
+        assert_eq!(origins, vec![false, true, true], "held synthetic typing must stay synthetic beside a platform key");
+        assert_eq!(raw.events.len(), origins.len());
+    }
+
+    #[test]
+    fn a_missing_origin_keeps_every_ordinary_event_and_fails_closed() {
+        let mut app = app();
+        app.issue_report.draft = Some(Draft::new("title".into(), String::new(), 0));
+        app.issue_report.pending =
+            Some(Pending { token: 1, signature: 0, deadline: f64::MAX, window: egui::Rect::ZERO, pixels_per_point: 1.0, max_side: 1 });
+        let moved = |x| egui::Event::PointerMoved(egui::pos2(x, 1.0));
+        let mut raw = egui::RawInput { events: vec![moved(1.0), moved(2.0), moved(3.0)], ..Default::default() };
+        let mut origins = vec![false];
+        hold_input(&mut app, &mut raw, &mut origins);
+        assert_eq!(raw.events.len(), 3, "ordinary events must never be dropped");
+        assert_eq!(origins, vec![false, false, false], "events without a preserved origin fail closed");
     }
 
     fn combine(app: &mut SolveApp) {

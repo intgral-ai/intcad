@@ -789,7 +789,7 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui, area: Rect) {
     let ui = &mut child;
     actions(app, ui);
     ui.add_space(t.space_8);
-    // Product sign-in is a structured account state, not a parsed refusal from the paid action.
+    // Product sign-in is a structured account state, independent of the check's refusal.
     if crate::account::show_product_prompt(app, ui, crate::account::PromptContext::Review) {
         ui.add_space(t.space_8);
     }

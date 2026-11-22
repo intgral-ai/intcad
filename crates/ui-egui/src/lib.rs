@@ -100,6 +100,7 @@ mod i18n_ui_tests;
 pub mod icon_svg;
 pub mod icons;
 pub mod inference;
+mod input_provenance;
 pub mod insert_handles;
 pub mod install;
 pub mod issue_report;
@@ -759,6 +760,10 @@ pub struct SolveApp {
     pub synthetic: Vec<egui::Event>,
     /// The modifiers of the synthetic press in progress (a Ctrl-drag keeps Ctrl while it moves).
     pub synthetic_mods: egui::Modifiers,
+    /// Which input this frame came from the platform, bound to the pointer gesture on the
+    /// control that activated it. App-injected automation can never claim this provenance; a
+    /// browser launch or similar native-only action must fail closed without it.
+    pub(crate) input_trust: input_provenance::Tracker,
     control_rx: Option<Receiver<ControlRequest>>,
     /// Leaving a document invalidates every request admitted in its current tab context.
     guarded_context: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -985,6 +990,7 @@ impl SolveApp {
             frame_clock: frame_rate::Clock::default(),
             synthetic: Vec::new(),
             synthetic_mods: egui::Modifiers::default(),
+            input_trust: input_provenance::Tracker::default(),
             control_rx: None,
             guarded_context: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             agent_chat: Default::default(),
@@ -3221,12 +3227,39 @@ impl SolveApp {
     /// The frame's input before the app reads it: synthetic events, then what is typed while a
     /// capture hides the report waits for it (the control channel's typing too).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
-        self.synthetic_input(raw);
-        issue_report::hold_input(self, raw);
+        // eframe may call this hook again with the previous post-hook batch when the window is
+        // minimized or otherwise logic-only. Reuse the origins already attached to that retained
+        // prefix; only genuinely new events are platform input. Synthetic events and replay are
+        // then folded in before the tracker consumes the batch.
+        let (mut from_platform, replayed) = self.input_trust.begin_batch(&raw.events);
+        self.synthetic_input(raw, &mut from_platform);
+        issue_report::hold_input(self, raw, &mut from_platform);
+        self.input_trust.update(&raw.events, &from_platform, replayed);
+        self.input_trust.retain(&raw.events, &from_platform);
     }
 
-    /// Inject synthetic events (one pointer event per frame).
-    fn synthetic_input(&mut self, raw: &mut egui::RawInput) {
+    /// Whether `response`'s click is one trusted platform activation on this control.
+    ///
+    /// A pointer click needs platform input at both ends of the gesture and no synthetic event
+    /// touching it; a keyboard or accessibility click needs one platform activation this frame
+    /// and must target this control, not merely be present somewhere in the frame.
+    pub(crate) fn trusted_click(&self, response: &egui::Response) -> bool {
+        if !response.clicked() {
+            return false;
+        }
+        if response.clicked_by(egui::PointerButton::Primary) {
+            !self.input_trust.any_activation_without_pointer() && self.input_trust.pointer_trusted(egui::PointerButton::Primary, response.rect)
+        } else {
+            let targets_this_control = response.ctx.memory(|memory| memory.has_focus(response.id))
+                || response.ctx.input(|input| input.has_accesskit_action_request(response.id, egui::accesskit::Action::Click));
+            targets_this_control && self.input_trust.keyboard_trusted()
+        }
+    }
+
+    /// Inject synthetic events (one pointer event per frame). Each injected event is marked
+    /// untrusted in `from_platform`, so automation input can never be mistaken for a native
+    /// activation.
+    fn synthetic_input(&mut self, raw: &mut egui::RawInput, from_platform: &mut Vec<bool>) {
         if self.synthetic.is_empty() {
             return;
         }
@@ -3257,20 +3290,32 @@ impl SolveApp {
                 egui::Event::ModifiersChanged(modifiers) => self.synthetic_mods = *modifiers,
                 egui::Event::PointerButton { pos, modifiers, pressed, .. } => {
                     raw.events.push(egui::Event::PointerMoved(*pos));
+                    from_platform.push(false);
                     raw.events.push(egui::Event::ModifiersChanged(*modifiers));
+                    from_platform.push(false);
                     // A drag keeps its press's modifiers until the release.
                     self.synthetic_mods = if *pressed { *modifiers } else { egui::Modifiers::NONE };
                 }
-                egui::Event::Key { modifiers, .. } => raw.events.push(egui::Event::ModifiersChanged(*modifiers)),
-                egui::Event::PointerMoved(_) => raw.events.push(egui::Event::ModifiersChanged(self.synthetic_mods)),
+                egui::Event::Key { modifiers, .. } => {
+                    raw.events.push(egui::Event::ModifiersChanged(*modifiers));
+                    from_platform.push(false);
+                }
+                egui::Event::PointerMoved(_) => {
+                    raw.events.push(egui::Event::ModifiersChanged(self.synthetic_mods));
+                    from_platform.push(false);
+                }
                 _ => {}
             }
             raw.events.push(event);
+            from_platform.push(false);
         }
     }
 
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        // A real UI pass consumes the hook's input. eframe's logic-only passes do not call this,
+        // so only here can the retained batch stop being replayable.
+        self.input_trust.input_consumed_by_ui();
         prefs::prepare_blur(self, ui.ctx());
         let blur_source = !self.home.open && !render_workspace::result_active(self);
         let _blur_scope = self.blur.begin(ui.ctx(), blur_source);

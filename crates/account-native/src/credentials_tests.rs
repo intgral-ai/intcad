@@ -1,6 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::default_constructed_unit_structs)]
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 
 use solidcraft_engine::entitlement::{
@@ -61,7 +63,15 @@ fn provider_completion_alone_cannot_activate_or_report_a_product_session() {
     assert_eq!(session.activate_product_session(&BlockedProductExchange).unwrap_err().code, CredentialErrorCode::Unavailable);
     assert!(!session.product_session_active());
     let calls = store.take_calls();
-    assert_eq!(calls.first(), Some(&Call::Delete(PRODUCT_SESSION_KEY.to_owned())), "provider completion clears the old product bearer first");
+    let revoked = calls.iter().position(|call| matches!(call, Call::Set(key) if key == "login/commit")).expect("the commit is revoked");
+    let product_delete =
+        calls.iter().position(|call| matches!(call, Call::Delete(key) if key == PRODUCT_SESSION_KEY)).expect("the old bearer is deleted");
+    assert!(revoked < product_delete, "the durable commit is revoked before authority deletion: {calls:?}");
+    assert_eq!(
+        calls.iter().find(|call| matches!(call, Call::Delete(_))),
+        Some(&Call::Delete(PRODUCT_SESSION_KEY.to_owned())),
+        "the product bearer is the first credential removed"
+    );
 }
 
 #[test]
@@ -116,11 +126,20 @@ struct StoreState {
     fail_delete: Option<String>,
     fail_set: Option<String>,
     fail_all_sets: bool,
+    fail_commit: bool,
+    block_commit: Option<Receiver<()>>,
+}
+
+impl StoreState {
+    fn is_commit_value(key: &str, secret: &str) -> bool {
+        key == "login/commit" && secret.starts_with("intcad-login/1")
+    }
 }
 
 #[derive(Clone, Default)]
 struct RecordingStore {
     inner: Arc<Mutex<StoreState>>,
+    commit_waiting: Arc<AtomicUsize>,
 }
 
 impl RecordingStore {
@@ -140,6 +159,22 @@ impl RecordingStore {
         self.inner.lock().unwrap().entries.insert(key.to_owned(), value.to_owned());
     }
 
+    fn set_fail_commit(&self, fail: bool) {
+        self.inner.lock().unwrap().fail_commit = fail;
+    }
+
+    fn block_next_commit(&self, gate: Receiver<()>) {
+        self.inner.lock().unwrap().block_commit = Some(gate);
+    }
+
+    fn wait_until_commit_blocked(&self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while self.commit_waiting.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(self.commit_waiting.load(Ordering::SeqCst) > 0, "the commit write was never reached");
+    }
+
     fn take_calls(&self) -> Vec<Call> {
         std::mem::take(&mut self.inner.lock().unwrap().calls)
     }
@@ -151,6 +186,14 @@ impl RecordingStore {
     fn keys(&self) -> Vec<String> {
         self.inner.lock().unwrap().entries.keys().cloned().collect()
     }
+
+    fn entry(&self, key: &str) -> Option<String> {
+        self.inner.lock().unwrap().entries.get(key).cloned()
+    }
+
+    fn force_put(&self, key: &str, value: &str) {
+        self.inner.lock().unwrap().entries.insert(key.to_owned(), value.to_owned());
+    }
 }
 
 impl CredentialStore for RecordingStore {
@@ -161,11 +204,20 @@ impl CredentialStore for RecordingStore {
     }
 
     fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
-        let mut state = self.inner.lock().map_err(|_| unavailable())?;
-        state.calls.push(Call::Set(key.to_owned()));
-        if state.fail_all_sets || state.fail_set.as_deref() == Some(key) {
-            return Err(unavailable());
+        let gate = {
+            let mut state = self.inner.lock().map_err(|_| unavailable())?;
+            state.calls.push(Call::Set(key.to_owned()));
+            if state.fail_all_sets || state.fail_set.as_deref() == Some(key) || (state.fail_commit && StoreState::is_commit_value(key, secret)) {
+                return Err(unavailable());
+            }
+            if StoreState::is_commit_value(key, secret) { state.block_commit.take() } else { None }
+        };
+        if let Some(gate) = gate {
+            self.commit_waiting.fetch_add(1, Ordering::SeqCst);
+            let _ = gate.recv();
+            self.commit_waiting.fetch_sub(1, Ordering::SeqCst);
         }
+        let mut state = self.inner.lock().map_err(|_| unavailable())?;
         state.entries.insert(key.to_owned(), secret.to_owned());
         Ok(())
     }
@@ -489,6 +541,18 @@ fn credential_session_is_send_and_sync_for_desktop_composition() {
     assert_send_sync::<CredentialSession>();
 }
 
+#[test]
+fn failed_provider_cleanup_keeps_the_durable_sign_out_marker() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_one", "product_one_SECRET");
+    store.set_fail_delete("provider/access_token");
+    assert!(session.sign_out().is_err());
+    let reopened = CredentialSession::new(Box::new(store));
+    assert!(reopened.logout_pending().unwrap());
+    assert!(!reopened.product_session_active());
+}
+
 const FIRST_INSTALL_ID: &str = "inst_product_0001";
 const FIRST_INSTALL_CREDENTIAL: &str = "installation_credential_000000000000000000000000";
 const INSTALL_ID_KEY: &str = "install/id";
@@ -640,4 +704,155 @@ fn a_second_first_installation_is_refused_without_touching_the_store() {
     let calls = store.take_calls();
     assert!(calls.iter().all(|call| matches!(call, Call::Get(_))), "an existing installation is never replaced by a new bootstrap: {calls:?}");
     assert_eq!(WireCredentials::installation_credential(&session).unwrap().expose_secret(), FIRST_INSTALL_CREDENTIAL);
+}
+
+#[test]
+fn a_failed_commit_marker_write_leaves_no_restorable_session() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    let provider = ProviderSession::from_authorized("user_provider_0001".into(), crate::http::Secret::new("provider_access_SECRET"));
+    let product = ProductSession::from_trusted_exchange("acct_partial", crate::http::Secret::new("product_partial_SECRET"), None);
+    store.set_fail_commit(true);
+    assert_eq!(session.persist_verified_login(&provider, &product, 2, &|| true).unwrap_err().code, CredentialErrorCode::Unavailable);
+    assert!(store.contains_key(PRODUCT_SESSION_KEY), "the test writes the raw value before the failed marker");
+    let fresh = CredentialSession::new(Box::new(store));
+    assert!(!fresh.product_session_active(), "an uncommitted partial write is restorable");
+    assert!(fresh.display_account().is_none());
+    assert!(fresh.bound_account().is_none());
+    assert!(fresh.authenticated_scope().is_none());
+}
+
+#[test]
+fn only_a_fresh_verified_login_can_reopen_after_failed_commit() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    let provider = ProviderSession::from_authorized("user_provider_0001".into(), crate::http::Secret::new("provider_access_SECRET"));
+    let partial = ProductSession::from_trusted_exchange("acct_partial", crate::http::Secret::new("product_partial_SECRET"), None);
+    store.set_fail_commit(true);
+    assert!(session.persist_verified_login(&provider, &partial, 1, &|| true).is_err());
+    store.set_fail_commit(false);
+    assert!(session.provider_account().is_none());
+    assert!(!session.product_session_active());
+    assert!(session.display_account().is_none());
+    assert!(session.authenticated_scope().is_none());
+    store.take_calls();
+    assert!(session.bind_scope(&scope("acct_partial", "inst_old")).is_err());
+    assert!(session.switch_account("acct_other").is_err());
+    assert!(session.complete_provider_login("user_other", "provider_other_SECRET").is_err());
+    assert!(store.take_calls().is_empty(), "normal mutations must refuse without touching storage");
+    let retry = ProductSession::from_trusted_exchange("acct_retry", crate::http::Secret::new("product_retry_SECRET"), None);
+    let (tx, rx) = channel();
+    store.block_next_commit(rx);
+    let worker_session = session.clone();
+    let worker = std::thread::spawn(move || worker_session.persist_verified_login(&provider, &retry, 2, &|| true));
+    store.wait_until_commit_blocked();
+    assert_eq!(store.take_calls().first(), Some(&Call::Set("login/commit".into())));
+    assert_eq!(store.entry("login/commit").as_deref(), Some("intcad-login/revoked"));
+    let fresh = CredentialSession::new(Box::new(store.clone()));
+    assert!(fresh.display_account().is_none(), "a verified retry remains invisible before its new commit");
+    tx.send(()).unwrap();
+    assert_eq!(worker.join().unwrap().unwrap().account_id, "acct_retry");
+    assert_eq!(session.display_account().as_deref(), Some("acct_retry"));
+    assert_eq!(fresh.display_account().as_deref(), Some("acct_retry"));
+    assert!(session.authenticated_scope().is_none(), "identity is not installation proof");
+}
+
+#[test]
+fn successful_cleanup_does_not_reopen_a_failed_session() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    let provider = ProviderSession::from_authorized("user_provider_0001".into(), crate::http::Secret::new("provider_access_SECRET"));
+    let product = ProductSession::from_trusted_exchange("acct_partial", crate::http::Secret::new("product_partial_SECRET"), None);
+    store.set_fail_commit(true);
+    assert!(session.persist_verified_login(&provider, &product, 1, &|| true).is_err());
+    store.set_fail_commit(false);
+    session.sign_out().unwrap();
+    assert!(!store.contains_key(PRODUCT_SESSION_KEY));
+    assert!(session.complete_provider_login("user_other", "provider_other_SECRET").is_err());
+}
+
+#[test]
+fn a_blocked_commit_is_not_visible_until_the_marker_lands() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    let (gate_tx, gate_rx) = channel();
+    store.block_next_commit(gate_rx);
+    let worker_session = session.clone();
+    let worker = std::thread::spawn(move || {
+        let provider = ProviderSession::from_authorized("user_provider_0001".into(), crate::http::Secret::new("provider_access_SECRET"));
+        let product = ProductSession::from_trusted_exchange("acct_blocked", crate::http::Secret::new("product_blocked_SECRET"), None);
+        worker_session.persist_verified_login(&provider, &product, 3, &|| true)
+    });
+    store.wait_until_commit_blocked();
+    let fresh = CredentialSession::new(Box::new(store.clone()));
+    assert!(!fresh.product_session_active(), "the staged/partial activation was read before the commit");
+    assert!(fresh.display_account().is_none());
+    assert!(fresh.authenticated_scope().is_none());
+    gate_tx.send(()).unwrap();
+    assert!(worker.join().unwrap().is_ok());
+    assert!(session.product_session_active(), "the commit was not visible after the marker");
+}
+
+#[test]
+fn a_superseded_generation_never_writes_the_commit_marker() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let current = Arc::clone(&calls);
+    let provider = ProviderSession::from_authorized("user_provider_0001".into(), crate::http::Secret::new("provider_access_SECRET"));
+    let product = ProductSession::from_trusted_exchange("acct_superseded", crate::http::Secret::new("product_superseded_SECRET"), None);
+    let result = session.persist_verified_login(&provider, &product, 4, &move || current.fetch_add(1, Ordering::SeqCst) == 0);
+    assert_eq!(result.unwrap_err().code, CredentialErrorCode::Unavailable);
+    let committed = store
+        .take_calls()
+        .iter()
+        .filter_map(|call| match call {
+            Call::Set(key) => store.entry(key).filter(|value| value.starts_with("intcad-login/1")),
+            _ => None,
+        })
+        .count();
+    assert_eq!(committed, 0, "a superseded generation wrote a commit marker");
+    assert!(!session.product_session_active());
+    let fresh = CredentialSession::new(Box::new(store));
+    assert!(!fresh.product_session_active());
+    assert!(fresh.display_account().is_none());
+}
+
+#[test]
+fn a_durable_tombstone_wins_a_race_with_a_blocked_commit() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    let (gate_tx, gate_rx) = channel();
+    store.block_next_commit(gate_rx);
+    let worker_session = session.clone();
+    let worker = std::thread::spawn(move || {
+        let provider = ProviderSession::from_authorized("user_provider_0001".into(), crate::http::Secret::new("provider_access_SECRET"));
+        let product = ProductSession::from_trusted_exchange("acct_race", crate::http::Secret::new("product_race_SECRET"), None);
+        worker_session.persist_verified_login(&provider, &product, 5, &|| true)
+    });
+    store.wait_until_commit_blocked();
+    // A separate durable writer represents the tombstone that must survive a crash before the
+    // commit finishes. The desktop's own promotion gate makes this an accepted sign-out only
+    // before promotion, never during it.
+    CredentialSession::new(Box::new(store.clone())).mark_logout_pending().unwrap();
+    gate_tx.send(()).unwrap();
+    let result = worker.join().unwrap();
+    assert!(result.is_ok(), "the write itself completed");
+    let fresh = CredentialSession::new(Box::new(store));
+    assert!(fresh.logout_pending().unwrap());
+    assert!(!fresh.product_session_active(), "the tombstone did not suppress the raced commit");
+    assert!(fresh.display_account().is_none());
+}
+
+#[test]
+fn display_identity_requires_the_same_durable_commit_as_product_authority() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_display", "product_display_SECRET");
+    assert_eq!(session.display_account().as_deref(), Some("acct_display"));
+    // Revoking the commit alone makes every reader, including the display-only identity, refuse.
+    store.force_put("login/commit", "intcad-login/revoked");
+    let fresh = CredentialSession::new(Box::new(store));
+    assert!(fresh.display_account().is_none());
+    assert!(!fresh.product_session_active());
 }

@@ -13,7 +13,7 @@ pub(crate) mod tests;
 
 use solidcraft_engine::entitlement::{Refusal, RefusalCode};
 
-pub use panel::{PromptContext, show_product_prompt, show_summary, status_chip};
+pub use panel::{PromptContext, show_inline_sign_in, show_product_prompt, show_summary, status_chip};
 pub(crate) use panel::{compact_menu_entry, status_chip_width};
 
 /// A point in time for a device-code login, in seconds since the Unix epoch.
@@ -27,30 +27,29 @@ pub struct Timestamp(pub u64);
 pub enum Action {
     RefreshStatus,
     SignIn,
+    /// Open the system browser at the verification address the provider just returned. Only a
+    /// fresh explicit click may do this; a pending login never launches a browser by itself.
+    OpenSignInBrowser,
+    CancelSignIn,
     SignOut,
     SwitchAccount,
-    /// Open the trusted verification page in the system browser. Only a click enqueues it, and
-    /// only [`State::process_actions`] calls the port's reviewed browser seam.
-    OpenVerification,
 }
 
-/// Where a cached device-code sign-in has reached. The panel reads this, never the port.
+/// Where an explicit desktop sign-in stands. The host fills this from its own worker; rendering
+/// only reads it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum SignInStatus {
-    /// No explicit sign-in is running.
+pub enum SignInState {
     #[default]
     Idle,
-    /// The worker was started; the prompt is not readable yet.
     Starting,
-    /// The browser prompt is cached and may be opened by one explicit action.
     Waiting,
-    /// The worker reported a refusal. A new explicit action may try again.
+    Expired,
     Failed,
 }
 
-impl SignInStatus {
-    /// The worker still needs the UI to wake and read its cached state.
-    pub fn waiting_for_worker(self) -> bool {
+impl SignInState {
+    /// A worker is starting or polling: one gesture is still in progress.
+    pub fn pending(self) -> bool {
         matches!(self, Self::Starting | Self::Waiting)
     }
 }
@@ -92,8 +91,21 @@ pub struct OwnModelView {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountView {
     pub signed_in: bool,
-    /// Show the explicit sign-in action; false in a build with no account support.
+    /// Show the explicit sign-in action; false without account support or during unconfirmed cleanup.
     pub sign_in_visible: bool,
+    /// Where an explicit desktop sign-in stands. It is idle unless the host started one.
+    pub sign_in_state: SignInState,
+    /// The provider's code and verification address while a login waits for the person.
+    pub sign_in_prompt: Option<DeviceCode>,
+    /// The stable reason a sign-in failed, if it did.
+    pub sign_in_error: Option<RefusalCode>,
+    /// A sign-out's durable marker/delete is still running; authority is already gone in process.
+    pub sign_out_pending: bool,
+    /// A readable durable sign-out marker from a previous process remains. The UI offers a
+    /// recovery action to finish the cleanup; no prior identity or authority is restored.
+    pub sign_out_recovery: bool,
+    /// The latest sign-out cleanup failed. The process stays fail-closed until a retry confirms it.
+    pub sign_out_error: Option<RefusalCode>,
     pub account_label: Option<String>,
     /// Credits a new billed operation may use; `None` when not known.
     pub available: Option<u64>,
@@ -115,6 +127,12 @@ impl AccountView {
         Self {
             signed_in: false,
             sign_in_visible: true,
+            sign_in_state: SignInState::Idle,
+            sign_in_prompt: None,
+            sign_in_error: None,
+            sign_out_pending: false,
+            sign_out_recovery: false,
+            sign_out_error: None,
             account_label: None,
             available: None,
             held: 0,
@@ -130,6 +148,12 @@ impl AccountView {
         Self {
             signed_in: false,
             sign_in_visible: false,
+            sign_in_state: SignInState::Idle,
+            sign_in_prompt: None,
+            sign_in_error: None,
+            sign_out_pending: false,
+            sign_out_recovery: false,
+            sign_out_error: None,
             account_label: None,
             available: None,
             held: 0,
@@ -148,7 +172,7 @@ impl AccountView {
     /// This build offers a product sign-in and the person is not signed in yet. Contextual
     /// product prompts read this instead of matching refusal text from a paid action.
     pub fn product_sign_in_required(&self) -> bool {
-        !self.signed_in && self.sign_in_visible
+        !self.signed_in && self.sign_in_visible && !self.sign_out_pending && !self.sign_out_recovery && self.sign_out_error.is_none()
     }
 }
 
@@ -188,22 +212,24 @@ pub trait AccountPort: Send + Sync {
     fn view(&self) -> AccountView;
     fn refresh_status(&mut self) -> Result<AccountView, Refusal>;
     fn sign_in(&mut self) -> Result<(), Refusal>;
+    /// Open the browser at the current provider-issued verification address. Default: no browser.
+    fn open_sign_in_browser(&mut self) -> Result<(), Refusal> {
+        Err(Refusal::new(RefusalCode::AuthRequired, "no sign-in is waiting for a browser"))
+    }
+    /// Stop the current attempt. A refusal means the sign-in is already completing and could not
+    /// be canceled; the caller must show that rather than imply cancellation succeeded.
+    fn cancel_sign_in(&mut self) -> Result<(), Refusal> {
+        Ok(())
+    }
+    /// Take a view the host worker produced, if it changed. Default: no worker.
+    fn poll(&mut self) -> Option<AccountView> {
+        None
+    }
     fn sign_out(&mut self) -> Result<(), Refusal>;
     fn switch_account(&mut self) -> Result<(), Refusal>;
     fn delete_account_guide(&self) -> DeleteAccountGuide;
     fn begin_device_code(&self) -> Result<DeviceCode, Refusal>;
     fn own_model_view(&self) -> Option<OwnModelView>;
-
-    /// Open the trusted verification page in the system browser. Only an explicit browser action
-    /// calls this; nothing here opens a browser on its own.
-    fn open_verification(&mut self) -> Result<(), Refusal> {
-        Err(Refusal::new(RefusalCode::AuthUnavailable, "no browser verification is available"))
-    }
-
-    /// Take the latest asynchronous sign-in failure, once, for an in-place prompt.
-    fn take_sign_in_notice(&mut self) -> Option<Refusal> {
-        None
-    }
 
     /// Take the host event that ends the old session's authority, if one occurred.
     ///
@@ -272,10 +298,6 @@ pub struct State {
     /// Explicit actions awaiting [`State::process_actions`] outside a frame.
     pending: Vec<Action>,
     notice: Option<Refusal>,
-    /// The latest device-code prompt, cached outside paint so every panel shows one challenge.
-    challenge: Option<DeviceCode>,
-    /// Where the cached device-code sign-in is; paint reads this and never the port.
-    sign_in: SignInStatus,
     /// Sampled before the cached view is adopted on each logic tick, so a bounded startup check
     /// that finishes with the new view still requests one more wake.
     startup_waiting: bool,
@@ -286,10 +308,6 @@ impl Default for AccountView {
     fn default() -> Self {
         Self::unavailable()
     }
-}
-
-fn now_seconds() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
 }
 
 /// Adopt a successful explicit action's fresh view and guidance, or keep its refusal.
@@ -306,7 +324,13 @@ fn apply(
             *guide = Some(port.delete_account_guide());
             *notice = None;
         }
-        Err(refusal) => *notice = Some(refusal),
+        Err(refusal) => {
+            // A refusal may still follow a partial host action: show the host's actual view, not
+            // the stale one from before the click.
+            *view = port.view();
+            *guide = Some(port.delete_account_guide());
+            *notice = Some(refusal);
+        }
     }
 }
 
@@ -319,16 +343,7 @@ impl State {
         let startup_waiting = port.startup_waiting();
         let view = port.view();
         let guide = port.delete_account_guide();
-        Self {
-            port: Some(port),
-            view,
-            guide: Some(guide),
-            pending: Vec::new(),
-            notice: None,
-            challenge: None,
-            sign_in: SignInStatus::Idle,
-            startup_waiting,
-        }
+        Self { port: Some(port), view, guide: Some(guide), pending: Vec::new(), notice: None, startup_waiting }
     }
 
     /// The browser stays anonymous and offline even if a desktop composition root is reused.
@@ -348,8 +363,6 @@ impl State {
         self.port = Some(port);
         self.pending.clear();
         self.notice = None;
-        self.challenge = None;
-        self.sign_in = SignInStatus::Idle;
     }
 
     /// No web build may install an account port, even through a shared host entry point.
@@ -388,13 +401,19 @@ impl State {
     /// Run every queued action on the port, outside a frame. Task 11 must make the network work
     /// asynchronous: this call may block the host loop, never the window thread's paint pass.
     ///
-    /// The host calls this once per logic tick. It also adopts the port's cached view and drains
-    /// one asynchronous notice, so a completed, failed or retired worker becomes visible without
-    /// any paint pass calling the port. A caller schedules a bounded wake while
+    /// The host calls this once per logic tick. It also adopts the port's cached view, so a
+    /// completed, failed or retired worker becomes visible without any paint pass calling the
+    /// port. A caller schedules a bounded wake while
     /// [`State::sign_in_waiting`] or [`State::startup_waiting`] says a worker is still running.
     pub fn process_actions(&mut self) {
         let actions = std::mem::take(&mut self.pending);
         let Some(port) = self.port.as_mut() else { return };
+        // Sample before reading a snapshot. Completion between the two calls still gets a final
+        // wake, even if the snapshot has not caught up. Poll before actions so an already-finished
+        // login cannot be opened or canceled from the previous frame's prompt.
+        self.startup_waiting = port.startup_waiting();
+        self.view = port.poll().unwrap_or_else(|| port.view());
+        self.guide = Some(port.delete_account_guide());
         for action in actions {
             match action {
                 Action::RefreshStatus => match port.refresh_status() {
@@ -408,94 +427,31 @@ impl State {
                 Action::SignIn => {
                     let result = port.sign_in();
                     apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
-                    self.challenge = None;
-                    self.sign_in = if self.notice.is_none() && !self.view.signed_in { SignInStatus::Starting } else { SignInStatus::Idle };
+                }
+                Action::OpenSignInBrowser => {
+                    let result = port.open_sign_in_browser();
+                    apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
+                }
+                Action::CancelSignIn => {
+                    let result = port.cancel_sign_in();
+                    apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
                 }
                 Action::SignOut => {
                     let result = port.sign_out();
                     apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
-                    self.challenge = None;
-                    self.sign_in = SignInStatus::Idle;
                 }
                 Action::SwitchAccount => {
                     let result = port.switch_account();
                     apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
-                    self.challenge = None;
-                    self.sign_in = SignInStatus::Idle;
                 }
-                Action::OpenVerification => match port.open_verification() {
-                    Ok(()) => self.notice = None,
-                    Err(refusal) => self.notice = Some(refusal),
-                },
             }
         }
-        self.sync_sign_in();
-    }
-
-    /// Read the port's cached view and latest device prompt outside a frame. No method here
-    /// starts a network request or opens a browser: the worker already owns them, and only
-    /// [`Action::OpenVerification`] calls the reviewed browser seam.
-    fn sync_sign_in(&mut self) {
-        let Some(port) = self.port.as_mut() else { return };
-        // Sample the bounded check before taking the view snapshot. Completion between the two
-        // calls then leaves a stale view with `startup_waiting` true, so the host wakes once more
-        // and the next logic tick adopts the completed view instead of showing it stale.
-        self.startup_waiting = port.startup_waiting();
-        self.view = port.view();
-        self.guide = Some(port.delete_account_guide());
-        if self.view.signed_in {
-            // A completed flow retires its prompt at once. A cached prompt from an older
-            // attempt is never shown beside the signed-in account.
-            self.challenge = None;
-            self.sign_in = SignInStatus::Idle;
-            return;
-        }
-        if let Some(refusal) = port.take_sign_in_notice() {
-            self.notice = Some(refusal);
-            self.challenge = None;
-            self.sign_in = SignInStatus::Failed;
-            return;
-        }
-        if !self.sign_in.waiting_for_worker() {
-            return;
-        }
-        match port.begin_device_code() {
-            Ok(challenge) => {
-                self.challenge = Some(challenge);
-                self.sign_in = SignInStatus::Waiting;
-            }
-            Err(refusal) if refusal.code == RefusalCode::AuthRequired => {
-                // The prompt is not readable yet, or the code has passed its deadline. Keep
-                // the progress state until the worker reports its terminal result.
-            }
-            Err(refusal) => {
-                self.notice = Some(refusal);
-                self.challenge = None;
-                self.sign_in = SignInStatus::Failed;
-            }
-        }
-    }
-
-    /// The cached device prompt, if a waiting sign-in has one.
-    pub fn challenge(&self) -> Option<&DeviceCode> {
-        self.challenge.as_ref()
-    }
-
-    /// Where the cached device sign-in is, for progress and retry labels.
-    pub fn sign_in_status(&self) -> SignInStatus {
-        self.sign_in
-    }
-
-    /// The cached code has passed its own deadline, so a browser action is no longer possible even
-    /// if the worker has not reported its terminal result yet.
-    pub fn sign_in_expired(&self) -> bool {
-        self.challenge.as_ref().is_some_and(|challenge| challenge.expires_at <= Timestamp(now_seconds()))
     }
 
     /// A worker is still running, so the host should wake the window within a bounded interval
     /// and read its cached state again. False after success, refusal, cancellation or expiry.
     pub fn sign_in_waiting(&self) -> bool {
-        self.sign_in.waiting_for_worker() && !self.sign_in_expired()
+        self.view.sign_in_state.pending()
     }
 
     /// A bounded startup check (restart verification) was still running when the cached view was
@@ -571,26 +527,6 @@ impl State {
             return Err(Refusal::new(RefusalCode::AuthUnavailable, "no account port is installed"));
         };
         port.begin_device_code()
-    }
-
-    /// An explicit browser action. Rendering enqueues a plain click; this call is made outside a
-    /// frame, so a slow system opener never runs in a paint pass.
-    pub fn open_verification(&mut self) -> Result<(), Refusal> {
-        let Some(port) = self.port.as_mut() else {
-            return Err(Refusal::new(RefusalCode::AuthUnavailable, "no account port is installed"));
-        };
-        let result = port.open_verification();
-        if let Err(refusal) = &result {
-            self.notice = Some(refusal.clone());
-        }
-        result
-    }
-
-    /// Drain a failed asynchronous sign-in into the account notice. Call outside a frame.
-    pub fn take_sign_in_notice(&mut self) -> Option<Refusal> {
-        let refusal = self.port.as_mut()?.take_sign_in_notice()?;
-        self.notice = Some(refusal.clone());
-        Some(refusal)
     }
 
     pub fn own_model_view(&self) -> Option<OwnModelView> {
