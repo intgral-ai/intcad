@@ -48,5 +48,23 @@
     "account.sign_in_retry": "로그인 다시 시도",
     "account.chat_prompt": "AI 채팅을 사용하려면 Intcad 계정에 로그인하십시오. 선택한 모델의 자체 로그인은 별개입니다.",
     "account.review_prompt": "검토 검사를 실행하려면 Intcad 계정에 로그인하십시오."
+  },
+  "ar": {
+    "account.menu_tooltip": "فتح قائمة حساب Intcad",
+    "account.sign_in_open_browser": "فتح صفحة تسجيل الدخول",
+    "account.chat_prompt": "سجّل الدخول إلى حسابك في Intcad لاستخدام المحادثة بالذكاء الاصطناعي. يظل تسجيل الدخول الخاص بالنموذج المحدد منفصلًا.",
+    "account.review_prompt": "سجّل الدخول إلى حسابك في Intcad لتشغيل فحوصات المراجعة."
+  },
+  "he": {
+    "account.menu_tooltip": "פתיחת תפריט חשבון Intcad",
+    "account.sign_in_open_browser": "פתיחת עמוד ההתחברות",
+    "account.chat_prompt": "התחבר לחשבון Intcad שלך כדי להשתמש בצ׳אט עם בינה מלאכותית. ההתחברות למודל שבחרת נשארת נפרדת.",
+    "account.review_prompt": "התחבר לחשבון Intcad שלך כדי להריץ בדיקות סקירה."
+  },
+  "vi": {
+    "account.menu_tooltip": "Mở menu tài khoản Intcad",
+    "account.sign_in_open_browser": "Mở trang đăng nhập",
+    "account.chat_prompt": "Đăng nhập vào tài khoản Intcad của bạn để dùng Trò chuyện AI. Việc đăng nhập vào mô hình đã chọn vẫn được thực hiện riêng.",
+    "account.review_prompt": "Đăng nhập vào tài khoản Intcad của bạn để chạy các phép kiểm tra trong mục Rà soát."
   }
 }

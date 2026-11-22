@@ -23,5 +23,20 @@
     "account.copy_device_code": "复制设备码",
     "account.device_code_copied": "已复制",
     "account.sign_in_manually": "手动打开"
+  },
+  "ar": {
+    "account.copy_device_code": "نسخ الرمز",
+    "account.device_code_copied": "تم النسخ",
+    "account.sign_in_manually": "فتح يدويًا"
+  },
+  "he": {
+    "account.copy_device_code": "העתקת הקוד",
+    "account.device_code_copied": "הועתק",
+    "account.sign_in_manually": "פתיחה ידנית"
+  },
+  "vi": {
+    "account.copy_device_code": "Sao chép mã",
+    "account.device_code_copied": "Đã sao chép",
+    "account.sign_in_manually": "Mở thủ công"
   }
 }
