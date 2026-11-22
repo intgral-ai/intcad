@@ -2151,7 +2151,9 @@ mod tests {
 
     #[test]
     fn a_wire_401_stops_the_original_control_operation_before_lease_expiry() {
-        use solidcraft_engine::entitlement::GrantId;
+        use solidcraft_account_native::OperationRenewal;
+        use solidcraft_engine::entitlement::{ConservativeDeadline, GrantId};
+        use std::sync::atomic::AtomicU64;
 
         struct FixtureBilling;
         impl solidcraft_engine::entitlement::BillingPort for FixtureBilling {
@@ -2179,17 +2181,34 @@ mod tests {
         let (mut req, _) = solidcraft_ui_egui::ControlRequest::trusted_control("engine.execute", json!({"command":"document.inspect"}));
         let operation = req.operation().unwrap().clone();
         CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("test_proof")).unwrap();
-        let make_service = |responses| {
-            HttpAccountService::with_transport(
-                ScriptedProduct::scripted(responses),
+        fn tick_unauthorized(session: CredentialSession, scope: AuthenticatedHostScope, operation: OperationId) {
+            struct DriverClock(Arc<AtomicU64>);
+            impl MonotonicClock for DriverClock {
+                fn now(&self) -> MonotonicInstant {
+                    MonotonicInstant::from_millis(self.0.load(Ordering::Relaxed))
+                }
+                fn wall_now(&self) -> SystemTime {
+                    UNIX_EPOCH
+                }
+            }
+            let time = Arc::new(AtomicU64::new(0));
+            let grant = Grant::from_server(GrantId::new("grant_desktop_test"), Capability::Control, MonotonicInstant::from_millis(60_000));
+            let mut renewal = OperationRenewal::new(
+                ScriptedProduct::scripted(vec![Ok(WireResponse::new(401, br#"{"error":{"code":"AUTH_REQUIRED"}}"#.to_vec()))]),
                 WireConnection::new("https://product.invalid", "1.0.0").unwrap(),
-                Box::new(session.clone()),
-                Box::new(session.clone()),
-                Box::new(Clock),
+                session,
+                Box::new(DriverClock(Arc::clone(&time))),
+                scope,
+                operation,
+                grant,
+                ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(60)),
+                Duration::from_secs(20),
             )
-        };
-        let unauthorized = || Ok(WireResponse::new(401, br#"{"error":{"code":"AUTH_REQUIRED"}}"#.to_vec()));
-        let mut renewal = make_service(vec![unauthorized()]);
+            .unwrap();
+            time.store(20_000, Ordering::Relaxed);
+            assert_eq!(renewal.tick().unwrap_err().code, RefusalCode::AuthRequired);
+            assert_eq!(renewal.deadline().expires_at(), MonotonicInstant::from_millis(60_000));
+        }
         let runtime = AccountRuntime::with_session(session.clone());
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         let startup = runtime.startup();
@@ -2199,10 +2218,7 @@ mod tests {
         app.install_billing(Box::new(FixtureBilling), budget);
         app.install_commit_authority(scope.clone(), Box::new(InertService), Box::new(Clock));
 
-        assert_eq!(
-            renewal.renew(&scope, &operation, &GrantId::new("grant_desktop_test"), Capability::Control).unwrap_err().code,
-            RefusalCode::AuthRequired
-        );
+        tick_unauthorized(session.clone(), scope.clone(), operation);
         let control::Outcome::Done(reply) = control::handle(&mut app, &egui::Context::default(), &mut req) else {
             panic!("a rejected operation must return an immediate refusal");
         };
@@ -2214,19 +2230,7 @@ mod tests {
         CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &finishing_id, Secret::new("test_proof")).unwrap();
         let worker_session = session.clone();
         let worker_scope = scope.clone();
-        let callback = move || {
-            let mut renewal = HttpAccountService::with_transport(
-                ScriptedProduct::scripted(vec![unauthorized()]),
-                WireConnection::new("https://product.invalid", "1.0.0").unwrap(),
-                Box::new(worker_session.clone()),
-                Box::new(worker_session.clone()),
-                Box::new(Clock),
-            );
-            assert_eq!(
-                renewal.renew(&worker_scope, &finishing_id, &GrantId::new("grant_desktop_test"), Capability::Control).unwrap_err().code,
-                RefusalCode::AuthRequired
-            );
-        };
+        let callback = move || tick_unauthorized(worker_session.clone(), worker_scope.clone(), finishing_id.clone());
         app.install_commit_authority(
             scope.clone(),
             Box::new(RenewalTestAuthority { on_third_lookup: Box::new(callback), lookups: AtomicUsize::new(0) }),

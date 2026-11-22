@@ -20,11 +20,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{
-    AccountService, Admission, AuthenticatedHostScope, Availability, BillingResult, Capability, EntryCategory, ErrorCode, Grant, GrantId,
-    MonotonicClock, MonotonicInstant, OperationId, OperationStatus, Refusal, RefusalCode,
+    AccountService, Admission, AuthenticatedHostScope, Availability, BillingResult, Capability, ConservativeDeadline, EntryCategory, ErrorCode,
+    Grant, GrantId, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, Refusal, RefusalCode, RenewalAttempt,
 };
 
-use crate::credentials::ProductExchangeError;
+use crate::credentials::{CredentialSession, ProductExchangeError};
 use crate::session_verification::{valid_account, verified_account};
 
 /// Frozen protocol version from the rev3 manifest.
@@ -491,6 +491,112 @@ pub struct HttpAccountService<T: Transport> {
     clock: Box<dyn MonotonicClock>,
 }
 
+/// A serial renewal driver for one already admitted desktop control operation.
+/// Drive it only on a worker with bounded transport and a suspend-aware clock shared
+/// with the dispatch/commit gates. Constructing it does not install authority.
+pub struct OperationRenewal<T: Transport> {
+    service: HttpAccountService<T>,
+    session: CredentialSession,
+    scope: AuthenticatedHostScope,
+    operation: OperationId,
+    authorization: GrantId,
+    bearer: Secret,
+    proof: Secret,
+    generation: u64,
+    deadline: ConservativeDeadline,
+    next: Option<MonotonicInstant>,
+}
+
+impl<T: Transport> OperationRenewal<T> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        transport: T,
+        connection: WireConnection,
+        session: CredentialSession,
+        clock: Box<dyn MonotonicClock>,
+        scope: AuthenticatedHostScope,
+        operation: OperationId,
+        grant: Grant,
+        deadline: ConservativeDeadline,
+        interval: Duration,
+    ) -> Result<Self, Refusal> {
+        let now = clock.now();
+        if grant.capability() != Capability::Control
+            || deadline.expires_at() > grant.expires_at()
+            || deadline.remaining(now).is_none()
+            || !(Duration::from_secs(1)..=Duration::from_secs(3600)).contains(&interval)
+        {
+            return Err(refusal(RefusalCode::UnsafeToStart));
+        }
+        let generation = session.authority_generation();
+        let bearer = WireCredentials::product_session(&session).ok_or_else(|| refusal(RefusalCode::AuthRequired))?;
+        let proof = WireCredentials::execution_session_proof(&session, &operation).ok_or_else(|| refusal(RefusalCode::AuthRequired))?;
+        let fixed = FixedCredentials::none().with_product_session(bearer.expose_secret()).with_execution_session_proof(proof.expose_secret());
+        let service = HttpAccountService::with_transport(transport, connection, Box::new(fixed), Box::new(session.clone()), clock);
+        let next = Some(now.saturating_add(interval));
+        let driver = Self { service, session, scope, operation, authorization: grant.id().clone(), bearer, proof, generation, deadline, next };
+        driver.check_binding()?;
+        Ok(driver)
+    }
+
+    fn check_binding(&self) -> Result<(), Refusal> {
+        if let Some(code) = self.session.renewal_refusal(&self.scope, &self.operation) {
+            return Err(refusal(code));
+        }
+        if self.session.authenticated_scope().as_ref() != Some(&self.scope)
+            || WireCredentials::product_session(&self.session).as_ref() != Some(&self.bearer)
+            || WireCredentials::execution_session_proof(&self.session, &self.operation).as_ref() != Some(&self.proof)
+            || self.session.authority_generation() != self.generation
+        {
+            return Err(refusal(RefusalCode::AuthRequired));
+        }
+        Ok(())
+    }
+
+    /// Attempt a renewal only when due. A failed exchange permanently retires this
+    /// driver and leaves the old deadline intact; no retries or replacement operations.
+    pub fn tick(&mut self) -> Result<bool, Refusal> {
+        let Some(next) = self.next else { return Ok(false) };
+        let now = self.service.clock.now();
+        if self.deadline.remaining(now).is_none() {
+            self.next = None;
+            return Err(refusal(RefusalCode::UnsafeToStart));
+        }
+        if now < next {
+            return Ok(false);
+        }
+        self.next = None;
+        self.check_binding()?;
+        let (grant, sent_at, interval) =
+            self.service.exchange_renewal(&self.scope, &self.operation, &self.authorization, Capability::Control, Some(&self.deadline))?;
+        let received_at = self.service.clock.now();
+        self.check_binding()?;
+        let interval = interval.ok_or_else(unavailable)?;
+        let attempt = RenewalAttempt { sent_at, received_at, old_deadline: self.deadline.clone(), still_valid: true };
+        let remaining = grant.expires_at().as_duration().saturating_sub(sent_at.as_duration());
+        let candidate = self.deadline.renewed(&attempt, remaining).map_err(|_| refusal(RefusalCode::UnsafeToStart))?;
+        let applied_at = self.service.clock.now();
+        if self.deadline.remaining(applied_at).is_none()
+            || candidate.remaining(applied_at).is_none()
+            || candidate.expires_at() < self.deadline.expires_at()
+        {
+            return Err(refusal(RefusalCode::UnsafeToStart));
+        }
+        self.deadline = candidate;
+        self.next = Some(sent_at.saturating_add(interval));
+        Ok(true)
+    }
+
+    pub fn deadline(&self) -> &ConservativeDeadline {
+        &self.deadline
+    }
+
+    #[cfg(test)]
+    pub(crate) fn transport(&self) -> &T {
+        self.service.transport()
+    }
+}
+
 impl<T: Transport> fmt::Debug for HttpAccountService<T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -657,7 +763,7 @@ impl<T: Transport> HttpAccountService<T> {
         Ok(InstallationBootstrap { installation_id, created_at, credential })
     }
 
-    /// POST `/v1/authorizations` for an initial lease. Renewal uses [`Self::renew`].
+    /// POST `/v1/authorizations` to renew an existing operation's lease.
     pub fn renew(
         &mut self,
         scope: &AuthenticatedHostScope,
@@ -665,8 +771,18 @@ impl<T: Transport> HttpAccountService<T> {
         authorization_id: &GrantId,
         capability: Capability,
     ) -> Result<Grant, Refusal> {
+        self.exchange_renewal(scope, operation, authorization_id, capability, None).map(|(grant, _, _)| grant)
+    }
+
+    fn exchange_renewal(
+        &mut self,
+        scope: &AuthenticatedHostScope,
+        operation: &OperationId,
+        authorization_id: &GrantId,
+        capability: Capability,
+        prior: Option<&ConservativeDeadline>,
+    ) -> Result<(Grant, MonotonicInstant, Option<Duration>), Refusal> {
         require_provable(scope)?;
-        let sent_at = self.clock.now();
         let mut request = self.request(
             "POST",
             "/v1/authorizations",
@@ -682,6 +798,10 @@ impl<T: Transport> HttpAccountService<T> {
             self.credentials.product_session().map(|secret| Secret::new(format!("Bearer {}", secret.expose_secret()))),
         )?;
         self.push_auth(&mut request, "X-Execution-Session-Proof", self.credentials.execution_session_proof(operation))?;
+        let sent_at = self.clock.now();
+        if prior.is_some_and(|deadline| deadline.remaining(sent_at).is_none()) {
+            return Err(refusal(RefusalCode::UnsafeToStart));
+        }
         let response = self.transport.send(&request).map_err(|_| unavailable())?;
         if response.status() == 401 {
             self.handoff.renewal_unauthorized(scope, operation);
@@ -701,7 +821,9 @@ impl<T: Transport> HttpAccountService<T> {
         }
         let remaining = value.get("remaining_seconds").and_then(Value::as_u64).ok_or_else(unavailable)?;
         let id = value.get("authorization_id").and_then(Value::as_str).ok_or_else(unavailable)?;
-        Ok(self.grant(sent_at, id, capability, remaining))
+        let interval =
+            value.get("renew_after_seconds").and_then(Value::as_u64).filter(|seconds| (1..=3600).contains(seconds)).map(Duration::from_secs);
+        Ok((self.grant(sent_at, id, capability, remaining), sent_at, interval))
     }
 
     /// Start with an optional trusted authorization lease.

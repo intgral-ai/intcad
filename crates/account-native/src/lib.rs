@@ -35,8 +35,8 @@ pub use device_code::{
     WORKOS_DEVICE_AUTHORIZATION_URL, WORKOS_DEVICE_GRANT_TYPE, WORKOS_TOKEN_URL, WorkOsPublicClient,
 };
 pub use http::{
-    BootstrapPlatform, CredentialHandoff, FixedCredentials, HttpAccountService, HttpConfigError, InstallationBootstrap, Secret, Transport,
-    TransportFailure, UreqTransport, WireConnection, WireCredentials, WireRequest, WireResponse,
+    BootstrapPlatform, CredentialHandoff, FixedCredentials, HttpAccountService, HttpConfigError, InstallationBootstrap, OperationRenewal, Secret,
+    Transport, TransportFailure, UreqTransport, WireConnection, WireCredentials, WireRequest, WireResponse,
 };
 pub use ledger::{FileOperationStore, InMemoryOperationStore};
 pub use session_verification::ServerVerifiedProductSession;

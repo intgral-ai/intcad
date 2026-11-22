@@ -189,6 +189,90 @@ fn error_body(code: &str) -> Value {
 }
 
 #[test]
+fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_late_success() {
+    use crate::credentials::{ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession};
+    use crate::http::{CredentialHandoff, OperationRenewal};
+    use solidcraft_engine::entitlement::{ConservativeDeadline, Grant};
+
+    struct Exchange;
+    impl ProductSessionExchange for Exchange {
+        fn exchange(&self, _: &ProviderSession) -> Result<ProductSession, ProductExchangeError> {
+            Ok(ProductSession::from_trusted_exchange("acct_example_0001", Secret::new("fixture_bearer"), None))
+        }
+    }
+    struct TimedReply {
+        wire: ScriptedTransport,
+        clock: TestClock,
+        receive_at: u64,
+    }
+    impl crate::http::Transport for TimedReply {
+        fn send(&self, request: &crate::http::WireRequest) -> Result<WireResponse, TransportFailure> {
+            self.clock.millis.set(self.receive_at);
+            self.wire.send(request)
+        }
+    }
+    for (status, receive_at, replace_proof) in [(200, 21_000, false), (401, 21_000, false), (200, 60_000, false), (200, 21_000, true)] {
+        let clock = TestClock::at(0);
+        let mut session = CredentialSession::new(Box::new(MemorySession::default()));
+        session.complete_provider_login("provider_fixture", "provider_token").unwrap();
+        session.activate_product_session(&Exchange).unwrap();
+        CredentialHandoff::installation_credential(&mut session, "inst_example_0001", Secret::new("fixture_installation")).unwrap();
+        let scope = session.authenticated_scope().unwrap();
+        let operation = operation();
+        CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("original_proof")).unwrap();
+        let grant = Grant::from_server(GrantId::new("grant_example_0001"), Capability::Control, MonotonicInstant::from_millis(60_000));
+        let body = if status == 401 {
+            error_body("AUTH_REQUIRED")
+        } else {
+            json!({"authorization_id":"grant_example_0001","operation_id":"op_example_0001","capability":"control","renewed":true,
+                "remaining_seconds":60,"renew_after_seconds":17,"execution_session_proof":null,"expires_at":"2026-01-01T00:01:20.000Z"})
+        };
+        let transport = TimedReply { wire: ScriptedTransport::new(vec![ok(status, body)]), clock: clock.clone(), receive_at };
+        let deadline = ConservativeDeadline::new(clock.now(), Duration::from_secs(60));
+        let mut renewal = OperationRenewal::new(
+            transport,
+            WireConnection::new(BASE, "1.0.0").unwrap(),
+            session.clone(),
+            Box::new(clock.clone()),
+            scope.clone(),
+            operation.clone(),
+            grant,
+            deadline.clone(),
+            Duration::from_secs(20),
+        )
+        .unwrap();
+        clock.millis.set(19_999);
+        assert_eq!(renewal.tick(), Ok(false));
+        if replace_proof {
+            CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("replacement_proof")).unwrap();
+        }
+        clock.millis.set(20_000);
+        let result = renewal.tick();
+        if status == 200 && receive_at < 60_000 && !replace_proof {
+            assert_eq!(result, Ok(true));
+            assert_eq!(renewal.deadline().expires_at(), MonotonicInstant::from_millis(80_000));
+            clock.millis.set(36_999);
+            assert_eq!(renewal.tick(), Ok(false));
+        } else {
+            assert!(result.is_err());
+            assert_eq!(renewal.deadline(), &deadline);
+            assert_eq!(renewal.tick(), Ok(false), "a refused or late lease never retries");
+        }
+        let requests = renewal.transport().wire.take_requests();
+        assert_eq!(requests.len(), usize::from(!replace_proof));
+        if let Some(request) = requests.first() {
+            assert_eq!(request.header("X-Execution-Session-Proof"), Some("original_proof"));
+            assert_eq!(request.header("X-Settlement-Credential"), None);
+            assert_eq!(
+                serde_json::from_slice::<Value>(request.body().unwrap()).unwrap(),
+                json!({"capability":"control","operation_id":"op_example_0001","renewal":{"authorization_id":"grant_example_0001"}})
+            );
+        }
+        assert_eq!(session.renewal_refusal(&scope, &operation), (status == 401).then_some(RefusalCode::AuthRequired));
+    }
+}
+
+#[test]
 fn failed_renewal_cannot_extend_the_original_operation_at_the_dispatch_and_commit_gates() {
     for (response, expected, auth_rejected) in [
         (Err(TransportFailure::Timeout), RefusalCode::AuthUnavailable, false),
