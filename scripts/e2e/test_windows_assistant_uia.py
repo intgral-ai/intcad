@@ -198,6 +198,7 @@ class StandaloneSmoke(unittest.TestCase):
         self.fixture("""
             $script:failures = [Collections.Generic.List[string]]::new()
             $script:failures.Add('original native failure')
+            $Evidence = 'fixture'
             $script:launcher = [pscustomobject]@{ HasExited=$true }
             $script:launcher | Add-Member ScriptMethod Dispose {}
             $script:job = [IntPtr]7
@@ -211,10 +212,66 @@ class StandaloneSmoke(unittest.TestCase):
             function CloseOwnedJob { $script:disposed++ }
             function Set-Content {}
             [void](Finish 'fixture')
-            if ($script:failures -join ';' -notlike 'original native failure;*run-owned job did not empty*stderr pipe did not close*stdout pipe did not close*') {
+            if ($script:failures -join ';' -notlike 'original native failure;*run-owned job did not empty after termination*stderr pipe did not close*stdout pipe did not close*') {
                 throw "lost a failure: $($script:failures -join ';')"
             }
             if ($script:terminated -ne 1 -or $script:disposed -ne 1) { throw 'lost job cleanup with the launcher already exited' }
+        """)
+
+    def test_successful_forced_cleanup_only_fails_an_otherwise_clean_run(self) -> None:
+        self.fixture("""
+            $script:failures = [Collections.Generic.List[string]]::new()
+            $Evidence = 'fixture'
+            function WaitJobEmpty { $script:terminated }
+            function StopOwnedJob { $script:terminated = $true }
+            function CloseOwnedJob {}
+            function Set-Content {}
+            foreach ($primary in @('BLOCKED: desktop input unavailable', 'FAIL: wrong page', '')) {
+                $script:failures.Clear()
+                if ($primary) { $script:failures.Add($primary) }
+                $script:job = [IntPtr]7; $script:terminated = $false
+                [void](Finish 'fixture')
+                if (-not $script:terminated) { throw 'job was not terminated' }
+                if ($script:failures.Count -ne 1) { throw "unexpected failures: $($script:failures -join ';')" }
+                if ($primary -and $script:failures[0] -cne $primary) { throw 'primary diagnosis changed' }
+                if (-not $primary -and $script:failures[0] -notlike '*forcing cleanup*') {
+                    throw 'a clean run requiring termination was not failed'
+                }
+            }
+        """)
+
+    def test_relay_nonzero_exit_fails_even_after_both_pipes_reach_eof(self) -> None:
+        self.fixture("""
+            $script:failures = [Collections.Generic.List[string]]::new()
+            $Evidence = 'fixture'
+            $script:launcher = [pscustomobject]@{ HasExited=$true; ExitCode=19 }
+            $script:launcher | Add-Member ScriptMethod Dispose {}
+            $script:stderr = [Threading.Tasks.Task]::FromResult('')
+            $script:stdout = [Threading.Tasks.Task]::FromResult('')
+            function Set-Content {}
+            [void](Finish 'fixture')
+            if ($script:failures.Count -ne 1 -or $script:failures[0] -notlike '*relay exited with code 19*') {
+                throw 'ignored nonzero relay exit'
+            }
+        """)
+
+    def test_hidden_runtime_blocked_preserves_label_and_prevents_pass(self) -> None:
+        self.fixture("""
+            $script:failures = [Collections.Generic.List[string]]::new()
+            $made = $true; $root = 'fixture'
+            function Launch { throw 'BLOCKED: desktop input unavailable' }
+            function New-Item {}
+            function Get-ChildItem {}
+            function Finish {}
+            $statements = @($ast.EndBlock.Statements)
+            $hidden = $statements | Where-Object {
+                $_ -is [System.Management.Automation.Language.IfStatementAst] -and $_.Extent.Text -like '*Launch 47952*'
+            }
+            . ([scriptblock]::Create($hidden.Extent.Text))
+            if ($script:failures.Count -ne 1 -or $script:failures[0] -cnotlike 'BLOCKED:*desktop input unavailable') {
+                throw "hidden run lost BLOCKED: $($script:failures -join ';')"
+            }
+            Reject { . ([scriptblock]::Create(($statements[-2..-1].Extent.Text -join "`n"))) } 'BLOCKED:'
         """)
 
     def test_launcher_gets_eof_without_permission_to_launch_when_job_assignment_fails(self) -> None:

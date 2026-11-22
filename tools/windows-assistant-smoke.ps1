@@ -760,9 +760,21 @@ function RecordCleanupFailure([string]$name, [string]$message) {
     $script:failures.Add($what)
 }
 
+function RecordRunFailure([string]$message, [string]$context = '') {
+    if ($message.StartsWith('BLOCKED:')) {
+        $what = "BLOCKED: $context$($message.Substring(8).TrimStart())"
+    } else {
+        $what = "FAIL: $context$message"
+    }
+    Write-Host $what
+    $script:failures.Add($what)
+}
+
 # Keep checking the job and both pipes even after the app or launcher exits.
 # Do not let a cleanup error overwrite the original smoke diagnosis.
 function Finish([string]$name) {
+    $hadPrimaryFailure = $script:failures.Count -gt 0
+    $forced = $false
     if ($script:client) {
         try { $script:client.Dispose() } catch { RecordCleanupFailure $name $_.Exception.Message }
         $script:client = $null
@@ -772,9 +784,11 @@ function Finish([string]$name) {
         try {
             $grace = if ($script:p -and -not $script:p.HasExited) { 0 } else { 5000 }
             $empty = WaitJobEmpty $script:job $grace
-            if (-not $empty) { RecordCleanupFailure $name 'run-owned job did not empty on its own; forcing cleanup' }
         } catch { RecordCleanupFailure $name $_.Exception.Message }
         if (-not $empty) {
+            $forced = $true
+            $why = 'run-owned job did not empty on its own; forcing cleanup'
+            if ($hadPrimaryFailure) { Write-Host "${name}: $why" } else { RecordCleanupFailure $name $why }
             try {
                 StopOwnedJob $script:job
                 if (-not (WaitJobEmpty $script:job 15000)) { throw 'run-owned job did not empty after termination' }
@@ -787,7 +801,9 @@ function Finish([string]$name) {
         try {
             # If nested assignment failed, the unassigned launcher was sent EOF, not "launch".
             if (-not $script:launcher.HasExited -and -not $script:launcher.WaitForExit(3000)) {
-                RecordCleanupFailure $name 'owned launcher did not exit'
+                $forced = $true
+                $why = 'owned launcher did not exit on its own; forcing cleanup'
+                if ($hadPrimaryFailure) { Write-Host "${name}: $why" } else { RecordCleanupFailure $name $why }
                 $script:launcher.Kill()
                 if (-not $script:launcher.WaitForExit(3000)) { throw 'owned launcher did not exit after termination' }
             }
@@ -796,6 +812,11 @@ function Finish([string]$name) {
     $err = ''
     try { $err = DrainRunPipe $script:stderr 'stderr' } catch { RecordCleanupFailure $name $_.Exception.Message }
     try { [void](DrainRunPipe $script:stdout 'stdout') } catch { RecordCleanupFailure $name $_.Exception.Message }
+    if ($script:launcher -and -not $hadPrimaryFailure -and -not $forced) {
+        try {
+            if ($script:launcher.ExitCode -ne 0) { throw "relay exited with code $($script:launcher.ExitCode)" }
+        } catch { RecordCleanupFailure $name $_.Exception.Message }
+    }
     try {
         Set-Content -Path (Join-Path $Evidence "$name-app-error-output.txt") -Value $err
     } catch { RecordCleanupFailure $name $_.Exception.Message }
@@ -870,8 +891,7 @@ try {
     Quit
     $made = $true
 } catch {
-    if ($_.Exception.Message.StartsWith('BLOCKED:')) { Write-Host $_.Exception.Message } else { Write-Host "FAIL: $($_.Exception.Message)" }
-    $failures.Add($_.Exception.Message)
+    RecordRunFailure $_.Exception.Message
 } finally {
     [void](Finish 'first-run')
 }
@@ -901,12 +921,11 @@ if ($made -and $failures.Count -eq 0) {
         Quit
         $hiddenPassed = $true
     } catch {
-        Write-Host "FAIL: with the runtime hidden: $($_.Exception.Message)"
-        $failures.Add("with the runtime hidden: " + $_.Exception.Message)
+        RecordRunFailure $_.Exception.Message 'with the runtime hidden: '
     } finally {
         $said = Finish 'runtime-hidden'
     }
-    if ($hiddenPassed) {
+    if ($hiddenPassed -and $failures.Count -eq 0) {
         RequireCreationDiagnostic $said
         Write-Host 'ok: the hidden runtime produced a native creation diagnostic and no blank child'
     }
