@@ -152,6 +152,41 @@ class StandaloneSmoke(unittest.TestCase):
             if (-not (PageClosed $closed $null $true $true)) { throw 'rejected a retained hidden page' }
         """)
 
+    def test_close_reports_only_bounded_counts_and_does_not_click_on_refusal(self) -> None:
+        self.fixture("""
+            $view = @{Window=[IntPtr]42; Rect=@{Left=10; Top=20; Right=110; Bottom=120}}
+            $valid = @{Left=20; Top=30; Right=40; Bottom=50; Enabled=$true; Offscreen=$false; Name='private draft'}
+            $disabled = $valid.Clone(); $disabled.Enabled = $false
+            $offscreen = $valid.Clone(); $offscreen.Offscreen = $true
+            $zero = $valid.Clone(); $zero.Right = $zero.Left
+            $outside = $valid.Clone(); $outside.Right = 111
+            function FindPageClose { $query }
+            function Click { throw 'unexpected input on refusal' }
+            function Write-Host($message) { $script:diagnostic = $message }
+            foreach ($case in @(
+                @{Query=@{matched=0; empty=0; candidates=@()}; Counts='matched=0 empty=0 disabled=0 offscreen=0 nonpositive=0 out_of_child=0 valid=0'},
+                @{Query=@{matched=5; empty=1; candidates=@($disabled,$offscreen,$zero,$outside)}; Counts='matched=5 empty=1 disabled=1 offscreen=1 nonpositive=1 out_of_child=1 valid=0'},
+                @{Query=@{matched=2; empty=0; candidates=@($valid,$valid)}; Counts='matched=2 empty=0 disabled=0 offscreen=0 nonpositive=0 out_of_child=0 valid=2'},
+                @{Query=@{matched=65; empty=0; candidates=(@($valid) * 65)}; Counts='matched=>64 empty=0 disabled=0 offscreen=0 nonpositive=0 out_of_child=0 valid=>64'}
+            )) {
+                $query = $case.Query
+                $script:diagnostic = ''
+                Reject { ClosePage $view } 'no unique clickable page Close inside the live WebView'
+                if ($script:diagnostic -cne "page Close UIA: $($case.Counts); webview=10,20-110,120") {
+                    throw "unexpected diagnostic: $script:diagnostic"
+                }
+            }
+            # The count bound is for logging, not a limit on the candidates searched.
+            $query = @{matched=65; empty=1; candidates=((@($disabled) * 64) + @($valid))}
+            $script:diagnostic = ''
+            function Click($x, $y, $window) {
+                if ($x -eq 30 -and $y -eq 40 -and $window -eq $view.Window) { throw 'fixture reached unchanged click' }
+                throw 'unexpected click point'
+            }
+            Reject { ClosePage $view } 'fixture reached unchanged click'
+            if ($script:diagnostic) { throw 'unique Close should not emit a refusal diagnostic' }
+        """)
+
     def test_focus_api_failure_is_blocked_but_null_and_wrong_focus_are_failures(self) -> None:
         self.fixture("""
             function Start-Sleep {}

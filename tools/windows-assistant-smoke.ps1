@@ -671,13 +671,32 @@ function WaitPage([datetime]$until, [string]$layout = '') {
     throw "did not see an open, surface-ready Assistant with matching native bounds (layout: '$layout')"
 }
 
-function PageClosePoint($page, $candidates) {
-    $valid = @($candidates | Where-Object {
-        $_.Enabled -eq $true -and $_.Offscreen -eq $false -and
-        $_.Right -gt $_.Left -and $_.Bottom -gt $_.Top -and
-        $_.Left -ge $page.Left -and $_.Top -ge $page.Top -and $_.Right -le $page.Right -and $_.Bottom -le $page.Bottom
-    })
-    if ($valid.Count -ne 1) { throw 'no unique clickable page Close inside the live WebView' }
+function PageClosePoint($page, $candidates, $query = $null) {
+    # Count each nonempty candidate by its first failing check, in the original filter order.
+    $counts = [ordered]@{ disabled = 0; offscreen = 0; nonpositive = 0; out_of_child = 0; valid = 0 }
+    $valid = @(
+        foreach ($candidate in $candidates) {
+            if ($candidate.Enabled -ne $true) { $counts.disabled++ }
+            elseif ($candidate.Offscreen -ne $false) { $counts.offscreen++ }
+            elseif (-not ($candidate.Right -gt $candidate.Left -and $candidate.Bottom -gt $candidate.Top)) { $counts.nonpositive++ }
+            elseif (-not ($candidate.Left -ge $page.Left -and $candidate.Top -ge $page.Top -and
+                    $candidate.Right -le $page.Right -and $candidate.Bottom -le $page.Bottom)) { $counts.out_of_child++ }
+            else { $counts.valid++; $candidate }
+        }
+    )
+    if ($valid.Count -ne 1) {
+        if ($null -ne $query) {
+            # Saturate only the printed counters. Check every candidate for uniqueness.
+            $summary = [ordered]@{ matched = [int]$query.matched; empty = [int]$query.empty }
+            foreach ($key in $counts.Keys) { $summary[$key] = $counts[$key] }
+            $fields = foreach ($key in $summary.Keys) {
+                $count = if ($summary[$key] -gt 64) { '>64' } else { $summary[$key] }
+                "$key=$count"
+            }
+            Write-Host "page Close UIA: $($fields -join ' '); webview=$($page.Left),$($page.Top)-$($page.Right),$($page.Bottom)"
+        }
+        throw 'no unique clickable page Close inside the live WebView'
+    }
     @{
         X = [int][Math]::Floor(($valid[0].Left + $valid[0].Right) / 2)
         Y = [int][Math]::Floor(($valid[0].Top + $valid[0].Bottom) / 2)
@@ -697,14 +716,20 @@ function FindPageClose($view) {
         $condition = [Windows.Automation.AndCondition]::new($name, $button)
         $element = [Windows.Automation.AutomationElement]::FromHandle($child)
         if ($null -eq $element) { throw 'the live WebView is not exposed to UI Automation' }
-        $found = @($element.FindAll([Windows.Automation.TreeScope]::Descendants, $condition) | ForEach-Object {
+        $matches = $element.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
+        $found = @($matches | ForEach-Object {
             $current = $_.Current; $rect = $current.BoundingRectangle
             if (-not $rect.IsEmpty) {
                 @{ Left = $rect.Left; Top = $rect.Top; Right = $rect.Right; Bottom = $rect.Bottom
                    Enabled = $current.IsEnabled; Offscreen = $current.IsOffscreen }
             }
         })
-        ConvertTo-Json -InputObject $found -Compress
+        # Extra reader data is counts only; the candidate payload and selection stay untruncated.
+        ConvertTo-Json -InputObject @{
+            matched = [Math]::Min(65, $matches.Count)
+            empty = [Math]::Min(65, ($matches.Count - $found.Count))
+            candidates = $found
+        } -Compress
     }.ToString()
     $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
     $info.UseShellExecute = $false
@@ -737,7 +762,8 @@ function FindPageClose($view) {
 }
 
 function ClosePage($view) {
-    $point = PageClosePoint $view.Rect (FindPageClose $view)
+    $query = FindPageClose $view
+    $point = PageClosePoint $view.Rect $query.candidates $query
     Click $point.X $point.Y $view.Window
     $until = [datetime]::UtcNow.AddSeconds(15)
     do {
