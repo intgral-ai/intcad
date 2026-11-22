@@ -15713,13 +15713,12 @@ fn the_web_page_may_only_ask_for_listed_actions_that_fit_the_chat() {
     h.app.agent_chat.items.push(Item::Changes { steps: 1, doc: other, undone: false });
     assert!(act(&mut h, json!({"type": "undo", "index": 1})).is_err(), "the design has moved on since those changes");
 
-    // The page says what colour its own surface is, for the frame the app draws around it. It
-    // is the page's first word to the app, so the control channel's status tells from it that
-    // the page is up.
+    // A backing colour by itself is not evidence of a live native view.
     assert_eq!(status(&h.app)["webView"]["page"], false);
     act(&mut h, json!({"type": "surface", "color": "#0e0e0e"})).expect("a colour");
     assert_eq!(h.app.agent_chat.web_canvas.map(|colour| colour.to_array()), Some([14, 14, 14, 255]));
     assert_eq!(status(&h.app)["webView"], json!({"host": h.app.agent_chat.web_host, "page": true}));
+    assert_eq!(h.call("ui.inspect", json!({}))["result"]["assistant"]["surface_ready"], false);
 
     // The panel's own controls are the page's too.
     act(&mut h, json!({"type": "side", "left": true})).expect("a listed panel control");
@@ -16373,6 +16372,39 @@ fn a_new_tab_shows_its_conversation_in_the_hosts_web_view() {
     crate::documents::switch(&mut h.app, 0);
     h.frames(3);
     assert!(h.app.agent_chat.web_host && crate::scenario::rect_of("agent_chat:web").is_some(), "and back in the first");
+}
+
+#[test]
+fn assistant_inspection_requires_a_valid_surface_from_the_live_view() {
+    let mut h = crate::scenario::Harness::new();
+    web::set_host(&mut h.app, true);
+    h.app.agent_chat.open = true;
+    let ctx = h.ctx.clone();
+    let inspect = |h: &mut crate::scenario::Harness| h.call("ui.inspect", json!({}))["result"]["assistant"].clone();
+    let no_surface = json!({"open": true, "surface_ready": false, "host": "available"});
+    assert_eq!(inspect(&mut h), no_surface);
+    let surface = web::Surface::default();
+    surface.bind(&mut h.app);
+    for message in
+        [r#"{"type":"ready"}"#, r##"{"type":"surface","color":"#oops!!"}"##, r##"{"type":"surface","color":"#+12345"}"##, r#"{"type":"surface"}"#]
+    {
+        assert!(surface.act(&mut h.app, &ctx, message).is_err(), "{message}");
+        assert_eq!(inspect(&mut h), no_surface, "{message}");
+    }
+    surface.act(&mut h.app, &ctx, r##"{"type":"surface","color":"#0e0e0e"}"##).expect("valid surface");
+    let ready = json!({"open": true, "surface_ready": true, "host": "available"});
+    assert_eq!(inspect(&mut h), ready);
+    crate::documents::open_tab(&mut h.app, solidcraft_engine::Session::default()).unwrap();
+    assert_eq!(inspect(&mut h), ready, "the proof belongs to the window, not a tab");
+    drop(surface);
+    assert!(h.app.agent_chat.web_canvas.is_some(), "the backing colour is retained");
+    assert_eq!(inspect(&mut h), no_surface);
+
+    web::set_host(&mut h.app, false);
+    web::set_problem(&mut h.app, web::Problem::Failed);
+    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": false, "host": "failed"}));
+    web::set_problem(&mut h.app, web::Problem::NativeWayland);
+    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": false, "host": "native_wayland"}));
 }
 
 // ---- The built-in agent and its connections ----

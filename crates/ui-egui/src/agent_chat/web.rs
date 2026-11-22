@@ -3,6 +3,9 @@
 //! things the page may ask for. The host owns the web view itself; the page is not trusted with
 //! more than the actions listed in [`act`], and every action is checked against the chat's state.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use serde_json::{Value, json};
 
 use super::*;
@@ -29,6 +32,8 @@ pub fn set_host(app: &mut SolveApp, available: bool) {
     app.agent_chat.web_host = available;
     if available {
         app.agent_chat.web_problem = None;
+    } else {
+        app.agent_chat.web_surface = Default::default();
     }
 }
 
@@ -36,6 +41,27 @@ pub fn set_host(app: &mut SolveApp, available: bool) {
 /// chat interface.
 pub fn set_problem(app: &mut SolveApp, problem: Problem) {
     app.agent_chat.web_problem = Some(problem);
+}
+
+/// Owned by one native view's IPC mailbox. The UI holds only a weak reference, so dropping the
+/// mailbox before dropping the view also invalidates its proof, without clearing the backing colour.
+#[derive(Default)]
+pub struct Surface(Rc<Cell<bool>>);
+
+impl Surface {
+    /// Bind only after native creation succeeds.
+    pub fn bind(&self, app: &mut SolveApp) {
+        app.agent_chat.web_surface = Rc::downgrade(&self.0);
+    }
+
+    /// Act on a message from this view's mailbox, recording only a validated surface.
+    pub fn act(&self, app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::result::Result<(), String> {
+        act_from(app, ctx, message, Some(self))
+    }
+}
+
+pub(super) fn surface_ready(app: &SolveApp) -> bool {
+    app.agent_chat.web_host && app.agent_chat.web_problem.is_none() && app.agent_chat.web_surface.upgrade().is_some_and(|surface| surface.get())
 }
 
 /// The panel's Retry: ask the host to try to make the view again, keeping the conversation.
@@ -695,6 +721,10 @@ pub fn state(app: &mut SolveApp) -> String {
 /// (`color`, `#rrggbb`: the page's own surface, for the frame around it), `copy` (`text`) and
 /// `open_link` (`url`, web addresses only). Anything else is refused with the reason.
 pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::result::Result<(), String> {
+    act_from(app, ctx, message, None)
+}
+
+fn act_from(app: &mut SolveApp, ctx: &egui::Context, message: &str, surface: Option<&Surface>) -> std::result::Result<(), String> {
     let _language = crate::i18n::scope(&app.preferences.language);
     if message.len() > MAX_MESSAGE * 4 {
         return Err("message too long".into());
@@ -1003,10 +1033,15 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             app.preferences.agent_chat_side = if left { "left" } else { "right" }.into();
         }
         "surface" => {
-            let hex = text("color").and_then(|colour| colour.strip_prefix('#')).filter(|hex| hex.len() == 6);
+            let hex = text("color")
+                .and_then(|colour| colour.strip_prefix('#'))
+                .filter(|hex| hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()));
             let rgb = hex.and_then(|hex| u32::from_str_radix(hex, 16).ok()).ok_or("surface: color must be #rrggbb")?;
             let [_, r, g, b] = rgb.to_be_bytes();
             app.agent_chat.web_canvas = Some(egui::Color32::from_rgb(r, g, b));
+            if let Some(surface) = surface {
+                surface.0.set(true);
+            }
         }
         "copy" => {
             let body = text("text").ok_or("copy: no text")?;

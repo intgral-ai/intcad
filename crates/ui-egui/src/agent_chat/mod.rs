@@ -498,6 +498,9 @@ pub struct AgentChat {
     /// floating panel's frame is filled with it, so the page and the strip beside it are one.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_canvas: Option<egui::Color32>,
+    /// Observation of the native view's surface, without keeping a disposed view's proof alive.
+    #[cfg(not(target_arch = "wasm32"))]
+    web_surface: std::rc::Weak<std::cell::Cell<bool>>,
     /// Files are being dragged over the host's web view ([`web::dragging`]).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_drag: bool,
@@ -655,7 +658,9 @@ impl AgentChat {
             std::mem::swap(&mut self.detecting, &mut other.detecting);
             // The web view is the window's, whichever design its conversation is about.
             std::mem::swap(&mut self.web_host, &mut other.web_host);
+            std::mem::swap(&mut self.web_problem, &mut other.web_problem);
             std::mem::swap(&mut self.web_canvas, &mut other.web_canvas);
+            std::mem::swap(&mut self.web_surface, &mut other.web_surface);
             std::mem::swap(&mut self.web_drag, &mut other.web_drag);
         }
         // Hit regions must be measured again for the incoming conversation.
@@ -1172,6 +1177,23 @@ impl AgentChat {
         }
         None
     }
+}
+
+/// Bounded, read-only evidence for the desktop control channel.
+pub(crate) fn inspect(app: &SolveApp) -> Value {
+    #[cfg(not(target_arch = "wasm32"))]
+    let (host, surface_ready) = (
+        match app.agent_chat.web_problem {
+            Some(web::Problem::NativeWayland) => "native_wayland",
+            Some(web::Problem::Failed) => "failed",
+            None if app.agent_chat.web_host => "available",
+            None => "unavailable",
+        },
+        web::surface_ready(app),
+    );
+    #[cfg(target_arch = "wasm32")]
+    let (host, surface_ready) = ("unavailable", false);
+    json!({"open": app.agent_chat.open, "surface_ready": surface_ready, "host": host})
 }
 
 /// What an event asks of the app.

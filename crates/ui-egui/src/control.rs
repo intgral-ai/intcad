@@ -2282,6 +2282,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
         }
         "ui.messages" => ok(crate::messages::control(app, p)),
         "ui.inspect" => ok(json!({
+            "assistant": crate::agent_chat::inspect(app),
             "render": crate::render_workspace::inspect_state(app),
             "ui": ui_state(app),
             "visibility": app.session.visibility,
@@ -3383,6 +3384,21 @@ mod tests {
         assert!(app.saving.is_none(), "no asynchronous native save started");
         assert_eq!(app.docs.closing, Some(0), "the save prompt state was not advanced");
         assert!(rx.try_recv().is_err(), "handle does not reply on the request's channel when called directly");
+    }
+
+    #[test]
+    fn signed_out_control_can_inspect_only_the_bounded_assistant_marker() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let ctx = egui::Context::default();
+        let (mut inspect, _) = ControlRequest::trusted_control("ui.inspect", json!({}));
+        let Outcome::Done(reply) = handle(&mut app, &ctx, &mut inspect) else { panic!("inspection must answer synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["assistant"], json!({"open": false, "surface_ready": false, "host": "unavailable"}));
+
+        let (mut open, _) = ControlRequest::trusted_control("ui.agent_chat", json!({"open": true}));
+        let Outcome::Done(reply) = handle(&mut app, &ctx, &mut open) else { panic!("a refused action must answer synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(!app.agent_chat.open);
     }
 
     #[test]
