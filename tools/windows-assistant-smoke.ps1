@@ -377,7 +377,13 @@ try {
         $made = $true
         Check $true 'the page in the web view reported to the app'
         Check ($null -ne $view) 'the web view is a visible window inside the app window'
-        CheckBuiltInAgent
+        # A package carries the built-in agent beside the program; a build tree does not. Only a
+        # package's copy is asked for it, and `installed-check.ps1` requires the folder there.
+        if (Test-Path -LiteralPath (Join-Path (Split-Path $Exe -Parent) 'mastra-agent\agent.json')) {
+            CheckBuiltInAgent
+        } else {
+            Write-Host 'note: this program carries no built-in agent (a build tree, not a package)'
+        }
         $w = Rect $h
         if ($view) {
             $v = $view.Rect
