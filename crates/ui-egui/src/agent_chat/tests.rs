@@ -18919,7 +18919,7 @@ fn assistant_dfm_automatic_dispatch_has_no_verified_scope() {
         let (mut app, _, _) = app_with_script();
         let dir = a_project_with_checks_on(&mut app);
         app.account = crate::account::State::with_port(crate::account::tests::signed_in_unknown_port());
-        let submitted = submit_dfm(&mut app, trigger);
+        let submitted = submit_dfm(&app, trigger);
         std::fs::remove_dir_all(dir).unwrap();
         assert!(!submitted, "a committed edit does not authorize an automatic DFM run");
     }
