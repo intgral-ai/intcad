@@ -21,6 +21,8 @@
 # than 100 %, files dropped on the panel, and the view over a real graphics card.
 #
 # Usage: tools/windows-assistant-smoke.ps1 -Exe target\ci\intcad.exe -Evidence assistant-smoke
+# Use a disposable runner account. The installed-package caller applies and verifies its own
+# app/WebView2 firewall rules before calling this script; leave that isolation in place.
 param(
     [Parameter(Mandatory = $true)][string]$Exe,
     [string]$Evidence = 'assistant-smoke',
@@ -29,11 +31,17 @@ param(
     [string]$WebView2InstallerSha256 = $env:SOLIDCRAFT_WEBVIEW2_INSTALLER_SHA256
 )
 $ErrorActionPreference = 'Stop'
+if (-not $IsWindows -or -not [Environment]::UserInteractive) {
+    throw 'BLOCKED: Windows Assistant smoke needs an interactive Windows desktop'
+}
+if (-not (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue)) {
+    throw 'BLOCKED: cannot verify ownership of the local control listener'
+}
 
 $runtimeHelper = Join-Path (Split-Path $PSScriptRoot -Parent) 'packaging\windows\webview2-runtime.ps1'
 if (-not (Test-Path -LiteralPath $runtimeHelper)) { throw "WebView2 helper not found: $runtimeHelper" }
 # The helper declares its own `$Evidence` parameter; dot-sourcing would replace our evidence
-# folder with its default (empty) before line 189. Keep the caller's value.
+# folder with its default (empty). Keep the caller's value.
 $EvidenceBeforeHelper = $Evidence
 . $runtimeHelper
 $Evidence = $EvidenceBeforeHelper
@@ -51,8 +59,11 @@ public static class AssistantWin {
         public RECT rcCaret;
     }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
@@ -110,16 +121,20 @@ public static class AssistantWin {
 # at 125 %, 2026-11-11). Per-monitor awareness (context -4) for this thread, on which every
 # call below is made.
 $dpiBefore = [AssistantWin]::SetThreadDpiAwarenessContext([IntPtr](-4))
-Write-Host ("DPI awareness: per monitor" + $(if ($dpiBefore -eq [IntPtr]::Zero) { ' was NOT taken (an older Windows): positions are right at 100 % only' } else { '' }))
+if ($dpiBefore -eq [IntPtr]::Zero) { throw 'BLOCKED: cannot establish physical screen coordinates (per-monitor DPI)' }
 
-$drawing = $true
-try { Add-Type -AssemblyName System.Drawing } catch { $drawing = $false; Write-Host "no System.Drawing here: $($_.Exception.Message)" }
+try { Add-Type -AssemblyName System.Drawing }
+catch { throw "BLOCKED: screen capture unavailable: $($_.Exception.Message)" }
 
 $failures = New-Object System.Collections.Generic.List[string]
 function Check([bool]$ok, [string]$what) {
     if ($ok) { Write-Host "ok: $what" } else { Write-Host "FAIL: $what"; $failures.Add($what) }
 }
-function Rect($h) { $r = New-Object AssistantWin+RECT; [void][AssistantWin]::GetWindowRect($h, [ref]$r); $r }
+function Rect($h) {
+    $r = New-Object AssistantWin+RECT
+    if (-not [AssistantWin]::GetWindowRect($h, [ref]$r)) { throw "cannot read bounds of $(Name $h)" }
+    $r
+}
 function Name($h) {
     if ($h -eq [IntPtr]::Zero) { return 'no window' }
     "window 0x{0:x} of class '{1}'" -f $h.ToInt64(), [AssistantWin]::Class($h)
@@ -132,7 +147,7 @@ function Name($h) {
 # The app's window as the screen shows it, native child windows included (the app's own
 # `ui.screenshot` holds only what the app draws).
 function Shot($h, [string]$name) {
-    if (-not $drawing) { Write-Host "skipped: screenshot $name (no System.Drawing)"; return }
+    $bitmap = $graphics = $null
     try {
         $r = Rect $h
         $bitmap = New-Object System.Drawing.Bitmap(($r.Right - $r.Left), ($r.Bottom - $r.Top))
@@ -140,10 +155,12 @@ function Shot($h, [string]$name) {
         $graphics.CopyFromScreen($r.Left, $r.Top, 0, 0, $bitmap.Size)
         $path = Join-Path $Evidence "$name.png"
         $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-        $graphics.Dispose(); $bitmap.Dispose()
         Write-Host "screenshot: $path"
     } catch {
-        Write-Host "skipped: screenshot $name ($($_.Exception.Message))"
+        throw "BLOCKED: cannot capture the desktop for $name ($($_.Exception.Message))"
+    } finally {
+        if ($graphics) { $graphics.Dispose() }
+        if ($bitmap) { $bitmap.Dispose() }
     }
 }
 
@@ -160,7 +177,7 @@ function Views($h, [string]$when, [switch]$Any) {
         $visible = [AssistantWin]::IsWindowVisible($child)
         Write-Host ("$when : child 0x{0:x} class '{1}' at {2},{3} - {4},{5} visible {6} process {7}" -f $child.ToInt64(), [AssistantWin]::Class($child), $r.Left, $r.Top, $r.Right, $r.Bottom, $visible, [AssistantWin]::Owner($child))
         $area = ($r.Right - $r.Left) * ($r.Bottom - $r.Top)
-        if ($visible -and $area -gt 0) {
+        if ($visible) {
             $found = @{ Window = $child; Rect = $r; Area = $area }
             if (-not $largest -or $area -gt $largest.Area) { $largest = $found }
             if ([AssistantWin]::Class($child) -eq 'WRY_WEBVIEW' -and (-not $view -or $area -gt $view.Area)) { $view = $found }
@@ -170,9 +187,18 @@ function Views($h, [string]$when, [switch]$Any) {
 }
 
 # A real press and release of the left button at a point of the screen.
-function Click([int]$x, [int]$y) {
-    [void][AssistantWin]::SetCursorPos($x, $y)
+function Click([int]$x, [int]$y, [IntPtr]$target) {
+    $pt = New-Object AssistantWin+POINT
+    if (-not [AssistantWin]::SetCursorPos($x, $y)) { throw 'BLOCKED: cannot move the desktop pointer' }
     Start-Sleep -Milliseconds 250
+    if (-not [AssistantWin]::GetCursorPos([ref]$pt) -or $pt.X -ne $x -or $pt.Y -ne $y -or
+        [AssistantWin]::GetForegroundWindow() -ne $h) {
+        throw 'BLOCKED: cannot direct desktop input to the smoke window'
+    }
+    $over = [AssistantWin]::At($x, $y)
+    if ($over -ne $target -and -not [AssistantWin]::IsChild($target, $over)) {
+        throw "click at $x,$y would hit $(Name $over), not $(Name $target)"
+    }
     [AssistantWin]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero) # LEFTDOWN
     Start-Sleep -Milliseconds 60
     [AssistantWin]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) # LEFTUP
@@ -195,6 +221,7 @@ function WaitFocus([scriptblock]$ok, [int]$seconds = 5) {
 # Lower-case letters and spaces, as key presses.
 function Keys([string]$text) {
     foreach ($c in $text.ToCharArray()) {
+        if ([AssistantWin]::GetForegroundWindow() -ne $h) { throw 'BLOCKED: the smoke window lost foreground before typing' }
         $key = if ($c -eq ' ') { 0x20 } else { [byte][char]::ToUpperInvariant($c) }
         [AssistantWin]::keybd_event([byte]$key, 0, 0, [UIntPtr]::Zero)
         Start-Sleep -Milliseconds 20
@@ -204,9 +231,8 @@ function Keys([string]$text) {
 }
 
 $Evidence = (New-Item -ItemType Directory -Force $Evidence).FullName
-$root = Join-Path $env:RUNNER_TEMP 'assistant-smoke'
-Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
-$local = Join-Path $root 'local'
+$temp = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [IO.Path]::GetTempPath() }
+$root = Join-Path $temp ('assistant-smoke-' + [guid]::NewGuid().ToString('N'))
 $crashes = Join-Path $root 'crashes'
 $exePath = (Resolve-Path $Exe).Path
 # Where WebView2 puts its files when the app does not say where: beside the exe.
@@ -220,9 +246,9 @@ if ($runtime -and -not $runtime.Healthy) {
 if (-not $runtime) {
     if ($WebView2Recovery -eq 'ReportOnly') {
         $gap = "Windows Assistant check: the WebView2 Runtime is NOT installed. The Assistant page was NOT checked, so this is not a pass. Install it with packaging/windows/webview2-runtime.ps1 -Action Install (online, or offline with -OfflineInstaller and -ExpectedSha256)."
-        Write-Host "NOT COVERED: $gap"
+        Write-Host "BLOCKED: $gap"
         if ($env:GITHUB_STEP_SUMMARY) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $gap }
-        throw $gap
+        throw "BLOCKED: $gap"
     }
     $installMode = switch ($WebView2Recovery) {
         'Online' { 'Online' }
@@ -241,79 +267,268 @@ Write-Host "WebView2 runtime: $($runtime.Version) ($($runtime.Scope), $($runtime
 # window is put at a known place and size that fits the runner's screen (physical px; the minimum
 # is 960 x 600) and brought to the front.
 function Launch([int]$port, [hashtable]$extra) {
-    $settings = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Intcad\data'
-    Remove-Item -Recurse -Force $settings -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force $settings, $local, $crashes | Out-Null
-    $script:token = -join ((1..64) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+    $profile = Join-Path $root "$port"
+    $script:settings = Join-Path $profile 'settings'
+    $local = Join-Path $profile 'local'
+    $roaming = Join-Path $profile 'roaming'
+    $control = Join-Path $profile 'control'
+    New-Item -ItemType Directory -Force $settings, $local, $roaming, $control, $crashes | Out-Null
+    $script:token = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant()
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exePath
     foreach ($a in @('--sample', '--control', "$port")) { [void]$psi.ArgumentList.Add($a) }
     $psi.UseShellExecute = $false
     $psi.RedirectStandardError = $true
     $psi.RedirectStandardOutput = $true
+    foreach ($key in @($psi.Environment.Keys)) {
+        if ($key -like 'WEBVIEW2_*') { [void]$psi.Environment.Remove($key) }
+    }
+    $psi.Environment['APPDATA'] = $roaming
     $psi.Environment['LOCALAPPDATA'] = $local
+    $psi.Environment['SOLIDCRAFT_SETTINGS_DIR'] = $settings
+    $psi.Environment['SOLIDCRAFT_RECOVERY_DIR'] = Join-Path $profile 'recovery'
+    $psi.Environment['SOLIDCRAFT_CONTROL_DIR'] = $control
+    $psi.Environment['SOLIDCRAFT_VALIDATION_DIR'] = Join-Path $profile 'validation'
     $psi.Environment['SOLIDCRAFT_CRASH_DIR'] = $crashes
     $psi.Environment['SOLIDCRAFT_CONTROL_TOKEN'] = $script:token
+    $psi.Environment['SOLIDCRAFT_UPDATE_CHECK'] = '0'
     foreach ($k in $extra.Keys) { $psi.Environment[$k] = $extra[$k] }
     $script:calls = 0
+    $script:client = $script:stderr = $script:stdout = $null
     $script:p = [System.Diagnostics.Process]::Start($psi)
     $script:stderr = $script:p.StandardError.ReadToEndAsync()
     $script:stdout = $script:p.StandardOutput.ReadToEndAsync()
     $script:h = [IntPtr]::Zero
-    $deadline = (Get-Date).AddSeconds(180)
-    while ($script:h -eq [IntPtr]::Zero -and (Get-Date) -lt $deadline -and -not $script:p.HasExited) {
+    $deadline = [datetime]::UtcNow.AddSeconds(180)
+    while ($script:h -eq [IntPtr]::Zero -and [datetime]::UtcNow -lt $deadline -and -not $script:p.HasExited) {
         $script:h = [AssistantWin]::MainWindow([uint32]$script:p.Id)
         if ($script:h -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 100 }
     }
     if ($script:h -eq [IntPtr]::Zero) { throw "no window (exited: $($script:p.HasExited))" }
     Write-Host "window: '$([AssistantWin]::Text($script:h))' class '$([AssistantWin]::Class($script:h))'"
-    $script:client = $null
-    while (-not $script:client -and (Get-Date) -lt $deadline -and -not $script:p.HasExited) {
-        try { $script:client = New-Object System.Net.Sockets.TcpClient('127.0.0.1', $port) } catch { Start-Sleep -Milliseconds 500 }
+    # Only connect to a listener owned by this process, not a stale/other occupant of the port.
+    while (-not $script:client -and [datetime]::UtcNow -lt $deadline -and -not $script:p.HasExited) {
+        $listener = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+        if ($listener.Count -gt 0) {
+            if ($listener.Count -ne 1 -or $listener[0].OwningProcess -ne $script:p.Id) {
+                throw "control port $port does not belong to the launched process"
+            }
+            $client = [Net.Sockets.TcpClient]::new()
+            try {
+                [void]$client.ConnectAsync('127.0.0.1', $port).Wait((RemainingMilliseconds $deadline))
+                if ($client.Connected) { $script:client = $client }
+            } finally {
+                if (-not $script:client) { $client.Dispose() }
+            }
+        } else { Start-Sleep -Milliseconds 200 }
     }
     if (-not $script:client) { throw "no control channel (exited: $($script:p.HasExited))" }
-    $script:client.ReceiveTimeout = 120000
     $stream = $script:client.GetStream()
     $script:writer = New-Object System.IO.StreamWriter($stream)
     $script:writer.AutoFlush = $true
     $script:reader = New-Object System.IO.StreamReader($stream)
     $sw = [AssistantWin]::GetSystemMetrics(0); $sh = [AssistantWin]::GetSystemMetrics(1)
     Write-Host "screen: $sw x $sh"
-    [void][AssistantWin]::SetWindowPos($script:h, [IntPtr]::Zero, 20, 20, [Math]::Min(1000, $sw - 40), [Math]::Min(620, $sh - 140), 0x0014) # NOZORDER | NOACTIVATE
+    if ($sw -lt 1000 -or $sh -lt 740) { throw 'BLOCKED: the desktop is too small for the 960 x 600 smoke window and margins' }
+    if (-not [AssistantWin]::SetWindowPos($script:h, [IntPtr]::Zero, 20, 20, [Math]::Min(1000, $sw - 40), [Math]::Min(620, $sh - 140), 0x0014)) {
+        throw 'BLOCKED: cannot place the smoke window'
+    }
     [void][AssistantWin]::SetForegroundWindow($script:h)
     Start-Sleep -Milliseconds 500
 }
 
-function Call([string]$method, $params = @{}) {
+function RemainingMilliseconds([datetime]$until) {
+    $ms = [Math]::Floor(($until - [datetime]::UtcNow).TotalMilliseconds)
+    if ($ms -lt 1) { throw 'operation deadline expired' }
+    [int]$ms
+}
+
+function Call([string]$method, $params = @{}, [datetime]$until = [datetime]::UtcNow.AddSeconds(15)) {
+    if ($method -cnotin @('ui.inspect', 'ui.rects', 'ui.screenshot')) { throw 'smoke requires read-only observations' }
     $script:calls += 1
     $request = @{ id = $script:calls; method = $method; params = $params }
     if ($script:calls -eq 1) { $request.token = $script:token }
+    $script:client.SendTimeout = RemainingMilliseconds $until
     $script:writer.WriteLine(($request | ConvertTo-Json -Compress -Depth 6))
-    $line = $script:reader.ReadLine()
+    $read = $script:reader.ReadLineAsync()
+    if (-not $read.Wait((RemainingMilliseconds $until))) { throw "control read timed out during $method" }
+    $line = $read.Result
     if (-not $line) { throw "the control channel closed during $method" }
     $reply = $line | ConvertFrom-Json -AsHashtable
-    if (-not $reply.ok) { throw "$method was refused: $line" }
+    if ($reply.id -ne $script:calls -or $reply.ok -isnot [bool] -or -not $reply.ok) { throw "$method did not return a successful matching reply" }
     $reply.result
 }
 
-# Open the Assistant, and wait for the page to report or for the host to give the view up.
-function OpenAssistant([int]$seconds) {
-    $state = Call 'ui.agent_chat' @{ features = $true; open = $true }
-    $until = (Get-Date).AddSeconds($seconds)
-    while ($state.webView -and $state.webView.host -and -not $state.webView.page -and (Get-Date) -lt $until) {
-        Start-Sleep -Milliseconds 500
-        $state = Call 'ui.agent_chat'
+function ReadAssistant($inspection) {
+    $state = $inspection.assistant
+    if ($state -isnot [Collections.IDictionary] -or $state.open -isnot [bool] -or
+        $state.surface_ready -isnot [bool] -or $state.host -isnot [string] -or
+        $state.host -cnotin @('available', 'unavailable', 'native_wayland', 'failed')) {
+        throw 'missing or invalid ui.inspect.assistant marker'
     }
-    Start-Sleep -Milliseconds 1500
     $state
 }
 
+function ScreenRect($result, [string]$name, $origin) {
+    $entry = $result.rects | Where-Object { $_.name -ceq $name } | Select-Object -Last 1
+    if (-not $entry) { return }
+    $scale = $result.pixelsPerPoint
+    if ($scale -le 0 -or -not [double]::IsFinite($scale) -or $entry.width -le 0 -or $entry.height -le 0) {
+        throw "invalid geometry for $name"
+    }
+    @{
+        Left   = $origin.X + [int]($entry.x * $scale)
+        Top    = $origin.Y + [int]($entry.y * $scale)
+        Right  = $origin.X + [int](($entry.x + $entry.width) * $scale)
+        Bottom = $origin.Y + [int](($entry.y + $entry.height) * $scale)
+    }
+}
+
+function TargetRect([string]$name, [datetime]$until) {
+    $result = Call 'ui.rects' @{ prefix = $name } $until
+    $origin = New-Object AssistantWin+POINT
+    if (-not [AssistantWin]::ClientToScreen($h, [ref]$origin)) { throw 'cannot locate the smoke window client origin' }
+    ScreenRect $result $name $origin
+}
+
+function ClickTarget([string]$name, [datetime]$until) {
+    do {
+        $r = TargetRect $name $until
+        if ($r) {
+            Click ([int](($r.Left + $r.Right) / 2)) ([int](($r.Top + $r.Bottom) / 2)) $h
+            return
+        }
+        Start-Sleep -Milliseconds 150
+    } while ([datetime]::UtcNow -lt $until)
+    throw "native UI target $name was not drawn"
+}
+
+function WaitPage([datetime]$until, [string]$layout = '') {
+    do {
+        $inspection = Call 'ui.inspect' @{} $until
+        $state = ReadAssistant $inspection
+        if ($state.host -cin @('failed', 'unavailable', 'native_wayland')) { throw "installed WebView2 host: $($state.host)" }
+        if ($state.open -and $state.surface_ready -and (-not $layout -or $inspection.ui.layout -ceq $layout)) {
+            $expected = TargetRect 'agent_chat:web' $until
+            $view = Views $h 'Assistant ready'
+            if ($view -and $expected) {
+                $v = $view.Rect; $w = Rect $h
+                # Rust and Win32 can round edges independently by a pixel.
+                $differences = @('Left', 'Top', 'Right', 'Bottom' | ForEach-Object { [Math]::Abs($v.$_ - $expected.$_) })
+                if (($differences | Measure-Object -Maximum).Maximum -le 2 -and
+                    $v.Left -ge $w.Left -and $v.Top -ge $w.Top -and $v.Right -le $w.Right -and $v.Bottom -le $w.Bottom -and
+                    $v.Right -gt $v.Left -and $v.Bottom -gt $v.Top) {
+                    return $view
+                }
+                Write-Host "native page edges differ from agent_chat:web by $($differences -join ', ') px"
+            }
+        }
+        Start-Sleep -Milliseconds 200
+    } while ([datetime]::UtcNow -lt $until)
+    throw "did not see an open, surface-ready Assistant with matching native bounds (layout: '$layout')"
+}
+
+function PageClosePoint($page, $candidates) {
+    $valid = @($candidates | Where-Object {
+        $_.Enabled -eq $true -and $_.Offscreen -eq $false -and
+        $_.Right -gt $_.Left -and $_.Bottom -gt $_.Top -and
+        $_.Left -ge $page.Left -and $_.Top -ge $page.Top -and $_.Right -le $page.Right -and $_.Bottom -le $page.Bottom
+    })
+    if ($valid.Count -ne 1) { throw 'no unique clickable page Close inside the live WebView' }
+    @{
+        X = [int][Math]::Floor(($valid[0].Left + $valid[0].Right) / 2)
+        Y = [int][Math]::Floor(($valid[0].Top + $valid[0].Bottom) / 2)
+    }
+}
+
+function FindPageClose($view) {
+    # Use Windows' inbox UIA assemblies via Windows PowerShell (.NET Framework).
+    # This reader sends no input. A separate process bounds even a stalled UIA provider.
+    $scriptText = '$child = [IntPtr]' + $view.Window.ToInt64() + "`n" + {
+        $ErrorActionPreference = 'Stop'
+        try { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase }
+        catch { [Console]::Error.WriteLine($_.Exception.Message); exit 2 }
+        $name = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'Close')
+        $button = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
+        $condition = [Windows.Automation.AndCondition]::new($name, $button)
+        $element = [Windows.Automation.AutomationElement]::FromHandle($child)
+        if ($null -eq $element) { throw 'the live WebView is not exposed to UI Automation' }
+        $found = @($element.FindAll([Windows.Automation.TreeScope]::Descendants, $condition) | ForEach-Object {
+            $current = $_.Current; $rect = $current.BoundingRectangle
+            if (-not $rect.IsEmpty) {
+                @{ Left = $rect.Left; Top = $rect.Top; Right = $rect.Right; Bottom = $rect.Bottom
+                   Enabled = $current.IsEnabled; Offscreen = $current.IsOffscreen }
+            }
+        })
+        ConvertTo-Json -InputObject $found -Compress
+    }.ToString()
+    $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    foreach ($arg in @('-NoProfile', '-NonInteractive', '-Mta', '-EncodedCommand',
+            [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($scriptText)))) {
+        [void]$info.ArgumentList.Add($arg)
+    }
+    try { $uia = [Diagnostics.Process]::Start($info) }
+    catch { throw "BLOCKED: Windows UI Automation reader cannot start: $($_.Exception.Message)" }
+    try {
+        $output = $uia.StandardOutput.ReadToEndAsync()
+        $errorOutput = $uia.StandardError.ReadToEndAsync()
+        if (-not $uia.WaitForExit(15000)) { throw 'page Close UI Automation query timed out' }
+        if (-not $errorOutput.Wait(1000) -or -not $output.Wait(1000)) { throw 'page Close UI Automation output did not end' }
+        if ($uia.ExitCode -eq 2) { throw "BLOCKED: Windows UI Automation assemblies unavailable: $($errorOutput.Result)" }
+        if ($uia.ExitCode -ne 0) { throw "page Close UI Automation query failed: $($errorOutput.Result)" }
+        $output.Result | ConvertFrom-Json -AsHashtable
+    } finally {
+        if (-not $uia.HasExited) { $uia.Kill() }
+        $uia.Dispose()
+    }
+}
+
+function ClosePage($view) {
+    $point = PageClosePoint $view.Rect (FindPageClose $view)
+    Click $point.X $point.Y $view.Window
+    $until = [datetime]::UtcNow.AddSeconds(15)
+    do {
+        if ($script:p.HasExited) { throw 'app exited during page Close' }
+        $state = ReadAssistant (Call 'ui.inspect' @{} $until)
+        if (PageClosed $state (Views $h 'after page Close') (-not $script:p.HasExited)) { return }
+        Start-Sleep -Milliseconds 200
+    } while ([datetime]::UtcNow -lt $until)
+    throw 'page Close did not close the panel and hide its native child'
+}
+
+function PageClosed($state, $visiblePage, [bool]$appAlive) {
+    if (-not $appAlive) { throw 'app exited during page Close' }
+    $state.open -eq $false -and $null -eq $visiblePage
+}
+
+function RequireCreationDiagnostic([string]$stderr) {
+    if ($stderr -cnotmatch '(?m)^solidcraft: assistant web view: could not be created(?:: [^\r\n]+| in this window)\r?$') {
+        throw 'hidden runtime: missing the native creation diagnostic in stderr'
+    }
+}
+
+function WaitCleanExit($process, [scriptblock]$close) {
+    if ($process.HasExited) { throw 'app exited before main window close' }
+    & $close
+    if (-not $process.WaitForExit(60000)) { throw 'app did not exit within 60 s of main window close' }
+    if ($process.ExitCode -ne 0) { throw ('exit code 0x{0:x} after main window close' -f $process.ExitCode) }
+}
+
 function Quit {
-    $script:writer.WriteLine((@{ id = 9999; method = 'app.quit'; params = @{ force = $true } } | ConvertTo-Json -Compress))
-    Write-Host "quit: $($script:reader.ReadLine())"
-    $script:client.Close()
-    if (-not $script:p.WaitForExit(60000)) { throw 'did not exit after app.quit' }
-    if ($script:p.ExitCode -ne 0) { throw ('exit code 0x{0:x}' -f $script:p.ExitCode) }
+    $script:client.Dispose()
+    $script:client = $null
+    WaitCleanExit $script:p {
+        if ([AssistantWin]::MainWindow([uint32]$script:p.Id) -ne $h -or [AssistantWin]::Owner($h) -ne $script:p.Id -or
+            -not [AssistantWin]::PostMessage($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { # WM_CLOSE
+            throw 'cannot close the owned main window'
+        }
+    }
+    Write-Host 'ok: the owned main window closed with exit code zero'
 }
 
 # The app's error output of a run, printed and kept; the run is ended if it has not ended.
@@ -322,6 +537,7 @@ function Quit {
 # as long as the job ran. The app is ended with every process it started, and the output is
 # taken as far as it has come if it does not end.
 function Finish([string]$name) {
+    if ($script:client) { $script:client.Dispose(); $script:client = $null }
     if ($script:p -and -not $script:p.HasExited) {
         Write-Host 'the app is still running: ending it and every process it started'
         try { $script:p.Kill($true) } catch { Write-Host "could not end it: $($_.Exception.Message)" }
@@ -340,96 +556,68 @@ Write-Host '=== the Assistant with the runtime this machine has'
 $made = $false
 try {
     Launch 47951 @{}
+    $initial = Call 'ui.inspect'
+    if ((ReadAssistant $initial).open -or $initial.ui.layout -cne 'floating') {
+        throw 'the isolated app did not start with the Assistant closed and Floating layout'
+    }
     [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '00-app-frame-before.png') })
-    $state = OpenAssistant 90
-    Check ($null -ne $state.webView) "the Assistant's status says how the conversation is shown (webView: $($state.webView | ConvertTo-Json -Compress))"
+    $until = [datetime]::UtcNow.AddSeconds(90)
+    ClickTarget 'titlebar:assistant' $until
+    $view = WaitPage $until 'floating'
+    Write-Host 'ok: the open Assistant reports current-view readiness and matches the visible native page'
     Shot $h '01-assistant-open'
     [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '01-app-frame-assistant-open.png') })
-    $view = Views $h 'assistant open'
 
-    if ($state.webView -and $state.webView.host -and $state.webView.page) {
-        $made = $true
-        Check $true 'the page in the web view reported to the app'
-        Check ($null -ne $view) 'the web view is a visible window inside the app window'
-        $w = Rect $h
-        if ($view) {
-            $v = $view.Rect
-            Write-Host "window $($w.Left),$($w.Top) - $($w.Right),$($w.Bottom); view $($v.Left),$($v.Top) - $($v.Right),$($v.Bottom)"
-            Check ($v.Left -ge $w.Left -and $v.Top -ge $w.Top -and $v.Right -le $w.Right -and $v.Bottom -le $w.Bottom) 'the view lies inside the app window'
+    # Do not submit a chat. A click in the message box lets the page take the keyboard;
+    # a click in the 3D view must give the keyboard back.
+    $w = Rect $h; $v = $view.Rect
+    $scale = [AssistantWin]::GetDpiForWindow($h) / 96.0
+    if ($scale -le 0) { throw 'BLOCKED: cannot read the desktop DPI' }
+    Click ($v.Left + [int](90 * $scale)) ($v.Bottom - [int](150 * $scale)) $view.Window
+    $focus = WaitFocus { param($f) $f -eq $view.Window -or [AssistantWin]::IsChild($view.Window, $f) }
+    if ($focus -eq [IntPtr]::Zero) { throw 'BLOCKED: Windows reported no keyboard focus after clicking the page' }
+    $inPage = $focus -eq $view.Window -or [AssistantWin]::IsChild($view.Window, $focus)
+    Check $inPage "a click on the message box gives the page the keyboard ($(Name $focus))"
+    if ($inPage) { Keys 'hello windows' }
+    Shot $h '02-after-click-and-typing-on-page'
+    $free = if (($v.Left - $w.Left) -ge ($w.Right - $v.Right)) { [int](($w.Left + $v.Left) / 2) } else { [int](($v.Right + $w.Right) / 2) }
+    Click $free ([int](($w.Top + $w.Bottom) / 2)) $h
+    $focus = WaitFocus { param($f) $f -eq $h }
+    if ($focus -eq [IntPtr]::Zero) { throw 'BLOCKED: Windows reported no keyboard focus after clicking the frame' }
+    Check ($focus -eq $h) "a click on the 3D view gives the frame the keyboard back ($(Name $focus))"
+    Shot $h '03-after-click-on-3d-view'
 
-            # The keyboard: to the page on a click in it, back to the window on a click elsewhere.
-            # The message box: the text is above the row of buttons at the foot of the page (a
-            # click lower down, at 85 px from the foot, opened the menu of one of those buttons).
-            # (Measured at 100 %; the page is drawn larger at a larger display scale.)
-            $scale = [AssistantWin]::GetDpiForWindow($h) / 96.0
-            if ($scale -le 0) { $scale = 1.0 }
-            Write-Host "display scale of the app's window: $([int]($scale * 100)) %"
-            $x = $v.Left + [int](90 * $scale); $y = $v.Bottom - [int](150 * $scale)
-            [void][AssistantWin]::SetCursorPos($x, $y)
-            $pt = New-Object AssistantWin+POINT; [void][AssistantWin]::GetCursorPos([ref]$pt)
-            if ($pt.X -ne $x -or $pt.Y -ne $y) {
-                Write-Host "skipped: the keyboard checks (this session doesn't move the pointer: at $($pt.X),$($pt.Y))"
-            } else {
-                Click $x $y
-                $focus = WaitFocus { param($f) $f -ne [IntPtr]::Zero -and $f -ne $h -and [AssistantWin]::IsChild($h, $f) }
-                $inPage = ($focus -ne [IntPtr]::Zero -and $focus -ne $h -and [AssistantWin]::IsChild($h, $focus))
-                if ($focus -eq [IntPtr]::Zero) {
-                    Write-Host 'unknown: which window has the keyboard after a click on the page (Windows named none)'
-                } else {
-                    Check $inPage "a click on the message box gives the page the keyboard ($(Name $focus))"
-                }
-                if ($inPage) {
-                    Keys 'hello windows'
-                    Start-Sleep -Milliseconds 800
-                }
-                Shot $h '02-after-click-and-typing-on-page'
-                # The 3D view, in the part of the window the panel leaves free.
-                $free = if (($v.Left - $w.Left) -ge ($w.Right - $v.Right)) { [int](($w.Left + $v.Left) / 2) } else { [int](($v.Right + $w.Right) / 2) }
-                Click $free ([int](($w.Top + $w.Bottom) / 2))
-                $focus = WaitFocus { param($f) $f -eq $h }
-                if ($focus -eq [IntPtr]::Zero) {
-                    Write-Host 'unknown: which window has the keyboard after a click on the rest of the window (Windows named none)'
-                } else {
-                    Check ($focus -eq $h) "a click on the rest of the window gives the window the keyboard back ($(Name $focus))"
-                    if (-not $inPage) { Write-Host 'note: the page was not seen to have the keyboard before that click, so the line above says little' }
-                }
-                Shot $h '03-after-click-on-3d-view'
-            }
-        }
+    ClosePage $view
+    Write-Host 'ok: page Close hid the native child and the app is still running'
+    Shot $h '03a-page-closed'
+    $until = [datetime]::UtcNow.AddSeconds(30)
+    ClickTarget 'titlebar:assistant' $until
+    $reopened = WaitPage $until 'floating'
+    if ($reopened.Window -ne $view.Window) { throw 'reopening did not reuse the retained native child' }
+    Shot $h '03b-page-reopened'
 
-        # Docked to the window's edge (the compact layout), the view leaves the resize edges free:
-        # at 2 px inside the window's edge the pointer is over the app's window, not over the view.
-        [void](Call 'engine.execute' @{ command = 'view.layout'; params = @{ mode = 'compact' } })
-        Start-Sleep -Milliseconds 2000
-        [void](Call 'ui.agent_chat')
-        Start-Sleep -Milliseconds 500
-        $docked = Views $h 'compact layout'
-        Shot $h '04-compact-layout'
-        $w = Rect $h
-        if ($docked) {
-            $v = $docked.Rect
-            Write-Host "compact layout: window $($w.Left),$($w.Top) - $($w.Right),$($w.Bottom); view $($v.Left),$($v.Top) - $($v.Right),$($v.Bottom)"
-            $cx = [int](($v.Left + $v.Right) / 2); $cy = [int](($v.Top + $v.Bottom) / 2)
-            $side = if (($w.Right - $v.Right) -le ($v.Left - $w.Left)) { @{ Name = 'right'; X = $w.Right - 3 } } else { @{ Name = 'left'; X = $w.Left + 2 } }
-            $at = [AssistantWin]::At($side.X, $cy)
-            Check ($at -eq $h) "compact layout: the window's $($side.Name) edge beside the panel is the app window's ($(Name $at))"
-            $at = [AssistantWin]::At($cx, $w.Bottom - 3)
-            Check ($at -eq $h) "compact layout: the window's bottom edge under the panel is the app window's ($(Name $at))"
-        } else {
-            Check $false 'compact layout: the web view is a visible window inside the app window'
-        }
+    # Switch layout through the real search result while the Assistant is open.
+    $until = [datetime]::UtcNow.AddSeconds(30)
+    ClickTarget 'ribbon:search' $until
+    Keys 'workspace layout'
+    ClickTarget 'search:command:view.layout' $until
+    $docked = WaitPage $until 'compact'
+    Shot $h '04-compact-layout'
+    $w = Rect $h; $v = $docked.Rect
+    $cx = [int](($v.Left + $v.Right) / 2); $cy = [int](($v.Top + $v.Bottom) / 2)
+    $side = if (($w.Right - $v.Right) -le ($v.Left - $w.Left)) { @{ Name = 'right'; X = $w.Right - 3 } } else { @{ Name = 'left'; X = $w.Left + 2 } }
+    $at = [AssistantWin]::At($side.X, $cy)
+    Check ($at -eq $h) "compact layout: the window's $($side.Name) edge beside the panel is the app window's ($(Name $at))"
+    $at = [AssistantWin]::At($cx, $w.Bottom - 3)
+    Check ($at -eq $h) "compact layout: the window's bottom edge under the panel is the app window's ($(Name $at))"
 
-        $data = Join-Path $local 'Intcad\assistant-web-view'
-        Check (Test-Path $data) "WebView2 keeps its files in the app's data folder ($data)"
-        Check ($besideBefore -or -not (Test-Path $beside)) "WebView2 wrote nothing beside the exe ($beside)"
-    } elseif ($state.webView -and -not $state.webView.host) {
-        Check $false "the WebView2 runtime $($runtime.Version) is installed, but the web view could not be made (the app's error output below says why)"
-    } else {
-        Check $false 'the page in the web view reported to the app within 90 s'
-    }
+    $data = Join-Path $settings 'assistant-web-view'
+    Check (Test-Path -LiteralPath $data -PathType Container) "WebView2 keeps its files in the isolated settings folder ($data)"
+    Check ($besideBefore -or -not (Test-Path -LiteralPath $beside)) "WebView2 did not create a new profile beside the exe ($beside)"
     Quit
+    $made = $true
 } catch {
-    Write-Host "FAIL: $($_.Exception.Message)"
+    if ($_.Exception.Message.StartsWith('BLOCKED:')) { Write-Host $_.Exception.Message } else { Write-Host "FAIL: $($_.Exception.Message)" }
     $failures.Add($_.Exception.Message)
 } finally {
     [void](Finish 'first-run')
@@ -441,36 +629,36 @@ if ($made) {
     Write-Host '=== the Assistant with the runtime hidden'
     $none = Join-Path $root 'no-runtime'
     New-Item -ItemType Directory -Force $none | Out-Null
-    $reported = $false
+    $hiddenPassed = $false
     try {
         Launch 47952 @{ WEBVIEW2_BROWSER_EXECUTABLE_FOLDER = $none }
-        $state = OpenAssistant 60
+        $until = [datetime]::UtcNow.AddSeconds(60)
+        ClickTarget 'titlebar:assistant' $until
+        do {
+            $state = ReadAssistant (Call 'ui.inspect' @{} $until)
+            if ($state.surface_ready) { throw 'hidden runtime still produced a ready page' }
+            if ($state.open -and $state.host -ceq 'failed') { break }
+            Start-Sleep -Milliseconds 200
+        } while ([datetime]::UtcNow -lt $until)
+        if (-not $state.open -or $state.host -cne 'failed') { throw 'hidden runtime did not report an open panel with a failed host' }
         Shot $h '05-runtime-hidden'
         [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '05-app-frame-runtime-hidden.png') })
         $left = Views $h 'runtime hidden' -Any
-        if ($state.webView -and -not $state.webView.host) {
-            $reported = $true
-            Check $true 'with the runtime hidden, the app reports that the web view could not be made instead of drawing a blank panel'
-            # The view's toolkit begins with a window of its own in the app's; one left shown
-            # there lies over the Assistant as a blank box.
-            $what = if ($left) { Name $left.Window } else { 'none' }
-            Check ($null -eq $left) "with the runtime hidden, no window is left shown over the panel ($what)"
-        } elseif ($state.webView -and $state.webView.page) {
-            Check $false 'with the runtime hidden, the app still made the view (WEBVIEW2_BROWSER_EXECUTABLE_FOLDER was ignored), so the missing-runtime path was NOT exercised'
-        } else {
-            Check $false 'with the runtime hidden, the app reports the missing web view within 60 s'
-        }
+        if ($left) { throw "hidden runtime left a visible child over the frame: $(Name $left.Window)" }
         Quit
+        $hiddenPassed = $true
     } catch {
         Write-Host "FAIL: with the runtime hidden: $($_.Exception.Message)"
         $failures.Add("with the runtime hidden: " + $_.Exception.Message)
     } finally {
         $said = Finish 'runtime-hidden'
     }
-    if ($reported) {
-        Check ($said -match 'assistant web view:') "with the runtime hidden, the app's error output says what happened to the web view"
-        Check ($said -match '(could not be created|WebView2|runtime|not installed|missing)') 'with the runtime hidden, the app error output names the missing view or runtime'
+    if ($hiddenPassed) {
+        RequireCreationDiagnostic $said
+        Write-Host 'ok: the hidden runtime produced a native creation diagnostic and no blank child'
     }
+} else {
+    Write-Host 'NOT RUN: hidden runtime (the installed-runtime checks did not reach native exit)'
 }
 
 $reports = @(Get-ChildItem -Recurse -Filter report.json $crashes -ErrorAction SilentlyContinue)
