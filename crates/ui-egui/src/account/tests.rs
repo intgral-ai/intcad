@@ -1549,6 +1549,22 @@ fn the_ai_chat_panel_shows_the_product_prompt() {
 }
 
 #[test]
+fn the_native_assistant_without_a_web_view_shows_the_product_prompt() {
+    use crate::agent_chat::web;
+
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.agent_chat.open = true;
+    web::set_host(&mut harness.app, false);
+    web::set_problem(&mut harness.app, web::Problem::Failed);
+    harness.app.account = State::with_port(Box::new(FlowPort::signed_out(None)));
+    harness.frames(3);
+
+    assert!(crate::scenario::handle_at("agent_chat:web_retry").is_some(), "the native fallback must be visible");
+    assert!(harness.widget("Sign in").is_some(), "the native fallback must offer product sign-in");
+    assert!(crate::scenario::handle_at("agent_chat:sign_in").is_some(), "the shared Chat sign-in action must be available");
+}
+
+#[test]
 fn the_web_assistant_keeps_the_product_prompt_above_the_page() {
     let flow = FlowPort::signed_out(None);
     let mut harness = crate::scenario::Harness::new();

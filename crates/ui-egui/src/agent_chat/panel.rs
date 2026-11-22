@@ -722,7 +722,7 @@ fn dock_drag(app: &mut SolveApp, ui: &egui::Ui, drag: &egui::Response, left: boo
 /// The desktop panel when the host has no web view: what happened, and what to install or change
 /// (Retry only where a view can be made; a native Wayland window needs the setting instead).
 /// Deliberately not a conversation: the conversation has one interface, the page.
-#[cfg(all(not(target_arch = "wasm32"), not(test)))]
+#[cfg(not(target_arch = "wasm32"))]
 fn unavailable(app: &mut SolveApp, ui: &mut egui::Ui) {
     let problem = app.agent_chat.web_problem.unwrap_or(web::Problem::Failed);
     let (title, body, settings, page, retry) = match problem {
@@ -764,6 +764,7 @@ fn unavailable(app: &mut SolveApp, ui: &mut egui::Ui) {
                 crate::prefs::open_at(app, page);
             }
         });
+        crate::account::show_product_prompt(app, ui, crate::account::PromptContext::Chat);
     });
 }
 
@@ -824,24 +825,22 @@ fn body(app: &mut SolveApp, ui: &mut egui::Ui, left: bool) {
         crate::scenario::publish_rect("agent_chat:web", rect);
         return;
     }
-    // A desktop host that could not make its view says why and offers Retry: there is no second
-    // conversation in the desktop app. The old egui panel stays for the browser build, where the
-    // host has no view, and for the tests that exercise it.
-    #[cfg(all(not(target_arch = "wasm32"), not(test)))]
-    {
-        unavailable(app, ui);
+    // Native tests without a host problem can still exercise the old egui conversation.
+    #[cfg(all(not(target_arch = "wasm32"), test))]
+    if app.agent_chat.web_problem.is_none() {
+        header(app, ui, left);
+        ui_kit::assistant_controls(ui, |ui| switcher(app, ui));
+        desktop_body(app, ui);
+        return;
     }
-    #[cfg(any(target_arch = "wasm32", test))]
+    // A desktop host that could not make its view says why and offers Retry: there is no second
+    // conversation in the desktop app.
+    #[cfg(not(target_arch = "wasm32"))]
+    unavailable(app, ui);
+    #[cfg(target_arch = "wasm32")]
     {
         header(app, ui, left);
-        #[cfg(not(target_arch = "wasm32"))]
-        ui_kit::assistant_controls(ui, |ui| switcher(app, ui));
-        #[cfg(target_arch = "wasm32")]
-        {
-            ui.label(tr("ui.agent_chat_desktop_only"));
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        desktop_body(app, ui);
+        ui.label(tr("ui.agent_chat_desktop_only"));
     }
 }
 
