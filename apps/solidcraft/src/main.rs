@@ -1093,16 +1093,6 @@ fn main() -> eframe::Result {
     solidcraft_engine::timing::profile_from_env();
     // Validate before legacy adoption, crash markers or any user preference read.
     let settings = settings_dir().map_err(|error| eframe::Error::AppCreation(error.into()))?;
-    // Legacy settings must be adopted before this runtime creates anything under the settings
-    // folder: creating the account ledger first makes the folder look non-fresh and silently
-    // drops the previous release's app.ron. The probe and ledger open still happen before the
-    // window exists, off the UI thread.
-    let account_runtime = prepare_account_runtime(settings.as_deref(), || {
-        if std::env::var_os("SOLIDCRAFT_SETTINGS_DIR").is_none() {
-            adopt_legacy_settings();
-        }
-    });
-    let account_startup = account_runtime.startup();
     let mut safe_mode = startup::env_on(std::env::var(startup::SAFE_MODE_ENV).ok().as_deref());
     let mut control_port: Option<u16> = solidcraft_engine::geom::env::var("CONTROL_PORT").and_then(|p| p.parse().ok());
     let mut files = Vec::new();
@@ -1145,6 +1135,18 @@ fn main() -> eframe::Result {
             _ => files.push(a),
         }
     }
+    // An information-only argument above has already returned, so this launch goes on to the
+    // window and only now opens the account runtime.
+    // Legacy settings must be adopted before this runtime creates anything under the settings
+    // folder: creating the account ledger first makes the folder look non-fresh and silently
+    // drops the previous release's app.ron. The probe and ledger open still happen before the
+    // window exists, off the UI thread.
+    let account_runtime = prepare_account_runtime(settings.as_deref(), || {
+        if std::env::var_os("SOLIDCRAFT_SETTINGS_DIR").is_none() {
+            adopt_legacy_settings();
+        }
+    });
+    let account_startup = account_runtime.startup();
     // `--max-file-size 2GB`: the largest files this run reads, over Preferences, never saved (#4086).
     if let Some(value) = max_file_size {
         let applied = startup::max_file_size(value.as_deref()).and_then(|bytes| solidcraft_engine::io::limits::set_override(Some(bytes)));
