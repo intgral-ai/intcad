@@ -545,13 +545,26 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       - name: Build the built-in agent's folder for each half of the universal app
         run: |
+          set -euo pipefail
           npm install -g "npm@${{ env.NPM_VERSION }}"
-          for target in aarch64-apple-darwin x86_64-apple-darwin; do
-            out="$RUNNER_TEMP/mastra-agent/$target"
-            node packages/mastra-runtime/scripts/agent-package.mjs build --target "$target" --out "$out"
-            cp -R "$out" "$RUNNER_TEMP/mastra-agent-run-$target"
-            node packages/mastra-runtime/scripts/agent-smoke.mjs "$RUNNER_TEMP/mastra-agent-run-$target"
-          done
+          # This runner is Apple silicon: its own Node builds the arm64 folder. The Intel folder's
+          # Node comes from the same pinned release, checked against nodejs.org's checksums, so the
+          # folder carries an x86_64 Node rather than this machine's.
+          curl -fsSL -o "$RUNNER_TEMP/node-arm64.tar.xz" "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/node-v${{ env.NODE_VERSION }}-darwin-arm64.tar.xz"
+          curl -fsSL -o "$RUNNER_TEMP/node-x64.tar.xz" "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/node-v${{ env.NODE_VERSION }}-darwin-x64.tar.xz"
+          curl -fsSL -o "$RUNNER_TEMP/SHASUMS256.txt" "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/SHASUMS256.txt"
+          (cd "$RUNNER_TEMP" && grep -E 'node-v${{ env.NODE_VERSION }}-darwin-(arm64|x64).tar.xz$' SHASUMS256.txt | shasum -a 256 -c -)
+          mkdir -p "$RUNNER_TEMP/node-arm64" "$RUNNER_TEMP/node-x64"
+          tar -xJf "$RUNNER_TEMP/node-arm64.tar.xz" -C "$RUNNER_TEMP/node-arm64" --strip-components 1
+          tar -xJf "$RUNNER_TEMP/node-x64.tar.xz" -C "$RUNNER_TEMP/node-x64" --strip-components 1
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target aarch64-apple-darwin \
+            --out "$RUNNER_TEMP/mastra-agent/aarch64-apple-darwin" --node "$RUNNER_TEMP/node-arm64/bin/node"
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target x86_64-apple-darwin \
+            --out "$RUNNER_TEMP/mastra-agent/x86_64-apple-darwin" --node "$RUNNER_TEMP/node-x64/bin/node"
+          # The arm64 folder is this machine's own: it is started against stand-ins. The Intel one
+          # is checked (whole, its target, its licences, no secret); running it needs an Intel Mac.
+          cp -R "$RUNNER_TEMP/mastra-agent/aarch64-apple-darwin" "$RUNNER_TEMP/mastra-agent-run"
+          node packages/mastra-runtime/scripts/agent-smoke.mjs "$RUNNER_TEMP/mastra-agent-run"
           {
             echo "SOLIDCRAFT_MASTRA_AGENT_DIR_AARCH64=$RUNNER_TEMP/mastra-agent/aarch64-apple-darwin"
             echo "SOLIDCRAFT_MASTRA_AGENT_DIR_X86_64=$RUNNER_TEMP/mastra-agent/x86_64-apple-darwin"
