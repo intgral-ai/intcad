@@ -25,7 +25,10 @@ use solidcraft_account_native::{
     FixedCredentials, HttpAccountService, ProductLogin, Secret, ServerVerifiedProductSession, Transport, UreqDeviceCodeTransport, UreqTransport,
     WireConnection, WireCredentials, WorkOsPublicClient,
 };
-use solidcraft_engine::entitlement::{AccountService, AuthenticatedHostScope, BudgetTable, MonotonicClock, MonotonicInstant, Refusal, RefusalCode};
+use solidcraft_engine::entitlement::{
+    AccountService, AuthenticatedHostScope, BillingResult, BudgetTable, MonotonicClock, MonotonicInstant, OperationStore, Refusal, RefusalCode,
+    SettlementIntent, UnsettledOperation,
+};
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::account::{AccountPort, AccountView, DeleteAccountGuide, DeviceCode, LifecycleEvent, OwnModelView, State, Timestamp};
 
@@ -707,6 +710,7 @@ impl AccountRuntime {
             product: self.sign_in.as_ref()?.product.clone(),
             credentials: self.credentials.clone(),
             transport: self.sign_in_product.clone(),
+            ledger_root: self.ledger.as_ref().map(|ledger| ledger.root().to_path_buf()),
         })
     }
 
@@ -742,23 +746,26 @@ struct RestartVerifier {
     product: WireConnection,
     credentials: CredentialSession,
     transport: Option<ProductTransportFactory>,
+    ledger_root: Option<std::path::PathBuf>,
 }
 
 impl RestartVerifier {
+    fn transport(&self) -> Box<dyn Transport + Send + Sync> {
+        match self.transport.as_ref() {
+            Some(factory) => factory(),
+            None => Box::new(UreqTransport::with_limits(RESTART_STATUS_TIMEOUT, RESTART_STATUS_CONNECT_TIMEOUT)),
+        }
+    }
+
     /// Ask the configured service whether the exact local bearer belongs to the expected account.
     /// Only a 200 snapshot for that account, followed by an unchanged pair and revocation
-    /// generation, yields a presentable scope. The worker never writes credentials, starts a
-    /// browser or replays an operation.
+    /// generation, yields a presentable scope. This check never writes credentials or opens a browser.
     fn verify(&self, binding: &RestartBinding, cancel: &SignInCancellation) -> Option<AuthenticatedHostScope> {
         if cancel.is_cancelled() {
             return None;
         }
-        let transport: Box<dyn Transport + Send + Sync> = match self.transport.as_ref() {
-            Some(factory) => factory(),
-            None => Box::new(UreqTransport::with_limits(RESTART_STATUS_TIMEOUT, RESTART_STATUS_CONNECT_TIMEOUT)),
-        };
         let service = HttpAccountService::with_transport(
-            transport,
+            self.transport(),
             self.product.clone(),
             Box::new(FixedCredentials::none().with_product_session(binding.product.expose_secret())),
             Box::new(self.credentials.clone()),
@@ -769,6 +776,64 @@ impl RestartVerifier {
             return None;
         }
         restart_binding_unchanged(&self.credentials, binding)
+    }
+
+    /// Replay durable intent only. The original settlement credential is deliberately the
+    /// only credential supplied to this adapter, and a refusal leaves the row unresolved.
+    fn recover_settlement(&self, binding: &RestartBinding, cancel: &SignInCancellation) {
+        const MAX_FINALIZE_ATTEMPTS: usize = 4;
+        let Some(root) = &self.ledger_root else { return };
+        if cancel.is_cancelled() {
+            return;
+        }
+        let Ok(mut ledger) = FileOperationStore::open(root) else {
+            solidcraft_engine::note!("account: startup settlement could not open the ledger");
+            return;
+        };
+        let Ok(rows) = ledger.unsettled_operations(Some(&binding.scope)) else {
+            solidcraft_engine::note!("account: startup settlement could not verify the ledger inventory");
+            return;
+        };
+        let mut attempts = 0;
+        for row in rows {
+            if cancel.is_cancelled() || attempts == MAX_FINALIZE_ATTEMPTS {
+                break;
+            }
+            let UnsettledOperation::Owned(record) = row else { continue };
+            let operation = &record.operation;
+            let Ok(Some(intent)) = ledger.settlement_intent(operation) else { continue };
+            let result = match intent {
+                SettlementIntent::Commit(result) => result,
+                SettlementIntent::Release(_) => BillingResult::FailedNoEffect,
+            };
+            // Another process may already have persisted a receipt since the inventory read.
+            if !matches!(ledger.load(operation), Ok(Some(current)) if !current.status.is_terminal()) {
+                continue;
+            }
+            let Some(credential) = WireCredentials::settlement_credential(&self.credentials, operation) else { continue };
+            let mut service = HttpAccountService::with_transport(
+                self.transport(),
+                self.product.clone(),
+                Box::new(FixedCredentials::none().with_settlement_credential(credential.expose_secret())),
+                Box::new(self.credentials.clone()),
+                Box::new(SystemMonotonicClock::new()),
+            );
+            if restart_binding_unchanged(&self.credentials, binding).is_none() || cancel.is_cancelled() {
+                break;
+            }
+            attempts += 1;
+            let receipt = service.finalize(&binding.scope, operation, result);
+            if cancel.is_cancelled() || restart_binding_unchanged(&self.credentials, binding).is_none() {
+                break;
+            }
+            if let Ok(status) = receipt
+                && status.is_terminal()
+                && let Err(error) = ledger.mark_terminal(operation, status)
+                && error != solidcraft_engine::entitlement::OperationStoreError::TerminalState
+            {
+                solidcraft_engine::note!("account: startup settlement could not persist the terminal receipt");
+            }
+        }
     }
 }
 
@@ -921,7 +986,11 @@ impl DesktopAccountPort {
         let worker_shared = Arc::clone(&shared);
         let worker_cancel = cancel.clone();
         let worker = std::thread::Builder::new().name("intcad-account-restart".into()).spawn(move || {
-            let verified = verifier.verify(&binding, &worker_cancel);
+            let mut verified = verifier.verify(&binding, &worker_cancel);
+            if verified.is_some() && verifier.ledger_root.is_some() {
+                verifier.recover_settlement(&binding, &worker_cancel);
+                verified = restart_binding_unchanged(&verifier.credentials, &binding);
+            }
             let accepted = verified.is_some();
             // Retirement already marks the shared result done and clears any cached account. A
             // late reply is dropped instead of writing after that decision.
@@ -1386,9 +1455,6 @@ impl AccountPort for DesktopAccountPort {
 /// restart check may change presentation but never authority. Controlled entries therefore keep
 /// the existing default refusal.
 pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: AccountStartup) {
-    if let Some(ledger) = runtime.ledger.take() {
-        app.install_review_store(Box::new(ledger));
-    }
     if let Some((scope, service, clock)) = runtime.take_commit_authority(&startup) {
         app.install_commit_authority(scope, service, clock);
         solidcraft_engine::note!("account: authenticated commit authority installed for an explicit synchronous session");
@@ -1399,7 +1465,13 @@ pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: Account
     } else {
         solidcraft_engine::note!("account: no account session restored; CAD stays anonymous and offline");
     }
-    app.account = State::with_port(Box::new(DesktopAccountPort::new(runtime, &startup)));
+    // Start the port while the runtime can still supply the ledger path. Recovery opens its own
+    // handle on the worker; the window gets the existing handle for normal Review queries.
+    let mut port = DesktopAccountPort::new(runtime, &startup);
+    if let Some(ledger) = port.runtime.ledger.take() {
+        app.install_review_store(Box::new(ledger));
+    }
+    app.account = State::with_port(Box::new(port));
 }
 
 #[cfg(test)]
@@ -1955,6 +2027,93 @@ mod tests {
         assert!(requests[0].body().is_none());
         assert!(opener.urls().is_empty(), "restart never opens a browser");
         port.shutdown();
+    }
+
+    #[test]
+    fn desktop_restart_replays_only_the_original_settlement_intent() {
+        use solidcraft_engine::entitlement::{OperationStore, SettlementIntent, TransportCorrelation};
+
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!("intcad-restart-settlement-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir(&path).unwrap();
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(path);
+        let store = TestStore::default();
+        let mut session = activate_session(&store);
+        let scope = session.authenticated_scope().unwrap();
+        let foreign = AuthenticatedHostScope::new(scope.account().clone(), scope.installation().clone(), HostSessionBinding::new("foreign_session"));
+        let mut ledger = FileOperationStore::open(&scratch.0).unwrap();
+        let mut add = |owner, correlation, has_intent| {
+            let row = ledger.persist_intent(owner, &TransportCorrelation::new(correlation), Capability::Review, EntryCategory::ReviewPanel).unwrap();
+            if has_intent {
+                ledger.record_settlement_intent(&row.operation, SettlementIntent::Commit(BillingResult::Succeeded)).unwrap();
+            }
+            CredentialHandoff::settlement_credential(&mut session, &row.operation, Secret::new("fixture_settlement")).unwrap();
+            row.operation
+        };
+        let original = add(&scope, "original_settlement", true);
+        let foreign = add(&foreign, "foreign_settlement", true);
+        let no_intent = add(&scope, "missing_settlement", false);
+        drop(ledger);
+        drop(session);
+
+        for (reply, expected, local_state) in [
+            (Some(Err(TransportFailure::Timeout)), 2, OperationStatus::Held),
+            (
+                Some(Ok(WireResponse::new(
+                    200,
+                    json!({
+                        "operation_id": original.as_str(), "state":"CHARGED", "result":"SUCCEEDED", "terminal":true,
+                        "finalized_at":"2026-01-01T00:00:30Z", "settlement_deadline":"2026-01-01T00:11:00Z"
+                    })
+                    .to_string()
+                    .into_bytes(),
+                ))),
+                2,
+                OperationStatus::Charged,
+            ),
+            (None, 1, OperationStatus::Charged),
+        ] {
+            let mut responses = vec![Ok(WireResponse::new(200, status_body_for(scope.account().as_str()).to_string().into_bytes()))];
+            responses.extend(reply);
+            let product = ScriptedProduct::scripted(responses);
+            let opener = RecordingOpener::default();
+            let mut runtime = restart_runtime(CredentialSession::new(Box::new(store.clone())), product.clone(), &opener);
+            runtime.ledger = Some(FileOperationStore::open(&scratch.0).unwrap());
+            let startup = runtime.startup();
+            assert!(startup.restored.is_none());
+            let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+            install(&mut app, runtime, startup);
+            wait_until("verified startup", || {
+                app.account.process_actions();
+                app.account.view().signed_in
+            });
+            let requests = product.requests();
+            assert_eq!(requests.len(), expected);
+            assert_eq!(requests[0].method(), "GET");
+            assert_eq!(requests[0].url(), "https://api.example/v1/status");
+            if let Some(request) = requests.get(1) {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(request.url(), format!("https://api.example/v1/operations/{}/finalize", original.as_str()));
+                assert_eq!(request.header("X-Settlement-Credential"), Some("fixture_settlement"));
+                assert_eq!(request.header("Authorization"), None);
+                assert_eq!(request.header("X-Execution-Session-Proof"), None);
+                assert_eq!(serde_json::from_slice::<serde_json::Value>(request.body().unwrap()).unwrap(), json!({"result":"SUCCEEDED"}));
+            }
+            let ledger = FileOperationStore::open(&scratch.0).unwrap();
+            assert_eq!(ledger.load(&original).unwrap().unwrap().status, local_state);
+            for skipped in [&foreign, &no_intent] {
+                assert_eq!(ledger.load(skipped).unwrap().unwrap().status, OperationStatus::Held);
+            }
+            assert!(!app.dfm_review.running);
+            assert!(opener.urls().is_empty());
+            app.account.shutdown();
+        }
     }
 
     #[test]
