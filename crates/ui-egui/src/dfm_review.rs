@@ -123,6 +123,10 @@ fn coded(code: RefusalCode, message: impl std::fmt::Display) -> String {
     format!("{}: {message}", refusal_name(code))
 }
 
+fn renewal_refusal(app: &SolveApp, operation: &OperationId) -> Option<String> {
+    app.account.renewal_refusal(app.commit_scope.as_ref()?, operation).map(|refusal| coded(refusal.code, refusal.message))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn verified_review_bound(app: &SolveApp) -> Result<Duration, String> {
     match app.budget.bound(Capability::Review, EntryCategory::ReviewPanel) {
@@ -182,6 +186,9 @@ fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(St
         return Err(coded(RefusalCode::UnsafeToStart, format!("the previous Review operation {} has no confirmed settlement", previous.as_str())));
     }
     if let Some(error) = authority_error(app) {
+        return Err(error);
+    }
+    if let Some(error) = renewal_refusal(app, &operation) {
         return Err(error);
     }
     let bound = verified_review_bound(app)?;
@@ -358,6 +365,9 @@ pub(crate) fn settle_review_run(app: &mut SolveApp, run: &str, produced: bool) -
             }
         }
     };
+    if produced && let Some(error) = renewal_refusal(app, &operation) {
+        return Err(error);
+    }
     let intent = if produced { SettlementIntent::Commit(BillingResult::Succeeded) } else { SettlementIntent::Release(RefusalCode::UnsafeToStart) };
     apply_settlement(app, &operation, intent)
 }
@@ -572,6 +582,11 @@ pub fn start(app: &mut SolveApp) {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn start_with_operation(app: &mut SolveApp, operation: OperationId) -> Result<(), String> {
     let (run, stop_at_ms) = prepare_review_with(app, operation.clone())?;
+    // A renewal can finish while admission or the run mapping is being recorded. Keep the
+    // original hold and mapping for recovery rather than dispatching this reserved run.
+    if let Some(error) = renewal_refusal(app, &operation) {
+        return Err(error);
+    }
     let reservation = solidcraft_engine::dfm::run::Reservation { run_id: run, operation_id: operation.as_str().to_string(), stop_at_ms };
     match solidcraft_engine::dfm::service::start_reserved(&mut app.session, reservation) {
         Ok(_) => {
@@ -642,34 +657,25 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     // never this operation's identity.
     let card = crate::dfm_chat::refresh_run(app, Some(&run));
     match card.outcome.as_deref() {
-        Some("current") if card.report_produced => {
+        _ if card.report_produced => {
+            // A superseded run's own findings are still evidence, but a refused renewal
+            // prevents treating them as a newly accepted result.
             let settle = settle_review_run(app, &run, true);
             app.dfm_review.running = false;
             app.dfm_review.cancelling = false;
             app.dfm_review.error = settle.err();
-            adopt(app, card);
-        }
-        Some("superseded") if card.report_produced => {
-            // A superseded run completed its report before a newer submission; its own findings
-            // are durable evidence, so it is charged once like a current run.
-            let settle = settle_review_run(app, &run, true);
-            app.dfm_review.running = false;
-            app.dfm_review.cancelling = false;
-            app.dfm_review.error = settle.err();
-            adopt(app, card);
+            let refusal = app.dfm_review.operation.as_ref().and_then(|operation| renewal_refusal(app, operation));
+            if let Some(error) = refusal {
+                app.dfm_review.error = Some(error);
+            } else {
+                adopt(app, card);
+            }
         }
         Some("cancelled" | "failed") if !card.report_produced => {
             let settle = settle_review_run(app, &run, false);
             app.dfm_review.running = false;
             app.dfm_review.cancelling = false;
             app.dfm_review.error = settle.err().or_else(|| Some(tr("ui.dfm_review_did_not_finish").to_string()));
-        }
-        _ if card.report_produced => {
-            let settle = settle_review_run(app, &run, true);
-            app.dfm_review.running = false;
-            app.dfm_review.cancelling = false;
-            app.dfm_review.error = settle.err();
-            adopt(app, card);
         }
         _ => {
             // No terminal evidence yet. While the service runs or the person has asked to stop,

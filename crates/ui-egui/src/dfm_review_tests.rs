@@ -579,6 +579,48 @@ fn review_panel_zero_violation_report_commits_once() {
     assert_eq!(ledger.operation_for(&run), h.app.dfm_review.operation.clone());
 }
 
+fn refuse_review_renewal(h: &mut Harness, operation: OperationId) {
+    use crate::account::{State, tests::FakeAccountPort};
+    let port = FakeAccountPort::signed_out(Arc::default()).with_refused_renewal(review_scope(), operation);
+    h.app.account = State::with_port(Box::new(port));
+}
+
+#[test]
+fn review_refused_renewal_prevents_dispatch_before_a_hold_is_taken() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    install(&mut h.app, &billing, &ledger);
+    let operation = crate::control::mint_operation().unwrap();
+    ledger.insert_record(operation.clone());
+    refuse_review_renewal(&mut h, operation.clone());
+    let error = crate::dfm_review::start_with_operation(&mut h.app, operation).unwrap_err();
+    assert!(error.starts_with("AUTH_REQUIRED:"), "{error}");
+    assert_eq!(billing.admits(), 0);
+    assert!(!h.app.dfm_review.running);
+}
+
+#[test]
+fn review_refused_renewal_prevents_an_unexpired_report_from_being_committed() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    let (operation, run) = begin_with_record(&mut h, &billing, &ledger);
+    let scratch = ProjectScratch::new("renewal-refused");
+    let root = project_session(&mut h, &scratch);
+    stopped_run(&root, &run, RunOutcome::Superseded);
+    complete_findings(&root, &run);
+    refuse_review_renewal(&mut h, operation.clone());
+    h.app.dfm_review.running = true;
+    h.app.dfm_review.polled = -1.0;
+    crate::dfm_review::poll(&mut h.app, &egui::Context::default());
+    assert_eq!(billing.commits(), 0, "the fixture clock is still inside the 60-second grant");
+    assert_eq!(billing.releases(), 0, "the report is not proof of no effect");
+    assert!(h.app.dfm_review.card.is_none());
+    assert!(h.app.dfm_review.error.as_deref().unwrap().starts_with("AUTH_REQUIRED:"));
+    assert_eq!(ledger.operation_for(&run), Some(operation));
+}
+
 /// An incomplete or failed check releases its hold and never charges.
 #[test]
 fn review_panel_failure_does_not_charge() {

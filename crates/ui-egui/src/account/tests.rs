@@ -17,6 +17,7 @@ pub(crate) struct FakeAccountPort {
     switch_guide: Option<&'static str>,
     lifecycle: Option<LifecycleEvent>,
     startup_waiting: Arc<AtomicBool>,
+    refused_renewal: Option<(AuthenticatedHostScope, solidcraft_engine::entitlement::OperationId)>,
     calls: Arc<Mutex<Vec<String>>>,
 }
 
@@ -107,12 +108,18 @@ impl FakeAccountPort {
             switch_guide: None,
             lifecycle: None,
             startup_waiting: Arc::new(AtomicBool::new(false)),
+            refused_renewal: None,
             calls,
         }
     }
 
     fn with_guide(view: AccountView, guide: DeleteAccountGuide, calls: Arc<Mutex<Vec<String>>>) -> Self {
-        Self { view, guide, switch_label: None, switch_guide: None, lifecycle: None, startup_waiting: Arc::new(AtomicBool::new(false)), calls }
+        Self { guide, ..Self::with_view(view, calls) }
+    }
+
+    pub(crate) fn with_refused_renewal(mut self, scope: AuthenticatedHostScope, operation: solidcraft_engine::entitlement::OperationId) -> Self {
+        self.refused_renewal = Some((scope, operation));
+        self
     }
 
     fn log(&self, name: &str) {
@@ -123,6 +130,10 @@ impl FakeAccountPort {
 }
 
 impl AccountPort for FakeAccountPort {
+    fn renewal_refusal(&self, scope: &AuthenticatedHostScope, operation: &solidcraft_engine::entitlement::OperationId) -> Option<RefusalCode> {
+        self.refused_renewal.as_ref().filter(|(expected, id)| expected == scope && id == operation).map(|_| RefusalCode::AuthRequired)
+    }
+
     fn view(&self) -> AccountView {
         self.log("view");
         self.view.clone()
