@@ -41,16 +41,20 @@ class AssistantNativeSmoke(unittest.TestCase):
         self.native.retained_hidden.return_value = True
         self.native.backing_scale = 1
         self.states = []
+        self.rects = [
+            {"name": "home:back", "x": 10, "y": 2, "width": 20, "height": 18},
+            {"name": "titlebar:assistant", "x": 10, "y": 2, "width": 20, "height": 18},
+            {"name": "titlebar:assistant", "x": 80, "y": 2, "width": 20, "height": 18},
+            {"name": "agent_chat:web", "x": 80, "y": 160, "width": 256, "height": 400},
+        ]
 
         def call(method, deadline, params=None):
             if method == "ui.inspect":
                 return {"ok": True, "result": self.states.pop(0) if len(self.states) > 1 else self.states[0]}
             if method == "ui.rects":
+                prefix = (params or {}).get("prefix", "")
                 return {"ok": True, "result": {"pixelsPerPoint": 1.25, "rects": [
-                    {"name": "home:back", "x": 10, "y": 2, "width": 20, "height": 18},
-                    {"name": "titlebar:assistant", "x": 10, "y": 2, "width": 20, "height": 18},
-                    {"name": "titlebar:assistant", "x": 80, "y": 2, "width": 20, "height": 18},
-                    {"name": "agent_chat:web", "x": 80, "y": 160, "width": 256, "height": 400},
+                    rect for rect in self.rects if rect["name"].startswith(prefix)
                 ]}}
             self.fail(f"unexpected control call: {method}")
 
@@ -141,6 +145,43 @@ class AssistantNativeSmoke(unittest.TestCase):
         self.native.retained_hidden.assert_called_once()
         self.assertEqual(self.native.retained_hidden.call_args.args, (314,))
         self.native.close_window.assert_called_once_with()
+
+    def test_rail_opens_and_reopens_with_or_without_titlebar_in_same_reply(self):
+        for titlebar_drawn in (True, False):
+            with self.subTest(titlebar_drawn=titlebar_drawn):
+                if not titlebar_drawn:
+                    self.rects[:] = [r for r in self.rects if r["name"] != "titlebar:assistant"]
+                self.rects[:0] = [
+                    {"name": "rail:assistant", "x": 320, "y": 32, "width": 20, "height": 18},
+                    {"name": "rail:assistant", "x": 320, "y": 40, "width": 20, "height": 18},
+                ]
+                self.states.clear()
+                for opened, ready in ((False, False), (True, True), (False, True), (False, True), (True, True)):
+                    self.state(opened, ready)
+                self.native.click.reset_mock()
+                self.control.call.reset_mock()
+                self.exit_info = None
+                self.exercise()
+                self.assertEqual([call.args for call in self.native.click.call_args_list], [(412, 61)] * 2)
+                snapshots = [call.args[2] for call in self.control.call.call_args_list if call.args[0] == "ui.rects"]
+                self.assertEqual(snapshots, [None, {"prefix": "agent_chat:web"}] * 2)
+                self.rects[:2] = []
+
+    def test_no_assistant_target_does_not_click_prefix_lookalike(self):
+        self.rects[:] = [r for r in self.rects if r["name"] != "titlebar:assistant"]
+        self.rects.append({"name": "rail:assistant-extra", "x": 320, "y": 40, "width": 20, "height": 18})
+        self.state(False, False)
+        with self.assertRaisesRegex(ValueError, "no native Assistant entry"):
+            self.exercise()
+        self.native.click.assert_not_called()
+
+    def test_malformed_drawn_rail_geometry_does_not_fall_back_or_click(self):
+        self.rects.append({"name": "rail:assistant", "x": 320, "y": 40, "width": "20", "height": 18})
+        self.state(False, False)
+        self.state(True, True)
+        with self.assertRaisesRegex(ValueError, "invalid rail:assistant rectangle"):
+            self.exercise()
+        self.native.click.assert_not_called()
 
     def test_initial_home_is_dismissed_by_native_click(self):
         self.state(False, False)

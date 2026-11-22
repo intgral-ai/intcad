@@ -176,18 +176,26 @@ def assistant(inspect):
     return state["open"], state["surface_ready"], state["host"]
 
 
-def ui_rect(control, name, deadline, backing_scale=1):
-    layout = result(control, "ui.rects", deadline, {"prefix": name})
+def ui_rect(control, names, deadline, backing_scale=1):
+    # Ask once when names have different prefixes, so both targets and scale
+    # describe the same frame.
+    params = {"prefix": names[0]} if len(names) == 1 else None
+    layout = result(control, "ui.rects", deadline, params)
     scale, rects = layout.get("pixelsPerPoint"), layout.get("rects")
     number = lambda n: type(n) in (float, int) and -100000 <= n <= 100000
     if not number(scale) or not 0 < scale <= 16 or not isinstance(rects, list):
         raise ValueError("invalid ui.rects observation")
-    for rect in reversed(rects):
-        if isinstance(rect, dict) and rect.get("name") == name:
+    for name in names:
+        for rect in reversed(rects):
+            if not isinstance(rect, dict) or rect.get("name") != name:
+                continue
             x, y, w, h = (rect.get(k) for k in ("x", "y", "width", "height"))
             if not all(map(number, (x, y, w, h))) or w <= 0 or h <= 0:
                 raise ValueError(f"invalid {name} rectangle")
-            return tuple(round(p * scale / backing_scale) for p in (x, y, x + w, y + h)), scale / backing_scale
+            bounds = tuple(round(p * scale / backing_scale) for p in (x, y, x + w, y + h))
+            if bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
+                raise ValueError(f"invalid {name} rectangle in native pixels")
+            return bounds, scale / backing_scale
     return None, scale
 
 
@@ -223,7 +231,7 @@ def exercise(app, control, native, seconds, capture):
         x, y, right, bottom = rect
         native.click((x + right) // 2, (y + bottom) // 2)
 
-    def open_from_titlebar(retained=False):
+    def open_from_entry(retained=False):
         dismissed = False
 
         def button(deadline):
@@ -231,30 +239,30 @@ def exercise(app, control, native, seconds, capture):
             state = inspect(deadline)
             opened, ready, host = assistant(state)
             if opened:
-                raise ValueError("Assistant was already open before the titlebar click")
+                raise ValueError("Assistant was already open before the entry click")
             if retained and (not ready or host != "available"):
                 raise ValueError("Assistant lost retained readiness before reopen")
             if state.get("home") is True:
                 if not dismissed:
-                    back = ui_rect(control, "home:back", deadline, native.backing_scale)[0]
+                    back = ui_rect(control, ("home:back",), deadline, native.backing_scale)[0]
                     if back:
                         click_rect(back)
                         dismissed = True
                 return None
-            return ui_rect(control, "titlebar:assistant", deadline, native.backing_scale)[0]
+            return ui_rect(control, ("rail:assistant", "titlebar:assistant"), deadline, native.backing_scale)[0]
 
-        click_rect(await_value(app, seconds, "Home did not dismiss or no native Assistant titlebar button", button))
+        click_rect(await_value(app, seconds, "Home did not dismiss or no native Assistant entry was drawn", button))
 
     def page(deadline):
         if assistant(inspect(deadline)) == (True, True, "available"):
-            rect, scale = ui_rect(control, "agent_chat:web", deadline, native.backing_scale)
+            rect, scale = ui_rect(control, ("agent_chat:web",), deadline, native.backing_scale)
             if rect:
                 actual = native.page(rect, timeout=min(5, remaining(deadline)))
                 if actual:
                     return actual, scale
         return None
 
-    open_from_titlebar()
+    open_from_entry()
     actual, scale = await_value(app, seconds, "no current-view readiness with matching visible native page", page)
     original = native.view_identity()
     print(f"ok: Assistant page ready and visible at {actual}", flush=True)
@@ -271,7 +279,7 @@ def exercise(app, control, native, seconds, capture):
 
     await_value(app, seconds, "page Close did not hide the retained native page while the app stayed live", hidden)
     print("ok: native page Close hid the retained Assistant", flush=True)
-    open_from_titlebar(retained=True)
+    open_from_entry(retained=True)
     actual, _ = await_value(app, seconds, "reopened Assistant lacked readiness or visible native page", page)
     if native.view_identity() != original:
         raise ValueError("Assistant reopened with a different native view")
