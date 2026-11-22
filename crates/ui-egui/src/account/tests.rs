@@ -18,6 +18,7 @@ pub(crate) struct FakeAccountPort {
     browser: Arc<Mutex<Vec<String>>>,
     poll_view: Option<AccountView>,
     cancel_refusal: Option<Refusal>,
+    sign_out_refusal: Option<Refusal>,
 }
 
 impl FakeAccountPort {
@@ -36,6 +37,7 @@ impl FakeAccountPort {
             browser: Arc::new(Mutex::new(Vec::new())),
             poll_view: None,
             cancel_refusal: None,
+            sign_out_refusal: None,
         }
     }
 
@@ -50,6 +52,7 @@ impl FakeAccountPort {
             browser: Arc::new(Mutex::new(Vec::new())),
             poll_view: None,
             cancel_refusal: None,
+            sign_out_refusal: None,
         }
     }
 
@@ -107,8 +110,12 @@ impl AccountPort for FakeAccountPort {
 
     fn sign_out(&mut self) -> Result<(), Refusal> {
         self.log("sign_out");
-        self.view = AccountView::signed_out();
+        self.view = AccountView { sign_out_error: Some(RefusalCode::AuthUnavailable), ..AccountView::signed_out() };
         self.lifecycle = Some(LifecycleEvent::SignedOut);
+        if let Some(refusal) = &self.sign_out_refusal {
+            return Err(refusal.clone());
+        }
+        self.view = AccountView::signed_out();
         Ok(())
     }
 
@@ -165,6 +172,8 @@ fn signed_in_view() -> AccountView {
         sign_in_state: SignInState::Idle,
         sign_in_prompt: None,
         sign_in_error: None,
+        sign_out_pending: false,
+        sign_out_error: None,
         account_label: Some("alice@example.com".into()),
         available: Some(999),
         held: 0,
@@ -313,7 +322,37 @@ fn a_refused_cancel_is_surfaced_instead_of_claiming_an_action() {
     state.process_actions();
     assert_eq!(state.notice().map(|refusal| refusal.code), Some(RefusalCode::AuthUnavailable));
     let log = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
-    assert_eq!(log, vec!["cancel_sign_in"], "a refusal is surfaced without inventing a new view");
+    assert_eq!(log, vec!["cancel_sign_in", "view"], "a refusal adopts the host's actual view");
+}
+
+#[test]
+fn a_sign_out_cleanup_failure_adopts_the_hosts_no_authority_view_and_offers_retry() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut port = FakeAccountPort::with_view(signed_in_view(), calls.clone());
+    port.sign_out_refusal = Some(Refusal::new(RefusalCode::AuthUnavailable, "the durable sign-out marker failed"));
+    let mut state = State::with_port(Box::new(port));
+    if let Ok(mut calls) = calls.lock() {
+        calls.clear();
+    }
+    state.request(Action::SignOut);
+    state.process_actions();
+    assert!(!state.view().signed_in, "a signed-in view survived a revoked authority");
+    assert_eq!(state.view().sign_out_error, Some(RefusalCode::AuthUnavailable));
+    assert_eq!(state.notice().map(|refusal| refusal.code), Some(RefusalCode::AuthUnavailable));
+    let log = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
+    assert_eq!(log, vec!["sign_out", "view"], "the host's actual view was adopted");
+}
+
+#[test]
+fn sign_out_pending_and_cleanup_failure_are_visible_with_a_retry() {
+    let pending = render_view(AccountView { sign_out_pending: true, ..AccountView::signed_out() });
+    let joined = pending.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join("\n").to_lowercase();
+    assert!(joined.contains("signing out"), "{pending:?}");
+    let failed = AccountView { sign_out_error: Some(RefusalCode::AuthUnavailable), ..AccountView::signed_out() };
+    let texts = render_view(failed);
+    let joined = texts.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join("\n");
+    assert!(joined.contains("cannot check authorization"), "{texts:?}");
+    assert!(crate::scenario::handle_at("account:retry_sign_out").is_some(), "no actionable retry");
 }
 
 #[test]

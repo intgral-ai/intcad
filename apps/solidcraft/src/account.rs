@@ -650,6 +650,18 @@ impl DesktopAccountPort {
         Some(self.view.clone())
     }
 
+    fn poll_cleanup(&mut self) -> Option<AccountView> {
+        let status = self.cleanup.lock().ok()?;
+        let pending = status.pending.is_some();
+        let error = status.error.as_ref().map(|refusal| refusal.code);
+        if self.view.sign_out_pending == pending && self.view.sign_out_error == error {
+            return None;
+        }
+        self.view.sign_out_pending = pending;
+        self.view.sign_out_error = error;
+        Some(self.view.clone())
+    }
+
     /// Refuse account work while a durable sign-out is unconfirmed, a cleanup is running or its
     /// latest generation failed. An unreadable status is itself a refusal.
     fn cleanup_confirmed(&self) -> Result<(), Refusal> {
@@ -694,21 +706,12 @@ impl DesktopAccountPort {
                 return Err(account_unavailable("the account cleanup state is unavailable"));
             }
         };
-        // A synchronous durable tombstone before any async delete closes the crash window after a
-        // just-promoted session. The promotion gate is still held, so no commit marker can race it.
-        // An earlier sign-out generation that still owns cleanup already has its marker; skip the
-        // second synchronous write so an older blocked delete cannot deadlock this UI action.
-        let marked = if status.pending.is_some() {
-            Ok(())
-        } else {
-            match self.runtime.credentials.try_mark_logout_pending() {
-                Ok(true) => Ok(()),
-                Ok(false) => {
-                    return Err(account_unavailable("the account store is busy; try sign-out again"));
-                }
-                Err(_) => Err(account_unavailable("the durable sign-out marker could not be written; cleanup is retrying")),
-            }
-        };
+        if status.pending.is_some() {
+            return Err(account_unavailable("a sign-out is already pending; wait for it to finish or try again"));
+        }
+        // Authority is revoked in this process now. The durable tombstone and delete run on one
+        // worker; this action does not claim durable completion until that worker confirms its
+        // own generation. No keyring write or delete happens on the window thread.
         self.runtime.credentials.revoke_in_process();
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
@@ -739,10 +742,7 @@ impl DesktopAccountPort {
         match worker {
             Ok(handle) => {
                 self.workers.push(handle);
-                match marked {
-                    Ok(()) => Ok(()),
-                    Err(_) => Err(account_unavailable("the durable sign-out marker could not be written; cleanup is retrying")),
-                }
+                Ok(())
             }
             // In-process authority and the event are already applied. The durable marker was
             // never written, so the status says cleanup never started (not that it is pending),
@@ -758,7 +758,13 @@ impl DesktopAccountPort {
     }
 
     fn join_workers(&mut self) {
+        // Exit-only serialization: wait for an in-progress promotion to become the documented
+        // winner before invalidating the generation. Never invalidate first and then accept a
+        // commit that was already inside the gate.
+        let gate_holder = Arc::clone(&self.persist_gate);
+        let gate = gate_holder.lock();
         self.invalidate_login();
+        drop(gate);
         let login_workers = std::mem::take(&mut self.login_workers);
         for worker in login_workers {
             let _ = worker.join();
@@ -777,6 +783,8 @@ fn signed_in_view(account: String) -> AccountView {
         sign_in_state: SignInState::Idle,
         sign_in_prompt: None,
         sign_in_error: None,
+        sign_out_pending: false,
+        sign_out_error: None,
         account_label: Some(account),
         available: None,
         held: 0,
@@ -925,7 +933,10 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn poll(&mut self) -> Option<AccountView> {
-        self.poll_login()
+        if let Some(view) = self.poll_login() {
+            return Some(view);
+        }
+        self.poll_cleanup()
     }
 
     fn sign_out(&mut self) -> Result<(), Refusal> {
@@ -1020,6 +1031,7 @@ mod tests {
         block_delete: Arc<Mutex<VecDeque<Receiver<()>>>>,
         block_get: Arc<Mutex<Option<Receiver<()>>>>,
         block_set: Arc<Mutex<Option<(String, Receiver<()>)>>>,
+        fail_set: Arc<Mutex<Option<String>>>,
         delete_waiting: Arc<AtomicUsize>,
         get_waiting: Arc<AtomicUsize>,
         set_waiting: Arc<AtomicUsize>,
@@ -1034,6 +1046,7 @@ mod tests {
                 block_delete: Arc::new(Mutex::new(VecDeque::new())),
                 block_get: Arc::new(Mutex::new(None)),
                 block_set: Arc::new(Mutex::new(None)),
+                fail_set: Arc::new(Mutex::new(None)),
                 delete_waiting: Arc::new(AtomicUsize::new(0)),
                 get_waiting: Arc::new(AtomicUsize::new(0)),
                 set_waiting: Arc::new(AtomicUsize::new(0)),
@@ -1056,6 +1069,11 @@ mod tests {
         /// Make the next write of `key` wait until the test releases it.
         fn block_next_set(&self, key: &str, gate: Receiver<()>) {
             *self.block_set.lock().unwrap() = Some((key.to_owned(), gate));
+        }
+
+        /// Fail writes of `key` while set; clear with `None` to allow a retry.
+        fn set_fail_key(&self, key: Option<&str>) {
+            *self.fail_set.lock().unwrap() = key.map(str::to_owned);
         }
 
         fn wait_until_set_blocked(&self) {
@@ -1081,6 +1099,9 @@ mod tests {
         }
 
         fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
+            if self.fail_set.lock().unwrap().as_deref() == Some(key) {
+                return Err(store_error());
+            }
             let gate = {
                 let mut blocked = self.block_set.lock().unwrap();
                 match blocked.as_ref() {
@@ -1299,32 +1320,76 @@ mod tests {
     }
 
     #[test]
-    fn an_older_cleanup_cannot_clear_the_newer_generation_barrier() {
+    fn a_repeated_sign_out_while_pending_is_refused_without_a_second_worker() {
         let store = TestStore::default();
-        let (gate_one_tx, gate_one_rx) = channel();
-        let (gate_two_tx, gate_two_rx) = channel();
+        let (gate_tx, gate_rx) = channel();
         let runtime = AccountRuntime::with_session(activate_session(&store));
-        store.block_next_delete(gate_one_rx);
+        store.block_next_delete(gate_rx);
         let startup = runtime.startup();
         let mut port = DesktopAccountPort::new(runtime, &startup);
 
         port.sign_out().unwrap();
         wait_for_counter(&store.delete_waiting, 1);
-        store.block_next_delete(gate_two_rx);
-        port.sign_out().unwrap();
-        assert_eq!(port.cleanup.lock().unwrap().pending, Some(2));
+        assert_eq!(port.cleanup.lock().unwrap().pending, Some(1));
         assert!(port.runtime.credentials.is_revoked());
+        let started = Instant::now();
+        let error = port.sign_out().unwrap_err();
+        assert_eq!(error.code, RefusalCode::AuthUnavailable);
+        assert!(started.elapsed() < Duration::from_millis(100), "a repeated sign-out blocked on keyring IO");
+        assert_eq!(port.cleanup.lock().unwrap().pending, Some(1), "a repeated sign-out started a second worker");
+        assert_eq!(port.take_lifecycle_event(), Some(LifecycleEvent::SignedOut), "one sign-out raises one event");
+        assert_eq!(port.take_lifecycle_event(), None);
 
-        // Let the older worker finish. It must not clear the newer generation's barrier while
-        // the newer worker waits before its first delete.
-        gate_one_tx.send(()).unwrap();
-        wait_for_counter(&store.delete_waiting, 2);
-        assert!(port.runtime.credentials.is_revoked(), "the older cleanup cleared a newer barrier");
-        assert_eq!(port.cleanup.lock().unwrap().pending, Some(2));
-
-        gate_two_tx.send(()).unwrap();
+        gate_tx.send(()).unwrap();
         wait_for_cleanup(&port);
+        assert!(port.cleanup.lock().unwrap().error.is_none());
         assert!(!port.runtime.credentials.is_revoked(), "the owning generation lifts the barrier");
+        port.shutdown();
+    }
+
+    #[test]
+    fn shutdown_waits_for_a_blocked_promotion_and_accepts_the_serialized_commit() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
+        let (gate_tx, gate_rx) = channel();
+        store.block_next_set("login/commit", gate_rx);
+        let mut port = login_port(browser, runner, &store);
+        port.sign_in().unwrap();
+        store.wait_until_set_blocked();
+        std::thread::scope(|scope| {
+            let shutdown = scope.spawn(|| port.shutdown());
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(!shutdown.is_finished(), "shutdown invalidated the generation before the promotion finished");
+            gate_tx.send(()).unwrap();
+            shutdown.join().unwrap();
+        });
+        assert!(port.runtime.credentials.product_session_active(), "the promotion that won the gate was not a valid commit");
+    }
+
+    #[test]
+    fn a_failed_sign_out_marker_is_surfaced_and_retryable() {
+        let store = TestStore::default();
+        let runtime = AccountRuntime::with_session(activate_session(&store));
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        store.set_fail_key(Some("auth/logout_pending"));
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        let error = port.cleanup.lock().unwrap().error.clone().expect("the failed durable marker is surfaced");
+        assert_eq!(error.code, RefusalCode::AuthUnavailable);
+        let _ = AccountPort::poll(&mut port);
+        assert_eq!(port.view().sign_out_error, Some(RefusalCode::AuthUnavailable));
+        assert!(port.runtime.credentials.is_revoked(), "the in-process authority stays revoked");
+        assert!(!port.runtime.credentials.logout_pending().unwrap_or(false), "no durable tombstone is claimed");
+
+        store.set_fail_key(None);
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert!(port.cleanup.lock().unwrap().error.is_none());
+        assert!(!port.runtime.credentials.logout_pending().unwrap_or(true), "the retry wrote and cleared the marker");
+        assert!(!port.runtime.credentials.product_session_active());
         port.shutdown();
     }
 

@@ -99,6 +99,10 @@ pub struct AccountView {
     pub sign_in_prompt: Option<DeviceCode>,
     /// The stable reason a sign-in failed, if it did.
     pub sign_in_error: Option<RefusalCode>,
+    /// A sign-out's durable marker/delete is still running; authority is already gone in process.
+    pub sign_out_pending: bool,
+    /// The latest sign-out cleanup failed. The process stays fail-closed until a retry confirms it.
+    pub sign_out_error: Option<RefusalCode>,
     pub account_label: Option<String>,
     /// Credits a new billed operation may use; `None` when not known.
     pub available: Option<u64>,
@@ -123,6 +127,8 @@ impl AccountView {
             sign_in_state: SignInState::Idle,
             sign_in_prompt: None,
             sign_in_error: None,
+            sign_out_pending: false,
+            sign_out_error: None,
             account_label: None,
             available: None,
             held: 0,
@@ -141,6 +147,8 @@ impl AccountView {
             sign_in_state: SignInState::Idle,
             sign_in_prompt: None,
             sign_in_error: None,
+            sign_out_pending: false,
+            sign_out_error: None,
             account_label: None,
             available: None,
             held: 0,
@@ -268,7 +276,13 @@ fn apply(
             *guide = Some(port.delete_account_guide());
             *notice = None;
         }
-        Err(refusal) => *notice = Some(refusal),
+        Err(refusal) => {
+            // A refusal may still follow a partial host action: show the host's actual view, not
+            // the stale one from before the click.
+            *view = port.view();
+            *guide = Some(port.delete_account_guide());
+            *notice = Some(refusal);
+        }
     }
 }
 

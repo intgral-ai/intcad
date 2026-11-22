@@ -26,8 +26,8 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
 | Frozen rev3 embedded bytes match client `contracts/pin.json` | **PASS** (earlier Task 13 evidence) | `contract-pin.md` |
 | Frozen `contract_vectors` (offline) | **NOT_RUN** in Task 1 | requires the external frozen artifacts; unchanged by this task |
 | `solidcraft-account-native` library tests (offline) | **PASS**, 106 passed / 0 failed / 1 ignored | `cargo test --offline --locked -p solidcraft-account-native --lib` |
-| Desktop account tests (`apps/solidcraft`) | **PASS**, 31 passed / 0 failed | `cargo test --offline --locked -p solidcraft --bin intcad account::tests` |
-| Account UI tests (`solidcraft-ui-egui`) | **PASS**, 23 passed / 0 failed | `cargo test --offline --locked -p solidcraft-ui-egui --lib account::` |
+| Desktop account tests (`apps/solidcraft`) | **PASS**, 33 passed / 0 failed | `cargo test --offline --locked -p solidcraft --bin intcad account::tests` |
+| Account UI tests (`solidcraft-ui-egui`) | **PASS**, 25 passed / 0 failed | `cargo test --offline --locked -p solidcraft-ui-egui --lib account::` |
 | Production web shell sign-in prompt and Review prompt reachability | **PASS**, 1 each | focused UI tests for the native web-view strip and an `UNSAFE_TO_START` Review refusal |
 | English/complete-catalog coverage for new messages | **PASS** | `... i18n::tests::every_complete_catalog_carries_every_english_message --exact` |
 | Focused clippy (`-D warnings`) for native, UI and desktop crates | **PASS** | `cargo clippy ... --all-targets -- -D warnings` |
@@ -35,7 +35,7 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
 | `cargo xtask layers` | **PASS**, no layering violations | native-only closure guard passed |
 | `solidcraft-ui-egui` wasm library check | **PASS**, 0 errors (existing warnings) | `cargo check ... --target wasm32-unknown-unknown --lib` |
 | Full `solidcraft-ui-egui` library suite | **FAILED**, same pre-existing `TexturesDelta`/agent-discovery signatures | representative failures reproduced at base `ad9ab83f8` (see Limits) |
-| Full desktop app test binary | **FAILED**, 180 passed / 2 failed | both are the pre-existing `TexturesDelta` drop-panic signature |
+| Full desktop app test binary | **FAILED**, 182 passed / 2 failed | both are the pre-existing `TexturesDelta` drop-panic signature |
 | Linux direct-binary package build and install | **NOT_RUN** | no package built in this bounded checkpoint |
 | Live WorkOS device-code completion and product verification | **NOT_RUN** | no production/provider credential, service or remote write |
 | No-auto-browser / explicit-click behavior on a real desktop | **NOT_RUN** | covered by scripted seams only; no GUI session |
@@ -67,9 +67,12 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
   [build configuration](desktop-configuration.md) seam and its fail-closed validation are tested
   with synthetic values only.
 - The durable activation commit is a single key. Deterministic fake-store tests cover a blocked
-  commit, a failed commit marker, a superseded generation, a tombstone racing a blocked commit and
-  display-only identity. This is not a claim of atomic multi-key keyring behavior; partial writes
-  are non-restorable, and a cancel/sign-out during promotion is refused rather than waited for.
+  commit, a failed commit marker, a superseded generation, a tombstone racing a blocked commit,
+  repeated sign-out while pending, a failed sign-out marker and display-only identity. Partial
+  writes are non-restorable; a cancel/sign-out during promotion is refused rather than waited for.
+  An accepted sign-out revokes in-process and shows a pending/failure state, but a crash before
+  its worker confirms the tombstone can leave the previously committed session restorable; no
+  crash safety is claimed for an unconfirmed sign-out.
 
 ## Remaining gates
 

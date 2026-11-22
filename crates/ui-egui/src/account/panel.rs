@@ -56,6 +56,7 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let sign_in_failed = app.tr("account.sign_in_failed").to_string();
     let sign_in_retry = app.tr("account.sign_in_retry").to_string();
     let chat_review_sign_in = app.tr("account.chat_review_sign_in").to_string();
+    let retry_sign_out = app.tr("account.retry_sign_out").to_string();
     let blocked = view
         .tool_blocked
         .filter(|code| !matches!(code, RefusalCode::CreditsExhausted | RefusalCode::CreditsHeld))
@@ -64,6 +65,7 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let mut sign_in_clicked = false;
     let mut sign_in_browser_clicked = false;
     let mut cancel_sign_in_clicked = false;
+    let mut retry_sign_out_clicked = false;
     let mut sign_out_clicked = false;
     let mut switch_clicked = false;
 
@@ -123,6 +125,15 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
         } else if view.sign_in_visible {
             FileView::detail(ui, &signed_out);
             FileView::detail(ui, &chat_review_sign_in);
+            if view.sign_out_pending {
+                FileView::detail(ui, &signing_out);
+            }
+            if let Some(code) = view.sign_out_error {
+                text(ui, &refusal_text(app, code), Text::Error("account_sign_out_error"));
+                let response = button(ui, &retry_sign_out, Button::Primary);
+                publish("account:retry_sign_out", &response);
+                retry_sign_out_clicked = response.clicked();
+            }
             match view.sign_in_state {
                 SignInState::Starting => {
                     FileView::detail(ui, &sign_in_starting);
@@ -188,6 +199,9 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
     }
     if cancel_sign_in_clicked {
         app.account.request(Action::CancelSignIn);
+    }
+    if retry_sign_out_clicked {
+        app.account.request(Action::SignOut);
     }
     if sign_out_clicked {
         app.account.request(Action::SignOut);

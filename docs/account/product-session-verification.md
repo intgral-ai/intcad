@@ -97,12 +97,23 @@ does not treat any staged or partial value as a session:
 4. A crash or storage failure before the commit leaves staged/partial values that every reader
    ignores. Clearing authority first writes `login/commit` to the revoked value, so even a
    partially deleted old session is non-restorable.
-5. An accepted sign-out writes the durable sign-out marker before returning where the promotion
-   gate is free. During promotion sign-out is refused. Repeated sign-out generations rely on the
-   marker already owned by the earlier cleanup, so a blocked delete cannot deadlock the window.
+5. An accepted sign-out revokes authority in process immediately, then runs one async worker that
+   writes the tombstone and deletes under its own generation. The UI shows a pending state and
+   reports a failure with a sign-out retry; a repeated sign-out while pending is refused without
+   a second worker. Durable completion is never claimed until that worker confirms its
+   generation. A crash before that confirmation can leave the previously committed session
+   restorable: this note does not claim crash safety for an unconfirmed sign-out. During
+   promotion, sign-out is refused rather than queued.
 6. A completed commit is a completed login; cancel after it is refused and sign-out is the
-   lifecycle transition. The process does not claim atomic multi-key keyring behavior beyond this
+   lifecycle transition. Shutdown waits at the exit gateway for an in-progress promotion to
+   finish before invalidating the generation, so a serialized commit winner is not invalidated
+   after the fact. The process does not claim atomic multi-key keyring behavior beyond this
    single-key commit boundary.
+
+The production desktop path uses `persist_verified_login` with its attempt generation. The older
+`activate_product_session` method remains a test/composition seam and writes the same commit
+marker; no shipped production caller uses it. Any future production caller must use the staged
+generation path rather than promote provider keys through a marker-exempt path.
 
 This is a conservative design and has a UX cost: a cancel or sign-out clicked while the final
 keyring promotion runs is refused with a retry/sign-out message instead of waiting or pretending

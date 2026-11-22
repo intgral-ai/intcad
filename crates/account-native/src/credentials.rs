@@ -559,21 +559,6 @@ impl CredentialSession {
         mark_logout(&mut state)
     }
 
-    /// Try to write the durable sign-out marker without waiting for a cleanup worker that holds
-    /// the session lock across its own keyring delete. `Ok(false)` means the lock is busy; the
-    /// caller must not claim a new sign-out was accepted unless an earlier generation already
-    /// owns the marker.
-    pub fn try_mark_logout_pending(&self) -> Result<bool, CredentialError> {
-        match self.inner.try_lock() {
-            Ok(mut state) => {
-                mark_logout(&mut state)?;
-                Ok(true)
-            }
-            Err(std::sync::TryLockError::WouldBlock) => Ok(false),
-            Err(std::sync::TryLockError::Poisoned(_)) => Err(unavailable()),
-        }
-    }
-
     /// Mark a durable sign-out before deleting anything. The marker is intentionally written
     /// first: if a delete fails, the next process sees it and refuses to restore the old bearer.
     /// A non-persistent headless session has no cross-process bearer to suppress, so its marker
@@ -709,6 +694,10 @@ impl CredentialSession {
     /// Activate an Intcad product session only from a typed, trusted exchange result. The provider
     /// token is input to the exchange, never the product bearer. Without a documented exchange the
     /// default [`BlockedProductExchange`] leaves product login inactive.
+    ///
+    /// This is the older test/composition seam: it writes the same durable commit marker but has
+    /// no desktop attempt generation or promotion gate. The shipped desktop uses
+    /// [`Self::persist_verified_login`]; future production callers must use that staged path.
     pub fn activate_product_session(&self, exchange: &dyn ProductSessionExchange) -> Result<ProductLogin, CredentialError> {
         let provider = {
             let state = self.inner.lock().map_err(|_| unavailable())?;
