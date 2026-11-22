@@ -85,9 +85,15 @@ foreach ($case in $cases) {
             if (-not $p.WaitForExit(15000)) { throw "FAIL: $($case.Name): $why; process did not exit after forced cleanup" }
         }
     }
-    $err = $stderr.Result
-    Write-Host $err
-    if ($ok -and -not $err.Contains($case.Expect)) { $ok = $false; $why = "stderr does not say '$($case.Expect)'" }
+    # An inherited pipe can stay open after the app exits.
+    if ($stderr.Wait(5000)) {
+        $err = $stderr.Result
+        Write-Host $err
+        if ($ok -and -not $err.Contains($case.Expect)) { $ok = $false; $why = "stderr does not say '$($case.Expect)'" }
+    } else {
+        $ok = $false
+        $why = if ($why) { "$why; timed out waiting for stderr" } else { 'timed out waiting for stderr' }
+    }
     $reports = @(Get-ChildItem -Recurse -Filter report.json $crashes -ErrorAction SilentlyContinue)
     if ($reports.Count -gt 0) {
         foreach ($r in $reports) { Get-Content $r.FullName | Write-Host }
