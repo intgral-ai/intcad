@@ -72,6 +72,9 @@ impl fmt::Display for Secret {
 /// credentials in a JSON ledger, or store them in plaintext. A handoff failure must fail the
 /// exchange closed; execution or settlement must not continue without the credential.
 pub trait CredentialHandoff {
+    /// A wire-level renewal refusal retires only the original operation, not the account.
+    fn renewal_unauthorized(&mut self, _scope: &AuthenticatedHostScope, _operation: &OperationId) {}
+
     /// Initial authorization-lease proof, keyed by the server-issued authorization id.
     fn initial_lease_proof(&mut self, authorization: &GrantId, capability: Capability, proof: Secret) -> Result<(), Refusal>;
     /// The execution grant proof for one admitted operation.
@@ -552,6 +555,10 @@ impl<T: Transport> HttpAccountService<T> {
 
     fn exchange(&self, request: WireRequest) -> Result<(u16, Value), Refusal> {
         let response = self.transport.send(&request).map_err(|_| unavailable())?;
+        Self::decode_response(response)
+    }
+
+    fn decode_response(response: WireResponse) -> Result<(u16, Value), Refusal> {
         if response.body.len() > MAX_RESPONSE_BYTES {
             return Err(unavailable());
         }
@@ -675,7 +682,12 @@ impl<T: Transport> HttpAccountService<T> {
             self.credentials.product_session().map(|secret| Secret::new(format!("Bearer {}", secret.expose_secret()))),
         )?;
         self.push_auth(&mut request, "X-Execution-Session-Proof", self.credentials.execution_session_proof(operation))?;
-        let (status, value) = self.exchange(request)?;
+        let response = self.transport.send(&request).map_err(|_| unavailable())?;
+        if response.status() == 401 {
+            self.handoff.renewal_unauthorized(scope, operation);
+            return Err(refusal(RefusalCode::AuthRequired));
+        }
+        let (status, value) = Self::decode_response(response)?;
         if status != 200 {
             return Err(error_refusal(status, &value));
         }

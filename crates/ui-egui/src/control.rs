@@ -932,6 +932,9 @@ fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Re
     if !scope.is_provable() {
         return Some(Refusal::new(RefusalCode::AuthRequired, "the host has no provable account, installation and session binding"));
     }
+    if let Some(refusal) = req.operation.as_ref().and_then(|operation| app.account.renewal_refusal(scope, operation)) {
+        return Some(refusal);
+    }
     let now = clock.now();
     if let Some(trusted) = req.trusted.as_ref()
         && (!trusted.is_provable() || trusted.scope() != scope)
@@ -995,6 +998,9 @@ fn authority_refusal_with(app: &SolveApp, req: &ControlRequest, admission: &Admi
     let Some((scope, account, clock)) = host_authority(app) else {
         return Some(Refusal::new(RefusalCode::AuthUnavailable, "the host has no commit authority for this controlled entry"));
     };
+    if let Some(refusal) = app.account.renewal_refusal(scope, operation) {
+        return Some(refusal);
+    }
     if !scope.is_provable() {
         return Some(Refusal::new(RefusalCode::AuthRequired, "the host has no provable account, installation and session binding"));
     }
@@ -1058,7 +1064,8 @@ fn authority_refusal_with(app: &SolveApp, req: &ControlRequest, admission: &Admi
     if let CommitDecision::Drop { code } = gate.check() {
         return Some(Refusal::new(code, "the operation's authorization is no longer valid at this commit point"));
     }
-    None
+    // A renewal can complete concurrently with the authority reads above.
+    app.account.renewal_refusal(scope, operation)
 }
 
 /// The commit gate runs before every reply is written back. It returns the engine's decision; the

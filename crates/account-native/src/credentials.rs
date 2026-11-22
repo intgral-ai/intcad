@@ -338,6 +338,8 @@ pub struct ProductLogin {
 #[derive(Clone)]
 pub struct CredentialSession {
     inner: Arc<Mutex<SessionState>>,
+    // Separate from the keyring lock: desktop gates read this without doing credential I/O.
+    refused_renewals: Arc<Mutex<BTreeSet<(AuthenticatedHostScope, OperationId)>>>,
     /// An in-process revocation barrier, set synchronously before any keyring cleanup starts.
     /// Reads consult it without taking the session lock, so they fail immediately even while a
     /// worker holds the lock across a slow keyring delete. Only a completed cleanup for the
@@ -373,6 +375,14 @@ impl CredentialSession {
             })),
             revoked: Arc::new(AtomicBool::new(false)),
             epoch: Arc::new(AtomicU64::new(0)),
+            refused_renewals: Arc::new(Mutex::new(BTreeSet::new())),
+        }
+    }
+
+    pub fn renewal_refusal(&self, scope: &AuthenticatedHostScope, operation: &OperationId) -> Option<RefusalCode> {
+        match self.refused_renewals.lock() {
+            Ok(refusals) => refusals.contains(&(scope.clone(), operation.clone())).then_some(RefusalCode::AuthRequired),
+            Err(_) => Some(RefusalCode::AuthUnavailable),
         }
     }
 
@@ -1127,6 +1137,12 @@ impl WireCredentials for CredentialSession {
 }
 
 impl CredentialHandoff for CredentialSession {
+    fn renewal_unauthorized(&mut self, scope: &AuthenticatedHostScope, operation: &OperationId) {
+        if let Ok(mut refusals) = self.refused_renewals.lock() {
+            refusals.insert((scope.clone(), operation.clone()));
+        }
+    }
+
     fn initial_lease_proof(&mut self, authorization: &GrantId, _capability: Capability, proof: Secret) -> Result<(), Refusal> {
         let (mut state, epoch) = self.lock_for_handoff()?;
         let (_, _, digest) = bound_scope(&state).ok_or_else(handoff_refusal)?;

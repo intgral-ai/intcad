@@ -1019,6 +1019,10 @@ fn current_view(startup: &AccountStartup) -> AccountView {
 }
 
 impl AccountPort for DesktopAccountPort {
+    fn renewal_refusal(&self, scope: &AuthenticatedHostScope, operation: &solidcraft_engine::entitlement::OperationId) -> Option<RefusalCode> {
+        self.runtime.credentials.renewal_refusal(scope, operation)
+    }
+
     fn view(&self) -> AccountView {
         if let Some(account) = self.completed_sign_in_account() {
             return signed_in_view(&account);
@@ -2143,6 +2147,138 @@ mod tests {
         assert!(!port.runtime.credentials.product_session_active());
         assert!(!port.view().signed_in);
         assert_eq!(port.begin_device_code().unwrap_err().code, RefusalCode::AuthRequired);
+    }
+
+    #[test]
+    fn a_wire_401_stops_the_original_control_operation_before_lease_expiry() {
+        use solidcraft_engine::entitlement::GrantId;
+
+        struct FixtureBilling;
+        impl solidcraft_engine::entitlement::BillingPort for FixtureBilling {
+            fn admit(&mut self, _: &OperationId, capability: Capability, _: EntryCategory) -> Result<Grant, Refusal> {
+                Ok(Grant::from_server(GrantId::new("grant_desktop_test"), capability, MonotonicInstant::from_millis(60_000)))
+            }
+            fn commit(&mut self, _: &OperationId, result: BillingResult) -> Result<BillingResult, Refusal> {
+                Ok(result)
+            }
+            fn release(&mut self, _: &OperationId, _: RefusalCode) -> Result<(), Refusal> {
+                Ok(())
+            }
+        }
+        struct Clock;
+        impl MonotonicClock for Clock {
+            fn now(&self) -> MonotonicInstant {
+                MonotonicInstant::from_millis(20_000)
+            }
+            fn wall_now(&self) -> SystemTime {
+                UNIX_EPOCH
+            }
+        }
+        let mut session = active_session();
+        let scope = session.authenticated_scope().unwrap();
+        let (mut req, _) = solidcraft_ui_egui::ControlRequest::trusted_control("engine.execute", json!({"command":"document.inspect"}));
+        let operation = req.operation().unwrap().clone();
+        CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("test_proof")).unwrap();
+        let make_service = |responses| {
+            HttpAccountService::with_transport(
+                ScriptedProduct::scripted(responses),
+                WireConnection::new("https://product.invalid", "1.0.0").unwrap(),
+                Box::new(session.clone()),
+                Box::new(session.clone()),
+                Box::new(Clock),
+            )
+        };
+        let unauthorized = || Ok(WireResponse::new(401, br#"{"error":{"code":"AUTH_REQUIRED"}}"#.to_vec()));
+        let mut renewal = make_service(vec![unauthorized()]);
+        let runtime = AccountRuntime::with_session(session.clone());
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let startup = runtime.startup();
+        install(&mut app, runtime, startup);
+        let mut budget = BudgetTable::unverified_default();
+        budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(1));
+        app.install_billing(Box::new(FixtureBilling), budget);
+        app.install_commit_authority(scope.clone(), Box::new(InertService), Box::new(Clock));
+
+        assert_eq!(
+            renewal.renew(&scope, &operation, &GrantId::new("grant_desktop_test"), Capability::Control).unwrap_err().code,
+            RefusalCode::AuthRequired
+        );
+        let control::Outcome::Done(reply) = control::handle(&mut app, &egui::Context::default(), &mut req) else {
+            panic!("a rejected operation must return an immediate refusal");
+        };
+        assert_eq!(reply["errorDetails"]["code"], "AuthRequired", "{reply}");
+
+        let new_request = || solidcraft_ui_egui::ControlRequest::trusted_control("document.inspect", json!({})).0;
+        let mut finishing = new_request();
+        let finishing_id = finishing.operation().unwrap().clone();
+        CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &finishing_id, Secret::new("test_proof")).unwrap();
+        let worker_session = session.clone();
+        let worker_scope = scope.clone();
+        let callback = move || {
+            let mut renewal = HttpAccountService::with_transport(
+                ScriptedProduct::scripted(vec![unauthorized()]),
+                WireConnection::new("https://product.invalid", "1.0.0").unwrap(),
+                Box::new(worker_session.clone()),
+                Box::new(worker_session.clone()),
+                Box::new(Clock),
+            );
+            assert_eq!(
+                renewal.renew(&worker_scope, &finishing_id, &GrantId::new("grant_desktop_test"), Capability::Control).unwrap_err().code,
+                RefusalCode::AuthRequired
+            );
+        };
+        app.install_commit_authority(
+            scope.clone(),
+            Box::new(RenewalTestAuthority { on_third_lookup: Box::new(callback), lookups: AtomicUsize::new(0) }),
+            Box::new(Clock),
+        );
+        let control::Outcome::Done(reply) = control::handle(&mut app, &egui::Context::default(), &mut finishing) else {
+            panic!("a rejected result must return an immediate refusal");
+        };
+        assert_eq!(reply["errorDetails"]["code"], "AuthRequired", "{reply}");
+        assert!(reply["error"].as_str().unwrap().starts_with("refused before writing the result"), "{reply}");
+
+        let control::Outcome::Done(reply) = control::handle(&mut app, &egui::Context::default(), &mut new_request()) else {
+            panic!("an unrelated inspection must return its result");
+        };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(session.authenticated_scope(), Some(scope), "401 on one operation does not sign out the session");
+    }
+
+    struct RenewalTestAuthority {
+        on_third_lookup: Box<dyn Fn() + Send + Sync>,
+        lookups: AtomicUsize,
+    }
+
+    impl AccountService for RenewalTestAuthority {
+        fn status(&self) -> Result<Availability, Refusal> {
+            Ok(Availability { online: true, version_supported: true, model_available: true, balance: 10, held: 0, reasons: vec![] })
+        }
+
+        fn authorize(&mut self, scope: &AuthenticatedHostScope, capability: Capability) -> Result<Grant, Refusal> {
+            InertService.authorize(scope, capability)
+        }
+
+        fn begin(
+            &mut self,
+            scope: &AuthenticatedHostScope,
+            operation: &OperationId,
+            capability: Capability,
+            entry: EntryCategory,
+        ) -> Result<Admission, Refusal> {
+            InertService.begin(scope, operation, capability, entry)
+        }
+
+        fn finalize(&mut self, scope: &AuthenticatedHostScope, operation: &OperationId, result: BillingResult) -> Result<OperationStatus, Refusal> {
+            InertService.finalize(scope, operation, result)
+        }
+
+        fn operation(&self, _scope: &AuthenticatedHostScope, _operation: &OperationId) -> Result<OperationStatus, Refusal> {
+            if self.lookups.fetch_add(1, Ordering::SeqCst) == 2 {
+                (self.on_third_lookup)();
+            }
+            Ok(OperationStatus::Held)
+        }
     }
 
     struct InertService;
