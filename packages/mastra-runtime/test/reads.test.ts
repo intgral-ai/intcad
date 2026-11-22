@@ -22,12 +22,13 @@ const ASK = [
 /** A permission request as Mastra Code sends it (`acp/event-mapper.js` of SDK 1.19.1). */
 const request = (title: string, args: unknown, options = ASK): Json => ({ sessionId: "s1", toolCall: { toolCallId: "c1", title, rawInput: typeof args === "string" ? args : JSON.stringify(args) }, options });
 
-test("permissionRules: the app's tools that only look run unasked in every session, the four file reads only with a project, and no category is allowed", () => {
+test("permissionRules: the app's tools that only look and the task tools run unasked in every session, the four file reads only with a project, and no category is allowed", () => {
   const denied = { ask_user: "deny", request_access: "deny" };
   const looks = Object.fromEntries(["list_commands", "describe_command", "inspect_design", "measure", "body_topology", "running", "pending", "skill_reference"].map((name) => [`intcad-app_${name}`, "allow"]));
+  const tasks = { task_write: "allow", task_update: "allow", task_complete: "allow", task_check: "allow" };
   assert.deepEqual(FENCED_READS, ["view", "find_files", "search_content", "file_stat"]);
-  assert.deepEqual(permissionRules(null), { categories: {}, tools: { ...denied, ...looks } });
-  assert.deepEqual(permissionRules("/a/project"), { categories: {}, tools: { ...denied, ...looks, view: "allow", find_files: "allow", search_content: "allow", file_stat: "allow" } });
+  assert.deepEqual(permissionRules(null), { categories: {}, tools: { ...denied, ...looks, ...tasks } });
+  assert.deepEqual(permissionRules("/a/project"), { categories: {}, tools: { ...denied, ...looks, ...tasks, view: "allow", find_files: "allow", search_content: "allow", file_stat: "allow" } });
   for (const tool of ["intcad-app_execute", "intcad-app_batch", "intcad-app_save", "intcad-app_set_parameter", "intcad-app_crash_reports", "execute_command", "write_file", "lsp_inspect", "web_search"]) {
     assert.equal(permissionRules("/a/project").tools[tool], undefined, tool);
   }

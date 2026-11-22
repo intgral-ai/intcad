@@ -22,10 +22,11 @@ its SDK and unchanged, with what the Assistant's Connections page needs added in
   It also hands Mastra what the app sends with a session: its note, and a project (below);
 - `brief.mjs`: the project brief, the list of the project's files a session on a project is told;
 - `reads.mjs`: what runs without asking the user (below), and the connection that answers itself
-  the permission requests of the app's commands that only read.
+  the permission requests of the app's commands that only read;
+- `plan.mjs`: plan first, the first change of a reply waiting for a plan the user has seen (below).
 
-The tests are `../test/connections.test.ts`, `../test/skills.test.ts`, `../test/brief.test.ts` and
-`../test/reads.test.ts`. They run these files
+The tests are `../test/connections.test.ts`, `../test/skills.test.ts`, `../test/brief.test.ts`,
+`../test/reads.test.ts` and `../test/plan.test.ts`. They run these files
 against stand-ins: no test signs in anywhere, opens a browser or reads a key.
 
 This folder is not part of the runtime artifact that `scripts/runtime-artifact.mjs` builds and
@@ -152,7 +153,8 @@ With a project:
   instructions. It asks for absolute paths (a relative one would be the session's own folder,
   which the tools do not reach). It also says how to read the latest DFM report (`inspect.dfm`)
   and the project's settings (`project.inspect`), and how to work, in four lines: start from the
-  files, a numbered plan first, check each requirement after a change, ask when requirements are
+  files, the plan as a task list (`task_write`) before the first change (it says this holds where
+  Mastra Code's own prompt says to just do it), check each requirement after a change, ask when requirements are
   missing or in conflict. It is made when the session opens; a file added later is found with
   the file tools.
 - The skill `intcad-context` says how to work from it: find the context first, plan in words,
@@ -194,6 +196,34 @@ send, and asks in the panel before one that names a file. Everything else asks t
 write, a command, `lsp_inspect`, the web tools (a fetch can carry what was read to anywhere), and
 the app's tools and commands that change the design or write files (`batch` too, even when every
 step only reads).
+
+### Plan first (`plan.mjs`)
+
+Decided on 2026-11-22 (INT-1473 B2). In a chat on a project, the first change of a reply waits until
+the user has been shown a plan, and the plan is the agent's task list. Asked in words, in the brief
+and in the skill, the model never wrote a plan: 0 of 10 real runs of "fix this part" showed one
+before the first change. Mastra Code's own prompt says "Just do it" and "Don't announce what you're
+about to do", and the model planned in its thinking, which the user never sees. Held and asked for
+a written plan, it planned in its thinking again, 4 to 11 times a run, before writing one.
+
+- The plan is Mastra Code's task list (`task_write`), which its own prompt asks for on a task of
+  several steps. The agent sends each `task_updated` event, which Mastra Code's ACP agent leaves
+  out, to the app as an ACP `plan` update: the app shows it as the reply's plan, a dot per step
+  that fills as the step is under way and done. The task tools run without a card (`TASK_TOOLS`,
+  `reads.mjs`): they change only that list. A numbered line in what the agent says counts as a
+  plan too.
+- A change is a call of the app's tools that changes the design or writes a file (`execute` with a
+  command that does not only read, `batch`, `set_parameter`, `undo`, `redo`, `new_design`, `open`,
+  `save`, `export`), or one of Mastra's file writes. Reads, screenshots, the shell, web tools,
+  skills and the task tools are not held.
+- A plan counts from the user's last message on. A plan the previous reply ended on, with no change
+  after it, carries over to the next message, so "plan, then the user's OK, then the change" needs
+  no second plan. A single change needs one task.
+- A change before a plan is declined by the agent itself (the user is not asked) with
+  `PLAN_FIRST` as the reason, which the model reads in place of Mastra's "not approved by the
+  user": record the plan with `task_write`, then make the call again. The reason goes with the
+  decline through Mastra's `declineContext` (`agent.mjs` wraps the session's
+  `respondToToolApproval`); where that is not there, nothing is held.
 
 Known and left as they are:
 - A new skill the model writes into the agent's home (it asks first) is offered to later

@@ -120,6 +120,8 @@ const textOf = (message) => (typeof message?.content === "string" ? message.cont
  *   "ask for access to: <folder>"                       asks for `request_access`;
  *   "put the file: <path> :: <text>"                    asks for the file-writing tool with that text;
  *   "call <tool> with <json>"                           asks for that tool with those arguments;
+ *   "say <text>[ then call <tool> with <json>]"         says the text (`\n` for a line break), then asks for that tool;
+ *   "plan with tasks: call <tool> with <json>"          asks for that tool; held for a plan, records it with `task_write`, then calls again;
  *   a tool's result                                     says whether the result had MARK in it, or
  *                                                       else the first heading (`# …`) it had;
  *   anything else                                       a plain sentence.
@@ -162,15 +164,47 @@ export function modelService({ keep = () => {}, status = () => 200 } = {}) {
         response.write(chunk({}, "stop"));
         response.end("data: [DONE]\n\n");
       };
-      const call = (tool, args) => {
+      const call = (tool, args, text, thought) => {
         for (const name of tool.parameters?.required ?? []) args[name] ??= "check";
+        if (thought) response.write(chunk({ role: "assistant", content: null, reasoning_content: thought }));
+        if (text) response.write(chunk({ role: "assistant", content: text }));
         response.write(chunk({ role: "assistant", content: null, tool_calls: [{ index: 0, id: `call_${seen.requests}`, type: "function", function: { name: tool.name, arguments: JSON.stringify(args) } }] }));
         response.write(chunk({}, "tool_calls"));
         response.end("data: [DONE]\n\n");
       };
       const messages = wanted.messages ?? [];
       const last = messages[messages.length - 1] ?? {};
+      // After "plan with tasks: …" recorded its task list, the held call again. Mastra Code puts a
+      // message of its own after the task tool's result (`<current-task-list …>`, as the user), so
+      // this goes by the stand-in's own last call and the user's last real message.
+      const lastCall = messages.findLast((message) => message.role === "assistant" && message.tool_calls?.length)?.tool_calls?.[0]?.function;
+      const firstAsked = textOf(messages.findLast((message) => message.role === "user" && !textOf(message).trimStart().startsWith("<current-task-list")));
+      if (wanted.stream && lastCall?.name === "task_write" && firstAsked.startsWith("plan with tasks: ")) {
+        const again = messages.filter((message) => message.role === "assistant" && message.tool_calls?.length).map((message) => message.tool_calls[0].function).findLast((fn) => fn.name !== "task_write");
+        if (again) {
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          return call({ name: again.name }, JSON.parse(again.arguments || "{}"));
+        }
+      }
       if (last.role === "tool") {
+        // A change the plan gate held (agent/plan.mjs): do as the real model did, think, write the
+        // plan and make the same call again, in one message. Twice held in one turn, give up in words.
+        const held = (message) => message.role === "tool" && textOf(message).includes("Intcad shows the user the plan");
+        const sinceUser = messages.slice(messages.findLastIndex((message) => message.role === "user") + 1);
+        const calls = [...messages].reverse().filter((message) => message.role === "assistant" && message.tool_calls?.length).map((message) => message.tool_calls[0].function);
+        const retry = calls.find((fn) => fn.name !== "task_write");
+        // "plan with tasks: …": the plan is the task list, then the held call again.
+        const withTasks = firstAsked.startsWith("plan with tasks: ");
+        const taskTool = (wanted.tools ?? []).map((tool) => tool.function ?? tool).find((tool) => tool.name === "task_write");
+        if (withTasks && held(last) && taskTool && sinceUser.filter(held).length < 2) {
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          return call(taskTool, { tasks: [{ id: "t1", content: "Fillet the edge, 3 mm; check with measure", status: "pending", activeForm: "Filleting the edge" }] }, "", "Held for a plan: record it as tasks.");
+        }
+        if (held(last) && retry && sinceUser.filter(held).length < 2) {
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          return call({ name: retry.name }, JSON.parse(retry.arguments || "{}"), "Plan:\n1. Fillet the edge, 3 mm; check with measure.\n", "The change was held for a plan; write it, then call again.");
+        }
+        if (held(last)) return say("Held twice: the plan did not reach the user.");
         const heading = /^# (.+)$/mu.exec(textOf(last));
         const refused = /outside the workspace|PermissionError|Permission denied|Access denied/iu.test(`${textOf(last)} ${JSON.stringify(last.content ?? "")}`);
         say(textOf(last).includes(MARK) || JSON.stringify(last.content ?? "").includes(MARK) ? `The tool answered with ${MARK}.` : refused ? "The tool refused." : heading ? `The tool answered with the heading "${heading[1].trim()}".` : "The tool answered without the expected text.");
@@ -186,7 +220,7 @@ export function modelService({ keep = () => {}, status = () => 200 } = {}) {
       const read = /read the file: ([^\n]+)/u.exec(asked);
       const access = /ask for access to: ([^\n]+)/u.exec(asked);
       const put = /^put the file: (.+?) :: ([\s\S]+)$/u.exec(asked);
-      const named = /^call ([a-z_-]+) with (\{[\s\S]*\})$/u.exec(asked);
+      const named = /^(?:plan with tasks: )?call ([a-z_-]+) with (\{[\s\S]*\})$/u.exec(asked);
       // Mastra Code's own names for its tools, as it offers them (SDK 1.19.1), and Mastra's for skills.
       const commandTool = find(/^execute_command$/u);
       const writeTool = find(/^write_file$/u);
@@ -200,6 +234,14 @@ export function modelService({ keep = () => {}, status = () => 200 } = {}) {
         response.write(chunk({ content: "The start of a slow answer. " }));
         // Only the client can end this response before teardown.
         return;
+      }
+      const spoken = /^say ([\s\S]+?)(?: then call ([a-z_-]+) with (\{[\s\S]*\}))?$/u.exec(asked);
+      if (spoken) {
+        const text = spoken[1].replaceAll("\\n", "\n");
+        const spokenTool = spoken[2] ? find(new RegExp(`^${spoken[2]}$`, "u")) : null;
+        if (!spokenTool) return say(spoken[2] ? `${text} No such tool was offered.` : text);
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        return call(spokenTool, JSON.parse(spoken[3]), text);
       }
       const namedTool = named ? find(new RegExp(`^${named[1]}$`, "u")) : null;
       const [tool, args] = put && writeTool ? [writeTool, { path: put[1].trim(), content: put[2] }] : named && namedTool ? [namedTool, JSON.parse(named[2])] : command && commandTool ? [commandTool, { command: command[1].trim() }] : write && writeTool ? [writeTool, { path: write[1].trim(), content: MARK }] : skill && skillTool ? [skillTool, { name: skill[1] }] : read && readTool ? [readTool, { path: read[1].trim() }] : access && accessTool ? [accessTool, { path: access[1].trim(), reason: "the smoke run asks" }] : /measure the part/u.test(asked) && find(/measure_part/u) ? [find(/measure_part/u), { unit: "mm" }] : [];
@@ -611,6 +653,57 @@ async function main(args) {
     return unasked && asked && JSON.stringify(out.serverSaw) === JSON.stringify([["inspect_design", null], ["execute", "inspect.measure"], ["execute", " Model.Edges "]]);
   });
 
+  // Plan first (agent/plan.mjs): in a chat on a project, a change before any plan is held, not
+  // asked about, and the model reads why. The stand-in then does what the real model did once it
+  // wrote its plan: thinks, writes the plan and calls again in one message; the plan reaches the
+  // user and the call then asks. A plan the last reply ended on, with no change after it, carries
+  // over to the next message, and only to that one.
+  const planCalls = join(work, "mcp-plan-calls.log");
+  await run("P1 plan first: a change before a plan is held and the model is told why; its plan reaches the user and the call then asks", { app: {}, mcpServers: [{ name: "intcad-app", command: process.execPath, args: [self, "--mcp-server", planCalls], env: [] }] }, async ({ out, prompt, service }) => {
+    const change = 'call intcad-app_execute with {"command":"solid.fillet","params":{"radius":3}}';
+    const seenByServer = () => (existsSync(planCalls) ? readFileSync(planCalls, "utf8").split(/\r?\n/u).filter(Boolean).length : 0);
+    // Held calls so far, as the model read them back (the conversation's tool results).
+    const heldSoFar = () => (service.seen.bodies.at(-1)?.messages ?? []).filter((message) => message.role === "tool" && textOf(message).includes("Intcad shows the user the plan")).length;
+    const turns = {};
+    const step = async (key, text) => {
+      const before = heldSoFar();
+      turns[key] = await prompt(text);
+      turns[key].held = heldSoFar() - before;
+      turns[key].server = seenByServer();
+    };
+    await step("held", change);
+    out.planShown = turns.held.answer.includes("1. Fillet the edge");
+    await step("planned", `say Plan:\\n1. Fillet the edge, 3 mm; check with measure. then ${change}`);
+    await step("planOnly", "say 1. Move the cable hole to x 110.\\n2. Check every requirement.\\nShall I go ahead?");
+    await step("carried", change);
+    await step("heldAgain", change);
+    await step("read", "call intcad-app_inspect_design with {}");
+    out.turns = Object.fromEntries(Object.entries(turns).map(([key, turn]) => [key, { stop: turn.stop, tools: turn.tools, asked: turn.asked, held: turn.held, server: turn.server, answer: turn.answer.slice(0, 80) }]));
+    const ended = Object.values(turns).every((turn) => turn.stop === "end_turn" && turn.askedStandIn);
+    const shape = Object.values(turns).map((turn) => [turn.held, turn.asked, turn.server]);
+    // held, then asked; planned: asked; plan only: nothing; carried: asked, not held; held again, then asked; a read: nothing.
+    return ended && out.planShown && JSON.stringify(shape) === JSON.stringify([[1, 1, 1], [0, 1, 2], [0, 0, 2], [0, 1, 3], [1, 1, 4], [0, 0, 5]]);
+  });
+
+  // The plan as a task list (agent/plan.mjs, decided 2026-11-22): held, the stand-in records its
+  // plan with `task_write`, which runs without a card and reaches the app as an ACP `plan`; the
+  // change, called again, then asks.
+  const taskCalls = join(work, "mcp-task-calls.log");
+  await run("P2 plan first as a task list: the list runs unasked, reaches the app as the plan, and the change then asks", { app: {}, mcpServers: [{ name: "intcad-app", command: process.execPath, args: [self, "--mcp-server", taskCalls], env: [] }] }, async ({ out, prompt, agent }) => {
+    const from = agent.notes.length;
+    const turn = await prompt('plan with tasks: call intcad-app_execute with {"command":"solid.fillet","params":{"radius":3}}');
+    const notes = agent.notes.slice(from);
+    const plans = notes.filter((note) => note.method === "session/update" && note.params?.update?.sessionUpdate === "plan").map((note) => note.params.update.entries);
+    const asks = notes.filter((note) => note.method === "session/request_permission").map((note) => note.params?.toolCall?.title);
+    out.turn = { stop: turn.stop, tools: turn.tools, asked: turn.asked, answer: turn.answer };
+    out.plans = plans;
+    out.asks = asks;
+    out.server = existsSync(taskCalls) ? readFileSync(taskCalls, "utf8").split(/\r?\n/u).filter(Boolean).length : 0;
+    // Held, task_write (no card), the plan shown, then the change's card and the change.
+    const shownFirst = plans.length > 0 && plans[0][0]?.content === "Fillet the edge, 3 mm; check with measure";
+    return turn.stop === "end_turn" && turn.tools.includes("task_write") && shownFirst && JSON.stringify(asks) === JSON.stringify(["intcad-app_execute"]) && out.server === 1;
+  });
+
   // The skills come from the package's copies, or from the repository when the entry is the
   // repository's own; what the agent installed in its home must be those files.
   const packaged = join(dirname(entry), "..", "skills");
@@ -704,14 +797,19 @@ async function main(args) {
 
   let refuseProjectWrites = true;
   const toolOf = (message) => message.params?.toolCall?.title ?? "";
+  // In a chat on a project a write waits for a plan (agent/plan.mjs, case P1): the cases about
+  // writes show one first, in a reply of its own, so the write reaches its card and the fence.
+  const PLAN_LINE = "say 1. Change the file, then read it back to check.";
   await run("V4 a change to a project file is left out when refused and written when allowed", { app: {}, prepare: projectFiles, permission: (message) => (toolOf(message) === "write_file" && refuseProjectWrites ? refuse(message) : allowOnce(message)) }, async (context) => {
     const { out, prompt, project } = context;
     const file = join(project, "requirements.md");
     const original = readFileSync(file);
     out.read = await prompt(`read the file: ${file}`);
+    await prompt(PLAN_LINE);
     out.refused = await prompt(`write the file: ${file}`);
     out.keptByteForByte = readFileSync(file).equals(original) && context.unchanged();
     refuseProjectWrites = false;
+    await prompt(PLAN_LINE);
     out.allowed = await prompt(`write the file: ${file}`);
     out.written = readFileSync(file, "utf8").trim() === MARK;
     // A read of a project file asks nothing (agent/reads.mjs, FENCED_READS); a change asks.
@@ -817,7 +915,10 @@ async function main(args) {
     const hooks = JSON.stringify({ SessionStart: [{ type: "command", command: touch("planted-session-hook.txt") }], UserPromptSubmit: [{ type: "command", command: touch("planted-prompt-hook.txt") }], PreToolUse: [{ type: "command", command: touch("planted-tool-hook.txt") }] });
     // The model tries, by relative paths, which land in the session's own folder: every write is refused.
     out.tries = [];
-    for (const [path, text] of [["AGENTS.md", agents], [".mcp.json", mcp], [".mastracode/hooks.json", hooks]]) out.tries.push(await prompt(`put the file: ${path} :: ${text}`));
+    for (const [path, text] of [["AGENTS.md", agents], [".mcp.json", mcp], [".mastracode/hooks.json", hooks]]) {
+      await prompt(PLAN_LINE);
+      out.tries.push(await prompt(`put the file: ${path} :: ${text}`));
+    }
     const folders = readdirSync(join(data, "sessions")).filter((name) => name.startsWith("s-")).map((name) => join(data, "sessions", name));
     out.sessionFolders = folders.length;
     out.writtenThere = folders.filter((folder) => [".mcp.json", "AGENTS.md", join(".mastracode", "hooks.json")].some((file) => existsSync(join(folder, file)))).length;

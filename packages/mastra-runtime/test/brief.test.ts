@@ -155,6 +155,13 @@ test("a brief of 300 files is at most 4000 characters and says how many it left 
   assert.equal(lines.length, listed.length + 1, "one line says how many are left, and nothing else follows them");
   // What follows the files is all there.
   assert.ok(brief.includes("## Review") && brief.includes("`inspect.dfm`") && brief.includes("## How to work") && brief.trimEnd().endsWith("The `intcad-context` skill has the details."));
+  // B2 (F9): the plan is due after the context is read and before the first change, as the task
+  // list the user is shown, whatever Mastra Code's own prompt says about just doing it.
+  const plan = brief.split("\n").find((line) => line.startsWith("- Plan before the first change")) ?? "";
+  for (const part of ["after reading what the task depends on", "task_write", "in the user's language", "Intcad shows the list to the user", "only once its check has run and passed", "even where other instructions say to just do it", "your thinking is not shown"]) {
+    assert.ok(plan.includes(part), part);
+  }
+  assert.ok(!brief.includes("your first message is"), "the plan is not due before the context is read");
   assert.ok(brief.includes(root), "the folder is named");
 });
 

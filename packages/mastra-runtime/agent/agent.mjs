@@ -1,7 +1,7 @@
 // Mastra Code's ACP agent with what Intcad adds: the connection methods, a model list a person can
 // read (only models one can talk to, newest first), sessions that follow a sign-in or sign-out
-// without being opened again, a reason on a turn that fails, and no card for the app's commands
-// that only read.
+// without being opened again, a reason on a turn that fails, no card for the app's commands that
+// only read, and in a chat on a project no change before a plan (plan.mjs).
 //
 // `Base` is Mastra Code's `MastraCodeAcpAgent`. It is passed in so this file imports nothing of
 // Mastra's and the tests can stand in for it.
@@ -9,6 +9,7 @@
 import { METHODS } from './connections.mjs';
 import { classifyFailure } from './problems.mjs';
 import { isChatModel, newestFirst, orderModelOptions } from './models.mjs';
+import { PlanGate, planEntries } from './plan.mjs';
 import { askingOnlyWhenNeeded } from './reads.mjs';
 
 const INVALID_PARAMS = -32602;
@@ -25,9 +26,18 @@ const BUSY = -32000;
  */
 export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns }) {
   return class IntcadAgent extends Base {
-    /** The app's `execute` with a command that only reads runs without a card (reads.mjs). */
+    #gate;
+
+    /**
+     * The app's `execute` with a command that only reads runs without a card (reads.mjs), and in a
+     * chat on a project the first change of a reply waits for a plan (plan.mjs).
+     */
     constructor(connection, ...rest) {
-      super(askingOnlyWhenNeeded(connection), ...rest);
+      let self;
+      const gate = new PlanGate(sessionId => Boolean(self?.sessions?.get(sessionId)?.plansFirst));
+      super(askingOnlyWhenNeeded(connection, gate), ...rest);
+      self = this;
+      this.#gate = gate;
     }
 
     /** The sign-ins are offered on the Connections page, through the methods below, not as ACP sign-in methods. */
@@ -73,8 +83,46 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       // also go. Set here, on the session's own thread: Mastra Code opens a new thread for the
       // session after building it, and the thread starts with no such folder of its own.
       if (entry.project) await entry.session.state.set({ sandboxAllowedPaths: [entry.project] });
+      // Plan first (plan.mjs): a change the gate held is declined with its reason, which is what the
+      // model reads in place of Mastra's "not approved by the user". Without a way to give the
+      // reason, nothing is held: a bare decline would read as the user's refusal.
+      const session = entry.session;
+      if (entry.project && typeof session?.respondToToolApproval === 'function') {
+        const respond = session.respondToToolApproval.bind(session);
+        const gate = this.#gate;
+        session.respondToToolApproval = answer => {
+          const reason = answer?.decision === 'decline' ? gate.reasonFor(answer.toolCallId) : undefined;
+          return respond(reason ? { ...answer, declineContext: { ...(answer.declineContext ?? {}), reason } } : answer);
+        };
+        entry.plansFirst = true;
+      }
+      this.#showTasks(entry, response.sessionId);
       await this.#settle(entry, true);
       return { ...response, configOptions: this.configOptions(entry), ...(response.models ? { models: { ...response.models, currentModelId: entry.session.model.get() ?? '' } } : {}) };
+    }
+
+    /**
+     * The agent's task list, shown as the reply's plan. Mastra Code's ACP agent leaves its
+     * `task_updated` event out; each one is sent here as an ACP `plan` update, which the app shows
+     * with a dot per step, and told to the plan gate, for which a task list is the plan (plan.mjs).
+     */
+    #showTasks(entry, sessionId) {
+      if (typeof entry.session?.subscribe !== 'function') return;
+      const gate = this.#gate;
+      const unsubscribe = entry.session.subscribe(event => {
+        if (event?.type !== 'task_updated') return;
+        gate.listed(sessionId, event.tasks);
+        const entries = planEntries(event.tasks);
+        if (!entries.length) return;
+        this.connection.sessionUpdate({ sessionId, update: { sessionUpdate: 'plan', entries } }).catch(error => process.stderr.write(`[intcad] could not show the task list: ${error}\n`));
+      });
+      if (typeof unsubscribe === 'function') {
+        const previous = entry.unsubscribe;
+        entry.unsubscribe = () => {
+          unsubscribe();
+          previous?.();
+        };
+      }
     }
 
     /**
@@ -111,6 +159,7 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       if (entry?.usable?.length && !entry.usable.includes(using)) {
         throw new RequestError(INTERNAL, `no connection serves ${using}`, { intcad: { kind: 'model', prefix: connections.prefixOf(using, { known: true }) } });
       }
+      this.#gate.prompted(request.sessionId);
       try {
         return await super.prompt(request);
       } catch (error) {

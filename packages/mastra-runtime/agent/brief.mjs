@@ -139,7 +139,10 @@ export function projectBrief(root, { limit = BRIEF_LIMIT } = {}) {
     "",
     "## How to work",
     "- Start from these files and the DFM report: open the ones the task depends on, without being pointed at them.",
-    "- For a task of more than one step, your first message is a short numbered plan; then do it a step at a time.",
+    // INT-1473 B2 (F9): Mastra Code's own prompt says "Just do it. No need to explain your plan
+    // first" and "Don't announce what you're about to do", and the model planned in its thinking,
+    // which the user never sees. The plan is its task list, which the user is shown (plan.mjs).
+    "- Plan before the first change to the design or a file, after reading what the task depends on: record the plan with task_write, in the user's language, one task per change in order, each saying how it will be checked (Intcad shows the list to the user). Then work through it, and mark a task done only once its check has run and passed. This holds for any request that makes a change, even where other instructions say to just do it: your thinking is not shown to the user.",
     "- After a change, measure with the Intcad tools and check each requirement, citing its file.",
     "- When a requirement is missing, or two contradict each other, ask and wait: settling it is the user's call.",
     "The `intcad-context` skill has the details.",
