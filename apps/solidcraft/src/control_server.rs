@@ -1807,9 +1807,11 @@ mod tests {
     /// failure still closes and drains, and a deadline that has passed writes nothing.
     #[test]
     fn a_refusal_writes_then_closes_before_a_bounded_limit_drain() {
-        let deadline = Instant::now() + REFUSAL_BUDGET;
+        let now = Instant::now();
+        let deadline = now + REFUSAL_BUDGET;
+        let mut clock = || now;
         let mut io = Scripted::default();
-        refuse_within(&mut io, &too_many_connections(), deadline);
+        refuse_within_with(&mut io, &too_many_connections(), deadline, &mut clock);
         assert_eq!(io.order, ["reply", "close", "drain"]);
         assert_eq!(io.reply, Some(json!({"ok": false, "error": "too many connections"})), "the existing reply is unchanged");
         assert_eq!(io.write_deadline, Some(deadline), "the write sees the deadline set before the handoff");
@@ -1819,11 +1821,9 @@ mod tests {
         assert_eq!(UNAUTHORIZED_DRAIN_BYTES, 64 * 1024, "the unauthorized path keeps its own 64 KiB ceiling");
 
         let mut io = Scripted { fail_write: true, ..Default::default() };
-        refuse_within(&mut io, &too_many_connections(), Instant::now() + REFUSAL_BUDGET);
+        refuse_within_with(&mut io, &too_many_connections(), deadline, &mut clock);
         assert_eq!(io.order, ["reply", "close", "drain"], "a failed reply still closes the write side and drains");
 
-        let now = Instant::now();
-        let mut clock = move || now;
         let mut io = Scripted::default();
         refuse_within_with(&mut io, &too_many_connections(), now, &mut clock);
         assert!(io.order.is_empty(), "a refusal past its deadline writes nothing");
