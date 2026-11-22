@@ -291,8 +291,8 @@ fn chip_tip(app: &SolveApp, view: &AccountView) -> String {
 
 /// The provider code, verification address and the two separate explicit actions. Shared by the
 /// account menu and the Chat/Review inline prompts so both surfaces can finish the same flow.
-/// The browser action is requested only on a platform-provenance click; app-injected automation
-/// therefore cannot launch it and fails closed.
+/// The browser action is requested only on the platform gesture that activated this button; an
+/// app-injected press, a mixed gesture, or a replayed synthetic key cannot launch it.
 fn waiting_sign_in_controls(app: &mut SolveApp, ui: &mut Ui, view: &AccountView, browser_handle: &str, cancel_handle: &str) {
     let Some(code) = &view.sign_in_prompt else { return };
     let t = Tokens::get();
@@ -301,7 +301,7 @@ fn waiting_sign_in_controls(app: &mut SolveApp, ui: &mut Ui, view: &AccountView,
     ui.horizontal(|ui| {
         let response = button(ui, app.tr("account.sign_in_browser"), Button::Primary);
         publish(browser_handle, &response);
-        if response.clicked() && app.activation_from_platform {
+        if app.trusted_click(&response) {
             app.account.request(Action::OpenSignInBrowser);
         }
         ui.add_space(t.space_8);

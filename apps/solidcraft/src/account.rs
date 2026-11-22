@@ -729,6 +729,9 @@ impl DesktopAccountPort {
     /// worker. The worker's result is applied only for its own generation, so a late result from
     /// an older switch can never clear a newer cleanup state.
     fn revoke(&mut self, event: LifecycleEvent) -> Result<(), Refusal> {
+        if !self.secure_store {
+            return Err(account_unavailable("no secure credential store is available"));
+        }
         if self.logout == StartupLogout::Unreadable {
             return Err(account_unavailable("the account storage state cannot be read"));
         }
@@ -1117,6 +1120,9 @@ mod tests {
         block_get: Arc<Mutex<Option<Receiver<()>>>>,
         block_set: Arc<Mutex<Option<(String, Receiver<()>)>>>,
         fail_set: Arc<Mutex<Option<String>>>,
+        persistent: Arc<AtomicBool>,
+        set_calls: Arc<AtomicUsize>,
+        delete_calls: Arc<AtomicUsize>,
         delete_waiting: Arc<AtomicUsize>,
         get_waiting: Arc<AtomicUsize>,
         set_waiting: Arc<AtomicUsize>,
@@ -1132,6 +1138,9 @@ mod tests {
                 block_get: Arc::new(Mutex::new(None)),
                 block_set: Arc::new(Mutex::new(None)),
                 fail_set: Arc::new(Mutex::new(None)),
+                persistent: Arc::new(AtomicBool::new(true)),
+                set_calls: Arc::new(AtomicUsize::new(0)),
+                delete_calls: Arc::new(AtomicUsize::new(0)),
                 delete_waiting: Arc::new(AtomicUsize::new(0)),
                 get_waiting: Arc::new(AtomicUsize::new(0)),
                 set_waiting: Arc::new(AtomicUsize::new(0)),
@@ -1161,6 +1170,15 @@ mod tests {
             *self.fail_set.lock().unwrap() = key.map(str::to_owned);
         }
 
+        /// Model a failed secure-store probe without changing what is readable.
+        fn set_persistent(&self, persistent: bool) {
+            self.persistent.store(persistent, Ordering::SeqCst);
+        }
+
+        fn mutation_count(&self) -> usize {
+            self.set_calls.load(Ordering::SeqCst) + self.delete_calls.load(Ordering::SeqCst)
+        }
+
         fn wait_until_set_blocked(&self) {
             let deadline = Instant::now() + Duration::from_secs(5);
             while self.set_waiting.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
@@ -1184,6 +1202,7 @@ mod tests {
         }
 
         fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
+            self.set_calls.fetch_add(1, Ordering::SeqCst);
             if self.fail_set.lock().unwrap().as_deref() == Some(key) {
                 return Err(store_error());
             }
@@ -1204,6 +1223,7 @@ mod tests {
         }
 
         fn delete(&mut self, key: &str) -> Result<(), CredentialError> {
+            self.delete_calls.fetch_add(1, Ordering::SeqCst);
             let gate = self.block_delete.lock().unwrap().pop_front();
             if let Some(gate) = gate {
                 self.delete_waiting.fetch_add(1, Ordering::SeqCst);
@@ -1217,7 +1237,7 @@ mod tests {
         }
 
         fn persistent(&self) -> bool {
-            true
+            self.persistent.load(Ordering::SeqCst)
         }
     }
 
@@ -1352,6 +1372,41 @@ mod tests {
         assert!(!view.sign_out_recovery, "unreadable storage must not expose recovery");
         assert!(!view.sign_in_visible, "unreadable storage must stay closed");
         assert!(port.sign_out().is_err(), "no write may be attempted when storage is unreadable");
+    }
+
+    #[test]
+    fn a_failed_store_probe_refuses_sign_out_and_switch_without_mutating_storage() {
+        let store = TestStore::default();
+        let session = activate_session(&store);
+        store.fail_delete.store(true, Ordering::SeqCst);
+        assert_eq!(session.sign_out().unwrap_err().code, CredentialErrorCode::Unavailable);
+        assert!(session.logout_pending().unwrap(), "a readable marker remains");
+        store.fail_delete.store(false, Ordering::SeqCst);
+        // The probe failed: storage is usable for reads, but this process may not write or spawn.
+        store.set_persistent(false);
+
+        let entries = store.entries.lock().unwrap().clone();
+        let mutations = store.mutation_count();
+        for action in [LifecycleEvent::SignedOut, LifecycleEvent::AccountSwitched] {
+            let runtime = AccountRuntime::with_session(CredentialSession::new(Box::new(store.clone())));
+            let startup = runtime.startup();
+            assert!(!startup.secure_store, "the failed probe is visible at startup");
+            assert_eq!(startup.logout, StartupLogout::ReadableTombstone, "the marker is still readable");
+            let mut port = DesktopAccountPort::new(runtime, &startup);
+            let before = port.view().clone();
+            let refused = match action {
+                LifecycleEvent::SignedOut => port.sign_out(),
+                LifecycleEvent::AccountSwitched => port.switch_account(),
+            };
+            assert!(refused.is_err(), "{action:?} must fail closed without a secure store");
+            assert_eq!(port.view(), before, "{action:?} changed the view");
+            assert!(port.lifecycle.is_none(), "{action:?} raised a lifecycle event");
+            assert!(port.workers.is_empty(), "{action:?} spawned cleanup");
+            assert!(!port.runtime.credentials.is_revoked(), "{action:?} revoked authority");
+            assert!(port.cleanup.lock().unwrap().pending.is_none(), "{action:?} started cleanup");
+            assert_eq!(store.mutation_count(), mutations, "{action:?} wrote or deleted storage");
+            assert_eq!(*store.entries.lock().unwrap(), entries, "{action:?} changed stored entries");
+        }
     }
 
     #[test]

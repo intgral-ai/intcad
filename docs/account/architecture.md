@@ -39,8 +39,11 @@ trusted release values are not read from runtime settings or responses, and no r
 ship in this build. Missing or invalid configuration refuses before a request. The worker never
 opens a browser, and a browser is launched only by a separate explicit click at the
 provider-issued verification address after its exact configured origin is checked again. The
-click must also carry platform provenance: app-injected automation events, including the control
-channel's pointer input, fail closed and cannot launch it. Chat and Review show the same code,
+click must also carry platform provenance bound to that button's own gesture: pointer press and
+release must both be platform input with no synthetic event touching the gesture, and a keyboard or
+accessibility activation must be one unambiguous platform event. App-injected automation events,
+including the control channel's pointer input or typing replayed after a report capture, fail
+closed and cannot launch it. Chat and Review show the same code,
 address, browser and cancel controls as the account menu, so the surface that refused the
 operation can complete the flow without replaying it. A verified identity is
 staged and only becomes readable at one durable commit marker; identity without installation
