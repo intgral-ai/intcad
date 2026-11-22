@@ -1667,6 +1667,49 @@ fn delete_steps_are_localized_through_the_catalog() {
     assert!(!joined.contains("account.delete_step_confirm"), "{texts:?}");
 }
 
+#[test]
+fn start_shows_plain_text_deletion_instructions_only_when_signed_in() {
+    const REQUEST: &str = "To request account deletion, email contact@intgral.ai from your account email address.";
+    let guide = DeleteAccountGuide { help_url: "", steps: &["account.delete_request", "account.delete_request_safety"] };
+    for view in [AccountView::signed_out(), signed_in_view()] {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut harness = crate::scenario::Harness::new();
+        harness.app.home.open = true;
+        harness.app.account = State::with_port(Box::new(FakeAccountPort::with_guide(view.clone(), guide, calls.clone())));
+        calls.lock().unwrap().clear();
+        let revision = harness.app.session.design_revision();
+        harness.frames(2);
+
+        let text = painted_text(&harness.shapes);
+        assert_eq!(text.contains("contact@intgral.ai"), view.signed_in, "{text}");
+        assert_eq!(text.contains(REQUEST), view.signed_in, "{text}");
+        assert_eq!(text.contains("Do not include passwords, codes, tokens, or design files."), view.signed_in, "{text}");
+        if view.signed_in {
+            let pos = harness
+                .shapes
+                .iter()
+                .find_map(|clipped| {
+                    let mut pos = None;
+                    crate::test_support::each_shape(&clipped.shape, &mut |shape| {
+                        if let egui::Shape::Text(text) = shape
+                            && text.galley.text().contains("contact@intgral.ai")
+                        {
+                            pos = Some(text.pos + text.galley.rect.center().to_vec2());
+                        }
+                    });
+                    pos
+                })
+                .unwrap();
+            native_click_at(&mut harness, pos);
+        }
+        assert!(harness.output.commands.is_empty(), "the guidance does not open or copy anything");
+        assert_eq!(harness.app.account.pending_action(), None);
+        assert_eq!(harness.app.account.view(), &view);
+        assert_eq!(harness.app.session.design_revision(), revision);
+        assert!(calls.lock().unwrap().is_empty(), "reading the guide does not dispatch to the account port");
+    }
+}
+
 fn render(view: &mut crate::SolveApp) -> Vec<(String, Pos2)> {
     let ctx = crate::fonts::test_context();
     let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 700.0))), ..Default::default() };

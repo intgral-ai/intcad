@@ -1889,9 +1889,7 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn delete_account_guide(&self) -> DeleteAccountGuide {
-        // No reviewed account-deletion page exists in this build; never send a user to a guessed
-        // address. The UI omits the guide when the URL is empty.
-        DeleteAccountGuide { help_url: "", steps: &[] }
+        DeleteAccountGuide { help_url: "", steps: &["account.delete_request", "account.delete_request_safety"] }
     }
 
     fn begin_device_code(&self) -> Result<DeviceCode, Refusal> {
@@ -2486,6 +2484,16 @@ mod tests {
 
     fn installed_session() -> CredentialSession {
         CredentialSession::new(Box::new(TestStore::default()))
+    }
+
+    #[test]
+    fn desktop_deletion_guide_has_localized_steps_without_a_url() {
+        let runtime = AccountRuntime::with_store(NoPersistentStore);
+        let startup = runtime.startup();
+        let port = DesktopAccountPort::new(runtime, &startup);
+        let guide = port.delete_account_guide();
+        assert!(guide.help_url.is_empty());
+        assert_eq!(guide.steps, &["account.delete_request", "account.delete_request_safety"]);
     }
 
     #[test]
