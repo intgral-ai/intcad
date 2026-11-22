@@ -213,7 +213,13 @@ def main():
             # Starting it again from a stopped state: the same app, the same package, a new session.
             control.call("ui.agent_chat", {"disconnect": True})
             state = control.call("ui.agent_chat", {}).get("result") or {}
-            checks.check(not state.get("connect"), "a stopped agent reports no connections")
+            stopped = state.get("connect") or {}
+            # A stopped agent keeps the page's empty shape (its keys, no plans) but says nothing
+            # about a running conversation: no plan is signed in and nothing is connected.
+            checks.check(state.get("state") == "off" and not stopped.get("plans")
+                         and not stopped.get("connected"),
+                         f"a stopped agent reports no connections (state {state.get('state')}, "
+                         f"plans {len(stopped.get('plans') or [])}, connected {stopped.get('connected')})")
             control.call("ui.agent_chat", {"connect": True})
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline and app.poll() is None and not (state.get("connect") or {}).get("plans"):
