@@ -150,8 +150,8 @@ impl RecordingStore {
         self.inner.lock().unwrap().fail_all_sets = true;
     }
 
-    fn set_fail_commit(&self) {
-        self.inner.lock().unwrap().fail_commit = true;
+    fn set_fail_commit(&self, fail: bool) {
+        self.inner.lock().unwrap().fail_commit = fail;
     }
 
     fn block_next_commit(&self, gate: Receiver<()>) {
@@ -486,7 +486,7 @@ fn a_failed_commit_marker_write_leaves_no_restorable_session() {
     let session = CredentialSession::new(Box::new(store.clone()));
     let provider = ProviderSession::from_authorized("user_provider_0001".into(), crate::http::Secret::new("provider_access_SECRET"));
     let product = ProductSession::from_trusted_exchange("acct_partial", crate::http::Secret::new("product_partial_SECRET"), None);
-    store.set_fail_commit();
+    store.set_fail_commit(true);
     assert_eq!(session.persist_verified_login(&provider, &product, 2, &|| true).unwrap_err().code, CredentialErrorCode::Unavailable);
     assert!(store.contains_key(PRODUCT_SESSION_KEY), "the test writes the raw value before the failed marker");
     let fresh = CredentialSession::new(Box::new(store));
@@ -494,6 +494,55 @@ fn a_failed_commit_marker_write_leaves_no_restorable_session() {
     assert!(fresh.display_account().is_none());
     assert!(fresh.bound_account().is_none());
     assert!(fresh.authenticated_scope().is_none());
+}
+
+#[test]
+fn only_a_fresh_verified_login_can_reopen_after_failed_commit() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    let provider = ProviderSession::from_authorized("user_provider_0001".into(), crate::http::Secret::new("provider_access_SECRET"));
+    let partial = ProductSession::from_trusted_exchange("acct_partial", crate::http::Secret::new("product_partial_SECRET"), None);
+    store.set_fail_commit(true);
+    assert!(session.persist_verified_login(&provider, &partial, 1, &|| true).is_err());
+    store.set_fail_commit(false);
+    assert!(session.provider_account().is_none());
+    assert!(!session.product_session_active());
+    assert!(session.display_account().is_none());
+    assert!(session.authenticated_scope().is_none());
+    store.take_calls();
+    assert!(session.bind_scope(&scope("acct_partial", "inst_old")).is_err());
+    assert!(session.switch_account("acct_other").is_err());
+    assert!(session.complete_provider_login("user_other", "provider_other_SECRET").is_err());
+    assert!(store.take_calls().is_empty(), "normal mutations must refuse without touching storage");
+    let retry = ProductSession::from_trusted_exchange("acct_retry", crate::http::Secret::new("product_retry_SECRET"), None);
+    let (tx, rx) = channel();
+    store.block_next_commit(rx);
+    let worker_session = session.clone();
+    let worker = std::thread::spawn(move || worker_session.persist_verified_login(&provider, &retry, 2, &|| true));
+    store.wait_until_commit_blocked();
+    assert_eq!(store.take_calls().first(), Some(&Call::Set("login/commit".into())));
+    assert_eq!(store.entry("login/commit").as_deref(), Some("intcad-login/revoked"));
+    let fresh = CredentialSession::new(Box::new(store.clone()));
+    assert!(fresh.display_account().is_none(), "a verified retry remains invisible before its new commit");
+    tx.send(()).unwrap();
+    assert_eq!(worker.join().unwrap().unwrap().account_id, "acct_retry");
+    assert_eq!(session.display_account().as_deref(), Some("acct_retry"));
+    assert_eq!(fresh.display_account().as_deref(), Some("acct_retry"));
+    assert!(session.authenticated_scope().is_none(), "identity is not installation proof");
+}
+
+#[test]
+fn successful_cleanup_does_not_reopen_a_failed_session() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    let provider = ProviderSession::from_authorized("user_provider_0001".into(), crate::http::Secret::new("provider_access_SECRET"));
+    let product = ProductSession::from_trusted_exchange("acct_partial", crate::http::Secret::new("product_partial_SECRET"), None);
+    store.set_fail_commit(true);
+    assert!(session.persist_verified_login(&provider, &product, 1, &|| true).is_err());
+    store.set_fail_commit(false);
+    session.sign_out().unwrap();
+    assert!(!store.contains_key(PRODUCT_SESSION_KEY));
+    assert!(session.complete_provider_login("user_other", "provider_other_SECRET").is_err());
 }
 
 #[test]

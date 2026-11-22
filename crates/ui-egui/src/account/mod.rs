@@ -91,7 +91,7 @@ pub struct OwnModelView {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountView {
     pub signed_in: bool,
-    /// Show the explicit sign-in action; false in a build with no account support.
+    /// Show the explicit sign-in action; false without account support or during unconfirmed cleanup.
     pub sign_in_visible: bool,
     /// Where an explicit desktop sign-in stands. It is idle unless the host started one.
     pub sign_in_state: SignInState,

@@ -122,18 +122,16 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
                     FileView::detail(ui, app.tr(step));
                 }
             }
+        } else if view.sign_out_pending {
+            FileView::detail(ui, &signing_out);
+        } else if let Some(code) = view.sign_out_error {
+            text(ui, &refusal_text(app, code), Text::Error("account_sign_out_error"));
+            let response = button(ui, &retry_sign_out, Button::Primary);
+            publish("account:retry_sign_out", &response);
+            retry_sign_out_clicked = response.clicked();
         } else if view.sign_in_visible {
             FileView::detail(ui, &signed_out);
             FileView::detail(ui, &chat_review_sign_in);
-            if view.sign_out_pending {
-                FileView::detail(ui, &signing_out);
-            }
-            if let Some(code) = view.sign_out_error {
-                text(ui, &refusal_text(app, code), Text::Error("account_sign_out_error"));
-                let response = button(ui, &retry_sign_out, Button::Primary);
-                publish("account:retry_sign_out", &response);
-                retry_sign_out_clicked = response.clicked();
-            }
             match view.sign_in_state {
                 SignInState::Starting => {
                     FileView::detail(ui, &sign_in_starting);
@@ -314,7 +312,7 @@ pub fn show_inline_sign_in(app: &mut SolveApp, ui: &mut Ui, message_id: &str, ha
         return;
     }
     let view = app.account.view().clone();
-    if view.signed_in || !view.sign_in_visible {
+    if view.signed_in || !view.sign_in_visible || view.sign_out_pending || view.sign_out_error.is_some() {
         return;
     }
     let t = Tokens::get();

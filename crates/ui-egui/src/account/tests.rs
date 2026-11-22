@@ -348,11 +348,29 @@ fn sign_out_pending_and_cleanup_failure_are_visible_with_a_retry() {
     let pending = render_view(AccountView { sign_out_pending: true, ..AccountView::signed_out() });
     let joined = pending.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join("\n").to_lowercase();
     assert!(joined.contains("signing out"), "{pending:?}");
+    assert!(crate::scenario::handle_at("account:sign_in").is_none(), "pending cleanup must hide sign-in");
+    assert!(crate::scenario::handle_at("account:retry_sign_out").is_none(), "cleanup is still running");
     let failed = AccountView { sign_out_error: Some(RefusalCode::AuthUnavailable), ..AccountView::signed_out() };
     let texts = render_view(failed);
     let joined = texts.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join("\n");
     assert!(joined.contains("cannot check authorization"), "{texts:?}");
     assert!(crate::scenario::handle_at("account:retry_sign_out").is_some(), "no actionable retry");
+    assert!(crate::scenario::handle_at("account:sign_in").is_none(), "failed cleanup must hide sign-in");
+}
+
+#[test]
+fn inline_sign_in_is_hidden_during_pending_or_failed_cleanup() {
+    for (sign_out_pending, sign_out_error) in [(true, None), (false, Some(RefusalCode::AuthUnavailable))] {
+        let mut app = crate::test_support::sample_app();
+        let view = AccountView { sign_out_pending, sign_out_error, ..AccountView::signed_out() };
+        app.account = State::with_port(Box::new(FakeAccountPort::with_view(view, Arc::new(Mutex::new(Vec::new())))));
+        crate::scenario::clear_handles();
+        let ctx = crate::fonts::test_context();
+        let _ = crate::test_support::frame(&ctx, egui::RawInput::default(), |ui| {
+            super::show_inline_sign_in(&mut app, ui, "account.chat_review_sign_in", "account:test_inline_sign_in");
+        });
+        assert!(crate::scenario::handle_at("account:test_inline_sign_in").is_none());
+    }
 }
 
 #[test]

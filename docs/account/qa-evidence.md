@@ -70,9 +70,11 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
   commit, a failed commit marker, a superseded generation, a tombstone racing a blocked commit,
   repeated sign-out while pending, a failed sign-out marker and display-only identity. Partial
   writes are non-restorable; a cancel/sign-out during promotion is refused rather than waited for.
-  An accepted sign-out revokes in-process and shows a pending/failure state, but a crash before
-  its worker confirms the tombstone can leave the previously committed session restorable; no
-  crash safety is claimed for an unconfirmed sign-out.
+  An accepted sign-out immediately revokes in-process authority, but only confirmed background
+  cleanup completes sign-out. Abrupt termination before the worker writes the durable tombstone
+  may leave the prior committed identity restorable. Normal exit joins background account
+  workers and may wait on the OS keyring. Real OS keyring latency and destructive crash
+  acceptance are **UNVERIFIED**.
 
 ## Remaining gates
 

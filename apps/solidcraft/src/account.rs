@@ -657,8 +657,11 @@ impl DesktopAccountPort {
         if self.view.sign_out_pending == pending && self.view.sign_out_error == error {
             return None;
         }
-        self.view.sign_out_pending = pending;
-        self.view.sign_out_error = error;
+        self.view = if self.secure_store && !pending && error.is_none() {
+            AccountView::signed_out()
+        } else {
+            AccountView { sign_out_pending: pending, sign_out_error: error, ..AccountView::unavailable() }
+        };
         Some(self.view.clone())
     }
 
@@ -692,18 +695,20 @@ impl DesktopAccountPort {
                 return Err(account_unavailable("the sign-in is completing; sign out again after it finishes"));
             }
         };
-        self.invalidate_login();
         // Publish the new generation and set the barrier in the same short lock. A finishing
         // older worker takes that lock before clearing anything, so it can never clear a newer
         // barrier between generation publication and its own stale-result check. No keyring IO
         // happens while this lock is held.
-        let mut status = match self.cleanup.lock() {
+        let cleanup = Arc::clone(&self.cleanup);
+        let mut status = match cleanup.lock() {
             Ok(status) => status,
             Err(_) => {
                 self.runtime.credentials.revoke_in_process();
+                self.invalidate_login();
                 self.lifecycle = Some(event);
-                self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
-                return Err(account_unavailable("the account cleanup state is unavailable"));
+                let error = account_unavailable("the account cleanup state is unavailable");
+                self.view = AccountView { sign_out_error: Some(error.code), ..AccountView::unavailable() };
+                return Err(error);
             }
         };
         if status.pending.is_some() {
@@ -718,12 +723,12 @@ impl DesktopAccountPort {
         status.pending = Some(generation);
         status.error = None;
         drop(status);
+        self.invalidate_login();
         drop(gate);
         self.lifecycle = Some(event);
-        self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
+        self.view = AccountView { sign_out_pending: true, ..AccountView::unavailable() };
 
         let credentials = self.runtime.credentials.clone();
-        let cleanup = Arc::clone(&self.cleanup);
         let worker = std::thread::Builder::new().name("intcad-account-cleanup".into()).spawn(move || {
             let result = credentials.sign_out_keeping_revocation();
             if let Ok(mut status) = cleanup.lock()
@@ -748,11 +753,14 @@ impl DesktopAccountPort {
             // never written, so the status says cleanup never started (not that it is pending),
             // and this process stays fail-closed; cross-process suppression cannot be claimed.
             Err(_) => {
+                let error = account_unavailable("the sign-out cleanup could not start");
+                self.view.sign_out_pending = false;
+                self.view.sign_out_error = Some(error.code);
                 if let Ok(mut status) = self.cleanup.lock() {
                     status.pending = None;
-                    status.error = Some(account_unavailable("the sign-out cleanup could not start"));
+                    status.error = Some(error.clone());
                 }
-                Err(account_unavailable("the sign-out cleanup could not start"))
+                Err(error)
             }
         }
     }
@@ -913,6 +921,9 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn cancel_sign_in(&mut self) -> Result<(), Refusal> {
+        if self.view.sign_out_pending || self.view.sign_out_error.is_some() {
+            return Err(account_unavailable("sign-out cleanup has not been confirmed"));
+        }
         let gate_holder = Arc::clone(&self.persist_gate);
         let gate = match gate_holder.try_lock() {
             Ok(gate) => gate,
@@ -1283,7 +1294,16 @@ mod tests {
             } else {
                 port.switch_account().unwrap();
             }
+            let first = port.view();
+            assert!(first.sign_out_pending, "{action:?} must show pending before the first poll");
+            assert!(!first.signed_in);
+            assert!(!first.sign_in_visible);
+            assert_eq!(first.account_label, None);
+            assert_eq!(first.sign_out_error, None);
             wait_for_cleanup(&port);
+            let confirmed = port.poll().expect("confirmed cleanup updates the pending view");
+            assert!(!confirmed.sign_out_pending);
+            assert!(confirmed.sign_in_visible);
             assert!(port.runtime.authenticated_scope().is_none(), "the old session binding is gone");
             assert!(!port.view().signed_in);
             assert_eq!(port.take_lifecycle_event(), Some(expected));
@@ -1332,11 +1352,13 @@ mod tests {
         wait_for_counter(&store.delete_waiting, 1);
         assert_eq!(port.cleanup.lock().unwrap().pending, Some(1));
         assert!(port.runtime.credentials.is_revoked());
+        let attempt = port.login_attempt;
         let started = Instant::now();
         let error = port.sign_out().unwrap_err();
         assert_eq!(error.code, RefusalCode::AuthUnavailable);
         assert!(started.elapsed() < Duration::from_millis(100), "a repeated sign-out blocked on keyring IO");
         assert_eq!(port.cleanup.lock().unwrap().pending, Some(1), "a repeated sign-out started a second worker");
+        assert_eq!(port.login_attempt, attempt, "refusing an action must not advance the login fence");
         assert_eq!(port.take_lifecycle_event(), Some(LifecycleEvent::SignedOut), "one sign-out raises one event");
         assert_eq!(port.take_lifecycle_event(), None);
 
@@ -1380,6 +1402,9 @@ mod tests {
         let error = port.cleanup.lock().unwrap().error.clone().expect("the failed durable marker is surfaced");
         assert_eq!(error.code, RefusalCode::AuthUnavailable);
         let _ = AccountPort::poll(&mut port);
+        assert_eq!(port.view().sign_out_error, Some(RefusalCode::AuthUnavailable));
+        assert!(!port.view().sign_in_visible);
+        assert!(port.cancel_sign_in().is_err(), "cancel cannot replace the cleanup error view");
         assert_eq!(port.view().sign_out_error, Some(RefusalCode::AuthUnavailable));
         assert!(port.runtime.credentials.is_revoked(), "the in-process authority stays revoked");
         assert!(!port.runtime.credentials.logout_pending().unwrap_or(false), "no durable tombstone is claimed");
@@ -1896,8 +1921,10 @@ mod tests {
         assert!(AccountPort::poll(&mut port).is_none(), "the success snapshot was returned twice");
         port.sign_out().unwrap();
         wait_for_cleanup(&port);
-        assert!(AccountPort::poll(&mut port).is_none(), "a stale success resurrected the signed-out view");
-        assert!(!port.view().signed_in);
+        let confirmed = port.poll().expect("cleanup confirmation is a separate terminal update");
+        assert!(!confirmed.sign_out_pending);
+        assert!(!confirmed.signed_in, "a stale success resurrected the signed-out view");
+        assert!(port.poll().is_none(), "terminal snapshots are not replayed");
     }
 
     #[test]

@@ -373,7 +373,10 @@ struct SessionState {
     installation: Option<String>,
     /// The WorkOS provider account. It never authorizes an Intcad call by itself.
     provider_account: Option<String>,
-    /// Set after a failed delete or a failed durable write; every read and write then fails closed.
+    /// Blocks credential reads and ordinary mutations during promotion or after a storage
+    /// failure. Sign-out cleanup may still remove credentials but cannot lift a failure lock.
+    /// Only a fresh verified login can replace a failed session: revoke the old commit first,
+    /// then unlock only after the new commit succeeds.
     locked: bool,
 }
 
@@ -537,7 +540,10 @@ impl CredentialSession {
             return Err(unavailable());
         }
         let mut state = self.lock()?;
-        if state.account.as_deref() == Some(account) && !state.locked {
+        if state.locked {
+            return Err(unavailable());
+        }
+        if state.account.as_deref() == Some(account) {
             return Ok(());
         }
         // A switch replaces all old authority. Persist the same sign-out tombstone first so a
@@ -551,9 +557,8 @@ impl CredentialSession {
         Ok(())
     }
 
-    /// Write the durable sign-out marker synchronously. The desktop calls this under its
-    /// promotion lock before an async cleanup, so a crash can never leave a just-promoted session
-    /// restorable after an accepted sign-out.
+    /// Write the durable tombstone without deleting credentials. Desktop sign-out instead
+    /// writes it as part of background cleanup; accepting the request does not write it.
     pub fn mark_logout_pending(&self) -> Result<(), CredentialError> {
         let mut state = self.lock()?;
         mark_logout(&mut state)
@@ -614,6 +619,9 @@ impl CredentialSession {
             return Err(unavailable());
         }
         let mut state = self.lock()?;
+        if state.locked {
+            return Err(unavailable());
+        }
         clear_authority(&mut state)?;
         let result = write_provider_login(&mut state, provider_account, access_token);
         if result.is_err() {
@@ -631,10 +639,10 @@ impl CredentialSession {
     /// Stage, then promote a verified provider/product login. `generation` is the caller's
     /// attempt id and `current` reports whether that attempt still owns the sign-in. Every value
     /// is written before the single commit marker; readers ignore all of them until that marker
-    /// is present. A crash, cancellation before the marker or any storage failure therefore
-    /// leaves a non-restorable state instead of a restorable half-session. The caller must hold
-    /// its promotion lock for the duration so cancel/sign-out cannot change the generation while
-    /// these keyring writes run.
+    /// is present. Once the old commit is revoked, a crash, cancellation before the new marker,
+    /// or failure staging the new session cannot leave a restorable half-session. A new verified
+    /// attempt may retry after failure; it must start by revoking the old commit again. The caller
+    /// must hold its promotion lock so cancel/sign-out cannot change the generation during writes.
     pub fn persist_verified_login(
         &self,
         provider: &ProviderSession,
@@ -684,7 +692,7 @@ impl CredentialSession {
                 Ok(ProductLogin { account_id: account })
             }
             Err(error) => {
-                // The commit marker is revoked or absent; every product reader keeps refusing.
+                // This process stays closed even if the initial revocation write itself failed.
                 state.locked = true;
                 Err(error)
             }
@@ -824,13 +832,14 @@ fn product_exchange_error(error: ProductExchangeError) -> CredentialError {
     CredentialError { code: CredentialErrorCode::Unavailable, message: message.into() }
 }
 
-/// Delete every credential and scope label, in authority order. The account/session credential is
-/// removed first; only a fully successful clear unlocks the session.
+/// Delete every credential and scope label, in authority order. A failed clear locks the
+/// session; successful cleanup preserves any pre-existing failure lock.
 fn clear_authority(state: &mut SessionState) -> Result<(), CredentialError> {
+    let was_locked = state.locked;
     state.locked = true;
     let result = clear_authority_inner(state);
     if result.is_ok() {
-        state.locked = false;
+        state.locked = was_locked;
     }
     result
 }

@@ -96,18 +96,22 @@ does not treat any staged or partial value as a session:
    requires it.
 4. A crash or storage failure before the commit leaves staged/partial values that every reader
    ignores. Clearing authority first writes `login/commit` to the revoked value, so even a
-   partially deleted old session is non-restorable.
+   partially deleted old session is non-restorable once that write succeeds. After a failed
+   commit, credential reads and ordinary writes stay closed. A fresh verified attempt can retry
+   by writing the revoked value again, then committing a new session.
 5. An accepted sign-out revokes authority in process immediately, then runs one async worker that
-   writes the tombstone and deletes under its own generation. The UI shows a pending state and
-   reports a failure with a sign-out retry; a repeated sign-out while pending is refused without
-   a second worker. Durable completion is never claimed until that worker confirms its
-   generation. A crash before that confirmation can leave the previously committed session
-   restorable: this note does not claim crash safety for an unconfirmed sign-out. During
-   promotion, sign-out is refused rather than queued.
+   writes the tombstone and deletes under its own generation. The first action view is pending;
+   sign-in is hidden while cleanup is pending or failed. A failure offers a sign-out retry.
+   Repeated requests while pending are refused without a second worker. Sign-out is successful
+   only after the background worker confirms cleanup. Abrupt termination before the durable
+   tombstone is written may leave the prior committed identity restorable. During promotion,
+   sign-out is refused rather than queued.
 6. A completed commit is a completed login; cancel after it is refused and sign-out is the
    lifecycle transition. Shutdown waits at the exit gateway for an in-progress promotion to
    finish before invalidating the generation, so a serialized commit winner is not invalidated
-   after the fact. The process does not claim atomic multi-key keyring behavior beyond this
+   after the fact. Normal exit joins background account workers and can wait on the OS keyring;
+   there is no bounded exit guarantee. Real OS keyring latency and destructive crash acceptance
+   are unverified. The process does not claim atomic multi-key keyring behavior beyond this
    single-key commit boundary.
 
 The production desktop path uses `persist_verified_login` with its attempt generation. The older
