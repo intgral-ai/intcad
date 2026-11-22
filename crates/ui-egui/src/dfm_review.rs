@@ -579,8 +579,9 @@ pub fn start(app: &mut SolveApp) {
 
 /// Prepare the durable mapping and then dispatch exactly the reserved run. A service failure
 /// before dispatch is proven no-effect: its one hold is released and no second operation is minted.
+/// The operation must be minted by the host, never taken from a request payload.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn start_with_operation(app: &mut SolveApp, operation: OperationId) -> Result<(), String> {
+pub fn start_with_operation(app: &mut SolveApp, operation: OperationId) -> Result<(), String> {
     let (run, stop_at_ms) = prepare_review_with(app, operation.clone())?;
     // A renewal can finish while admission or the run mapping is being recorded. Keep the
     // original hold and mapping for recovery rather than dispatching this reserved run.

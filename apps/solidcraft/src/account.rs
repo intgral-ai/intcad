@@ -2281,6 +2281,153 @@ mod tests {
         }
     }
 
+    #[test]
+    fn review_wire_401_blocks_dispatch_and_late_report_before_expiry() {
+        use solidcraft_engine::dfm::run::{RunMeta, RunOutcome, RunStore};
+        use solidcraft_engine::entitlement::{GrantId, OperationRecord, OperationStore, RunId};
+        use std::sync::atomic::AtomicUsize;
+
+        struct Clock;
+        impl MonotonicClock for Clock {
+            fn now(&self) -> MonotonicInstant {
+                MonotonicInstant::from_millis(20_000)
+            }
+            fn wall_now(&self) -> SystemTime {
+                UNIX_EPOCH
+            }
+        }
+
+        struct Billing {
+            on_admit: Box<dyn Fn(&OperationId) + Send>,
+            calls: Arc<Mutex<Vec<&'static str>>>,
+        }
+        impl solidcraft_engine::entitlement::BillingPort for Billing {
+            fn admit(&mut self, operation: &OperationId, capability: Capability, _: EntryCategory) -> Result<Grant, Refusal> {
+                self.calls.lock().unwrap().push("admit");
+                (self.on_admit)(operation);
+                Ok(Grant::from_server(GrantId::new("grant_review_fixture"), capability, MonotonicInstant::from_millis(60_000)))
+            }
+            fn commit(&mut self, _: &OperationId, result: BillingResult) -> Result<BillingResult, Refusal> {
+                self.calls.lock().unwrap().push("commit");
+                Ok(result)
+            }
+            fn release(&mut self, _: &OperationId, _: RefusalCode) -> Result<(), Refusal> {
+                self.calls.lock().unwrap().push("release");
+                Ok(())
+            }
+        }
+
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!("intcad-review-wire-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir(&path).unwrap();
+        let scratch = Scratch(path);
+        let project = solidcraft_engine::project::create(&scratch.0, "review-project", "part").unwrap();
+        let journal = scratch.0.join("journal");
+        let mut ledger = FileOperationStore::open(&journal).unwrap();
+        let mut session = active_session();
+        let scope = session.authenticated_scope().unwrap();
+        let operation = OperationId::parse("op_review_wire_fixture").unwrap();
+        ledger
+            .save_new(&OperationRecord::held(operation.clone(), scope.account().clone(), Capability::Review, EntryCategory::ReviewPanel, 0))
+            .unwrap();
+        CredentialHandoff::execution_session_proof(&mut session, Capability::Review, &operation, Secret::new("fixture_review_proof")).unwrap();
+
+        let scripted = ScriptedProduct::scripted(vec![Ok(WireResponse::new(
+            401,
+            br#"{"error":{"code":"AUTH_REQUIRED","message":"Authentication or credential is not valid.","retryable":false,"request_id":"req_example_0001"}}"#
+                .to_vec(),
+        ))]);
+        let runtime = AccountRuntime::new(session.clone(), Some(ledger));
+        let startup = runtime.startup();
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.session.path = Some(project.design.to_string_lossy().into_owned());
+        install(&mut app, runtime, startup);
+        app.install_commit_authority(scope.clone(), Box::new(InertService), Box::new(Clock));
+        let mut budget = BudgetTable::unverified_default();
+        budget.set_verified(Capability::Review, EntryCategory::ReviewPanel, Duration::from_secs(1));
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let renew_session = session.clone();
+        let renew_scope = scope.clone();
+        let transport = scripted.clone();
+        app.install_billing(
+            Box::new(Billing {
+                calls: Arc::clone(&calls),
+                on_admit: Box::new(move |operation| {
+                    let mut service = HttpAccountService::with_transport(
+                        transport.clone(),
+                        WireConnection::new("https://product.invalid", "1.0.0").unwrap(),
+                        Box::new(renew_session.clone()),
+                        Box::new(renew_session.clone()),
+                        Box::new(Clock),
+                    );
+                    assert_eq!(
+                        service.renew(&renew_scope, operation, &GrantId::new("grant_review_fixture"), Capability::Review).unwrap_err().code,
+                        RefusalCode::AuthRequired
+                    );
+                }),
+            }),
+            budget,
+        );
+        let error = solidcraft_ui_egui::dfm_review::start_with_operation(&mut app, operation.clone()).unwrap_err();
+        assert!(error.starts_with("AUTH_REQUIRED:"), "{error}");
+        assert!(!app.dfm_review.running);
+        assert_eq!(*calls.lock().unwrap(), ["admit"]);
+        let requests = scripted.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].header("X-Execution-Session-Proof"), Some("fixture_review_proof"));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(requests[0].body().unwrap()).unwrap(),
+            json!({"capability":"review","operation_id":operation.as_str(),"renewal":{"authorization_id":"grant_review_fixture"}}),
+        );
+
+        let journal = FileOperationStore::open(journal).unwrap();
+        let run = journal.load(&operation).unwrap().unwrap().review_run_id.unwrap();
+        let store = RunStore::new(project.project.root());
+        let meta = RunMeta::new(
+            run.as_str(),
+            "review-project",
+            "sha256:candidate",
+            "sha256:config",
+            "model",
+            "2026-11-21T00:00:00.000Z",
+            "2026-11-21T00:00:01.000Z",
+            RunOutcome::Superseded,
+            None,
+        );
+        store.write_stopped(&meta).unwrap();
+        std::fs::write(
+            store.run_dir(run.as_str()).unwrap().join("findings.json"),
+            json!({
+                "schemaVersion":2, "runId":run.as_str(), "candidateDigest":"sha256:candidate",
+                "profileDigest":"sha256:profile", "configDigest":"sha256:config", "modelVersion":"model",
+                "projectId":"review-project", "source":{"kind":"native"}, "findings":[], "rules":[], "notChecked":"",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        // Mark the mapped run as awaiting completion to exercise the live poll without
+        // spawning a worker. The scripted result arrives while the clock is still at 20 s.
+        app.dfm_review.running = true;
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(egui::RawInput { time: Some(1.0), ..Default::default() }, |ui| {
+            solidcraft_ui_egui::dfm_review::poll(&mut app, ui.ctx());
+        });
+        assert!(!app.dfm_review.running, "the late report reached the completion branch");
+        assert!(app.dfm_review.error.as_deref().unwrap().starts_with("AUTH_REQUIRED:"));
+        assert!(app.dfm_review.card.is_none());
+        assert_eq!(*calls.lock().unwrap(), ["admit"]);
+        assert_eq!(journal.review_operation(&RunId::new(run.as_str())).unwrap(), Some(operation.clone()));
+        assert_eq!(journal.settlement_intent(&operation).unwrap(), None);
+        assert_eq!(journal.load(&operation).unwrap().unwrap().status, OperationStatus::Held);
+        assert_eq!(session.authenticated_scope(), Some(scope));
+    }
+
     struct InertService;
 
     impl AccountService for InertService {
