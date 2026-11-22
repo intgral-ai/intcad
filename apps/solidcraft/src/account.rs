@@ -1551,6 +1551,45 @@ mod tests {
     }
 
     #[test]
+    fn restart_status_matches_fresh_login_activation_conditions() {
+        let mut unverified_email = status_body_for("acct_desktop_0001");
+        unverified_email["account"]["email_verified"] = json!(false);
+        unverified_email["eligible"] = json!(false);
+        unverified_email["reasons"] = json!(["EMAIL_UNVERIFIED"]);
+
+        let mut ineligible_client = status_body_for("acct_desktop_0001");
+        ineligible_client["client"]["supported"] = json!(false);
+        ineligible_client["eligible"] = json!(false);
+        ineligible_client["reasons"] = json!(["VERSION_UNSUPPORTED"]);
+
+        let mut wrong_protocol_version = status_body_for("acct_desktop_0001");
+        wrong_protocol_version["protocol"]["version"] = json!("intcad-auth/2.0");
+
+        let mut unsupported_protocol = status_body_for("acct_desktop_0001");
+        unsupported_protocol["protocol"]["supported"] = json!(false);
+        unsupported_protocol["eligible"] = json!(false);
+        unsupported_protocol["reasons"] = json!(["PROTOCOL_UNSUPPORTED"]);
+
+        for (case, body) in [
+            ("unverified email", unverified_email),
+            ("ineligible client", ineligible_client),
+            ("wrong protocol version", wrong_protocol_version),
+            ("unsupported protocol", unsupported_protocol),
+        ] {
+            let product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, body.to_string().into_bytes()))]);
+            let opener = RecordingOpener::default();
+            let runtime = restart_runtime(active_session(), product.clone(), &opener);
+            let startup = runtime.startup();
+            assert!(startup.candidate.is_some(), "{case}: the local pair is still a candidate");
+            assert!(startup.restored.is_none(), "{case}: restart must apply the fresh-login activation conditions");
+            let port = DesktopAccountPort::new(runtime, &startup);
+            assert!(!port.view().signed_in, "{case}: an ineligible restart is not presented as signed in");
+            assert_eq!(product.requests().len(), 1, "{case}: still one bounded status read");
+            assert!(opener.urls().is_empty(), "{case}: restart opens no browser");
+        }
+    }
+
+    #[test]
     fn restart_status_timeout_and_refusal_leave_the_candidate_closed() {
         for response in [
             Err(TransportFailure::Timeout),

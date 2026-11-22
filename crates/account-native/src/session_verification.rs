@@ -10,7 +10,8 @@
 //!
 //! This is not implicit token promotion:
 //! - a completed provider login alone never activates or persists a product session;
-//! - only an explicit [`ProductSessionExchange`] call runs this verification;
+//! - only an explicit [`ProductSessionExchange`] call activates a product session; the desktop
+//!   restart presentation check reuses [`verified_account`] without activating or writing one;
 //! - a non-200 response, a disabled/deleted account, an unverified email, unsupported client or
 //!   protocol metadata, an invalid account identifier or a malformed response leaves the session
 //!   inactive;
@@ -93,7 +94,7 @@ impl<T: Transport> ProductSessionExchange for ServerVerifiedProductSession<T> {
 ///
 /// Other status members are deliberately not decoded here. A missing, inconsistent, unsupported
 /// or out-of-grammar consumed value is a refusal.
-fn verified_account(value: &Value) -> Result<String, ProductExchangeError> {
+pub(crate) fn verified_account(value: &Value) -> Result<String, ProductExchangeError> {
     let account =
         value.pointer("/account/id").and_then(Value::as_str).filter(|account| valid_account(account)).ok_or(ProductExchangeError::Unavailable)?;
     if value.pointer("/account/status").and_then(Value::as_str) != Some("active")

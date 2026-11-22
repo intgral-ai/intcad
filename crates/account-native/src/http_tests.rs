@@ -217,6 +217,45 @@ fn restart_status_requires_the_exact_account_and_bearer_without_sending_anything
 }
 
 #[test]
+fn restart_status_enforces_every_fresh_login_activation_condition() {
+    let mut unverified_email = status_body(1000, 0, 1000);
+    unverified_email["account"]["email_verified"] = json!(false);
+    unverified_email["eligible"] = json!(false);
+    unverified_email["reasons"] = json!(["EMAIL_UNVERIFIED"]);
+
+    let mut ineligible_client = status_body(1000, 0, 1000);
+    ineligible_client["client"]["supported"] = json!(false);
+    ineligible_client["eligible"] = json!(false);
+    ineligible_client["reasons"] = json!(["VERSION_UNSUPPORTED"]);
+
+    let mut wrong_protocol_version = status_body(1000, 0, 1000);
+    wrong_protocol_version["protocol"]["version"] = json!("intcad-auth/2.0");
+
+    let mut unsupported_protocol = status_body(1000, 0, 1000);
+    unsupported_protocol["protocol"]["supported"] = json!(false);
+    unsupported_protocol["eligible"] = json!(false);
+    unsupported_protocol["reasons"] = json!(["PROTOCOL_UNSUPPORTED"]);
+
+    for (case, body) in [
+        ("unverified email", unverified_email),
+        ("ineligible client", ineligible_client),
+        ("wrong protocol version", wrong_protocol_version),
+        ("unsupported protocol", unsupported_protocol),
+    ] {
+        // The generic status decoder stays a permissive snapshot; only restart activation narrows.
+        let status = scripted(vec![ok(200, body.clone())]);
+        assert!(status.status().is_ok(), "generic status must not be narrowed for {case}");
+
+        let restart = scripted(vec![ok(200, body)]);
+        assert_eq!(
+            restart.restart_status("acct_example_0001").unwrap_err().code,
+            RefusalCode::AuthRequired,
+            "restart must enforce the fresh-login activation condition for {case}"
+        );
+    }
+}
+
+#[test]
 fn begin_maps_newly_admitted_already_exists_owned_elsewhere_and_conflict() {
     let mut admitted = scripted(vec![ok(200, admitted_body())]);
     match admitted.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap() {

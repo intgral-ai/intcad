@@ -79,15 +79,19 @@ The exchange is explicit:
    publishes the code for display.
 3. Polling waits the server's interval, follows `slow_down` by increasing it, stops at
    `expires_in`, and checks cancellation before every request and before each credential write.
-   Cancelling a worker wakes the wait immediately; the session revocation epoch also rejects a
-   late write after sign-out or account switch.
+   Cancelling a worker wakes the wait immediately. In the covered fixtures, the in-process
+   barrier and monotonic epoch reject a late write observed after sign-out or account switch.
+   Tests use virtual timing and scripted gates; this is not a real-time scheduling guarantee.
 4. After approval the worker stores the provider login, then calls
    `ServerVerifiedProductSession` against the configured product origin. The product-service
    refusal or transport failure leaves the product session inactive; provider success alone never
-   grants authority.
+   grants authority. Only after that exact status check succeeds does the desktop request one
+   first installation pair from the same configured origin. A refused or malformed bootstrap
+   refuses the sign-in rather than inventing an account or installation scope.
 5. The host reads the cached completed result. A completed view reports the account label but
-   still refuses chat, billed tools and commit authority because no installation bootstrap or
-   account service is wired.
+   still refuses chat, billed tools and commit authority because no reviewed account service is
+   wired. The persisted installation pair permits a later restart candidate; it does not prove
+   server-side installation validity by itself.
 
 Production configuration is three explicit host values, all required together:
 
@@ -98,15 +102,41 @@ Production configuration is three explicit host values, all required together:
 Tests script both transports, a virtual clock and an inert browser opener. They perform no network
 request, open no browser and use no real credential. Late authorization after cancellation or
 account switch, untrusted origins, slow-down and deadline handling, provider success followed by a
-product refusal, and verified success without a replayed exchange are covered locally.
+product refusal, and verified success without a replayed exchange are covered locally under
+virtual time and scripted gates; those fixtures do not claim scheduling or live-latency assurance.
+
+## Restart presentation checkpoint
+
+`AccountRuntime::startup` treats persisted credentials as a candidate, not an active session. A
+candidate needs the complete stored pair: a provable account/installation/session scope, the exact
+product bearer and the installation credential. A missing installation credential, a null or
+read-only store, a durable sign-out marker or an unreadable credential state yields no candidate
+and no signed-in view.
+
+Before promoting the signed-in view, startup performs one bounded `GET /v1/status` against the
+configured product origin with the captured exact bearer. Restart applies the same consumed
+activation predicate as fresh login: active and email-verified account, exact supported protocol,
+supported client, `eligible` true with empty `reasons`, and coherent balance fields. The reply's
+account id must equal the captured local account. After the request, startup re-reads the scope,
+bearer, installation credential and revocation generation; any change discards the result.
+There is no installation bootstrap or replacement, no browser opening, no operation replay and no
+automatic token refresh on this path.
+
+The generic `AccountService::status` decoder remains the broader quota/status snapshot. Restart
+narrows only its own presentation decision; it does not narrow the generic status contract. A
+successful restart read proves only that the server accepted the exact bearer for this account
+under those activation conditions. It does not prove that the stored installation credential is
+still server-valid, and it installs no billing, commit, MCP or controlled-execution authority.
+Those remain absent until a separately reviewed account service and installation-validity path
+exist.
 
 This checkpoint does not yet:
 
-- perform `POST /v1/installations` or persist an installation credential, so a restarted process
-  has no provable `AuthenticatedHostScope` and controlled authority stays closed;
+- prove server-side installation validity or revalidate the installation credential;
 - install a reviewed account service, quota snapshot, billing or commit authority;
-- render the device-code prompt or account menu in the UI (Entry 3);
-- refresh, revoke or revalidate the product session after startup;
+- provide real GUI or staging acceptance for the account entry and prompts (Entry 3 is implemented
+  and covered by local widget tests only);
+- periodically refresh or renew the product session, or poll for revocation after startup;
 - run against a live WorkOS, AuthKit or product deployment.
 
 ## Fail-closed cases covered by local tests
@@ -119,18 +149,26 @@ This checkpoint does not yet:
   characters, and a disallowed suffix character;
 - incoherent balance/held/available values;
 - malformed and over-sized response bodies, timeout and redirect transport failures;
-- request shape: exact configured origin, contract headers, provider bearer, no body.
+- request shape: exact configured origin, contract headers, provider bearer, no body;
+- restart activation parity: unverified email, ineligible client, unsupported protocol metadata,
+  wrong exact protocol version, account mismatch, missing installation credential, timeout/refusal
+  and a reply that arrives after the local generation changed;
+- restart replay/gesture guards: exactly one `GET /v1/status`, no `POST /v1/installations`, no
+  browser opener call and no presentation or authority from the local candidate alone.
 
 The positive fixtures also cover a coherent zero balance and a positive held balance. They prove
 only that the consumed arithmetic is accepted; they do not establish credit authority.
 
-Tests live in `crates/account-native/src/session_verification_tests.rs` and use a scripted
-transport. They perform no network request and use no real credential. This note does not claim
-live, staging or production verification.
+Fresh-login tests live in `crates/account-native/src/session_verification_tests.rs`; the shared
+activation predicate is exercised by restart tests in `crates/account-native/src/http_tests.rs`
+and desktop restart tests in `apps/solidcraft/src/account.rs` (the latter in the existing account
+test module). They use scripted transports. They perform no network request and use no real
+credential. This note does not claim live, staging or production verification.
 
 ## Before production activation
 
-The following are required together; none is present in this build:
+The following are required together. Local implementations are noted where they exist; none is
+verified live in this build:
 
 - a **trusted configured product service origin**, supplied by reviewed configuration rather than
   an environment heuristic, token field or response value; the desktop reads it from one explicit
@@ -143,9 +181,13 @@ The following are required together; none is present in this build:
   to the account/installation; a marker alone never restores authority (not implemented; the
   desktop still refuses sign-in while a marker is unconfirmed);
 - **installation bootstrap**: `POST /v1/installations` with the activated product bearer and a
-  provable host scope, followed by durable installation credential storage, so a later
-  `AuthenticatedHostScope` can be proven (not implemented);
-- token expiry/refresh handling, revocation polling or periodic revalidation (not implemented).
+  durable installation credential pair (implemented and covered by local scripted tests; not
+  verified against a live service, and restart does not prove the pair is still server-valid);
+- **bounded restart status check**: one exact-bearer `GET /v1/status` under the same consumed
+  activation predicate as fresh login, followed by a local binding/generation recheck (implemented
+  locally; no live staging evidence);
+- token expiry/refresh handling, revocation polling or periodic renewal/revalidation (not
+  implemented).
 - live WorkOS/AuthKit/product verification with the approved public client id and staging origins
   (not run; requires the QA configuration named above).
 
@@ -155,9 +197,9 @@ This checkpoint does not deliver:
 
 - a baked-in product service origin, WorkOS client id or AuthKit origin (all three are required
   from the host environment and remain unset in the shipped build);
-- a finished account entry UI, prompt expiry/retry presentation or account menu (Entry 3);
-- installation bootstrap, token expiry/refresh handling, revocation polling or periodic revalidation;
+- real GUI/staging acceptance of the account entry, prompt expiry/retry presentation or account
+  menu (Entry 3 has local widget coverage only);
+- periodic token refresh, revocation polling, renewal or installation-validity revalidation;
 - production billing, settlement, MCP authority or controlled execution;
-- restart-time server revalidation (startup still relies on the earlier activation and the
-  persisted session binding);
+- a claim that a successful restart status read proves installation-server validity;
 - real keychains, staging, Windows or wasm validation.

@@ -24,7 +24,8 @@ use solidcraft_engine::entitlement::{
     MonotonicClock, MonotonicInstant, OperationId, OperationStatus, Refusal, RefusalCode,
 };
 
-use crate::session_verification::valid_account;
+use crate::credentials::ProductExchangeError;
+use crate::session_verification::{valid_account, verified_account};
 
 /// Frozen protocol version from the rev3 manifest.
 pub const PROTOCOL_VERSION: &str = "intcad-auth/1.0";
@@ -798,13 +799,10 @@ impl<T: Transport> HttpAccountService<T> {
 }
 
 impl<T: Transport> HttpAccountService<T> {
-    /// Read one authenticated `/v1/status` snapshot and return the exact server account id with it.
-    ///
-    /// The bearer is read from the host credential session and sent as the only credential. A
-    /// missing or unusable bearer is refused before any request. Shapes and consistency checks
-    /// match [`AccountService::status`]; this helper adds the account id needed to bind a restart
-    /// verification to the exact local account.
-    fn status_snapshot(&self) -> Result<(String, Availability), Refusal> {
+    /// Read one authenticated `/v1/status` value. The bearer is read from the host credential
+    /// session and sent as the only credential; a missing or unusable bearer is refused before any
+    /// request.
+    fn status_value(&self) -> Result<Value, Refusal> {
         let mut request = self.request("GET", "/v1/status", None);
         self.push_auth(
             &mut request,
@@ -815,6 +813,13 @@ impl<T: Transport> HttpAccountService<T> {
         if status != 200 {
             return Err(error_refusal(status, &value));
         }
+        Ok(value)
+    }
+
+    /// Decode the permissive status snapshot the generic [`AccountService::status`] contract uses.
+    /// This deliberately still accepts an active-but-ineligible or unsupported account; activation
+    /// and restart checks apply the stricter consumed predicate separately.
+    fn parse_status_snapshot(&self, value: &Value) -> Result<(String, Availability), Refusal> {
         let account = value.pointer("/account/id").and_then(Value::as_str).filter(|account| valid_account(account)).ok_or_else(unavailable)?;
         let account_status = value.pointer("/account/status").and_then(Value::as_str).ok_or_else(unavailable)?;
         match account_status {
@@ -823,9 +828,9 @@ impl<T: Transport> HttpAccountService<T> {
             "deleted" => return Err(refusal(RefusalCode::AuthRequired)),
             _ => return Err(unavailable()),
         }
-        let balance = required_u64(&value, "/balance")?;
-        let held = required_u64(&value, "/held")?;
-        let available = required_u64(&value, "/available")?;
+        let balance = required_u64(value, "/balance")?;
+        let held = required_u64(value, "/held")?;
+        let available = required_u64(value, "/available")?;
         if held > balance || available != balance.saturating_sub(held) {
             return Err(unavailable());
         }
@@ -854,11 +859,20 @@ impl<T: Transport> HttpAccountService<T> {
         Ok((account.to_owned(), Availability { online: true, version_supported, model_available, balance, held, reasons }))
     }
 
+    /// Read one authenticated `/v1/status` snapshot and return the exact server account id with it.
+    fn status_snapshot(&self) -> Result<(String, Availability), Refusal> {
+        self.parse_status_snapshot(&self.status_value()?)
+    }
+
     /// Prove that the configured product service accepts the host's exact bearer for the expected
-    /// account. This is a restart presentation check only: it never bootstraps an installation,
-    /// issues a grant, or claims that the installation credential is still server-valid.
+    /// account under the same consumed activation conditions as a fresh login.
+    ///
+    /// This is a restart presentation check only: it never bootstraps an installation, issues a
+    /// grant, or claims that the installation credential is still server-valid.
     pub fn restart_status(&self, expected_account: &str) -> Result<Availability, Refusal> {
-        let (account, availability) = self.status_snapshot()?;
+        let value = self.status_value()?;
+        let (_, availability) = self.parse_status_snapshot(&value)?;
+        let account = verified_account(&value).map_err(activation_refusal)?;
         if account != expected_account {
             return Err(refusal(RefusalCode::AuthRequired));
         }
@@ -982,6 +996,15 @@ fn message(code: RefusalCode) -> &'static str {
 
 fn unavailable() -> Refusal {
     refusal(RefusalCode::AuthUnavailable)
+}
+
+/// Map the shared activation predicate's result to the HTTP adapter's refusal codes. The predicate
+/// is reused by fresh login and restart; its unavailable and rejected outcomes stay fail-closed.
+fn activation_refusal(error: ProductExchangeError) -> Refusal {
+    match error {
+        ProductExchangeError::Rejected => refusal(RefusalCode::AuthRequired),
+        ProductExchangeError::NotConfigured | ProductExchangeError::Unavailable => unavailable(),
+    }
 }
 
 fn validate_finalize_receipt(state: OperationStatus, result: BillingResult, terminal: bool, value: &Value) -> Result<(), Refusal> {
