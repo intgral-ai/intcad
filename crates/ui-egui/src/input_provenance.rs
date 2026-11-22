@@ -4,17 +4,13 @@
 //! frame-wide marker: automation can inject a press in one frame and let a platform event
 //! complete it, or restore held typing after the marker was computed. eframe can also keep a
 //! logic-only frame's post-hook [`RawInput`](egui::RawInput) and pass it through this hook again,
-//! so each event's origin has to survive that replay until the batch is consumed.
+//! so an unconsumed batch has to stay untrusted/fail closed until a real UI pass consumes it.
 
 use egui::{Event, Key, PointerButton, Pos2, Rect};
 
 /// The pointer buttons this tracker follows. Other buttons are ignored, never aliased to one of
 /// these.
 const BUTTONS: [PointerButton; 3] = [PointerButton::Primary, PointerButton::Secondary, PointerButton::Middle];
-
-/// A backlog larger than this is not copied into the retained batch. The next hook then fails
-/// closed for native-only actions instead of letting unlabelled replay through.
-const MAX_RETAINED_EVENTS: usize = 16_384;
 
 /// One button's gesture, kept from its platform or injected press until the frame that observes
 /// its release.
@@ -29,25 +25,12 @@ struct Gesture {
     release_from_platform: Option<bool>,
 }
 
-/// The previous post-hook event batch, so a rehook can reuse the origins it already computed.
-///
-/// eframe appends new input to its pending batch and calls the hook again before any pass
-/// consumes it. Events are therefore always a prefix match plus new platform input. A stale
-/// batch (already consumed by a pass) does not match and the new input is trusted as platform
-/// input. `Unverifiable` is the bounded fallback: one batch fails closed rather than reusing
-/// origins we could not preserve.
-#[derive(Clone, Debug, Default)]
-enum Retained {
-    #[default]
-    None,
-    Events {
-        events: Vec<Event>,
-        from_platform: Vec<bool>,
-    },
-    Unverifiable,
-}
-
 /// Provenance for the current frame plus the pointer gesture still in progress across frames.
+///
+/// eframe appends new input to its pending post-hook batch and calls the hook again before any
+/// pass consumes it. Host pre-hooks may transform that batch first, so the retained fact is only
+/// whether the unconsumed batch contained synthetic input, not its exact event list. A real UI
+/// pass clears it through [`Tracker::input_consumed_by_ui`]; a logic-only pass keeps it.
 #[derive(Debug, Default)]
 pub(crate) struct Tracker {
     gesture: [Gesture; BUTTONS.len()],
@@ -56,50 +39,42 @@ pub(crate) struct Tracker {
     synthetic_keys: bool,
     platform_accesskit: u8,
     synthetic_accesskit: bool,
-    retained: Retained,
+    /// `None` nothing is pending; `Some(false)` an unconsumed all-platform batch; `Some(true)` an
+    /// unconsumed batch that contained synthetic input and cannot be mapped through pre-hooks.
+    retained: Option<bool>,
 }
 
 impl Tracker {
-    /// Start a hook batch: label events from the retained post-hook prefix, or treat all events
-    /// as new platform input when that prefix is stale. Returns the origins and whether the
-    /// pointer state must be rebuilt from the entire replayed batch.
+    /// Start a hook batch using the explicit consumption lifecycle.
+    ///
+    /// No pending batch means this is fresh platform input. An unconsumed all-platform batch stays
+    /// trusted even if host pre-hooks transformed it. An unconsumed batch that contained synthetic
+    /// input cannot be mapped through those transformations, so the whole batch fails closed for
+    /// native-only actions while ordinary input is left intact. Either way, a retained batch is
+    /// replayed, so pointer state is rebuilt.
     pub(crate) fn begin_batch(&mut self, events: &[Event]) -> (Vec<bool>, bool) {
-        match std::mem::take(&mut self.retained) {
-            Retained::None => (vec![true; events.len()], false),
-            Retained::Unverifiable => {
-                // We cannot prove which events were already labelled. Rebuild from this batch
-                // with every event untrusted for native-only actions; ordinary input still works.
+        match self.retained.take() {
+            None => (vec![true; events.len()], false),
+            Some(false) => (vec![true; events.len()], true),
+            Some(true) => {
                 self.gesture = Default::default();
                 (vec![false; events.len()], true)
-            }
-            Retained::Events { events: retained, mut from_platform } => {
-                if !retained.is_empty() && events.len() >= retained.len() && events[..retained.len()] == retained[..] {
-                    from_platform.resize(events.len(), true);
-                    (from_platform, true)
-                } else if !events.is_empty() && events.len() < retained.len() && retained[..events.len()] == events[..] {
-                    // A shorter prefix cannot prove whether these are retained or new events.
-                    self.gesture = Default::default();
-                    (vec![false; events.len()], true)
-                } else {
-                    // The previous batch was consumed by a pass: this is a fresh platform batch.
-                    (vec![true; events.len()], false)
-                }
             }
         }
     }
 
-    /// Keep this post-hook batch for the next hook call, bounded by [`MAX_RETAINED_EVENTS`].
+    /// Record that the current post-hook batch was not consumed by a real UI pass yet.
     ///
-    /// A length mismatch cannot be labelled safely, so the next batch fails closed for
-    /// native-only actions; the events themselves are already preserved by the caller.
+    /// Only whether synthetic input was present is kept, so this stays constant-size and cannot
+    /// re-label transformed events. A missing origin taints the batch, never drops an event.
     pub(crate) fn retain(&mut self, events: &[Event], from_platform: &[bool]) {
-        self.retained = if events.is_empty() {
-            Retained::None
-        } else if events.len() != from_platform.len() || events.len() > MAX_RETAINED_EVENTS {
-            Retained::Unverifiable
-        } else {
-            Retained::Events { events: events.to_vec(), from_platform: from_platform.to_vec() }
-        };
+        self.retained =
+            if events.is_empty() { None } else { Some(events.len() != from_platform.len() || from_platform.iter().any(|platform| !platform)) };
+    }
+
+    /// A real UI pass consumed the input, so no unconsumed batch remains to replay.
+    pub(crate) fn input_consumed_by_ui(&mut self) {
+        self.retained = None;
     }
 
     /// Replace this frame's summary and consume its ordered events with their origins.
@@ -306,7 +281,7 @@ mod tests {
     }
 
     #[test]
-    fn retained_native_press_and_new_release_stay_trusted() {
+    fn retained_native_input_stays_trusted_when_pre_hooks_transform_it() {
         let mut tracker = Tracker::default();
         let press = vec![pointer(pos2(120.0, 110.0), true)];
         let (origins, replayed) = tracker.begin_batch(&press);
@@ -315,17 +290,17 @@ mod tests {
         tracker.update(&press, &origins, replayed);
         tracker.retain(&press, &origins);
 
-        let mut next = press.clone();
-        next.push(pointer(pos2(120.0, 110.0), false));
-        let (origins, replayed) = tracker.begin_batch(&next);
-        assert_eq!(origins, vec![true, true]);
-        assert!(replayed, "the retained press is replayed, not applied twice");
-        tracker.update(&next, &origins, replayed);
-        assert!(tracker.pointer_trusted(PointerButton::Primary, control()));
+        // The desktop pre-hooks may insert/remove events before the app hook sees the batch.
+        let transformed = vec![Event::ModifiersChanged(Modifiers::NONE), pointer(pos2(120.0, 110.0), true), pointer(pos2(120.0, 110.0), false)];
+        let (origins, replayed) = tracker.begin_batch(&transformed);
+        assert_eq!(origins, vec![true, true, true], "an all-platform retained batch stays platform");
+        assert!(replayed, "the retained batch is replayed, not applied twice");
+        tracker.update(&transformed, &origins, replayed);
+        assert!(tracker.pointer_trusted(PointerButton::Primary, control()), "the press was retained and the transformed batch completed it");
     }
 
     #[test]
-    fn retained_synthetic_press_stays_tainted_when_a_platform_release_arrives() {
+    fn retained_synthetic_input_fails_closed_when_pre_hooks_transform_it() {
         let mut tracker = Tracker::default();
         let press = vec![pointer(pos2(120.0, 110.0), true)];
         let (mut origins, replayed) = tracker.begin_batch(&press);
@@ -334,46 +309,50 @@ mod tests {
         tracker.update(&press, &origins, false);
         tracker.retain(&press, &origins);
 
-        let mut next = press.clone();
-        next.push(pointer(pos2(120.0, 110.0), false));
-        let (origins, replayed) = tracker.begin_batch(&next);
-        assert_eq!(origins, vec![false, true], "the retained synthetic press keeps its origin");
+        // We cannot tell which transformed event came from the retained synthetic press.
+        let transformed = vec![Event::ModifiersChanged(Modifiers::NONE), pointer(pos2(120.0, 110.0), true), pointer(pos2(120.0, 110.0), false)];
+        let (origins, replayed) = tracker.begin_batch(&transformed);
+        assert_eq!(origins, vec![false, false, false], "an unconsumed synthetic batch fails closed");
         assert!(replayed);
-        tracker.update(&next, &origins, replayed);
+        tracker.update(&transformed, &origins, replayed);
         assert!(
             !tracker.pointer_trusted(PointerButton::Primary, control()),
-            "a retained synthetic press cannot be completed by a new platform release"
+            "a transformed retained synthetic batch cannot be completed by a platform release"
         );
     }
 
     #[test]
-    fn a_stale_retained_batch_does_not_taint_new_native_input() {
+    fn visible_ui_consumption_clears_the_retained_batch() {
         let mut tracker = Tracker::default();
-        let old = vec![key(Key::Enter)];
-        let origins = plain(&old);
-        tracker.update(&old, &origins, false);
-        tracker.retain(&old, &origins);
-
-        let fresh = vec![key(Key::Space)];
-        let (origins, replayed) = tracker.begin_batch(&fresh);
-        assert_eq!(origins, vec![true], "a consumed batch is not a prefix of the next platform batch");
+        let press = vec![pointer(pos2(120.0, 110.0), true)];
+        let (mut origins, replayed) = tracker.begin_batch(&press);
         assert!(!replayed);
+        origins[0] = false;
+        tracker.update(&press, &origins, false);
+        tracker.retain(&press, &origins);
+
+        tracker.input_consumed_by_ui();
+        tracker.update(&[pointer(pos2(120.0, 110.0), false)], &[true], false);
+        assert!(!tracker.pointer_trusted(PointerButton::Primary, control()), "the old synthetic press ends untrusted");
+
+        let fresh = vec![pointer(pos2(120.0, 110.0), true)];
+        let (origins, replayed) = tracker.begin_batch(&fresh);
+        assert_eq!(origins, vec![true], "after a real UI pass the next batch is fresh platform input");
+        assert!(!replayed);
+        tracker.update(&fresh, &origins, replayed);
+        tracker.update(&[pointer(pos2(120.0, 110.0), false)], &[true], false);
+        assert!(tracker.pointer_trusted(PointerButton::Primary, control()));
     }
 
     #[test]
-    fn a_shorter_retained_prefix_fails_closed() {
+    fn a_missing_origin_taints_the_retained_batch() {
         let mut tracker = Tracker::default();
-        let retained = vec![key(Key::Enter), key(Key::Space)];
-        let origins = plain(&retained);
-        tracker.update(&retained, &origins, false);
-        tracker.retain(&retained, &origins);
-
-        let shorter = vec![key(Key::Enter)];
-        let (origins, replayed) = tracker.begin_batch(&shorter);
-        assert_eq!(origins, vec![false], "a truncated prefix cannot prove its origin");
+        let events = vec![key(Key::Enter)];
+        tracker.update(&events, &[true], false);
+        tracker.retain(&events, &[]);
+        let (origins, replayed) = tracker.begin_batch(&[key(Key::Space)]);
+        assert_eq!(origins, vec![false], "a retained length mismatch fails closed on the next hook");
         assert!(replayed);
-        tracker.update(&shorter, &origins, replayed);
-        assert!(!tracker.keyboard_trusted());
     }
 
     #[test]

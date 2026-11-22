@@ -41,11 +41,12 @@ opens a browser, and a browser is launched only by a separate explicit click at 
 provider-issued verification address after its exact configured origin is checked again. The
 click must also carry platform provenance bound to that button's own gesture: pointer press and
 release must both be platform input with no synthetic event touching the gesture, and a keyboard or
-accessibility activation must be one unambiguous platform event. A logic-only eframe pass that
-retains and replays its post-hook input keeps each event's recorded origin until a pass consumes
-it. App-injected automation events, including the control channel's pointer input or typing
-replayed after a report capture, fail closed and cannot launch it. Chat and Review show the same
-code,
+accessibility activation must be one unambiguous platform event. A logic-only eframe pass keeps
+the unconsumed batch's taint until a real UI pass consumes it: an all-platform batch stays trusted,
+while any unconsumed batch that contained synthetic input fails closed because host pre-hooks may
+have transformed its events. App-injected automation events, including the control channel's
+pointer input or typing replayed after a report capture, fail closed and cannot launch it. Chat and
+Review show the same code,
 address, browser and cancel controls as the account menu, so the surface that refused the
 operation can complete the flow without replaying it. A verified identity is
 staged and only becomes readable at one durable commit marker; identity without installation

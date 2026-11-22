@@ -3313,6 +3313,9 @@ impl SolveApp {
 
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        // A real UI pass consumes the hook's input. eframe's logic-only passes do not call this,
+        // so only here can the retained batch stop being replayable.
+        self.input_trust.input_consumed_by_ui();
         prefs::prepare_blur(self, ui.ctx());
         let blur_source = !self.home.open && !render_workspace::result_active(self);
         let _blur_scope = self.blur.begin(ui.ctx(), blur_source);

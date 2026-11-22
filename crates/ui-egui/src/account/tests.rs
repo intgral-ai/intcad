@@ -244,6 +244,31 @@ fn a_synthetic_press_retained_by_a_logic_only_hook_stays_tainted() {
 }
 
 #[test]
+fn a_visible_ui_pass_consumes_retained_taint_before_the_next_native_click() {
+    let mut app = crate::test_support::sample_app();
+    let rect = egui::Rect::from_min_size(Pos2::new(100.0, 100.0), egui::vec2(120.0, 30.0));
+    let at = rect.center();
+    app.synthetic.push(pointer(at, true));
+    let mut first = frame_input(Vec::new());
+    app.raw_input_hook(&mut first);
+
+    // A real UI pass (unlike eframe's logic-only pass) consumes the retained input.
+    let ctx = crate::fonts::test_context();
+    let mut visible = frame_input(Vec::new());
+    app.raw_input_hook(&mut visible);
+    let _ = crate::test_support::frame(&ctx, visible, |ui| app.ui(ui));
+    let mut old_release = frame_input(vec![pointer(at, false)]);
+    app.raw_input_hook(&mut old_release);
+
+    let mut press = frame_input(vec![egui::Event::PointerMoved(at), pointer(at, true)]);
+    app.raw_input_hook(&mut press);
+    app.input_trust.input_consumed_by_ui();
+    let mut release = frame_input(vec![pointer(at, false)]);
+    app.raw_input_hook(&mut release);
+    assert!(app.input_trust.pointer_trusted(egui::PointerButton::Primary, rect), "a fresh native click after visible consumption must stay trusted");
+}
+
+#[test]
 fn a_platform_keyboard_activation_is_trusted_only_on_the_focused_control() {
     let mut app = crate::test_support::sample_app();
     let ctx = crate::fonts::test_context();
@@ -564,10 +589,86 @@ fn inline_waiting_sign_in_offers_the_shared_controls_and_completes_on_a_native_c
         let _ = crate::test_support::frame(&ctx, raw, |ui| {
             super::show_inline_sign_in(&mut app, ui, "account.sign_in_for_chat", "agent_chat:sign_in");
         });
+        app.input_trust.input_consumed_by_ui();
     }
     assert_eq!(app.account.pending_action(), Some(Action::OpenSignInBrowser), "the native click was not accepted");
     app.account.process_actions();
     assert_eq!(browser.lock().unwrap().as_slice(), ["https://auth.example/device"]);
+}
+
+fn inline_waiting_app(browser: Arc<Mutex<Vec<String>>>) -> crate::SolveApp {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut port = FakeAccountPort::with_view(
+        AccountView {
+            sign_in_state: SignInState::Waiting,
+            sign_in_prompt: Some(DeviceCode {
+                user_code: "BCDF-GHJK".into(),
+                verification_uri: "https://auth.example/device".into(),
+                expires_at: Timestamp(9_999),
+            }),
+            ..AccountView::signed_out()
+        },
+        calls,
+    );
+    port.browser = browser;
+    let mut app = crate::test_support::sample_app();
+    app.account = State::with_port(Box::new(port));
+    app
+}
+
+fn inline_frame(app: &mut crate::SolveApp, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
+    let mut raw = frame_input(events);
+    app.raw_input_hook(&mut raw);
+    let output = crate::test_support::frame(ctx, raw, |ui| {
+        super::show_inline_sign_in(app, ui, "account.sign_in_for_chat", "agent_chat:sign_in");
+    });
+    // This direct panel frame is a real UI pass, so model the app pass's consumption claim.
+    app.input_trust.input_consumed_by_ui();
+    output
+}
+
+#[test]
+fn the_inline_panel_accepts_a_platform_keyboard_activation_on_its_browser_button() {
+    let browser = Arc::new(Mutex::new(Vec::new()));
+    let mut app = inline_waiting_app(browser.clone());
+    let ctx = crate::fonts::test_context();
+    let _ = inline_frame(&mut app, &ctx, Vec::new());
+    let _ = inline_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }],
+    );
+    let _ = inline_frame(&mut app, &ctx, vec![platform_key(egui::Key::Space)]);
+    assert_eq!(app.account.pending_action(), Some(Action::OpenSignInBrowser));
+    assert!(browser.lock().unwrap().is_empty(), "the panel must only enqueue the fake port action");
+}
+
+#[test]
+fn the_inline_panel_accepts_a_platform_accesskit_activation_for_its_browser_button() {
+    let browser = Arc::new(Mutex::new(Vec::new()));
+    let mut app = inline_waiting_app(browser.clone());
+    let ctx = crate::fonts::test_context();
+    ctx.enable_accesskit();
+    let output = inline_frame(&mut app, &ctx, Vec::new());
+    let label = app.tr("account.sign_in_browser").to_string();
+    let node = output
+        .platform_output
+        .accesskit_update
+        .as_ref()
+        .and_then(|update| update.nodes.iter().find(|(_, node)| node.label() == Some(label.as_str())).map(|(id, _)| *id))
+        .expect("the browser button should be in the accessibility tree");
+    let _ = inline_frame(
+        &mut app,
+        &ctx,
+        vec![egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+            action: egui::accesskit::Action::Click,
+            target_tree: egui::accesskit::TreeId::ROOT,
+            target_node: node,
+            data: None,
+        })],
+    );
+    assert_eq!(app.account.pending_action(), Some(Action::OpenSignInBrowser));
+    assert!(browser.lock().unwrap().is_empty(), "the panel must only enqueue the fake port action");
 }
 
 #[test]
