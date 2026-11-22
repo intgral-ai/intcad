@@ -591,6 +591,13 @@ impl<T: Transport> OperationRenewal<T> {
         &self.deadline
     }
 
+    /// Time until the next attempt or expiry, whichever is earlier.
+    pub fn wait_for_next_tick(&self) -> Option<Duration> {
+        let now = self.service.clock.now();
+        let due = self.next?.min(self.deadline.expires_at());
+        Some(due.as_duration().saturating_sub(now.as_duration()))
+    }
+
     #[cfg(test)]
     pub(crate) fn transport(&self) -> &T {
         self.service.transport()

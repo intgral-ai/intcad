@@ -659,6 +659,11 @@ pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result
         };
     }
     if let Some(refusal) = authority_snapshot_refusal(app, req) {
+        if req.entry == EntryCategory::DirectControl
+            && let Some(operation) = req.operation.as_ref()
+        {
+            app.account.control_finished(operation);
+        }
         return Err(refusal);
     }
     match admit_for_app(app, req) {
@@ -674,8 +679,20 @@ pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result
                 return Err(refusal);
             }
             req.admission = Some(admission.clone());
+            register_control_renewal(app, req, &admission);
             Ok(admission)
         }
+    }
+}
+
+fn register_control_renewal(app: &mut SolveApp, req: &ControlRequest, admission: &Admission) {
+    if req.entry == EntryCategory::DirectControl
+        && let Admission::NewlyAdmitted { operation, grant } = admission
+        && req.operation.as_ref() == Some(operation)
+        && grant.capability() == Capability::Control
+        && let Some(scope) = app.commit_scope.as_ref()
+    {
+        app.account.control_admitted(scope, operation, grant);
     }
 }
 
@@ -683,6 +700,9 @@ pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result
 /// evidence that no effect occurred (for example, admission itself refused before any step).
 /// A release transport failure is kept as recovery work instead of silently discarded.
 fn release_admission(app: &mut SolveApp, admission: &Admission, reason: RefusalCode) {
+    if let Admission::NewlyAdmitted { operation, .. } = admission {
+        app.account.control_finished(operation);
+    }
     if let Admission::NewlyAdmitted { operation, .. } = admission
         && let Some(billing) = app.billing.as_mut()
         && let Err(refusal) = billing.release(operation, reason)
@@ -1868,6 +1888,11 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
         Some(admission) => admission.clone(),
         None => {
             if let Some(refusal) = authority_snapshot_refusal(app, req) {
+                if req.entry == EntryCategory::DirectControl
+                    && let Some(operation) = req.operation.as_ref()
+                {
+                    app.account.control_finished(operation);
+                }
                 return admission_refusal(&refusal);
             }
             admit_for_app(app, req)
@@ -1891,6 +1916,9 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
         }
         return admission_refusal(&refusal);
     }
+    if req.admission.is_none() {
+        register_control_renewal(app, req, &admission);
+    }
     // The host marks the actual dispatch boundary. Pre-dispatch refusals before this point can
     // release an unstarted admission; nothing reads this flag from request parameters.
     req.work_started.store(true, Ordering::Relaxed);
@@ -1898,6 +1926,9 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
     // The actual commit point: re-read the advancing clock, the current account/session and the
     // durable state before writing the result back.
     let decision = commit_decision(app, req, &admission, &out);
+    if let Admission::NewlyAdmitted { operation, .. } = &admission {
+        app.account.control_finished(operation);
+    }
     let notice =
         settle_result(app, &admission, decision, req.local_no_effect.load(Ordering::Relaxed), req.local_unknown_effect.load(Ordering::Relaxed), &out);
     if !decision.allowed() {

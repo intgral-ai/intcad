@@ -424,7 +424,25 @@ struct ControlRenewalJob {
     grant: solidcraft_engine::entitlement::Grant,
     generation: u64,
     cutoff: Arc<Mutex<Option<MonotonicInstant>>>,
+    cancelled: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
+}
+
+type ControlRenewalFactory = Box<
+    dyn FnMut(
+            CredentialSession,
+            AuthenticatedHostScope,
+            solidcraft_engine::entitlement::OperationId,
+            solidcraft_engine::entitlement::Grant,
+        ) -> std::io::Result<ControlRenewalJob>
+        + Send
+        + Sync,
+>;
+
+impl Drop for ControlRenewalJob {
+    fn drop(&mut self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
 }
 
 impl ControlRenewalJob {
@@ -440,10 +458,12 @@ impl ControlRenewalJob {
         initial: solidcraft_engine::entitlement::ConservativeDeadline,
         interval: Duration,
         setup: impl FnOnce() -> (T, WireConnection, Box<dyn MonotonicClock>) + Send + 'static,
-        wait_until_due: impl FnOnce(Duration) + Send + 'static,
+        mut wait_until_due: impl FnMut(Duration, &AtomicBool) -> bool + Send + 'static,
     ) -> std::io::Result<Self> {
         let cutoff = Arc::new(Mutex::new(None));
         let published = Arc::clone(&cutoff);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let retired = Arc::clone(&cancelled);
         let generation = session.authority_generation();
         let credentials = session;
         let (worker_scope, worker_operation, worker_grant) = (scope.clone(), operation.clone(), grant.clone());
@@ -462,16 +482,28 @@ impl ControlRenewalJob {
             ) else {
                 return;
             };
-            wait_until_due(interval);
-            if matches!(driver.tick(), Ok(true))
-                && let Ok(mut slot) = published.lock()
-                && credentials.authority_generation() == generation
-                && !credentials.is_revoked()
-            {
-                *slot = Some(driver.deadline().expires_at());
+            while let Some(wait) = driver.wait_for_next_tick() {
+                if retired.load(Ordering::SeqCst)
+                    || !wait_until_due(wait, &retired)
+                    || retired.load(Ordering::SeqCst)
+                    || credentials.authority_generation() != generation
+                {
+                    break;
+                }
+                match driver.tick() {
+                    Ok(true) => {
+                        let Ok(mut slot) = published.lock() else { break };
+                        if retired.load(Ordering::SeqCst) || credentials.authority_generation() != generation || credentials.is_revoked() {
+                            break;
+                        }
+                        *slot = Some(driver.deadline().expires_at());
+                    }
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
             }
         })?;
-        Ok(Self { scope, operation, grant, generation, cutoff, worker: Some(worker) })
+        Ok(Self { scope, operation, grant, generation, cutoff, cancelled, worker: Some(worker) })
     }
 
     #[cfg(test)]
@@ -494,6 +526,7 @@ pub struct AccountRuntime {
     clock: Option<Box<dyn MonotonicClock + Send + Sync>>,
     service: Option<Box<dyn AccountService + Send + Sync>>,
     control_renewal: Option<ControlRenewalJob>,
+    control_renewal_factory: Option<ControlRenewalFactory>,
     /// Explicit device sign-in settings, absent unless the host supplied all three trusted values.
     sign_in: Option<SignInConfig>,
     /// Test-injected transports. Production creates the documented HTTPS transports per job.
@@ -545,6 +578,7 @@ impl AccountRuntime {
             clock: Some(Box::new(SystemMonotonicClock::new())),
             service: None,
             control_renewal: None,
+            control_renewal_factory: None,
             sign_in: None,
             sign_in_device: None,
             sign_in_product: None,
@@ -772,6 +806,12 @@ struct DesktopAccountPort {
 }
 
 impl DesktopAccountPort {
+    fn retire_control_renewal(&self) {
+        if let Some(job) = &self.runtime.control_renewal {
+            job.cancelled.store(true, Ordering::SeqCst);
+        }
+    }
+
     fn new(runtime: AccountRuntime, startup: &AccountStartup) -> Self {
         let view = current_view(startup);
         let mut port = Self {
@@ -889,7 +929,7 @@ impl DesktopAccountPort {
     /// worker. The worker's result is applied only for its own generation, so a late result from
     /// an older switch can never clear a newer cleanup state.
     fn revoke(&mut self, event: LifecycleEvent) -> Result<(), Refusal> {
-        self.runtime.control_renewal = None;
+        self.retire_control_renewal();
         // A running device flow or restart check belongs to the session being retired. Cancel
         // both before the generation barrier is published, so no later result can write for the
         // old session.
@@ -1084,6 +1124,31 @@ fn current_view(startup: &AccountStartup) -> AccountView {
 }
 
 impl AccountPort for DesktopAccountPort {
+    fn control_admitted(
+        &mut self,
+        scope: &AuthenticatedHostScope,
+        operation: &solidcraft_engine::entitlement::OperationId,
+        grant: &solidcraft_engine::entitlement::Grant,
+    ) {
+        // One slot, including a retired worker whose bounded request is still returning.
+        if self
+            .runtime
+            .control_renewal
+            .as_ref()
+            .is_some_and(|job| !job.cancelled.load(Ordering::SeqCst) || job.worker.as_ref().is_some_and(|worker| !worker.is_finished()))
+        {
+            return;
+        }
+        let Some(factory) = self.runtime.control_renewal_factory.as_mut() else { return };
+        self.runtime.control_renewal = factory(self.runtime.credentials.clone(), scope.clone(), operation.clone(), grant.clone()).ok();
+    }
+
+    fn control_finished(&mut self, operation: &solidcraft_engine::entitlement::OperationId) {
+        if self.runtime.control_renewal.as_ref().is_some_and(|job| &job.operation == operation) {
+            self.retire_control_renewal();
+        }
+    }
+
     fn renewed_control_cutoff(
         &self,
         scope: &AuthenticatedHostScope,
@@ -1096,7 +1161,7 @@ impl AccountPort for DesktopAccountPort {
             return None;
         }
         let cutoff = *job.cutoff.lock().ok()?;
-        (credentials.authority_generation() == job.generation).then_some(cutoff).flatten()
+        (credentials.authority_generation() == job.generation && !job.cancelled.load(Ordering::SeqCst)).then_some(cutoff).flatten()
     }
 
     fn renewal_refusal(&self, scope: &AuthenticatedHostScope, operation: &solidcraft_engine::entitlement::OperationId) -> Option<RefusalCode> {
@@ -1207,10 +1272,11 @@ impl AccountPort for DesktopAccountPort {
 
     fn shutdown(&mut self) {
         self.cancel_restart();
-        if let Some(mut job) = self.runtime.control_renewal.take()
-            && let Some(worker) = job.worker.take()
-        {
-            let _ = worker.join();
+        if let Some(mut job) = self.runtime.control_renewal.take() {
+            job.cancelled.store(true, Ordering::SeqCst);
+            if let Some(worker) = job.worker.take() {
+                let _ = worker.join();
+            }
         }
         self.join_workers();
     }
@@ -2335,6 +2401,56 @@ mod tests {
     }
 
     #[test]
+    fn direct_control_admission_calls_the_optional_renewal_factory() {
+        let session = active_session();
+        let scope = session.authenticated_scope().unwrap();
+        let (mut request, _) = solidcraft_ui_egui::ControlRequest::trusted_control("document.inspect", json!({}));
+        let operation = request.operation().unwrap().clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let mut runtime = AccountRuntime::with_session(session);
+        runtime.control_renewal_factory = Some(Box::new(move |session, scope, admitted, grant| {
+            assert_eq!(admitted, operation);
+            assert_eq!(session.authenticated_scope(), Some(scope));
+            assert_eq!(grant.capability(), Capability::Control);
+            observed.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::other("fixture: no renewal worker"))
+        }));
+        let startup = runtime.startup();
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        install(&mut app, runtime, startup);
+        let mut budget = BudgetTable::unverified_default();
+        budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(1));
+        struct Billing;
+        impl solidcraft_engine::entitlement::BillingPort for Billing {
+            fn admit(&mut self, _: &OperationId, capability: Capability, _: EntryCategory) -> Result<Grant, Refusal> {
+                Ok(Grant::from_server(
+                    solidcraft_engine::entitlement::GrantId::new("grant_registration_fixture"),
+                    capability,
+                    MonotonicInstant::from_millis(60_000),
+                ))
+            }
+            fn commit(&mut self, _: &OperationId, result: BillingResult) -> Result<BillingResult, Refusal> {
+                Ok(result)
+            }
+            fn release(&mut self, _: &OperationId, _: RefusalCode) -> Result<(), Refusal> {
+                Ok(())
+            }
+        }
+        app.install_billing(Box::new(Billing), budget);
+        app.install_commit_authority(
+            scope,
+            Box::new(RenewalTestAuthority { on_third_lookup: Box::new(|| {}), lookups: AtomicUsize::new(0) }),
+            Box::new(SystemMonotonicClock::new()),
+        );
+        let control::Outcome::Done(reply) = control::handle(&mut app, &egui::Context::default(), &mut request) else {
+            panic!("expected a synchronous inspection");
+        };
+        assert_eq!(reply["ok"], true, "a failed worker start does not extend or void the original lease: {reply}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn background_control_renewal_only_publishes_a_matching_timely_reply() {
         use solidcraft_engine::entitlement::{ConservativeDeadline, GrantId};
         use std::sync::atomic::AtomicU64;
@@ -2361,11 +2477,14 @@ mod tests {
                 Ok(())
             }
         }
-        for (status, received, matching, dispatch_at, expected) in [
-            (200, 21_000, true, 65_000, None),
-            (200, 60_000, true, 65_000, Some("UnsafeToStart")),
-            (200, 21_000, false, 65_000, Some("UnsafeToStart")),
-            (401, 21_000, true, 21_000, Some("AuthRequired")),
+        for (status, received, matching, second_reply, dispatch_at, expected, responses, retire) in [
+            (200, 21_000, true, 41_000, 85_000, None, 2, None),
+            (200, 21_000, true, 80_000, 85_000, Some("UnsafeToStart"), 2, None),
+            (200, 60_000, true, 41_000, 65_000, Some("UnsafeToStart"), 1, None),
+            (200, 21_000, false, 41_000, 65_000, Some("UnsafeToStart"), 1, None),
+            (401, 21_000, true, 41_000, 21_000, Some("AuthRequired"), 1, None),
+            (200, 21_000, true, 41_000, 65_000, None, 1, Some(Action::SignOut)),
+            (200, 21_000, true, 41_000, 65_000, None, 1, Some(Action::SwitchAccount)),
         ] {
             let time = Arc::new(AtomicU64::new(0));
             let clock = Clock(time.clone());
@@ -2381,9 +2500,19 @@ mod tests {
                 "execution_session_proof":null,"expires_at":"2026-01-01T00:01:20.000Z"
             });
             let body = if status == 401 { json!({"error":{"code":"AUTH_REQUIRED"}}) } else { body };
-            let mut wire = ScriptedProduct::scripted(vec![Ok(WireResponse::new(status, body.to_string().into_bytes()))]);
+            let mut wire = ScriptedProduct::scripted((0..responses).map(|_| Ok(WireResponse::new(status, body.to_string().into_bytes()))).collect());
             let response_time = time.clone();
-            wire.on_send(move || response_time.store(received, Ordering::SeqCst));
+            let (entered_tx, entered_rx) = channel();
+            let (release_tx, release_rx) = channel();
+            let release_rx = Mutex::new(release_rx);
+            wire.on_send(move || {
+                if retire.is_some() {
+                    entered_tx.send(()).unwrap();
+                    release_rx.lock().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                let at = response_time.load(Ordering::SeqCst);
+                response_time.store(if at == 20_000 { received } else { second_reply }, Ordering::SeqCst);
+            });
             let worker_clock = clock.clone();
             let worker_wire = wire.clone();
             let send_time = time.clone();
@@ -2395,18 +2524,44 @@ mod tests {
                 ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(60)),
                 Duration::from_secs(20),
                 move || (worker_wire, WireConnection::new("https://product.invalid", "1.0.0").unwrap(), Box::new(worker_clock)),
-                move |interval| {
-                    assert_eq!(interval, Duration::from_secs(20));
-                    send_time.store(20_000, Ordering::SeqCst);
+                {
+                    let mut attempts = 0;
+                    move |interval, _| {
+                        if attempts == responses {
+                            return false;
+                        }
+                        attempts += 1;
+                        send_time.fetch_add(u64::try_from(interval.as_millis()).unwrap(), Ordering::SeqCst);
+                        true
+                    }
                 },
             )
             .unwrap();
+            if let Some(action) = retire {
+                let cache = job.cutoff.clone();
+                let mut runtime = AccountRuntime::with_session(session);
+                runtime.control_renewal = Some(job);
+                let startup = runtime.startup();
+                let mut port = DesktopAccountPort::new(runtime, &startup);
+                entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                match action {
+                    Action::SignOut => port.sign_out().unwrap(),
+                    Action::SwitchAccount => port.switch_account().unwrap(),
+                    _ => panic!("unexpected fixture action"),
+                }
+                release_tx.send(()).unwrap();
+                port.runtime.control_renewal.as_mut().unwrap().wait_for_fixture();
+                assert_eq!(*cache.lock().unwrap(), None, "a retired worker did not publish its late reply");
+                port.shutdown();
+                continue;
+            }
             job.wait_for_fixture();
-            assert_eq!(wire.requests().len(), 1);
+            assert_eq!(wire.requests().len(), responses);
             assert_eq!(wire.requests()[0].header("X-Execution-Session-Proof"), Some("fixture_control_proof"));
             time.store(dispatch_at, Ordering::SeqCst);
             let mut runtime = AccountRuntime::with_session(session);
             runtime.control_renewal = Some(job);
+            let cancelled = runtime.control_renewal.as_ref().unwrap().cancelled.clone();
             let startup = runtime.startup();
             let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
             install(&mut app, runtime, startup);
@@ -2425,6 +2580,7 @@ mod tests {
             if let Some(code) = expected {
                 assert_eq!(reply["errorDetails"]["code"], code, "{reply}");
             }
+            assert!(cancelled.load(Ordering::SeqCst), "both completion and pre-dispatch refusal retire the operation");
         }
     }
 
