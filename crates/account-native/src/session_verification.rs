@@ -123,7 +123,7 @@ fn verified_account(value: &Value) -> Result<String, ProductExchangeError> {
 /// The server account id must match the frozen rev3 `^acct_[A-Za-z0-9_-]{8,64}$` grammar. This is
 /// shape validation only; it makes no claim about the WorkOS identity mapping, which only the
 /// server verified.
-fn valid_account(account: &str) -> bool {
+pub(crate) fn valid_account(account: &str) -> bool {
     account.strip_prefix("acct_").is_some_and(|suffix| {
         (8..=64).contains(&suffix.len()) && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
     })

@@ -22,8 +22,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use solidcraft_account_native::{
     BootstrapPlatform, CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodePrompt, DeviceCodeTransport, FileOperationStore,
-    HttpAccountService, ProductLogin, ServerVerifiedProductSession, Transport, UreqDeviceCodeTransport, UreqTransport, WireConnection,
-    WorkOsPublicClient,
+    FixedCredentials, HttpAccountService, ProductLogin, Secret, ServerVerifiedProductSession, Transport, UreqDeviceCodeTransport, UreqTransport,
+    WireConnection, WireCredentials, WorkOsPublicClient,
 };
 use solidcraft_engine::entitlement::{AccountService, AuthenticatedHostScope, BudgetTable, MonotonicClock, MonotonicInstant, Refusal, RefusalCode};
 use solidcraft_ui_egui::SolveApp;
@@ -321,6 +321,11 @@ type DeviceTransportFactory = Arc<dyn Fn() -> Box<dyn DeviceCodeTransport + Send
 type ProductTransportFactory = Arc<dyn Fn() -> Box<dyn Transport + Send + Sync> + Send + Sync>;
 type BrowserOpener = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
+/// A restart check is one startup decision, so it gets its own short bounds instead of the
+/// 30-second limit the full sign-in flow allows. A slow or offline service must not hold launch.
+const RESTART_STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+const RESTART_STATUS_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SignInPhase {
     Starting,
@@ -366,6 +371,18 @@ fn signed_in_view(account: &str) -> AccountView {
     }
 }
 
+/// The exact local facts a restart may try to verify: the account/installation/session scope plus
+/// the two stored credentials that make it a complete pair. This is a candidate only; it never
+/// backs presentation or authority.
+struct RestartBinding {
+    scope: AuthenticatedHostScope,
+    product: Secret,
+    installation: Secret,
+    /// The credential session's revocation generation when the binding was captured. A sign-out,
+    /// switch or completed cleanup changes it, so a late result is discarded.
+    generation: u64,
+}
+
 /// Account facts read once before the window exists.
 #[derive(Clone, Debug)]
 pub struct AccountStartup {
@@ -373,6 +390,10 @@ pub struct AccountStartup {
     /// A durable sign-out marker is present, or its state could not be read. Either way startup
     /// refuses to restore or admit anything until a reviewed sign-in path clears it.
     logout_pending: bool,
+    /// Complete local credentials found at startup. They are not a session until an online status
+    /// check accepts them.
+    candidate: Option<AuthenticatedHostScope>,
+    /// A local candidate that the configured product service accepted online in this process.
     restored: Option<AuthenticatedHostScope>,
 }
 
@@ -472,32 +493,93 @@ impl AccountRuntime {
         self.credentials.authenticated_scope()
     }
 
-    /// A session is restored only when the secure store is usable, a product session is active
-    /// and the authenticated account, installation and session binding are provable.
-    #[cfg(test)]
-    pub fn restored_session(&self) -> Option<AuthenticatedHostScope> {
-        self.restored_with_store(self.credentials.is_persistent())
-    }
-
     /// Read the secure-store facts once, before the window exists, so `install` does no keyring
     /// work on the window's thread.
+    ///
+    /// A persisted pair is only a restart candidate. It becomes a restored session after one
+    /// bounded, account-bound `GET /v1/status` through the configured product transport succeeds
+    /// and the exact local binding is unchanged. There is no bootstrap, browser or operation
+    /// replay here, and the result is presentation only: controlled authority stays closed unless
+    /// a separately reviewed account service is installed.
     pub fn startup(&self) -> AccountStartup {
         let secure_store = self.credentials.is_persistent();
         // An unreadable tombstone is treated as present: revocation/safety cannot be confirmed.
         let logout_pending = self.credentials.logout_pending().unwrap_or(true);
-        let restored = if logout_pending { None } else { self.restored_with_store(secure_store) };
-        AccountStartup { secure_store, logout_pending, restored }
+        let binding = (!logout_pending).then(|| self.restart_binding(secure_store)).flatten();
+        let candidate = binding.as_ref().map(|binding| binding.scope.clone());
+        let restored = binding.as_ref().and_then(|binding| self.verify_restart_candidate(binding));
+        if candidate.is_some() && restored.is_none() {
+            solidcraft_engine::note!("account: a complete local pair is a restart candidate only; online status did not verify it");
+        } else if restored.is_some() {
+            solidcraft_engine::note!("account: persisted account session verified by a bounded online status read");
+        }
+        AccountStartup { secure_store, logout_pending, candidate, restored }
     }
 
-    fn restored_with_store(&self, secure_store: bool) -> Option<AuthenticatedHostScope> {
-        let scope = self.authenticated_scope();
-        crate::startup::can_restore_account_session(
-            secure_store,
-            self.credentials.product_session_active(),
-            scope.as_ref().is_some_and(AuthenticatedHostScope::is_provable),
-        )
-        .then_some(scope)
-        .flatten()
+    /// Capture the complete persisted pair and its revocation generation. A missing installation
+    /// credential, a product-only login, a failed read and a store change during the read all
+    /// yield no candidate.
+    fn restart_binding(&self, secure_store: bool) -> Option<RestartBinding> {
+        if !secure_store {
+            return None;
+        }
+        let generation = self.credentials.authority_generation();
+        let scope = self.authenticated_scope()?;
+        if !crate::startup::can_restore_account_session(secure_store, self.credentials.product_session_active(), scope.is_provable()) {
+            return None;
+        }
+        let product = WireCredentials::product_session(&self.credentials)?;
+        if !WireCredentials::installation_bound(&self.credentials) {
+            return None;
+        }
+        let installation = WireCredentials::installation_credential(&self.credentials)?;
+        if self.credentials.authority_generation() != generation {
+            return None;
+        }
+        Some(RestartBinding { scope, product, installation, generation })
+    }
+
+    /// Ask the configured service whether the exact local bearer belongs to the expected account.
+    /// Only after a 200 snapshot with that account id does the unchanged local pair become the
+    /// restored session.
+    fn verify_restart_candidate(&self, binding: &RestartBinding) -> Option<AuthenticatedHostScope> {
+        let config = self.sign_in.as_ref()?;
+        let transport: Box<dyn Transport + Send + Sync> = match self.sign_in_product.as_ref() {
+            Some(factory) => factory(),
+            None => Box::new(UreqTransport::with_limits(RESTART_STATUS_TIMEOUT, RESTART_STATUS_CONNECT_TIMEOUT)),
+        };
+        let service = HttpAccountService::with_transport(
+            transport,
+            config.product.clone(),
+            Box::new(FixedCredentials::none().with_product_session(binding.product.expose_secret())),
+            Box::new(self.credentials.clone()),
+            Box::new(SystemMonotonicClock::new()),
+        );
+        service.restart_status(binding.scope.account().as_str()).ok()?;
+        self.restart_binding_unchanged(binding)
+    }
+
+    /// Re-read the exact scope, bearer, installation credential and revocation generation after
+    /// the network read. Any difference means the result belongs to a session that is no longer
+    /// current.
+    fn restart_binding_unchanged(&self, binding: &RestartBinding) -> Option<AuthenticatedHostScope> {
+        if self.credentials.authority_generation() != binding.generation {
+            return None;
+        }
+        let scope = self.authenticated_scope()?;
+        if scope != binding.scope {
+            return None;
+        }
+        if WireCredentials::product_session(&self.credentials).as_ref() != Some(&binding.product) {
+            return None;
+        }
+        if WireCredentials::installation_credential(&self.credentials).as_ref() != Some(&binding.installation) {
+            return None;
+        }
+        if self.credentials.authority_generation() != binding.generation {
+            return None;
+        }
+        Some(scope)
     }
 
     /// The current safe-stop bounds, still unverified in this task.
@@ -506,14 +588,20 @@ impl AccountRuntime {
         &self.budget
     }
 
-    /// Take the installed account service and clock only when a provable session backs them.
-    fn take_commit_authority(&mut self) -> Option<(AuthenticatedHostScope, Box<dyn AccountService + Send>, Box<dyn MonotonicClock + Send>)> {
+    /// Take the installed account service and clock only when this process accepted the restored
+    /// session through the online restart checkpoint and the exact binding still matches. A local
+    /// candidate by itself never installs controlled authority.
+    fn take_commit_authority(
+        &mut self,
+        startup: &AccountStartup,
+    ) -> Option<(AuthenticatedHostScope, Box<dyn AccountService + Send>, Box<dyn MonotonicClock + Send>)> {
         // Check the service first: with no reviewed adapter this task performs no credential
         // read while the window is being created.
         let service = self.service.take()?;
         let clock = self.clock.take()?;
-        let scope = self.authenticated_scope()?;
-        Some((scope, service, clock))
+        let scope = startup.restored.clone()?;
+        let current = self.authenticated_scope()?;
+        (current == scope).then_some((scope, service, clock))
     }
 }
 
@@ -925,13 +1013,15 @@ pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: Account
     if let Some(ledger) = runtime.ledger.take() {
         app.install_review_store(Box::new(ledger));
     }
-    if let Some((scope, service, clock)) = runtime.take_commit_authority() {
+    if let Some((scope, service, clock)) = runtime.take_commit_authority(&startup) {
         app.install_commit_authority(scope, service, clock);
-        solidcraft_engine::note!("account: authenticated commit authority installed for the restored session");
+        solidcraft_engine::note!("account: authenticated commit authority installed for the verified restart session");
     } else if startup.logout_pending {
         solidcraft_engine::note!("account: a previous sign-out is not confirmed; restore and controlled authority stay closed");
     } else if startup.restored.is_some() {
-        solidcraft_engine::note!("account: session restored from the secure store; controlled authority stays closed");
+        solidcraft_engine::note!("account: session verified online for presentation; controlled authority stays closed without a service");
+    } else if startup.candidate.is_some() {
+        solidcraft_engine::note!("account: local restart candidate not verified online; signed-in view and authority stay closed");
     } else {
         solidcraft_engine::note!("account: no account session restored; CAD stays anonymous and offline");
     }
@@ -954,8 +1044,8 @@ mod tests {
         ProductSession, ProductSessionExchange, ProviderSession, Secret, Transport, TransportFailure, WireCredentials, WireRequest, WireResponse,
     };
     use solidcraft_engine::entitlement::{
-        Admission, BillingResult, Capability, CredentialError, CredentialErrorCode, CredentialStore, EntryCategory, Grant, OperationId, Refusal,
-        RefusalCode,
+        AccountId, AccountService, Admission, Availability, BillingResult, Capability, CredentialError, CredentialErrorCode, CredentialStore,
+        EntryCategory, Grant, HostSessionBinding, InstallationId, OperationId, OperationStatus, Refusal, RefusalCode,
     };
     use solidcraft_ui_egui::account::{AccountPort, Action};
     use solidcraft_ui_egui::control;
@@ -1044,7 +1134,7 @@ mod tests {
 
     impl ProductSessionExchange for TestExchange {
         fn exchange(&self, _provider: &ProviderSession) -> Result<ProductSession, ProductExchangeError> {
-            Ok(ProductSession::from_trusted_exchange("account_desktop", Secret::new("product_session_test_0000000000"), None))
+            Ok(ProductSession::from_trusted_exchange("acct_desktop_0001", Secret::new("product_session_test_0000000000"), None))
         }
     }
 
@@ -1119,17 +1209,22 @@ mod tests {
         })
     }
 
-    fn status_body() -> serde_json::Value {
+    fn status_body_for(account: &str) -> serde_json::Value {
         json!({
-            "account": {"id": "acct_product_0001", "email_verified": true, "status": "active"},
+            "account": {"id": account, "email_verified": true, "status": "active"},
             "client": {"version": "1.0.0", "supported": true},
             "protocol": {"version": "intcad-auth/1.0", "supported": true},
             "eligible": true,
             "reasons": [],
+            "capabilities": {"chat": true},
             "balance": 10,
             "held": 0,
             "available": 10
         })
+    }
+
+    fn status_body() -> serde_json::Value {
+        status_body_for("acct_product_0001")
     }
 
     #[derive(Default)]
@@ -1218,6 +1313,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct ScriptedProduct {
         state: Arc<Mutex<ProductScript>>,
+        on_send: Option<Arc<dyn Fn() + Send + Sync>>,
     }
 
     impl ScriptedProduct {
@@ -1234,6 +1330,12 @@ mod tests {
             ])
         }
 
+        /// Run one inert fixture action while the request is in flight, so a test can retire the
+        /// session before the response is applied.
+        fn on_send(&mut self, action: impl Fn() + Send + Sync + 'static) {
+            self.on_send = Some(Arc::new(action));
+        }
+
         fn requests(&self) -> Vec<WireRequest> {
             self.state.lock().unwrap().requests.clone()
         }
@@ -1241,6 +1343,9 @@ mod tests {
 
     impl Transport for ScriptedProduct {
         fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
+            if let Some(action) = self.on_send.as_ref() {
+                action();
+            }
             let mut state = self.state.lock().unwrap();
             state.requests.push(request.clone());
             state.responses.pop_front().unwrap_or(Err(TransportFailure::Network))
@@ -1311,6 +1416,21 @@ mod tests {
         AccountRuntime::with_session(session).with_sign_in_harness(account_config(), device_factory, product_factory, timing, opener.opener())
     }
 
+    /// A restart runtime with a configured scripted product service and an inert opener. Startup
+    /// consumes exactly the scripted `/v1/status` response.
+    fn restart_runtime(session: CredentialSession, product: ScriptedProduct, opener: &RecordingOpener) -> AccountRuntime {
+        harness_runtime(session, ScriptedDevice::default(), product, Arc::new(VirtualTiming::default()), opener)
+    }
+
+    fn verified_restart_runtime(session: CredentialSession) -> AccountRuntime {
+        let opener = RecordingOpener::default();
+        restart_runtime(
+            session,
+            ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes()))]),
+            &opener,
+        )
+    }
+
     fn run_drive(
         device: ScriptedDevice,
         product: ScriptedProduct,
@@ -1337,32 +1457,137 @@ mod tests {
     #[test]
     fn startup_without_secure_store_does_not_restore_session() {
         let runtime = AccountRuntime::with_store(NoPersistentStore);
-        assert!(runtime.restored_session().is_none());
+        let startup = runtime.startup();
+        assert!(!startup.secure_store);
+        assert!(startup.candidate.is_none());
+        assert!(startup.restored.is_none());
     }
 
     #[test]
-    fn restore_requires_an_active_product_session_and_a_provable_scope() {
+    fn a_persisted_session_is_not_signed_in_until_online_status_verifies_it() {
+        // Restart fixture: a complete durable session exists, but no configured transport has
+        // confirmed it with the product service in this process.
+        let runtime = AccountRuntime::with_session(active_session());
+        let startup = runtime.startup();
+        assert!(startup.candidate.is_some(), "the complete pair is a local restart candidate");
+        assert!(startup.restored.is_none(), "no online read accepted it");
+        let port = DesktopAccountPort::new(runtime, &startup);
+        assert!(!port.view().signed_in, "local credentials alone must not present a signed-in account");
+        assert!(port.view().sign_in_visible, "an unverified restart stays signed out and offers an explicit sign-in");
+    }
+
+    #[test]
+    fn a_restart_candidate_requires_an_active_product_session_and_a_complete_pair() {
         let no_product = AccountRuntime::with_session(installed_session());
-        assert!(no_product.restored_session().is_none(), "a provider-only or empty session never restores");
+        let startup = no_product.startup();
+        assert!(startup.candidate.is_none(), "a provider-only or empty session is never a candidate");
 
         let active = AccountRuntime::with_session(active_session());
-        assert!(active.restored_session().is_some(), "the persisted product session and installation restore one scope");
         assert!(active.authenticated_scope().is_some_and(|scope| scope.is_provable()));
+        assert!(active.startup().candidate.is_some(), "the persisted product session and installation pair is complete");
+
+        // A derived scope alone is not enough: the installation credential must be readable.
+        let session = installed_session();
+        session.complete_provider_login("provider_account", "provider_token").unwrap();
+        session.activate_product_session(&TestExchange).unwrap();
+        let scope = AuthenticatedHostScope::new(
+            AccountId::new("acct_desktop_0001"),
+            InstallationId::new("installation_desktop"),
+            HostSessionBinding::new("local_scope_only"),
+        );
+        session.bind_scope(&scope).unwrap();
+        assert!(session.authenticated_scope().is_some(), "the generic scope can be derived without a credential");
+        assert!(WireCredentials::installation_credential(&session).is_none());
+        let product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes()))]);
+        let opener = RecordingOpener::default();
+        let runtime = restart_runtime(session, product.clone(), &opener);
+        let startup = runtime.startup();
+        assert!(startup.candidate.is_none(), "a missing installation credential is not a complete pair");
+        assert!(startup.restored.is_none());
+        assert!(product.requests().is_empty(), "an incomplete pair sends no restart status request");
+        assert!(opener.urls().is_empty());
     }
 
     #[test]
-    fn a_fresh_process_restores_the_persisted_scope_from_the_secure_store() {
+    fn a_fresh_process_restores_the_persisted_scope_after_one_exact_online_status_read() {
         let store = TestStore::default();
         let previous = activate_session(&store);
         let previous_binding = previous.authenticated_scope().unwrap().session_binding().clone();
+        let product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes()))]);
+        let opener = RecordingOpener::default();
 
         // A new process has empty in-memory labels. Only the secure store proves the account,
         // installation and the exact product session; the binding must match the old one.
-        let restored = AccountRuntime::with_session(CredentialSession::new(Box::new(store)));
-        let scope = restored.restored_session().expect("a persisted product session is restorable");
-        assert_eq!(scope.account().as_str(), "account_desktop");
+        let restored = restart_runtime(CredentialSession::new(Box::new(store)), product.clone(), &opener);
+        let startup = restored.startup();
+        let scope = startup.restored.expect("an online-verified persisted session is restorable");
+        assert_eq!(scope.account().as_str(), "acct_desktop_0001");
         assert_eq!(scope.installation().as_str(), "installation_desktop");
         assert_eq!(scope.session_binding(), &previous_binding);
+        let requests = product.requests();
+        assert_eq!(requests.len(), 1, "restart performs one status read and no bootstrap or replay");
+        assert_eq!(requests[0].method(), "GET");
+        assert_eq!(requests[0].url(), "https://api.example/v1/status");
+        assert_eq!(requests[0].header("Authorization"), Some("Bearer product_session_test_0000000000"));
+        assert!(requests[0].body().is_none());
+        assert!(opener.urls().is_empty(), "restart never opens a browser");
+    }
+
+    #[test]
+    fn a_restart_status_reply_for_another_account_is_refused_without_replay() {
+        let product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_other_0001").to_string().into_bytes()))]);
+        let opener = RecordingOpener::default();
+        let runtime = restart_runtime(active_session(), product.clone(), &opener);
+        let startup = runtime.startup();
+        assert!(startup.candidate.is_some());
+        assert!(startup.restored.is_none(), "a reply for another account never becomes this session");
+        let port = DesktopAccountPort::new(runtime, &startup);
+        assert!(!port.view().signed_in);
+        let requests = product.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url(), "https://api.example/v1/status");
+        assert_eq!(requests[0].method(), "GET");
+        assert!(opener.urls().is_empty());
+    }
+
+    #[test]
+    fn restart_status_timeout_and_refusal_leave_the_candidate_closed() {
+        for response in [
+            Err(TransportFailure::Timeout),
+            Err(TransportFailure::Network),
+            Ok(WireResponse::new(401, Vec::new())),
+            Ok(WireResponse::new(503, Vec::new())),
+        ] {
+            let product = ScriptedProduct::scripted(vec![response]);
+            let opener = RecordingOpener::default();
+            let runtime = restart_runtime(active_session(), product.clone(), &opener);
+            let startup = runtime.startup();
+            assert!(startup.candidate.is_some());
+            assert!(startup.restored.is_none(), "an unavailable or refused status never promotes presentation");
+            let port = DesktopAccountPort::new(runtime, &startup);
+            assert!(!port.view().signed_in);
+            assert_eq!(product.requests().len(), 1, "one bounded attempt, no retry or replay");
+            assert!(opener.urls().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_status_reply_that_arrives_after_revocation_is_stale_and_never_restores() {
+        let session = active_session();
+        let stale = session.clone();
+        let mut product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes()))]);
+        product.on_send(move || {
+            stale.switch_account("account_other").unwrap();
+        });
+        let opener = RecordingOpener::default();
+        let runtime = restart_runtime(session, product.clone(), &opener);
+        let startup = runtime.startup();
+        assert!(startup.candidate.is_some(), "the old pair was captured before the request");
+        assert!(startup.restored.is_none(), "the reply belongs to a retired generation");
+        let port = DesktopAccountPort::new(runtime, &startup);
+        assert!(!port.view().signed_in, "a stale status result never promotes a signed-in view");
+        assert_eq!(product.requests().len(), 1);
+        assert!(opener.urls().is_empty());
     }
 
     #[test]
@@ -1377,8 +1602,8 @@ mod tests {
         let restarted = AccountRuntime::with_session(CredentialSession::new(Box::new(memory)));
         let startup = restarted.startup();
         assert!(!startup.secure_store, "memory is not a secure store");
+        assert!(startup.candidate.is_none());
         assert!(startup.restored.is_none(), "an in-memory session must not survive a restart");
-        assert!(restarted.restored_session().is_none());
     }
 
     #[test]
@@ -1393,13 +1618,16 @@ mod tests {
         let restarted = AccountRuntime::with_session(CredentialSession::new(Box::new(store.clone())));
         let startup = restarted.startup();
         assert!(startup.logout_pending, "startup sees the unconfirmed sign-out");
+        assert!(startup.candidate.is_none());
         assert!(startup.restored.is_none());
-        assert!(restarted.restored_session().is_none());
 
         // Once the inert store is healthy, the marker still suppresses restore until a reviewed
         // sign-in path clears it.
         store.fail_delete.store(false, Ordering::SeqCst);
-        assert!(AccountRuntime::with_session(CredentialSession::new(Box::new(store))).restored_session().is_none());
+        let startup = AccountRuntime::with_session(CredentialSession::new(Box::new(store))).startup();
+        assert!(startup.logout_pending);
+        assert!(startup.candidate.is_none());
+        assert!(startup.restored.is_none());
     }
 
     #[test]
@@ -1420,16 +1648,18 @@ mod tests {
         let session = CredentialSession::new(Box::new(store.clone()));
         session.complete_provider_login("provider_account", "provider_token").unwrap();
         let runtime = AccountRuntime::with_session(CredentialSession::new(Box::new(store)));
-        assert!(runtime.restored_session().is_none());
+        let startup = runtime.startup();
+        assert!(startup.candidate.is_none(), "a provider login alone is never a restart candidate");
+        assert!(startup.restored.is_none());
     }
 
     #[test]
     fn sign_out_and_switch_clear_credentials_and_raise_one_lifecycle_event() {
         for (action, expected) in [(Action::SignOut, LifecycleEvent::SignedOut), (Action::SwitchAccount, LifecycleEvent::AccountSwitched)] {
-            let runtime = AccountRuntime::with_session(active_session());
+            let runtime = verified_restart_runtime(active_session());
             let startup = runtime.startup();
             let mut port = DesktopAccountPort::new(runtime, &startup);
-            assert!(port.view().signed_in);
+            assert!(port.view().signed_in, "the online-verified restart is presented");
             if action == Action::SignOut {
                 port.sign_out().unwrap();
             } else {
@@ -1532,14 +1762,63 @@ mod tests {
         assert_eq!(port.begin_device_code().unwrap_err().code, RefusalCode::AuthRequired);
     }
 
+    struct InertService;
+
+    impl AccountService for InertService {
+        fn status(&self) -> Result<Availability, Refusal> {
+            Err(account_unavailable("inert test service"))
+        }
+
+        fn authorize(&mut self, _scope: &AuthenticatedHostScope, _capability: Capability) -> Result<Grant, Refusal> {
+            Err(account_unavailable("inert test service"))
+        }
+
+        fn begin(
+            &mut self,
+            _scope: &AuthenticatedHostScope,
+            _operation: &OperationId,
+            _capability: Capability,
+            _entry: EntryCategory,
+        ) -> Result<Admission, Refusal> {
+            Err(account_unavailable("inert test service"))
+        }
+
+        fn finalize(
+            &mut self,
+            _scope: &AuthenticatedHostScope,
+            _operation: &OperationId,
+            _result: BillingResult,
+        ) -> Result<OperationStatus, Refusal> {
+            Err(account_unavailable("inert test service"))
+        }
+
+        fn operation(&self, _scope: &AuthenticatedHostScope, _operation: &OperationId) -> Result<OperationStatus, Refusal> {
+            Err(account_unavailable("inert test service"))
+        }
+    }
+
+    #[test]
+    fn local_restart_candidate_alone_never_installs_commit_authority() {
+        let mut unverified = AccountRuntime::with_session(active_session());
+        unverified.service = Some(Box::new(InertService));
+        let startup = unverified.startup();
+        assert!(startup.candidate.is_some());
+        assert!(unverified.take_commit_authority(&startup).is_none(), "a local candidate alone installs no authority");
+
+        let mut verified = verified_restart_runtime(active_session());
+        verified.service = Some(Box::new(InertService));
+        let startup = verified.startup();
+        assert!(verified.take_commit_authority(&startup).is_some(), "only the online-verified scope may install authority");
+    }
+
     #[test]
     fn installing_the_runtime_leaves_controlled_authority_closed_without_a_service() {
-        let runtime = AccountRuntime::with_session(active_session());
+        let runtime = verified_restart_runtime(active_session());
         let startup = runtime.startup();
         let mut app = solidcraft_ui_egui::SolveApp::new(solidcraft_engine::Session::default(), solidcraft_ui_egui::Services::default());
         install(&mut app, runtime, startup);
         assert!(app.account.is_installed(), "the desktop port is installed");
-        assert!(app.account.view().signed_in, "the restored product session is shown");
+        assert!(app.account.view().signed_in, "the online-verified restart is shown");
 
         let (gui, _) = solidcraft_ui_egui::ControlRequest::trusted_gui("engine.execute", json!({"command": "document.inspect"}));
         assert!(matches!(control::admit_control_request(&gui, &BudgetTable::unverified_default(), &mut NoBilling), Admission::Allowed));

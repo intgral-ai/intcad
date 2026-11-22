@@ -24,6 +24,8 @@ use solidcraft_engine::entitlement::{
     MonotonicClock, MonotonicInstant, OperationId, OperationStatus, Refusal, RefusalCode,
 };
 
+use crate::session_verification::valid_account;
+
 /// Frozen protocol version from the rev3 manifest.
 pub const PROTOCOL_VERSION: &str = "intcad-auth/1.0";
 /// Hard response-size cap. The largest frozen artifact is 176,410 bytes; responses are far smaller.
@@ -282,6 +284,12 @@ pub struct UreqTransport {
 
 impl UreqTransport {
     pub fn new() -> Self {
+        Self::with_limits(Duration::from_secs(30), Duration::from_secs(10))
+    }
+
+    /// A transport for one bounded startup check. The caller supplies both the total and connect
+    /// limits; TLS verification, HTTPS-only and zero redirects are unchanged.
+    pub fn with_limits(total: Duration, connect: Duration) -> Self {
         let tls = ureq::tls::TlsConfig::builder()
             .root_certs(ureq::tls::RootCerts::PlatformVerifier)
             .unversioned_rustls_crypto_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
@@ -291,8 +299,8 @@ impl UreqTransport {
             .https_only(true)
             .http_status_as_error(false)
             .max_redirects(0)
-            .timeout_global(Some(Duration::from_secs(30)))
-            .timeout_connect(Some(Duration::from_secs(10)))
+            .timeout_global(Some(total))
+            .timeout_connect(Some(connect))
             .user_agent("intcad-account")
             .build()
             .into();
@@ -789,8 +797,14 @@ impl<T: Transport> HttpAccountService<T> {
     }
 }
 
-impl<T: Transport> AccountService for HttpAccountService<T> {
-    fn status(&self) -> Result<Availability, Refusal> {
+impl<T: Transport> HttpAccountService<T> {
+    /// Read one authenticated `/v1/status` snapshot and return the exact server account id with it.
+    ///
+    /// The bearer is read from the host credential session and sent as the only credential. A
+    /// missing or unusable bearer is refused before any request. Shapes and consistency checks
+    /// match [`AccountService::status`]; this helper adds the account id needed to bind a restart
+    /// verification to the exact local account.
+    fn status_snapshot(&self) -> Result<(String, Availability), Refusal> {
         let mut request = self.request("GET", "/v1/status", None);
         self.push_auth(
             &mut request,
@@ -801,6 +815,7 @@ impl<T: Transport> AccountService for HttpAccountService<T> {
         if status != 200 {
             return Err(error_refusal(status, &value));
         }
+        let account = value.pointer("/account/id").and_then(Value::as_str).filter(|account| valid_account(account)).ok_or_else(unavailable)?;
         let account_status = value.pointer("/account/status").and_then(Value::as_str).ok_or_else(unavailable)?;
         match account_status {
             "active" => {}
@@ -836,7 +851,24 @@ impl<T: Transport> AccountService for HttpAccountService<T> {
         {
             return Err(unavailable());
         }
-        Ok(Availability { online: true, version_supported, model_available, balance, held, reasons })
+        Ok((account.to_owned(), Availability { online: true, version_supported, model_available, balance, held, reasons }))
+    }
+
+    /// Prove that the configured product service accepts the host's exact bearer for the expected
+    /// account. This is a restart presentation check only: it never bootstraps an installation,
+    /// issues a grant, or claims that the installation credential is still server-valid.
+    pub fn restart_status(&self, expected_account: &str) -> Result<Availability, Refusal> {
+        let (account, availability) = self.status_snapshot()?;
+        if account != expected_account {
+            return Err(refusal(RefusalCode::AuthRequired));
+        }
+        Ok(availability)
+    }
+}
+
+impl<T: Transport> AccountService for HttpAccountService<T> {
+    fn status(&self) -> Result<Availability, Refusal> {
+        self.status_snapshot().map(|(_, availability)| availability)
     }
 
     fn authorize(&mut self, scope: &AuthenticatedHostScope, capability: Capability) -> Result<Grant, Refusal> {

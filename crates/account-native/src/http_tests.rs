@@ -197,6 +197,26 @@ fn status_returns_balance_held_available_from_one_snapshot() {
 }
 
 #[test]
+fn restart_status_requires_the_exact_account_and_bearer_without_sending_anything_else() {
+    let service = scripted(vec![ok(200, status_body(1000, 1, 999))]);
+    service.restart_status("acct_example_0001").unwrap();
+    let requests = service.transport().take_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method(), "GET");
+    assert_eq!(requests[0].url(), "https://auth.intcad.invalid/v1/status");
+    assert_eq!(requests[0].header("Authorization"), Some("Bearer product_session_example_0000000000000000"));
+    assert!(requests[0].header("X-Installation-Credential").is_none());
+    assert!(requests[0].body().is_none());
+
+    let mismatch = scripted(vec![ok(200, status_body(1000, 1, 999))]);
+    assert_eq!(mismatch.restart_status("acct_other_0001").unwrap_err().code, RefusalCode::AuthRequired);
+
+    let missing = scripted_with(FixedCredentials::none(), vec![ok(200, status_body(1000, 1, 999))]);
+    assert_eq!(missing.restart_status("acct_example_0001").unwrap_err().code, RefusalCode::AuthRequired);
+    assert!(missing.transport().take_requests().is_empty(), "a missing bearer is refused before any request");
+}
+
+#[test]
 fn begin_maps_newly_admitted_already_exists_owned_elsewhere_and_conflict() {
     let mut admitted = scripted(vec![ok(200, admitted_body())]);
     match admitted.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap() {

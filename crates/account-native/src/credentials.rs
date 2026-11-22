@@ -395,6 +395,13 @@ impl CredentialSession {
         self.revoked.load(Ordering::SeqCst)
     }
 
+    /// The monotonic revocation generation. It advances before any sign-out or switch cleanup
+    /// starts, so a caller comparing it before and after a network read can reject a result that
+    /// was admitted by the retired session.
+    pub fn authority_generation(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+
     /// The common read gate: check the lock-free barrier first, then recheck it and the epoch
     /// after the session lock is acquired. The returned epoch must also be checked after any
     /// store IO before returning a credential.
