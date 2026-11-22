@@ -31,6 +31,25 @@ No production values are checked in. A local build, developer build or CI job wi
 variables builds an anonymous, offline desktop with the existing account refusals. The release
 builder must set all three together and record which values it used in release evidence.
 
+## Before a staging package run
+
+Use **Staging desktop packages (nonpublishing)** (`staging-packages.yml`), not the ordinary
+package or release gate workflow. Before an authorized dispatch:
+
+1. Review the exact public staging tuple in `.github/config/intcad-staging-account.json`
+   at the approved SHA. The staging wrapper requires a WorkOS ID of `client_` followed
+   by ASCII alphanumerics and bare HTTPS origins with no trailing slash. Never put secrets
+   or production settings in that file. Rotate the tuple through a new reviewed commit.
+2. Verify the manual workflow is discoverable for dispatch (GitHub requires it to exist on the
+   default branch). Verify the selected run ref points to the approved, reviewed SHA and
+   the `staging` environment gate remains in place. No GitHub variables are read at runtime.
+
+The build path expects one tuple for Linux x86_64, both macOS builds that form the universal
+package, and Windows x64. `staging-` Actions artifacts carry build evidence with the checkout SHA,
+package hashes, and the exact public tuple, path and source SHA under `accountConfig`.
+This workflow does not publish a release or provide signed distribution. Package checks are not
+installed-app UX, sign-in or keychain acceptance evidence.
+
 ## Relationship to installation and authority
 
 A verified WorkOS identity is not installation proof. Explicit sign-in verifies the product
