@@ -58,6 +58,24 @@ public static class AssistantWin {
         public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret;
         public RECT rcCaret;
     }
+    public class QueueState {
+        public bool Succeeded { get; set; }
+        public IntPtr hwndFocus { get; set; }
+        public IntPtr hwndCapture { get; set; }
+    }
+    [StructLayout(LayoutKind.Sequential)] struct MOUSEINPUT {
+        public int X, Y; public uint Data, Flags, Time; public UIntPtr Extra;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT {
+        public ushort Key, Scan; public uint Flags, Time; public UIntPtr Extra;
+    }
+    [StructLayout(LayoutKind.Explicit)] struct INPUTDATA {
+        [FieldOffset(0)] public MOUSEINPUT Mouse;
+        [FieldOffset(0)] public KEYBDINPUT Key;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct INPUT {
+        public uint Type; public INPUTDATA Data;
+    }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
@@ -66,12 +84,13 @@ public static class AssistantWin {
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
-    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
-    [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
+    [DllImport("user32.dll")] static extern uint SendInput(uint count, INPUT[] input, int size);
+    [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int i);
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsChild(IntPtr parent, IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr WindowFromPoint(POINT p);
     [DllImport("user32.dll")] public static extern bool GetGUIThreadInfo(uint thread, ref GUITHREADINFO info);
@@ -106,12 +125,93 @@ public static class AssistantWin {
     }
     // The window that has the keyboard in the foreground thread's input queue. A child window of
     // another process shares that queue with its parent's thread.
-    public static IntPtr Focus() {
+    public static QueueState InputQueue() {
         var info = new GUITHREADINFO();
         info.cbSize = Marshal.SizeOf(typeof(GUITHREADINFO));
-        return GetGUIThreadInfo(0, ref info) ? info.hwndFocus : IntPtr.Zero;
+        bool ok = GetGUIThreadInfo(0, ref info);
+        return new QueueState { Succeeded = ok, hwndFocus = info.hwndFocus, hwndCapture = info.hwndCapture };
+    }
+    static INPUT Mouse(uint flags) {
+        return new INPUT { Type = 0, Data = new INPUTDATA { Mouse = new MOUSEINPUT { Flags = flags } } };
+    }
+    static INPUT Key(ushort key, uint flags) {
+        return new INPUT { Type = 1, Data = new INPUTDATA { Key = new KEYBDINPUT { Key = key, Flags = flags } } };
+    }
+    public static uint Click() {
+        return SendInput(2, new[] { Mouse(0x0002), Mouse(0x0004) }, Marshal.SizeOf(typeof(INPUT)));
+    }
+    public static bool ReleaseMouse() {
+        return SendInput(1, new[] { Mouse(0x0004) }, Marshal.SizeOf(typeof(INPUT))) == 1;
+    }
+    public static bool TypeKey(ushort key) {
+        uint count = SendInput(2, new[] { Key(key, 0), Key(key, 0x0002) }, Marshal.SizeOf(typeof(INPUT)));
+        if (count == 1 && SendInput(1, new[] { Key(key, 0x0002) }, Marshal.SizeOf(typeof(INPUT))) != 1)
+            throw new InvalidOperationException("partial key press; key release could not be queued");
+        return count == 2;
     }
     public static IntPtr At(int x, int y) { POINT p; p.X = x; p.Y = y; return WindowFromPoint(p); }
+}
+
+// An unnamed nested job, with no breakaway flags and kill-on-last-handle-close.
+public static class AssistantJob {
+    [StructLayout(LayoutKind.Sequential)] struct Limits {
+        public long ProcessTime, JobTime;
+        public uint Flags;
+        public UIntPtr MinimumWorkingSet, MaximumWorkingSet;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint Priority, Scheduling;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct ExtendedLimits {
+        public Limits Basic;
+        public ulong ReadOps, WriteOps, OtherOps, ReadBytes, WriteBytes, OtherBytes;
+        public UIntPtr ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct Accounting {
+        public long UserTime, KernelTime, PeriodUserTime, PeriodKernelTime;
+        public uint Faults, Total, Active, Terminated;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateJobObject(IntPtr attrs, string name);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetInformationJobObject(Microsoft.Win32.SafeHandles.SafeFileHandle job, int kind, ref ExtendedLimits info, int size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool QueryInformationJobObject(Microsoft.Win32.SafeHandles.SafeFileHandle job, int kind, out Accounting info, int size, IntPtr returned);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool AssignProcessToJobObject(Microsoft.Win32.SafeHandles.SafeFileHandle job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool IsProcessInJob(IntPtr process, Microsoft.Win32.SafeHandles.SafeFileHandle job, out bool member);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool TerminateJobObject(Microsoft.Win32.SafeHandles.SafeFileHandle job, uint code);
+    static Exception Error(string call) {
+        return new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), call + " failed");
+    }
+    public static Microsoft.Win32.SafeHandles.SafeFileHandle Create() {
+        var job = CreateJobObject(IntPtr.Zero, null);
+        if (job.IsInvalid) throw Error("CreateJobObject");
+        var limits = new ExtendedLimits { Basic = new Limits { Flags = 0x2000 } }; // KILL_ON_JOB_CLOSE
+        if (SetInformationJobObject(job, 9, ref limits, Marshal.SizeOf(typeof(ExtendedLimits)))) return job;
+        var error = Error("SetInformationJobObject");
+        job.Dispose();
+        throw error;
+    }
+    public static void Assign(Microsoft.Win32.SafeHandles.SafeFileHandle job, IntPtr process) {
+        if (!AssignProcessToJobObject(job, process)) throw Error("AssignProcessToJobObject");
+    }
+    public static bool Contains(Microsoft.Win32.SafeHandles.SafeFileHandle job, IntPtr process) {
+        bool member;
+        if (!IsProcessInJob(process, job, out member)) throw Error("IsProcessInJob");
+        return member;
+    }
+    public static uint Active(Microsoft.Win32.SafeHandles.SafeFileHandle job) {
+        Accounting info;
+        if (!QueryInformationJobObject(job, 1, out info, Marshal.SizeOf(typeof(Accounting)), IntPtr.Zero))
+            throw Error("QueryInformationJobObject");
+        return info.Active;
+    }
+    public static void Terminate(Microsoft.Win32.SafeHandles.SafeFileHandle job) {
+        if (!TerminateJobObject(job, 1)) throw Error("TerminateJobObject");
+    }
 }
 '@
 
@@ -186,22 +286,56 @@ function Views($h, [string]$when, [switch]$Any) {
     if ($Any) { $largest } else { $view }
 }
 
-# A real press and release of the left button at a point of the screen.
-function Click([int]$x, [int]$y, [IntPtr]$target) {
-    $pt = New-Object AssistantWin+POINT
+function IsOwnedFrame {
+    $script:p -and -not $script:p.HasExited -and [AssistantWin]::IsWindow($h) -and
+        [AssistantWin]::Owner($h) -eq $script:p.Id
+}
+
+function WithinWindow([IntPtr]$parent, [IntPtr]$candidate) {
+    $candidate -ne [IntPtr]::Zero -and [AssistantWin]::IsWindow($candidate) -and
+        ($candidate -eq $parent -or [AssistantWin]::IsChild($parent, $candidate))
+}
+
+function ReadInputQueue { [AssistantWin]::InputQueue() }
+function SendMouseClick { [AssistantWin]::Click() }
+function ReleaseMouseButton { [AssistantWin]::ReleaseMouse() }
+function MovePointer([int]$x, [int]$y) {
     if (-not [AssistantWin]::SetCursorPos($x, $y)) { throw 'BLOCKED: cannot move the desktop pointer' }
+}
+
+function ReadClickRoute([int]$x, [int]$y, [IntPtr]$target) {
+    $pt = New-Object AssistantWin+POINT
+    @{
+        CursorAtPoint = [AssistantWin]::GetCursorPos([ref]$pt) -and $pt.X -eq $x -and $pt.Y -eq $y
+        HitInTarget = WithinWindow $target ([AssistantWin]::At($x, $y))
+        Queue = ReadInputQueue
+        LeftDown = ([AssistantWin]::GetAsyncKeyState(1) -band 0x8000) -ne 0
+        TargetInFrame = WithinWindow $h $target
+        Foreground = [AssistantWin]::GetForegroundWindow() -eq $h
+        FrameOwned = IsOwnedFrame
+    }
+}
+
+# Validate after pointer movement. Queue down/up together so there is no sleep with a button held.
+function Click([int]$x, [int]$y, [IntPtr]$target) {
+    MovePointer $x $y
     Start-Sleep -Milliseconds 250
-    if (-not [AssistantWin]::GetCursorPos([ref]$pt) -or $pt.X -ne $x -or $pt.Y -ne $y -or
-        [AssistantWin]::GetForegroundWindow() -ne $h) {
+    $route = ReadClickRoute $x $y $target
+    if (-not $route.FrameOwned) { throw 'cannot direct input to a live owned frame' }
+    if (-not $route.TargetInFrame) { throw 'click target is no longer in the owned frame' }
+    if (-not $route.CursorAtPoint -or -not $route.Foreground) {
         throw 'BLOCKED: cannot direct desktop input to the smoke window'
     }
-    $over = [AssistantWin]::At($x, $y)
-    if ($over -ne $target -and -not [AssistantWin]::IsChild($target, $over)) {
-        throw "click at $x,$y would hit $(Name $over), not $(Name $target)"
+    if (-not $route.Queue.Succeeded) { throw 'BLOCKED: GetGUIThreadInfo could not check mouse capture' }
+    if ($route.Queue.hwndCapture -ne [IntPtr]::Zero) { throw 'BLOCKED: mouse capture can redirect the click' }
+    if ($route.LeftDown) { throw 'BLOCKED: the left mouse button is already down' }
+    if (-not $route.HitInTarget) { throw "click at $x,$y would not hit the target or its descendant" }
+    $sent = SendMouseClick
+    if ($sent -eq 1) {
+        if (-not (ReleaseMouseButton)) { throw 'partial mouse click; left mouse button release could not be queued' }
+        throw 'partial mouse click; left mouse button was released'
     }
-    [AssistantWin]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero) # LEFTDOWN
-    Start-Sleep -Milliseconds 60
-    [AssistantWin]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero) # LEFTUP
+    if ($sent -ne 2) { throw 'BLOCKED: SendInput did not accept the mouse click' }
     Start-Sleep -Milliseconds 700
 }
 
@@ -211,21 +345,27 @@ function Click([int]$x, [int]$y, [IntPtr]$target) {
 function WaitFocus([scriptblock]$ok, [int]$seconds = 5) {
     $until = (Get-Date).AddSeconds($seconds)
     do {
-        $focus = [AssistantWin]::Focus()
+        $queue = ReadInputQueue
+        if (-not $queue.Succeeded) { throw 'BLOCKED: GetGUIThreadInfo could not read keyboard focus' }
+        $focus = $queue.hwndFocus
         if (& $ok $focus) { return $focus }
         Start-Sleep -Milliseconds 100
     } while ((Get-Date) -lt $until)
-    $focus
+    throw "unexpected keyboard focus (HWND: $focus)"
 }
 
 # Lower-case letters and spaces, as key presses.
-function Keys([string]$text) {
+function Keys([string]$text, [IntPtr]$target) {
     foreach ($c in $text.ToCharArray()) {
-        if ([AssistantWin]::GetForegroundWindow() -ne $h) { throw 'BLOCKED: the smoke window lost foreground before typing' }
         $key = if ($c -eq ' ') { 0x20 } else { [byte][char]::ToUpperInvariant($c) }
-        [AssistantWin]::keybd_event([byte]$key, 0, 0, [UIntPtr]::Zero)
-        Start-Sleep -Milliseconds 20
-        [AssistantWin]::keybd_event([byte]$key, 0, 0x0002, [UIntPtr]::Zero) # KEYUP
+        $queue = ReadInputQueue
+        if (-not $queue.Succeeded) { throw 'BLOCKED: GetGUIThreadInfo could not verify typing focus' }
+        if (-not (IsOwnedFrame) -or [AssistantWin]::GetForegroundWindow() -ne $h) {
+            throw 'BLOCKED: the live smoke frame lost foreground before typing'
+        }
+        if (-not (WithinWindow $h $target) -or -not (WithinWindow $target $queue.hwndFocus) -or
+            ($target -eq $h -and $queue.hwndFocus -ne $h)) { throw 'unexpected keyboard focus before typing' }
+        if (-not [AssistantWin]::TypeKey($key)) { throw 'BLOCKED: SendInput did not accept a complete key press' }
         Start-Sleep -Milliseconds 40
     }
 }
@@ -266,6 +406,65 @@ Write-Host "WebView2 runtime: $($runtime.Version) ($($runtime.Scope), $($runtime
 # Start the app with settings of its own and wait for its window and its control channel. The
 # window is put at a known place and size that fits the runner's screen (physical px; the minimum
 # is 960 x 600) and brought to the front.
+function AssignOwnedLauncher($job, $launcher) { [AssistantJob]::Assign($job, $launcher.Handle) }
+
+function AuthorizeOwnedLaunch($job, $launcher) {
+    try {
+        try { AssignOwnedLauncher $job $launcher }
+        catch { throw "BLOCKED: cannot nest a run-owned job under this runner's job policy: $($_.Exception.Message)" }
+        $launcher.StandardInput.WriteLine('launch')
+    } finally { $launcher.StandardInput.Dispose() } # On assignment failure, EOF means do not launch.
+}
+
+function StartOwnedApp($psi, [int]$port) {
+    # The launcher waits on a private pipe. It cannot start the app until assigned to the job.
+    # This avoids the race between Process.Start and job assignment without breaking away from CI.
+    $launcherCode = {
+        $ErrorActionPreference = 'Stop'
+        if ([Console]::ReadLine() -cne 'launch') { exit 0 }
+        $start = [Diagnostics.ProcessStartInfo]::new($env:ASSISTANT_SMOKE_EXE)
+        foreach ($arg in @('--sample', '--control', $env:ASSISTANT_SMOKE_PORT)) { [void]$start.ArgumentList.Add($arg) }
+        $start.UseShellExecute = $false
+        $start.RedirectStandardOutput = $start.RedirectStandardError = $true
+        $app = [Diagnostics.Process]::Start($start)
+        [Console]::WriteLine($app.Id)
+        [Console]::Out.Flush()
+        $outCopy = $app.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput())
+        $errCopy = $app.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError())
+        $app.WaitForExit()
+        [Threading.Tasks.Task]::WaitAll(@($outCopy, $errCopy))
+        exit $app.ExitCode
+    }
+    $psi.FileName = Join-Path $PSHOME 'pwsh.exe'
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardInput = $true
+    $psi.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
+    $psi.Environment['ASSISTANT_SMOKE_EXE'] = $exePath
+    $psi.Environment['ASSISTANT_SMOKE_PORT'] = "$port"
+    foreach ($arg in @('-NoProfile', '-NonInteractive', '-EncodedCommand',
+            [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launcherCode.ToString())))) {
+        [void]$psi.ArgumentList.Add($arg)
+    }
+    try { $script:job = [AssistantJob]::Create() }
+    catch { throw "BLOCKED: cannot create the run-owned Windows job: $($_.Exception.Message)" }
+    $script:launcher = [Diagnostics.Process]::Start($psi)
+    $script:stderr = $script:launcher.StandardError.ReadToEndAsync()
+    AuthorizeOwnedLaunch $script:job $script:launcher
+    $pidLine = $script:launcher.StandardOutput.ReadLineAsync()
+    if (-not $pidLine.Wait(15000)) { throw 'owned launcher did not report the app process within 15 s' }
+    $script:stdout = $script:launcher.StandardOutput.ReadToEndAsync()
+    $appId = 0
+    if (-not [int]::TryParse($pidLine.Result, [ref]$appId)) { throw 'owned launcher did not start the app' }
+    $appProcess = [Diagnostics.Process]::GetProcessById($appId)
+    try {
+        if (-not [AssistantJob]::Contains($script:job, $appProcess.Handle)) { throw 'app process is not in the run-owned job' }
+    } catch {
+        $appProcess.Dispose()
+        throw
+    }
+    $script:p = $appProcess
+}
+
 function Launch([int]$port, [hashtable]$extra) {
     $profile = Join-Path $root "$port"
     $script:settings = Join-Path $profile 'settings'
@@ -275,8 +474,6 @@ function Launch([int]$port, [hashtable]$extra) {
     New-Item -ItemType Directory -Force $settings, $local, $roaming, $control, $crashes | Out-Null
     $script:token = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant()
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $exePath
-    foreach ($a in @('--sample', '--control', "$port")) { [void]$psi.ArgumentList.Add($a) }
     $psi.UseShellExecute = $false
     $psi.RedirectStandardError = $true
     $psi.RedirectStandardOutput = $true
@@ -294,10 +491,8 @@ function Launch([int]$port, [hashtable]$extra) {
     $psi.Environment['SOLIDCRAFT_UPDATE_CHECK'] = '0'
     foreach ($k in $extra.Keys) { $psi.Environment[$k] = $extra[$k] }
     $script:calls = 0
-    $script:client = $script:stderr = $script:stdout = $null
-    $script:p = [System.Diagnostics.Process]::Start($psi)
-    $script:stderr = $script:p.StandardError.ReadToEndAsync()
-    $script:stdout = $script:p.StandardOutput.ReadToEndAsync()
+    $script:client = $script:stderr = $script:stdout = $script:p = $script:launcher = $script:job = $null
+    StartOwnedApp $psi $port
     $script:h = [IntPtr]::Zero
     $deadline = [datetime]::UtcNow.AddSeconds(180)
     while ($script:h -eq [IntPtr]::Zero -and [datetime]::UtcNow -lt $deadline -and -not $script:p.HasExited) {
@@ -483,7 +678,12 @@ function FindPageClose($view) {
         if ($uia.ExitCode -ne 0) { throw "page Close UI Automation query failed: $($errorOutput.Result)" }
         $output.Result | ConvertFrom-Json -AsHashtable
     } finally {
-        if (-not $uia.HasExited) { $uia.Kill() }
+        try {
+            if (-not $uia.HasExited) {
+                $uia.Kill()
+                if (-not $uia.WaitForExit(3000)) { throw 'owned UI Automation query did not exit after termination' }
+            }
+        } catch { RecordCleanupFailure 'page Close UI Automation' $_.Exception.Message }
         $uia.Dispose()
     }
 }
@@ -495,15 +695,19 @@ function ClosePage($view) {
     do {
         if ($script:p.HasExited) { throw 'app exited during page Close' }
         $state = ReadAssistant (Call 'ui.inspect' @{} $until)
-        if (PageClosed $state (Views $h 'after page Close') (-not $script:p.HasExited)) { return }
+        $visible = Views $h 'after page Close'
+        $retained = (WithinWindow $h $view.Window) -and [AssistantWin]::Class($view.Window) -ceq 'WRY_WEBVIEW' -and
+            -not [AssistantWin]::IsWindowVisible($view.Window)
+        if (PageClosed $state $visible (IsOwnedFrame) $retained) { return }
         Start-Sleep -Milliseconds 200
     } while ([datetime]::UtcNow -lt $until)
-    throw 'page Close did not close the panel and hide its native child'
+    throw 'page Close did not leave a closed panel with the original hidden, surface-ready child'
 }
 
-function PageClosed($state, $visiblePage, [bool]$appAlive) {
+function PageClosed($state, $visiblePage, [bool]$appAlive, [bool]$originalHiddenChild) {
     if (-not $appAlive) { throw 'app exited during page Close' }
-    $state.open -eq $false -and $null -eq $visiblePage
+    $state.open -eq $false -and $state.surface_ready -eq $true -and $state.host -ceq 'available' -and
+        $null -eq $visiblePage -and $originalHiddenChild
 }
 
 function RequireCreationDiagnostic([string]$stderr) {
@@ -531,23 +735,75 @@ function Quit {
     Write-Host 'ok: the owned main window closed with exit code zero'
 }
 
-# The app's error output of a run, printed and kept; the run is ended if it has not ended.
-# Nothing here waits without a limit: an app that started and never showed a window (the 32-bit
-# build on a CI runner, 2026-11-11) kept this script waiting for the end of its error output for
-# as long as the job ran. The app is ended with every process it started, and the output is
-# taken as far as it has come if it does not end.
+function WaitJobEmpty($job, [int]$milliseconds) {
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        if ([AssistantJob]::Active($job) -eq 0) { return $true }
+        if ($timer.ElapsedMilliseconds -ge $milliseconds) { return $false }
+        Start-Sleep -Milliseconds 100
+    } while ($true)
+}
+
+function StopOwnedJob($job) { [AssistantJob]::Terminate($job) }
+function CloseOwnedJob($job) { $job.Dispose() }
+
+function DrainRunPipe($task, [string]$which) {
+    if ($task) {
+        if (-not $task.Wait(3000)) { throw "$which pipe did not close after the run; a surviving process cannot be ruled out" }
+        $task.Result
+    }
+}
+
+function RecordCleanupFailure([string]$name, [string]$message) {
+    $what = "${name} cleanup: $message"
+    Write-Host "FAIL: $what"
+    $script:failures.Add($what)
+}
+
+# Keep checking the job and both pipes even after the app or launcher exits.
+# Do not let a cleanup error overwrite the original smoke diagnosis.
 function Finish([string]$name) {
-    if ($script:client) { $script:client.Dispose(); $script:client = $null }
-    if ($script:p -and -not $script:p.HasExited) {
-        Write-Host 'the app is still running: ending it and every process it started'
-        try { $script:p.Kill($true) } catch { Write-Host "could not end it: $($_.Exception.Message)" }
-        [void]$script:p.WaitForExit(15000)
+    if ($script:client) {
+        try { $script:client.Dispose() } catch { RecordCleanupFailure $name $_.Exception.Message }
+        $script:client = $null
+    }
+    if ($script:job) {
+        $empty = $false
+        try {
+            $grace = if ($script:p -and -not $script:p.HasExited) { 0 } else { 5000 }
+            $empty = WaitJobEmpty $script:job $grace
+            if (-not $empty) { RecordCleanupFailure $name 'run-owned job did not empty on its own; forcing cleanup' }
+        } catch { RecordCleanupFailure $name $_.Exception.Message }
+        if (-not $empty) {
+            try {
+                StopOwnedJob $script:job
+                if (-not (WaitJobEmpty $script:job 15000)) { throw 'run-owned job did not empty after termination' }
+            } catch { RecordCleanupFailure $name $_.Exception.Message }
+        }
+        try { CloseOwnedJob $script:job } catch { RecordCleanupFailure $name $_.Exception.Message }
+        $script:job = $null
+    }
+    if ($script:launcher) {
+        try {
+            # If nested assignment failed, the unassigned launcher was sent EOF, not "launch".
+            if (-not $script:launcher.HasExited -and -not $script:launcher.WaitForExit(3000)) {
+                RecordCleanupFailure $name 'owned launcher did not exit'
+                $script:launcher.Kill()
+                if (-not $script:launcher.WaitForExit(3000)) { throw 'owned launcher did not exit after termination' }
+            }
+        } catch { RecordCleanupFailure $name $_.Exception.Message }
     }
     $err = ''
-    if ($script:stderr) {
-        if ($script:stderr.Wait(15000)) { $err = $script:stderr.Result } else { $err = "(the app's error output did not end within 15 s: a process it started still holds it open)" }
+    try { $err = DrainRunPipe $script:stderr 'stderr' } catch { RecordCleanupFailure $name $_.Exception.Message }
+    try { [void](DrainRunPipe $script:stdout 'stdout') } catch { RecordCleanupFailure $name $_.Exception.Message }
+    try {
+        Set-Content -Path (Join-Path $Evidence "$name-app-error-output.txt") -Value $err
+    } catch { RecordCleanupFailure $name $_.Exception.Message }
+    foreach ($process in @($script:p, $script:launcher)) {
+        if ($process) {
+            try { $process.Dispose() } catch { RecordCleanupFailure $name $_.Exception.Message }
+        }
     }
-    Set-Content -Path (Join-Path $Evidence "$name-app-error-output.txt") -Value $err
     Write-Host $err
     $err
 }
@@ -574,17 +830,14 @@ try {
     $scale = [AssistantWin]::GetDpiForWindow($h) / 96.0
     if ($scale -le 0) { throw 'BLOCKED: cannot read the desktop DPI' }
     Click ($v.Left + [int](90 * $scale)) ($v.Bottom - [int](150 * $scale)) $view.Window
-    $focus = WaitFocus { param($f) $f -eq $view.Window -or [AssistantWin]::IsChild($view.Window, $f) }
-    if ($focus -eq [IntPtr]::Zero) { throw 'BLOCKED: Windows reported no keyboard focus after clicking the page' }
-    $inPage = $focus -eq $view.Window -or [AssistantWin]::IsChild($view.Window, $focus)
-    Check $inPage "a click on the message box gives the page the keyboard ($(Name $focus))"
-    if ($inPage) { Keys 'hello windows' }
+    $focus = WaitFocus { param($f) WithinWindow $view.Window $f }
+    Write-Host "ok: a click on the message box gives the page the keyboard ($(Name $focus))"
+    Keys 'hello windows' $view.Window
     Shot $h '02-after-click-and-typing-on-page'
     $free = if (($v.Left - $w.Left) -ge ($w.Right - $v.Right)) { [int](($w.Left + $v.Left) / 2) } else { [int](($v.Right + $w.Right) / 2) }
     Click $free ([int](($w.Top + $w.Bottom) / 2)) $h
     $focus = WaitFocus { param($f) $f -eq $h }
-    if ($focus -eq [IntPtr]::Zero) { throw 'BLOCKED: Windows reported no keyboard focus after clicking the frame' }
-    Check ($focus -eq $h) "a click on the 3D view gives the frame the keyboard back ($(Name $focus))"
+    Write-Host "ok: a click on the 3D view gives the frame the keyboard back ($(Name $focus))"
     Shot $h '03-after-click-on-3d-view'
 
     ClosePage $view
@@ -599,7 +852,7 @@ try {
     # Switch layout through the real search result while the Assistant is open.
     $until = [datetime]::UtcNow.AddSeconds(30)
     ClickTarget 'ribbon:search' $until
-    Keys 'workspace layout'
+    Keys 'workspace layout' $h
     ClickTarget 'search:command:view.layout' $until
     $docked = WaitPage $until 'compact'
     Shot $h '04-compact-layout'
@@ -625,7 +878,7 @@ try {
 
 # The same app with no runtime to be found: the app must report that the view could not be made
 # and leave no blank window over the panel. It must not quietly pass as a working Assistant.
-if ($made) {
+if ($made -and $failures.Count -eq 0) {
     Write-Host '=== the Assistant with the runtime hidden'
     $none = Join-Path $root 'no-runtime'
     New-Item -ItemType Directory -Force $none | Out-Null

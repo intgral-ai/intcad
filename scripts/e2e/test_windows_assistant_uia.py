@@ -142,10 +142,95 @@ class StandaloneSmoke(unittest.TestCase):
     def test_page_close_requires_closed_panel_hidden_child_and_live_app(self) -> None:
         self.fixture("""
             $closed = @{ open=$false; surface_ready=$true; host='available' }
-            if (PageClosed @{open=$true} $null $true) { throw 'accepted open panel' }
-            if (PageClosed $closed @{Window=1} $true) { throw 'accepted visible page' }
-            Reject { PageClosed $closed $null $false } 'app exited during page Close'
-            if (-not (PageClosed $closed $null $true)) { throw 'rejected a retained hidden page' }
+            if (PageClosed @{open=$true} $null $true $true) { throw 'accepted open panel' }
+            if (PageClosed $closed @{Window=1} $true $true) { throw 'accepted visible page' }
+            Reject { PageClosed $closed $null $false $true } 'app exited during page Close'
+            if (PageClosed $closed $null $true $false) { throw 'accepted destroyed or detached original child' }
+            if (PageClosed @{open=$false; surface_ready=$false; host='available'} $null $true $true) {
+                throw 'accepted lost retained readiness'
+            }
+            if (-not (PageClosed $closed $null $true $true)) { throw 'rejected a retained hidden page' }
+        """)
+
+    def test_focus_api_failure_is_blocked_but_null_and_wrong_focus_are_failures(self) -> None:
+        self.fixture("""
+            function Start-Sleep {}
+            function ReadInputQueue { @{ Succeeded=$false; hwndFocus=[IntPtr]::Zero } }
+            Reject { WaitFocus { $true } 0 } 'BLOCKED: GetGUIThreadInfo'
+            function ReadInputQueue { @{ Succeeded=$true; hwndFocus=[IntPtr]::Zero } }
+            Reject { WaitFocus { $false } 0 } 'unexpected keyboard focus'
+            function ReadInputQueue { @{ Succeeded=$true; hwndFocus=[IntPtr]44 } }
+            Reject { WaitFocus { $false } 0 } 'unexpected keyboard focus'
+            if ((WaitFocus { param($f) $f -eq [IntPtr]44 } 0) -ne [IntPtr]44) { throw 'lost valid focus' }
+        """)
+
+    def test_mouse_disallows_stale_frame_target_or_capture_and_releases_partial_press(self) -> None:
+        self.fixture("""
+            function Start-Sleep {}
+            $script:sent = 0; $script:released = 0
+            function SendMouseClick { $script:sent++; $script:count }
+            function ReleaseMouseButton { $script:released++; $true }
+            $script:sample = @{
+                FrameOwned=$true; Foreground=$true; CursorAtPoint=$true; LeftDown=$false;
+                TargetInFrame=$true; HitInTarget=$true;
+                Queue=@{Succeeded=$true; hwndCapture=[IntPtr]::Zero}
+            }
+            function ReadClickRoute { $script:sample }
+            function MovePointer {}
+            $script:sample.FrameOwned = $false
+            Reject { Click 10 20 ([IntPtr]1) } 'live owned frame'
+            $script:sample.FrameOwned = $true; $script:sample.TargetInFrame = $false
+            Reject { Click 10 20 ([IntPtr]1) } 'target is no longer in the owned frame'
+            $script:sample.TargetInFrame = $true; $script:sample.Queue.hwndCapture = [IntPtr]7
+            Reject { Click 10 20 ([IntPtr]1) } 'mouse capture'
+            $script:sample.Queue.hwndCapture = [IntPtr]::Zero; $script:sample.LeftDown = $true
+            Reject { Click 10 20 ([IntPtr]1) } 'left mouse button is already down'
+            if ($script:sent -ne 0 -or $script:released -ne 0) { throw 'sent input to an unsafe route' }
+            $script:sample.LeftDown = $false; $script:count = 1
+            Reject { Click 10 20 ([IntPtr]1) } 'partial mouse click'
+            if ($script:sent -ne 1 -or $script:released -ne 1) { throw 'partial press was not released' }
+            $script:count = 2
+            Click 10 20 ([IntPtr]1)
+            if ($script:sent -ne 2 -or $script:released -ne 1) { throw 'complete click was not sent exactly once' }
+        """)
+
+    def test_cleanup_records_surviving_job_and_pipe_failures_without_losing_primary_failure(self) -> None:
+        self.fixture("""
+            $script:failures = [Collections.Generic.List[string]]::new()
+            $script:failures.Add('original native failure')
+            $script:launcher = [pscustomobject]@{ HasExited=$true }
+            $script:launcher | Add-Member ScriptMethod Dispose {}
+            $script:job = [IntPtr]7
+            # Stub Wait to reproduce an open pipe without sleeping for the production timeout.
+            $script:stderr = [pscustomobject]@{}
+            $script:stderr | Add-Member ScriptMethod Wait { $false }
+            $script:stdout = $script:stderr
+            $script:terminated = 0; $script:disposed = 0
+            function WaitJobEmpty { $false }
+            function StopOwnedJob { $script:terminated++ }
+            function CloseOwnedJob { $script:disposed++ }
+            function Set-Content {}
+            [void](Finish 'fixture')
+            if ($script:failures -join ';' -notlike 'original native failure;*run-owned job did not empty*stderr pipe did not close*stdout pipe did not close*') {
+                throw "lost a failure: $($script:failures -join ';')"
+            }
+            if ($script:terminated -ne 1 -or $script:disposed -ne 1) { throw 'lost job cleanup with the launcher already exited' }
+        """)
+
+    def test_launcher_gets_eof_without_permission_to_launch_when_job_assignment_fails(self) -> None:
+        self.fixture("""
+            $pipe = [IO.StringWriter]::new()
+            $launcher = @{ Handle=[IntPtr]4; StandardInput=$pipe }
+            function AssignOwnedLauncher { throw 'fixture nested job denial' }
+            Reject { AuthorizeOwnedLaunch ([IntPtr]7) $launcher } 'BLOCKED: cannot nest a run-owned job'
+            if ($pipe.ToString()) { throw 'launcher was authorized without job membership' }
+            Reject { $pipe.WriteLine('unexpected write') } 'closed'
+            function AssignOwnedLauncher {}
+            $pipe = [IO.StringWriter]::new()
+            $launcher.StandardInput = $pipe
+            AuthorizeOwnedLaunch ([IntPtr]7) $launcher
+            if ($pipe.ToString().Trim() -cne 'launch') { throw 'assigned launcher not released' }
+            Reject { $pipe.WriteLine('unexpected write') } 'closed'
         """)
 
     def test_outer_close_rejects_timeout_nonzero_and_exit_before_input(self) -> None:
