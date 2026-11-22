@@ -704,6 +704,102 @@ fn settlement_intent_is_durable_and_write_once() {
 }
 
 #[test]
+fn reopening_after_lost_finalize_reply_replays_only_the_original_settlement() {
+    use std::cell::Cell;
+
+    use serde_json::json;
+    use solidcraft_engine::entitlement::AccountService;
+
+    use crate::http::{
+        FixedCredentials, HttpAccountService, RecordingHandoff, Transport, TransportFailure, WireConnection, WireRequest, WireResponse,
+    };
+
+    // Model the frozen server's idempotency: the debit succeeds before the first
+    // response is lost; an identical replay returns the original receipt.
+    struct Meter<'a> {
+        operation: &'a OperationId,
+        attempts: &'a Cell<usize>,
+        debits: &'a Cell<usize>,
+    }
+    impl Transport for Meter<'_> {
+        fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url(), format!("https://product.invalid/v1/operations/{}/finalize", self.operation.as_str()));
+            assert_eq!(request.header("X-Settlement-Credential"), Some("fixture_settlement"));
+            assert_eq!(request.header("Authorization"), None);
+            assert_eq!(request.header("X-Execution-Session-Proof"), None);
+            assert_eq!(serde_json::from_slice::<serde_json::Value>(request.body().unwrap()).unwrap(), json!({"result":"SUCCEEDED"}));
+            self.attempts.set(self.attempts.get() + 1);
+            if self.debits.get() == 0 {
+                self.debits.set(1);
+                return Err(TransportFailure::Timeout);
+            }
+            Ok(WireResponse::new(
+                200,
+                json!({
+                    "operation_id": self.operation.as_str(), "state": "CHARGED", "result": "SUCCEEDED", "terminal": true,
+                    "finalized_at": "2026-01-01T00:00:30Z", "settlement_deadline": "2026-01-01T00:11:00Z"
+                })
+                .to_string()
+                .into_bytes(),
+            ))
+        }
+    }
+
+    struct Clock;
+    impl solidcraft_engine::entitlement::MonotonicClock for Clock {
+        fn now(&self) -> solidcraft_engine::entitlement::MonotonicInstant {
+            solidcraft_engine::entitlement::MonotonicInstant::from_millis(0)
+        }
+        fn wall_now(&self) -> std::time::SystemTime {
+            std::time::UNIX_EPOCH
+        }
+    }
+
+    let mut disk = TempStore::new("settlement-replay");
+    let original_scope = scope();
+    let operation =
+        disk.persist_intent(&original_scope, &correlation("review_fixture"), Capability::Review, EntryCategory::ReviewPanel).unwrap().operation;
+    let run = RunId::new("run_settlement_fixture");
+    disk.record_review(&ReviewOperation::new(run.clone(), operation.clone())).unwrap();
+    let intent = SettlementIntent::Commit(BillingResult::Succeeded);
+    assert_eq!(disk.record_settlement_intent(&operation, intent), Ok(SaveOutcome::Saved));
+    let attempts = Cell::new(0);
+    let debits = Cell::new(0);
+    let service = || {
+        HttpAccountService::with_transport(
+            Meter { operation: &operation, attempts: &attempts, debits: &debits },
+            WireConnection::new("https://product.invalid", "1.0.0").unwrap(),
+            Box::new(FixedCredentials::none().with_settlement_credential("fixture_settlement")),
+            Box::new(RecordingHandoff::new().0),
+            Box::new(Clock),
+        )
+    };
+    assert_eq!(service().finalize(&original_scope, &operation, BillingResult::Succeeded).unwrap_err().code, RefusalCode::AuthUnavailable);
+    assert_eq!((attempts.get(), debits.get()), (1, 1));
+
+    // Drive recovery explicitly: no CAD runner, billing admission, or desktop
+    // startup hook participates in this native ledger/HTTP regression.
+    let mut reopened = disk.reopen();
+    assert!(matches!(reopened.unsettled_operations(Some(&other_scope())).unwrap().as_slice(), [UnsettledOperation::Foreign(_)]));
+    let rows = reopened.unsettled_operations(Some(&original_scope)).unwrap();
+    let [UnsettledOperation::Owned(recovered)] = rows.as_slice() else { panic!("expected one owned recovery row: {rows:?}") };
+    assert_eq!(recovered.operation, operation);
+    assert_eq!(recovered.review_run_id.as_ref(), Some(&run));
+    let Some(SettlementIntent::Commit(result)) = reopened.settlement_intent(&recovered.operation).unwrap() else {
+        panic!("the original commit intent must survive reopening");
+    };
+    let terminal = service().finalize(&original_scope, &recovered.operation, result).unwrap();
+    assert_eq!(terminal, OperationStatus::Charged);
+    reopened.mark_terminal(&recovered.operation, terminal).unwrap();
+
+    let reopened_again = disk.reopen();
+    assert_eq!(reopened_again.load(&operation).unwrap().unwrap().status, OperationStatus::Charged);
+    assert!(reopened_again.unsettled_operations(Some(&original_scope)).unwrap().is_empty());
+    assert_eq!((attempts.get(), debits.get()), (2, 1));
+}
+
+#[test]
 fn settlement_intent_creation_has_one_winner_under_competition() {
     use std::sync::{Arc, Barrier};
     let mut temp = TempStore::new("settlement-competition");
