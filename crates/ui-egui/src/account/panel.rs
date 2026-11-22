@@ -98,13 +98,12 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
             let enabled = pending.is_none();
             ui.horizontal(|ui| {
                 let label = if pending == Some(Action::SignOut) { &signing_out } else { &sign_out_label };
-                let options = if enabled { Button::Small } else { Button::Enabled(false) };
-                let response = button(ui, label, options);
+                let response = ui.add_enabled_ui(enabled, |ui| button(ui, label, Button::Small)).inner;
                 publish("account:sign_out", &response);
                 sign_out_clicked = response.clicked();
                 ui.add_space(t.space_8);
                 let label = if pending == Some(Action::SwitchAccount) { &switching } else { &switch_label };
-                let response = button(ui, label, options);
+                let response = ui.add_enabled_ui(enabled, |ui| button(ui, label, Button::Small)).inner;
                 publish("account:switch_account", &response);
                 switch_clicked = response.clicked();
             });
@@ -156,8 +155,7 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
                 }
                 SignInState::Idle => {
                     let label = if pending == Some(Action::SignIn) { &signing_in } else { &sign_in_label };
-                    let options = if pending.is_none() { Button::Primary } else { Button::Enabled(false) };
-                    let response = button(ui, label, options);
+                    let response = ui.add_enabled_ui(pending.is_none(), |ui| button(ui, label, Button::Primary)).inner;
                     publish("account:sign_in", &response);
                     sign_in_clicked = response.clicked();
                     if pending.is_some() {
