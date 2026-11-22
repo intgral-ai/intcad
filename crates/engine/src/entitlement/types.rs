@@ -364,19 +364,45 @@ pub struct Grant {
     id: GrantId,
     capability: Capability,
     expires_at: MonotonicInstant,
+    renewal: Option<(AuthenticatedHostScope, OperationId, super::clock::ConservativeDeadline, MonotonicInstant)>,
 }
 
 impl Grant {
     /// Account adapters call this only with a grant received from the server.
     pub fn from_server(id: GrantId, capability: Capability, expires_at: MonotonicInstant) -> Self {
-        Self { id, capability, expires_at }
+        Self { id, capability, expires_at, renewal: None }
     }
 
     /// Test-only grant. Never treat this as production authority.
     #[cfg(test)]
     #[doc(hidden)]
     pub fn test_fixture(id: GrantId, capability: Capability) -> Self {
-        Self { id, capability, expires_at: MonotonicInstant::from_millis(60_000) }
+        Self::from_server(id, capability, MonotonicInstant::from_millis(60_000))
+    }
+
+    /// Attach the schedule from the original operation admission, not a locally guessed interval.
+    pub fn with_admission_renewal(
+        mut self,
+        scope: AuthenticatedHostScope,
+        operation: OperationId,
+        sent_at: MonotonicInstant,
+        interval: std::time::Duration,
+    ) -> Self {
+        let due = sent_at.saturating_add(interval);
+        if !interval.is_zero() && due < self.expires_at {
+            let remaining = self.expires_at.as_duration().saturating_sub(sent_at.as_duration());
+            self.renewal = Some((scope, operation, super::clock::ConservativeDeadline::new(sent_at, remaining), due));
+        }
+        self
+    }
+
+    pub fn renewal_schedule(
+        &self,
+        scope: &AuthenticatedHostScope,
+        operation: &OperationId,
+    ) -> Option<(&super::clock::ConservativeDeadline, MonotonicInstant)> {
+        let (owner, original, deadline, due) = self.renewal.as_ref()?;
+        (owner == scope && original == operation).then_some((deadline, *due))
     }
 
     pub fn capability(&self) -> Capability {

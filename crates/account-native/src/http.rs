@@ -27,6 +27,10 @@ use solidcraft_engine::entitlement::{
 use crate::credentials::{CredentialSession, ProductExchangeError};
 use crate::session_verification::{valid_account, verified_account};
 
+fn renewal_interval(value: Option<&Value>) -> Option<Duration> {
+    value.and_then(Value::as_u64).filter(|seconds| (1..=3600).contains(seconds)).map(Duration::from_secs)
+}
+
 /// Frozen protocol version from the rev3 manifest.
 pub const PROTOCOL_VERSION: &str = "intcad-auth/1.0";
 /// Hard response-size cap. The largest frozen artifact is 176,410 bytes; responses are far smaller.
@@ -521,11 +525,39 @@ impl<T: Transport> OperationRenewal<T> {
         interval: Duration,
     ) -> Result<Self, Refusal> {
         let now = clock.now();
-        if grant.capability() != Capability::Control
-            || deadline.expires_at() > grant.expires_at()
-            || deadline.remaining(now).is_none()
-            || !(Duration::from_secs(1)..=Duration::from_secs(3600)).contains(&interval)
-        {
+        if !(Duration::from_secs(1)..=Duration::from_secs(3600)).contains(&interval) {
+            return Err(refusal(RefusalCode::UnsafeToStart));
+        }
+        Self::at_due(transport, connection, session, clock, scope, operation, grant, deadline, now.saturating_add(interval))
+    }
+
+    pub fn from_admission(
+        transport: T,
+        connection: WireConnection,
+        session: CredentialSession,
+        clock: Box<dyn MonotonicClock>,
+        scope: AuthenticatedHostScope,
+        operation: OperationId,
+        grant: Grant,
+    ) -> Result<Self, Refusal> {
+        let (deadline, due) = grant.renewal_schedule(&scope, &operation).ok_or_else(|| refusal(RefusalCode::UnsafeToStart))?;
+        let deadline = deadline.clone();
+        Self::at_due(transport, connection, session, clock, scope, operation, grant, deadline, due)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn at_due(
+        transport: T,
+        connection: WireConnection,
+        session: CredentialSession,
+        clock: Box<dyn MonotonicClock>,
+        scope: AuthenticatedHostScope,
+        operation: OperationId,
+        grant: Grant,
+        deadline: ConservativeDeadline,
+        due: MonotonicInstant,
+    ) -> Result<Self, Refusal> {
+        if grant.capability() != Capability::Control || deadline.expires_at() > grant.expires_at() || deadline.remaining(clock.now()).is_none() {
             return Err(refusal(RefusalCode::UnsafeToStart));
         }
         let generation = session.authority_generation();
@@ -533,7 +565,7 @@ impl<T: Transport> OperationRenewal<T> {
         let proof = WireCredentials::execution_session_proof(&session, &operation).ok_or_else(|| refusal(RefusalCode::AuthRequired))?;
         let fixed = FixedCredentials::none().with_product_session(bearer.expose_secret()).with_execution_session_proof(proof.expose_secret());
         let service = HttpAccountService::with_transport(transport, connection, Box::new(fixed), Box::new(session.clone()), clock);
-        let next = Some(now.saturating_add(interval));
+        let next = Some(due);
         let driver = Self { service, session, scope, operation, authorization: grant.id().clone(), bearer, proof, generation, deadline, next };
         driver.check_binding()?;
         Ok(driver)
@@ -828,8 +860,7 @@ impl<T: Transport> HttpAccountService<T> {
         }
         let remaining = value.get("remaining_seconds").and_then(Value::as_u64).ok_or_else(unavailable)?;
         let id = value.get("authorization_id").and_then(Value::as_str).ok_or_else(unavailable)?;
-        let interval =
-            value.get("renew_after_seconds").and_then(Value::as_u64).filter(|seconds| (1..=3600).contains(seconds)).map(Duration::from_secs);
+        let interval = renewal_interval(value.get("renew_after_seconds"));
         Ok((self.grant(sent_at, id, capability, remaining), sent_at, interval))
     }
 
@@ -892,7 +923,10 @@ impl<T: Transport> HttpAccountService<T> {
                     .ok_or_else(unavailable)?;
                 let settlement =
                     value.get("settlement_credential").and_then(Value::as_str).filter(|credential| !credential.is_empty()).ok_or_else(unavailable)?;
-                let grant = self.grant_from_absolute(sent_at, wall_sent, grant_id, capability, authorization_expires_at, grant_expires_at)?;
+                let mut grant = self.grant_from_absolute(sent_at, wall_sent, grant_id, capability, authorization_expires_at, grant_expires_at)?;
+                if let Some(interval) = renewal_interval(value.pointer("/execution_grant/renew_after_seconds")) {
+                    grant = grant.with_admission_renewal(scope.clone(), operation.clone(), sent_at, interval);
+                }
                 self.handoff.execution_session_proof(capability, operation, Secret::new(proof)).map_err(|_| unavailable())?;
                 self.handoff.settlement_credential(operation, Secret::new(settlement)).map_err(|_| unavailable())?;
                 Ok(Admission::NewlyAdmitted { operation: operation.clone(), grant })

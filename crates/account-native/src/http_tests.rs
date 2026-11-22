@@ -421,6 +421,9 @@ fn begin_maps_newly_admitted_already_exists_owned_elsewhere_and_conflict() {
             assert_eq!(grant.capability(), Capability::Chat);
             assert_eq!(grant.id().as_str(), "grant_example_0001");
             assert_eq!(grant.expires_at(), MonotonicInstant::from_millis(T0 + 60_000));
+            let (initial, due) = grant.renewal_schedule(&scope(), &operation()).unwrap();
+            assert_eq!(initial.expires_at(), grant.expires_at());
+            assert_eq!(due, MonotonicInstant::from_millis(T0 + 20_000));
         }
         other => panic!("unexpected admission: {other:?}"),
     }

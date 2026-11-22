@@ -439,6 +439,15 @@ type ControlRenewalFactory = Box<
         + Sync,
 >;
 
+type RenewalWait = Arc<dyn Fn(Duration, &AtomicBool) -> bool + Send + Sync>;
+
+struct ControlRenewalSource {
+    connection: WireConnection,
+    transport: ProductTransportFactory,
+    clock: Arc<dyn Fn() -> Box<dyn MonotonicClock> + Send + Sync>,
+    wait: RenewalWait,
+}
+
 impl Drop for ControlRenewalJob {
     fn drop(&mut self) {
         self.cancelled.store(true, Ordering::SeqCst);
@@ -446,17 +455,13 @@ impl Drop for ControlRenewalJob {
 }
 
 impl ControlRenewalJob {
-    // Fixture registration only. Shipped startup has no admitted lease or approved
-    // suspend-aware clock to register here.
-    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn spawn<T: Transport + 'static>(
         session: CredentialSession,
         scope: AuthenticatedHostScope,
         operation: solidcraft_engine::entitlement::OperationId,
         grant: solidcraft_engine::entitlement::Grant,
-        initial: solidcraft_engine::entitlement::ConservativeDeadline,
-        interval: Duration,
+        fixture_schedule: Option<(solidcraft_engine::entitlement::ConservativeDeadline, Duration)>,
         setup: impl FnOnce() -> (T, WireConnection, Box<dyn MonotonicClock>) + Send + 'static,
         mut wait_until_due: impl FnMut(Duration, &AtomicBool) -> bool + Send + 'static,
     ) -> std::io::Result<Self> {
@@ -469,17 +474,29 @@ impl ControlRenewalJob {
         let (worker_scope, worker_operation, worker_grant) = (scope.clone(), operation.clone(), grant.clone());
         let worker = std::thread::Builder::new().name("intcad-control-renewal".into()).spawn(move || {
             let (transport, connection, clock) = setup();
-            let Ok(mut driver) = solidcraft_account_native::OperationRenewal::new(
-                transport,
-                connection,
-                credentials.clone(),
-                clock,
-                worker_scope,
-                worker_operation,
-                worker_grant,
-                initial,
-                interval,
-            ) else {
+            let driver = match fixture_schedule {
+                Some((initial, interval)) => solidcraft_account_native::OperationRenewal::new(
+                    transport,
+                    connection,
+                    credentials.clone(),
+                    clock,
+                    worker_scope,
+                    worker_operation,
+                    worker_grant,
+                    initial,
+                    interval,
+                ),
+                None => solidcraft_account_native::OperationRenewal::from_admission(
+                    transport,
+                    connection,
+                    credentials.clone(),
+                    clock,
+                    worker_scope,
+                    worker_operation,
+                    worker_grant,
+                ),
+            };
+            let Ok(mut driver) = driver else {
                 return;
             };
             while let Some(wait) = driver.wait_for_next_tick() {
@@ -527,6 +544,7 @@ pub struct AccountRuntime {
     service: Option<Box<dyn AccountService + Send + Sync>>,
     control_renewal: Option<ControlRenewalJob>,
     control_renewal_factory: Option<ControlRenewalFactory>,
+    control_renewal_source: Option<ControlRenewalSource>,
     /// Explicit device sign-in settings, absent unless the host supplied all three trusted values.
     sign_in: Option<SignInConfig>,
     /// Test-injected transports. Production creates the documented HTTPS transports per job.
@@ -579,6 +597,7 @@ impl AccountRuntime {
             service: None,
             control_renewal: None,
             control_renewal_factory: None,
+            control_renewal_source: None,
             sign_in: None,
             sign_in_device: None,
             sign_in_product: None,
@@ -1170,8 +1189,27 @@ impl AccountPort for DesktopAccountPort {
         {
             return;
         }
-        let Some(factory) = self.runtime.control_renewal_factory.as_mut() else { return };
-        self.runtime.control_renewal = factory(self.runtime.credentials.clone(), scope.clone(), operation.clone(), grant.clone()).ok();
+        if let Some(source) = &self.runtime.control_renewal_source {
+            if grant.renewal_schedule(scope, operation).is_none() {
+                return;
+            }
+            let connection = source.connection.clone();
+            let transport = source.transport.clone();
+            let clock = source.clock.clone();
+            let wait = source.wait.clone();
+            self.runtime.control_renewal = ControlRenewalJob::spawn(
+                self.runtime.credentials.clone(),
+                scope.clone(),
+                operation.clone(),
+                grant.clone(),
+                None,
+                move || (transport(), connection, clock()),
+                move |interval, cancelled| wait(interval, cancelled),
+            )
+            .ok();
+        } else if let Some(factory) = self.runtime.control_renewal_factory.as_mut() {
+            self.runtime.control_renewal = factory(self.runtime.credentials.clone(), scope.clone(), operation.clone(), grant.clone()).ok();
+        }
     }
 
     fn control_finished(&mut self, operation: &solidcraft_engine::entitlement::OperationId) {
@@ -2491,8 +2529,19 @@ mod tests {
 
     #[test]
     fn direct_control_admission_starts_a_worker_that_rejects_a_reply_after_suspend() {
-        use solidcraft_engine::entitlement::{ConservativeDeadline, GrantId};
         use std::sync::atomic::AtomicU64;
+
+        struct ObservedTransport(ScriptedProduct, std::sync::mpsc::Sender<()>);
+        impl Transport for ObservedTransport {
+            fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
+                self.0.send(request)
+            }
+        }
+        impl Drop for ObservedTransport {
+            fn drop(&mut self) {
+                let _ = self.1.send(());
+            }
+        }
 
         #[derive(Clone)]
         struct Clock(Arc<AtomicU64>);
@@ -2501,7 +2550,7 @@ mod tests {
                 MonotonicInstant::from_millis(self.0.load(Ordering::SeqCst))
             }
             fn wall_now(&self) -> SystemTime {
-                UNIX_EPOCH
+                UNIX_EPOCH + Duration::from_secs(1_767_225_600)
             }
         }
         struct Billing(Grant, Arc<AtomicUsize>);
@@ -2520,12 +2569,30 @@ mod tests {
         for (received_at, accepted) in [(21_000, true), (60_001, false)] {
             let time = Arc::new(AtomicU64::new(0));
             let clock = Clock(time.clone());
-            let mut session = active_session();
+            let session = active_session();
             let scope = session.authenticated_scope().unwrap();
             let (mut request, _) = solidcraft_ui_egui::ControlRequest::trusted_control("document.inspect", json!({}));
             let operation = request.operation().unwrap().clone();
-            CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("admitted_proof")).unwrap();
-            let grant = Grant::from_server(GrantId::new("grant_admitted_fixture"), Capability::Control, MonotonicInstant::from_millis(60_000));
+            let connection = WireConnection::new("https://product.invalid", "1.0.0").unwrap();
+            let admission_body = json!({
+                "outcome":"NEWLY_ADMITTED","operation_id":operation.as_str(),"installation_id":scope.installation().as_str(),
+                "state":"HELD","settlement_deadline":null,"authorization_expires_at":"2026-01-01T00:01:00.000Z",
+                "execution_grant":{"grant_id":"grant_admitted_fixture","capability":"control","expires_at":"2026-01-01T00:01:00.000Z",
+                    "renew_after_seconds":17,"session_proof":"admitted_proof"},
+                "settlement_credential":"fixture_settlement"
+            });
+            let mut admission_service = HttpAccountService::with_transport(
+                ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, admission_body.to_string().into_bytes()))]),
+                connection.clone(),
+                Box::new(session.clone()),
+                Box::new(session.clone()),
+                Box::new(clock.clone()),
+            );
+            let Admission::NewlyAdmitted { grant, .. } =
+                admission_service.begin(&scope, &operation, Capability::Control, EntryCategory::DirectControl).unwrap()
+            else {
+                panic!("expected scripted admission")
+            };
             let body = json!({
                 "authorization_id":grant.id().as_str(), "operation_id":operation.as_str(),
                 "capability":"control", "renewed":true, "remaining_seconds":60, "renew_after_seconds":20,
@@ -2534,36 +2601,25 @@ mod tests {
             let mut wire = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, body.to_string().into_bytes()))]);
             let reply_time = time.clone();
             wire.on_send(move || reply_time.store(received_at, Ordering::SeqCst));
-            let worker = Arc::new(Mutex::new(None::<std::thread::JoinHandle<()>>));
-            let worker_slot = worker.clone();
+            let (finished_tx, finished_rx) = channel();
+            let finished_rx = Mutex::new(finished_rx);
             let worker_wire = wire.clone();
             let worker_clock = clock.clone();
+            let sent_time = time.clone();
             let mut runtime = AccountRuntime::with_session(session);
-            runtime.control_renewal_factory = Some(Box::new(move |session, scope, operation, grant| {
-                let wire = worker_wire.clone();
-                let clock = worker_clock.clone();
-                let sent_time = clock.0.clone();
-                let mut first = true;
-                let mut job = ControlRenewalJob::spawn(
-                    session,
-                    scope,
-                    operation,
-                    grant,
-                    ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(60)),
-                    Duration::from_secs(20),
-                    move || (wire, WireConnection::new("https://product.invalid", "1.0.0").unwrap(), Box::new(clock)),
-                    move |wait, _| {
-                        if !std::mem::take(&mut first) {
-                            return false;
-                        }
-                        assert_eq!(wait, Duration::from_secs(20));
-                        sent_time.store(20_000, Ordering::SeqCst);
-                        true
-                    },
-                )?;
-                *worker_slot.lock().unwrap() = job.worker.take();
-                Ok(job)
-            }));
+            runtime.control_renewal_source = Some(ControlRenewalSource {
+                connection,
+                transport: Arc::new(move || Box::new(ObservedTransport(worker_wire.clone(), finished_tx.clone()))),
+                clock: Arc::new(move || Box::new(worker_clock.clone())),
+                wait: Arc::new(move |wait, _| {
+                    if sent_time.load(Ordering::SeqCst) != 0 {
+                        return false;
+                    }
+                    assert_eq!(wait, Duration::from_secs(17));
+                    sent_time.store(17_000, Ordering::SeqCst);
+                    true
+                }),
+            });
             let startup = runtime.startup();
             let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
             install(&mut app, runtime, startup);
@@ -2575,7 +2631,7 @@ mod tests {
                 scope,
                 Box::new(RenewalTestAuthority {
                     on_third_lookup: Box::new(move || {
-                        worker.lock().unwrap().take().unwrap().join().unwrap();
+                        finished_rx.lock().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
                         time.store(65_000, Ordering::SeqCst);
                     }),
                     lookups: AtomicUsize::new(0),
@@ -2590,6 +2646,7 @@ mod tests {
             let requests = wire.requests();
             assert_eq!(requests.len(), 1);
             assert_eq!(requests[0].header("X-Execution-Session-Proof"), Some("admitted_proof"));
+            assert_eq!(requests[0].header("X-Settlement-Credential"), None);
         }
     }
 
@@ -2664,8 +2721,7 @@ mod tests {
                 scope.clone(),
                 operation,
                 grant.clone(),
-                ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(60)),
-                Duration::from_secs(20),
+                Some((ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(60)), Duration::from_secs(20))),
                 move || (worker_wire, WireConnection::new("https://product.invalid", "1.0.0").unwrap(), Box::new(worker_clock)),
                 {
                     let mut attempts = 0;
