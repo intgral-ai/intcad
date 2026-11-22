@@ -1,5 +1,6 @@
 //! Scripted, in-memory account port tests. Nothing here reaches a provider, keychain or network.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use egui::Pos2;
@@ -15,6 +16,7 @@ pub(crate) struct FakeAccountPort {
     switch_label: Option<&'static str>,
     switch_guide: Option<&'static str>,
     lifecycle: Option<LifecycleEvent>,
+    startup_waiting: Arc<AtomicBool>,
     calls: Arc<Mutex<Vec<String>>>,
 }
 
@@ -30,12 +32,13 @@ impl FakeAccountPort {
             switch_label: None,
             switch_guide: None,
             lifecycle: None,
+            startup_waiting: Arc::new(AtomicBool::new(false)),
             calls,
         }
     }
 
     fn with_guide(view: AccountView, guide: DeleteAccountGuide, calls: Arc<Mutex<Vec<String>>>) -> Self {
-        Self { view, guide, switch_label: None, switch_guide: None, lifecycle: None, calls }
+        Self { view, guide, switch_label: None, switch_guide: None, lifecycle: None, startup_waiting: Arc::new(AtomicBool::new(false)), calls }
     }
 
     fn log(&self, name: &str) {
@@ -110,6 +113,10 @@ impl AccountPort for FakeAccountPort {
 
     fn take_lifecycle_event(&mut self) -> Option<LifecycleEvent> {
         self.lifecycle.take()
+    }
+
+    fn startup_waiting(&self) -> bool {
+        self.startup_waiting.load(Ordering::SeqCst)
     }
 }
 
@@ -957,6 +964,18 @@ fn ai_chat_and_review_prompts_are_product_account_context_not_model_auth() {
     unavailable.account = State::with_port(Box::new(FakeAccountPort::with_view(AccountView::unavailable(), calls)));
     let texts = render_prompt(&mut unavailable, PromptContext::Review);
     assert!(texts.is_empty(), "an unavailable build offers no product sign-in: {texts:?}");
+}
+
+#[test]
+fn a_bounded_startup_check_keeps_the_host_waking_until_the_port_finishes() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let waiting = Arc::new(AtomicBool::new(true));
+    let mut port = FakeAccountPort::signed_out(calls);
+    port.startup_waiting = Arc::clone(&waiting);
+    let state = State::with_port(Box::new(port));
+    assert!(state.startup_waiting(), "a running bounded check asks the host for one more wake");
+    waiting.store(false, Ordering::SeqCst);
+    assert!(!state.startup_waiting(), "a finished check stops the bounded wake");
 }
 
 fn render_prompt(app: &mut crate::SolveApp, context: PromptContext) -> Vec<(String, Pos2)> {

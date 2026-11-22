@@ -354,6 +354,21 @@ struct SignInJob {
     shared: Arc<Mutex<SignInShared>>,
 }
 
+#[derive(Default)]
+struct RestartShared {
+    /// The account label of an online-verified original pair, for presentation only.
+    account: Option<String>,
+    /// The bounded check has finished, failed or been retired.
+    done: bool,
+}
+
+/// One bounded background restart check. It holds only presentation state; nothing here can
+/// install commit authority.
+struct RestartJob {
+    cancel: SignInCancellation,
+    shared: Arc<Mutex<RestartShared>>,
+}
+
 /// A signed-in view after a completed device flow and installation bootstrap. Controlled
 /// authority stays closed: this checkpoint installs no account service, so chat and billed tools
 /// are still unavailable even though the product session and installation are bound.
@@ -374,6 +389,7 @@ fn signed_in_view(account: &str) -> AccountView {
 /// The exact local facts a restart may try to verify: the account/installation/session scope plus
 /// the two stored credentials that make it a complete pair. This is a candidate only; it never
 /// backs presentation or authority.
+#[derive(Clone, Debug)]
 struct RestartBinding {
     scope: AuthenticatedHostScope,
     product: Secret,
@@ -393,7 +409,11 @@ pub struct AccountStartup {
     /// Complete local credentials found at startup. They are not a session until an online status
     /// check accepts them.
     candidate: Option<AuthenticatedHostScope>,
-    /// A local candidate that the configured product service accepted online in this process.
+    /// The exact pair whose bounded online check runs after the window exists. Startup never does
+    /// that network read synchronously, so a candidate stays signed out until the check finishes.
+    restart: Option<RestartBinding>,
+    /// A local candidate that a synchronous in-process check accepted. No current startup path
+    /// sets this; the bounded background check below is presentation only and must not fill it.
     restored: Option<AuthenticatedHostScope>,
 }
 
@@ -496,24 +516,21 @@ impl AccountRuntime {
     /// Read the secure-store facts once, before the window exists, so `install` does no keyring
     /// work on the window's thread.
     ///
-    /// A persisted pair is only a restart candidate. It becomes a restored session after one
-    /// bounded, account-bound `GET /v1/status` through the configured product transport succeeds
-    /// and the exact local binding is unchanged. There is no bootstrap, browser or operation
-    /// replay here, and the result is presentation only: controlled authority stays closed unless
-    /// a separately reviewed account service is installed.
+    /// A persisted pair is only a restart candidate and this call performs no network work. The
+    /// window can open at once; after it exists, [`DesktopAccountPort`] runs one bounded,
+    /// account-bound `GET /v1/status` on its own native worker. There is no bootstrap, browser or
+    /// operation replay here, and a verified result is presentation only: controlled authority
+    /// stays closed unless a separately reviewed account service is installed synchronously.
     pub fn startup(&self) -> AccountStartup {
         let secure_store = self.credentials.is_persistent();
         // An unreadable tombstone is treated as present: revocation/safety cannot be confirmed.
         let logout_pending = self.credentials.logout_pending().unwrap_or(true);
-        let binding = (!logout_pending).then(|| self.restart_binding(secure_store)).flatten();
-        let candidate = binding.as_ref().map(|binding| binding.scope.clone());
-        let restored = binding.as_ref().and_then(|binding| self.verify_restart_candidate(binding));
-        if candidate.is_some() && restored.is_none() {
-            solidcraft_engine::note!("account: a complete local pair is a restart candidate only; online status did not verify it");
-        } else if restored.is_some() {
-            solidcraft_engine::note!("account: persisted account session verified by a bounded online status read");
+        let restart = (!logout_pending).then(|| self.restart_binding(secure_store)).flatten();
+        let candidate = restart.as_ref().map(|binding| binding.scope.clone());
+        if candidate.is_some() {
+            solidcraft_engine::note!("account: a complete local pair is a restart candidate; the bounded online check stays off the window thread");
         }
-        AccountStartup { secure_store, logout_pending, candidate, restored }
+        AccountStartup { secure_store, logout_pending, candidate, restart, restored: None }
     }
 
     /// Capture the complete persisted pair and its revocation generation. A missing installation
@@ -539,47 +556,14 @@ impl AccountRuntime {
         Some(RestartBinding { scope, product, installation, generation })
     }
 
-    /// Ask the configured service whether the exact local bearer belongs to the expected account.
-    /// Only after a 200 snapshot with that account id does the unchanged local pair become the
-    /// restored session.
-    fn verify_restart_candidate(&self, binding: &RestartBinding) -> Option<AuthenticatedHostScope> {
-        let config = self.sign_in.as_ref()?;
-        let transport: Box<dyn Transport + Send + Sync> = match self.sign_in_product.as_ref() {
-            Some(factory) => factory(),
-            None => Box::new(UreqTransport::with_limits(RESTART_STATUS_TIMEOUT, RESTART_STATUS_CONNECT_TIMEOUT)),
-        };
-        let service = HttpAccountService::with_transport(
-            transport,
-            config.product.clone(),
-            Box::new(FixedCredentials::none().with_product_session(binding.product.expose_secret())),
-            Box::new(self.credentials.clone()),
-            Box::new(SystemMonotonicClock::new()),
-        );
-        service.restart_status(binding.scope.account().as_str()).ok()?;
-        self.restart_binding_unchanged(binding)
-    }
-
-    /// Re-read the exact scope, bearer, installation credential and revocation generation after
-    /// the network read. Any difference means the result belongs to a session that is no longer
-    /// current.
-    fn restart_binding_unchanged(&self, binding: &RestartBinding) -> Option<AuthenticatedHostScope> {
-        if self.credentials.authority_generation() != binding.generation {
-            return None;
-        }
-        let scope = self.authenticated_scope()?;
-        if scope != binding.scope {
-            return None;
-        }
-        if WireCredentials::product_session(&self.credentials).as_ref() != Some(&binding.product) {
-            return None;
-        }
-        if WireCredentials::installation_credential(&self.credentials).as_ref() != Some(&binding.installation) {
-            return None;
-        }
-        if self.credentials.authority_generation() != binding.generation {
-            return None;
-        }
-        Some(scope)
+    /// Collect the immutable pieces a bounded restart worker needs. A missing sign-in
+    /// configuration means no check can run and the candidate stays signed out.
+    fn restart_verifier(&self) -> Option<RestartVerifier> {
+        Some(RestartVerifier {
+            product: self.sign_in.as_ref()?.product.clone(),
+            credentials: self.credentials.clone(),
+            transport: self.sign_in_product.clone(),
+        })
     }
 
     /// The current safe-stop bounds, still unverified in this task.
@@ -588,9 +572,9 @@ impl AccountRuntime {
         &self.budget
     }
 
-    /// Take the installed account service and clock only when this process accepted the restored
-    /// session through the online restart checkpoint and the exact binding still matches. A local
-    /// candidate by itself never installs controlled authority.
+    /// Take the installed account service and clock only when an explicit synchronous checkpoint
+    /// accepted the exact session. The bounded background restart check never fills that
+    /// checkpoint, so its result can never install controlled authority.
     fn take_commit_authority(
         &mut self,
         startup: &AccountStartup,
@@ -607,6 +591,63 @@ impl AccountRuntime {
 
 fn account_unavailable(message: &'static str) -> Refusal {
     Refusal::new(RefusalCode::AuthUnavailable, message)
+}
+
+/// The immutable pieces of one bounded restart check that can move to a native worker.
+struct RestartVerifier {
+    product: WireConnection,
+    credentials: CredentialSession,
+    transport: Option<ProductTransportFactory>,
+}
+
+impl RestartVerifier {
+    /// Ask the configured service whether the exact local bearer belongs to the expected account.
+    /// Only a 200 snapshot for that account, followed by an unchanged pair and revocation
+    /// generation, yields a presentable scope. The worker never writes credentials, starts a
+    /// browser or replays an operation.
+    fn verify(&self, binding: &RestartBinding, cancel: &SignInCancellation) -> Option<AuthenticatedHostScope> {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        let transport: Box<dyn Transport + Send + Sync> = match self.transport.as_ref() {
+            Some(factory) => factory(),
+            None => Box::new(UreqTransport::with_limits(RESTART_STATUS_TIMEOUT, RESTART_STATUS_CONNECT_TIMEOUT)),
+        };
+        let service = HttpAccountService::with_transport(
+            transport,
+            self.product.clone(),
+            Box::new(FixedCredentials::none().with_product_session(binding.product.expose_secret())),
+            Box::new(self.credentials.clone()),
+            Box::new(SystemMonotonicClock::new()),
+        );
+        service.restart_status(binding.scope.account().as_str()).ok()?;
+        if cancel.is_cancelled() {
+            return None;
+        }
+        restart_binding_unchanged(&self.credentials, binding)
+    }
+}
+
+/// Re-read the exact scope, bearer, installation credential and revocation generation after the
+/// network read. Any difference means the result belongs to a session that is no longer current.
+fn restart_binding_unchanged(credentials: &CredentialSession, binding: &RestartBinding) -> Option<AuthenticatedHostScope> {
+    if credentials.authority_generation() != binding.generation {
+        return None;
+    }
+    let scope = credentials.authenticated_scope()?;
+    if scope != binding.scope {
+        return None;
+    }
+    if WireCredentials::product_session(credentials).as_ref() != Some(&binding.product) {
+        return None;
+    }
+    if WireCredentials::installation_credential(credentials).as_ref() != Some(&binding.installation) {
+        return None;
+    }
+    if credentials.authority_generation() != binding.generation {
+        return None;
+    }
+    Some(scope)
 }
 
 /// A monotonic clock for the runtime. It counts this process's elapsed time; suspend handling and
@@ -660,13 +701,16 @@ struct DesktopAccountPort {
     /// One explicit device sign-in at a time. The worker owns the network; this only holds the
     /// cancellation flag and the state the window may read.
     sign_in: Option<SignInJob>,
+    /// The bounded restart check, if a complete persisted pair was captured at startup. It fills
+    /// presentation only and is retired by any explicit sign-in, sign-out, switch or shutdown.
+    restart: Option<RestartJob>,
     workers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl DesktopAccountPort {
     fn new(runtime: AccountRuntime, startup: &AccountStartup) -> Self {
         let view = current_view(startup);
-        Self {
+        let mut port = Self {
             runtime,
             view,
             lifecycle: None,
@@ -675,7 +719,48 @@ impl DesktopAccountPort {
             generation: 0,
             cleanup: Arc::new(Mutex::new(CleanupStatus::default())),
             sign_in: None,
+            restart: None,
             workers: Vec::new(),
+        };
+        if let Some(binding) = startup.restart.clone() {
+            port.start_restart(binding);
+        }
+        port
+    }
+
+    /// Start the one bounded restart check on its own native worker and return at once. The
+    /// window's thread never performs this HTTP read.
+    fn start_restart(&mut self, binding: RestartBinding) {
+        let Some(verifier) = self.runtime.restart_verifier() else { return };
+        let shared = Arc::new(Mutex::new(RestartShared::default()));
+        let cancel = SignInCancellation::default();
+        let worker_shared = Arc::clone(&shared);
+        let worker_cancel = cancel.clone();
+        let worker = std::thread::Builder::new().name("intcad-account-restart".into()).spawn(move || {
+            let verified = verifier.verify(&binding, &worker_cancel);
+            let accepted = verified.is_some();
+            if let Ok(mut shared) = worker_shared.lock() {
+                shared.done = true;
+                // A result that lands after an explicit sign-in, sign-out, switch or shutdown was
+                // cancelled must not be presented, even if it won the race to the lock.
+                if accepted && !worker_cancel.is_cancelled() {
+                    shared.account = verified.map(|scope| scope.account().as_str().to_owned());
+                } else {
+                    shared.account = None;
+                }
+            }
+            if accepted && !worker_cancel.is_cancelled() {
+                solidcraft_engine::note!("account: persisted account session verified by a bounded online status read; presentation only");
+            } else if !worker_cancel.is_cancelled() {
+                solidcraft_engine::note!("account: a restart candidate was not verified online; signed-in view stays closed");
+            }
+        });
+        match worker {
+            Ok(handle) => {
+                self.workers.push(handle);
+                self.restart = Some(RestartJob { cancel, shared });
+            }
+            Err(_) => solidcraft_engine::note!("account: the bounded restart check could not start; signed-in view stays closed"),
         }
     }
 
@@ -687,8 +772,28 @@ impl DesktopAccountPort {
         }
     }
 
+    /// Retire the restart check without waiting on its network request. Clearing the cached
+    /// account at once also prevents a just-finished result from appearing beside a newer
+    /// explicit attempt; the worker's generation and pair checks reject a late write.
+    fn cancel_restart(&mut self) {
+        if let Some(job) = self.restart.as_mut() {
+            job.cancel.cancel();
+            if let Ok(mut shared) = job.shared.lock() {
+                shared.account = None;
+            }
+        }
+    }
+
     fn completed_sign_in_account(&self) -> Option<String> {
         self.sign_in.as_ref()?.shared.lock().ok()?.account.clone()
+    }
+
+    fn verified_restart_account(&self) -> Option<String> {
+        self.restart.as_ref()?.shared.lock().ok()?.account.clone()
+    }
+
+    fn restart_waiting(&self) -> bool {
+        self.restart.as_ref().is_some_and(|job| job.shared.lock().is_ok_and(|shared| !shared.done))
     }
 
     /// Refuse account work while a durable sign-out is unconfirmed, a cleanup is running or its
@@ -714,8 +819,10 @@ impl DesktopAccountPort {
     /// worker. The worker's result is applied only for its own generation, so a late result from
     /// an older switch can never clear a newer cleanup state.
     fn revoke(&mut self, event: LifecycleEvent) -> Result<(), Refusal> {
-        // A running device flow belongs to the session being retired. Cancel it before the
-        // generation barrier is published, so no later approval can write for the old session.
+        // A running device flow or restart check belongs to the session being retired. Cancel
+        // both before the generation barrier is published, so no later result can write for the
+        // old session.
+        self.cancel_restart();
         self.cancel_sign_in();
         // Publish the new generation and set the barrier in the same short lock. A finishing
         // older worker takes that lock before clearing anything, so it can never clear a newer
@@ -806,6 +913,9 @@ impl DesktopAccountPort {
                 SignInPhase::Failed | SignInPhase::Cancelled => self.cancel_sign_in(),
             }
         }
+        // The explicit sign-in becomes the current attempt; an older bounded restart result may
+        // not land beside it, even if it carries the same pair.
+        self.cancel_restart();
         let device_factory = self.runtime.sign_in_device.clone();
         let product_factory = self.runtime.sign_in_product.clone();
         let timing = self.runtime.sign_in_timing.clone();
@@ -907,15 +1017,18 @@ impl AccountPort for DesktopAccountPort {
         if let Some(account) = self.completed_sign_in_account() {
             return signed_in_view(&account);
         }
+        if let Some(account) = self.verified_restart_account() {
+            return signed_in_view(&account);
+        }
         self.view.clone()
     }
 
     fn refresh_status(&mut self) -> Result<AccountView, Refusal> {
         self.cleanup_confirmed()?;
-        // A completed device flow is recognized from the cached worker state. It is not replayed
-        // or exchanged again; this process still installs no account service, so the snapshot
-        // stays the one the verified sign-in produced.
-        if self.completed_sign_in_account().is_some() {
+        // A completed device flow or an online-verified restart is recognized from cached worker
+        // state. Neither is replayed or exchanged again; this process still installs no account
+        // service, so the snapshot stays the one the check produced.
+        if self.completed_sign_in_account().is_some() || self.verified_restart_account().is_some() {
             return Ok(self.view());
         }
         if !self.secure_store {
@@ -998,7 +1111,12 @@ impl AccountPort for DesktopAccountPort {
         self.lifecycle.take()
     }
 
+    fn startup_waiting(&self) -> bool {
+        self.restart_waiting()
+    }
+
     fn shutdown(&mut self) {
+        self.cancel_restart();
         self.join_workers();
     }
 }
@@ -1007,21 +1125,20 @@ impl AccountPort for DesktopAccountPort {
 ///
 /// The UI port is always installed so the start page and title bar have one host-owned seam. The
 /// durable ledgers are installed when they opened. Commit and billing authority are installed
-/// only from the same runtime when a reviewed service exists; in this task it does not, so
-/// controlled entries keep the existing default refusal.
+/// only from a synchronous verified scope; startup provides none, and the bounded background
+/// restart check may change presentation but never authority. Controlled entries therefore keep
+/// the existing default refusal.
 pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: AccountStartup) {
     if let Some(ledger) = runtime.ledger.take() {
         app.install_review_store(Box::new(ledger));
     }
     if let Some((scope, service, clock)) = runtime.take_commit_authority(&startup) {
         app.install_commit_authority(scope, service, clock);
-        solidcraft_engine::note!("account: authenticated commit authority installed for the verified restart session");
+        solidcraft_engine::note!("account: authenticated commit authority installed for an explicit synchronous session");
     } else if startup.logout_pending {
         solidcraft_engine::note!("account: a previous sign-out is not confirmed; restore and controlled authority stay closed");
-    } else if startup.restored.is_some() {
-        solidcraft_engine::note!("account: session verified online for presentation; controlled authority stays closed without a service");
     } else if startup.candidate.is_some() {
-        solidcraft_engine::note!("account: local restart candidate not verified online; signed-in view and authority stay closed");
+        solidcraft_engine::note!("account: local restart candidate stays signed out until its bounded online check finishes; authority stays closed");
     } else {
         solidcraft_engine::note!("account: no account session restored; CAD stays anonymous and offline");
     }
@@ -1177,6 +1294,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(condition(), "timed out waiting for {what}");
+    }
+
+    fn wait_for_restart(port: &DesktopAccountPort) {
+        wait_until("the bounded restart check", || !port.startup_waiting());
     }
 
     fn account_config() -> SignInConfig {
@@ -1517,10 +1638,16 @@ mod tests {
         let opener = RecordingOpener::default();
 
         // A new process has empty in-memory labels. Only the secure store proves the account,
-        // installation and the exact product session; the binding must match the old one.
-        let restored = restart_runtime(CredentialSession::new(Box::new(store)), product.clone(), &opener);
-        let startup = restored.startup();
-        let scope = startup.restored.expect("an online-verified persisted session is restorable");
+        // installation and the exact product session; the binding must match the old one. Startup
+        // returns before the network read; the port's bounded worker verifies the pair.
+        let restarted = restart_runtime(CredentialSession::new(Box::new(store)), product.clone(), &opener);
+        let startup = restarted.startup();
+        assert!(startup.candidate.is_some(), "the complete pair was captured before the window");
+        assert!(startup.restored.is_none(), "startup performs no synchronous online read");
+        let mut port = DesktopAccountPort::new(restarted, &startup);
+        wait_for_restart(&port);
+        assert!(port.view().signed_in, "the bounded online check presents the exact persisted session");
+        let scope = port.runtime.authenticated_scope().expect("the unchanged pair is the current session");
         assert_eq!(scope.account().as_str(), "acct_desktop_0001");
         assert_eq!(scope.installation().as_str(), "installation_desktop");
         assert_eq!(scope.session_binding(), &previous_binding);
@@ -1531,6 +1658,7 @@ mod tests {
         assert_eq!(requests[0].header("Authorization"), Some("Bearer product_session_test_0000000000"));
         assert!(requests[0].body().is_none());
         assert!(opener.urls().is_empty(), "restart never opens a browser");
+        port.shutdown();
     }
 
     #[test]
@@ -1540,9 +1668,10 @@ mod tests {
         let runtime = restart_runtime(active_session(), product.clone(), &opener);
         let startup = runtime.startup();
         assert!(startup.candidate.is_some());
-        assert!(startup.restored.is_none(), "a reply for another account never becomes this session");
+        assert!(startup.restored.is_none(), "startup performs no synchronous online read");
         let port = DesktopAccountPort::new(runtime, &startup);
-        assert!(!port.view().signed_in);
+        wait_for_restart(&port);
+        assert!(!port.view().signed_in, "a reply for another account never becomes this session");
         let requests = product.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url(), "https://api.example/v1/status");
@@ -1581,8 +1710,9 @@ mod tests {
             let runtime = restart_runtime(active_session(), product.clone(), &opener);
             let startup = runtime.startup();
             assert!(startup.candidate.is_some(), "{case}: the local pair is still a candidate");
-            assert!(startup.restored.is_none(), "{case}: restart must apply the fresh-login activation conditions");
+            assert!(startup.restored.is_none(), "{case}: startup performs no synchronous online read");
             let port = DesktopAccountPort::new(runtime, &startup);
+            wait_for_restart(&port);
             assert!(!port.view().signed_in, "{case}: an ineligible restart is not presented as signed in");
             assert_eq!(product.requests().len(), 1, "{case}: still one bounded status read");
             assert!(opener.urls().is_empty(), "{case}: restart opens no browser");
@@ -1602,9 +1732,10 @@ mod tests {
             let runtime = restart_runtime(active_session(), product.clone(), &opener);
             let startup = runtime.startup();
             assert!(startup.candidate.is_some());
-            assert!(startup.restored.is_none(), "an unavailable or refused status never promotes presentation");
+            assert!(startup.restored.is_none(), "startup performs no synchronous online read");
             let port = DesktopAccountPort::new(runtime, &startup);
-            assert!(!port.view().signed_in);
+            wait_for_restart(&port);
+            assert!(!port.view().signed_in, "an unavailable or refused status never promotes presentation");
             assert_eq!(product.requests().len(), 1, "one bounded attempt, no retry or replay");
             assert!(opener.urls().is_empty());
         }
@@ -1622,11 +1753,87 @@ mod tests {
         let runtime = restart_runtime(session, product.clone(), &opener);
         let startup = runtime.startup();
         assert!(startup.candidate.is_some(), "the old pair was captured before the request");
-        assert!(startup.restored.is_none(), "the reply belongs to a retired generation");
+        assert!(startup.restored.is_none(), "startup performs no synchronous online read");
         let port = DesktopAccountPort::new(runtime, &startup);
+        wait_for_restart(&port);
         assert!(!port.view().signed_in, "a stale status result never promotes a signed-in view");
         assert_eq!(product.requests().len(), 1);
         assert!(opener.urls().is_empty());
+    }
+
+    #[test]
+    fn a_gated_restart_check_returns_from_startup_and_a_logic_tick_before_http() {
+        let (gate_tx, gate_rx) = channel();
+        let gate = Arc::new(Mutex::new(gate_rx));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let mut product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes()))]);
+        let worker_entered = Arc::clone(&entered);
+        let worker_gate = Arc::clone(&gate);
+        product.on_send(move || {
+            worker_entered.fetch_add(1, Ordering::SeqCst);
+            let _ = worker_gate.lock().unwrap().recv();
+        });
+        let opener = RecordingOpener::default();
+        let runtime = restart_runtime(active_session(), product.clone(), &opener);
+
+        // Startup reads only local facts, so it must complete with no request sent.
+        let startup = runtime.startup();
+        assert!(startup.candidate.is_some());
+        assert!(startup.restored.is_none());
+        assert!(product.requests().is_empty(), "startup sent a request before the window existed");
+
+        let mut app = solidcraft_ui_egui::SolveApp::new(solidcraft_engine::Session::default(), solidcraft_ui_egui::Services::default());
+        install(&mut app, runtime, startup);
+        wait_for_counter(&entered, 1);
+        // The transport is still blocked. Both installation and this logic tick already returned.
+        app.account.process_actions();
+        assert!(!app.account.view().signed_in, "a pending check is never presented as signed in");
+        assert!(app.account.startup_waiting(), "the host should wake while the bounded check runs");
+
+        gate_tx.send(()).unwrap();
+        wait_until("the gated restart view", || {
+            app.account.process_actions();
+            app.account.view().signed_in
+        });
+        assert_eq!(app.account.view().account_label.as_deref(), Some("acct_desktop_0001"));
+        assert!(!app.account.startup_waiting(), "a finished check stops the bounded wake");
+        assert_eq!(product.requests().len(), 1, "one status read and no bootstrap or replay");
+        assert_eq!(product.requests()[0].method(), "GET");
+        assert_eq!(product.requests()[0].url(), "https://api.example/v1/status");
+        assert!(opener.urls().is_empty(), "the restart check never opens a browser");
+        app.account.shutdown();
+    }
+
+    #[test]
+    fn a_retired_restart_reply_after_sign_out_is_discarded_without_replay() {
+        let (gate_tx, gate_rx) = channel();
+        let gate = Arc::new(Mutex::new(gate_rx));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let mut product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes()))]);
+        let worker_entered = Arc::clone(&entered);
+        let worker_gate = Arc::clone(&gate);
+        product.on_send(move || {
+            worker_entered.fetch_add(1, Ordering::SeqCst);
+            let _ = worker_gate.lock().unwrap().recv();
+        });
+        let opener = RecordingOpener::default();
+        let store = TestStore::default();
+        let runtime = restart_runtime(activate_session(&store), product.clone(), &opener);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+
+        wait_for_counter(&entered, 1);
+        assert!(!port.view().signed_in, "a pending check is never presented as signed in");
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        gate_tx.send(()).unwrap();
+        wait_until("the retired restart check", || !port.startup_waiting());
+        assert!(!port.view().signed_in, "a reply for the retired pair is discarded");
+        assert!(port.runtime.credentials.authenticated_scope().is_none(), "the sign-out pair stays gone");
+        assert_eq!(product.requests().len(), 1, "the in-flight request is never replayed");
+        assert_eq!(product.requests()[0].method(), "GET");
+        assert!(opener.urls().is_empty());
+        port.shutdown();
     }
 
     #[test]
@@ -1698,6 +1905,7 @@ mod tests {
             let runtime = verified_restart_runtime(active_session());
             let startup = runtime.startup();
             let mut port = DesktopAccountPort::new(runtime, &startup);
+            wait_for_restart(&port);
             assert!(port.view().signed_in, "the online-verified restart is presented");
             if action == Action::SignOut {
                 port.sign_out().unwrap();
@@ -1842,12 +2050,20 @@ mod tests {
         unverified.service = Some(Box::new(InertService));
         let startup = unverified.startup();
         assert!(startup.candidate.is_some());
+        assert!(startup.restored.is_none(), "startup carries no synchronously verified scope");
         assert!(unverified.take_commit_authority(&startup).is_none(), "a local candidate alone installs no authority");
+    }
 
-        let mut verified = verified_restart_runtime(active_session());
-        verified.service = Some(Box::new(InertService));
-        let startup = verified.startup();
-        assert!(verified.take_commit_authority(&startup).is_some(), "only the online-verified scope may install authority");
+    #[test]
+    fn a_background_restart_result_presents_without_installing_commit_authority() {
+        let mut runtime = verified_restart_runtime(active_session());
+        runtime.service = Some(Box::new(InertService));
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        wait_for_restart(&port);
+        assert!(port.view().signed_in, "the bounded online check is presentable");
+        assert!(port.runtime.take_commit_authority(&startup).is_none(), "a background result never fills the synchronous authority checkpoint");
+        port.shutdown();
     }
 
     #[test]
@@ -1857,10 +2073,15 @@ mod tests {
         let mut app = solidcraft_ui_egui::SolveApp::new(solidcraft_engine::Session::default(), solidcraft_ui_egui::Services::default());
         install(&mut app, runtime, startup);
         assert!(app.account.is_installed(), "the desktop port is installed");
+        wait_until("the background restart view", || {
+            app.account.process_actions();
+            app.account.view().signed_in
+        });
         assert!(app.account.view().signed_in, "the online-verified restart is shown");
 
         let (gui, _) = solidcraft_ui_egui::ControlRequest::trusted_gui("engine.execute", json!({"command": "document.inspect"}));
         assert!(matches!(control::admit_control_request(&gui, &BudgetTable::unverified_default(), &mut NoBilling), Admission::Allowed));
+        app.account.shutdown();
     }
 
     struct NoBilling;

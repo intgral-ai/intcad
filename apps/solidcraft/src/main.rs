@@ -199,9 +199,9 @@ impl eframe::App for App {
         // old session's commit authority before the control queue is read below.
         self.solve.account.process_actions();
         self.solve.drain_account_lifecycle();
-        // A device sign-in runs on its worker. Read its cached state on the logic tick and ask for
-        // one bounded wake instead of a continuous repaint loop.
-        if self.solve.account.sign_in_waiting() {
+        // A device sign-in or bounded restart check runs on its worker. Read its cached state on
+        // the logic tick and ask for one bounded wake instead of a continuous repaint loop.
+        if self.solve.account.sign_in_waiting() || self.solve.account.startup_waiting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
         if self.frames < 2 {

@@ -187,6 +187,13 @@ pub trait AccountPort: Send + Sync {
         None
     }
 
+    /// A bounded startup check (such as restart verification) is still running, so the host
+    /// should wake the window within a bounded interval and read the cached view again. The
+    /// default has no startup work.
+    fn startup_waiting(&self) -> bool {
+        false
+    }
+
     /// Wait for host cleanup that must not be lost on a normal exit. The default has no work.
     fn shutdown(&mut self) {}
 }
@@ -441,6 +448,13 @@ impl State {
     /// and read its cached state again. False after success, refusal, cancellation or expiry.
     pub fn sign_in_waiting(&self) -> bool {
         self.sign_in.waiting_for_worker() && !self.sign_in_expired()
+    }
+
+    /// A bounded startup check (restart verification) is still running, so the host should wake
+    /// the window within a bounded interval and read the cached view again. No paint pass or
+    /// wake starts the check.
+    pub fn startup_waiting(&self) -> bool {
+        self.port.as_ref().is_some_and(|port| port.startup_waiting())
     }
 
     /// Drain the host's end-of-session event after [`State::process_actions`], never from a
