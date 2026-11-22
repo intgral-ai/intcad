@@ -243,6 +243,18 @@ try {
   $Cli = Join-Path $Dir 'intcad-cli.exe'
   $Notices = Join-Path $Dir 'ASSISTANT-THIRD-PARTY-NOTICES.txt'
   foreach ($file in $App, $Cli, $Notices) { if (-not (Test-Path $file)) { throw "the MSI did not install $file" } }
+  # A release package carries the built-in agent, whole: its Node, entry, manifest, dependencies
+  # and skills. The smoke check below starts it out of the installed folder.
+  $Agent = Join-Path $Dir 'mastra-agent'
+  foreach ($file in 'agent.json', 'node.exe', 'agent\main.mjs', 'licenses\NODE-LICENSE.txt',
+                    'node_modules\@mastra\code-sdk\package.json',
+                    'node_modules\@agentclientprotocol\sdk\package.json') {
+    if (-not (Test-Path (Join-Path $Agent $file))) { throw "the MSI did not install mastra-agent\$file" }
+  }
+  if (-not (Get-ChildItem (Join-Path $Agent 'skills') -Recurse -Filter SKILL.md -ErrorAction SilentlyContinue)) {
+    throw 'the MSI installed no agent skills (mastra-agent\skills\<set>\<skill>\SKILL.md)'
+  }
+  Write-Output 'ok: the MSI installed the built-in agent with its Node, dependencies and skills'
   Get-ChildItem $Dir | Format-Table Name, Length
   $installed = (Get-FileHash $App -Algorithm SHA256).Hash
   $expected = (Get-FileHash $Built -Algorithm SHA256).Hash
