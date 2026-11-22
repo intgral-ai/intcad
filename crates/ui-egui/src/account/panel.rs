@@ -50,8 +50,6 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let action_pending = app.tr("account.action_pending").to_string();
     let sign_in_starting = app.tr("account.sign_in_starting").to_string();
     let sign_in_waiting = app.tr("account.sign_in_waiting").to_string();
-    let sign_in_browser = app.tr("account.sign_in_browser").to_string();
-    let sign_in_cancel = app.tr("account.sign_in_cancel").to_string();
     let sign_in_expired = app.tr("account.sign_in_expired").to_string();
     let sign_in_failed = app.tr("account.sign_in_failed").to_string();
     let sign_in_retry = app.tr("account.sign_in_retry").to_string();
@@ -63,11 +61,11 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
         .map(|code| refusal_text(app, code));
     let notice = notice.map(|refusal| refusal_text(app, refusal.code));
     let mut sign_in_clicked = false;
-    let mut sign_in_browser_clicked = false;
-    let mut cancel_sign_in_clicked = false;
     let mut retry_sign_out_clicked = false;
     let mut sign_out_clicked = false;
     let mut switch_clicked = false;
+    let sign_out_recovery = app.tr("account.sign_out_recovery").to_string();
+    let finish_sign_out = app.tr("account.finish_sign_out").to_string();
 
     FileView::section(ui, &title, t.space_10, |ui| {
         if view.signed_in {
@@ -124,6 +122,11 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
             }
         } else if view.sign_out_pending {
             FileView::detail(ui, &signing_out);
+        } else if view.sign_out_recovery {
+            FileView::detail(ui, &sign_out_recovery);
+            let response = button(ui, &finish_sign_out, Button::Primary);
+            publish("account:finish_sign_out", &response);
+            retry_sign_out_clicked = response.clicked();
         } else if let Some(code) = view.sign_out_error {
             text(ui, &refusal_text(app, code), Text::Error("account_sign_out_error"));
             let response = button(ui, &retry_sign_out, Button::Primary);
@@ -138,19 +141,7 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
                 }
                 SignInState::Waiting => {
                     FileView::detail(ui, &sign_in_waiting);
-                    if let Some(code) = &view.sign_in_prompt {
-                        FileView::detail(ui, &crate::i18n::format("account.sign_in_code", &[("code", &code.user_code)]));
-                        FileView::detail(ui, &crate::i18n::format("account.sign_in_address", &[("url", &code.verification_uri)]));
-                        ui.horizontal(|ui| {
-                            let response = button(ui, &sign_in_browser, Button::Primary);
-                            publish("account:sign_in_browser", &response);
-                            sign_in_browser_clicked = response.clicked();
-                            ui.add_space(t.space_8);
-                            let response = button(ui, &sign_in_cancel, Button::Normal);
-                            publish("account:sign_in_cancel", &response);
-                            cancel_sign_in_clicked = response.clicked();
-                        });
-                    }
+                    waiting_sign_in_controls(app, ui, &view, "account:sign_in_browser", "account:sign_in_cancel");
                 }
                 SignInState::Expired | SignInState::Failed => {
                     if view.sign_in_state == SignInState::Expired {
@@ -191,12 +182,6 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
 
     if sign_in_clicked {
         app.account.request(Action::SignIn);
-    }
-    if sign_in_browser_clicked {
-        app.account.request(Action::OpenSignInBrowser);
-    }
-    if cancel_sign_in_clicked {
-        app.account.request(Action::CancelSignIn);
     }
     if retry_sign_out_clicked {
         app.account.request(Action::SignOut);
@@ -304,32 +289,72 @@ fn chip_tip(app: &SolveApp, view: &AccountView) -> String {
     tip
 }
 
+/// The provider code, verification address and the two separate explicit actions. Shared by the
+/// account menu and the Chat/Review inline prompts so both surfaces can finish the same flow.
+/// The browser action is requested only on a platform-provenance click; app-injected automation
+/// therefore cannot launch it and fails closed.
+fn waiting_sign_in_controls(app: &mut SolveApp, ui: &mut Ui, view: &AccountView, browser_handle: &str, cancel_handle: &str) {
+    let Some(code) = &view.sign_in_prompt else { return };
+    let t = Tokens::get();
+    FileView::detail(ui, &crate::i18n::format("account.sign_in_code", &[("code", &code.user_code)]));
+    FileView::detail(ui, &crate::i18n::format("account.sign_in_address", &[("url", &code.verification_uri)]));
+    ui.horizontal(|ui| {
+        let response = button(ui, app.tr("account.sign_in_browser"), Button::Primary);
+        publish(browser_handle, &response);
+        if response.clicked() && app.activation_from_platform {
+            app.account.request(Action::OpenSignInBrowser);
+        }
+        ui.add_space(t.space_8);
+        let response = button(ui, app.tr("account.sign_in_cancel"), Button::Normal);
+        publish(cancel_handle, &response);
+        if response.clicked() {
+            app.account.request(Action::CancelSignIn);
+        }
+    });
+}
+
 /// A local, in-place sign-in prompt for a refusal surface such as Chat or Review. It only
 /// enqueues the same explicit action the account menu uses; it never opens a browser itself.
+/// While a login waits it shows the same code, verification address, browser and cancel controls
+/// as the account menu, so the surface that refused the operation can complete the flow.
 /// `handle` must be unique on the surface so scripted UI checks can address the button.
 pub fn show_inline_sign_in(app: &mut SolveApp, ui: &mut Ui, message_id: &str, handle: &str) {
     if !app.account.is_installed() {
         return;
     }
     let view = app.account.view().clone();
-    if view.signed_in || !view.sign_in_visible || view.sign_out_pending || view.sign_out_error.is_some() {
+    if view.signed_in || !view.sign_in_visible || view.sign_out_pending || view.sign_out_error.is_some() || view.sign_out_recovery {
         return;
     }
     let t = Tokens::get();
     let message = app.tr(message_id).to_string();
     FileView::detail(ui, &message);
-    if view.sign_in_state.pending() {
-        FileView::detail(ui, app.tr("account.sign_in_waiting"));
-        return;
-    }
-    let label = match view.sign_in_state {
-        SignInState::Expired | SignInState::Failed => app.tr("account.sign_in_retry").to_string(),
-        _ => app.tr("account.sign_in").to_string(),
-    };
-    let response = button(ui, &label, Button::Primary);
-    publish(handle, &response);
-    if response.clicked() {
-        app.account.request(Action::SignIn);
+    match view.sign_in_state {
+        SignInState::Starting => FileView::detail(ui, app.tr("account.sign_in_starting")),
+        SignInState::Waiting => {
+            FileView::detail(ui, app.tr("account.sign_in_waiting"));
+            waiting_sign_in_controls(app, ui, &view, &format!("{handle}:browser"), &format!("{handle}:cancel"));
+        }
+        SignInState::Expired | SignInState::Failed => {
+            let text = if view.sign_in_state == SignInState::Expired {
+                app.tr("account.sign_in_expired").to_string()
+            } else {
+                view.sign_in_error.map(|code| refusal_text(app, code)).unwrap_or_else(|| app.tr("account.sign_in_failed").to_string())
+            };
+            FileView::detail(ui, &text);
+            let response = button(ui, app.tr("account.sign_in_retry"), Button::Primary);
+            publish(handle, &response);
+            if response.clicked() {
+                app.account.request(Action::SignIn);
+            }
+        }
+        SignInState::Idle => {
+            let response = button(ui, app.tr("account.sign_in"), Button::Primary);
+            publish(handle, &response);
+            if response.clicked() {
+                app.account.request(Action::SignIn);
+            }
+        }
     }
     ui.add_space(t.space_4);
 }

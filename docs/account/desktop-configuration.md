@@ -23,7 +23,9 @@ Missing or malformed values fail closed together:
 - the WorkOS device response's verification origin must equal the configured AuthKit origin
   exactly before the prompt is published to the UI;
 - the browser launch re-checks the same exact origin, so a foreign or malformed address never
-  reaches the system browser.
+  reaches the system browser;
+- the browser button accepts only a platform-provenance activation; control-channel or app
+  synthetic input fails closed.
 
 No production values are checked in. A local build, developer build or CI job without the three
 variables builds an anonymous, offline desktop with the existing account refusals. The release

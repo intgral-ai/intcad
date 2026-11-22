@@ -8,10 +8,10 @@ or production service was used.
 
 | Item | Value |
 | --- | --- |
-| Client commit | Round 1 fix on top of `959d0c5`; base Task 1 code `4fb4859` |
+| Client commit | Final fix on top of `e1b3ebc0e`; base Task 1 code `4fb4859` |
 | Base | `ad9ab83f8` |
 | Branch | `feat/int1497-desktop-entry` |
-| Worktree state | clean; these evidence changes are committed on the task branch |
+| Worktree state | clean after the final fix commit; logs under `.superpowers/` and `/tmp/opencode` |
 | Platform | Linux host (native `x86_64` build of the client crates) |
 | Package type | none; no installer or portable package was built or installed |
 | Target | this worktree's own native `target/`; no shared or reused build directory |
@@ -25,9 +25,13 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
 | --- | --- | --- |
 | Frozen rev3 embedded bytes match client `contracts/pin.json` | **PASS** (earlier Task 13 evidence) | `contract-pin.md` |
 | Frozen `contract_vectors` (offline) | **NOT_RUN** in Task 1 | requires the external frozen artifacts; unchanged by this task |
-| `solidcraft-account-native` library tests (offline) | **PASS**, 106 passed / 0 failed / 1 ignored | `cargo test --offline --locked -p solidcraft-account-native --lib` |
-| Desktop account tests (`apps/solidcraft`) | **PASS**, 33 passed / 0 failed | `cargo test --offline --locked -p solidcraft --bin intcad account::tests` |
-| Account UI tests (`solidcraft-ui-egui`) | **PASS**, 25 passed / 0 failed | `cargo test --offline --locked -p solidcraft-ui-egui --lib account::` |
+| `solidcraft-account-native` library tests (offline) | **PASS**, 108 passed / 0 failed / 1 ignored | `cargo test --offline --locked -p solidcraft-account-native --lib` |
+| Desktop account tests (`apps/solidcraft`) | **PASS**, 35 passed / 0 failed | `cargo test --offline --locked -p solidcraft --bin intcad account::tests` |
+| Account UI tests (`solidcraft-ui-egui`) | **PASS**, 30 passed / 0 failed | `cargo test --offline --locked -p solidcraft-ui-egui --lib account::` |
+| Chat/Review inline code, browser, cancel and retry controls | **PASS** | focused UI account tests; the Chat strip reachability test still passes |
+| Browser launch requires platform-provenance activation | **PASS** | a platform pointer click dispatches; an app-injected control click is refused |
+| Startup recovery for a readable sign-out tombstone | **PASS** | readable marker offers recovery, no identity/authority restored; unreadable storage stays closed |
+| Bounded repaint while a sign-in or sign-out worker is pending | **PASS** | pure scheduling check; no repaint is requested once idle |
 | Production web shell sign-in prompt and Review prompt reachability | **PASS**, 1 each | focused UI tests for the native web-view strip and an `UNSAFE_TO_START` Review refusal |
 | English/complete-catalog coverage for new messages | **PASS** | `... i18n::tests::every_complete_catalog_carries_every_english_message --exact` |
 | Focused clippy (`-D warnings`) for native, UI and desktop crates | **PASS** | `cargo clippy ... --all-targets -- -D warnings` |
@@ -35,7 +39,7 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
 | `cargo xtask layers` | **PASS**, no layering violations | native-only closure guard passed |
 | `solidcraft-ui-egui` wasm library check | **PASS**, 0 errors (existing warnings) | `cargo check ... --target wasm32-unknown-unknown --lib` |
 | Full `solidcraft-ui-egui` library suite | **FAILED**, same pre-existing `TexturesDelta`/agent-discovery signatures | representative failures reproduced at base `ad9ab83f8` (see Limits) |
-| Full desktop app test binary | **FAILED**, 182 passed / 2 failed | both are the pre-existing `TexturesDelta` drop-panic signature |
+| Full desktop app test binary | **FAILED**, 184 passed / 2 failed | both are the pre-existing `TexturesDelta` drop-panic signature |
 | Linux direct-binary package build and install | **NOT_RUN** | no package built in this bounded checkpoint |
 | Live WorkOS device-code completion and product verification | **NOT_RUN** | no production/provider credential, service or remote write |
 | No-auto-browser / explicit-click behavior on a real desktop | **NOT_RUN** | covered by scripted seams only; no GUI session |
@@ -48,8 +52,12 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
 ## Limits of this evidence
 
 - The new tests use scripted device/product transports and in-memory credential stores. They
-  prove the attempt fence, explicit browser action, verification-before-persistence and UI states,
-  not a live provider, server, staging, keychain or production authority.
+  prove the attempt fence, explicit browser action, platform-provenance refusal of automation,
+  verification-before-persistence, startup tombstone recovery and UI states, not a live provider,
+  server, staging, keychain or production authority.
+- The platform-provenance tests feed a scripted platform pointer event and a scripted
+  control-channel click into the same frame loop. They prove the app's defensive dispatch; they
+  do not claim an OS-level input boundary or an acceptance run on a real desktop.
 - The full UI suite's `TexturesDelta` failures are a harness panic already present at base
   `ad9ab83f8`: `dialogs_hole::tests::every_dropdown_option_previews_a_different_hole` and
   `agent_chat::discover::tests::desktop_path_can_start_an_agent_and_its_runtime` were reproduced
@@ -80,7 +88,8 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
 
 1. Reviewed WorkOS client id, AuthKit verification origin and product HTTPS origin set by the
    trusted release builder, then a real device-code completion with the exact configured origins.
-2. Installation bootstrap and startup tombstone recovery for a real desktop install.
+2. Installation bootstrap and startup tombstone recovery on a real desktop install (including
+   readable-marker recovery and the unreadable-storage refusal).
 3. Linux direct-binary packaging and the full account flow matrix on a real install.
 4. Windows MSI packaging, Credential Manager behavior and durability/ACL checks.
 5. macOS package and account flow in an authorized environment, or keep the release gate RED.

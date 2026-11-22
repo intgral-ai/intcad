@@ -199,6 +199,12 @@ impl eframe::App for App {
         // old session's commit authority before the control queue is read below.
         self.solve.account.process_actions();
         self.solve.drain_account_lifecycle();
+        // A pending worker publishes no spontaneous wake-up. Poll at a bounded cadence while an
+        // attempt or cleanup is pending so code, expiry, completion and sign-out reach an idle
+        // window; stop as soon as the view is idle again.
+        if let Some(wait) = account::poll_repaint_after(self.solve.account.view()) {
+            ctx.request_repaint_after(wait);
+        }
         if self.frames < 2 {
             self.frames += 1;
             // Before the window is shown: its title bar must be within reach (window_fit.rs).

@@ -173,6 +173,7 @@ fn signed_in_view() -> AccountView {
         sign_in_prompt: None,
         sign_in_error: None,
         sign_out_pending: false,
+        sign_out_recovery: false,
         sign_out_error: None,
         account_label: Some("alice@example.com".into()),
         available: Some(999),
@@ -182,6 +183,16 @@ fn signed_in_view() -> AccountView {
         tool_blocked: None,
         own_model_label: None,
     }
+}
+
+fn native_click(harness: &mut crate::scenario::Harness, handle: &str) {
+    let pos = crate::scenario::handle_at(handle).unwrap_or_else(|| panic!("{handle} is not drawn"));
+    let button = egui::PointerButton::Primary;
+    harness.frame_with(vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton { pos, button, pressed: true, modifiers: egui::Modifiers::NONE },
+    ]);
+    harness.frame_with(vec![egui::Event::PointerButton { pos, button, pressed: false, modifiers: egui::Modifiers::NONE }]);
 }
 
 #[test]
@@ -280,11 +291,45 @@ fn waiting_sign_in_shows_the_code_and_launches_the_browser_only_on_an_explicit_c
     }
     assert!(browser.lock().unwrap().is_empty(), "rendering a pending sign-in launched a browser");
     assert!(crate::scenario::handle_at("account:sign_in_browser").is_some());
-    crate::test_support::click(&mut harness, "account:sign_in_browser");
+    native_click(&mut harness, "account:sign_in_browser");
     harness.app.account.process_actions();
     assert_eq!(browser.lock().unwrap().as_slice(), ["https://auth.example/device"]);
     let log = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
     assert_eq!(log, vec!["open_sign_in_browser", "view"]);
+}
+
+#[test]
+fn a_synthetic_control_click_cannot_launch_the_sign_in_browser() {
+    let browser = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut port = FakeAccountPort::with_view(
+        AccountView {
+            sign_in_state: SignInState::Waiting,
+            sign_in_prompt: Some(DeviceCode {
+                user_code: "BCDF-GHJK".into(),
+                verification_uri: "https://auth.example/device".into(),
+                expires_at: Timestamp(9_999),
+            }),
+            ..AccountView::signed_out()
+        },
+        calls.clone(),
+    );
+    port.browser = browser.clone();
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = true;
+    harness.app.account = State::with_port(Box::new(port));
+    harness.frames(2);
+    if let Ok(mut calls) = calls.lock() {
+        calls.clear();
+    }
+    assert!(crate::scenario::handle_at("account:sign_in_browser").is_some());
+    // The control channel's click is app-injected automation, not platform provenance. It must
+    // fail closed instead of opening a browser for an agent.
+    crate::test_support::click(&mut harness, "account:sign_in_browser");
+    harness.app.account.process_actions();
+    assert!(browser.lock().unwrap().is_empty(), "automation launched the browser");
+    let log = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
+    assert!(!log.iter().any(|call| call == "open_sign_in_browser"), "automation reached the browser: {log:?}");
 }
 
 #[test]
@@ -356,6 +401,94 @@ fn sign_out_pending_and_cleanup_failure_are_visible_with_a_retry() {
     assert!(joined.contains("cannot check authorization"), "{texts:?}");
     assert!(crate::scenario::handle_at("account:retry_sign_out").is_some(), "no actionable retry");
     assert!(crate::scenario::handle_at("account:sign_in").is_none(), "failed cleanup must hide sign-in");
+}
+
+#[test]
+fn inline_waiting_sign_in_offers_the_shared_controls_and_completes_on_a_native_click() {
+    let browser = Arc::new(Mutex::new(Vec::new()));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut port = FakeAccountPort::with_view(
+        AccountView {
+            sign_in_state: SignInState::Waiting,
+            sign_in_prompt: Some(DeviceCode {
+                user_code: "BCDF-GHJK".into(),
+                verification_uri: "https://auth.example/device".into(),
+                expires_at: Timestamp(9_999),
+            }),
+            ..AccountView::signed_out()
+        },
+        calls.clone(),
+    );
+    port.browser = browser.clone();
+    let mut app = crate::test_support::sample_app();
+    app.account = State::with_port(Box::new(port));
+    let ctx = crate::fonts::test_context();
+    let input = || egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 700.0))),
+        events: Vec::new(),
+        ..Default::default()
+    };
+    let mut raw = input();
+    app.raw_input_hook(&mut raw);
+    crate::scenario::clear_handles();
+    let output = crate::test_support::frame(&ctx, raw, |ui| {
+        super::show_inline_sign_in(&mut app, ui, "account.sign_in_for_chat", "agent_chat:sign_in");
+    });
+    let text = crate::test_support::text_shapes(&output).map(|shape| shape.galley.text().to_string()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("BCDF-GHJK"), "the inline prompt lost the code: {text}");
+    assert!(text.contains("https://auth.example/device"), "the inline prompt lost the address: {text}");
+    assert!(browser.lock().unwrap().is_empty(), "appearing launched a browser");
+    assert!(crate::scenario::handle_at("agent_chat:sign_in:browser").is_some(), "no browser action: {:?}", crate::scenario::handles(""));
+    assert!(crate::scenario::handle_at("agent_chat:sign_in:cancel").is_some(), "no cancel action");
+
+    let pos = crate::scenario::handle_at("agent_chat:sign_in:browser").unwrap();
+    let button = egui::PointerButton::Primary;
+    for pressed in [true, false] {
+        let mut raw = input();
+        raw.events.push(egui::Event::PointerMoved(pos));
+        raw.events.push(egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE });
+        app.raw_input_hook(&mut raw);
+        let _ = crate::test_support::frame(&ctx, raw, |ui| {
+            super::show_inline_sign_in(&mut app, ui, "account.sign_in_for_chat", "agent_chat:sign_in");
+        });
+    }
+    assert_eq!(app.account.pending_action(), Some(Action::OpenSignInBrowser), "the native click was not accepted");
+    app.account.process_actions();
+    assert_eq!(browser.lock().unwrap().as_slice(), ["https://auth.example/device"]);
+}
+
+#[test]
+fn inline_expired_or_failed_sign_in_offers_one_explicit_retry() {
+    for state in [SignInState::Expired, SignInState::Failed] {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mut app = crate::test_support::sample_app();
+        app.account = State::with_port(Box::new(FakeAccountPort::with_view(
+            AccountView { sign_in_state: state, sign_in_error: Some(RefusalCode::AuthRequired), ..AccountView::signed_out() },
+            calls,
+        )));
+        let ctx = crate::fonts::test_context();
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 700.0))), ..Default::default() };
+        crate::scenario::clear_handles();
+        let _ = crate::test_support::frame(&ctx, input, |ui| {
+            super::show_inline_sign_in(&mut app, ui, "account.sign_in_for_chat", "agent_chat:sign_in");
+        });
+        assert!(crate::scenario::handle_at("agent_chat:sign_in").is_some(), "{state:?} lost the retry");
+    }
+}
+
+#[test]
+fn a_readable_startup_tombstone_offers_a_recovery_action_and_unreadable_stays_closed() {
+    let recovery = AccountView { sign_out_recovery: true, ..AccountView::unavailable() };
+    let texts = render_view(recovery);
+    let joined = texts.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join("\n");
+    assert!(joined.contains("previous sign-out"), "{texts:?}");
+    assert!(crate::scenario::handle_at("account:finish_sign_out").is_some(), "no recovery action");
+    assert!(crate::scenario::handle_at("account:sign_in").is_none(), "recovery must not offer sign-in");
+    let unreadable = AccountView::unavailable();
+    let _ = render_view(unreadable.clone());
+    assert!(crate::scenario::handle_at("account:finish_sign_out").is_none());
+    assert!(crate::scenario::handle_at("account:sign_in").is_none());
+    assert!(!unreadable.sign_out_recovery);
 }
 
 #[test]

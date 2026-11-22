@@ -63,12 +63,18 @@ The exchange is explicit:
   `CredentialSession::persist_verified_login`; a provider-only or rejected result writes nothing.
 - The worker's attempt id is checked before and after verification and again when the final
   write is published, so cancel, sign-out, account switch, shutdown and late replies cannot
-  install a stale session. Instants a worker does write after losing the generation race remove
-  that attempt's own write on its worker thread. `State::poll` adopts each terminal snapshot once
-  on the host logic step, never on a paint pass.
+  install a stale session. A worker that loses the generation race leaves no readable session:
+  promotion first revokes the old commit marker and only writes the new marker after every staged
+  value. There is no compensating-delete path to rely on. `State::poll` adopts each terminal
+  snapshot once on the host logic step, never on a paint pass; while an attempt or cleanup is
+  pending the host asks for a bounded repaint so code, expiry, completion and sign-out reach an
+  idle window without unrelated input.
 - The browser is launched only by a separate explicit "Sign in in browser" action, only at the
   HTTPS verification address from the current provider prompt and only when that address has the
-  same exact configured AuthKit origin; sign-in itself never opens one.
+  same exact configured AuthKit origin; sign-in itself never opens one. That action also requires
+  platform-provenance activation: app-injected automation input fails closed. Chat and Review
+  inline prompts show the same code, address, browser and cancel controls, with expiry/retry, so
+  a refused surface can finish the flow without replaying the original operation.
 - The desktop ships no reviewed WorkOS client id, AuthKit verification origin or product service
   origin. [Desktop build configuration](desktop-configuration.md) compiles in only explicit
   values through `WorkOsPublicClient::new` and `WireConnection::new`; with any missing or
@@ -135,7 +141,8 @@ commit marker was introduced is treated as non-restorable and requires a fresh s
   characters, and a disallowed suffix character;
 - incoherent balance/held/available values;
 - malformed and over-sized response bodies, timeout and redirect transport failures;
-- request shape: exact configured origin, contract headers, provider bearer, no body.
+- request shape: exact configured origin, contract headers, provider bearer, no body;
+- browser launch from app-injected automation input, and an unreadable startup sign-out state.
 
 The positive fixtures also cover a coherent zero balance and a positive held balance. They prove
 only that the consumed arithmetic is accepted; they do not establish credit authority.
@@ -154,10 +161,12 @@ The following are required together; the client seam exists, but no reviewed val
 - a **native HTTPS transport with redirects disabled** (the existing production `ureq` transport
   sets `https_only`, `max_redirects(0)` and platform certificates) and tests that exercise it
   without a live service;
-- **startup tombstone recovery boundary**: a fresh provider login verified against the
-  configured origin may replace the identity and clear the durable sign-out marker, but only an
-  installation-bound product session may restore `AuthenticatedHostScope`; the marker alone never
-  restores authority, and identity without installation proof never enables controlled work;
+- **startup tombstone recovery boundary**: a readable durable sign-out marker offers a recovery
+  action that finishes the cleanup; a fresh provider login verified against the configured origin
+  may replace the identity and clear the marker, but only an installation-bound product session
+  may restore `AuthenticatedHostScope`; the marker alone never restores authority, and identity
+  without installation proof never enables controlled work. An unreadable marker or store stays
+  closed, with no recovery or sign-in offered;
 - **installation bootstrap**: `POST /v1/installations` with the activated product bearer and a
   provable host scope, followed by durable installation credential storage, so a later
   `AuthenticatedHostScope` can be proven;

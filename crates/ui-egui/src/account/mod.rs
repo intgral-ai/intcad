@@ -101,6 +101,9 @@ pub struct AccountView {
     pub sign_in_error: Option<RefusalCode>,
     /// A sign-out's durable marker/delete is still running; authority is already gone in process.
     pub sign_out_pending: bool,
+    /// A readable durable sign-out marker from a previous process remains. The UI offers a
+    /// recovery action to finish the cleanup; no prior identity or authority is restored.
+    pub sign_out_recovery: bool,
     /// The latest sign-out cleanup failed. The process stays fail-closed until a retry confirms it.
     pub sign_out_error: Option<RefusalCode>,
     pub account_label: Option<String>,
@@ -128,6 +131,7 @@ impl AccountView {
             sign_in_prompt: None,
             sign_in_error: None,
             sign_out_pending: false,
+            sign_out_recovery: false,
             sign_out_error: None,
             account_label: None,
             available: None,
@@ -148,6 +152,7 @@ impl AccountView {
             sign_in_prompt: None,
             sign_in_error: None,
             sign_out_pending: false,
+            sign_out_recovery: false,
             sign_out_error: None,
             account_label: None,
             available: None,

@@ -782,7 +782,7 @@ fn web_sign_in_strip(app: &mut SolveApp, ui: &mut egui::Ui, rect: &mut Rect) {
         return;
     }
     let t = Tokens::get();
-    let height = (t.space_16 * 4.0).max(t.control_height * 3.0);
+    let height = (t.space_16 * 8.0).max(t.control_height * 6.0);
     let strip = Rect::from_min_max(rect.min, pos2(rect.max.x, (rect.min.y + height).min(rect.max.y)));
     if strip.height() <= 0.0 {
         return;

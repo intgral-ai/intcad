@@ -759,6 +759,10 @@ pub struct SolveApp {
     pub synthetic: Vec<egui::Event>,
     /// The modifiers of the synthetic press in progress (a Ctrl-drag keeps Ctrl while it moves).
     pub synthetic_mods: egui::Modifiers,
+    /// This frame's activating input came from the platform, not from app-injected automation.
+    /// A control-channel `ui.click` is synthetic and can never claim this provenance; account
+    /// browser launch and similar native-only actions must fail closed without it.
+    pub activation_from_platform: bool,
     control_rx: Option<Receiver<ControlRequest>>,
     /// Leaving a document invalidates every request admitted in its current tab context.
     guarded_context: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -856,6 +860,12 @@ impl Drop for SolveApp {
         #[cfg(not(target_arch = "wasm32"))]
         home::finish_pictures(&mut self.home, std::time::Duration::from_secs(10));
     }
+}
+
+/// Input that can activate a widget without pointer motion. Automation may inject the same
+/// events, so only their absence of a synthetic counterpart marks platform provenance.
+fn activates(event: &egui::Event) -> bool {
+    matches!(event, egui::Event::PointerButton { .. } | egui::Event::Key { .. } | egui::Event::AccessKitActionRequest(_))
 }
 
 impl SolveApp {
@@ -985,6 +995,7 @@ impl SolveApp {
             frame_clock: frame_rate::Clock::default(),
             synthetic: Vec::new(),
             synthetic_mods: egui::Modifiers::default(),
+            activation_from_platform: false,
             control_rx: None,
             guarded_context: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             agent_chat: Default::default(),
@@ -3221,14 +3232,20 @@ impl SolveApp {
     /// The frame's input before the app reads it: synthetic events, then what is typed while a
     /// capture hides the report waits for it (the control channel's typing too).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
-        self.synthetic_input(raw);
+        // Provenance is per frame: platform input is already in `raw` before automation's queue
+        // is merged. Any synthetic event this frame makes the frame untrusted, even if the
+        // platform delivered a click in the same frame.
+        let platform_activation = raw.events.iter().any(activates);
+        let synthetic_injected = self.synthetic_input(raw);
+        self.activation_from_platform = platform_activation && !synthetic_injected;
         issue_report::hold_input(self, raw);
     }
 
-    /// Inject synthetic events (one pointer event per frame).
-    fn synthetic_input(&mut self, raw: &mut egui::RawInput) {
+    /// Inject synthetic events (one pointer event per frame). Returns whether any were injected,
+    /// so automation input can never be mistaken for a native activation.
+    fn synthetic_input(&mut self, raw: &mut egui::RawInput) -> bool {
         if self.synthetic.is_empty() {
-            return;
+            return false;
         }
         // Text and modifier prefixes may precede a pointer event. Never drain past that event.
         let n = self
@@ -3267,6 +3284,7 @@ impl SolveApp {
             }
             raw.events.push(event);
         }
+        true
     }
 
     /// Lay out the whole window.

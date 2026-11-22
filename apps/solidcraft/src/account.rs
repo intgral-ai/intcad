@@ -29,17 +29,37 @@ use solidcraft_ui_egui::account::{
     AccountPort, AccountView, DeleteAccountGuide, DeviceCode, LifecycleEvent, OwnModelView, SignInState, State, Timestamp,
 };
 
+/// The durable sign-out state read once before the window exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StartupLogout {
+    /// No marker: ordinary signed-out or signed-in restore rules apply.
+    Clear,
+    /// A marker is readable and present. No prior identity or authority may be restored; the UI
+    /// offers a recovery action that finishes the durable cleanup.
+    ReadableTombstone,
+    /// The marker or the secure store could not be read. Nothing is offered and every account
+    /// action stays closed.
+    Unreadable,
+}
+
 /// Account facts read once before the window exists.
 #[derive(Clone, Debug)]
 pub struct AccountStartup {
     secure_store: bool,
-    /// A durable sign-out marker is present, or its state could not be read. Either way startup
-    /// refuses to restore or admit anything until a reviewed sign-in path clears it.
-    logout_pending: bool,
+    /// A readable durable sign-out marker, or an unreadable safety state. Either way startup
+    /// refuses to restore or admit anything until cleanup or a reviewed sign-in clears it.
+    logout: StartupLogout,
     restored: Option<AuthenticatedHostScope>,
     /// A persisted product session's account label, shown even when this build cannot prove the
     /// installation scope that controlled work needs.
     active_account: Option<String>,
+}
+
+impl AccountStartup {
+    #[cfg(test)]
+    fn logout_pending(&self) -> bool {
+        self.logout != StartupLogout::Clear
+    }
 }
 
 /// The reviewed values a desktop provider sign-in needs. Neither value comes from an environment
@@ -440,11 +460,17 @@ impl AccountRuntime {
     /// work on the window's thread.
     pub fn startup(&self) -> AccountStartup {
         let secure_store = self.credentials.is_persistent();
-        // An unreadable tombstone is treated as present: revocation/safety cannot be confirmed.
-        let logout_pending = self.credentials.logout_pending().unwrap_or(true);
-        let restored = if logout_pending { None } else { self.restored_with_store(secure_store) };
-        let active_account = if secure_store && !logout_pending { self.credentials.display_account() } else { None };
-        AccountStartup { secure_store, logout_pending, restored, active_account }
+        // A present marker is recoverable when it is readable; an unreadable one keeps the
+        // process fully closed because revocation/safety cannot be confirmed.
+        let logout = match self.credentials.logout_pending() {
+            Ok(true) => StartupLogout::ReadableTombstone,
+            Ok(false) => StartupLogout::Clear,
+            Err(_) => StartupLogout::Unreadable,
+        };
+        let pending = logout != StartupLogout::Clear;
+        let restored = if pending { None } else { self.restored_with_store(secure_store) };
+        let active_account = if secure_store && !pending { self.credentials.display_account() } else { None };
+        AccountStartup { secure_store, logout, restored, active_account }
     }
 
     fn restored_with_store(&self, secure_store: bool) -> Option<AuthenticatedHostScope> {
@@ -511,6 +537,8 @@ impl MonotonicClock for SystemMonotonicClock {
 struct CleanupStatus {
     /// The latest revocation generation whose durable cleanup has not finished.
     pending: Option<u64>,
+    /// The owning generation's cleanup finished successfully and has not been adopted by `poll`.
+    completed: bool,
     /// The latest generation's cleanup error; the session stays fail-closed until a reviewed
     /// sign-in path can repair it.
     error: Option<Refusal>,
@@ -520,9 +548,9 @@ struct DesktopAccountPort {
     runtime: AccountRuntime,
     view: AccountView,
     lifecycle: Option<LifecycleEvent>,
-    /// `true` until a reviewed sign-in path has cleared a durable logout marker. It keeps the
-    /// failed-cleanup identity fail-closed across this process too.
-    logout_pending: bool,
+    /// `true` until a reviewed sign-in path or confirmed cleanup has cleared a durable logout
+    /// marker. It keeps the failed-cleanup identity fail-closed across this process too.
+    logout: StartupLogout,
     secure_store: bool,
     generation: u64,
     cleanup: Arc<Mutex<CleanupStatus>>,
@@ -544,7 +572,7 @@ impl DesktopAccountPort {
             runtime,
             view,
             lifecycle: None,
-            logout_pending: startup.logout_pending,
+            logout: startup.logout,
             secure_store: startup.secure_store,
             generation: 0,
             cleanup: Arc::new(Mutex::new(CleanupStatus::default())),
@@ -624,7 +652,7 @@ impl DesktopAccountPort {
             }
             LoginPhase::Done => {
                 let account = status.account.clone()?;
-                self.logout_pending = false;
+                self.logout = StartupLogout::Clear;
                 // The product status verified the session, but this build installs no account
                 // service or model authority, so Chat and controlled entries keep their existing
                 // refusal until a reviewed adapter exists.
@@ -651,13 +679,26 @@ impl DesktopAccountPort {
     }
 
     fn poll_cleanup(&mut self) -> Option<AccountView> {
-        let status = self.cleanup.lock().ok()?;
-        let pending = status.pending.is_some();
-        let error = status.error.as_ref().map(|refusal| refusal.code);
-        if self.view.sign_out_pending == pending && self.view.sign_out_error == error {
-            return None;
+        let (pending, error, completed) = {
+            let mut status = self.cleanup.lock().ok()?;
+            let completed = if status.pending.is_some() || status.error.is_some() {
+                false
+            } else if status.completed {
+                status.completed = false;
+                true
+            } else {
+                // A startup recovery view or a pending action is not changed until its own worker
+                // reports. An unreadable startup state has no cleanup to adopt.
+                return None;
+            };
+            (status.pending.is_some(), status.error.as_ref().map(|refusal| refusal.code), completed)
+        };
+        if completed && self.secure_store {
+            // The worker deleted the marker only after the old authority was gone. This is the one
+            // place a readable startup tombstone becomes ordinary signed-out state.
+            self.logout = StartupLogout::Clear;
         }
-        self.view = if self.secure_store && !pending && error.is_none() {
+        self.view = if self.secure_store && !pending && error.is_none() && completed {
             AccountView::signed_out()
         } else {
             AccountView { sign_out_pending: pending, sign_out_error: error, ..AccountView::unavailable() }
@@ -668,7 +709,7 @@ impl DesktopAccountPort {
     /// Refuse account work while a durable sign-out is unconfirmed, a cleanup is running or its
     /// latest generation failed. An unreadable status is itself a refusal.
     fn cleanup_confirmed(&self) -> Result<(), Refusal> {
-        if self.logout_pending {
+        if self.logout != StartupLogout::Clear {
             return Err(account_unavailable("a previous sign-out is not yet confirmed"));
         }
         let status = self.cleanup.lock().map_err(|_| account_unavailable("the account cleanup state is unavailable"))?;
@@ -688,6 +729,9 @@ impl DesktopAccountPort {
     /// worker. The worker's result is applied only for its own generation, so a late result from
     /// an older switch can never clear a newer cleanup state.
     fn revoke(&mut self, event: LifecycleEvent) -> Result<(), Refusal> {
+        if self.logout == StartupLogout::Unreadable {
+            return Err(account_unavailable("the account storage state cannot be read"));
+        }
         let gate_holder = Arc::clone(&self.persist_gate);
         let gate = match gate_holder.try_lock() {
             Ok(gate) => gate,
@@ -721,6 +765,7 @@ impl DesktopAccountPort {
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         status.pending = Some(generation);
+        status.completed = false;
         status.error = None;
         drop(status);
         self.invalidate_login();
@@ -739,6 +784,7 @@ impl DesktopAccountPort {
                     // Only the owning generation may lift the barrier.
                     credentials.end_revocation();
                     status.error = None;
+                    status.completed = true;
                 } else {
                     status.error = Some(account_unavailable("the account session cleanup did not complete"));
                 }
@@ -758,6 +804,7 @@ impl DesktopAccountPort {
                 self.view.sign_out_error = Some(error.code);
                 if let Ok(mut status) = self.cleanup.lock() {
                     status.pending = None;
+                    status.completed = false;
                     status.error = Some(error.clone());
                 }
                 Err(error)
@@ -792,6 +839,7 @@ fn signed_in_view(account: String) -> AccountView {
         sign_in_prompt: None,
         sign_in_error: None,
         sign_out_pending: false,
+        sign_out_recovery: false,
         sign_out_error: None,
         account_label: Some(account),
         available: None,
@@ -806,8 +854,17 @@ fn signed_in_view(account: String) -> AccountView {
 }
 
 fn current_view(startup: &AccountStartup) -> AccountView {
-    if !startup.secure_store || startup.logout_pending {
+    if !startup.secure_store {
         return AccountView::unavailable();
+    }
+    match startup.logout {
+        // An unreadable store or marker cannot prove that recovery is possible: no action at all.
+        StartupLogout::Unreadable => return AccountView::unavailable(),
+        // A readable marker is recoverable, but the previous identity and authority stay gone.
+        StartupLogout::ReadableTombstone => {
+            return AccountView { sign_out_recovery: true, ..AccountView::unavailable() };
+        }
+        StartupLogout::Clear => {}
     }
     if let Some(scope) = startup.restored.as_ref() {
         return signed_in_view(scope.account().as_str().to_owned());
@@ -816,6 +873,13 @@ fn current_view(startup: &AccountStartup) -> AccountView {
         Some(account) => signed_in_view(account),
         None => AccountView::signed_out(),
     }
+}
+
+/// While a provider attempt or a durable sign-out cleanup is pending, an idle window cannot rely
+/// on unrelated input to poll the worker. Ask the host to repaint after a bounded interval so a
+/// prompt, expiry, completion or confirmation reaches the screen; return `None` once idle.
+pub fn poll_repaint_after(view: &AccountView) -> Option<Duration> {
+    (view.sign_in_state.pending() || view.sign_out_pending).then_some(Duration::from_secs(1))
 }
 
 impl AccountPort for DesktopAccountPort {
@@ -840,6 +904,9 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn sign_in(&mut self) -> Result<(), Refusal> {
+        if self.logout == StartupLogout::Unreadable {
+            return Err(account_unavailable("the account storage state cannot be read"));
+        }
         if self.login_pending() {
             return Err(account_unavailable("a sign-in is already in progress"));
         }
@@ -850,13 +917,16 @@ impl AccountPort for DesktopAccountPort {
         if !self.secure_store {
             return Err(account_unavailable("no secure credential store is available"));
         }
-        if let Ok(status) = self.cleanup.lock() {
+        if let Ok(mut status) = self.cleanup.lock() {
             if status.pending.is_some() {
                 return Err(account_unavailable("the sign-out cleanup is still running"));
             }
             if let Some(error) = &status.error {
                 return Err(error.clone());
             }
+            // A new attempt supersedes an unadopted cleanup confirmation, so the later poll can
+            // never overwrite the signed-in view with the previous sign-out.
+            status.completed = false;
         } else {
             return Err(account_unavailable("the account cleanup state is unavailable"));
         }
@@ -996,8 +1066,12 @@ pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: Account
     if let Some((scope, service, clock)) = runtime.take_commit_authority() {
         app.install_commit_authority(scope, service, clock);
         solidcraft_engine::note!("account: authenticated commit authority installed for the restored session");
-    } else if startup.logout_pending {
-        solidcraft_engine::note!("account: a previous sign-out is not confirmed; restore and controlled authority stay closed");
+    } else if startup.logout == StartupLogout::ReadableTombstone {
+        solidcraft_engine::note!(
+            "account: a readable sign-out marker is present; recovery is offered and no prior identity or authority is restored"
+        );
+    } else if startup.logout == StartupLogout::Unreadable {
+        solidcraft_engine::note!("account: the sign-out state could not be read; account restore and actions stay closed");
     } else if startup.restored.is_some() {
         solidcraft_engine::note!("account: session restored from the secure store; controlled authority stays closed");
     } else {
@@ -1251,7 +1325,8 @@ mod tests {
 
         let restarted = AccountRuntime::with_session(CredentialSession::new(Box::new(store.clone())));
         let startup = restarted.startup();
-        assert!(startup.logout_pending, "startup sees the unconfirmed sign-out");
+        assert!(startup.logout_pending(), "startup sees the unconfirmed sign-out");
+        assert_eq!(startup.logout, StartupLogout::ReadableTombstone);
         assert!(startup.restored.is_none());
         assert!(restarted.restored_session().is_none());
 
@@ -1269,8 +1344,61 @@ mod tests {
         store.fail_get.store(true, Ordering::SeqCst);
         let runtime = AccountRuntime::with_session(CredentialSession::new(Box::new(store)));
         let startup = runtime.startup();
-        assert!(startup.logout_pending, "an unreadable safety marker is treated as unsafe");
+        assert!(startup.logout_pending(), "an unreadable safety marker is treated as unsafe");
+        assert_eq!(startup.logout, StartupLogout::Unreadable);
         assert!(startup.restored.is_none());
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        let view = port.view();
+        assert!(!view.sign_out_recovery, "unreadable storage must not expose recovery");
+        assert!(!view.sign_in_visible, "unreadable storage must stay closed");
+        assert!(port.sign_out().is_err(), "no write may be attempted when storage is unreadable");
+    }
+
+    #[test]
+    fn a_readable_startup_tombstone_offers_recovery_and_clears_only_after_confirmed_cleanup() {
+        let store = TestStore::default();
+        let session = activate_session(&store);
+        store.fail_delete.store(true, Ordering::SeqCst);
+        assert_eq!(session.sign_out().unwrap_err().code, CredentialErrorCode::Unavailable);
+
+        let runtime = AccountRuntime::with_session(CredentialSession::new(Box::new(store.clone())));
+        let startup = runtime.startup();
+        assert_eq!(startup.logout, StartupLogout::ReadableTombstone);
+        assert!(startup.restored.is_none(), "the marker suppressed identity restore");
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        assert!(port.view().sign_out_recovery, "a readable tombstone must offer recovery");
+        assert!(!port.view().sign_in_visible, "no sign-in before the marker is cleared");
+        assert!(!port.view().signed_in, "no prior identity is restored");
+        assert!(port.runtime.authenticated_scope().is_none(), "no prior authority is restored");
+
+        store.fail_delete.store(false, Ordering::SeqCst);
+        port.sign_out().unwrap();
+        assert!(port.view().sign_out_pending, "the recovery action starts one cleanup");
+        wait_for_cleanup(&port);
+        let view = port.poll().expect("the recovery cleanup is adopted once");
+        assert!(!view.sign_out_recovery);
+        assert!(!view.sign_out_pending);
+        assert!(view.sign_in_visible, "confirmed cleanup returns to ordinary signed-out state");
+        assert_eq!(port.logout, StartupLogout::Clear);
+        assert!(!port.runtime.credentials.logout_pending().unwrap(), "the durable marker is gone");
+        assert!(port.runtime.authenticated_scope().is_none(), "recovery never revives authority");
+        port.shutdown();
+    }
+
+    #[test]
+    fn poll_repaint_is_bounded_to_pending_worker_states() {
+        assert_eq!(poll_repaint_after(&AccountView::signed_out()), None, "an idle window must not schedule frames");
+        assert_eq!(poll_repaint_after(&signed_in_view("alice".into())), None);
+        assert_eq!(poll_repaint_after(&AccountView { sign_in_state: SignInState::Expired, ..AccountView::signed_out() }), None);
+        assert_eq!(poll_repaint_after(&AccountView { sign_in_state: SignInState::Failed, ..AccountView::signed_out() }), None);
+        for state in [SignInState::Starting, SignInState::Waiting] {
+            let view = AccountView { sign_in_state: state, ..AccountView::signed_out() };
+            assert_eq!(poll_repaint_after(&view), Some(Duration::from_secs(1)), "{state:?} needs a bounded poll");
+        }
+        let pending = AccountView { sign_out_pending: true, ..AccountView::unavailable() };
+        assert_eq!(poll_repaint_after(&pending), Some(Duration::from_secs(1)), "sign-out completion needs a bounded poll");
+        let recovery = AccountView { sign_out_recovery: true, ..AccountView::unavailable() };
+        assert_eq!(poll_repaint_after(&recovery), None, "recovery waits for a person, not a worker");
     }
 
     #[test]
@@ -1336,7 +1464,7 @@ mod tests {
         assert!(port.cleanup.lock().unwrap().error.is_none(), "cleanup completed");
         assert!(!port.runtime.credentials.is_revoked(), "the owning generation lifted the barrier");
         port.shutdown();
-        assert!(!port.logout_pending, "the startup gate was already clear");
+        assert_eq!(port.logout, StartupLogout::Clear, "the startup gate was already clear");
     }
 
     #[test]
@@ -1935,15 +2063,15 @@ mod tests {
         let exchange = ScriptedExchange::accepting();
         let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
         let mut port = login_port(browser, runner, &store);
-        assert!(port.logout_pending, "the startup marker is present");
+        assert_eq!(port.logout, StartupLogout::ReadableTombstone, "the startup marker is present");
         port.sign_in().unwrap();
         wait_for_login(&mut port, true);
-        assert!(!port.logout_pending, "a verified identity clears the tombstone");
+        assert_eq!(port.logout, StartupLogout::Clear, "a verified identity clears the tombstone");
         assert!(port.runtime.credentials.product_session_active());
         assert!(port.runtime.credentials.authenticated_scope().is_none(), "identity is not installation proof");
         let restarted = AccountRuntime::with_session(CredentialSession::new(Box::new(store)));
         let startup = restarted.startup();
-        assert!(!startup.logout_pending);
+        assert!(!startup.logout_pending());
         assert!(startup.restored.is_none(), "restart does not restore controlled authority without installation proof");
         assert_eq!(startup.active_account.as_deref(), Some("acct_desktop0001"));
     }
