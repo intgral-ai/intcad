@@ -113,14 +113,21 @@ product bearer and the installation credential. A missing installation credentia
 read-only store, a durable sign-out marker or an unreadable credential state yields no candidate
 and no signed-in view.
 
-Before promoting the signed-in view, startup performs one bounded `GET /v1/status` against the
-configured product origin with the captured exact bearer. Restart applies the same consumed
-activation predicate as fresh login: active and email-verified account, exact supported protocol,
-supported client, `eligible` true with empty `reasons`, and coherent balance fields. The reply's
-account id must equal the captured local account. After the request, startup re-reads the scope,
-bearer, installation credential and revocation generation; any change discards the result.
-There is no installation bootstrap or replacement, no browser opening, no operation replay and no
-automatic token refresh on this path.
+Before promoting the signed-in view, the desktop performs one bounded `GET /v1/status` against the
+configured product origin with the captured exact bearer. Startup itself does no network read: it
+reads only local facts before the window exists and leaves the cached view signed out/pending.
+After the window is created, `DesktopAccountPort` starts one bounded native worker for that single
+check, so window creation and logic ticks do not wait on HTTP. The host samples the worker's
+waiting state before adopting the cached view on each logic tick; a completion that lands between
+those two reads therefore still schedules one more bounded wake instead of leaving a stale
+signed-out view. Restart applies the same consumed activation predicate as fresh login: active and
+email-verified account, exact supported protocol, supported client, `eligible` true with empty
+`reasons`, and coherent balance fields. The reply's account id must equal the captured local
+account. After the request, the worker re-reads the scope, bearer, installation credential and
+revocation generation; any change discards the result. An explicit sign-in, sign-out, account
+switch or GUI shutdown retires the check immediately, marks its shared result done and drops a
+late reply. There is no installation bootstrap or replacement, no browser opening, no operation
+replay and no automatic token refresh on this path.
 
 The generic `AccountService::status` decoder remains the broader quota/status snapshot. Restart
 narrows only its own presentation decision; it does not narrow the generic status contract. A
@@ -154,7 +161,11 @@ This checkpoint does not yet:
   wrong exact protocol version, account mismatch, missing installation credential, timeout/refusal
   and a reply that arrives after the local generation changed;
 - restart replay/gesture guards: exactly one `GET /v1/status`, no `POST /v1/installations`, no
-  browser opener call and no presentation or authority from the local candidate alone.
+  browser opener call and no presentation or authority from the local candidate alone;
+- restart worker boundaries: startup sends no request before the window; a completion between the
+  cached-view read and the wake sample still schedules another wake; retirement by explicit
+  sign-in, sign-out, switch or shutdown marks the shared result done immediately and drops a late
+  reply.
 
 The positive fixtures also cover a coherent zero balance and a positive held balance. They prove
 only that the consumed arithmetic is accepted; they do not establish credit authority.
@@ -184,8 +195,9 @@ verified live in this build:
   durable installation credential pair (implemented and covered by local scripted tests; not
   verified against a live service, and restart does not prove the pair is still server-valid);
 - **bounded restart status check**: one exact-bearer `GET /v1/status` under the same consumed
-  activation predicate as fresh login, followed by a local binding/generation recheck (implemented
-  locally; no live staging evidence);
+  activation predicate as fresh login, run on one native worker after window creation, followed by
+  a local binding/generation recheck and retirement that drops late replies (implemented locally;
+  no live staging evidence);
 - token expiry/refresh handling, revocation polling or periodic renewal/revalidation (not
   implemented).
 - live WorkOS/AuthKit/product verification with the approved public client id and staging origins

@@ -249,6 +249,9 @@ pub struct State {
     challenge: Option<DeviceCode>,
     /// Where the cached device-code sign-in is; paint reads this and never the port.
     sign_in: SignInStatus,
+    /// Sampled before the cached view is adopted on each logic tick, so a bounded startup check
+    /// that finishes with the new view still requests one more wake.
+    startup_waiting: bool,
 }
 
 impl Default for AccountView {
@@ -284,9 +287,21 @@ impl State {
     /// Install the host's port; this is the composition root's only entry point.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_port(port: Box<dyn AccountPort>) -> Self {
+        // Sample before the view snapshot. If the check finishes in between, the stale
+        // signed-out view is still followed by a wake that adopts the completed one.
+        let startup_waiting = port.startup_waiting();
         let view = port.view();
         let guide = port.delete_account_guide();
-        Self { port: Some(port), view, guide: Some(guide), pending: Vec::new(), notice: None, challenge: None, sign_in: SignInStatus::Idle }
+        Self {
+            port: Some(port),
+            view,
+            guide: Some(guide),
+            pending: Vec::new(),
+            notice: None,
+            challenge: None,
+            sign_in: SignInStatus::Idle,
+            startup_waiting,
+        }
     }
 
     /// The browser stays anonymous and offline even if a desktop composition root is reused.
@@ -299,6 +314,8 @@ impl State {
     /// Replace the host's port, e.g. after a host restart.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_port(&mut self, port: Box<dyn AccountPort>) {
+        // Same order as `with_port`: the waiting sample belongs to the view it precedes.
+        self.startup_waiting = port.startup_waiting();
         self.view = port.view();
         self.guide = Some(port.delete_account_guide());
         self.port = Some(port);
@@ -347,7 +364,7 @@ impl State {
     /// The host calls this once per logic tick. It also adopts the port's cached view and drains
     /// one asynchronous notice, so a completed, failed or retired worker becomes visible without
     /// any paint pass calling the port. A caller schedules a bounded wake while
-    /// [`State::sign_in_waiting`] says a worker is still running.
+    /// [`State::sign_in_waiting`] or [`State::startup_waiting`] says a worker is still running.
     pub fn process_actions(&mut self) {
         let actions = std::mem::take(&mut self.pending);
         let Some(port) = self.port.as_mut() else { return };
@@ -393,6 +410,10 @@ impl State {
     /// [`Action::OpenVerification`] calls the reviewed browser seam.
     fn sync_sign_in(&mut self) {
         let Some(port) = self.port.as_mut() else { return };
+        // Sample the bounded check before taking the view snapshot. Completion between the two
+        // calls then leaves a stale view with `startup_waiting` true, so the host wakes once more
+        // and the next logic tick adopts the completed view instead of showing it stale.
+        self.startup_waiting = port.startup_waiting();
         self.view = port.view();
         self.guide = Some(port.delete_account_guide());
         if self.view.signed_in {
@@ -450,11 +471,11 @@ impl State {
         self.sign_in.waiting_for_worker() && !self.sign_in_expired()
     }
 
-    /// A bounded startup check (restart verification) is still running, so the host should wake
-    /// the window within a bounded interval and read the cached view again. No paint pass or
+    /// A bounded startup check (restart verification) was still running when the cached view was
+    /// sampled, so the host should wake the window once more and read again. No paint pass or
     /// wake starts the check.
     pub fn startup_waiting(&self) -> bool {
-        self.port.as_ref().is_some_and(|port| port.startup_waiting())
+        self.startup_waiting
     }
 
     /// Drain the host's end-of-session event after [`State::process_actions`], never from a

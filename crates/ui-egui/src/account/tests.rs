@@ -20,6 +20,80 @@ pub(crate) struct FakeAccountPort {
     calls: Arc<Mutex<Vec<String>>>,
 }
 
+/// A port whose bounded startup check completes right after `view()` takes its snapshot, so a
+/// live wake probe after that view would report no work while the cached view is still stale.
+struct StartupCompletionPort {
+    state: Arc<Mutex<StartupCompletion>>,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+struct StartupCompletion {
+    waiting: bool,
+    view: AccountView,
+    complete_after_view: bool,
+}
+
+impl StartupCompletionPort {
+    fn new() -> (Self, Arc<Mutex<StartupCompletion>>) {
+        let state = Arc::new(Mutex::new(StartupCompletion { waiting: true, view: AccountView::signed_out(), complete_after_view: false }));
+        let port = Self { state: Arc::clone(&state), calls: Arc::new(Mutex::new(Vec::new())) };
+        (port, state)
+    }
+
+    fn log(&self, name: &str) {
+        if let Ok(mut calls) = self.calls.lock() {
+            calls.push(name.to_string());
+        }
+    }
+}
+
+impl AccountPort for StartupCompletionPort {
+    fn view(&self) -> AccountView {
+        self.log("view");
+        let mut state = self.state.lock().unwrap();
+        let view = state.view.clone();
+        if state.complete_after_view {
+            state.complete_after_view = false;
+            state.waiting = false;
+            state.view = signed_in_view();
+        }
+        view
+    }
+
+    fn refresh_status(&mut self) -> Result<AccountView, Refusal> {
+        Ok(self.view())
+    }
+
+    fn sign_in(&mut self) -> Result<(), Refusal> {
+        Ok(())
+    }
+
+    fn sign_out(&mut self) -> Result<(), Refusal> {
+        Ok(())
+    }
+
+    fn switch_account(&mut self) -> Result<(), Refusal> {
+        Ok(())
+    }
+
+    fn delete_account_guide(&self) -> DeleteAccountGuide {
+        DeleteAccountGuide { help_url: "", steps: &[] }
+    }
+
+    fn begin_device_code(&self) -> Result<DeviceCode, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthRequired, "not in this fake"))
+    }
+
+    fn own_model_view(&self) -> Option<OwnModelView> {
+        None
+    }
+
+    fn startup_waiting(&self) -> bool {
+        self.log("startup_waiting");
+        self.state.lock().unwrap().waiting
+    }
+}
+
 impl FakeAccountPort {
     pub(crate) fn signed_out(calls: Arc<Mutex<Vec<String>>>) -> Self {
         Self::with_view(AccountView::signed_out(), calls)
@@ -972,10 +1046,28 @@ fn a_bounded_startup_check_keeps_the_host_waking_until_the_port_finishes() {
     let waiting = Arc::new(AtomicBool::new(true));
     let mut port = FakeAccountPort::signed_out(calls);
     port.startup_waiting = Arc::clone(&waiting);
-    let state = State::with_port(Box::new(port));
+    let mut state = State::with_port(Box::new(port));
     assert!(state.startup_waiting(), "a running bounded check asks the host for one more wake");
     waiting.store(false, Ordering::SeqCst);
+    state.process_actions();
     assert!(!state.startup_waiting(), "a finished check stops the bounded wake");
+}
+
+#[test]
+fn a_completion_between_the_view_and_wake_read_still_requests_a_wake() {
+    let (port, state) = StartupCompletionPort::new();
+    let mut app = State::with_port(Box::new(port));
+
+    // Arm the completion to happen just after the next view snapshot is taken, while the new
+    // view it produces is not adopted on this tick.
+    state.lock().unwrap().complete_after_view = true;
+    app.process_actions();
+    assert!(!app.view().signed_in, "the just-taken view is still the cached signed-out snapshot");
+    assert!(app.startup_waiting(), "the host must wake once more because work existed before the view");
+
+    app.process_actions();
+    assert!(app.view().signed_in, "the next logic tick adopts the completed view");
+    assert!(!app.startup_waiting(), "a finished check stops the bounded wake");
 }
 
 fn render_prompt(app: &mut crate::SolveApp, context: PromptContext) -> Vec<(String, Pos2)> {

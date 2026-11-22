@@ -731,7 +731,10 @@ impl DesktopAccountPort {
     /// Start the one bounded restart check on its own native worker and return at once. The
     /// window's thread never performs this HTTP read.
     fn start_restart(&mut self, binding: RestartBinding) {
-        let Some(verifier) = self.runtime.restart_verifier() else { return };
+        let Some(verifier) = self.runtime.restart_verifier() else {
+            solidcraft_engine::note!("account: a restart candidate has no complete service configuration; signed-in view stays closed");
+            return;
+        };
         let shared = Arc::new(Mutex::new(RestartShared::default()));
         let cancel = SignInCancellation::default();
         let worker_shared = Arc::clone(&shared);
@@ -739,19 +742,21 @@ impl DesktopAccountPort {
         let worker = std::thread::Builder::new().name("intcad-account-restart".into()).spawn(move || {
             let verified = verifier.verify(&binding, &worker_cancel);
             let accepted = verified.is_some();
-            if let Ok(mut shared) = worker_shared.lock() {
-                shared.done = true;
-                // A result that lands after an explicit sign-in, sign-out, switch or shutdown was
-                // cancelled must not be presented, even if it won the race to the lock.
-                if accepted && !worker_cancel.is_cancelled() {
-                    shared.account = verified.map(|scope| scope.account().as_str().to_owned());
-                } else {
-                    shared.account = None;
-                }
+            // Retirement already marks the shared result done and clears any cached account. A
+            // late reply is dropped instead of writing after that decision.
+            if worker_cancel.is_cancelled() {
+                return;
             }
-            if accepted && !worker_cancel.is_cancelled() {
+            let Ok(mut shared) = worker_shared.lock() else { return };
+            if worker_cancel.is_cancelled() {
+                return;
+            }
+            shared.done = true;
+            shared.account = if accepted { verified.map(|scope| scope.account().as_str().to_owned()) } else { None };
+            drop(shared);
+            if accepted {
                 solidcraft_engine::note!("account: persisted account session verified by a bounded online status read; presentation only");
-            } else if !worker_cancel.is_cancelled() {
+            } else {
                 solidcraft_engine::note!("account: a restart candidate was not verified online; signed-in view stays closed");
             }
         });
@@ -772,14 +777,15 @@ impl DesktopAccountPort {
         }
     }
 
-    /// Retire the restart check without waiting on its network request. Clearing the cached
-    /// account at once also prevents a just-finished result from appearing beside a newer
-    /// explicit attempt; the worker's generation and pair checks reject a late write.
+    /// Retire the restart check without waiting on its network request. The shared result is
+    /// marked done and its cached account cleared immediately; a reply that lands after this
+    /// retirement is dropped rather than publishing beside a newer explicit attempt.
     fn cancel_restart(&mut self) {
         if let Some(job) = self.restart.as_mut() {
             job.cancel.cancel();
             if let Ok(mut shared) = job.shared.lock() {
                 shared.account = None;
+                shared.done = true;
             }
         }
     }
@@ -1473,6 +1479,34 @@ mod tests {
         }
     }
 
+    /// An inert product transport that holds only the first `GET /v1/status` until the test
+    /// releases it. Later sign-in requests share the same scripted responses without waiting.
+    #[derive(Clone)]
+    struct GatedStatusProduct {
+        inner: ScriptedProduct,
+        gate: Arc<Mutex<Option<Receiver<()>>>>,
+        entered: Arc<AtomicUsize>,
+    }
+
+    impl GatedStatusProduct {
+        fn hold_first_status(inner: ScriptedProduct, gate: Receiver<()>) -> Self {
+            Self { inner, gate: Arc::new(Mutex::new(Some(gate))), entered: Arc::new(AtomicUsize::new(0)) }
+        }
+    }
+
+    impl Transport for GatedStatusProduct {
+        fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
+            if request.method() == "GET" && request.url().ends_with("/v1/status") {
+                let gate = self.gate.lock().unwrap().take();
+                if let Some(gate) = gate {
+                    self.entered.fetch_add(1, Ordering::SeqCst);
+                    let _ = gate.recv();
+                }
+            }
+            self.inner.send(request)
+        }
+    }
+
     #[derive(Default)]
     struct VirtualTiming {
         millis: Mutex<u64>,
@@ -1827,13 +1861,115 @@ mod tests {
         port.sign_out().unwrap();
         wait_for_cleanup(&port);
         gate_tx.send(()).unwrap();
-        wait_until("the retired restart check", || !port.startup_waiting());
+        port.shutdown();
         assert!(!port.view().signed_in, "a reply for the retired pair is discarded");
         assert!(port.runtime.credentials.authenticated_scope().is_none(), "the sign-out pair stays gone");
         assert_eq!(product.requests().len(), 1, "the in-flight request is never replayed");
         assert_eq!(product.requests()[0].method(), "GET");
         assert!(opener.urls().is_empty());
+    }
+
+    #[test]
+    fn an_explicit_sign_in_retires_the_restart_check_and_drops_its_late_reply() {
+        let (gate_tx, gate_rx) = channel();
+        let device = ScriptedDevice::scripted(vec![(200, device_body()), (200, token_body())]);
+        let product = ScriptedProduct::scripted(vec![
+            Ok(WireResponse::new(200, status_body().to_string().into_bytes())),
+            Ok(WireResponse::new(201, installation_body().to_string().into_bytes())),
+            Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes())),
+        ]);
+        let gated = GatedStatusProduct::hold_first_status(product.clone(), gate_rx);
+        let device_factory: DeviceTransportFactory = {
+            let device = device.clone();
+            Arc::new(move || Box::new(Arc::new(device.clone())))
+        };
+        let product_factory: ProductTransportFactory = {
+            let gated = gated.clone();
+            Arc::new(move || Box::new(Arc::new(gated.clone())))
+        };
+        let opener = RecordingOpener::default();
+        let store = TestStore::default();
+        let runtime = AccountRuntime::with_session(activate_session(&store)).with_sign_in_harness(
+            account_config(),
+            device_factory,
+            product_factory,
+            Arc::new(VirtualTiming::default()),
+            opener.opener(),
+        );
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+
+        wait_for_counter(&gated.entered, 1);
+        port.sign_in().unwrap();
+        wait_until("the explicit sign-in", || port.completed_sign_in_account().is_some());
+        assert_eq!(port.view().account_label.as_deref(), Some("acct_product_0001"));
+        assert!(!port.startup_waiting(), "retirement marks the old check done before its network returns");
+
+        gate_tx.send(()).unwrap();
         port.shutdown();
+        assert!(port.verified_restart_account().is_none(), "a late restart reply is dropped after an explicit sign-in");
+        assert_eq!(port.view().account_label.as_deref(), Some("acct_product_0001"), "the completed sign-in stays current");
+        assert_eq!(product.requests().len(), 3, "the late status read is consumed once and never replayed");
+        assert!(opener.urls().is_empty());
+    }
+
+    #[test]
+    fn a_retired_restart_reply_after_switch_is_discarded_without_replay() {
+        let (gate_tx, gate_rx) = channel();
+        let gate = Arc::new(Mutex::new(gate_rx));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let mut product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes()))]);
+        let worker_entered = Arc::clone(&entered);
+        let worker_gate = Arc::clone(&gate);
+        product.on_send(move || {
+            worker_entered.fetch_add(1, Ordering::SeqCst);
+            let _ = worker_gate.lock().unwrap().recv();
+        });
+        let opener = RecordingOpener::default();
+        let store = TestStore::default();
+        let runtime = restart_runtime(activate_session(&store), product.clone(), &opener);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+
+        wait_for_counter(&entered, 1);
+        assert!(!port.view().signed_in);
+        port.switch_account().unwrap();
+        wait_for_cleanup(&port);
+        gate_tx.send(()).unwrap();
+        port.shutdown();
+        assert!(port.verified_restart_account().is_none(), "a reply for the switched-away pair is discarded");
+        assert_eq!(product.requests().len(), 1, "the in-flight request is never replayed");
+        assert!(opener.urls().is_empty());
+    }
+
+    #[test]
+    fn retiring_a_restart_check_marks_done_immediately_and_drops_the_late_reply() {
+        let (gate_tx, gate_rx) = channel();
+        let gate = Arc::new(Mutex::new(gate_rx));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let mut product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes()))]);
+        let worker_entered = Arc::clone(&entered);
+        let worker_gate = Arc::clone(&gate);
+        product.on_send(move || {
+            worker_entered.fetch_add(1, Ordering::SeqCst);
+            let _ = worker_gate.lock().unwrap().recv();
+        });
+        let opener = RecordingOpener::default();
+        let runtime = restart_runtime(active_session(), product.clone(), &opener);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+
+        wait_for_counter(&entered, 1);
+        assert!(port.startup_waiting());
+        // Shutdown follows this same retirement step before joining its worker.
+        port.cancel_restart();
+        assert!(!port.startup_waiting(), "retirement marks shared done immediately");
+        gate_tx.send(()).unwrap();
+        port.shutdown();
+        assert!(port.verified_restart_account().is_none(), "the late reply is dropped");
+        assert!(!port.view().signed_in);
+        assert_eq!(product.requests().len(), 1);
+        assert!(opener.urls().is_empty());
     }
 
     #[test]
