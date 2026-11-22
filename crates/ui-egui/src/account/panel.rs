@@ -551,7 +551,7 @@ fn publish(name: &str, response: &egui::Response) {
     crate::scenario::publish_rect(name, response.rect);
 }
 
-fn refusal_text(app: &SolveApp, code: RefusalCode) -> String {
+pub(crate) fn refusal_text(app: &SolveApp, code: RefusalCode) -> String {
     let id = match code {
         RefusalCode::AuthRequired => "account.reason_auth_required",
         RefusalCode::AuthUnavailable => "account.reason_auth_unavailable",

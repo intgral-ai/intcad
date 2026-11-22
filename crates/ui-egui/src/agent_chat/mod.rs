@@ -1603,26 +1603,32 @@ pub(crate) fn refresh_dfm_auto(app: &mut SolveApp) {
     app.agent_chat.dfm.set_auto_enabled(enabled);
 }
 
-/// Submit a decided trigger through the engine's background DFM service. This is the one host
-/// entry: the Run DFM command and the automatic checks both come through here. The service is a
-/// desktop host: the browser build has no background thread and submits nothing.
-#[cfg(not(target_arch = "wasm32"))]
-fn submit_dfm(app: &mut SolveApp, trigger: dfm_runtime::Trigger) -> bool {
-    match solidcraft_engine::dfm::service::start(&mut app.session) {
-        Ok(_) => true,
-        Err(error) => {
-            log::warn!("the DFM check did not start after {trigger:?}: {error}");
-            false
-        }
+/// Refuse before minting or admitting anything. The account snapshot can rule out eligibility,
+/// not authorize execution. No verified Assistant DFM execution scope exists: neither the
+/// turn's authority nor the Review panel's stop bound covers a separate Assistant check.
+fn assistant_dfm_refusal(app: &SolveApp) -> solidcraft_engine::entitlement::RefusalCode {
+    use solidcraft_engine::entitlement::RefusalCode;
+
+    let account = app.account.view();
+    if let Some(code) = account.tool_blocked {
+        return code;
     }
+    if !account.signed_in {
+        return RefusalCode::AuthRequired;
+    }
+    if account.no_credits() {
+        return RefusalCode::CreditsExhausted;
+    }
+    RefusalCode::UnsafeToStart
 }
 
-#[cfg(target_arch = "wasm32")]
-fn submit_dfm(_app: &mut SolveApp, _trigger: dfm_runtime::Trigger) -> bool {
+/// A decided automatic trigger is not permission to run the ordinary CAD command.
+fn submit_dfm(app: &SolveApp, trigger: dfm_runtime::Trigger) -> bool {
+    log::debug!("Assistant DFM not started after {trigger:?}: {:?}", assistant_dfm_refusal(app));
     false
 }
 
-/// The host's Run DFM entry: no AI connection is needed. Returns whether a run was submitted.
+/// A manual Assistant trigger, separate from the ordinary CAD command.
 #[allow(dead_code)]
 pub(crate) fn run_dfm(app: &mut SolveApp) -> bool {
     let stamp = app.session.document_stamp();

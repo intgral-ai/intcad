@@ -841,6 +841,48 @@ fn project_session(h: &mut Harness, scratch: &ProjectScratch) -> std::path::Path
     created.project.root().to_path_buf()
 }
 
+fn assert_assistant_dfm_refused(action: &str) {
+    for signed_in in [false, true] {
+        let mut h = Harness::new();
+        let scratch = ProjectScratch::new("assistant-refusal");
+        project_session(&mut h, &scratch);
+        let billing = CountingBilling::default();
+        let ledger = ReviewLedger::default();
+        // Even a verified Review bound and working billing do not cover the Assistant entry.
+        install(&mut h.app, &billing, &ledger);
+        let view = if signed_in {
+            crate::account::AccountView { signed_in: true, available: Some(10), tool_blocked: None, ..crate::account::AccountView::signed_out() }
+        } else {
+            crate::account::AccountView::signed_out()
+        };
+        h.app.account = crate::account::State::with_port(Box::new(crate::account::tests::FakeAccountPort::with_view(view, Default::default())));
+        let log = h.app.session.log.clone();
+        crate::agent_chat::web::act(&mut h.app, &egui::Context::default(), action).expect("the Assistant handles the refusal");
+        assert_eq!(h.app.session.log, log, "no DFM command reaches the session (signed_in={signed_in})");
+        assert!(h.app.dfm_chat.card.is_none(), "no run card is created");
+        let [crate::agent_chat::Item::Notice { error: true, text }] = h.app.agent_chat.items.as_slice() else {
+            panic!("the refusal must not create a tool row or a model turn");
+        };
+        let reason = if signed_in { "ui.dfm_check.assistant_unavailable" } else { "account.reason_auth_required" };
+        assert_eq!(text.as_str(), h.app.tr(reason));
+        assert_eq!((billing.admits(), billing.commits(), billing.releases()), (0, 0, 0));
+        assert!(ledger.records.lock().unwrap().is_empty());
+        assert!(ledger.reviews.lock().unwrap().is_empty());
+        assert!(ledger.intents.lock().unwrap().is_empty());
+        assert!(h.app.take_pending_settlements().is_empty());
+    }
+}
+
+#[test]
+fn assistant_dfm_button_refuses_before_dispatch_or_operation_effects() {
+    assert_assistant_dfm_refused(r#"{"type":"dfm_check"}"#);
+}
+
+#[test]
+fn assistant_dfm_phrase_refuses_before_dispatch_or_operation_effects() {
+    assert_assistant_dfm_refused(r#"{"type":"send","text":"检查一下当前钣金件","now":true}"#);
+}
+
 fn stopped_run(root: &std::path::Path, run: &str, outcome: RunOutcome) {
     let store = RunStore::new(root);
     let meta = RunMeta::new(

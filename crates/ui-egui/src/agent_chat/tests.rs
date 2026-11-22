@@ -18873,8 +18873,8 @@ fn ask_here_sends_no_view_picture_and_waits_for_the_card() {
 }
 
 /// PIL-305: the automatic check reads the project's `ci.toml` switch when it decides. A design
-/// opened from a project whose checks are on must run its check even when no project command has
-/// refreshed the switch yet (the open path adopts the session without `finish_command`).
+/// opened from a project whose checks are on still decides the trigger even when no project
+/// command has refreshed the switch yet (the open path adopts the session without `finish_command`).
 #[test]
 fn an_accepted_preview_reads_the_projects_check_switch() {
     let dir = std::env::temp_dir().join(format!("solidcraft-dfm-switch-{}", std::process::id()));
@@ -18889,7 +18889,7 @@ fn an_accepted_preview_reads_the_projects_check_switch() {
     let id = review_card(&app).id;
     review::accept(&mut app, id).unwrap();
     assert!(app.agent_chat.dfm.auto_enabled(), "the project says checks run by themselves");
-    assert_eq!(app.agent_chat.dfm.fired, before + 1, "so the accept runs one check");
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "accept decides one trigger, not execution authority");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -18908,6 +18908,23 @@ fn a_project_with_checks_on(app: &mut SolveApp) -> std::path::PathBuf {
     dir
 }
 
+/// The project's automatic-check setting is not execution authority for a committed edit,
+/// including when it came from a preview accepted by the user.
+#[test]
+fn assistant_dfm_automatic_dispatch_has_no_verified_scope() {
+    for trigger in [
+        dfm_runtime::Trigger::Edits { document_id: "doc".into(), turn: "turn".into(), revision: "rev".into() },
+        dfm_runtime::Trigger::AcceptedPreview { document_id: "doc".into(), turn: "preview".into(), revision: "rev".into() },
+    ] {
+        let (mut app, _, _) = app_with_script();
+        let dir = a_project_with_checks_on(&mut app);
+        app.account = crate::account::State::with_port(crate::account::tests::signed_in_unknown_port());
+        let submitted = submit_dfm(&mut app, trigger);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(!submitted, "a committed edit does not authorize an automatic DFM run");
+    }
+}
+
 /// The page's Accept button posts `review`; the host turns it into the same accept the panel's
 /// button calls, so the page can finish a previewed turn.
 #[test]
@@ -18919,24 +18936,24 @@ fn the_web_page_accepts_a_waiting_preview() {
     let id = review_card(&app).id;
     web::act(&mut app, &ctx, &json!({"type": "review", "id": id, "accept": true}).to_string()).expect("the page may accept");
     assert_eq!(review_card(&app).outcome, review::Outcome::Accepted);
-    assert_eq!(app.agent_chat.dfm.fired, before + 1, "and the accepted change runs one check");
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "the accepted change decides one trigger");
     assert!(
         web::act(&mut app, &ctx, &json!({"type": "review", "id": id, "accept": true}).to_string()).is_err(),
         "a second accept has nothing to accept"
     );
 }
 
-/// PIL-305: accepting a preview submits exactly one check; a rejection or a stale accept submits
-/// none. The trigger is the same one direct commits use.
+/// PIL-305: accepting a preview decides exactly one check trigger; a rejection or a stale accept
+/// decides none. Dispatch requires separate authority.
 #[test]
-fn an_accepted_preview_runs_one_check_and_a_rejection_or_stale_accept_runs_none() {
+fn an_accepted_preview_triggers_one_check_and_a_rejection_or_stale_accept_triggers_none() {
     let (mut app, tx, script, _ctx) = previewed_turn("a box");
     let _project = a_project_with_checks_on(&mut app);
     let before = app.agent_chat.dfm.fired;
     finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
     let id = review_card(&app).id;
     review::accept(&mut app, id).unwrap();
-    assert_eq!(app.agent_chat.dfm.fired, before + 1, "accept commits and runs one check");
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "accept commits and decides one trigger");
 
     let (mut app, tx, script, _ctx) = previewed_turn("a box");
     let _project = a_project_with_checks_on(&mut app);
