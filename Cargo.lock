@@ -5077,6 +5077,7 @@ dependencies = [
  "solidcraft-space-mouse",
  "solidcraft-ui-egui",
  "ureq",
+ "url",
  "windows-sys 0.61.2",
  "winit",
  "winreg",

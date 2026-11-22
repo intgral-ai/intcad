@@ -334,7 +334,7 @@ impl DesktopAccountConfig {
     /// builder can use this seam without inventing a runtime or environment fallback.
     pub fn new(workos_public_client_id: &str, product_https_origin: &str, authkit_verification_origin: &str) -> Option<Self> {
         let client = WorkOsPublicClient::new(workos_public_client_id)?;
-        let product = WireConnection::new(product_https_origin, env!("CARGO_PKG_VERSION")).ok()?;
+        let product = crate::keyring_store::product_connection(product_https_origin, env!("CARGO_PKG_VERSION"))?;
         let verification = WireConnection::new(authkit_verification_origin, env!("CARGO_PKG_VERSION")).ok()?;
         Some(Self { client, product, verification_origin: verification.base_url().to_owned() })
     }
@@ -828,13 +828,30 @@ impl AccountRuntime {
     /// The production desktop runtime with explicit trusted account configuration. A missing
     /// configuration keeps the same anonymous CAD and leaves the explicit sign-in refused.
     fn desktop_with_config(settings: Option<&Path>, config: Option<DesktopAccountConfig>) -> Self {
-        let keyring_lock = eframe::storage_dir(crate::SETTINGS_FOLDER)
-            .and_then(|directory| crate::keyring_store::try_lock_account_namespace(&directory).ok().flatten());
-        let credentials = if keyring_lock.is_some() {
-            crate::keyring_store::account_credential_session()
-        } else {
-            solidcraft_engine::note!("account: another desktop holds the secure store, or its lock is unavailable");
-            CredentialSession::new(Box::new(solidcraft_account_native::NoPersistentStore))
+        let lock_directory = eframe::storage_dir(crate::SETTINGS_FOLDER);
+        Self::desktop_with_store(settings, config, lock_directory.as_deref(), |service| {
+            Box::new(solidcraft_account_native::KeyringStore::new(service))
+        })
+    }
+
+    fn desktop_with_store(
+        settings: Option<&Path>,
+        config: Option<DesktopAccountConfig>,
+        lock_directory: Option<&Path>,
+        open_store: impl FnOnce(&str) -> Box<dyn solidcraft_engine::entitlement::CredentialStore + Send>,
+    ) -> Self {
+        // No reviewed origin means there is no keyring namespace to open. Never fall back to
+        // another origin or to pre-binding entries, even when a ledger is available.
+        let keyring_lock =
+            config.as_ref().and(lock_directory).and_then(|directory| crate::keyring_store::try_lock_account_namespace(directory).ok().flatten());
+        let credentials = match (&config, &keyring_lock) {
+            (Some(config), Some(_)) => CredentialSession::new(open_store(&crate::keyring_store::account_keyring_service(&config.product))),
+            (config, _) => {
+                if config.is_some() {
+                    solidcraft_engine::note!("account: another desktop holds the secure store, or its lock is unavailable");
+                }
+                CredentialSession::without_persistence()
+            }
         };
         let ledger = settings.and_then(|directory| match FileOperationStore::open(directory.join("account")) {
             Ok(store) => Some(store),
@@ -1992,6 +2009,7 @@ mod tests {
         block_set: Arc<Mutex<Option<(String, Receiver<()>)>>>,
         fail_set: Arc<Mutex<Option<String>>>,
         persistent: Arc<AtomicBool>,
+        get_calls: Arc<AtomicUsize>,
         set_calls: Arc<AtomicUsize>,
         delete_calls: Arc<AtomicUsize>,
         delete_waiting: Arc<AtomicUsize>,
@@ -2010,6 +2028,7 @@ mod tests {
                 block_set: Arc::new(Mutex::new(None)),
                 fail_set: Arc::new(Mutex::new(None)),
                 persistent: Arc::new(AtomicBool::new(true)),
+                get_calls: Arc::new(AtomicUsize::new(0)),
                 set_calls: Arc::new(AtomicUsize::new(0)),
                 delete_calls: Arc::new(AtomicUsize::new(0)),
                 delete_waiting: Arc::new(AtomicUsize::new(0)),
@@ -2061,6 +2080,7 @@ mod tests {
 
     impl CredentialStore for TestStore {
         fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
+            self.get_calls.fetch_add(1, Ordering::SeqCst);
             let gate = self.block_get.lock().unwrap().take();
             if let Some(gate) = gate {
                 self.get_waiting.fetch_add(1, Ordering::SeqCst);
@@ -2552,6 +2572,114 @@ mod tests {
         assert!(requests[0].body().is_none());
         assert!(opener.urls().is_empty(), "restart never opens a browser");
         port.shutdown();
+    }
+
+    #[test]
+    fn desktop_does_not_open_the_keyring_without_a_reviewed_origin_or_the_lock() {
+        let open_store = |_: &str| -> Box<dyn CredentialStore + Send> { panic!("the OS keyring must not open") };
+        let lock_dir = std::env::temp_dir().join(format!("intcad-no-origin-{}", std::process::id()));
+        let no_origin = AccountRuntime::desktop_with_store(None, None, Some(&lock_dir), open_store);
+        assert!(!no_origin.startup().secure_store);
+        assert!(!lock_dir.exists(), "no reviewed origin need not reserve the keyring");
+        let config = DesktopAccountConfig::new("client_test", "https://api.example", "https://auth.example").unwrap();
+        let no_lock = AccountRuntime::desktop_with_store(None, Some(config), None, open_store);
+        assert!(!no_lock.startup().secure_store);
+    }
+
+    #[test]
+    fn desktop_restart_never_reads_or_sends_another_origins_credentials() {
+        use solidcraft_engine::entitlement::{OperationStore, TransportCorrelation};
+
+        let path = std::env::temp_dir().join(format!("intcad-origin-binding-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(path);
+        let stores = std::cell::RefCell::new(BTreeMap::<String, TestStore>::new());
+        let store_for = |service: &str| stores.borrow_mut().entry(service.to_owned()).or_default().clone();
+        let open = |origin, product: ScriptedProduct| {
+            let config = DesktopAccountConfig::new("client_test", origin, "https://auth.example").unwrap();
+            let mut runtime =
+                AccountRuntime::desktop_with_store(Some(&scratch.0), Some(config), Some(&scratch.0), |service| Box::new(store_for(service)));
+            runtime.restart_transport = Some(Arc::new(move || Box::new(product.clone())));
+            runtime
+        };
+        let original = open("https://api.example", ScriptedProduct::default());
+        let mut session = original.credentials.clone();
+        session.complete_provider_login("provider_account", "provider_token").unwrap();
+        session.activate_product_session(&TestExchange).unwrap();
+        CredentialHandoff::installation_credential(&mut session, "installation_desktop", Secret::new("installation_credential")).unwrap();
+        let scope = session.authenticated_scope().unwrap();
+        let mut ledger = FileOperationStore::open(scratch.0.join("account")).unwrap();
+        let row =
+            ledger.persist_intent(&scope, &TransportCorrelation::new("origin_binding"), Capability::Review, EntryCategory::ReviewPanel).unwrap();
+        ledger.record_settlement_intent(&row.operation, SettlementIntent::Commit(BillingResult::Succeeded)).unwrap();
+        CredentialHandoff::settlement_credential(&mut session, &row.operation, Secret::new("fixture_settlement")).unwrap();
+        drop(session);
+        drop(original);
+
+        let original_store = stores.borrow().values().next().unwrap().clone();
+        let legacy = store_for(solidcraft_account_native::ACCOUNT_KEYRING_SERVICE);
+        let unscoped_entries = original_store.entries.lock().unwrap().clone();
+        *legacy.entries.lock().unwrap() = unscoped_entries;
+        let original_reads = original_store.get_calls.load(Ordering::SeqCst);
+        let recovery_script = || {
+            ScriptedProduct::scripted(vec![
+                Ok(WireResponse::new(200, status_body_for(scope.account().as_str()).to_string().into_bytes())),
+                Ok(WireResponse::new(
+                    200,
+                    json!({
+                        "operation_id": row.operation.as_str(), "state":"CHARGED", "result":"SUCCEEDED", "terminal":true,
+                        "finalized_at":"2026-01-01T00:00:30Z", "settlement_deadline":"2026-01-01T00:11:00Z"
+                    })
+                    .to_string()
+                    .into_bytes(),
+                )),
+            ])
+        };
+
+        // A shared ledger and old unscoped entries are not evidence that the new origin owns
+        // the previous server's bearer or settlement credential, even if it would accept them.
+        for origin in ["https://other.example", "https://api.example:8443"] {
+            let product = recovery_script();
+            let runtime = open(origin, product.clone());
+            let startup = runtime.startup();
+            assert!(startup.secure_store);
+            let mut port = DesktopAccountPort::new(runtime, &startup);
+            for worker in std::mem::take(&mut port.workers) {
+                worker.join().unwrap();
+            }
+            assert!(product.requests().is_empty(), "a different origin must send neither status nor finalize");
+            assert!(startup.candidate.is_none());
+            assert!(!port.view().signed_in);
+            port.shutdown();
+            assert_eq!(original_store.get_calls.load(Ordering::SeqCst), original_reads);
+            assert_eq!(legacy.get_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(ledger.load(&row.operation).unwrap().unwrap().status, OperationStatus::Held);
+        }
+
+        let product = recovery_script();
+        let same = open("https://API.Example:443/", product.clone());
+        let startup = same.startup();
+        assert_eq!(startup.candidate.as_ref(), Some(&scope));
+        let mut port = DesktopAccountPort::new(same, &startup);
+        for worker in std::mem::take(&mut port.workers) {
+            worker.join().unwrap();
+        }
+        assert!(port.view().signed_in);
+        port.shutdown();
+        let requests = product.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].url(), "https://api.example/v1/status");
+        assert_eq!(requests[0].header("Authorization"), Some("Bearer product_session_test_0000000000"));
+        assert_eq!(requests[1].url(), format!("https://api.example/v1/operations/{}/finalize", row.operation.as_str()));
+        assert_eq!(requests[1].header("X-Settlement-Credential"), Some("fixture_settlement"));
+        assert_eq!(ledger.load(&row.operation).unwrap().unwrap().status, OperationStatus::Charged);
+        assert_eq!(legacy.get_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
