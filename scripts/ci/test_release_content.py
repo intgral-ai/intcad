@@ -55,6 +55,27 @@ def workflow(name):
     return yaml.load((WORKFLOWS / name).read_text(), Loader=yaml.BaseLoader)
 
 
+@unittest.skipIf(yaml is None, "workflow wiring needs PyYAML (required by packaging lint)")
+class WindowsAssistantSmokeWorkflow(unittest.TestCase):
+    def test_packaging_lint_runs_the_windows_assistant_smoke_unittest(self):
+        steps = workflow("packaging-lint.yml")["jobs"]["lint"]["steps"]
+        command = "python3 -m unittest scripts/e2e/test_windows_assistant_uia.py"
+        self.assertTrue(
+            any(step.get("run", "").strip() == command and "if" not in step
+                and step.get("continue-on-error", "false") == "false" for step in steps),
+            f"Packaging lint must run {command} without skipping or ignoring failures",
+        )
+
+    def test_windows_assistant_smoke_changes_trigger_packaging_lint(self):
+        events = workflow("packaging-lint.yml")["on"]
+        for event in ("pull_request", "push"):
+            for path in ("tools/windows-assistant-smoke.ps1",
+                         "scripts/e2e/test_windows_assistant_uia.py",
+                         "scripts/e2e/windows_assistant_uia.py"):
+                with self.subTest(event=event, path=path):
+                    self.assertIn(path, events[event]["paths"])
+
+
 class StagingConfig(unittest.TestCase):
     def setUp(self):
         self.assertTrue(HELPER.is_file(), "missing staging config helper")
