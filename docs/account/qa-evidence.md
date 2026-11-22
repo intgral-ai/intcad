@@ -1,7 +1,7 @@
 # Account QA evidence
 
-Bounded Task 13 evidence snapshot. It records only checks that actually ran. No platform package,
-live credential, GUI session, real keychain, hardware, staging or production service was used.
+This page separates the original Task 13 contract snapshot from the later Linux desktop
+account-entry run. Neither run used live credentials or a staging or production account service.
 
 ## Tested revision and environment
 
@@ -51,9 +51,29 @@ Contract byte evidence is in [`contract-pin.md`](contract-pin.md).
 - Existing production authority remains disabled: there is no shipped service origin, sign-in
   command, real keychain validation, refresh/revocation handling or settlement authority.
 
+## Linux desktop account-entry run
+
+This run tested clean client commit `c8c5c392866a12274387ce66833109331e530309` in the
+Linux guest for task `int1497-entry`. Its direct binary and deployed executable matched SHA-256
+`f07fe3861559a38f9aa8ebe362000606bb55c445c98c5cd1bd9eb7e5be3e4de5`.
+The local evidence directory is
+`~/.local/state/intcad-e2e/runs/intcad-e2e-int1497-client-778ee328d234-int1497-entry/20261121T235143Z-65612/`.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Build and deploy the Linux direct binary | **PASS** | `report.json`, steps 1–2 |
+| General guest acceptance, steps 3–8 | **BLOCKED** | `ui.documents` refused the request because the controlled entry had no verified stop bound; `logs/20-ui-documents.json` |
+| Signed-out desktop account entry in the guest | **BLOCKED** | No persistent default credential store or complete account-service configuration; `screenshots/20-account-normal-before.png`, `screenshots/21-home-account-unavailable.png`, and `logs/21-secure-store-dbus.txt` |
+| 700×600 compact account entry in the guest | **NOT_RUN** | Desktop clamped the request to 960×600; `screenshots/22-resize-clamped.png` and `screenshots/23-file-menu-960x600-home-closed.png` are not evidence at 700×600 |
+| Anonymous sample display and view change | **Observed** | Manual view-axis click changed the rendered view; `screenshots/25-sample-view-control.png`. This does not pass the automated CAD suite. |
+| Real sign-in, registration, verification, or password recovery | **NOT_RUN** | No account configuration was supplied and no external account request was made. |
+
+The 700×600 regression remains a UI harness test, not a native-window screenshot. The overall
+guest acceptance result is **BLOCKED**. The guest was stopped after capturing the evidence.
+
 ## Remaining gates
 
-1. Linux direct-binary packaging and the full account flow matrix on a real install.
+1. Full Linux acceptance and account flow matrix on a real install with a persistent credential store.
 2. Windows MSI packaging, Credential Manager behavior and durability/ACL checks.
 3. macOS package and account flow in an authorized environment, or keep the release gate RED.
 4. Real OS keychain integration and live device-code flow without GUI dialogs on programmatic
