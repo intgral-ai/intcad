@@ -25,13 +25,13 @@ jobs:
             runner: windows-latest
             executable: target/ci/intcad.exe
     env:
-      PRODUCT_SHA: 4f58747c147bf9d666c4cd2a6a3be9c2e49b4627
+      PRODUCT_SHA: ae4917855e9f4757d77b9d779803ef303cd5e025
       EXECUTABLE: ${{ matrix.executable }}
       CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 4f58747c147bf9d666c4cd2a6a3be9c2e49b4627
+          ref: ae4917855e9f4757d77b9d779803ef303cd5e025
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@1.99.1
       - name: Install Linux build dependencies
