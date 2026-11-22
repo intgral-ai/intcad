@@ -3227,20 +3227,22 @@ impl SolveApp {
     /// The frame's input before the app reads it: synthetic events, then what is typed while a
     /// capture hides the report waits for it (the control channel's typing too).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
-        // Platform input is already in `raw` before automation's queue is merged. Track each
-        // event's origin through the merge and the report's held-input replay, then bind the
-        // gesture to the control that reports a click.
-        let mut from_platform = vec![true; raw.events.len()];
+        // eframe may call this hook again with the previous post-hook batch when the window is
+        // minimized or otherwise logic-only. Reuse the origins already attached to that retained
+        // prefix; only genuinely new events are platform input. Synthetic events and replay are
+        // then folded in before the tracker consumes the batch.
+        let (mut from_platform, replayed) = self.input_trust.begin_batch(&raw.events);
         self.synthetic_input(raw, &mut from_platform);
         issue_report::hold_input(self, raw, &mut from_platform);
-        debug_assert_eq!(raw.events.len(), from_platform.len());
-        self.input_trust.update(&raw.events, &from_platform);
+        self.input_trust.update(&raw.events, &from_platform, replayed);
+        self.input_trust.retain(&raw.events, &from_platform);
     }
 
     /// Whether `response`'s click is one trusted platform activation on this control.
     ///
     /// A pointer click needs platform input at both ends of the gesture and no synthetic event
-    /// touching it; a keyboard or accessibility click needs one platform activation this frame.
+    /// touching it; a keyboard or accessibility click needs one platform activation this frame
+    /// and must target this control, not merely be present somewhere in the frame.
     pub(crate) fn trusted_click(&self, response: &egui::Response) -> bool {
         if !response.clicked() {
             return false;
@@ -3248,7 +3250,9 @@ impl SolveApp {
         if response.clicked_by(egui::PointerButton::Primary) {
             !self.input_trust.any_activation_without_pointer() && self.input_trust.pointer_trusted(egui::PointerButton::Primary, response.rect)
         } else {
-            self.input_trust.keyboard_trusted()
+            let targets_this_control = response.ctx.memory(|memory| memory.has_focus(response.id))
+                || response.ctx.input(|input| input.has_accesskit_action_request(response.id, egui::accesskit::Action::Click));
+            targets_this_control && self.input_trust.keyboard_trusted()
         }
     }
 

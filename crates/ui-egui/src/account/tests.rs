@@ -195,6 +195,119 @@ fn native_click(harness: &mut crate::scenario::Harness, handle: &str) {
     harness.frame_with(vec![egui::Event::PointerButton { pos, button, pressed: false, modifiers: egui::Modifiers::NONE }]);
 }
 
+fn frame_input(events: Vec<egui::Event>) -> egui::RawInput {
+    egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(900.0, 700.0))), events, ..Default::default() }
+}
+
+fn pointer(pos: Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+}
+
+fn platform_key(key: egui::Key) -> egui::Event {
+    egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+}
+
+#[test]
+fn a_native_press_retained_by_a_logic_only_hook_stays_trusted() {
+    let mut app = crate::test_support::sample_app();
+    let rect = egui::Rect::from_min_size(Pos2::new(100.0, 100.0), egui::vec2(120.0, 30.0));
+    let at = rect.center();
+    let mut first = frame_input(vec![egui::Event::PointerMoved(at), pointer(at, true)]);
+    app.raw_input_hook(&mut first);
+
+    // eframe keeps the post-hook batch for the next logic-only call, then appends new input.
+    let mut second = first.clone();
+    second.events.push(pointer(at, false));
+    app.raw_input_hook(&mut second);
+    assert!(
+        app.input_trust.pointer_trusted(egui::PointerButton::Primary, rect),
+        "a native press retained across a logic-only hook must keep its provenance"
+    );
+}
+
+#[test]
+fn a_synthetic_press_retained_by_a_logic_only_hook_stays_tainted() {
+    let mut app = crate::test_support::sample_app();
+    let rect = egui::Rect::from_min_size(Pos2::new(100.0, 100.0), egui::vec2(120.0, 30.0));
+    let at = rect.center();
+    app.synthetic.push(pointer(at, true));
+    let mut first = frame_input(Vec::new());
+    app.raw_input_hook(&mut first);
+
+    let mut second = first.clone();
+    second.events.push(pointer(at, false));
+    app.raw_input_hook(&mut second);
+    assert!(
+        !app.input_trust.pointer_trusted(egui::PointerButton::Primary, rect),
+        "a retained synthetic press must not be relabelled as platform input"
+    );
+}
+
+#[test]
+fn a_platform_keyboard_activation_is_trusted_only_on_the_focused_control() {
+    let mut app = crate::test_support::sample_app();
+    let ctx = crate::fonts::test_context();
+    let target = egui::Id::new("account:keyboard_target");
+    let other = egui::Id::new("account:keyboard_other");
+    let rect = egui::Rect::from_min_size(Pos2::new(100.0, 100.0), egui::vec2(120.0, 30.0));
+    let other_rect = egui::Rect::from_min_size(Pos2::new(300.0, 100.0), egui::vec2(120.0, 30.0));
+
+    let mut focus = frame_input(Vec::new());
+    app.raw_input_hook(&mut focus);
+    let _ = crate::test_support::frame(&ctx, focus, |ui| {
+        ui.interact(rect, target, egui::Sense::click()).request_focus();
+    });
+
+    let mut raw = frame_input(vec![platform_key(egui::Key::Space)]);
+    app.raw_input_hook(&mut raw);
+    let mut trusted_target = false;
+    let mut trusted_other = false;
+    let _ = crate::test_support::frame(&ctx, raw, |ui| {
+        trusted_target = app.trusted_click(&ui.interact(rect, target, egui::Sense::click()));
+        trusted_other = app.trusted_click(&ui.interact(other_rect, other, egui::Sense::click()));
+    });
+    assert!(trusted_target, "the focused control did not accept its platform keyboard activation");
+    assert!(!trusted_other, "another control borrowed the keyboard activation");
+}
+
+#[test]
+fn a_platform_accesskit_click_is_trusted_only_for_its_target() {
+    let mut app = crate::test_support::sample_app();
+    let ctx = crate::fonts::test_context();
+    ctx.enable_accesskit();
+    let target = egui::Id::new("account:accesskit_target");
+    let other = egui::Id::new("account:accesskit_other");
+    let rect = egui::Rect::from_min_size(Pos2::new(100.0, 100.0), egui::vec2(120.0, 30.0));
+    let other_rect = egui::Rect::from_min_size(Pos2::new(300.0, 100.0), egui::vec2(120.0, 30.0));
+    let request = |id: egui::Id| {
+        egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+            action: egui::accesskit::Action::Click,
+            target_tree: egui::accesskit::TreeId::ROOT,
+            target_node: id.accesskit_id(),
+            data: None,
+        })
+    };
+
+    let mut raw = frame_input(vec![request(target)]);
+    app.raw_input_hook(&mut raw);
+    let mut trusted_target = false;
+    let mut trusted_other = false;
+    let _ = crate::test_support::frame(&ctx, raw, |ui| {
+        trusted_target = app.trusted_click(&ui.interact(rect, target, egui::Sense::click()));
+        trusted_other = app.trusted_click(&ui.interact(other_rect, other, egui::Sense::click()));
+    });
+    assert!(trusted_target, "the AccessKit request did not activate its target");
+    assert!(!trusted_other, "another control borrowed the AccessKit activation");
+
+    let mut wrong = frame_input(vec![request(other)]);
+    app.raw_input_hook(&mut wrong);
+    let mut target_with_wrong_request = false;
+    let _ = crate::test_support::frame(&ctx, wrong, |ui| {
+        target_with_wrong_request = app.trusted_click(&ui.interact(rect, target, egui::Sense::click()));
+    });
+    assert!(!target_with_wrong_request, "a request for another control authorized this one");
+}
+
 #[test]
 fn signed_out_shows_sign_in_and_no_quota() {
     let view = AccountView::signed_out();

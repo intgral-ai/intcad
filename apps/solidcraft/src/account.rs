@@ -1393,6 +1393,8 @@ mod tests {
             assert!(!startup.secure_store, "the failed probe is visible at startup");
             assert_eq!(startup.logout, StartupLogout::ReadableTombstone, "the marker is still readable");
             let mut port = DesktopAccountPort::new(runtime, &startup);
+            assert!(!port.view().sign_out_recovery, "a failed probe must not offer recovery");
+            assert!(!port.view().sign_in_visible, "a failed probe must not offer sign-in");
             let before = port.view().clone();
             let refused = match action {
                 LifecycleEvent::SignedOut => port.sign_out(),

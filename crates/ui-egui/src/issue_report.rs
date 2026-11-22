@@ -774,14 +774,15 @@ pub(crate) fn pending(app: &SolveApp) -> bool {
 /// its focused field back: a screenshot taken once the preview is done can hide the form while
 /// its user types (#7171).
 pub(crate) fn hold_input(app: &mut SolveApp, raw: &mut egui::RawInput, from_platform: &mut Vec<bool>) {
-    debug_assert_eq!(raw.events.len(), from_platform.len());
     let state = &mut app.issue_report;
     if state.draft.is_none() {
         state.held.clear();
     } else if state.pending.is_some() {
         let mut kept = Vec::with_capacity(raw.events.len());
-        let mut kept_origins = Vec::with_capacity(from_platform.len());
-        for (event, origin) in raw.events.drain(..).zip(from_platform.drain(..)) {
+        let mut kept_origins = Vec::with_capacity(raw.events.len());
+        for (index, event) in raw.events.drain(..).enumerate() {
+            // A missing origin is untrusted, but the ordinary event is still kept.
+            let origin = from_platform.get(index).copied().unwrap_or(false);
             if typing(&event) {
                 if state.held.len() < MAX_HELD {
                     state.held.push(HeldEvent { event, from_platform: origin });
@@ -795,18 +796,20 @@ pub(crate) fn hold_input(app: &mut SolveApp, raw: &mut egui::RawInput, from_plat
         *from_platform = kept_origins;
     } else if !state.held.is_empty() {
         let held = std::mem::take(&mut state.held);
-        let mut events = Vec::with_capacity(held.len() + raw.events.len());
-        let mut origins = Vec::with_capacity(held.len() + from_platform.len());
+        let raw_events = std::mem::take(&mut raw.events);
+        let mut events = Vec::with_capacity(held.len() + raw_events.len());
+        let mut origins = Vec::with_capacity(held.len() + raw_events.len());
         for held in held {
             events.push(held.event);
             origins.push(held.from_platform);
         }
-        events.append(&mut raw.events);
-        origins.append(from_platform);
+        for (index, event) in raw_events.into_iter().enumerate() {
+            origins.push(from_platform.get(index).copied().unwrap_or(false));
+            events.push(event);
+        }
         raw.events = events;
         *from_platform = origins;
     }
-    debug_assert_eq!(raw.events.len(), from_platform.len());
 }
 
 /// What [`hold_input`] keeps for the form.
@@ -997,6 +1000,20 @@ mod tests {
         hold_input(&mut app, &mut raw, &mut origins);
         assert_eq!(origins, vec![false, true, true], "held synthetic typing must stay synthetic beside a platform key");
         assert_eq!(raw.events.len(), origins.len());
+    }
+
+    #[test]
+    fn a_missing_origin_keeps_every_ordinary_event_and_fails_closed() {
+        let mut app = app();
+        app.issue_report.draft = Some(Draft::new("title".into(), String::new(), 0));
+        app.issue_report.pending =
+            Some(Pending { token: 1, signature: 0, deadline: f64::MAX, window: egui::Rect::ZERO, pixels_per_point: 1.0, max_side: 1 });
+        let moved = |x| egui::Event::PointerMoved(egui::pos2(x, 1.0));
+        let mut raw = egui::RawInput { events: vec![moved(1.0), moved(2.0), moved(3.0)], ..Default::default() };
+        let mut origins = vec![false];
+        hold_input(&mut app, &mut raw, &mut origins);
+        assert_eq!(raw.events.len(), 3, "ordinary events must never be dropped");
+        assert_eq!(origins, vec![false, false, false], "events without a preserved origin fail closed");
     }
 
     fn combine(app: &mut SolveApp) {

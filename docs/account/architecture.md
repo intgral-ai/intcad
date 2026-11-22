@@ -41,9 +41,11 @@ opens a browser, and a browser is launched only by a separate explicit click at 
 provider-issued verification address after its exact configured origin is checked again. The
 click must also carry platform provenance bound to that button's own gesture: pointer press and
 release must both be platform input with no synthetic event touching the gesture, and a keyboard or
-accessibility activation must be one unambiguous platform event. App-injected automation events,
-including the control channel's pointer input or typing replayed after a report capture, fail
-closed and cannot launch it. Chat and Review show the same code,
+accessibility activation must be one unambiguous platform event. A logic-only eframe pass that
+retains and replays its post-hook input keeps each event's recorded origin until a pass consumes
+it. App-injected automation events, including the control channel's pointer input or typing
+replayed after a report capture, fail closed and cannot launch it. Chat and Review show the same
+code,
 address, browser and cancel controls as the account menu, so the surface that refused the
 operation can complete the flow without replaying it. A verified identity is
 staged and only becomes readable at one durable commit marker; identity without installation
@@ -53,7 +55,9 @@ plan.
 Startup reads the durable sign-out marker once. A readable marker offers a recovery action that
 finishes the cleanup; the previous identity and authority stay unrestorable and no sign-in is
 offered until the cleanup confirms. An unreadable marker or storage state stays fully closed: it
-offers neither recovery nor sign-in and refuses account actions without attempting a write.
+offers neither recovery nor sign-in and refuses account actions without attempting a write. If the
+secure-store probe failed, recovery and sign-in are not offered, and sign-out or account switch
+refuse before any write or cleanup worker starts even when a marker is readable.
 
 ## Closure guard
 
