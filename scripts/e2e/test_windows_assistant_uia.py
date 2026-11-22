@@ -315,9 +315,50 @@ class StandaloneSmoke(unittest.TestCase):
                 @{ name='titlebar:assistant'; x=20; y=40; width=40; height=20 },
                 @{ name='titlebar:assistant_badge'; x=90; y=10; width=5; height=5 }
             )}
-            $rect = ScreenRect $result 'titlebar:assistant' @{X=44; Y=50}
+            $rect = ScreenRect $result 'titlebar:assistant' @{Left=44; Top=50; Right=444; Bottom=450}
             if ($rect.Left -ne 69 -or $rect.Top -ne 100 -or $rect.Right -ne 119 -or $rect.Bottom -ne 125) {
                 throw 'wrong screen rectangle'
+            }
+        """)
+
+    def test_rect_geometry_rejects_missing_or_non_numeric_values(self) -> None:
+        self.fixture("""
+            $client = @{Left=-40; Top=50; Right=360; Bottom=450}
+            $default = @{name='agent_chat:web'; x=20; y=40; width=40; height=20}
+            foreach ($field in @('x','y','width','height','pixelsPerPoint')) {
+                foreach ($invalid in @($null, $true, '1', [double]::NaN, [double]::PositiveInfinity)) {
+                    $entry = $default.Clone(); $reply = @{pixelsPerPoint=1.25; rects=@($entry)}
+                    if ($field -ne 'pixelsPerPoint') { $entry[$field] = $invalid } else { $reply[$field] = $invalid }
+                    Reject { ScreenRect $reply 'agent_chat:web' $client } 'invalid geometry for agent_chat:web'
+                }
+                $entry = $default.Clone(); $reply = @{pixelsPerPoint=1.25; rects=@($entry)}
+                if ($field -ne 'pixelsPerPoint') { $entry.Remove($field) } else { $reply.Remove($field) }
+                Reject { ScreenRect $reply 'agent_chat:web' $client } 'invalid geometry for agent_chat:web'
+            }
+        """)
+
+    def test_rect_geometry_rejects_overflow_collapse_and_outside_client_edges(self) -> None:
+        self.fixture("""
+            $client = @{Left=-40; Top=50; Right=60; Bottom=150}
+            foreach ($rect in @(
+                @{x=20; y=20; width=0; height=20},
+                @{x=20; y=20; width=20; height=-1},
+                @{x=20; y=20; width=0.1; height=20},
+                @{x=9999999999; y=20; width=20; height=20},
+                @{x=20; y=20; width=[double]::MaxValue; height=20},
+                @{x=-1; y=20; width=20; height=20},
+                @{x=20; y=-1; width=20; height=20},
+                @{x=70; y=20; width=20; height=20},
+                @{x=20; y=70; width=20; height=20}
+            )) {
+                $rect.name = 'agent_chat:web'
+                $reply = @{pixelsPerPoint=1.25; rects=@($rect)}
+                Reject { ScreenRect $reply 'agent_chat:web' $client } 'invalid geometry for agent_chat:web'
+            }
+            $reply = @{pixelsPerPoint=1.25; rects=@(@{name='agent_chat:web';x=0;y=0;width=80;height=80})}
+            $screen = ScreenRect $reply 'agent_chat:web' $client
+            if ($screen.Left -ne -40 -or $screen.Top -ne 50 -or $screen.Right -ne 60 -or $screen.Bottom -ne 150) {
+                throw 'wrong translated client bounds'
             }
         """)
 
@@ -339,7 +380,7 @@ class StandaloneSmoke(unittest.TestCase):
             $rail = @{name='rail:assistant'; x=280; y=64; width=20; height=16}
             $title = @{name='titlebar:assistant'; x=20; y=8; width=20; height=16}
             $other = @{name='rail:assistant_badge'; x=0; y=0; width=20; height=16}
-            function ClientOrigin { @{X=40; Y=50} }
+            function ClientBounds { @{Left=40; Top=50; Right=440; Bottom=450} }
             function Call($method, $parameters, $until) {
                 if ($method -cne 'ui.rects' -or $parameters.ContainsKey('prefix') -or $until -ne $deadline) {
                     throw 'expected one unfiltered observation with the existing deadline'
@@ -355,7 +396,8 @@ class StandaloneSmoke(unittest.TestCase):
             foreach ($case in @(
                 @{rects=@($other,$rail); point='402,140'},
                 @{rects=@($title,$rail); point='402,140'},
-                @{rects=@($other,$title); point='78,70'}
+                @{rects=@($other,$title); point='77,70'},
+                @{rects=@(@{name='rail:assistant'; x=1; y=1; width=0.5; height=0.5}); point='41,51'}
             )) {
                 $script:reads = 0; $script:click = $null
                 $rects = $case.rects; $deadline = [datetime]::UtcNow.AddSeconds(10)
@@ -368,6 +410,15 @@ class StandaloneSmoke(unittest.TestCase):
             $script:reads = 0; $script:click = $null
             Reject { ClickAssistantEntry $deadline } 'rail:assistant or titlebar:assistant was not drawn'
             if ($script:reads -ne 1 -or $script:click) { throw 'clicked a target that was not drawn' }
+            foreach ($badRail in @(
+                @{name='rail:assistant'; y=64; width=20; height=16},
+                @{name='rail:assistant'; x=315; y=64; width=20; height=16}
+            )) {
+                $rects = @($badRail, $title); $deadline = [datetime]::UtcNow.AddSeconds(10)
+                $script:reads = 0
+                Reject { ClickAssistantEntry $deadline } 'invalid geometry for rail:assistant'
+                if ($script:reads -ne 1 -or $script:click) { throw 'clicked despite malformed preferred entry' }
+            }
         """)
 
 

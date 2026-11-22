@@ -77,6 +77,7 @@ public static class AssistantWin {
         public uint Type; public INPUTDATA Data;
     }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref POINT p);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
@@ -564,33 +565,65 @@ function ReadAssistant($inspection) {
     $state
 }
 
-function ScreenRect($result, [string]$name, $origin) {
+function ScreenRect($result, [string]$name, $client) {
     $entry = $result.rects | Where-Object { $_.name -ceq $name } | Select-Object -Last 1
     if (-not $entry) { return }
-    $scale = $result.pixelsPerPoint
-    if ($scale -le 0 -or -not [double]::IsFinite($scale) -or $entry.width -le 0 -or $entry.height -le 0) {
-        throw "invalid geometry for $name"
+    foreach ($value in @($entry.x, $entry.y, $entry.width, $entry.height, $result.pixelsPerPoint)) {
+        # JSON numbers are integers or floating-point values, never coerced strings or booleans.
+        if (($value -isnot [int] -and $value -isnot [long] -and $value -isnot [double]) -or
+            -not [double]::IsFinite($value)) {
+            throw "invalid geometry for ${name}: expected finite numeric coordinates, size and scale"
+        }
+    }
+    $x = [double]$entry.x; $y = [double]$entry.y
+    $width = [double]$entry.width; $height = [double]$entry.height
+    $scale = [double]$result.pixelsPerPoint
+    if ($x -lt 0 -or $y -lt 0 -or $width -le 0 -or $height -le 0 -or $scale -le 0) {
+        throw "invalid geometry for ${name}: negative origin or nonpositive size or scale"
+    }
+    # Keep arithmetic in double until all rounded edges are proven representable and in bounds.
+    $left = [Math]::Round($x * $scale)
+    $top = [Math]::Round($y * $scale)
+    $right = [Math]::Round(($x + $width) * $scale)
+    $bottom = [Math]::Round(($y + $height) * $scale)
+    $clientWidth = [double]$client.Right - $client.Left
+    $clientHeight = [double]$client.Bottom - $client.Top
+    if (-not [double]::IsFinite($right) -or -not [double]::IsFinite($bottom) -or
+        $right -le $left -or $bottom -le $top -or
+        $right -gt [Math]::Min($clientWidth, [int]::MaxValue) -or
+        $bottom -gt [Math]::Min($clientHeight, [int]::MaxValue)) {
+        throw "invalid geometry for ${name}: rounded rectangle is empty, overflows or is outside the client"
     }
     @{
-        Left   = $origin.X + [int]($entry.x * $scale)
-        Top    = $origin.Y + [int]($entry.y * $scale)
-        Right  = $origin.X + [int](($entry.x + $entry.width) * $scale)
-        Bottom = $origin.Y + [int](($entry.y + $entry.height) * $scale)
+        Left   = [int]($client.Left + $left)
+        Top    = [int]($client.Top + $top)
+        Right  = [int]($client.Left + $right)
+        Bottom = [int]($client.Top + $bottom)
     }
 }
 
-function ClientOrigin {
-    $origin = New-Object AssistantWin+POINT
-    if (-not [AssistantWin]::ClientToScreen($h, [ref]$origin)) { throw 'cannot locate the smoke window client origin' }
-    $origin
+function ClientBounds {
+    $bounds = New-Object AssistantWin+RECT
+    if (-not (IsOwnedFrame) -or -not [AssistantWin]::GetClientRect($h, [ref]$bounds)) {
+        throw 'cannot read the live owned frame client bounds'
+    }
+    $origin = New-Object AssistantWin+POINT; $far = New-Object AssistantWin+POINT
+    $origin.X = $bounds.Left; $origin.Y = $bounds.Top
+    $far.X = $bounds.Right; $far.Y = $bounds.Bottom
+    if (-not [AssistantWin]::ClientToScreen($h, [ref]$origin) -or
+        -not [AssistantWin]::ClientToScreen($h, [ref]$far) -or -not (IsOwnedFrame) -or
+        $far.X -le $origin.X -or $far.Y -le $origin.Y) {
+        throw 'cannot translate positive client bounds for the live owned frame'
+    }
+    @{ Left = $origin.X; Top = $origin.Y; Right = $far.X; Bottom = $far.Y }
 }
 
 function TargetRect([string[]]$names, [datetime]$until) {
     $params = if ($names.Count -eq 1) { @{ prefix = $names[0] } } else { @{} }
     $result = Call 'ui.rects' $params $until
-    $origin = ClientOrigin
+    $client = ClientBounds
     foreach ($name in $names) {
-        $rect = ScreenRect $result $name $origin
+        $rect = ScreenRect $result $name $client
         if ($rect) { return $rect }
     }
 }
@@ -599,7 +632,8 @@ function ClickTarget([string[]]$names, [datetime]$until) {
     do {
         $r = TargetRect $names $until
         if ($r) {
-            Click ([int](($r.Left + $r.Right) / 2)) ([int](($r.Top + $r.Bottom) / 2)) $h
+            # Right and bottom are exclusive, including for a one-pixel target.
+            Click ([int][Math]::Floor(($r.Left + $r.Right) / 2)) ([int][Math]::Floor(($r.Top + $r.Bottom) / 2)) $h
             return
         }
         Start-Sleep -Milliseconds 150
