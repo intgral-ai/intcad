@@ -841,6 +841,124 @@ fn narrow_file_account_menu_keeps_copy_and_manual_controls_in_the_open_popup() {
 }
 
 #[test]
+fn compact_copy_survives_file_overlap_at_the_staging_window_size() {
+    let mut code = future_device_code(300);
+    code.verification_uri = "https://auth.example/device?user_code=PRIVATE#fragment".into();
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = start_flow(&FlowPort::signed_out(Some(code)));
+    // The Linux staging window is 980×760 physical at 1.4× scale: about 700×543 egui points.
+    harness.call("ui.resize", json!({"width":700.0,"height":543.0}));
+    harness.frames(3);
+    // Open both levels with real pointer gestures, as the staging E2E does. Synthetic clicks do
+    // not move the custom File area through the same layer ordering.
+    native_click(&mut harness, "appbar:file");
+    harness.frames(2);
+    native_click(&mut harness, "account:overflow");
+    harness.frames(8);
+    let copy = crate::scenario::rect_of("account:sign_in_browser:copy").expect("the child publishes Copy code");
+    let menus = crate::scenario::rects("menu:");
+    let covered = menus.iter().filter(|(_, rect)| rect.contains(copy.center())).map(|(name, rect)| (name.clone(), *rect)).collect::<Vec<_>>();
+    assert!(!covered.is_empty(), "the staging layout does not reproduce the File child overlap: copy {copy:?}, menues {menus:?}");
+    // Reproduce the staging history that leaves the custom File area above the child popup after
+    // a later click. Without an explicit sublayer, that layer also owns the hit test.
+    let file_layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("sc_file_area"));
+    harness.ctx.memory_mut(|memory| memory.areas_mut().move_to_top(file_layer));
+    harness.frames(2);
+    assert_ne!(harness.ctx.layer_id_at(copy.center()), Some(file_layer), "the File layer owns the visible Copy point; covered rows: {covered:?}");
+    assert!(harness.output.commands.is_empty(), "clipboard requires a click");
+    native_click_at(&mut harness, copy.center());
+    assert!(
+        matches!(harness.output.commands.as_slice(), [egui::OutputCommand::CopyText(code)] if code == "BCDF-GHJK"),
+        "a File row intercepted the visible Copy code at {copy:?}; commands: {:?}, covered: {covered:?}",
+        harness.output.commands
+    );
+    assert!(harness.app.account.pending_action().is_none(), "Copy code must not queue a File action");
+}
+
+#[test]
+fn compact_sign_in_keeps_the_file_account_open_to_show_the_waiting_code() {
+    let flow = FlowPort::signed_out(Some(future_device_code(300)));
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = State::with_port(Box::new(flow));
+    harness.call("ui.resize", json!({"width":700.0,"height":720.0}));
+    harness.frames(3);
+    open_compact_account_menu(&mut harness);
+    assert!(crate::scenario::handle_at("account:sign_in").is_some(), "the compact sign-in action is visible");
+
+    native_click(&mut harness, "account:sign_in");
+    harness.app.account.process_actions();
+    harness.app.account.process_actions();
+    harness.frames(2);
+    assert!(
+        crate::scenario::handle_at("account:overflow").is_some(),
+        "the File parent closed during a sign-in start: {:?}",
+        crate::scenario::handles("account:")
+    );
+    assert!(
+        crate::scenario::handle_at("account:sign_in_browser:copy").is_some(),
+        "the waiting code is not actionable: {:?}",
+        crate::scenario::handles("account:")
+    );
+    let text = painted_text(&harness.shapes).to_lowercase();
+    assert!(text.contains("bcdf-ghjk"), "the waiting code is missing: {text}");
+}
+
+#[test]
+fn compact_browser_action_keeps_the_file_account_open_with_the_waiting_code() {
+    let flow = FlowPort::signed_out(Some(future_device_code(300)));
+    let state = start_flow(&flow);
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = state;
+    harness.call("ui.resize", json!({"width":700.0,"height":720.0}));
+    harness.frames(3);
+    open_compact_account_menu(&mut harness);
+    assert!(crate::scenario::handle_at("account:sign_in_browser").is_some(), "the browser action is visible");
+
+    native_click(&mut harness, "account:sign_in_browser");
+    harness.app.account.process_actions();
+    harness.frames(2);
+    assert_eq!(flow.with_state(|state| state.opens), Some(1), "the explicit browser action did not run");
+    assert!(crate::scenario::handle_at("account:overflow").is_some(), "the File parent closed after the browser action");
+    assert!(crate::scenario::handle_at("account:sign_in_browser:copy").is_some(), "the waiting code is not actionable");
+    assert!(painted_text(&harness.shapes).to_lowercase().contains("bcdf-ghjk"), "the waiting code is missing");
+}
+
+#[test]
+fn compact_retry_keeps_the_file_account_open_with_the_new_waiting_code() {
+    let flow = FlowPort::signed_out(Some(DeviceCode {
+        user_code: "BCDF-GHJK".into(),
+        verification_uri: "https://auth.example/device".into(),
+        expires_at: Timestamp(0),
+    }));
+    let state = start_flow(&flow);
+    flow.change(|state| state.challenge = Some(future_device_code(300)));
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = state;
+    harness.call("ui.resize", json!({"width":700.0,"height":720.0}));
+    harness.frames(3);
+    open_compact_account_menu(&mut harness);
+    assert!(crate::scenario::handle_at("account:sign_in").is_some(), "the retry action is visible");
+
+    native_click(&mut harness, "account:sign_in");
+    harness.app.account.process_actions();
+    harness.app.account.process_actions();
+    harness.frames(2);
+    assert!(crate::scenario::handle_at("account:overflow").is_some(), "the File parent closed after retry");
+    assert!(
+        crate::scenario::handle_at("account:sign_in_browser:copy").is_some(),
+        "the new waiting code is not actionable: {:?}",
+        crate::scenario::handles("account:")
+    );
+    let text = painted_text(&harness.shapes).to_lowercase();
+    assert!(text.contains("bcdf-ghjk"), "the new waiting code is missing: {text}");
+    assert!(!text.contains("sign-in code expired"), "the retry still shows the expired state: {text}");
+}
+
+#[test]
 fn an_outside_click_closes_the_compact_file_account_child_and_parent() {
     let mut harness = crate::scenario::Harness::new();
     harness.app.home.open = false;

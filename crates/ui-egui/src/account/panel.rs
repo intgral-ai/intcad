@@ -266,7 +266,8 @@ pub(crate) fn menu_available(app: &SolveApp) -> bool {
 
 /// The File menu's compact fallback when the caption chip lacks room. It opens the same
 /// [`show_menu`] body as the chip, so sign-in, browser, sign-out and switch stay identical.
-/// Returns whether an action was taken.
+/// Returns whether the File menu should close after the child action. Sign-in requests keep it
+/// open so the waiting code and its retry remain visible; other account actions close it.
 pub(crate) fn compact_menu_entry(app: &mut SolveApp, ui: &mut Ui) -> bool {
     if !menu_available(app) {
         return false;
@@ -276,7 +277,10 @@ pub(crate) fn compact_menu_entry(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let entry = crate::ui_kit::Menu::button_keep_open(ui, label, |ui| show_menu(app, ui));
     crate::scenario::publish_handle("account:overflow", entry.response.rect.center());
     crate::scenario::publish_rect("account:overflow", entry.response.rect);
-    entry.inner == Some(true)
+    if entry.inner != Some(true) {
+        return false;
+    }
+    !matches!(app.account.pending_action(), Some(Action::SignIn | Action::OpenSignInBrowser))
 }
 
 /// The permanent account menu: who is signed in, the one shared device challenge, and the

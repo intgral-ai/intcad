@@ -130,9 +130,17 @@ impl Menu {
             let popup = if keep_open { popup.close_behavior(KEEP_OPEN_ON_CLICK) } else { popup };
             popup.show(content)
         };
-        let child_rect = popup.as_ref().map(|r| r.response.rect);
+        let child = popup.as_ref().map(|r| (r.response.rect, r.response.layer_id));
         if keep_open {
-            Self::mark_keep_open(ui.ctx(), child_rect);
+            // The child shares the custom parent's foreground order. Mark it as that layer's
+            // sublayer so it paints and receives hit tests above the rows it overlaps, even after
+            // the parent area is moved to top by a later click.
+            if let Some((_, layer)) = child
+                && layer.order == ui.layer_id().order
+            {
+                ui.ctx().set_sublayer(ui.layer_id(), layer);
+            }
+            Self::mark_keep_open(ui.ctx(), child.map(|(rect, _)| rect));
         }
         let response = egui::InnerResponse { response, inner: popup.map(|r| r.inner) };
         ui.set_style(previous);
