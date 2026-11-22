@@ -6,8 +6,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{
-    AccountId, AccountService, Admission, AuthenticatedHostScope, BillingResult, Capability, EntryCategory, GrantId, HostSessionBinding,
-    MonotonicClock, MonotonicInstant, OperationId, OperationStatus, RefusalCode,
+    AccountId, AccountService, Admission, AuthenticatedHostScope, AuthorizationBound, Availability, BillingResult, BudgetTable, Capability,
+    CommitDecision, CommitGate, EntryCategory, GrantId, HostSessionBinding, MonotonicClock, MonotonicInstant, OperationId, OperationStatus,
+    RefusalCode, TrustedContext,
 };
 
 use crate::credentials::{CredentialSession, MemorySession};
@@ -20,13 +21,14 @@ use crate::http::{HandoffLog, RecordingHandoff, ScriptedTransport};
 const BASE: &str = "https://auth.intcad.invalid";
 const T0: u64 = 1_767_225_600_000;
 
+#[derive(Clone)]
 struct TestClock {
-    millis: Cell<u64>,
+    millis: Rc<Cell<u64>>,
 }
 
 impl TestClock {
     fn at(millis: u64) -> Self {
-        Self { millis: Cell::new(millis) }
+        Self { millis: Rc::new(Cell::new(millis)) }
     }
 }
 
@@ -184,6 +186,77 @@ fn receipt_body(state: &str, result: &str, terminal: bool) -> Value {
 
 fn error_body(code: &str) -> Value {
     json!({"error": {"code": code, "message": "stable", "retryable": false, "request_id": "req_example_0001"}})
+}
+
+#[test]
+fn failed_renewal_cannot_extend_the_original_operation_at_the_dispatch_and_commit_gates() {
+    for (response, expected, auth_rejected) in [
+        (Err(TransportFailure::Timeout), RefusalCode::AuthUnavailable, false),
+        (ok(401, error_body("AUTH_REQUIRED")), RefusalCode::AuthRequired, true),
+    ] {
+        let clock = TestClock::at(T0);
+        let (handoff, _) = RecordingHandoff::new();
+        let mut service = HttpAccountService::with_transport(
+            ScriptedTransport::new(vec![ok(200, status_body(1000, 0, 1000)), ok(200, admitted_body()), response]),
+            WireConnection::new(BASE, "1.0.0").unwrap(),
+            Box::new(credentials()),
+            Box::new(handoff),
+            Box::new(clock.clone()),
+        );
+        let (scope, operation) = (scope(), operation());
+        let (capability, entry) = (Capability::Chat, EntryCategory::Mastra);
+        let online = service.status().unwrap();
+        let Admission::NewlyAdmitted { grant, .. } = service.begin(&scope, &operation, capability, entry).unwrap() else {
+            panic!("expected an original operation lease");
+        };
+        let trusted = TrustedContext::mint(&scope, operation.as_str(), capability, entry).unwrap();
+        let mut budget = BudgetTable::unverified_default();
+        budget.set_verified(capability, entry, Duration::from_secs(1));
+        let gates = |availability: &Availability, now| {
+            let bound = AuthorizationBound::ExpiresAt(grant.expires_at());
+            (
+                budget.require(capability, entry, availability, bound.remaining(now).unwrap_or_default()).map_err(|err| err.code),
+                CommitGate::new(&operation, capability, entry)
+                    .with_trusted(&trusted)
+                    .with_current_scope(&scope)
+                    .with_availability(availability)
+                    .with_status(OperationStatus::Held)
+                    .with_bound(bound)
+                    .with_now(now)
+                    .check(),
+            )
+        };
+
+        clock.millis.set(T0 + 20_000);
+        assert_eq!(gates(&online, clock.now()), (Ok(Duration::from_secs(1)), CommitDecision::Allow));
+        let refusal = service.renew(&scope, &operation, grant.id(), capability).unwrap_err();
+        assert_eq!(refusal.code, expected);
+        assert_eq!(grant.expires_at(), MonotonicInstant::from_millis(T0 + 60_000));
+
+        let requests = service.transport().take_requests();
+        assert_eq!(requests.len(), 3);
+        let request = &requests[2];
+        assert_eq!(request.method(), "POST");
+        assert_eq!(request.url(), format!("{BASE}/v1/authorizations"));
+        assert_eq!(request.header("X-Execution-Session-Proof"), Some("execution_session_proof_example_000000000000000"));
+        assert_eq!(
+            serde_json::from_slice::<Value>(request.body().unwrap()).unwrap(),
+            json!({"capability": "chat", "operation_id": "op_example_0001", "renewal": {"authorization_id": "grant_example_0001"}})
+        );
+
+        if auth_rejected {
+            // Supply the observed refusal to both gates as a host would. This is not a test
+            // of automatic revocation propagation, which is not wired in production.
+            let mut blocked = online.clone();
+            blocked.reasons.push(refusal.code);
+            assert_eq!(gates(&blocked, clock.now()), (Err(expected), CommitDecision::Drop { code: expected }));
+        }
+        // Even with an otherwise online snapshot, no new lease means the original,
+        // half-open cutoff still stops dispatch and commit.
+        clock.millis.set(T0 + 60_000);
+        let expired = RefusalCode::UnsafeToStart;
+        assert_eq!(gates(&online, clock.now()), (Err(expired), CommitDecision::Drop { code: expired }));
+    }
 }
 
 #[test]
