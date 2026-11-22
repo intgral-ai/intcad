@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::hash::{BuildHasher, Hash, Hasher};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -109,6 +109,30 @@ pub struct FileOperationStore {
 }
 
 impl FileOperationStore {
+    fn settlement_cursor_path(&self, scope: &AuthenticatedHostScope) -> PathBuf {
+        let key = digest(&[scope.account().as_str(), scope.installation().as_str(), scope.session_binding().as_str()]);
+        self.root.join(format!("settlement-cursor-{key}"))
+    }
+
+    /// Read a scheduling hint, never proof of scope or settlement. An absent or
+    /// invalid hint starts a new scan.
+    pub fn settlement_cursor(&self, scope: &AuthenticatedHostScope) -> Option<OperationId> {
+        let path = self.settlement_cursor_path(scope);
+        if !fs::symlink_metadata(&path).ok()?.is_file() {
+            return None;
+        }
+        let mut cursor = String::new();
+        // An OperationId is at most 67 bytes; read one extra to detect overlong files.
+        fs::File::open(path).ok()?.take(68).read_to_string(&mut cursor).ok()?;
+        OperationId::parse(&cursor).ok()
+    }
+
+    /// Advance the scheduling hint before an attempt, even if its result will
+    /// be lost. This does not alter the immutable intent or the terminal state.
+    pub fn advance_settlement_cursor(&self, scope: &AuthenticatedHostScope, operation: &OperationId) -> std::io::Result<()> {
+        solidcraft_io::safe_write::write_atomic_no_follow(&self.settlement_cursor_path(scope), operation.as_str().as_bytes())
+    }
+
     /// Open (and create if needed) a ledger directory.
     ///
     /// The caller must pass a directory the host has already made private to the current user.

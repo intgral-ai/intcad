@@ -790,10 +790,16 @@ impl RestartVerifier {
             solidcraft_engine::note!("account: startup settlement could not open the ledger");
             return;
         };
-        let Ok(rows) = ledger.unsettled_operations(Some(&binding.scope)) else {
+        let Ok(mut rows) = ledger.unsettled_operations(Some(&binding.scope)) else {
             solidcraft_engine::note!("account: startup settlement could not verify the ledger inventory");
             return;
         };
+        // Inventory is sorted by operation ID, including when the prior cursor
+        // no longer appears (for example, its receipt went terminal).
+        if let Some(cursor) = ledger.settlement_cursor(&binding.scope) {
+            let after = rows.partition_point(|row| row.record().operation <= cursor);
+            rows.rotate_left(after);
+        }
         let mut attempts = 0;
         for row in rows {
             if cancel.is_cancelled() || attempts == MAX_FINALIZE_ATTEMPTS {
@@ -819,6 +825,13 @@ impl RestartVerifier {
                 Box::new(SystemMonotonicClock::new()),
             );
             if restart_binding_unchanged(&self.credentials, binding).is_none() || cancel.is_cancelled() {
+                break;
+            }
+            if ledger.advance_settlement_cursor(&binding.scope, operation).is_err() {
+                solidcraft_engine::note!("account: startup settlement could not advance the retry cursor");
+                break;
+            }
+            if cancel.is_cancelled() {
                 break;
             }
             attempts += 1;
@@ -2113,6 +2126,73 @@ mod tests {
             assert!(!app.dfm_review.running);
             assert!(opener.urls().is_empty());
             app.account.shutdown();
+        }
+    }
+
+    #[test]
+    fn startup_settlement_rotates_past_repeated_failures_without_exceeding_four_attempts() {
+        use solidcraft_engine::entitlement::TransportCorrelation;
+
+        let path = std::env::temp_dir().join(format!("intcad-settlement-backlog-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(path);
+        let store = TestStore::default();
+        let mut session = activate_session(&store);
+        let scope = session.authenticated_scope().unwrap();
+        let mut ledger = FileOperationStore::open(&scratch.0).unwrap();
+        let intent = SettlementIntent::Commit(BillingResult::Succeeded);
+        let mut operations = std::array::from_fn::<_, 5, _>(|i| {
+            let row = ledger
+                .persist_intent(&scope, &TransportCorrelation::new(format!("backlog_{i}")), Capability::Review, EntryCategory::ReviewPanel)
+                .unwrap();
+            ledger.record_settlement_intent(&row.operation, intent).unwrap();
+            CredentialHandoff::settlement_credential(&mut session, &row.operation, Secret::new("fixture_settlement")).unwrap();
+            row.operation
+        });
+        operations.sort();
+        drop(ledger);
+        drop(session);
+
+        // All finalize calls fail, so no row disappears and each restart must
+        // make progress through the unchanged backlog on its own.
+        for (launch, expected) in [[0, 1, 2, 3], [4, 0, 1, 2], [3, 4, 0, 1]].into_iter().enumerate() {
+            let mut responses = vec![Ok(WireResponse::new(200, status_body_for(scope.account().as_str()).to_string().into_bytes()))];
+            responses.extend((0..5).map(|_| Err(TransportFailure::Timeout)));
+            let product = ScriptedProduct::scripted(responses);
+            let opener = RecordingOpener::default();
+            let mut runtime = restart_runtime(CredentialSession::new(Box::new(store.clone())), product.clone(), &opener);
+            runtime.ledger = Some(FileOperationStore::open(&scratch.0).unwrap());
+            let startup = runtime.startup();
+            let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+            install(&mut app, runtime, startup);
+            wait_until("startup settlement completes", || {
+                app.account.process_actions();
+                app.account.view().signed_in
+            });
+            app.account.shutdown();
+            let requests = product.requests();
+            assert_eq!(requests.len(), 5, "one status read plus four finalize attempts");
+            assert_eq!(requests[0].url(), "https://api.example/v1/status");
+            for (request, index) in requests[1..].iter().zip(expected) {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(
+                    request.url(),
+                    format!("https://api.example/v1/operations/{}/finalize", operations[index].as_str()),
+                    "startup {} must resume the bounded scan",
+                    launch + 1
+                );
+            }
+        }
+        let ledger = FileOperationStore::open(&scratch.0).unwrap();
+        for operation in &operations {
+            assert_eq!(ledger.load(operation).unwrap().unwrap().status, OperationStatus::Held);
+            assert_eq!(ledger.settlement_intent(operation).unwrap(), Some(intent));
         }
     }
 
