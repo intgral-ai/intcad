@@ -579,23 +579,37 @@ function ScreenRect($result, [string]$name, $origin) {
     }
 }
 
-function TargetRect([string]$name, [datetime]$until) {
-    $result = Call 'ui.rects' @{ prefix = $name } $until
+function ClientOrigin {
     $origin = New-Object AssistantWin+POINT
     if (-not [AssistantWin]::ClientToScreen($h, [ref]$origin)) { throw 'cannot locate the smoke window client origin' }
-    ScreenRect $result $name $origin
+    $origin
 }
 
-function ClickTarget([string]$name, [datetime]$until) {
+function TargetRect([string[]]$names, [datetime]$until) {
+    $params = if ($names.Count -eq 1) { @{ prefix = $names[0] } } else { @{} }
+    $result = Call 'ui.rects' $params $until
+    $origin = ClientOrigin
+    foreach ($name in $names) {
+        $rect = ScreenRect $result $name $origin
+        if ($rect) { return $rect }
+    }
+}
+
+function ClickTarget([string[]]$names, [datetime]$until) {
     do {
-        $r = TargetRect $name $until
+        $r = TargetRect $names $until
         if ($r) {
             Click ([int](($r.Left + $r.Right) / 2)) ([int](($r.Top + $r.Bottom) / 2)) $h
             return
         }
         Start-Sleep -Milliseconds 150
     } while ([datetime]::UtcNow -lt $until)
-    throw "native UI target $name was not drawn"
+    throw "native UI target $($names -join ' or ') was not drawn"
+}
+
+function ClickAssistantEntry([datetime]$until) {
+    # The design workspace uses the rail. If it has no rail, use the title bar from the same frame.
+    ClickTarget @('rail:assistant', 'titlebar:assistant') $until
 }
 
 function WaitPage([datetime]$until, [string]$layout = '') {
@@ -839,7 +853,7 @@ try {
     }
     [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '00-app-frame-before.png') })
     $until = [datetime]::UtcNow.AddSeconds(90)
-    ClickTarget 'titlebar:assistant' $until
+    ClickAssistantEntry $until
     $view = WaitPage $until 'floating'
     Write-Host 'ok: the open Assistant reports current-view readiness and matches the visible native page'
     Shot $h '01-assistant-open'
@@ -865,7 +879,7 @@ try {
     Write-Host 'ok: page Close hid the native child and the app is still running'
     Shot $h '03a-page-closed'
     $until = [datetime]::UtcNow.AddSeconds(30)
-    ClickTarget 'titlebar:assistant' $until
+    ClickAssistantEntry $until
     $reopened = WaitPage $until 'floating'
     if ($reopened.Window -ne $view.Window) { throw 'reopening did not reuse the retained native child' }
     Shot $h '03b-page-reopened'
@@ -906,7 +920,7 @@ if ($made -and $failures.Count -eq 0) {
     try {
         Launch 47952 @{ WEBVIEW2_BROWSER_EXECUTABLE_FOLDER = $none }
         $until = [datetime]::UtcNow.AddSeconds(60)
-        ClickTarget 'titlebar:assistant' $until
+        ClickAssistantEntry $until
         do {
             $state = ReadAssistant (Call 'ui.inspect' @{} $until)
             if ($state.surface_ready) { throw 'hidden runtime still produced a ready page' }

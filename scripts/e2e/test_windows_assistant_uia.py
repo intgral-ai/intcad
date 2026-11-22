@@ -333,6 +333,43 @@ class StandaloneSmoke(unittest.TestCase):
             Reject { WaitPage ([datetime]::UtcNow.AddSeconds(10)) 'floating' } 'polled again for readiness'
         """)
 
+    def test_assistant_entry_click_prefers_rail_and_falls_back_using_one_rects_reply(self) -> None:
+        self.fixture("""
+            $h = [IntPtr]42
+            $rail = @{name='rail:assistant'; x=280; y=64; width=20; height=16}
+            $title = @{name='titlebar:assistant'; x=20; y=8; width=20; height=16}
+            $other = @{name='rail:assistant_badge'; x=0; y=0; width=20; height=16}
+            function ClientOrigin { @{X=40; Y=50} }
+            function Call($method, $parameters, $until) {
+                if ($method -cne 'ui.rects' -or $parameters.ContainsKey('prefix') -or $until -ne $deadline) {
+                    throw 'expected one unfiltered observation with the existing deadline'
+                }
+                $script:reads++
+                @{pixelsPerPoint=1.25; rects=$rects}
+            }
+            function Click($x, $y, $target) {
+                if ($target -ne $h) { throw 'click is not scoped to the frame' }
+                $script:click = "$x,$y"
+            }
+            function Start-Sleep {}
+            foreach ($case in @(
+                @{rects=@($other,$rail); point='402,140'},
+                @{rects=@($title,$rail); point='402,140'},
+                @{rects=@($other,$title); point='78,70'}
+            )) {
+                $script:reads = 0; $script:click = $null
+                $rects = $case.rects; $deadline = [datetime]::UtcNow.AddSeconds(10)
+                ClickAssistantEntry $deadline
+                if ($script:reads -ne 1 -or $script:click -cne $case.point) {
+                    throw "wrong Assistant click: $script:click ($script:reads reads)"
+                }
+            }
+            $rects = @($other); $deadline = [datetime]::UtcNow
+            $script:reads = 0; $script:click = $null
+            Reject { ClickAssistantEntry $deadline } 'rail:assistant or titlebar:assistant was not drawn'
+            if ($script:reads -ne 1 -or $script:click) { throw 'clicked a target that was not drawn' }
+        """)
+
 
 if __name__ == "__main__":
     unittest.main()
