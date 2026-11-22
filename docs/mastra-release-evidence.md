@@ -72,7 +72,17 @@ Four separate things held it back, and all four had to change together:
 - `packaging/tests/mastra_agent_test.py` — 8 passed.
 - `node packages/mastra-runtime/scripts/agent-package.mjs build --target
   x86_64-unknown-linux-gnu` with Node 22.23.4 — 291 MB, 10,716 files, 349 packages, 0 problems.
-- `node packages/mastra-runtime/scripts/agent-smoke.mjs` — 7 of 7 cases pass.
+- `node packages/mastra-runtime/scripts/agent-smoke.mjs` — 8 of 8 cases pass, on the folder the
+  release stages and again on the folder unpacked from `intcad-0.1.2-linux-x86_64.tar.gz`, in
+  `fedora:latest` with **no system Node** (`command -v node` empty).
+- `packaging/linux/package.sh --skip-build --formats tar` with the pinned Node — produced
+  `intcad-0.1.2-linux-x86_64.tar.gz` (461 MB) with `lib/intcad/mastra-agent/` at mode `555`.
+- `scripts/ci/package_contents.py --distribution mastra-agent` on that tarball —
+  `agent.present`, `agent.node`, no missing file, all four modelling skills, `markers: []`,
+  `agentMarkers: []`, `unchecked: []`.
+- `packaging/assistant-check.py --built-in-agent` in `fedora:latest` with the tarball's app —
+  the Agent's page and the built-in agent came up, the agent started out of the package and
+  reported its connections, and stopped.
 - `actionlint` on both workflows — clean; `shellcheck` on the shell scripts — clean.
 
 ## Still open (release blockers, not code)
