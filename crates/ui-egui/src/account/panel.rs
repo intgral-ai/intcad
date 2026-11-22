@@ -59,7 +59,6 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let guide = app.account.delete_account_guide();
     let pending = app.account.pending_action();
     let title = app.tr("account.title").to_string();
-    let signed_out = app.tr("account.signed_out").to_string();
     let signed_in = app.tr("account.signed_in").to_string();
     let unknown = app.tr("account.credits_unknown").to_string();
     let zero = app.tr("account.zero_credits").to_string();
@@ -137,9 +136,10 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
         } else if needs_sign_out_attention(&view) {
             retry_sign_out_clicked = sign_out_controls(app, ui, &view);
         } else if view.sign_in_visible {
-            FileView::detail(ui, &signed_out);
-            FileView::detail(ui, &chat_review_sign_in);
-            sign_in_controls(app, ui, &view, "account:sign_in", "account:sign_in_browser", "account:sign_in_cancel");
+            if view.sign_in_state == SignInState::Idle && pending.is_none() {
+                FileView::detail(ui, &chat_review_sign_in);
+            }
+            sign_in_controls(app, ui, &view, "account:start", "account:sign_in", "account:sign_in_browser", "account:sign_in_cancel");
             if pending.is_some() {
                 FileView::detail(ui, &action_pending);
             }
@@ -245,7 +245,13 @@ pub fn status_chip(app: &mut SolveApp, ui: &Ui, slot: Rect) {
     let response = response.backing_on_hover_text(&tip);
     crate::scenario::publish_handle("titlebar:account_status", slot.center());
     crate::scenario::publish_rect("titlebar:account_status", slot);
-    Container::new(ui.ctx(), Surface::Popup).menu(&response).frame(Menu::frame()).show(|ui| show_menu(app, ui));
+    // The menu hosts the shared challenge's copy feedback and manual disclosure. Clicking inside
+    // must not dismiss it, or those secondary controls would close the surface they act on.
+    Container::new(ui.ctx(), Surface::Popup)
+        .menu(&response)
+        .frame(Menu::frame())
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| show_menu(app, ui));
 }
 
 /// Whether this build offers the permanent account entry at all: an installed port and either a
@@ -319,9 +325,7 @@ pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
     } else if needs_sign_out_attention(&view) {
         sign_out_clicked = sign_out_controls(app, ui, &view);
     } else if view.sign_in_visible {
-        let signed_out = app.tr("account.signed_out").to_string();
-        crate::ui_kit::text(ui, &signed_out, Text::Note("account_menu_signed_out"));
-        sign_in_action = sign_in_controls(app, ui, &view, "account:sign_in", "account:sign_in_browser", "account:sign_in_cancel");
+        sign_in_action = sign_in_controls(app, ui, &view, "account:menu", "account:sign_in", "account:sign_in_browser", "account:sign_in_cancel");
     } else {
         let unavailable = app.tr("account.unavailable").to_string();
         crate::ui_kit::text(ui, &unavailable, Text::Note("account_menu_unavailable"));
@@ -399,33 +403,43 @@ fn chip_tip(app: &SolveApp, view: &AccountView) -> String {
     tip
 }
 
-/// The provider code, verification address and the two separate explicit actions. Shared by the
+/// The short code and explicit actions, with a manual address behind a disclosure. Shared by the
 /// account menu and the Chat/Review inline prompts so both surfaces can finish the same flow.
 /// The browser action is requested only on the platform gesture that activated this button; an
 /// app-injected press, a mixed gesture, or a replayed synthetic key cannot launch it.
-fn waiting_sign_in_controls(app: &mut SolveApp, ui: &mut Ui, view: &AccountView, browser_handle: &str, cancel_handle: &str) -> bool {
+fn waiting_sign_in_controls(app: &mut SolveApp, ui: &mut Ui, view: &AccountView, surface: &str, browser_handle: &str, cancel_handle: &str) -> bool {
     let t = Tokens::get();
-    if let Some(code) = &view.sign_in_prompt {
+    let prompt = view.sign_in_prompt.as_ref();
+    let prompt_id = prompt.map(|code| egui::Id::new((&code.user_code, &code.verification_uri, code.expires_at.0)));
+    // Copy feedback and the manual disclosure belong to one surface and this exact challenge. A
+    // replacement attempt starts collapsed and uncopied, even when the prior prompt is still cached.
+    let state_id = ui.make_persistent_id(("sign_in_controls", surface));
+    let (mut copied, mut manual) = ui.data(|data| {
+        data.get_temp::<(Option<Id>, bool, bool)>(state_id)
+            .filter(|(prior, _, _)| *prior == prompt_id)
+            .map_or((false, false), |(_, copied, manual)| (copied, manual))
+    });
+    if let Some(code) = prompt {
         FileView::detail(ui, &crate::i18n::format("account.sign_in_code", &[("code", &code.user_code)]));
-        FileView::detail(ui, &crate::i18n::format("account.sign_in_address", &[("url", &code.verification_uri)]));
-        // Informational only; the host owns expiry, including eligibility to launch the browser.
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
-        if let Some(remaining) = code.expires_at.0.checked_sub(now).filter(|remaining| *remaining > 0) {
-            let minutes = remaining.div_ceil(60).to_string();
-            FileView::detail(ui, &crate::i18n::format("account.sign_in_expires", &[("minutes", &minutes)]));
-        }
     }
     let action = ui
         .add_enabled_ui(app.account.pending_action().is_none(), |ui| {
             ui.horizontal_wrapped(|ui| {
                 let mut action = None;
-                if view.sign_in_prompt.is_some() {
+                if let Some(code) = prompt {
                     let response = button(ui, app.tr("account.sign_in_browser"), Button::Primary);
                     publish(browser_handle, &response);
-                    if app.trusted_click(&response) {
+                    if app.trusted_click(&response) && !device_code_expired(code) {
                         action = Some(Action::OpenSignInBrowser);
                     }
                     ui.add_space(t.space_8);
+                    let label = if copied { "account.device_code_copied" } else { "account.copy_device_code" };
+                    let copy = button(ui, app.tr(label), Button::Normal);
+                    publish(&format!("{browser_handle}:copy"), &copy);
+                    if app.trusted_click(&copy) && !device_code_expired(code) {
+                        ui.ctx().copy_text(code.user_code.clone());
+                        copied = true;
+                    }
                 }
                 let response = button(ui, app.tr("account.sign_in_cancel"), Button::Normal);
                 publish(cancel_handle, &response);
@@ -434,15 +448,35 @@ fn waiting_sign_in_controls(app: &mut SolveApp, ui: &mut Ui, view: &AccountView,
             .inner
         })
         .inner;
+    if let Some(address) = prompt.and_then(|code| manual_address(&code.verification_uri)) {
+        let response = button(ui, app.tr("account.sign_in_manually"), Button::Small);
+        publish(&format!("{browser_handle}:manual"), &response);
+        if response.clicked() {
+            manual = !manual;
+        }
+        if manual {
+            FileView::detail(ui, &crate::i18n::format("account.sign_in_address", &[("url", address)]));
+        }
+    }
+    ui.data_mut(|data| data.insert_temp(state_id, (prompt_id, copied, manual)));
     if let Some(action) = action {
         app.account.request(action);
     }
     action.is_some()
 }
 
+/// The manual fallback shows only a safe HTTPS origin and path. Query and fragment can carry the
+/// provider's one-time code or other account data, so the disclosure never reveals them.
+fn manual_address(uri: &str) -> Option<&str> {
+    let address = uri.split(['?', '#']).next().unwrap_or_default();
+    let rest = address.strip_prefix("https://")?;
+    (!rest.is_empty() && !rest.bytes().any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace() || byte == b'\\' || byte == b'@'))
+        .then_some(address)
+}
+
 /// A local, in-place sign-in prompt for a refusal surface such as Chat or Review. It only
 /// enqueues the same explicit action the account menu uses; it never opens a browser itself.
-/// While a login waits it shows the same code, verification address, browser and cancel controls
+/// While a login waits it shows the same code, copy, browser and cancel controls
 /// as the account menu, so the surface that refused the operation can complete the flow.
 /// `handle` must be unique on the surface so scripted UI checks can address the button.
 pub fn show_inline_sign_in(app: &mut SolveApp, ui: &mut Ui, message_id: &str, handle: &str) -> bool {
@@ -450,8 +484,10 @@ pub fn show_inline_sign_in(app: &mut SolveApp, ui: &mut Ui, message_id: &str, ha
         return false;
     }
     let view = app.account.view().clone();
-    FileView::detail(ui, app.tr(message_id));
-    sign_in_controls(app, ui, &view, handle, &format!("{handle}:browser"), &format!("{handle}:cancel"));
+    if view.sign_in_state == SignInState::Idle {
+        FileView::detail(ui, app.tr(message_id));
+    }
+    sign_in_controls(app, ui, &view, handle, handle, &format!("{handle}:browser"), &format!("{handle}:cancel"));
     if let Some(notice) = app.account.notice() {
         text(ui, &refusal_text(app, notice.code), Text::Error("account_context_notice"));
     }
@@ -459,19 +495,32 @@ pub fn show_inline_sign_in(app: &mut SolveApp, ui: &mut Ui, message_id: &str, ha
     true
 }
 
-fn sign_in_controls(app: &mut SolveApp, ui: &mut Ui, view: &AccountView, handle: &str, browser_handle: &str, cancel_handle: &str) -> bool {
+fn device_code_expired(code: &super::DeviceCode) -> bool {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+    code.expires_at.0 <= now
+}
+
+fn sign_in_controls(
+    app: &mut SolveApp,
+    ui: &mut Ui,
+    view: &AccountView,
+    surface: &str,
+    handle: &str,
+    browser_handle: &str,
+    cancel_handle: &str,
+) -> bool {
     let pending = app.account.pending_action();
     let label = match view.sign_in_state {
         SignInState::Starting => {
             FileView::detail(ui, app.tr("account.sign_in_starting"));
             return false;
         }
-        SignInState::Waiting => {
+        SignInState::Waiting if !view.sign_in_prompt.as_ref().is_some_and(device_code_expired) => {
             FileView::detail(ui, app.tr("account.sign_in_waiting"));
-            return waiting_sign_in_controls(app, ui, view, browser_handle, cancel_handle);
+            return waiting_sign_in_controls(app, ui, view, surface, browser_handle, cancel_handle);
         }
-        SignInState::Expired | SignInState::Failed => {
-            let text = if view.sign_in_state == SignInState::Expired {
+        SignInState::Waiting | SignInState::Expired | SignInState::Failed => {
+            let text = if view.sign_in_state != SignInState::Failed {
                 app.tr("account.sign_in_expired").to_string()
             } else {
                 view.sign_in_error.map(|code| refusal_text(app, code)).unwrap_or_else(|| app.tr("account.sign_in_failed").to_string())

@@ -1,0 +1,27 @@
+{
+  "en": {
+    "account.copy_device_code": "Copy code",
+    "account.device_code_copied": "Copied",
+    "account.sign_in_manually": "Open manually"
+  },
+  "de": {
+    "account.copy_device_code": "Code kopieren",
+    "account.device_code_copied": "Kopiert",
+    "account.sign_in_manually": "Manuell öffnen"
+  },
+  "ja": {
+    "account.copy_device_code": "コードをコピー",
+    "account.device_code_copied": "コピー済み",
+    "account.sign_in_manually": "手動で開く"
+  },
+  "ko": {
+    "account.copy_device_code": "코드 복사",
+    "account.device_code_copied": "복사됨",
+    "account.sign_in_manually": "수동으로 열기"
+  },
+  "zh": {
+    "account.copy_device_code": "复制设备码",
+    "account.device_code_copied": "已复制",
+    "account.sign_in_manually": "手动打开"
+  }
+}

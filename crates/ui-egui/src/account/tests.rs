@@ -636,6 +636,174 @@ fn clicking_sign_in_enqueues_and_processes_outside_a_frame() {
 }
 
 #[test]
+fn start_and_titlebar_copy_only_the_short_device_code() {
+    for home in [true, false] {
+        let mut code = future_device_code(300);
+        code.verification_uri = "https://auth.example/device?user_code=BCDF-GHJK".into();
+        let mut harness = crate::scenario::Harness::new();
+        harness.app.home.open = home;
+        harness.app.account = start_flow(&FlowPort::signed_out(Some(code)));
+        harness.frames(2);
+        if !home {
+            native_click(&mut harness, "titlebar:account_status");
+            harness.frames(2);
+        }
+        assert!(harness.output.commands.is_empty(), "clipboard requires a click");
+        native_click(&mut harness, "account:sign_in_browser:copy");
+        assert!(matches!(harness.output.commands.as_slice(), [egui::OutputCommand::CopyText(code)] if code == "BCDF-GHJK"));
+        assert!(harness.app.account.pending_action().is_none(), "copy must not queue any account action");
+    }
+}
+
+#[test]
+fn start_and_the_titlebar_menu_show_one_compact_challenge_and_hide_the_manual_address() {
+    for home in [true, false] {
+        let mut code = future_device_code(300);
+        code.verification_uri = "https://auth.example/device?user_code=PRIVATE#fragment".into();
+        let (mut harness, _flow) = waiting_harness(home, code);
+        let text = painted_text(&harness.shapes).to_lowercase();
+        let waiting = crate::i18n::tr("account.sign_in_waiting").to_lowercase();
+        assert_eq!(text.matches(&waiting).count(), 1, "the waiting status is repeated on this surface: {text}");
+        assert!(text.contains("bcdf-ghjk"), "{home}: {text}");
+        assert!(!text.contains("private"), "the query code leaked by default: {home}: {text}");
+        assert!(!text.contains("https://auth.example/device"), "the address is visible by default: {home}: {text}");
+        assert!(!text.contains("expires"), "the countdown is visible by default: {home}: {text}");
+        for handle in ["account:sign_in_browser", "account:sign_in_browser:copy", "account:sign_in_browser:manual", "account:sign_in_cancel"] {
+            assert!(crate::scenario::handle_at(handle).is_some(), "{home}: {handle} is missing: {:?}", crate::scenario::handles("account:"));
+        }
+
+        native_click(&mut harness, "account:sign_in_browser:manual");
+        harness.frames(1);
+        let text = painted_text(&harness.shapes).to_lowercase();
+        assert!(text.contains("https://auth.example/device"), "the disclosure did not reveal the address: {home}: {text}");
+        assert!(!text.contains("private"), "the disclosure revealed the query: {home}: {text}");
+        assert!(!text.contains("fragment"), "the disclosure revealed the fragment: {home}: {text}");
+    }
+}
+
+#[test]
+fn copy_reports_copied_and_a_replacement_challenge_clears_feedback_and_disclosure() {
+    for home in [true, false] {
+        let (mut harness, flow) = waiting_harness(home, future_device_code(300));
+        assert!(harness.output.commands.is_empty(), "clipboard requires a click");
+        native_click(&mut harness, "account:sign_in_browser:copy");
+        assert!(matches!(harness.output.commands.as_slice(), [egui::OutputCommand::CopyText(code)] if code == "BCDF-GHJK"));
+        assert!(harness.app.account.pending_action().is_none(), "copy must not queue any account action");
+        harness.frames(1);
+        assert!(
+            harness.widget(crate::i18n::tr("account.device_code_copied")).is_some(),
+            "{home}: the copy action did not report success: {:?}",
+            crate::scenario::handles("account:")
+        );
+
+        native_click(&mut harness, "account:sign_in_browser:manual");
+        harness.frames(1);
+        assert!(painted_text(&harness.shapes).contains("https://auth.example/device"), "{home}: the manual address did not open");
+
+        let mut replacement = future_device_code(300);
+        replacement.user_code = "MNOP-QRST".into();
+        flow.change(|state| {
+            state.challenge = Some(replacement.clone());
+            state.view = waiting_view(replacement.clone());
+        });
+        harness.app.account.process_actions();
+        harness.frames(2);
+        let text = painted_text(&harness.shapes).to_lowercase();
+        assert!(text.contains("mnop-qrst"), "{home}: the replacement code is missing: {text}");
+        assert!(!text.contains("bcdf-ghjk"), "{home}: the old code survived: {text}");
+        assert!(!text.contains("https://auth.example/device"), "{home}: the old manual address stayed open: {text}");
+        assert!(
+            harness.widget(crate::i18n::tr("account.copy_device_code")).is_some(),
+            "{home}: the copy feedback did not reset: {:?}",
+            crate::scenario::handles("account:")
+        );
+        assert!(harness.widget(crate::i18n::tr("account.device_code_copied")).is_none(), "{home}: stale copy feedback");
+        assert!(harness.output.commands.is_empty(), "{home}: a stale copy reached the clipboard");
+    }
+}
+
+#[test]
+fn app_injected_copy_does_not_write_the_clipboard() {
+    let (mut harness, _flow) = waiting_harness(true, future_device_code(300));
+    assert!(harness.output.commands.is_empty(), "clipboard requires a click");
+    crate::test_support::click(&mut harness, "account:sign_in_browser:copy");
+    assert!(harness.output.commands.is_empty(), "automation wrote the clipboard: {:?}", harness.output.commands);
+    assert!(harness.app.account.pending_action().is_none());
+}
+
+#[test]
+fn an_expired_waiting_challenge_hides_copy_browser_and_manual_and_keeps_the_retry() {
+    let expired = DeviceCode {
+        user_code: "BCDF-GHJK".into(),
+        verification_uri: "https://auth.example/device?user_code=PRIVATE".into(),
+        expires_at: Timestamp(0),
+    };
+    let texts = render_view(waiting_view(expired));
+    let text = joined(&texts);
+    assert!(text.contains("sign-in code expired"), "{texts:?}");
+    assert!(crate::scenario::handle_at("account:sign_in").is_some(), "the explicit retry is missing");
+    for handle in ["account:sign_in_browser", "account:sign_in_browser:copy", "account:sign_in_browser:manual", "account:sign_in_cancel"] {
+        assert!(crate::scenario::handle_at(handle).is_none(), "an expired challenge still offers {handle}");
+    }
+    assert!(!text.contains("bcdf-ghjk"), "an expired challenge still shows its code: {texts:?}");
+    assert!(!text.contains("private"), "an expired challenge still shows its address: {texts:?}");
+}
+
+#[test]
+fn the_assistant_and_review_share_the_compact_copy_and_manual_disclosure() {
+    for context in [PromptContext::Chat, PromptContext::Review] {
+        let mut app = crate::test_support::sample_app();
+        app.account = State::with_port(Box::new(FakeAccountPort::with_view(waiting_view(future_device_code(300)), Arc::new(Mutex::new(Vec::new())))));
+        let texts = render_prompt(&mut app, context);
+        let text = joined(&texts);
+        assert!(text.contains("bcdf-ghjk"), "{context:?}: {texts:?}");
+        assert!(!text.contains("https://auth.example/device"), "{context:?}: the address is visible by default: {texts:?}");
+        assert!(!text.contains("expires in"), "{context:?}: the countdown is visible by default: {texts:?}");
+        let prefix = match context {
+            PromptContext::Chat => "agent_chat:sign_in",
+            PromptContext::Review => "review:sign_in",
+        };
+        for suffix in ["browser", "browser:copy", "browser:manual", "cancel"] {
+            assert!(crate::scenario::handle_at(&format!("{prefix}:{suffix}")).is_some(), "{context:?}: no {suffix} action");
+        }
+    }
+}
+
+#[test]
+fn normal_and_narrow_waiting_layouts_keep_the_code_and_actions_on_screen() {
+    for width in [1200.0, 700.0] {
+        let screen = egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(width, 720.0));
+
+        let mut start = crate::scenario::Harness::new();
+        start.app.home.open = true;
+        start.app.account = start_flow(&FlowPort::signed_out(Some(future_device_code(300))));
+        start.call("ui.resize", json!({"width":width,"height":720.0}));
+        start.frames(3);
+        assert_surface_on_screen("start", screen);
+
+        let mut menu = crate::scenario::Harness::new();
+        menu.app.home.open = false;
+        menu.app.account = start_flow(&FlowPort::signed_out(Some(future_device_code(300))));
+        menu.call("ui.resize", json!({"width":width,"height":720.0}));
+        menu.frames(3);
+        if width >= 900.0 {
+            native_click(&mut menu, "titlebar:account_status");
+            menu.frames(2);
+        } else {
+            open_compact_account_menu(&mut menu);
+        }
+        assert_surface_on_screen("menu", screen);
+    }
+}
+
+fn assert_surface_on_screen(surface: &str, screen: egui::Rect) {
+    for handle in ["account:sign_in_browser", "account:sign_in_browser:copy", "account:sign_in_browser:manual", "account:sign_in_cancel"] {
+        let rect = crate::scenario::rect_of(handle).unwrap_or_else(|| panic!("{surface}: {handle} is not drawn"));
+        assert!(screen.contains_rect(rect), "{surface}: {handle} is clipped at {screen:?}: {rect:?}");
+    }
+}
+
+#[test]
 fn waiting_sign_in_shows_the_code_and_launches_the_browser_only_on_an_explicit_click() {
     let browser = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -645,7 +813,7 @@ fn waiting_sign_in_shows_the_code_and_launches_the_browser_only_on_an_explicit_c
             sign_in_prompt: Some(DeviceCode {
                 user_code: "BCDF-GHJK".into(),
                 verification_uri: "https://auth.example/device".into(),
-                expires_at: Timestamp(9_999),
+                expires_at: future_device_code(300).expires_at,
             }),
             ..AccountView::signed_out()
         },
@@ -678,7 +846,7 @@ fn a_synthetic_control_click_cannot_launch_the_sign_in_browser() {
             sign_in_prompt: Some(DeviceCode {
                 user_code: "BCDF-GHJK".into(),
                 verification_uri: "https://auth.example/device".into(),
-                expires_at: Timestamp(9_999),
+                expires_at: future_device_code(300).expires_at,
             }),
             ..AccountView::signed_out()
         },
@@ -783,7 +951,7 @@ fn inline_waiting_sign_in_offers_the_shared_controls_and_completes_on_a_native_c
             sign_in_prompt: Some(DeviceCode {
                 user_code: "BCDF-GHJK".into(),
                 verification_uri: "https://auth.example/device".into(),
-                expires_at: Timestamp(9_999),
+                expires_at: future_device_code(300).expires_at,
             }),
             ..AccountView::signed_out()
         },
@@ -806,13 +974,34 @@ fn inline_waiting_sign_in_offers_the_shared_controls_and_completes_on_a_native_c
     });
     let text = crate::test_support::text_shapes(&output).map(|shape| shape.galley.text().to_string()).collect::<Vec<_>>().join("\n");
     assert!(text.contains("BCDF-GHJK"), "the inline prompt lost the code: {text}");
-    assert!(text.contains("https://auth.example/device"), "the inline prompt lost the address: {text}");
+    assert!(!text.contains("https://auth.example/device"), "the address is visible before the disclosure: {text}");
     assert!(browser.lock().unwrap().is_empty(), "appearing launched a browser");
     assert!(crate::scenario::handle_at("agent_chat:sign_in:browser").is_some(), "no browser action: {:?}", crate::scenario::handles(""));
+    assert!(crate::scenario::handle_at("agent_chat:sign_in:browser:copy").is_some(), "no copy action");
+    assert!(crate::scenario::handle_at("agent_chat:sign_in:browser:manual").is_some(), "no manual disclosure");
     assert!(crate::scenario::handle_at("agent_chat:sign_in:cancel").is_some(), "no cancel action");
 
-    let pos = crate::scenario::handle_at("agent_chat:sign_in:browser").unwrap();
     let button = egui::PointerButton::Primary;
+    let manual = crate::scenario::handle_at("agent_chat:sign_in:browser:manual").unwrap();
+    for pressed in [true, false] {
+        let mut raw = input();
+        raw.events.push(egui::Event::PointerMoved(manual));
+        raw.events.push(egui::Event::PointerButton { pos: manual, button, pressed, modifiers: egui::Modifiers::NONE });
+        app.raw_input_hook(&mut raw);
+        let _ = crate::test_support::frame(&ctx, raw, |ui| {
+            super::show_inline_sign_in(&mut app, ui, "account.sign_in_for_chat", "agent_chat:sign_in");
+        });
+    }
+    let mut raw = input();
+    app.raw_input_hook(&mut raw);
+    let reopened = crate::test_support::frame(&ctx, raw, |ui| {
+        super::show_inline_sign_in(&mut app, ui, "account.sign_in_for_chat", "agent_chat:sign_in");
+    });
+    app.input_trust.input_consumed_by_ui();
+    let text = crate::test_support::text_shapes(&reopened).map(|shape| shape.galley.text().to_string()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("https://auth.example/device"), "the manual disclosure lost the address: {text}");
+
+    let pos = crate::scenario::handle_at("agent_chat:sign_in:browser").unwrap();
     for pressed in [true, false] {
         let mut raw = input();
         raw.events.push(egui::Event::PointerMoved(pos));
@@ -836,7 +1025,7 @@ fn inline_waiting_app(browser: Arc<Mutex<Vec<String>>>) -> crate::SolveApp {
             sign_in_prompt: Some(DeviceCode {
                 user_code: "BCDF-GHJK".into(),
                 verification_uri: "https://auth.example/device".into(),
-                expires_at: Timestamp(9_999),
+                expires_at: future_device_code(300).expires_at,
             }),
             ..AccountView::signed_out()
         },
@@ -1269,6 +1458,38 @@ fn joined(texts: &[(String, Pos2)]) -> String {
     texts.iter().map(|(text, _)| text.as_str()).collect::<Vec<_>>().join("\n").to_lowercase()
 }
 
+fn waiting_view(code: DeviceCode) -> AccountView {
+    AccountView { sign_in_state: SignInState::Waiting, sign_in_prompt: Some(code), ..AccountView::signed_out() }
+}
+
+fn painted_text(shapes: &[egui::epaint::ClippedShape]) -> String {
+    let mut text = String::new();
+    for clipped in shapes {
+        crate::test_support::each_shape(&clipped.shape, &mut |shape| {
+            if let egui::Shape::Text(text_shape) = shape {
+                text.push_str(text_shape.galley.text());
+                text.push('\n');
+            }
+        });
+    }
+    text
+}
+
+/// A waiting device challenge on either the actual Start summary or the permanent account menu.
+fn waiting_harness(home: bool, code: DeviceCode) -> (crate::scenario::Harness, FlowPort) {
+    let flow = FlowPort::signed_out(Some(code));
+    let state = start_flow(&flow);
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = home;
+    harness.app.account = state;
+    harness.frames(2);
+    if !home {
+        native_click(&mut harness, "titlebar:account_status");
+        harness.frames(2);
+    }
+    (harness, flow)
+}
+
 #[test]
 fn the_permanent_toolbar_entry_says_sign_in_when_signed_out() {
     let app = crate::test_support::sample_app();
@@ -1421,7 +1642,7 @@ fn the_compact_challenge_keeps_the_explicit_browser_gesture_and_never_opens_by_i
 }
 
 #[test]
-fn the_cached_challenge_shows_progress_code_and_expiry_without_a_port_call_in_paint() {
+fn the_cached_challenge_shows_one_compact_status_without_the_address_or_countdown() {
     let flow = FlowPort::signed_out(Some(future_device_code(300)));
     let state = start_flow(&flow);
     assert_eq!(state.view().sign_in_state, SignInState::Waiting);
@@ -1432,9 +1653,14 @@ fn the_cached_challenge_shows_progress_code_and_expiry_without_a_port_call_in_pa
     app.account = state;
     let texts = render(&mut app);
     let text = joined(&texts);
-    assert!(text.contains(&crate::i18n::tr("account.sign_in_waiting").to_lowercase()), "{texts:?}");
+    let waiting = crate::i18n::tr("account.sign_in_waiting").to_lowercase();
+    assert_eq!(text.matches(&waiting).count(), 1, "the waiting status is repeated: {texts:?}");
     assert!(text.contains("bcdf-ghjk"), "{texts:?}");
-    assert!(text.contains("expires in"), "{texts:?}");
+    assert!(!text.contains("expires in"), "the countdown is still shown: {texts:?}");
+    assert!(!text.contains("https://auth.example/device"), "the full address is visible by default: {texts:?}");
+    for handle in ["account:sign_in_browser", "account:sign_in_browser:copy", "account:sign_in_browser:manual", "account:sign_in_cancel"] {
+        assert!(crate::scenario::handle_at(handle).is_some(), "{handle} is not actionable: {:?}", crate::scenario::handles(""));
+    }
     assert_eq!(flow.calls(), calls, "a paint pass called the account port");
     assert_eq!(flow.with_state(|state| state.opens), Some(0));
 }
