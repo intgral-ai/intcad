@@ -211,7 +211,8 @@ def main():
             checks.check(state.get("currentAgent") == "mastra", f"the built-in agent is the conversation's agent ({state.get('currentAgent')})")
             checks.check(bool((state.get("connect") or {}).get("plans")), "the built-in agent started out of the package and reported its connections")
             # Starting it again from a stopped state: the same app, the same package, a new session.
-            control.call("ui.agent_chat", {"disconnect": True})
+            # The control channel's own word for Stop is `stop` (web.rs `disconnect` is the page's).
+            control.call("ui.agent_chat", {"stop": True})
             state = control.call("ui.agent_chat", {}).get("result") or {}
             stopped = state.get("connect") or {}
             # A stopped agent keeps the page's empty shape (its keys, no plans) but says nothing

@@ -80,9 +80,13 @@ Four separate things held it back, and all four had to change together:
 - `scripts/ci/package_contents.py --distribution mastra-agent` on that tarball —
   `agent.present`, `agent.node`, no missing file, all four modelling skills, `markers: []`,
   `agentMarkers: []`, `unchecked: []`.
-- `packaging/assistant-check.py --built-in-agent` in `fedora:latest` with the tarball's app —
-  the Agent's page and the built-in agent came up, the agent started out of the package and
-  reported its connections, and stopped.
+- `packaging/assistant-check.py --built-in-agent --screen` in `fedora:latest` with the tarball's
+  app — all 12 checks pass: the Assistant's page loaded, the built-in agent was offered first and
+  was the conversation's agent, it started out of the package and reported its connections, a
+  stopped agent reported none, it started again, and the app quit cleanly with no crash report.
+  `screen.png` shows the running Assistant on the agent's Connections page (five plans, five API
+  keys, custom addresses) beside the untouched Workspace, Browser, Files, Review, Simulation and
+  Autocomplete entries.
 - `actionlint` on both workflows — clean; `shellcheck` on the shell scripts — clean.
 
 ## Still open (release blockers, not code)
