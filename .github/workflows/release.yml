@@ -64,6 +64,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - id: verify-staging-config
+        name: Verify the staging snapshot against the committed configuration
+        if: inputs.staging_account_config != ''
+        env:
+          STAGING_ACCOUNT_CONFIG: ${{ inputs.staging_account_config }}
+        run: python -I scripts/ci/staging_account_config.py verify
       - id: v
         name: Resolve checkout version (never a publication decision)
         run: |
@@ -231,12 +237,13 @@ jobs:
           snapshot = os.environ.get('STAGING_ACCOUNT_CONFIG')
           if snapshot:
               sys.path.insert(0, str(Path('scripts/ci').resolve()))
-              from staging_account_config import parse_snapshot
+              from staging_account_config import CONFIG_PATH, verify_snapshot
               try:
-                  values = parse_snapshot(snapshot)
+                  values = verify_snapshot(snapshot, sha)
               except ValueError as error:
                   raise SystemExit(str(error)) from None
-              data['accountConfig'] = dict(source='github-environment:staging', values=values)
+              data['accountConfig'] = dict(source='checked-in:staging', path=CONFIG_PATH,
+                                           sourceRevision=sha, values=values)
           (directory / 'build.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
 
           # The runtime requirement is decided from the package bytes themselves.

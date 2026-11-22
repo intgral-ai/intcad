@@ -33,27 +33,22 @@ builder must set all three together and record which values it used in release e
 
 ## Before a staging package run
 
-**Dispatch is blocked.** The wrapper rejects higher-scope keys visible to an unbound job,
-then stops before reading any raw staging values. The Actions runner can log step
-environment values before validation. Do not dispatch until a reviewed source can
-provide environment-scoped inputs without displaying them before validation.
-
 Use **Staging desktop packages (nonpublishing)** (`staging-packages.yml`), not the ordinary
-package or release gate workflow. Once the blocker is resolved, before an authorized dispatch:
+package or release gate workflow. Before an authorized dispatch:
 
-1. Verify the `staging` GitHub environment contains the exact approved public values for all
-   three keys above. The staging wrapper requires a WorkOS ID of `client_` followed by ASCII
-   alphanumerics and bare HTTPS origins with no trailing slash. Check that the repository
-   and any organization variables visible to it do not define any of these keys. Do not
-   use secrets, production values or repository/organization fallbacks.
+1. Review the exact public staging tuple in `.github/config/intcad-staging-account.json`
+   at the approved SHA. The staging wrapper requires a WorkOS ID of `client_` followed
+   by ASCII alphanumerics and bare HTTPS origins with no trailing slash. Never put secrets
+   or production settings in that file. Rotate the tuple through a new reviewed commit.
 2. Verify the manual workflow is discoverable for dispatch (GitHub requires it to exist on the
-   default branch). Verify the selected run ref points to the approved, reviewed SHA.
+   default branch). Verify the selected run ref points to the approved, reviewed SHA and
+   the `staging` environment gate remains in place. No GitHub variables are read at runtime.
 
 The build path expects one tuple for Linux x86_64, both macOS builds that form the universal
 package, and Windows x64. `staging-` Actions artifacts carry build evidence with the checkout SHA,
-package hashes, and the exact public tuple under `accountConfig`. This workflow does not publish
-a release or provide signed distribution. Package checks are not installed-app UX, sign-in or
-keychain acceptance evidence.
+package hashes, and the exact public tuple, path and source SHA under `accountConfig`.
+This workflow does not publish a release or provide signed distribution. Package checks are not
+installed-app UX, sign-in or keychain acceptance evidence.
 
 ## Relationship to installation and authority
 

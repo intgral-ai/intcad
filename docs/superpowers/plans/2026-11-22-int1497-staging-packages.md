@@ -4,7 +4,7 @@
 
 **Goal:** Add one nonpublishing CI entry for installable Intcad staging packages on three desktop platforms.
 
-**Architecture:** A manual wrapper snapshots the public `staging` environment configuration once. The reusable package workflow consumes that snapshot, restricts the staging matrix, and binds configuration provenance to package evidence.
+**Architecture:** A manual wrapper gated by the `staging` environment snapshots the checked-in public staging tuple once. The reusable package workflow verifies and consumes that snapshot, restricts the staging matrix, and binds its path and revision to package evidence.
 
 **Tech Stack:** GitHub Actions, Python standard library, PyYAML for workflow assertions, actionlint.
 
@@ -19,7 +19,7 @@
 
 ## Review Focus
 
-- All three variables absent or any subset present must fail before packaging.
+- A missing tuple or any subset of its keys must fail before packaging.
 - A malformed public ID or non-origin URL must fail without echoing the rejected value.
 - The universal macOS join must not be the first consumer of the staging configuration.
 - The existing reusable gate and ordinary manual caller must not receive staging configuration.
@@ -27,18 +27,21 @@
 
 ### Task 1: Manual staging entry, compile-time configuration and evidence
 
-**Files:** Create `.github/workflows/staging-packages.yml` and
-`scripts/ci/staging_account_config.py`; modify `.github/workflows/release.yml`,
+**Files:** Create `.github/workflows/staging-packages.yml`,
+`scripts/ci/staging_account_config.py`, and `.github/config/intcad-staging-account.json`;
+modify `.github/workflows/release.yml`,
 `.github/workflows/packaging-lint.yml`, `scripts/ci/test_release_content.py`,
 and `docs/account/desktop-configuration.md`.
 
 **Interfaces:** Workflow input `staging_account_config` is a JSON string, default empty.
 `validate_config(values: Mapping[str, str]) -> dict[str, str]` accepts exactly the three
 environment keys in the spec or raises `ValueError` naming only invalid/missing keys.
-The helper CLI has `snapshot` (writes `config=<compact JSON>` to `GITHUB_OUTPUT`)
+The helper CLI has `snapshot` (reads the checked-in tuple from the clean run SHA and writes
+`config=<compact JSON>` to `GITHUB_OUTPUT`), `verify` (compares the snapshot to that checkout),
 and `inject` (validates `STAGING_ACCOUNT_CONFIG`, writes those three compile keys to
 `GITHUB_ENV`); values enter steps through environment variables, never command expansion.
-Staging build evidence adds `accountConfig: {"source": "github-environment:staging",
+Staging build evidence adds `accountConfig: {"source": "checked-in:staging",
+"path": ".github/config/intcad-staging-account.json", "sourceRevision": "<run SHA>",
 "values": {...}}`; ordinary `build.json` has no new field.
 
 - [ ] **Write failing contract tests** in `scripts/ci/test_release_content.py`:
@@ -50,12 +53,14 @@ Staging build evidence adds `accountConfig: {"source": "github-environment:stagi
   its reusable call depends on snapshot. Assert expected staging matrices, compile step order,
   no staging env injection in the macOS join, distinct staging artifact labels, no production
   refs/secrets/publication, and ordinary names and metadata unchanged. Test metadata generation
-  with temporary fixture bytes: SHA matches the file and configuration matches the snapshot.
+  with temporary fixture bytes: SHA matches the file and configuration matches the snapshot and
+  committed tuple. Test malformed/extra-key files and reject dirty or mismatched revisions and drift.
 - [ ] **Observe RED:** `python3 -I scripts/ci/test_release_content.py` fails new tests for missing
   staging entry/helper; distinguish any existing baseline failures.
 - [ ] **Implement the helper and wrapper:** validate before output; exclusive HTTPS origins
   (bare origin, optional valid port) and public WorkOS `client_` followed by ASCII alphanumerics.
-  Pass one validated compact JSON snapshot to `release.yml`. Do not inherit secrets.
+  Read the exact approved public tuple from the checked-in JSON file only. Pass one validated
+  compact JSON snapshot to `release.yml`. Do not inherit secrets or read GitHub variables at runtime.
 - [ ] **Wire the reusable workflow:** reject nonempty staging input from any caller other than
   `staging-packages.yml` on `workflow_dispatch` in the `version` job before dependent runners.
   Use the existing Beta reduced-platform path to skip other jobs, and select Linux x86_64 and
@@ -64,9 +69,9 @@ Staging build evidence adds `accountConfig: {"source": "github-environment:stagi
   macOS join's compile env; pass it there only to generate final evidence. Prefix the staging
   upload/download artifact labels, including intermediate binaries and evidence; keep package
   filenames and ordinary package IDs stable. Validate the same snapshot in the evidence step;
-  do not re-read GitHub variables.
-- [ ] **Document the operator gate** in `desktop-configuration.md`: exact public tuple from
-  `staging`, no repository/organization shadowing, run ref must point to the approved SHA,
+  compare it to the same checked-in tuple.
+- [ ] **Document the operator gate** in `desktop-configuration.md`: review the exact checked-in
+  public tuple, retain the `staging` environment gate, run ref must point to the approved SHA,
   manual wrapper must be discoverable for dispatch, and signed distribution/installed UX
   evidence remain out of scope. Add the regression command to packaging lint if not already run.
 - [ ] **Observe GREEN:** run `python3 -I scripts/ci/test_release_content.py`,

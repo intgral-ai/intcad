@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import re
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -13,6 +14,7 @@ AUTHKIT_ORIGIN = "INTCAD_AUTHKIT_VERIFICATION_ORIGIN"
 PRODUCT_ORIGIN = "INTCAD_PRODUCT_HTTPS_ORIGIN"
 KEYS = (CLIENT_ID, AUTHKIT_ORIGIN, PRODUCT_ORIGIN)
 SNAPSHOT_ENV = "STAGING_ACCOUNT_CONFIG"
+CONFIG_PATH = ".github/config/intcad-staging-account.json"
 
 CLIENT_PATTERN = re.compile(r"client_[A-Za-z0-9]+")
 ORIGIN_PATTERN = re.compile(r"https://(\[[0-9a-fA-F:.]+\]|[a-zA-Z0-9.-]+)(?::([0-9]{1,5}))?")
@@ -71,15 +73,43 @@ def parse_snapshot(snapshot: str) -> dict[str, str]:
     return validate_config(values)
 
 
+def checkout_config(expected_sha: str) -> dict[str, str]:
+    try:
+        sha = subprocess.check_output(["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL,
+                                      text=True).strip()
+        if sha != expected_sha:
+            raise ValueError("staging configuration sourceRevision mismatch")
+        if subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], stderr=subprocess.DEVNULL).returncode:
+            raise ValueError("dirty tracked staging checkout")
+        payload = subprocess.check_output(["git", "show", f"{sha}:{CONFIG_PATH}"], stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.CalledProcessError):
+        raise ValueError(f"cannot read committed staging configuration: {CONFIG_PATH}") from None
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError(f"invalid UTF-8 in {CONFIG_PATH}") from None
+    return parse_snapshot(text)
+
+
+def verify_snapshot(snapshot: str, expected_sha: str) -> dict[str, str]:
+    values = parse_snapshot(snapshot)
+    if values != checkout_config(expected_sha):
+        raise ValueError("staging snapshot does not match committed configuration")
+    return values
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("snapshot", "inject"))
+    parser.add_argument("command", choices=("snapshot", "verify", "inject"))
     args = parser.parse_args()
     try:
         if args.command == "snapshot":
-            values = validate_config({key: os.environ.get(key, "") for key in KEYS})
+            values = checkout_config(os.environ.get("GITHUB_SHA", ""))
             destination = "GITHUB_OUTPUT"
             text = "config=" + json.dumps(values, separators=(",", ":")) + "\n"
+        elif args.command == "verify":
+            verify_snapshot(os.environ.get(SNAPSHOT_ENV, ""), os.environ.get("GITHUB_SHA", ""))
+            return
         else:
             values = parse_snapshot(os.environ.get(SNAPSHOT_ENV, ""))
             destination = "GITHUB_ENV"

@@ -16,19 +16,22 @@ signing credentials or notarization. Existing macOS ad-hoc packaging remains unc
 
 ## Design
 
-1. A job bound to GitHub's `staging` environment snapshots the three public variables:
+1. A job gated by GitHub's `staging` environment snapshots `.github/config/intcad-staging-account.json`
+   from a clean checkout at the selected run SHA. The file contains only these exact public keys:
    `INTCAD_WORKOS_PUBLIC_CLIENT_ID`, `INTCAD_AUTHKIT_VERIFICATION_ORIGIN` and
    `INTCAD_PRODUCT_HTTPS_ORIGIN`. Missing or malformed values fail before packaging. No secret,
-   repository-level fallback, or hard-coded production default may substitute for staging. Before
-   remote execution, verify the environment's exact approved values and that neither the repository
-   nor visible organization variables define the same names.
+   runtime GitHub variable (of any scope), or production default may substitute for this file.
+   The initial values are the exact approved public staging tuple. Any rotation requires review of
+   the new tuple and SHA. The environment remains an approval gate, not a data source.
 2. Use the same snapshot for Linux and Windows packaging and **both** macOS compile jobs. The
    universal macOS join consumes existing binaries and does not compile or read mutable staging
    inputs. Ordinary package runs keep their existing targets, names, evidence, and account
    configuration behavior.
 3. Staging Actions artifact names distinguish staging from ordinary packages. Evidence includes
-   the fixed source SHA, target, artifact SHA-256s, and configuration source and public tuple from
-   that same snapshot. Do not claim a login, keychain, or installed-app acceptance pass from metadata.
+   the fixed source SHA, target, artifact SHA-256s, and the public tuple, checked-in path and SHA
+   for that same snapshot. The reusable workflow verifies the snapshot against the fixed checkout
+   before dependent runners and in the evidence step. Do not claim a login, keychain, or
+   installed-app acceptance pass from metadata.
 
 ## Approval boundary
 
