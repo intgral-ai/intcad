@@ -881,12 +881,34 @@ fn a_file_action_closes_the_compact_account_child_and_parent() {
 }
 
 #[test]
-fn the_manual_disclosure_reports_its_expanded_state_to_accesskit() {
+fn the_manual_disclosure_reports_toggled_state_to_accesskit() {
+    // AccessKit's shared collapsing-header widget info exposes Toggled, not Expanded. The Linux
+    // adapter version used here does not map it to AT-SPI Expanded, so this test does not claim
+    // that AT-SPI state.
     let (mut harness, _flow) = waiting_harness(true, future_device_code(300));
-    assert_eq!(manual_toggle_state(&harness), Some(egui::accesskit::Toggled::False), "collapsed disclosure state");
+    assert_eq!(manual_toggle_state(&harness), Some(egui::accesskit::Toggled::False), "collapsed disclosure Toggled");
     native_click(&mut harness, "account:sign_in_browser:manual");
     harness.frames(1);
-    assert_eq!(manual_toggle_state(&harness), Some(egui::accesskit::Toggled::True), "expanded disclosure state");
+    assert_eq!(manual_toggle_state(&harness), Some(egui::accesskit::Toggled::True), "expanded disclosure Toggled");
+}
+
+#[test]
+fn compact_manual_disclosure_takes_focus_and_toggles_with_keyboard() {
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = start_flow(&FlowPort::signed_out(Some(future_device_code(300))));
+    harness.call("ui.resize", json!({"width":700.0,"height":720.0}));
+    harness.frames(3);
+    open_compact_account_menu(&mut harness);
+    assert!(crate::scenario::handle_at("account:sign_in_browser:manual").is_some(), "the manual disclosure is drawn");
+
+    native_click(&mut harness, "account:sign_in_browser:manual");
+    harness.frames(1);
+    assert!(painted_text(&harness.shapes).contains("https://auth.example/device"), "the pointer click did not expand the disclosure");
+
+    harness.frame_with(vec![platform_key(egui::Key::Space)]);
+    harness.frames(1);
+    assert!(!painted_text(&harness.shapes).contains("https://auth.example/device"), "Space did not toggle the focused disclosure");
 }
 
 fn manual_toggle_state(harness: &crate::scenario::Harness) -> Option<egui::accesskit::Toggled> {

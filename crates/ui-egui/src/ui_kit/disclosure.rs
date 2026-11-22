@@ -50,6 +50,9 @@ pub(crate) fn disclosure_label_button(ui: &mut Ui, label: &str, expanded: bool) 
     let icon = t.form_section_icon_size;
     let width = (t.space_8 + icon + t.space_6 + galley.size().x + t.space_8).max(t.control_height);
     let (rect, response) = ui.allocate_exact_size(vec2(width, t.control_height), Sense::click());
+    if response.clicked() {
+        response.request_focus();
+    }
     if response.hovered() {
         ui.painter().rect_filled(rect, t.control_radius, t.hover);
     }
