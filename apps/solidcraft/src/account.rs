@@ -2117,6 +2117,88 @@ mod tests {
     }
 
     #[test]
+    fn switching_accounts_during_startup_finalize_discards_the_receipt_and_stops_recovery() {
+        use solidcraft_engine::entitlement::TransportCorrelation;
+
+        let path = std::env::temp_dir().join(format!("intcad-startup-finalize-switch-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(path);
+        let store = TestStore::default();
+        let mut session = activate_session(&store);
+        let scope = session.authenticated_scope().unwrap();
+        let mut ledger = FileOperationStore::open(&scratch.0).unwrap();
+        let intent = SettlementIntent::Commit(BillingResult::Succeeded);
+        let mut operations = ["settlement_switch_a", "settlement_switch_b"].map(|correlation| {
+            let row = ledger.persist_intent(&scope, &TransportCorrelation::new(correlation), Capability::Review, EntryCategory::ReviewPanel).unwrap();
+            ledger.record_settlement_intent(&row.operation, intent).unwrap();
+            CredentialHandoff::settlement_credential(&mut session, &row.operation, Secret::new("fixture_settlement")).unwrap();
+            row.operation
+        });
+        // Startup inventories rows in operation-ID order.
+        operations.sort();
+        let [first, second] = &operations;
+        drop(ledger);
+        drop(session);
+
+        let receipt = |operation: &OperationId| {
+            Ok(WireResponse::new(
+                200,
+                json!({
+                    "operation_id": operation.as_str(), "state":"CHARGED", "result":"SUCCEEDED", "terminal":true,
+                    "finalized_at":"2026-01-01T00:00:30Z", "settlement_deadline":"2026-01-01T00:11:00Z"
+                })
+                .to_string()
+                .into_bytes(),
+            ))
+        };
+        let mut product = ScriptedProduct::scripted(vec![
+            Ok(WireResponse::new(200, status_body_for(scope.account().as_str()).to_string().into_bytes())),
+            receipt(first),
+            receipt(second),
+        ]);
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let release_rx = Mutex::new(release_rx);
+        let sends = AtomicUsize::new(0);
+        product.on_send(move || {
+            if sends.fetch_add(1, Ordering::SeqCst) == 1 {
+                entered_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+        });
+        let opener = RecordingOpener::default();
+        let mut runtime = restart_runtime(CredentialSession::new(Box::new(store)), product.clone(), &opener);
+        runtime.ledger = Some(FileOperationStore::open(&scratch.0).unwrap());
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        port.switch_account().unwrap();
+        assert_eq!(port.take_lifecycle_event(), Some(LifecycleEvent::AccountSwitched));
+        release_tx.send(()).unwrap();
+        // Join without invoking a second cancellation via shutdown.
+        port.join_workers();
+
+        let ledger = FileOperationStore::open(&scratch.0).unwrap();
+        for operation in &operations {
+            assert_eq!(ledger.load(operation).unwrap().unwrap().status, OperationStatus::Held);
+            assert_eq!(ledger.settlement_intent(operation).unwrap(), Some(intent));
+        }
+        let requests = product.requests();
+        assert_eq!(requests.len(), 2, "status and the in-flight finalize only");
+        assert_eq!(requests[0].url(), "https://api.example/v1/status");
+        assert_eq!(requests[1].method(), "POST");
+        assert_eq!(requests[1].url(), format!("https://api.example/v1/operations/{}/finalize", first.as_str()));
+        assert!(!port.view().signed_in);
+        assert!(opener.urls().is_empty());
+    }
+
+    #[test]
     fn a_restart_status_reply_for_another_account_is_refused_without_replay() {
         let product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_other_0001").to_string().into_bytes()))]);
         let opener = RecordingOpener::default();
