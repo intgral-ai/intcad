@@ -212,10 +212,36 @@ try {
     Assert-OwnedWindow $p $h 'placing the window'
     $sw = [Win]::GetSystemMetrics(0); $sh = [Win]::GetSystemMetrics(1)
     Write-Host "screen: $sw x $sh"
-    if (-not [Win]::SetWindowPos($h, [IntPtr]::Zero, 20, 20, [Math]::Min(1000, $sw - 40), [Math]::Min(620, $sh - 140), 0x0014)) { # NOZORDER | NOACTIVATE
+    # Request a new origin even when the window already has the usual test bounds.
+    # Otherwise an unprocessed request could look like a successful placement.
+    $initial = Rect $h
+    $placeX = if ($initial.Left -eq 20) { 21 } else { 20 }
+    $placeY = 20
+    $placeWidth = [Math]::Min(1000, $sw - 40)
+    $placeHeight = [Math]::Min(620, $sh - 140)
+    if ($placeWidth -le 0 -or $placeHeight -le 0) { throw "screen is too small for test placement: $sw x $sh" }
+    # SWP_ASYNCWINDOWPOS | SWP_NOZORDER | SWP_NOACTIVATE: don't wait on the app's input queue.
+    if (-not [Win]::SetWindowPos($h, [IntPtr]::Zero, $placeX, $placeY, $placeWidth, $placeHeight, 0x4014)) {
         throw 'could not place the window (SetWindowPos failed)'
     }
-    Start-Sleep -Milliseconds 500
+    $placementTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $placed = $false
+    do {
+        Assert-OwnedWindow $p $h 'waiting for placement'
+        $actual = Rect $h
+        # Windows can enforce a larger minimum size at this DPI.
+        if ($actual.Left -eq $placeX -and $actual.Top -eq $placeY -and
+            ($actual.Right - $actual.Left) -ge $placeWidth -and ($actual.Bottom - $actual.Top) -ge $placeHeight) {
+            $placed = $true
+            break
+        }
+        Start-Sleep -Milliseconds 50
+    } while ($placementTimer.ElapsedMilliseconds -lt 5000)
+    if (-not $placed) {
+        throw "window placement did not reach $placeX,$placeY with at least ${placeWidth}x$placeHeight within 5 s (last bounds $($actual.Left),$($actual.Top) - $($actual.Right),$($actual.Bottom))"
+    }
+    Assert-OwnedWindow $p $h 'after placement'
+    Write-Host "ok: placed window at $($actual.Left),$($actual.Top) - $($actual.Right),$($actual.Bottom)"
     CheckBorder $p $h 'restored'
 
     # A real drag on the bottom edge, if this session takes mouse input.
