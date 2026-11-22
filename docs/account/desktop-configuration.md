@@ -32,7 +32,9 @@ builder must set all three together and record which values it used in release e
 ## Relationship to installation and authority
 
 A verified WorkOS identity is not installation proof. Sign-in may replace a durable sign-out
-marker after the configured product origin verifies the session, and the account label may be
-shown again after restart from a persisted product session. `AuthenticatedHostScope`, controlled
+marker after the configured product origin verifies the session, but only the staged activation
+whose commit marker was written can be shown after restart. `AuthenticatedHostScope`, controlled
 entries, billing, commit authority and Chat availability still require a reviewed installation
-bootstrap plus a reviewed account service; this build installs neither.
+bootstrap plus a reviewed account service; this build installs neither. The durable commit is a
+single key; partial multi-key writes are conservative and non-restorable rather than a claimed
+transaction.

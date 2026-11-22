@@ -78,6 +78,38 @@ The exchange is explicit:
   still refuses and no production billing, commit or MCP authority is installed.
 - No token is sent to any origin other than the caller-configured `WireConnection`.
 
+## Durable activation boundary
+
+The credential store has individual key writes, not a multi-key transaction. The client therefore
+does not treat any staged or partial value as a session:
+
+1. A desktop sign-in worker holds its promotion lock from the first staging write through the
+   commit. Cancel and sign-out try-lock that gate. If promotion is in progress, the UI action is
+   refused without waiting and reports that the sign-in is completing; it never claims a
+   cancellation or sign-out that did not own the durable boundary.
+2. Staged keys under `login/stage/…` are written first, then the provider, account and product
+   keys. None of these are read as authority.
+3. The single `login/commit` key is written last with the attempt generation and account. Its
+   presence, together with the matching account/product/installation values and an absent
+   sign-out marker, is the commit/linearization point. Every reader — product bearer, installation
+   credential, scope, settlement/execution proofs, bound account and display-only identity —
+   requires it.
+4. A crash or storage failure before the commit leaves staged/partial values that every reader
+   ignores. Clearing authority first writes `login/commit` to the revoked value, so even a
+   partially deleted old session is non-restorable.
+5. An accepted sign-out writes the durable sign-out marker before returning where the promotion
+   gate is free. During promotion sign-out is refused. Repeated sign-out generations rely on the
+   marker already owned by the earlier cleanup, so a blocked delete cannot deadlock the window.
+6. A completed commit is a completed login; cancel after it is refused and sign-out is the
+   lifecycle transition. The process does not claim atomic multi-key keyring behavior beyond this
+   single-key commit boundary.
+
+This is a conservative design and has a UX cost: a cancel or sign-out clicked while the final
+keyring promotion runs is refused with a retry/sign-out message instead of waiting or pretending
+to succeed. A verification that succeeds after cancellation is not activated; a verification that
+already committed finishes as a normal login. An existing credential session written before this
+commit marker was introduced is treated as non-restorable and requires a fresh sign-in.
+
 ## Fail-closed cases covered by local tests
 
 - provider login alone, and the default blocked exchange;

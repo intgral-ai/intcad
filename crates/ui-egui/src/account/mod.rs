@@ -170,8 +170,11 @@ pub trait AccountPort: Send + Sync {
     fn open_sign_in_browser(&mut self) -> Result<(), Refusal> {
         Err(Refusal::new(RefusalCode::AuthRequired, "no sign-in is waiting for a browser"))
     }
-    /// Stop the current attempt. Default: nothing to cancel.
-    fn cancel_sign_in(&mut self) {}
+    /// Stop the current attempt. A refusal means the sign-in is already completing and could not
+    /// be canceled; the caller must show that rather than imply cancellation succeeded.
+    fn cancel_sign_in(&mut self) -> Result<(), Refusal> {
+        Ok(())
+    }
     /// Take a view the host worker produced, if it changed. Default: no worker.
     fn poll(&mut self) -> Option<AccountView> {
         None
@@ -357,10 +360,8 @@ impl State {
                     apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
                 }
                 Action::CancelSignIn => {
-                    port.cancel_sign_in();
-                    self.view = port.view();
-                    self.guide = Some(port.delete_account_guide());
-                    self.notice = None;
+                    let result = port.cancel_sign_in();
+                    apply(&**port, result, &mut self.view, &mut self.guide, &mut self.notice);
                 }
                 Action::SignOut => {
                     let result = port.sign_out();

@@ -17,6 +17,7 @@ pub(crate) struct FakeAccountPort {
     calls: Arc<Mutex<Vec<String>>>,
     browser: Arc<Mutex<Vec<String>>>,
     poll_view: Option<AccountView>,
+    cancel_refusal: Option<Refusal>,
 }
 
 impl FakeAccountPort {
@@ -34,6 +35,7 @@ impl FakeAccountPort {
             calls,
             browser: Arc::new(Mutex::new(Vec::new())),
             poll_view: None,
+            cancel_refusal: None,
         }
     }
 
@@ -47,6 +49,7 @@ impl FakeAccountPort {
             calls,
             browser: Arc::new(Mutex::new(Vec::new())),
             poll_view: None,
+            cancel_refusal: None,
         }
     }
 
@@ -89,9 +92,13 @@ impl AccountPort for FakeAccountPort {
         }
     }
 
-    fn cancel_sign_in(&mut self) {
+    fn cancel_sign_in(&mut self) -> Result<(), Refusal> {
         self.log("cancel_sign_in");
+        if let Some(refusal) = &self.cancel_refusal {
+            return Err(refusal.clone());
+        }
         self.view = AccountView::signed_out();
+        Ok(())
     }
 
     fn poll(&mut self) -> Option<AccountView> {
@@ -291,6 +298,22 @@ fn expired_sign_in_explains_and_offers_one_explicit_retry() {
     assert!(harness.app.account.view().signed_in, "the explicit retry ran one sign-in");
     let log = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
     assert_eq!(log, vec!["sign_in", "view"]);
+}
+
+#[test]
+fn a_refused_cancel_is_surfaced_instead_of_claiming_an_action() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut port = FakeAccountPort::with_view(AccountView::signed_out(), calls.clone());
+    port.cancel_refusal = Some(Refusal::new(RefusalCode::AuthUnavailable, "the sign-in is completing"));
+    let mut state = State::with_port(Box::new(port));
+    if let Ok(mut calls) = calls.lock() {
+        calls.clear();
+    }
+    state.request(Action::CancelSignIn);
+    state.process_actions();
+    assert_eq!(state.notice().map(|refusal| refusal.code), Some(RefusalCode::AuthUnavailable));
+    let log = calls.lock().map(|calls| calls.clone()).unwrap_or_default();
+    assert_eq!(log, vec!["cancel_sign_in"], "a refusal is surfaced without inventing a new view");
 }
 
 #[test]

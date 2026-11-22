@@ -189,7 +189,7 @@ fn provider_credentials_are_persisted_only_after_a_trusted_product_exchange() {
     assert!(!session.product_session_active());
 
     let product = TestExchange.exchange(&provider).unwrap();
-    session.persist_verified_login(&provider, &product).unwrap();
+    session.persist_verified_login(&provider, &product, 1, &|| true).unwrap();
     assert!(session.product_session_active());
     assert_eq!(session.provider_account().as_deref(), Some("user_01E4ZCR3C56J083X43JQXF3JK5"));
     assert_eq!(WireCredentials::product_session(&session).unwrap().expose_secret(), "product_SECRET");

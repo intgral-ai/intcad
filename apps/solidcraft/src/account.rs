@@ -14,7 +14,6 @@
 //! cancellation ends the current attempt's authority immediately.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -85,15 +84,17 @@ fn config_from_build_values(client: Option<&str>, authkit: Option<&str>, product
 /// The browser seam. The production launcher starts the system browser only for the exact
 /// provider-issued HTTPS verification address of the current attempt.
 pub trait BrowserLauncher: Send + Sync {
-    fn open(&self, url: &str) -> Result<(), Refusal>;
+    /// `allowed_origin` is supplied by the host configuration; the launcher repeats the exact
+    /// check rather than trusting its caller to have done so.
+    fn open(&self, url: &str, allowed_origin: &str) -> Result<(), Refusal>;
 }
 
 struct SystemBrowserLauncher;
 
 impl BrowserLauncher for SystemBrowserLauncher {
-    fn open(&self, url: &str) -> Result<(), Refusal> {
-        if https_origin(url).is_none() {
-            return Err(Refusal::new(RefusalCode::AuthUnavailable, "the sign-in page is not a trusted HTTPS address"));
+    fn open(&self, url: &str, allowed_origin: &str) -> Result<(), Refusal> {
+        if !trusted_browser_url(url, allowed_origin) {
+            return Err(Refusal::new(RefusalCode::AuthUnavailable, "the sign-in page is not the configured HTTPS origin"));
         }
         #[cfg(target_os = "windows")]
         let mut command = {
@@ -153,14 +154,11 @@ struct LoginStatus {
     phase: LoginPhase,
     prompt: Option<DeviceCode>,
     account: Option<String>,
-    /// The attempt an explicit cancel superseded. A retry replaces this marker, so a superseded
-    /// cleanup never deletes a newer attempt's write.
-    canceled: Option<u64>,
 }
 
 impl Default for LoginStatus {
     fn default() -> Self {
-        Self { attempt: 0, phase: LoginPhase::Idle, prompt: None, account: None, canceled: None }
+        Self { attempt: 0, phase: LoginPhase::Idle, prompt: None, account: None }
     }
 }
 
@@ -318,20 +316,9 @@ fn run_login<T: DeviceCodeTransport>(task: LoginTask, transport: T, exchange: &d
     if !current(&status, attempt) {
         return;
     }
-    match credentials.persist_verified_login(&provider, &product) {
-        Ok(login) => {
-            if current(&status, attempt) {
-                finish(&status, attempt, LoginPhase::Done, Some(login.account_id));
-            } else {
-                // Cancel or sign-out won after the attempt's generation check but before this
-                // write completed. The write is this attempt's own, so remove it here, off the
-                // window thread, and never publish a stale success.
-                let removed = credentials.sign_out_keeping_revocation().is_ok();
-                if removed {
-                    credentials.end_revocation();
-                }
-            }
-        }
+    let generation_current = || current(&status, attempt) && !credentials.is_revoked();
+    match credentials.persist_verified_login(&provider, &product, attempt, &generation_current) {
+        Ok(login) => finish(&status, attempt, LoginPhase::Done, Some(login.account_id)),
         Err(error) => {
             let code = match error.code {
                 CredentialErrorCode::NoPersistentCredential => RefusalCode::AuthRequired,
@@ -541,15 +528,11 @@ struct DesktopAccountPort {
     cleanup: Arc<Mutex<CleanupStatus>>,
     workers: Vec<std::thread::JoinHandle<()>>,
     login_attempt: u64,
-    /// Whether a product session was already active when this attempt began; cancelling removes
-    /// only what the attempt itself wrote, never a pre-existing session.
-    session_before_login: bool,
     login_status: Arc<Mutex<LoginStatus>>,
+    /// Held by the worker for staging, promotion and the final commit marker. Cancel and sign-out
+    /// try-lock it: a cancel during promotion is refused without waiting on keyring IO.
     persist_gate: Arc<Mutex<()>>,
     login_workers: Vec<std::thread::JoinHandle<()>>,
-    /// Canceled-attempt durable cleanups still running. Retry refuses (without blocking) until
-    /// one finishes, so it can never start over an old attempt's unremoved write.
-    attempt_cleanup_pending: Arc<AtomicUsize>,
     browser: Arc<dyn BrowserLauncher>,
     runner: LoginRunner,
 }
@@ -567,11 +550,9 @@ impl DesktopAccountPort {
             cleanup: Arc::new(Mutex::new(CleanupStatus::default())),
             workers: Vec::new(),
             login_attempt: 0,
-            session_before_login: false,
             login_status: Arc::new(Mutex::new(LoginStatus::default())),
             persist_gate: Arc::new(Mutex::new(())),
             login_workers: Vec::new(),
-            attempt_cleanup_pending: Arc::new(AtomicUsize::new(0)),
             browser: Arc::new(SystemBrowserLauncher),
             runner: production_login_runner(),
         }
@@ -611,45 +592,14 @@ impl DesktopAccountPort {
     /// on a keyring write. A worker that already entered its final write observes the changed
     /// generation and removes its own attempt write off the window thread.
     fn invalidate_login(&mut self) {
-        let canceled = self.login_attempt;
         self.login_attempt = self.login_attempt.wrapping_add(1);
         if let Ok(mut status) = self.login_status.lock() {
             *status = LoginStatus::default();
             status.attempt = self.login_attempt;
-            status.canceled = Some(canceled);
         }
         self.view.sign_in_state = SignInState::Idle;
         self.view.sign_in_prompt = None;
         self.view.sign_in_error = None;
-    }
-
-    /// Remove a canceled attempt's finished write without blocking the window thread and without
-    /// touching a session that existed before the attempt. Only called while the cancel's
-    /// generation is still current; a newer retry supersedes it.
-    fn spawn_attempt_cleanup(&mut self, attempt: u64) {
-        if self.session_before_login {
-            return;
-        }
-        let credentials = self.runtime.credentials.clone();
-        let status = Arc::clone(&self.login_status);
-        let pending = Arc::clone(&self.attempt_cleanup_pending);
-        pending.fetch_add(1, Ordering::SeqCst);
-        let finished = Arc::clone(&pending);
-        let worker = std::thread::Builder::new().name("intcad-account-cancel-cleanup".into()).spawn(move || {
-            let current = status.lock().map(|status| status.canceled == Some(attempt)).unwrap_or(false);
-            // The durable read and delete happen here, never on the window thread. No product
-            // session means this attempt never wrote one, so a pre-existing tombstone is kept.
-            if current && credentials.product_session_active() {
-                let _ = credentials.sign_out();
-            }
-            finished.fetch_sub(1, Ordering::SeqCst);
-        });
-        match worker {
-            Ok(worker) => self.workers.push(worker),
-            Err(_) => {
-                pending.fetch_sub(1, Ordering::SeqCst);
-            }
-        }
     }
 
     fn poll_login(&mut self) -> Option<AccountView> {
@@ -723,6 +673,13 @@ impl DesktopAccountPort {
     /// worker. The worker's result is applied only for its own generation, so a late result from
     /// an older switch can never clear a newer cleanup state.
     fn revoke(&mut self, event: LifecycleEvent) -> Result<(), Refusal> {
+        let gate_holder = Arc::clone(&self.persist_gate);
+        let gate = match gate_holder.try_lock() {
+            Ok(gate) => gate,
+            Err(_) => {
+                return Err(account_unavailable("the sign-in is completing; sign out again after it finishes"));
+            }
+        };
         self.invalidate_login();
         // Publish the new generation and set the barrier in the same short lock. A finishing
         // older worker takes that lock before clearing anything, so it can never clear a newer
@@ -737,12 +694,28 @@ impl DesktopAccountPort {
                 return Err(account_unavailable("the account cleanup state is unavailable"));
             }
         };
+        // A synchronous durable tombstone before any async delete closes the crash window after a
+        // just-promoted session. The promotion gate is still held, so no commit marker can race it.
+        // An earlier sign-out generation that still owns cleanup already has its marker; skip the
+        // second synchronous write so an older blocked delete cannot deadlock this UI action.
+        let marked = if status.pending.is_some() {
+            Ok(())
+        } else {
+            match self.runtime.credentials.try_mark_logout_pending() {
+                Ok(true) => Ok(()),
+                Ok(false) => {
+                    return Err(account_unavailable("the account store is busy; try sign-out again"));
+                }
+                Err(_) => Err(account_unavailable("the durable sign-out marker could not be written; cleanup is retrying")),
+            }
+        };
         self.runtime.credentials.revoke_in_process();
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
         status.pending = Some(generation);
         status.error = None;
         drop(status);
+        drop(gate);
         self.lifecycle = Some(event);
         self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
 
@@ -766,7 +739,10 @@ impl DesktopAccountPort {
         match worker {
             Ok(handle) => {
                 self.workers.push(handle);
-                Ok(())
+                match marked {
+                    Ok(()) => Ok(()),
+                    Err(_) => Err(account_unavailable("the durable sign-out marker could not be written; cleanup is retrying")),
+                }
             }
             // In-process authority and the event are already applied. The durable marker was
             // never written, so the status says cleanup never started (not that it is pending),
@@ -855,9 +831,6 @@ impl AccountPort for DesktopAccountPort {
             // Lifecycle rule: a new provider login never replaces an active account implicitly.
             return Err(account_unavailable("sign out or switch account before signing in again"));
         }
-        if self.attempt_cleanup_pending.load(Ordering::SeqCst) > 0 {
-            return Err(account_unavailable("a canceled sign-in cleanup is still finishing"));
-        }
         if !self.secure_store {
             return Err(account_unavailable("no secure credential store is available"));
         }
@@ -879,12 +852,11 @@ impl AccountPort for DesktopAccountPort {
             return Err(account_unavailable("previous sign-in workers are still finishing"));
         }
 
-        self.session_before_login = false;
         self.login_attempt = self.login_attempt.wrapping_add(1);
         let attempt = self.login_attempt;
         match self.login_status.lock() {
             Ok(mut status) => {
-                *status = LoginStatus { attempt, phase: LoginPhase::Starting, prompt: None, account: None, canceled: None };
+                *status = LoginStatus { attempt, phase: LoginPhase::Starting, prompt: None, account: None };
             }
             Err(_) => return Err(account_unavailable("the sign-in state is unavailable")),
         }
@@ -929,17 +901,27 @@ impl AccountPort for DesktopAccountPort {
         if !trusted_browser_url(url, &config.verification_origin) {
             return Err(Refusal::new(RefusalCode::AuthUnavailable, "the sign-in page is not the configured verification origin"));
         }
-        self.browser.open(url)
+        self.browser.open(url, &config.verification_origin)
     }
 
-    fn cancel_sign_in(&mut self) {
-        let attempt = self.login_attempt;
+    fn cancel_sign_in(&mut self) -> Result<(), Refusal> {
+        let gate_holder = Arc::clone(&self.persist_gate);
+        let gate = match gate_holder.try_lock() {
+            Ok(gate) => gate,
+            Err(_) => {
+                // Promotion owns the gate from its first staged write through the commit marker.
+                // Cancelling now is refused, not reported as success and not waited for.
+                return Err(account_unavailable("the sign-in is completing; it can no longer be canceled"));
+            }
+        };
+        let completed = self.view.signed_in || self.login_status.lock().map(|status| status.phase == LoginPhase::Done).unwrap_or(false);
+        if completed {
+            return Err(account_unavailable("the sign-in has completed; sign out instead"));
+        }
         self.invalidate_login();
-        // A worker that finished just before this click is removed by an async cleanup under the
-        // old generation. A worker still inside its final write observes the generation change
-        // and removes its own write. The window thread waits for neither.
-        self.spawn_attempt_cleanup(attempt);
         self.view = if self.secure_store { AccountView::signed_out() } else { AccountView::unavailable() };
+        drop(gate);
+        Ok(())
     }
 
     fn poll(&mut self) -> Option<AccountView> {
@@ -1037,8 +1019,10 @@ mod tests {
         fail_get: Arc<AtomicBool>,
         block_delete: Arc<Mutex<VecDeque<Receiver<()>>>>,
         block_get: Arc<Mutex<Option<Receiver<()>>>>,
+        block_set: Arc<Mutex<Option<(String, Receiver<()>)>>>,
         delete_waiting: Arc<AtomicUsize>,
         get_waiting: Arc<AtomicUsize>,
+        set_waiting: Arc<AtomicUsize>,
     }
 
     impl Default for TestStore {
@@ -1049,8 +1033,10 @@ mod tests {
                 fail_get: Arc::new(AtomicBool::new(false)),
                 block_delete: Arc::new(Mutex::new(VecDeque::new())),
                 block_get: Arc::new(Mutex::new(None)),
+                block_set: Arc::new(Mutex::new(None)),
                 delete_waiting: Arc::new(AtomicUsize::new(0)),
                 get_waiting: Arc::new(AtomicUsize::new(0)),
+                set_waiting: Arc::new(AtomicUsize::new(0)),
             }
         }
     }
@@ -1065,6 +1051,19 @@ mod tests {
         /// Make the next read wait while this store's session lock is held.
         fn block_next_get(&self, gate: Receiver<()>) {
             *self.block_get.lock().unwrap() = Some(gate);
+        }
+
+        /// Make the next write of `key` wait until the test releases it.
+        fn block_next_set(&self, key: &str, gate: Receiver<()>) {
+            *self.block_set.lock().unwrap() = Some((key.to_owned(), gate));
+        }
+
+        fn wait_until_set_blocked(&self) {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.set_waiting.load(Ordering::SeqCst) == 0 && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(self.set_waiting.load(Ordering::SeqCst) > 0, "the staged/commit write was never reached");
         }
     }
 
@@ -1082,6 +1081,18 @@ mod tests {
         }
 
         fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
+            let gate = {
+                let mut blocked = self.block_set.lock().unwrap();
+                match blocked.as_ref() {
+                    Some((expected, _)) if expected == key => blocked.take().map(|(_, gate)| gate),
+                    _ => None,
+                }
+            };
+            if let Some(gate) = gate {
+                self.set_waiting.fetch_add(1, Ordering::SeqCst);
+                let _ = gate.recv();
+                self.set_waiting.fetch_sub(1, Ordering::SeqCst);
+            }
             self.entries.lock().unwrap().insert(key.to_owned(), secret.to_owned());
             Ok(())
         }
@@ -1525,7 +1536,10 @@ mod tests {
     }
 
     impl BrowserLauncher for RecordingBrowser {
-        fn open(&self, url: &str) -> Result<(), Refusal> {
+        fn open(&self, url: &str, allowed_origin: &str) -> Result<(), Refusal> {
+            if !trusted_browser_url(url, allowed_origin) {
+                return Err(account_unavailable("the test browser refused a foreign origin"));
+            }
             self.opened.lock().map_err(|_| account_unavailable("browser test lock"))?.push(url.to_owned());
             Ok(())
         }
@@ -1656,7 +1670,7 @@ mod tests {
         }
         assert!(port.view().sign_in_prompt.is_some(), "the provider prompt arrived");
         port.open_sign_in_browser().unwrap();
-        port.cancel_sign_in();
+        AccountPort::cancel_sign_in(&mut port).unwrap();
         gate_tx.send(()).unwrap();
         port.shutdown();
 
@@ -1667,7 +1681,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_after_a_worker_finish_removes_the_attempts_session() {
+    fn cancel_after_commit_is_refused_and_sign_out_remains_the_lifecycle_transition() {
         let store = TestStore::default();
         let browser = RecordingBrowser::default();
         let exchange = ScriptedExchange::accepting();
@@ -1675,13 +1689,12 @@ mod tests {
         let mut port = login_port(browser, runner, &store);
         port.sign_in().unwrap();
         wait_for_login(&mut port, true);
-        AccountPort::cancel_sign_in(&mut port);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while port.attempt_cleanup_pending.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(!port.runtime.credentials.product_session_active(), "an abandoned verified attempt stayed active");
-        assert!(port.runtime.credentials.provider_account().is_none());
+        let error = AccountPort::cancel_sign_in(&mut port).unwrap_err();
+        assert_eq!(error.code, RefusalCode::AuthUnavailable, "a completed sign-in was reported as canceled");
+        assert!(port.runtime.credentials.product_session_active(), "the committed session is not deleted");
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert!(!port.runtime.credentials.product_session_active());
         assert!(!port.view().signed_in);
     }
 
@@ -1696,7 +1709,7 @@ mod tests {
             connection: config.product.clone(),
             verification_origin: config.verification_origin.clone(),
             credentials: CredentialSession::new(Box::new(store.clone())),
-            status: Arc::new(Mutex::new(LoginStatus { attempt, phase: LoginPhase::Starting, prompt: None, account: None, canceled: None })),
+            status: Arc::new(Mutex::new(LoginStatus { attempt, phase: LoginPhase::Starting, prompt: None, account: None })),
             persist_gate: Arc::new(Mutex::new(())),
         }
     }
@@ -1797,16 +1810,8 @@ mod tests {
         let mut port = config_port(test_config(), browser, runner, &store);
         port.sign_in().unwrap();
         let started = Instant::now();
-        port.cancel_sign_in();
+        AccountPort::cancel_sign_in(&mut port).unwrap();
         assert!(started.elapsed() < Duration::from_millis(100), "cancel blocked on a live worker");
-        let started = Instant::now();
-        assert!(port.sign_in().is_err(), "retry started over a still-running canceled cleanup");
-        assert!(started.elapsed() < Duration::from_millis(100), "retry blocked on a live worker");
-        assert_eq!(attempts.load(Ordering::SeqCst), 1);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while port.attempt_cleanup_pending.load(Ordering::SeqCst) > 0 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
         let started = Instant::now();
         port.sign_in().unwrap();
         assert!(started.elapsed() < Duration::from_millis(100), "retry joined a live worker");
@@ -1867,6 +1872,52 @@ mod tests {
         assert!(!trusted_browser_url("http://auth.example/device", "https://auth.example"));
         assert!(!trusted_browser_url("https://other.example/device", "https://auth.example"));
         assert!(!trusted_browser_url("https://user@auth.example/device", "https://auth.example"));
+    }
+
+    #[test]
+    fn cancel_during_blocked_persistence_is_refused_without_waiting_or_claiming_success() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
+        let (gate_tx, gate_rx) = channel();
+        store.block_next_set("login/commit", gate_rx);
+        let mut port = login_port(browser, runner, &store);
+        port.sign_in().unwrap();
+        store.wait_until_set_blocked();
+        let started = Instant::now();
+        let error = AccountPort::cancel_sign_in(&mut port).unwrap_err();
+        assert_eq!(error.code, RefusalCode::AuthUnavailable);
+        assert!(started.elapsed() < Duration::from_millis(100), "cancel waited on blocked persistence");
+        gate_tx.send(()).unwrap();
+        wait_for_login(&mut port, true);
+        assert!(port.runtime.credentials.product_session_active(), "the refused cancel did not claim cancellation");
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert!(!port.runtime.credentials.product_session_active());
+    }
+
+    #[test]
+    fn sign_out_during_blocked_persistence_is_refused_then_works_after_commit() {
+        let store = TestStore::default();
+        let browser = RecordingBrowser::default();
+        let exchange = ScriptedExchange::accepting();
+        let (runner, _) = test_runner(ScriptedDeviceTransport::default(), exchange);
+        let (gate_tx, gate_rx) = channel();
+        store.block_next_set("login/commit", gate_rx);
+        let mut port = login_port(browser, runner, &store);
+        port.sign_in().unwrap();
+        store.wait_until_set_blocked();
+        let started = Instant::now();
+        let error = port.sign_out().unwrap_err();
+        assert_eq!(error.code, RefusalCode::AuthUnavailable);
+        assert!(started.elapsed() < Duration::from_millis(100), "sign-out waited on blocked persistence");
+        gate_tx.send(()).unwrap();
+        wait_for_login(&mut port, true);
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert!(!port.runtime.credentials.product_session_active(), "the accepted sign-out did not remove the commit");
+        assert!(!port.view().signed_in);
     }
 
     #[test]

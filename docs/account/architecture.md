@@ -38,9 +38,10 @@ HTTPS product origin come only from compile-time [desktop build configuration](d
 trusted release values are not read from runtime settings or responses, and no reviewed values
 ship in this build. Missing or invalid configuration refuses before a request. The worker never
 opens a browser, and a browser is launched only by a separate explicit click at the
-provider-issued verification address after its exact configured origin is checked again. A
-verified identity may clear a sign-out marker, but installation proof, settlement, billing and
-execution authority remain gated by the surrounding tasks in the plan.
+provider-issued verification address after its exact configured origin is checked again. A verified identity is
+staged and only becomes readable at one durable commit marker; identity without installation
+proof, settlement, billing and execution authority remain gated by the surrounding tasks in the
+plan.
 
 ## Closure guard
 
