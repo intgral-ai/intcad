@@ -1,7 +1,7 @@
-# Start the Windows app and check its resize border (#1381): as soon as the window exists (before
-# the first frame), Windows' hit test reports a resize edge or corner within the resize-border
-# width of every side and the client area inside it; a maximized window has none; and a real
-# press-and-drag on the bottom edge (SetCursorPos + mouse input) resizes the window.
+# Start the Windows app and check its resize border (#1381): at first sight, before requesting
+# a screenshot, Windows' hit test reports the sides, corners and client area. The resize border
+# disappears on maximize and returns on restore. A real bottom-edge drag resizes the window
+# when the desktop delivers mouse input. The app must exit cleanly on a native close request.
 #
 # What this can't check on a CI runner (one monitor at 100 %): moving the window between monitors
 # with different scales, and the resize border's width at other scales (unit tests cover the sizes).
@@ -19,8 +19,9 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll", ExactSpelling = true)] public static extern bool PostMessageW(IntPtr h, uint msg, IntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
@@ -36,14 +37,18 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
     public static string Text(IntPtr h) { var s = new System.Text.StringBuilder(256); GetWindowTextW(h, s, 256); return s.ToString(); }
     public static string Class(IntPtr h) { var s = new System.Text.StringBuilder(256); GetClassNameW(h, s, 256); return s.ToString(); }
-    // The process's visible top-level window titled SolidCraft (the app's main window; the
-    // process has other top-level windows, such as the IME's).
+    public static bool IsOwnedWindow(IntPtr h, uint pid) {
+        uint owner;
+        return h != IntPtr.Zero && GetWindowThreadProcessId(h, out owner) != 0 && owner == pid && IsWindowVisible(h);
+    }
+    // The process's visible top-level Intcad window, not its other windows (such as the IME's).
     public static IntPtr MainWindow(uint pid) {
         IntPtr found = IntPtr.Zero;
         EnumWindows((h, l) => {
-            uint p; GetWindowThreadProcessId(h, out p);
-            var title = Text(h);
-            if (p == pid && IsWindowVisible(h) && (title.StartsWith("Intcad") || title.StartsWith("SolidCraft"))) { found = h; return false; }
+            if (IsOwnedWindow(h, pid)) {
+                var title = Text(h);
+                if (title.StartsWith("Intcad") || title.StartsWith("SolidCraft")) { found = h; return false; }
+            }
             return true;
         }, IntPtr.Zero);
         return found;
@@ -60,7 +65,30 @@ $failures = New-Object System.Collections.Generic.List[string]
 function Check([bool]$ok, [string]$what) {
     if ($ok) { Write-Host "ok: $what" } else { Write-Host "FAIL: $what"; $failures.Add($what) }
 }
-function Rect($h) { $r = New-Object Win+RECT; [void][Win]::GetWindowRect($h, [ref]$r); $r }
+function Rect($h) {
+    $r = New-Object Win+RECT
+    if (-not [Win]::GetWindowRect($h, [ref]$r)) { throw 'could not read the window rectangle' }
+    $r
+}
+
+function Assert-OwnedWindow($p, $h, [string]$when) {
+    if ($p.HasExited -or -not [Win]::IsOwnedWindow($h, [uint32]$p.Id)) {
+        throw "$when : no owned window for process $($p.Id) (exited: $($p.HasExited))"
+    }
+}
+
+function Wait-WindowState($p, $h, [bool]$zoomed, [string]$state) {
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        Assert-OwnedWindow $p $h "waiting for $state"
+        if ([Win]::IsZoomed($h) -eq $zoomed -and -not [Win]::IsIconic($h)) {
+            Write-Host "ok: window became $state"
+            return
+        }
+        Start-Sleep -Milliseconds 100
+    } while ($timer.ElapsedMilliseconds -lt 10000)
+    throw "window did not become $state within 10 s"
+}
 
 # Every side and corner, `in` px inside the window's outer pixel, and points just past the border.
 function CheckBorder($h, [string]$when) {
@@ -134,6 +162,7 @@ $psi.Environment['SOLIDCRAFT_CONTROL_TOKEN'] = $token
 $p = [System.Diagnostics.Process]::Start($psi)
 $stderr = $p.StandardError.ReadToEndAsync()
 $stdout = $p.StandardOutput.ReadToEndAsync()
+$client = $null
 
 try {
     # The window as soon as it shows (eframe creates it hidden and shows it after the first frame).
@@ -144,10 +173,10 @@ try {
         if ($h -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 20 }
     }
     if ($h -eq [IntPtr]::Zero) { throw "no window (exited: $($p.HasExited))" }
+    Assert-OwnedWindow $p $h 'first sight'
     Write-Host "window: '$([Win]::Text($h))' class '$([Win]::Class($h))'"
     CheckBorder $h 'first sight'
 
-    $client = $null
     while (-not $client -and (Get-Date) -lt $deadline -and -not $p.HasExited) {
         try { $client = New-Object System.Net.Sockets.TcpClient('127.0.0.1', $port) } catch { Start-Sleep -Milliseconds 500 }
     }
@@ -159,8 +188,11 @@ try {
     $reader = New-Object System.IO.StreamReader($stream)
     $writer.WriteLine((@{ id = 1; token = $token; method = 'ui.screenshot'; params = @{ path = (Join-Path $root 'first.png') } } | ConvertTo-Json -Compress))
     Write-Host "first frame: $($reader.ReadLine())"
+    $client.Close()
+    $client = $null
 
     # A known place and size that fits the runner's screen (physical px; the minimum is 960 x 600).
+    Assert-OwnedWindow $p $h 'placing the window'
     $sw = [Win]::GetSystemMetrics(0); $sh = [Win]::GetSystemMetrics(1)
     Write-Host "screen: $sw x $sh"
     [void][Win]::SetWindowPos($h, [IntPtr]::Zero, 20, 20, [Math]::Min(1000, $sw - 40), [Math]::Min(620, $sh - 140), 0x0014) # NOZORDER | NOACTIVATE
@@ -196,48 +228,49 @@ try {
             # The hosted Windows runner reports the pointer at the requested position
             # but does not deliver the synthetic button/move sequence to the app. The
             # hit-test border checks above still ran; a real desktop run must resize.
-            Write-Host "skipped: the drag (the hosted runner did not deliver synthetic mouse input; height +$dh)"
+            Write-Host "skipped: the drag (synthetic mouse input on the hosted runner did not verify a resize; height +$dh)"
         } else {
             Check $false "dragging the bottom edge down $grow px resizes the window (height +$dh, top $($before.Top) -> $($after.Top))"
         }
     }
 
-    # Maximized: no resize border, the whole window is client area. Drive the app's own
-    # title-bar action over the control channel: a direct ShowWindow can be ignored while
-    # the app still records the viewport state, so ask the product and poll the result.
-    $writer.WriteLine((@{ id = 2; method = 'ui.window'; params = @{ action = 'maximize' } } | ConvertTo-Json -Compress))
-    Write-Host "maximize: $($reader.ReadLine())"
-    $deadline = (Get-Date).AddSeconds(10)
-    while (-not [Win]::IsZoomed($h) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
-    if ([Win]::IsZoomed($h)) {
-        # The maximized window's rect overhangs the screen by the hidden frame (Windows' own
-        # frame answers there); the screen's left edge is where the pointer can be.
-        $r = Rect $h
-        $x = [Math]::Max($r.Left, 0) + 1
-        $got = [Win]::HitTest($h, $x, [int](($r.Top + $r.Bottom) / 2))
-        Check ($got -eq 1) "maximized ($($r.Left),$($r.Top) - $($r.Right),$($r.Bottom)), the screen's left edge is client area ($($HT[$got]))"
-    } elseif ($env:GITHUB_ACTIONS -eq 'true') {
-        # The hosted runner has no interactive desktop; a real machine still fails this.
-        Write-Host 'skipped: the maximize (the hosted runner did not deliver the maximize)'
-    } else {
-        Check $false 'the window maximizes'
+    # Post native system commands to the app's window thread. They don't need mouse input,
+    # and posting keeps the state wait bounded if the thread doesn't respond.
+    Assert-OwnedWindow $p $h 'maximizing'
+    if ([Win]::IsZoomed($h) -or [Win]::IsIconic($h)) { throw 'window was not restored before maximize' }
+    if (-not [Win]::PostMessageW($h, 0x0112, [IntPtr]0xF030, [IntPtr]::Zero)) { # WM_SYSCOMMAND / SC_MAXIMIZE
+        throw 'could not post SC_MAXIMIZE'
     }
-    $writer.WriteLine((@{ id = 3; method = 'ui.window'; params = @{ action = 'restore' } } | ConvertTo-Json -Compress))
-    Write-Host "restore: $($reader.ReadLine())"
-    $deadline = (Get-Date).AddSeconds(10)
-    while ([Win]::IsZoomed($h) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+    Wait-WindowState $p $h $true 'maximized'
+    # The maximized window's rect overhangs the screen by the hidden frame (Windows' own
+    # frame answers there); the screen's left edge is where the pointer can be.
+    $r = Rect $h
+    $x = [Math]::Max($r.Left, 0) + 1
+    $got = [Win]::HitTest($h, $x, [int](($r.Top + $r.Bottom) / 2))
+    Check ($got -eq 1) "maximized ($($r.Left),$($r.Top) - $($r.Right),$($r.Bottom)), the screen's left edge is client area ($($HT[$got]))"
+
+    Assert-OwnedWindow $p $h 'restoring'
+    if (-not [Win]::IsZoomed($h)) { throw 'window was not maximized before restore' }
+    if (-not [Win]::PostMessageW($h, 0x0112, [IntPtr]0xF120, [IntPtr]::Zero)) { # WM_SYSCOMMAND / SC_RESTORE
+        throw 'could not post SC_RESTORE'
+    }
+    Wait-WindowState $p $h $false 'restored'
     CheckBorder $h 'restored again'
 
-    $writer.WriteLine((@{ id = 4; method = 'app.quit'; params = @{ force = $true } } | ConvertTo-Json -Compress))
-    Write-Host "quit: $($reader.ReadLine())"
-    $client.Close()
-    if (-not $p.WaitForExit(60000)) { throw 'did not exit after app.quit' }
+    Assert-OwnedWindow $p $h 'closing'
+    if (-not [Win]::PostMessageW($h, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)) { throw 'could not post WM_CLOSE' }
+    if (-not $p.WaitForExit(60000)) { throw 'did not exit after WM_CLOSE within 60 s' }
     if ($p.ExitCode -ne 0) { throw ('exit code 0x{0:x}' -f $p.ExitCode) }
+    Write-Host 'ok: WM_CLOSE exited with code 0'
 } catch {
     $failures.Add($_.Exception.Message)
 } finally {
-    if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit() }
+    if ($client) { $client.Close() }
+    if (-not $p.HasExited) {
+        $p.Kill()
+        if (-not $p.WaitForExit(5000)) { $failures.Add('process did not exit after cleanup kill') }
+    }
 }
-Write-Host $stderr.Result
+if ($stderr.IsCompletedSuccessfully) { Write-Host $stderr.Result }
 if ($failures.Count -gt 0) { Write-Error ("resize border: " + ($failures -join '; ')) }
 Write-Host 'PASS: resize border'
