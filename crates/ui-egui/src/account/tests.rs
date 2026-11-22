@@ -419,6 +419,10 @@ fn signed_in_view() -> AccountView {
 
 fn native_click(harness: &mut crate::scenario::Harness, handle: &str) {
     let pos = crate::scenario::handle_at(handle).unwrap_or_else(|| panic!("{handle} is not drawn"));
+    native_click_at(harness, pos);
+}
+
+fn native_click_at(harness: &mut crate::scenario::Harness, pos: Pos2) {
     let button = egui::PointerButton::Primary;
     harness.frame_with(vec![
         egui::Event::PointerMoved(pos),
@@ -834,6 +838,46 @@ fn narrow_file_account_menu_keeps_copy_and_manual_controls_in_the_open_popup() {
     assert!(text.contains("https://auth.example/device"), "the File Account popup closed before the manual address rendered: {text}");
     assert!(!text.contains("private"), "the manual address revealed the query: {text}");
     assert!(!text.contains("fragment"), "the manual address revealed the fragment: {text}");
+}
+
+#[test]
+fn an_outside_click_closes_the_compact_file_account_child_and_parent() {
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = start_flow(&FlowPort::signed_out(Some(future_device_code(300))));
+    harness.call("ui.resize", json!({"width":700.0,"height":720.0}));
+    harness.frames(3);
+    open_compact_account_menu(&mut harness);
+    assert!(crate::scenario::handle_at("account:overflow").is_some(), "the File menu is open");
+    assert!(crate::scenario::handle_at("account:sign_in_browser:copy").is_some(), "the account child is open");
+
+    native_click_at(&mut harness, Pos2::new(560.0, 420.0));
+    harness.frames(2);
+    assert!(crate::scenario::handle_at("account:sign_in_browser:copy").is_none(), "the account child survived an outside click");
+    assert!(
+        crate::scenario::handle_at("account:overflow").is_none(),
+        "the File parent survived an outside click: {:?}",
+        crate::scenario::handles("")
+    );
+    assert!(harness.widget(&compact_account_label()).is_none(), "the compact account row is still painted");
+}
+
+#[test]
+fn a_file_action_closes_the_compact_account_child_and_parent() {
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = start_flow(&FlowPort::signed_out(Some(future_device_code(300))));
+    harness.call("ui.resize", json!({"width":700.0,"height":720.0}));
+    harness.frames(3);
+    open_compact_account_menu(&mut harness);
+    assert!(crate::scenario::handle_at("account:sign_in_browser:copy").is_some(), "the account child is open");
+    let action = "Export STL…";
+    assert!(harness.widget(action).is_some(), "the unrelated File action is visible: {:?}", crate::scenario::handles(""));
+    harness.step(&json!({"widget": action})).unwrap();
+
+    assert!(crate::scenario::handle_at("account:sign_in_browser:copy").is_none(), "the account child survived the File action");
+    assert!(crate::scenario::handle_at("account:overflow").is_none(), "the File action did not close its parent: {:?}", crate::scenario::handles(""));
+    assert!(harness.widget(&compact_account_label()).is_none(), "the compact account row is still painted after the File action");
 }
 
 #[test]

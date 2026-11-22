@@ -130,25 +130,31 @@ impl Menu {
             let popup = if keep_open { popup.close_behavior(KEEP_OPEN_ON_CLICK) } else { popup };
             popup.show(content)
         };
+        let child_rect = popup.as_ref().map(|r| r.response.rect);
         if keep_open {
-            Self::mark_keep_open(ui.ctx(), popup_id);
+            Self::mark_keep_open(ui.ctx(), child_rect);
         }
         let response = egui::InnerResponse { response, inner: popup.map(|r| r.inner) };
         ui.set_style(previous);
         response
     }
 
-    fn mark_keep_open(ctx: &egui::Context, popup_id: egui::Id) {
+    fn mark_keep_open(ctx: &egui::Context, child_rect: Option<Rect>) {
         let pass = ctx.cumulative_pass_nr();
-        ctx.data_mut(|data| data.insert_temp(keep_open_marker(), (popup_id, pass)));
+        ctx.data_mut(|data| data.insert_temp(keep_open_marker(), (pass, child_rect)));
     }
 
-    /// A keep-open menu is showing in this pass. Parent menus that close on an outside click must
-    /// stay open while the person uses the child popup's copy feedback or manual disclosure.
+    /// A click inside the keep-open child popup in this pass. Parent menus that close on an outside
+    /// click must stay open only for that interaction; a previous pass's response or a click
+    /// elsewhere never suppresses dismissal or an explicit File action.
     pub(crate) fn keeps_parent_open(ctx: &egui::Context) -> bool {
         let pass = ctx.cumulative_pass_nr();
-        let marker = ctx.data(|data| data.get_temp::<(egui::Id, u64)>(keep_open_marker()));
-        marker.is_some_and(|(popup_id, marked)| marked == pass && ctx.read_response(popup_id).is_some())
+        let marker = ctx.data(|data| data.get_temp::<(u64, Option<Rect>)>(keep_open_marker()));
+        let Some(rect) = marker.filter(|(marked, _)| *marked == pass).and_then(|(_, rect)| rect) else {
+            return false;
+        };
+        let click = ctx.input(|i| i.pointer.any_click().then(|| i.pointer.interact_pos()).flatten());
+        click.is_some_and(|at| rect.contains(at))
     }
 
     /// Hovering a row opens its flyout, like the context menu's. The open flyout stays while the

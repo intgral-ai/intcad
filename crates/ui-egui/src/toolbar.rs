@@ -929,9 +929,10 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
         });
     let just_opened = ctx.data(|d| d.get_temp::<u64>(egui::Id::new("sc_file_menu_opened"))) == Some(ctx.cumulative_pass_nr());
     // The compact account row opens a popup with secondary controls (copy feedback and the manual
-    // address). Its keep-open policy also keeps this custom parent menu alive while it is used.
+    // address). Only a current click inside that child keeps this custom parent alive; an explicit
+    // File action or a click elsewhere always closes it.
     let keep_open = crate::ui_kit::Menu::keeps_parent_open(ctx);
-    if !keep_open && (close || (!just_opened && resp.response.clicked_elsewhere())) {
+    if close || (!just_opened && resp.response.clicked_elsewhere() && !keep_open) {
         ctx.data_mut(|d| d.insert_temp(id, false));
     }
 }
