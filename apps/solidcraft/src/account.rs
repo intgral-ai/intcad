@@ -450,11 +450,27 @@ struct ControlRenewalSource {
 
 impl Drop for ControlRenewalJob {
     fn drop(&mut self) {
-        self.cancelled.store(true, Ordering::SeqCst);
+        self.cancel();
     }
 }
 
+// Re-sample the lease clock even if the OS wait itself excludes suspend.
+#[cfg(any(target_os = "linux", test))]
+fn native_renewal_wait(wait: Duration, cancelled: &AtomicBool) -> bool {
+    if !cancelled.load(Ordering::SeqCst) {
+        std::thread::park_timeout(wait.min(Duration::from_millis(250)));
+    }
+    !cancelled.load(Ordering::SeqCst)
+}
+
 impl ControlRenewalJob {
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        if let Some(worker) = &self.worker {
+            worker.thread().unpark();
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn spawn<T: Transport + 'static>(
         session: CredentialSession,
@@ -568,6 +584,17 @@ impl AccountRuntime {
         });
         let mut runtime = Self::new(credentials, ledger);
         if let Some(sign_in) = SignInConfig::from_environment() {
+            // This installs transport and timing only. Without controlled admission
+            // authority there is no grant and no worker or HTTPS request starts.
+            #[cfg(target_os = "linux")]
+            {
+                runtime.control_renewal_source = Some(ControlRenewalSource {
+                    connection: sign_in.product.clone(),
+                    transport: Arc::new(|| Box::new(UreqTransport::with_limits(Duration::from_secs(5), Duration::from_secs(3)))),
+                    clock: Arc::new(|| Box::new(SystemMonotonicClock::new())),
+                    wait: Arc::new(native_renewal_wait),
+                });
+            }
             runtime.sign_in = Some(sign_in);
             runtime.sign_in_opener = Some(Arc::new(open_system_browser));
         } else {
@@ -858,7 +885,7 @@ struct DesktopAccountPort {
 impl DesktopAccountPort {
     fn retire_control_renewal(&self) {
         if let Some(job) = &self.runtime.control_renewal {
-            job.cancelled.store(true, Ordering::SeqCst);
+            job.cancel();
         }
     }
 
@@ -1342,7 +1369,7 @@ impl AccountPort for DesktopAccountPort {
     fn shutdown(&mut self) {
         self.cancel_restart();
         if let Some(mut job) = self.runtime.control_renewal.take() {
-            job.cancelled.store(true, Ordering::SeqCst);
+            job.cancel();
             if let Some(worker) = job.worker.take() {
                 let _ = worker.join();
             }
@@ -2651,6 +2678,56 @@ mod tests {
     }
 
     #[test]
+    fn native_control_renewal_wait_stops_without_sending_after_finish_or_switch() {
+        use solidcraft_engine::entitlement::{ConservativeDeadline, GrantId};
+
+        for switch in [false, true] {
+            let mut session = active_session();
+            let scope = session.authenticated_scope().unwrap();
+            let operation = OperationId::parse("op_cancel_wait_fixture").unwrap();
+            CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("fixture_proof")).unwrap();
+            let clock = SystemMonotonicClock::new();
+            let initial = ConservativeDeadline::new(clock.now(), Duration::from_secs(60));
+            let grant = Grant::from_server(GrantId::new("grant_cancel_fixture"), Capability::Control, initial.expires_at());
+            let wire = ScriptedProduct::default();
+            let worker_wire = wire.clone();
+            let (waiting_tx, waiting_rx) = channel();
+            let (returned_tx, returned_rx) = channel();
+            let job = ControlRenewalJob::spawn(
+                session.clone(),
+                scope,
+                operation.clone(),
+                grant,
+                Some((initial, Duration::from_secs(30))),
+                move || (worker_wire, WireConnection::new("https://product.invalid", "1.0.0").unwrap(), Box::new(clock)),
+                move |wait, cancelled| {
+                    waiting_tx.send(()).unwrap();
+                    let elapsed = native_renewal_wait(wait, cancelled);
+                    returned_tx.send(elapsed).unwrap();
+                    elapsed
+                },
+            )
+            .unwrap();
+            let mut runtime = AccountRuntime::with_session(session);
+            runtime.control_renewal = Some(job);
+            let startup = runtime.startup();
+            let mut port = DesktopAccountPort::new(runtime, &startup);
+            waiting_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            if switch {
+                port.switch_account().unwrap();
+            } else {
+                port.control_finished(&operation);
+            }
+            assert!(!returned_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+            let job = port.runtime.control_renewal.as_mut().unwrap();
+            job.wait_for_fixture();
+            assert!(wire.requests().is_empty());
+            assert_eq!(*job.cutoff.lock().unwrap(), None);
+            port.shutdown();
+        }
+    }
+
+    #[test]
     fn background_control_renewal_only_publishes_a_matching_timely_reply() {
         use solidcraft_engine::entitlement::{ConservativeDeadline, GrantId};
         use std::sync::atomic::AtomicU64;
@@ -2677,14 +2754,21 @@ mod tests {
                 Ok(())
             }
         }
+        #[derive(Clone, Copy)]
+        enum Retirement {
+            Finish,
+            SignOut,
+            Switch,
+        }
         for (status, received, matching, second_reply, dispatch_at, expected, responses, retire) in [
             (200, 21_000, true, 41_000, 85_000, None, 2, None),
             (200, 21_000, true, 80_000, 85_000, Some("UnsafeToStart"), 2, None),
             (200, 60_000, true, 41_000, 65_000, Some("UnsafeToStart"), 1, None),
             (200, 21_000, false, 41_000, 65_000, Some("UnsafeToStart"), 1, None),
             (401, 21_000, true, 41_000, 21_000, Some("AuthRequired"), 1, None),
-            (200, 21_000, true, 41_000, 65_000, None, 1, Some(Action::SignOut)),
-            (200, 21_000, true, 41_000, 65_000, None, 1, Some(Action::SwitchAccount)),
+            (200, 21_000, true, 41_000, 65_000, None, 1, Some(Retirement::Finish)),
+            (200, 21_000, true, 41_000, 65_000, None, 1, Some(Retirement::SignOut)),
+            (200, 21_000, true, 41_000, 65_000, None, 1, Some(Retirement::Switch)),
         ] {
             let time = Arc::new(AtomicU64::new(0));
             let clock = Clock(time.clone());
@@ -2719,7 +2803,7 @@ mod tests {
             let mut job = ControlRenewalJob::spawn(
                 session.clone(),
                 scope.clone(),
-                operation,
+                operation.clone(),
                 grant.clone(),
                 Some((ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(60)), Duration::from_secs(20))),
                 move || (worker_wire, WireConnection::new("https://product.invalid", "1.0.0").unwrap(), Box::new(worker_clock)),
@@ -2744,13 +2828,14 @@ mod tests {
                 let mut port = DesktopAccountPort::new(runtime, &startup);
                 entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
                 match action {
-                    Action::SignOut => port.sign_out().unwrap(),
-                    Action::SwitchAccount => port.switch_account().unwrap(),
-                    _ => panic!("unexpected fixture action"),
+                    Retirement::Finish => port.control_finished(&operation),
+                    Retirement::SignOut => port.sign_out().unwrap(),
+                    Retirement::Switch => port.switch_account().unwrap(),
                 }
                 release_tx.send(()).unwrap();
                 port.runtime.control_renewal.as_mut().unwrap().wait_for_fixture();
                 assert_eq!(*cache.lock().unwrap(), None, "a retired worker did not publish its late reply");
+                assert_eq!(wire.requests().len(), 1, "retirement prevents a second exchange");
                 port.shutdown();
                 continue;
             }
