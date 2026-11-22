@@ -488,9 +488,13 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
             permissions_section(app, ui);
             // The built-in agent is the only one, and its connections are on the Assistant's own
             // page: there is no list of agents to manage here.
+            // The built-in agent is listed first and cannot be edited, removed or replaced; the
+            // agents found on the computer and the ones the user added stay beside it.
             #[cfg(not(target_arch = "wasm32"))]
             {
-                if !agents::is_builtin(app) {
+                // With the built-in agent and nothing beside it there is no list to manage; the
+                // other agents are found when they are, and then listed here too.
+                if !agents::is_builtin(app) || agents::entries(app).len() > 1 {
                     let browsing = !crate::prefs_search::querying(ui) || app.prefs_window.section == crate::prefs::PAGE_ASSISTANT;
                     if app.preferences.ai_features && browsing && app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
                         refresh(app, &ui.ctx().clone());
@@ -557,8 +561,10 @@ fn connecting_section(app: &mut SolveApp, ui: &mut egui::Ui) {
                 ui_kit::help_icon(ui, tr(help));
             });
         }
-        // The built-in agent answers by itself: there is no other way to run a turn to choose.
-        if !agents::is_builtin(app) {
+        // The built-in agent answers by itself; every other agent uses the execution choice, and
+        // with no other agent there is nothing for the choice to run.
+        let all = agents::entries(app);
+        if !agents::is_builtin(app) || all.len() > 1 {
             execution_controls(app, ui);
         }
     });
@@ -794,33 +800,42 @@ fn agents_section(app: &mut SolveApp, ui: &mut egui::Ui) {
                                 egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
                                 |ui| {
                                     let is_default = default.as_deref() == Some(entry.id.as_str());
-                                    let choice = ui_kit::button(
-                                        ui,
-                                        tr(if is_default { "ui.ai_default" } else { "ai.prefs.make_default" }),
-                                        if is_default { ui_kit::Button::SmallSelected } else { ui_kit::Button::Small },
-                                    );
-                                    crate::scenario::publish_target(&format!("dialog:list:{}", entry.id), choice.rect);
-                                    if choice.clicked() {
-                                        app.preferences.agent_default = entry.id.clone();
+                                    let carried = agents::is_builtin_entry(app, entry);
+                                    if carried {
+                                        // The package carries it: there is nothing to point at, edit or
+                                        // remove. It is the agent a new install starts with.
+                                        ui_kit::settings_badge(ui, tr("ui.ai_default"), false);
+                                    } else {
+                                        let choice = ui_kit::button(
+                                            ui,
+                                            tr(if is_default { "ui.ai_default" } else { "ai.prefs.make_default" }),
+                                            if is_default { ui_kit::Button::SmallSelected } else { ui_kit::Button::Small },
+                                        );
+                                        crate::scenario::publish_target(&format!("dialog:list:{}", entry.id), choice.rect);
+                                        if choice.clicked() {
+                                            app.preferences.agent_default = entry.id.clone();
+                                        }
                                     }
-                                    let test_button = ui_kit::button(ui, tr("ui.ai_test"), ui_kit::Button::Small);
-                                    crate::scenario::publish_handle(&format!("prefs:ai_test:{}", entry.id), test_button.rect.center());
-                                    let tip = match entry.kind {
-                                        Kind::Acp => "ui.ai_test_acp_tip",
-                                        Kind::Api => "ui.ai_test_api_tip",
-                                        Kind::Anthropic => "ui.ai_test_anthropic_tip",
-                                    };
-                                    if test_button.backing_on_hover_text(tr(tip)).clicked() {
-                                        test = Some(entry.clone());
+                                    if !carried {
+                                        let test_button = ui_kit::button(ui, tr("ui.ai_test"), ui_kit::Button::Small);
+                                        crate::scenario::publish_handle(&format!("prefs:ai_test:{}", entry.id), test_button.rect.center());
+                                        let tip = match entry.kind {
+                                            Kind::Acp => "ui.ai_test_acp_tip",
+                                            Kind::Api => "ui.ai_test_api_tip",
+                                            Kind::Anthropic => "ui.ai_test_anthropic_tip",
+                                        };
+                                        if test_button.backing_on_hover_text(tr(tip)).clicked() {
+                                            test = Some(entry.clone());
+                                        }
                                     }
-                                    if !entry.found {
+                                    if !carried && !entry.found {
                                         let edit_button = ui_kit::button(ui, tr("ui.ai_edit"), ui_kit::Button::Small);
                                         crate::scenario::publish_handle(&format!("prefs:ai_edit:{}", entry.id), edit_button.rect.center());
                                         if edit_button.backing_on_hover_text(tr("ui.ai_edit_tip")).clicked() {
                                             edit = Some(entry.id.clone());
                                         }
                                     }
-                                    if !entry.found {
+                                    if !carried && !entry.found {
                                         let button = ui_kit::button(ui, tr("ui.ai_remove"), ui_kit::Button::Ghost);
                                         crate::scenario::publish_target(&format!("prefs:ai_remove:{}", entry.id), button.rect);
                                         if button.clicked() {
@@ -834,7 +849,7 @@ fn agents_section(app: &mut SolveApp, ui: &mut egui::Ui) {
                                         "signed_out" => ui_kit::settings_badge(ui, tr("ui.agent_chat_not_signed_in"), true),
                                         _ => {}
                                     }
-                                    if !entry.found {
+                                    if !carried && !entry.found {
                                         ui_kit::settings_badge(ui, tr("ui.ai_added"), false);
                                     }
                                 },

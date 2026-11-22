@@ -16438,12 +16438,12 @@ fn conn_act(app: &mut SolveApp, ctx: &egui::Context, action: Value) -> std::resu
     web::act(app, ctx, &action.to_string())
 }
 
-/// A1: with the built-in agent the agent list is that agent alone, whatever was found on the
-/// computer or added before; nothing is looked for; nothing is offered to install; and the page
-/// is told the connections. Without it, all of that is as it was.
+/// A1: with the built-in agent the agent list shows it first and keeps the agents found on the
+/// computer and the ones the user added beside it; nothing to install is dropped, and the page is
+/// told the connections. Without it, all of that is as it was.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn with_the_built_in_agent_the_list_is_that_agent_alone() {
+fn with_the_built_in_agent_the_list_starts_with_it_and_keeps_the_others() {
     let mut h = app_with_cover_and_base();
     let known = discover::KNOWN.iter().find(|known| known.id == "goose").expect("a known agent");
     h.app.agent_chat.detection = Some(discover::Detection {
@@ -16476,25 +16476,26 @@ fn with_the_built_in_agent_the_list_is_that_agent_alone() {
 
     h.app.builtin_agent = Some(builtin_agent());
     let state = page_state(&mut h.app);
-    assert_eq!(state["agents"], json!([{"id": "mastra", "name": "Mastra", "detail": "mastra-agent", "hint": null}]));
-    assert_eq!(state["agent"], "mastra");
-    assert_eq!(state["missing"], json!([]), "nothing to install beside it");
+    // The built-in agent is offered first; the agents found and added stay beside it.
+    assert_eq!(state["agents"].as_array().map(Vec::len), Some(3), "{}", state["agents"]);
+    assert_eq!(state["agents"][0], json!({"id": "mastra", "name": "Mastra", "detail": "mastra-agent", "hint": null}));
+    assert_eq!(state["agent"], "custom-1", "the agent the user set as default is still the one");
+    assert_eq!(state["missing"].as_array().map(Vec::len), Some(1), "an agent that is not installed is still offered for install");
     assert_eq!(state["detecting"], false);
-    assert!(state["connect"].is_object(), "the page is told the connections: {}", state["connect"]);
-    assert_eq!(state["connect"]["connected"], false);
+    assert_eq!(state["connect"], Value::Null, "the chosen agent has no connections page");
     let told = status(&h.app);
-    assert_eq!(told["agents"].as_array().map(Vec::len), Some(1));
-    assert_eq!((&told["agents"][0]["id"], &told["currentAgent"]), (&json!("mastra"), &json!("mastra")));
-    assert_eq!(agents::entries(&h.app).len(), 1);
-    // No look at the computer starts, whoever asks for one.
+    assert_eq!(told["agents"].as_array().map(Vec::len), Some(3));
+    assert_eq!((&told["agents"][0]["id"], &told["currentAgent"]), (&json!("mastra"), &json!("custom-1")));
+    assert_eq!(agents::entries(&h.app).len(), 3);
+    // Picking an agent of before works, and so does picking the built-in one again: its page is
+    // the one that is told the connections.
     let ctx = h.ctx.clone();
-    refresh(&mut h.app, &ctx);
-    conn_act(&mut h.app, &ctx, json!({"type": "refresh"})).expect("a listed action");
-    h.call("ui.agent_chat", json!({"refresh": true}));
-    assert!(h.app.agent_chat.detecting.is_none(), "nothing is looked for on the computer");
-    // An agent of before cannot be picked.
-    assert!(conn_act(&mut h.app, &ctx, json!({"type": "agent", "id": "custom-1"})).is_err());
-    assert!(h.call("ui.agent_chat", json!({"agent": "claude"}))["ok"] == json!(false));
+    conn_act(&mut h.app, &ctx, json!({"type": "agent", "id": "claude"})).expect("a listed agent");
+    assert_eq!(h.app.agent_chat.agent_id.as_deref(), Some("claude"));
+    assert!(h.call("ui.agent_chat", json!({"agent": "mastra"}))["ok"] == json!(true));
+    assert_eq!(agents::current(&h.app).map(|entry| entry.id).as_deref(), Some("mastra"));
+    let state = page_state(&mut h.app);
+    assert!(state["connect"].is_object(), "the built-in agent's page: {}", state["connect"]);
 }
 
 /// A1: Settings shows no list of agents and no execution choice beside the built-in agent; the

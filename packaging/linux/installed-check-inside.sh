@@ -101,6 +101,19 @@ run_step() {
   echo "ok: this system has no network"
   chmod 777 /evidence
   local check=(python3 /packaging/assistant-check.py --exe "$exe" --evidence /evidence --screen)
+  # A release package carries the built-in agent: the app must find it in the installed tree and
+  # start it when the Assistant opens. The package check says which packages carry it.
+  case "$exe" in
+    /opt/squashfs-root/AppRun) agent_dir=/opt/squashfs-root/usr/lib/intcad/mastra-agent ;;
+    *) agent_dir="$(dirname "$(command -v intcad)")/../lib/intcad/mastra-agent" ;;
+  esac
+  if [ -f "$agent_dir/agent.json" ]; then
+    echo "ok: the installed package carries the built-in agent at $agent_dir"
+    test -x "$agent_dir/node" || { echo "FAIL: the agent's Node program is not executable: $agent_dir/node" >&2; exit 1; }
+    check+=(--built-in-agent)
+  else
+    echo "note: this package carries no built-in agent"
+  fi
 
   if [ "$session" = x11 ]; then
     export DISPLAY=:99

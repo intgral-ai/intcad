@@ -1,7 +1,8 @@
 # Packaged Mastra runtime
 
-Status: **packaging scaffolding only — the runtime artifact is NOT approved, and bundling is
-opt-in.** Four shipped `@mastra/core/dist/ee-*` files carry the Mastra Enterprise License (DQ-7),
+Status: **the workflow runtime (`mastra/`) is packaging scaffolding only — the artifact is NOT
+approved, and bundling it stays opt-in and refused. The built-in agent (`mastra-agent/`) is what
+a release carries; see "The built-in agent in release packages".** Four shipped `@mastra/core/dist/ee-*` files carry the Mastra Enterprise License (DQ-7),
 so `policy.approvals` is empty and the admission gate fails closed. Ordinary release packaging
 leaves the workflow out unless `--with-mastra` / `SOLIDCRAFT_WITH_MASTRA=1` is passed; the owner
 must decide that release default (DQ-7/DQ-4) before a package may include it. No installed-package,
@@ -143,37 +144,44 @@ without `--with-mastra` do not call it.
   launch, signature/notarization verification, non-inclusion and a native modeling plus local
   validation turn. None of those are claimed by this repository-only change.
 
-## The built-in agent in test packages
+## The built-in agent in release packages
 
 The Assistant's built-in agent (`packages/mastra-runtime/agent/`, Mastra Code's ACP agent with
 Intcad's additions) is a second thing beside the workflow runtime above, with a folder of its
 own. Nothing in the sections above applies to it, and it does not go through
-`cargo xtask runtime-artifact`: that gate admits the `mastra/` artifact and has no approval. For
-now the agent's folder is carried only by **test packages**, built by hand with an opt-in or by
-the workflow `.github/workflows/agent-test-packages.yml`. Ordinary packages and `release.yml` are
-unchanged and carry no agent; `scripts/ci/package_contents.py` would report one (a
-`node_modules` folder, a Node program) in a package that claims to be native.
+`cargo xtask runtime-artifact`: that gate admits the `mastra/` artifact and has no approval.
 
-The order decided for it: test packages for the team, shown to work on the three systems; then
-the release carries the agent, and it is the Assistant's agent. There is no switch that turns it
-off and brings back the agents found on the computer.
+**A release carries the agent.** `release.yml` sets `SOLIDCRAFT_WITH_MASTRA_AGENT=1` and
+`SOLIDCRAFT_DISTRIBUTION=mastra-agent`; each supported package builds the agent's folder on its own
+runner from the pinned lock with that system's pinned Node, has the package script check it, and
+proves from the built installer bytes that the folder is whole. The long-lived `SOLIDCRAFT_WITH_MASTRA`
+(the legacy `mastra/` workflow runtime) stays `0`: that artifact is still unapproved.
+
+The agent is the Assistant's agent. The agents found on the computer and the ones the user added
+are still listed after it (`crates/ui-egui/src/agent_chat/agents.rs`): a release package brings a
+working agent, it does not take an external ACP agent away.
+
+`.github/workflows/agent-test-packages.yml` stays: it is the hand-started lane for one system's
+package before a release, not the way a release gets the agent.
 
 ### Where it is, and how the app finds it
 
-| Test package | Folder | Target |
+| Package | Folder | Target |
 |---|---|---|
-| macOS `.app`, Apple silicon only | `Intcad.app/Contents/Resources/mastra-agent` | `aarch64-apple-darwin` |
-| Linux `.deb`, `.rpm`, `.tar.gz`, AppImage, x86_64 glibc | `usr/lib/intcad/mastra-agent` | `x86_64-unknown-linux-gnu` |
+| Linux `.deb`, `.rpm`, `.tar.gz`, AppImage | `usr/lib/intcad/mastra-agent` | `x86_64-unknown-linux-gnu` |
+| Flatpak, Arch, Snap (x86_64) | what the Linux tarball they repack carries | `x86_64-unknown-linux-gnu` |
+| macOS `.app`, universal | `Contents/Resources/mastra-agent/aarch64-apple-darwin` and `.../x86_64-apple-darwin` | both Apple targets |
 | Windows MSI and portable zip, x64 | `mastra-agent\` beside `intcad.exe` | `x86_64-pc-windows-msvc` |
+| Linux aarch64, FreeBSD, Windows x86/arm64, web | none (native) | — |
 
 The folder holds a Node program (`node`, `node.exe`), the agent's entry files (`agent/*.mjs`),
-`node_modules/` with Mastra Code's SDK, `licenses/` and `agent.json` (what it was built from and
-what was left out). When no `SOLIDCRAFT_MASTRA_AGENT` is set, the app looks for the folder beside
-itself by the rules of `mastra/` (`crates/ui-egui/src/agent_chat/agents.rs`). The folder is what
-says the package carries the agent: with it the Assistant has the built-in agent and nothing
-else, and starts the folder's Node with the entry. A folder that is damaged does not bring the
-old agent list back; the agent fails to start and the Assistant shows that. A universal macOS
-app and the other architectures are not offered.
+`node_modules/` with Mastra Code's SDK, the modelling skills, `licenses/` and `agent.json` (what it
+was built from and what was left out). When no `SOLIDCRAFT_MASTRA_AGENT` is set, the app looks for
+the folder beside itself by the rules of `mastra/`, including the per-CPU folder of a universal
+app (`crates/ui-egui/src/agent_chat/agents.rs`). The folder is what says the package carries the
+agent: with it the built-in agent is offered first and started when the Assistant opens. A folder
+that is damaged does not bring the old agent list back; the agent fails to start and the Assistant
+shows that. Architectures the agent is not built for carry none and say so in `contents.json`.
 
 ### What the agent does by itself, and what it does not
 
@@ -213,12 +221,27 @@ adaptation was made from (`agent-package/adapted-from.json`).
 
 ### How the folder is made
 
+The release workflow does this on each runner; a person does the same by hand:
+
 ```sh
+# aarch64 macOS universal app: one folder per CPU
 node packages/mastra-runtime/scripts/agent-package.mjs build --target aarch64-apple-darwin --out target/mastra-agent/aarch64-apple-darwin
-packaging/macos/package.sh --arch aarch64 --with-mastra-agent        # or SOLIDCRAFT_WITH_MASTRA_AGENT=1
+node packages/mastra-runtime/scripts/agent-package.mjs build --target x86_64-apple-darwin --out target/mastra-agent/x86_64-apple-darwin
+SOLIDCRAFT_MASTRA_AGENT_DIR_AARCH64=target/mastra-agent/aarch64-apple-darwin \
+SOLIDCRAFT_MASTRA_AGENT_DIR_X86_64=target/mastra-agent/x86_64-apple-darwin \
+  packaging/macos/package.sh --arch universal --skip-build --with-mastra-agent
+
+# Linux x86_64 (or SOLIDCRAFT_WITH_MASTRA_AGENT=1)
+node packages/mastra-runtime/scripts/agent-package.mjs build --target x86_64-unknown-linux-gnu --out target/mastra-agent/x86_64-unknown-linux-gnu
 packaging/linux/package.sh --with-mastra-agent
+
+# Windows x64
+node packages/mastra-runtime/scripts/agent-package.mjs build --target x86_64-pc-windows-msvc --out target\mastra-agent\x86_64-pc-windows-msvc
 pwsh packaging/windows/package.ps1 -Arch x64 -WithMastraAgent
 ```
+
+A package for an architecture the agent is not built for (`--without-mastra-agent`,
+`-WithMastraAgent:$false`, `SOLIDCRAFT_WITH_MASTRA_AGENT=0`) carries none and must not claim one.
 
 `build` needs the pinned Node and npm (`.nvmrc`, `packageManager`) and the npm registry. It
 installs `packages/mastra-runtime/agent-package/package-lock.json` for the target with
@@ -355,8 +378,26 @@ without Node (Node itself is about 125 MB and 87 MB). Nothing of those folders w
 -WithMastraAgent`, the WiX harvest and the workflow have not been run anywhere; the PowerShell
 changes were not even parsed. The first run of the workflow is the evidence for those systems.
 
+### What the release gate proves, and what it does not
+
+`scripts/ci/package_contents.py` records, from each built installer, whether `mastra-agent/` is
+there, whether its Node program is there, and which of its required files are missing;
+`scripts/ci/release_content.py` refuses a release that declares `mastra-agent` and ships a
+supported package without it whole. The installed checks (`packaging/linux/installed-check*.sh`,
+`packaging/macos/installed-check.sh`, `tools/windows-assistant-smoke.ps1`) open the Assistant in the
+installed copy, require the built-in agent first, require it to start out of the package and to
+start again after it stopped.
+
+None of that is a licence: the scans, the lock, the enterprise removal and the smoke tests are
+technical checks. The open points below remain decisions for the owner and legal review, and a
+release that ships the agent must record them.
+
 ### Open before the release carries it
 
+- **Redistribution rights.** The lock's packages declare licences, but no one has reviewed the
+  exact retained files, the transitive licences and the notices, and no one at Mastra has cleared
+  them. A green scan is not permission to redistribute. Owner and legal review decide; this is a
+  release blocker until recorded.
 - **The three systems.** Nothing has run on Windows or Linux. On Windows, file modes do not make
   a folder read-only: an MSI installs it where a user cannot write, a portable zip unpacks it
   writable. With Mastra's refresh off, nothing was seen to write into a writable folder (macOS,

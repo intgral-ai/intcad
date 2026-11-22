@@ -320,6 +320,8 @@ try {
     $env:SOLIDCRAFT_UPDATE_CHECK = '0'
 
     Write-Output '==> the Assistant in the installed app'
+    # A release package carries the built-in agent: the smoke check finds it, starts it out of the
+    # installed folder and starts it again after it stopped.
     & (Join-Path $RepoRoot 'tools\windows-assistant-smoke.ps1') -Exe $App -Evidence (Join-Path $Evidence 'assistant') `
       -WebView2Recovery $WebView2Recovery -WebView2OfflineInstaller $WebView2OfflineInstaller `
       -WebView2InstallerSha256 $WebView2InstallerSha256
