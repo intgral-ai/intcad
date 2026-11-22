@@ -1421,7 +1421,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         chat.picking = Some(true);
         return;
     };
-    let builtin = agents::is_builtin(app);
+    let builtin = agents::is_builtin_entry(app, &entry);
     // The built-in agent answers by itself. The execution choice is not offered with it, so one
     // an older version saved must not apply: nobody could change it back.
     let execution = if builtin { agents::Execution::Direct } else { app.preferences.chat_execution };
@@ -1585,7 +1585,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
 /// ([`connections::settle`]); every other agent opens its session by itself.
 #[cfg(not(target_arch = "wasm32"))]
 fn started_with(app: &mut SolveApp, ctx: &egui::Context, mut b: Box<dyn ChatBackend>, entry: &agents::Entry, execution: agents::Execution) {
-    let builtin = agents::is_builtin(app);
+    let builtin = agents::is_builtin_entry(app, entry);
     b.set_instructions(&app.preferences.agent_instructions);
     // The built-in agent is not what "the agent started last" means to a version without it:
     // what an older version saved there stays for that version to find.
@@ -1642,7 +1642,8 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.agent_chat.connect_at_start {
         return;
     }
-    // The built-in agent is the only one there is: nothing is looked for first.
+    // The built-in agent needs nothing to be looked for first; the agents on the computer are
+    // looked for when the Assistant or its Settings page is shown, so the switcher offers them.
     let builtin = agents::is_builtin(app);
     if app.agent_chat.detection.is_none() && !builtin {
         refresh(app, ctx);
@@ -1652,8 +1653,8 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
     if app.agent_chat.state.is_some() || !app.preferences.agent_connect_at_start {
         return;
     }
-    // The agent an older version started last is not offered beside the built-in one, and is
-    // not missed either.
+    // The agent a user started stays the one this launch starts; the built-in agent was never
+    // one, so a value an older version saved is kept for that version and is not looked for here.
     let last = if builtin { String::new() } else { app.preferences.agent_last.clone() };
     if !last.is_empty() {
         if !agents::entries(app).iter().any(|e| e.id == last) {
@@ -3089,8 +3090,9 @@ pub(super) fn start_builtin_when_shown(app: &mut SolveApp, ctx: &egui::Context) 
 /// looks at once).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn refresh(app: &mut SolveApp, ctx: &egui::Context) {
-    // With the built-in agent nothing is looked for on the computer: every look comes through here.
-    if app.agent_chat.detecting.is_some() || agents::is_builtin(app) {
+    // The built-in agent is not looked for on the computer, but the agents found there are: they
+    // are offered beside it.
+    if app.agent_chat.detecting.is_some() {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();

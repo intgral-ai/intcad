@@ -199,14 +199,27 @@ def main():
 
         if args.built_in_agent:
             # The agent is found inside the package and started when its panel shows; what it tells
-            # the Connections page (its plans) arrives once it has answered.
+            # the Connections page (its plans) arrives once it has answered. The other agents stay
+            # offered beside it: the package carries one, it does not take the others away.
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline and app.poll() is None and not (state.get("connect") or {}).get("plans"):
                 time.sleep(0.5)
                 state = control.call("ui.agent_chat", {}).get("result") or {}
-            names = [agent.get("name") for agent in state.get("agents") or []]
-            checks.check(state.get("currentAgent") == "mastra" and names == ["Mastra"], f"the built-in agent is the only agent offered ({names})")
+            agents = state.get("agents") or []
+            names = [agent.get("name") for agent in agents]
+            checks.check(bool(agents) and agents[0].get("id") == "mastra", f"the built-in agent is offered first ({names})")
+            checks.check(state.get("currentAgent") == "mastra", f"the built-in agent is the conversation's agent ({state.get('currentAgent')})")
             checks.check(bool((state.get("connect") or {}).get("plans")), "the built-in agent started out of the package and reported its connections")
+            # Starting it again from a stopped state: the same app, the same package, a new session.
+            control.call("ui.agent_chat", {"disconnect": True})
+            state = control.call("ui.agent_chat", {}).get("result") or {}
+            checks.check(not state.get("connect"), "a stopped agent reports no connections")
+            control.call("ui.agent_chat", {"connect": True})
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline and app.poll() is None and not (state.get("connect") or {}).get("plans"):
+                time.sleep(0.5)
+                state = control.call("ui.agent_chat", {}).get("result") or {}
+            checks.check(bool((state.get("connect") or {}).get("plans")), "the built-in agent starts again after it stopped")
 
         # Pictures: what the app draws, and (asked for) the whole screen, which has the page in it.
         frame = evidence / "app-frame.png"

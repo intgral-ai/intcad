@@ -424,12 +424,9 @@ pub fn state(app: &mut SolveApp) -> String {
             .collect::<Vec<_>>()
     });
     // The known agents not found. A basic one is listed by the page as not ready, with `body`.
-    // Beside the built-in agent there is nothing to install, whatever was found before.
-    let builtin = agents::is_builtin(app);
     let missing: Vec<Value> = chat
         .detection
         .as_ref()
-        .filter(|_| !builtin)
         .map(|found| {
             let listed = |agent: &super::discover::Missing| {
                 let body = agent.basic.then(|| trf("ui.agent_chat_install_body", &[("agent", agent.name)]));

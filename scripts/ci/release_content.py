@@ -1,13 +1,23 @@
-"""Decide whether a release is native-only from actual package content evidence.
+"""Decide a release's distribution from actual package content evidence.
 
 `contents.json` is produced per package job by `package_contents.py` from the built
-artifacts. #14/#15 (the Mastra installed-runtime requirements) are not applicable
-only when the workflow declares a native distribution AND every canonical installer
-was inspected and contains no runtime marker. A declaration, an env flag, a file
-name or a hand-written boolean is never enough.
+artifacts. The declaration in the workflow is checked against what the packages
+really carry:
+
+- ``native``: every canonical installer was inspected and holds no runtime marker,
+  so #14/#15 (the Mastra installed-runtime requirements) are not applicable;
+- ``mastra-agent``: every canonical installer carries the built-in agent's folder
+  whole (its own Node, entry, dependencies and licences) and no legacy runtime;
+- ``mastra``: refused, whatever the evidence says. A declaration, an env flag, a
+  file name or a hand-written boolean is never enough.
 """
 
 DERIVED_PREFIXES = ("release-flatpak-", "release-arch-", "release-snap-")
+DISTRIBUTIONS = ("native", "mastra", "mastra-agent")
+# The canonical package identities that must carry the built-in agent when the release declares
+# one. These are the supported targets the agent is built for; the other architectures stay
+# native and say so.
+AGENT_IDENTITIES = ("release-linux-x86_64", "release-macos", "release-windows-x64")
 
 
 def _artifacts(build):
@@ -24,43 +34,82 @@ def _sample(items, limit=5):
     return shown + more
 
 
-def problems(source_revision, descriptors, contents):
-    """Return every reason the native-content decision is not satisfied.
+def problems(source_revision, descriptors, contents, declaration="native"):
+    """Return every reason the declared distribution is not supported by the evidence.
 
     ``descriptors`` maps packageId to a parsed build.json. ``contents`` maps
-    packageId to a parsed contents.json. An empty list means the native decision
-    is supported by the evidence; it is not a repository-wide success claim.
+    packageId to a parsed contents.json. An empty list means the declaration is
+    supported by the package bytes; it is not a repository-wide success claim.
     """
     failures = []
+    if declaration not in DISTRIBUTIONS:
+        return ["the workflow declares an unknown distribution: " + str(declaration)]
+    if declaration == "mastra":
+        return ["#15/#14: the legacy Mastra workflow runtime is declared; "
+                "it is not approved for a release and no package evidence can approve it"]
+    carrying_agent = declaration == "mastra-agent"
+    # A release that ships the agent ships it in every supported package; the architectures the
+    # agent is not built for stay native and say so.
+    def expected_distribution(identity):
+        return "mastra-agent" if carrying_agent and identity in AGENT_IDENTITIES else "native"
     canonical = {
         identity: build
         for identity, build in descriptors.items()
         if not identity.startswith(DERIVED_PREFIXES)
     }
-    native = {}
+    proven = {}
     for identity, build in sorted(canonical.items()):
         report = contents.get(identity)
         if not isinstance(report, dict):
             failures.append(identity + ": missing package content evidence (contents.json); "
-                            "#15/#14 cannot be marked not applicable")
+                            "the distribution cannot be proven")
             continue
         if report.get("packageId") != identity:
             failures.append(identity + ": content evidence packageId mismatch")
         if report.get("sourceRevision") != source_revision:
             failures.append(identity + ": content evidence sourceRevision mismatch")
         distribution = report.get("distribution")
-        if distribution != "native":
-            failures.append(identity + ": distribution is " + str(distribution)
-                            + ", not native; #15/#14 still block this distribution")
+        needed = expected_distribution(identity)
+        if distribution != needed:
+            failures.append(identity + ": content was recorded as " + str(distribution)
+                            + ", the release needs " + needed + " for this package")
             continue
+        agent = report.get("agent")
+        if carrying_agent and identity in AGENT_IDENTITIES:
+            # The canonical packages must carry the agent whole, from their own bytes.
+            if not isinstance(agent, dict) or not agent.get("present"):
+                failures.append(identity + ": declared mastra-agent but the built package carries no "
+                                "mastra-agent/ folder")
+            else:
+                if not agent.get("node"):
+                    failures.append(identity + ": the built package's mastra-agent/ folder has no Node program")
+                if agent.get("missing"):
+                    failures.append(identity + ": the built package's agent is incomplete: missing "
+                                    + _sample(agent.get("missing")))
+                # INT-1473's agentic work starts from the modelling skills: a package whose agent
+                # carries none ships an agent that cannot do the job it is packaged for.
+                if not agent.get("skills"):
+                    failures.append(identity + ": the built package's agent carries no skills "
+                                    "(mastra-agent/skills/<set>/<skill>/SKILL.md)")
+        elif isinstance(agent, dict) and agent.get("present"):
+            failures.append(identity + ": carries mastra-agent/ but the release supports the agent on "
+                            + _sample(AGENT_IDENTITIES) + " only")
         markers = report.get("markers")
         if not isinstance(markers, list):
             failures.append(identity + ": content markers are missing")
             continue
         if markers:
             paths = [marker.get("path") if isinstance(marker, dict) else marker for marker in markers]
-            failures.append(identity + ": declared native but the installed package contains the #15 runtime: "
-                            + _sample(paths))
+            failures.append(identity + ": the installed package contains the #15 runtime: " + _sample(paths))
+        if carrying_agent:
+            foreign = report.get("agentMarkers")
+            if not isinstance(foreign, list):
+                failures.append(identity + ": agent markers are missing")
+                continue
+            if foreign:
+                paths = [marker.get("path") if isinstance(marker, dict) else marker for marker in foreign]
+                failures.append(identity + ": a Node program or enterprise content outside mastra-agent/: "
+                                + _sample(paths))
         unchecked = report.get("unchecked")
         if not isinstance(unchecked, list):
             failures.append(identity + ": unchecked artifact list is missing")
@@ -68,7 +117,7 @@ def problems(source_revision, descriptors, contents):
         if unchecked:
             names = [item.get("name") if isinstance(item, dict) else item for item in unchecked]
             failures.append(identity + ": content not inspected for " + _sample(names)
-                            + "; native distribution is unproven")
+                            + "; the distribution is unproven")
         ignored = set(report.get("ignored") or [])
         checked = {
             item.get("name"): item.get("sha256")
@@ -97,7 +146,7 @@ def problems(source_revision, descriptors, contents):
                             + (f"; missing {_sample(missing)}" if missing else "")
                             + (f"; unexpected {_sample(extra)}" if extra else "")
                             + (f"; digest mismatch {_sample(changed)}" if changed else ""))
-        native[identity] = distribution == "native" and not markers and not unchecked and checked == expected
+        proven[identity] = distribution == needed and not markers and not unchecked and checked == expected
 
     derived = {
         identity: build
@@ -125,9 +174,13 @@ def problems(source_revision, descriptors, contents):
             failures.append(identity + ": derived package source was not inspected")
             continue
         source = report.get("derivedFrom")
-        if not native.get(source):
-            failures.append(identity + ": derived package source is not a verified native package: " + str(source))
+        if not proven.get(source):
+            failures.append(identity + ": derived package source is not a verified package: " + str(source))
             continue
+        # A derived package is the source tarball repacked: it carries what the source carries.
+        if report.get("distribution") != (contents.get(source) or {}).get("distribution"):
+            failures.append(identity + ": derived package distribution " + str(report.get("distribution"))
+                            + " does not match its source " + str(source))
         source_artifacts = _artifacts(descriptors.get(source) or {})
         source_digest = report.get("sourceSha256")
         # Arch copies a prerelease tarball under its pkgver name before packaging. The
