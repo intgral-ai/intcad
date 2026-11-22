@@ -218,7 +218,7 @@ class ReleaseWorkflowWiring(unittest.TestCase):
     def test_aggregate_no_longer_appends_unconditional_mastra_failures(self):
         self.assertNotIn("problems.append('#15: required runtime-artifact", self.gate)
         self.assertNotIn("problems.append('#14: required installed-runtime", self.gate)
-        self.assertIn("content.problems(sha, descriptors, contents, os.environ['SOLIDCRAFT_DISTRIBUTION'])", self.gate)
+        self.assertIn("content.problems(sha, descriptors, contents, os.environ.get('SOLIDCRAFT_DISTRIBUTION', 'mastra-agent'))", self.gate)
         self.assertIn('SOLIDCRAFT_DISTRIBUTION: "mastra-agent"', self.gate, "a release gate must declare what it ships")
 
     def test_release_jobs_record_actual_package_contents(self):

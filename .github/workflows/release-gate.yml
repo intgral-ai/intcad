@@ -345,7 +345,7 @@ jobs:
           # `native`; either way every canonical package must have been inspected, the
           # digests must match build.json, and the legacy workflow runtime stays refused.
           # A declaration, an environment flag or a file name cannot substitute.
-          problems.extend(content.problems(sha, descriptors, contents, os.environ['SOLIDCRAFT_DISTRIBUTION']))
+          problems.extend(content.problems(sha, descriptors, contents, os.environ.get('SOLIDCRAFT_DISTRIBUTION', 'mastra-agent')))
           for problem in problems:
               print('FAIL: ' + problem)
           sys.exit(1 if problems else 0)

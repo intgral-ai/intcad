@@ -62,7 +62,7 @@ def problems(source_revision, descriptors, contents, declaration="native"):
         report = contents.get(identity)
         if not isinstance(report, dict):
             failures.append(identity + ": missing package content evidence (contents.json); "
-                            "the distribution cannot be proven")
+                            "#15/#14 cannot be marked not applicable")
             continue
         if report.get("packageId") != identity:
             failures.append(identity + ": content evidence packageId mismatch")
@@ -100,7 +100,7 @@ def problems(source_revision, descriptors, contents, declaration="native"):
             continue
         if markers:
             paths = [marker.get("path") if isinstance(marker, dict) else marker for marker in markers]
-            failures.append(identity + ": the installed package contains the #15 runtime: " + _sample(paths))
+            failures.append(identity + ": the installed package contains the #15/#14 runtime: " + _sample(paths))
         if carrying_agent:
             foreign = report.get("agentMarkers")
             if not isinstance(foreign, list):
@@ -117,7 +117,7 @@ def problems(source_revision, descriptors, contents, declaration="native"):
         if unchecked:
             names = [item.get("name") if isinstance(item, dict) else item for item in unchecked]
             failures.append(identity + ": content not inspected for " + _sample(names)
-                            + "; the distribution is unproven")
+                            + "; the distribution is unproven, so #15/#14 still apply")
         ignored = set(report.get("ignored") or [])
         checked = {
             item.get("name"): item.get("sha256")
