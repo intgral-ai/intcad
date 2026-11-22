@@ -1,0 +1,72 @@
+# Temporary binary-producing diagnostic. Do not integrate.
+name: INT-1454 PR 209 desktop binaries
+
+on:
+  push:
+    branches: [diag/int1454-a6-pr209-build]
+    paths: [.github/workflows/int1454-pr209-build.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Desktop binary (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            runner: ubuntu-24.04
+            executable: target/ci/intcad
+          - os: windows
+            runner: windows-latest
+            executable: target/ci/intcad.exe
+    env:
+      PRODUCT_SHA: 4f58747c147bf9d666c4cd2a6a3be9c2e49b4627
+      EXECUTABLE: ${{ matrix.executable }}
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 4f58747c147bf9d666c4cd2a6a3be9c2e49b4627
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - name: Install Linux build dependencies
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
+      - name: Verify source and build desktop binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
+          test -z "$(git status --porcelain)"
+          [[ "$(cargo -V)" == "cargo 1.99.1 "* ]]
+          [[ "$(rustc -V)" == "rustc 1.99.1 "* ]]
+          mkdir -p evidence
+          {
+            printf 'source=%s\nworkflow=%s\nrun=%s\nattempt=%s\n' "$PRODUCT_SHA" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf 'runner_os=%s\nrunner_arch=%s\nimage_os=%s\nimage_version=%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            cargo -V
+            rustc -vV
+            sha256sum Cargo.lock
+            printf '%s\n' 'command=cargo build --locked --profile ci -p solidcraft --bin intcad'
+          } > evidence/source.txt
+          code=0
+          cargo build --locked --profile ci -p solidcraft --bin intcad 2>&1 | tee evidence/build.log || code=$?
+          printf '%s\n' "$code" > evidence/build.exit
+          test "$code" -eq 0
+          test -s "$EXECUTABLE"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          cp "$EXECUTABLE" evidence/
+          (cd evidence && sha256sum "${EXECUTABLE##*/}" > SHA256SUMS)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: pr209-desktop-${{ matrix.os }}-${{ env.PRODUCT_SHA }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 7
