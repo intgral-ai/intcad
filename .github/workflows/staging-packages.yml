@@ -7,23 +7,46 @@ permissions:
   contents: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    # Without an environment binding, vars can only include repository and organization keys.
+    # Evaluate presence in the job matrix; the runner step gets only booleans.
+    strategy:
+      matrix:
+        include:
+          - INTCAD_WORKOS_PUBLIC_CLIENT_ID: ${{ contains(toJSON(vars), '"INTCAD_WORKOS_PUBLIC_CLIENT_ID":') }}
+            INTCAD_AUTHKIT_VERIFICATION_ORIGIN: ${{ contains(toJSON(vars), '"INTCAD_AUTHKIT_VERIFICATION_ORIGIN":') }}
+            INTCAD_PRODUCT_HTTPS_ORIGIN: ${{ contains(toJSON(vars), '"INTCAD_PRODUCT_HTTPS_ORIGIN":') }}
+    steps:
+      - name: Reject higher-scope account configuration
+        shell: bash
+        env:
+          INTCAD_WORKOS_PUBLIC_CLIENT_ID: ${{ matrix.INTCAD_WORKOS_PUBLIC_CLIENT_ID }}
+          INTCAD_AUTHKIT_VERIFICATION_ORIGIN: ${{ matrix.INTCAD_AUTHKIT_VERIFICATION_ORIGIN }}
+          INTCAD_PRODUCT_HTTPS_ORIGIN: ${{ matrix.INTCAD_PRODUCT_HTTPS_ORIGIN }}
+        run: |
+          status=0
+          for key in INTCAD_WORKOS_PUBLIC_CLIENT_ID INTCAD_AUTHKIT_VERIFICATION_ORIGIN INTCAD_PRODUCT_HTTPS_ORIGIN; do
+            if [ "${!key}" != false ]; then
+              echo "::error::$key must not be defined at repository or organization scope"
+              status=1
+            fi
+          done
+          exit "$status"
+
   snapshot:
+    needs: preflight
     runs-on: ubuntu-24.04
     environment: staging
     outputs:
       config: ${{ steps.config.outputs.config }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
       - id: config
-        name: Snapshot public staging account configuration
-        env:
-          INTCAD_WORKOS_PUBLIC_CLIENT_ID: ${{ vars.INTCAD_WORKOS_PUBLIC_CLIENT_ID }}
-          INTCAD_AUTHKIT_VERIFICATION_ORIGIN: ${{ vars.INTCAD_AUTHKIT_VERIFICATION_ORIGIN }}
-          INTCAD_PRODUCT_HTTPS_ORIGIN: ${{ vars.INTCAD_PRODUCT_HTTPS_ORIGIN }}
-        run: python -I scripts/ci/staging_account_config.py snapshot
+        name: Block until staging configuration can be read without logging raw values
+        # The runner can print step env and inputs before the helper can validate or mask them.
+        run: |
+          echo '::error::Staging packages are blocked: no approved non-logging environment variable source'
+          exit 1
 
   packages:
     needs: snapshot

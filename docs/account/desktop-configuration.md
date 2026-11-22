@@ -33,8 +33,13 @@ builder must set all three together and record which values it used in release e
 
 ## Before a staging package run
 
+**Dispatch is blocked.** The wrapper rejects higher-scope keys visible to an unbound job,
+then stops before reading any raw staging values. The Actions runner can log step
+environment values before validation. Do not dispatch until a reviewed source can
+provide environment-scoped inputs without displaying them before validation.
+
 Use **Staging desktop packages (nonpublishing)** (`staging-packages.yml`), not the ordinary
-package or release gate workflow. Before an authorized dispatch:
+package or release gate workflow. Once the blocker is resolved, before an authorized dispatch:
 
 1. Verify the `staging` GitHub environment contains the exact approved public values for all
    three keys above. The staging wrapper requires a WorkOS ID of `client_` followed by ASCII
@@ -44,7 +49,7 @@ package or release gate workflow. Before an authorized dispatch:
 2. Verify the manual workflow is discoverable for dispatch (GitHub requires it to exist on the
    default branch). Verify the selected run ref points to the approved, reviewed SHA.
 
-The wrapper captures the tuple once for Linux x86_64, both macOS builds that form the universal
+The build path expects one tuple for Linux x86_64, both macOS builds that form the universal
 package, and Windows x64. `staging-` Actions artifacts carry build evidence with the checkout SHA,
 package hashes, and the exact public tuple under `accountConfig`. This workflow does not publish
 a release or provide signed distribution. Package checks are not installed-app UX, sign-in or

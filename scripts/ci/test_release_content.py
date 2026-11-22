@@ -130,10 +130,7 @@ class StagingWorkflow(unittest.TestCase):
         snapshot = wrapper["jobs"]["snapshot"]
         packages = wrapper["jobs"]["packages"]
         self.assertEqual(snapshot["environment"], "staging")
-        self.assertEqual(snapshot["steps"][0]["with"]["ref"], "${{ github.sha }}")
-        step = next(step for step in snapshot["steps"] if step.get("id") == "config")
-        self.assertEqual(step["env"], {key: f"${{{{ vars.{key} }}}}" for key in CONFIG})
-        self.assertNotIn("${{", step["run"])
+        self.assertTrue(any(step.get("id") == "config" for step in snapshot["steps"]))
         self.assertEqual(snapshot["outputs"]["config"], "${{ steps.config.outputs.config }}")
         self.assertEqual(packages, {
             "needs": "snapshot",
@@ -149,6 +146,45 @@ class StagingWorkflow(unittest.TestCase):
             for forbidden in ("refs/heads/", "${{ secrets.", "secrets: inherit", "contents: write",
                               "gh release ", "git push", "softprops/action-gh-release", "--notarize"):
                 self.assertNotIn(forbidden, text)
+
+    def test_unbound_preflight_rejects_any_higher_scope_key(self):
+        jobs = workflow("staging-packages.yml")["jobs"]
+        self.assertEqual(jobs["snapshot"].get("needs"), "preflight")
+        preflight = jobs["preflight"]
+        self.assertNotIn("environment", preflight)
+        self.assertNotIn("if", preflight)
+        self.assertEqual(preflight["strategy"]["matrix"], {"include": [{
+            key: f"""${{{{ contains(toJSON(vars), '"{key}":') }}}}""" for key in CONFIG
+        }]})
+        [step] = preflight["steps"]
+        self.assertNotIn("if", step)
+        self.assertEqual(step["env"], {key: f"${{{{ matrix.{key} }}}}" for key in CONFIG})
+        for present in itertools.product((False, True), repeat=3):
+            with self.subTest(present=present):
+                result = subprocess.run(
+                    ["bash", "-ec", step["run"]],
+                    env={**os.environ, **{key: str(flag).lower() for key, flag in zip(CONFIG, present)}},
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, int(any(present)))
+                for key, flag in zip(CONFIG, present):
+                    self.assertEqual(key in result.stdout + result.stderr, flag)
+
+    def test_snapshot_fails_closed_without_expanding_any_raw_variables(self):
+        snapshot = workflow("staging-packages.yml")["jobs"]["snapshot"]
+        self.assertNotIn("vars", json.dumps(snapshot))
+        [step] = snapshot["steps"]
+        self.assertNotIn("if", step)
+        self.assertNotIn("continue-on-error", step)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "output"
+            result = subprocess.run(["bash", "-ec", step["run"]],
+                                    env={**os.environ, **CONFIG, "GITHUB_OUTPUT": str(output)},
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(output.exists())
+            for value in CONFIG.values():
+                self.assertNotIn(value, result.stdout + result.stderr)
 
     def test_version_guard_rejects_other_workflows_and_events(self):
         version = workflow("release.yml")["jobs"]["version"]
