@@ -87,7 +87,16 @@ Four separate things held it back, and all four had to change together:
   `screen.png` shows the running Assistant on the agent's Connections page (five plans, five API
   keys, custom addresses) beside the untouched Workspace, Browser, Files, Review, Simulation and
   Autocomplete entries.
-- `actionlint` on both workflows — clean; `shellcheck` on the shell scripts — clean.
+- `packaging/tests/mastra_agent_test.py` — 8 passed (the fixture now carries a skill set and a
+  stamp, and `stage-agent.sh` forwards the test-only `--skills-root`).
+- `scripts/ci/test_gate.py` — 71 passed.
+- `actionlint` on both workflows — clean; `shellcheck` on the shell scripts — clean; every
+  changed PowerShell file parses.
+- Findings kept in the text above were used to fix two real gaps: the stop/start check read the
+  page's word (`disconnect`) instead of the control channel's (`stop`), and the Windows smoke
+  assumed every program it was given came from a package. A build tree carries no agent, so the
+  built-in-agent checks now run only when `mastra-agent/agent.json` is beside the program, and
+  `installed-check.ps1` requires the folder, its Node, dependencies and skills from the MSI.
 
 ## Still open (release blockers, not code)
 
