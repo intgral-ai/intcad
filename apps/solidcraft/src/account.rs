@@ -9,10 +9,11 @@
 //! service origin, WorkOS client id or AuthKit origin unless the host supplies all three. No
 //! shipped UI action completes a provider sign-in implicitly, no browser opens without an explicit
 //! browser action, and a completed flow activates only after the configured product service
-//! verifies it. The desktop installs no production billing or commit authority and never promotes
-//! a provider token implicitly. Ordinary CAD stays free and anonymous; controlled entries keep
-//! their existing default refusal. A secure store is probed before any session is restored, and
-//! sign-out or account switch ends the old session's authority immediately.
+//! verifies it and issues one installation binding. The desktop installs no production billing or
+//! commit authority and never promotes a provider token implicitly. Ordinary CAD stays free and
+//! anonymous; controlled entries keep their existing default refusal. A secure store is probed
+//! before any session is restored, and sign-out or account switch ends the old session's
+//! authority immediately.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,8 +21,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use solidcraft_account_native::{
-    CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodePrompt, DeviceCodeTransport, FileOperationStore, ProductLogin,
-    ServerVerifiedProductSession, Transport, UreqDeviceCodeTransport, UreqTransport, WireConnection, WorkOsPublicClient,
+    BootstrapPlatform, CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodePrompt, DeviceCodeTransport, FileOperationStore,
+    HttpAccountService, ProductLogin, ServerVerifiedProductSession, Transport, UreqDeviceCodeTransport, UreqTransport, WireConnection,
+    WorkOsPublicClient,
 };
 use solidcraft_engine::entitlement::{AccountService, AuthenticatedHostScope, BudgetTable, MonotonicClock, MonotonicInstant, Refusal, RefusalCode};
 use solidcraft_ui_egui::SolveApp;
@@ -262,8 +264,38 @@ where
     if cancel.is_cancelled() {
         return Err(auth_required("the sign-in was cancelled"));
     }
-    let exchange = ServerVerifiedProductSession::new(transport, product.clone());
-    flow.session().activate_product_session(&exchange).map_err(|_| account_unavailable("the product service did not verify the sign-in"))
+    let exchange = ServerVerifiedProductSession::new(&transport, product.clone());
+    let login =
+        flow.session().activate_product_session(&exchange).map_err(|_| account_unavailable("the product service did not verify the sign-in"))?;
+    // The product service has verified the exact WorkOS session. Only now does the desktop ask
+    // the same trusted origin to issue its first installation identity. No account or installation
+    // scope is invented before that response, and a malformed or failed bootstrap refuses the
+    // sign-in rather than leaving a partially bound session.
+    if cancel.is_cancelled() {
+        return Err(auth_required("the sign-in was cancelled"));
+    }
+    let session = flow.session().clone();
+    let mut account = HttpAccountService::with_transport(
+        &transport,
+        product.clone(),
+        Box::new(session.clone()),
+        Box::new(session),
+        Box::new(SystemMonotonicClock::new()),
+    );
+    account
+        .bootstrap_first_installation(current_bootstrap_platform(), None)
+        .map_err(|_| account_unavailable("the installation could not be bound"))?;
+    Ok(login)
+}
+
+fn current_bootstrap_platform() -> BootstrapPlatform {
+    if cfg!(target_os = "windows") {
+        BootstrapPlatform::Windows
+    } else if cfg!(target_os = "macos") {
+        BootstrapPlatform::Macos
+    } else {
+        BootstrapPlatform::Linux
+    }
 }
 
 /// Open one validated verification page in the system browser. Only an explicit browser action
@@ -317,9 +349,9 @@ struct SignInJob {
     shared: Arc<Mutex<SignInShared>>,
 }
 
-/// A signed-in view after a completed device flow. Controlled authority stays closed: this
-/// checkpoint performs no installation bootstrap and installs no account service, so chat and
-/// billed tools are still unavailable even though the product session is recognized.
+/// A signed-in view after a completed device flow and installation bootstrap. Controlled
+/// authority stays closed: this checkpoint installs no account service, so chat and billed tools
+/// are still unavailable even though the product session and installation are bound.
 fn signed_in_view(account: &str) -> AccountView {
     AccountView {
         signed_in: true,
@@ -793,8 +825,8 @@ impl AccountPort for DesktopAccountPort {
     fn refresh_status(&mut self) -> Result<AccountView, Refusal> {
         self.cleanup_confirmed()?;
         // A completed device flow is recognized from the cached worker state. It is not replayed
-        // or exchanged again; this process has no installation binding or account service, so the
-        // snapshot stays the one the verified sign-in produced.
+        // or exchanged again; this process still installs no account service, so the snapshot
+        // stays the one the verified sign-in produced.
         if self.completed_sign_in_account().is_some() {
             return Ok(self.view());
         }
@@ -1169,6 +1201,14 @@ mod tests {
         }
     }
 
+    fn installation_body() -> serde_json::Value {
+        json!({
+            "installation_id": "inst_product_0001",
+            "installation_credential": "installation_credential_product_0000000000000000",
+            "created_at": "2026-01-01T00:00:00.000Z"
+        })
+    }
+
     #[derive(Default)]
     struct ProductScript {
         responses: VecDeque<Result<WireResponse, TransportFailure>>,
@@ -1188,7 +1228,10 @@ mod tests {
         }
 
         fn ok() -> Self {
-            Self::scripted(vec![Ok(WireResponse::new(200, status_body().to_string().into_bytes()))])
+            Self::scripted(vec![
+                Ok(WireResponse::new(200, status_body().to_string().into_bytes())),
+                Ok(WireResponse::new(201, installation_body().to_string().into_bytes())),
+            ])
         }
 
         fn requests(&self) -> Vec<WireRequest> {
@@ -1580,7 +1623,7 @@ mod tests {
         port.sign_in().unwrap();
         wait_until("the retried verified sign-in", || port.view().signed_in);
         assert_eq!(device.requests().len(), 3, "the retry starts a new authorization; the old flow is not replayed");
-        assert_eq!(product.requests().len(), 1);
+        assert_eq!(product.requests().len(), 2, "the retried verified sign-in also binds one installation");
         assert!(opener.urls().is_empty());
         port.shutdown();
     }
@@ -1636,16 +1679,18 @@ mod tests {
         assert_eq!(port.view().account_label.as_deref(), Some("acct_product_0001"));
         assert_eq!(port.take_sign_in_notice(), None);
         assert!(port.runtime.credentials.product_session_active(), "a verified product session is recognized");
-        assert!(port.runtime.credentials.authenticated_scope().is_none(), "no installation binding, so controlled authority stays closed");
-        assert_eq!(port.view().tool_blocked, Some(RefusalCode::AuthUnavailable));
-        assert_eq!(product.requests().len(), 1, "the product service verifies the provider token once");
+        let scope = port.runtime.credentials.authenticated_scope().expect("the verified sign-in bound one installation");
+        assert_eq!(scope.account().as_str(), "acct_product_0001");
+        assert_eq!(scope.installation().as_str(), "inst_product_0001");
+        assert_eq!(port.view().tool_blocked, Some(RefusalCode::AuthUnavailable), "no account service is installed");
+        assert_eq!(product.requests().len(), 2, "the product service verifies the token and then issues one installation");
         assert_eq!(port.begin_device_code().unwrap_err().code, RefusalCode::AuthRequired, "a completed flow retires its prompt");
         assert!(opener.urls().len() == 1, "only the explicit action opened the browser");
 
         // Recognizing the completed flow is cached: refreshing never replays the exchange.
         let view = port.refresh_status().unwrap();
         assert!(view.signed_in);
-        assert_eq!(product.requests().len(), 1, "a refresh must not replay product verification");
+        assert_eq!(product.requests().len(), 2, "a refresh must not replay product verification or installation bootstrap");
         port.shutdown();
     }
 
@@ -1797,7 +1842,46 @@ mod tests {
         assert_eq!(result.unwrap().account_id, "acct_product_0001");
         assert_eq!(requests.len(), 3, "one authorization request and two polls; no step repeats");
         assert_eq!(prompts.len(), 1);
-        assert_eq!(product.requests().len(), 1);
+        let product_requests = product.requests();
+        assert_eq!(product_requests.len(), 2, "verification then one installation bootstrap; no step repeats");
+        assert_eq!(product_requests[0].url(), "https://api.example/v1/status");
+        assert_eq!(product_requests[1].url(), "https://api.example/v1/installations");
+        assert_eq!(
+            product_requests[1].header("Authorization"),
+            Some("Bearer access_token_SECRET_000000000000000000000000"),
+            "the installation request uses the verified product session"
+        );
+        assert!(product_requests[1].header("X-Installation-Credential").is_none());
+        let installation: serde_json::Value = serde_json::from_slice(product_requests[1].body().unwrap()).unwrap();
+        assert!(installation.get("label").is_none(), "the desktop sends no hostname, username or path");
         assert_eq!(WireCredentials::product_session(&session).unwrap().expose_secret(), "access_token_SECRET_000000000000000000000000");
+        let bound = session.authenticated_scope().expect("the installation pair is durable and readable");
+        assert_eq!(bound.installation().as_str(), "inst_product_0001");
+        assert_eq!(WireCredentials::installation_credential(&session).unwrap().expose_secret(), "installation_credential_product_0000000000000000");
+    }
+
+    #[test]
+    fn a_refused_installation_bootstrap_leaves_the_sign_in_unverified_and_scope_closed() {
+        let device = ScriptedDevice::scripted(vec![(200, device_body()), (200, token_body())]);
+        let product = ScriptedProduct::scripted(vec![
+            Ok(WireResponse::new(200, status_body().to_string().into_bytes())),
+            Ok(WireResponse::new(
+                503,
+                json!({"error": {"code": "AUTH_UNAVAILABLE", "message": "unavailable", "retryable": true, "request_id": "req_test"}})
+                    .to_string()
+                    .into_bytes(),
+            )),
+        ]);
+        let timing = Arc::new(VirtualTiming::default());
+        let (result, session, _requests, _prompts) = run_drive(device, product.clone(), timing, SignInCancellation::default());
+
+        assert_eq!(result.unwrap_err().code, RefusalCode::AuthUnavailable, "the sign-in is refused after the failed bootstrap");
+        assert!(session.product_session_active(), "the verified product session is recognized");
+        assert!(!WireCredentials::installation_bound(&session), "no invented installation id or scope");
+        assert!(session.authenticated_scope().is_none(), "controlled authority stays closed");
+        assert!(WireCredentials::installation_credential(&session).is_none());
+        let requests = product.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].url(), "https://api.example/v1/installations");
     }
 }

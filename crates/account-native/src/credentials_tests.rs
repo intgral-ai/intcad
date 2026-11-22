@@ -114,6 +114,7 @@ struct StoreState {
     entries: BTreeMap<String, String>,
     calls: Vec<Call>,
     fail_delete: Option<String>,
+    fail_set: Option<String>,
     fail_all_sets: bool,
 }
 
@@ -129,6 +130,14 @@ impl RecordingStore {
 
     fn set_fail_all_sets(&self) {
         self.inner.lock().unwrap().fail_all_sets = true;
+    }
+
+    fn set_fail_set(&self, key: &str) {
+        self.inner.lock().unwrap().fail_set = Some(key.to_owned());
+    }
+
+    fn put(&self, key: &str, value: &str) {
+        self.inner.lock().unwrap().entries.insert(key.to_owned(), value.to_owned());
     }
 
     fn take_calls(&self) -> Vec<Call> {
@@ -154,7 +163,7 @@ impl CredentialStore for RecordingStore {
     fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
         let mut state = self.inner.lock().map_err(|_| unavailable())?;
         state.calls.push(Call::Set(key.to_owned()));
-        if state.fail_all_sets {
+        if state.fail_all_sets || state.fail_set.as_deref() == Some(key) {
             return Err(unavailable());
         }
         state.entries.insert(key.to_owned(), secret.to_owned());
@@ -478,4 +487,157 @@ fn a_restarted_session_preserves_and_then_clears_every_tracked_credential() {
 fn credential_session_is_send_and_sync_for_desktop_composition() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<CredentialSession>();
+}
+
+const FIRST_INSTALL_ID: &str = "inst_product_0001";
+const FIRST_INSTALL_CREDENTIAL: &str = "installation_credential_000000000000000000000000";
+const INSTALL_ID_KEY: &str = "install/id";
+const INSTALL_CREDENTIAL_KEY: &str = "install/credential";
+
+fn publish_first_installation(session: &CredentialSession, expected: &str) -> Result<(), solidcraft_engine::entitlement::Refusal> {
+    let mut handoff = session.clone();
+    CredentialHandoff::first_installation_credential(
+        &mut handoff,
+        &crate::http::Secret::new(expected),
+        FIRST_INSTALL_ID,
+        crate::http::Secret::new(FIRST_INSTALL_CREDENTIAL),
+    )
+}
+
+#[test]
+fn first_installation_publishes_the_credential_before_the_id_and_both_read_after_restart() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_one", "product_one_SECRET");
+    assert!(!WireCredentials::installation_bound(&session));
+    assert!(session.authenticated_scope().is_none(), "the account alone is not an installation binding");
+    store.take_calls();
+
+    publish_first_installation(&session, "product_one_SECRET").unwrap();
+    let calls = store.take_calls();
+    let credential_set = calls.iter().position(|call| matches!(call, Call::Set(key) if key == INSTALL_CREDENTIAL_KEY)).unwrap();
+    let id_set = calls.iter().position(|call| matches!(call, Call::Set(key) if key == INSTALL_ID_KEY)).unwrap();
+    assert!(credential_set < id_set, "the credential is durable before the id marks the pair published: {calls:?}");
+    assert!(session.authenticated_scope().is_some());
+    assert_eq!(session.authenticated_scope().unwrap().installation().as_str(), FIRST_INSTALL_ID);
+    assert_eq!(WireCredentials::installation_credential(&session).unwrap().expose_secret(), FIRST_INSTALL_CREDENTIAL);
+
+    let restarted = CredentialSession::new(Box::new(store.clone()));
+    assert!(WireCredentials::installation_bound(&restarted), "the persisted identity suppresses a replacement bootstrap");
+    let scope = restarted.authenticated_scope().expect("the durable pair restores one provable scope");
+    assert_eq!(scope.account().as_str(), "acct_one");
+    assert_eq!(scope.installation().as_str(), FIRST_INSTALL_ID);
+    assert_eq!(
+        WireCredentials::installation_credential(&restarted).unwrap().expose_secret(),
+        FIRST_INSTALL_CREDENTIAL,
+        "the credential and id are read as one binding after restart"
+    );
+}
+
+#[test]
+fn first_installation_requires_the_exact_active_product_session_and_an_unrevoked_epoch() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_one", "product_one_SECRET");
+    store.take_calls();
+
+    assert_eq!(
+        publish_first_installation(&session, "product_other_SECRET").unwrap_err().code,
+        RefusalCode::AuthUnavailable,
+        "a token that is no longer the active product session cannot publish an installation"
+    );
+    let calls = store.take_calls();
+    assert!(calls.iter().all(|call| matches!(call, Call::Get(_))), "a mismatched token performs no store write: {calls:?}");
+
+    let control = CredentialSession::new(Box::new(RecordingStore::default()));
+    product_sign_in(&control, "acct_one", "product_one_SECRET");
+    publish_first_installation(&control, "product_one_SECRET").unwrap();
+    assert!(WireCredentials::installation_bound(&control), "the exact active token publishes the pair");
+
+    session.revoke_in_process();
+    assert_eq!(publish_first_installation(&session, "product_one_SECRET").unwrap_err().code, RefusalCode::AuthUnavailable);
+    assert!(store.take_calls().is_empty(), "a revoked epoch writes nothing");
+    assert!(!WireCredentials::installation_bound(&session));
+}
+
+#[test]
+fn a_failed_credential_write_publishes_no_id_and_a_restart_fails_closed() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_one", "product_one_SECRET");
+    store.set_fail_set(INSTALL_CREDENTIAL_KEY);
+
+    assert_eq!(publish_first_installation(&session, "product_one_SECRET").unwrap_err().code, RefusalCode::AuthUnavailable);
+    let calls = store.take_calls();
+    assert!(
+        calls.iter().any(|call| matches!(call, Call::Set(key) if key == INSTALL_CREDENTIAL_KEY)),
+        "the credential write was attempted and failed: {calls:?}"
+    );
+    assert!(!store.contains_key(INSTALL_ID_KEY), "a failed credential write must not publish the identity");
+    assert!(!store.contains_key(INSTALL_CREDENTIAL_KEY));
+    assert!(!WireCredentials::installation_bound(&session));
+    assert!(session.authenticated_scope().is_none(), "the failed write locks this process");
+
+    let restarted = CredentialSession::new(Box::new(store));
+    assert!(!WireCredentials::installation_bound(&restarted));
+    assert!(restarted.authenticated_scope().is_none(), "a partial failure restores no scope");
+}
+
+#[test]
+fn a_failed_id_write_leaves_no_readable_binding_and_suppresses_authority() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_one", "product_one_SECRET");
+    store.set_fail_set(INSTALL_ID_KEY);
+
+    assert_eq!(publish_first_installation(&session, "product_one_SECRET").unwrap_err().code, RefusalCode::AuthUnavailable);
+    let calls = store.take_calls();
+    assert!(
+        calls.iter().any(|call| matches!(call, Call::Set(key) if key == INSTALL_CREDENTIAL_KEY)),
+        "the credential was written before the id attempt: {calls:?}"
+    );
+    assert!(calls.iter().any(|call| matches!(call, Call::Set(key) if key == INSTALL_ID_KEY)), "the id write was attempted and failed: {calls:?}");
+    assert!(!store.contains_key(INSTALL_ID_KEY), "the identity is the last publication marker and must not be half-written");
+    assert!(!store.contains_key(INSTALL_CREDENTIAL_KEY), "the unpublished credential is removed");
+    assert!(!WireCredentials::installation_bound(&session));
+    assert!(session.authenticated_scope().is_none());
+
+    let restarted = CredentialSession::new(Box::new(store));
+    assert!(!WireCredentials::installation_bound(&restarted));
+    assert!(WireCredentials::installation_credential(&restarted).is_none());
+    assert!(restarted.authenticated_scope().is_none());
+}
+
+#[test]
+fn a_credential_orphaned_before_the_id_crash_marker_is_unreadable_and_a_retry_publishes_the_pair() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_one", "product_one_SECRET");
+    store.take_calls();
+    // Simulate a process that wrote the credential and died before the id write completed.
+    store.put(INSTALL_CREDENTIAL_KEY, FIRST_INSTALL_CREDENTIAL);
+
+    let restarted = CredentialSession::new(Box::new(store.clone()));
+    assert!(!WireCredentials::installation_bound(&restarted), "an orphan credential is not an identity");
+    assert!(WireCredentials::installation_credential(&restarted).is_none(), "an orphan credential is not readable");
+    assert!(restarted.authenticated_scope().is_none(), "an orphan credential restores no scope");
+
+    publish_first_installation(&restarted, "product_one_SECRET").unwrap();
+    assert!(store.contains_key(INSTALL_ID_KEY), "the retry publishes the missing marker");
+    assert_eq!(WireCredentials::installation_credential(&restarted).unwrap().expose_secret(), FIRST_INSTALL_CREDENTIAL);
+    assert!(restarted.authenticated_scope().is_some());
+}
+
+#[test]
+fn a_second_first_installation_is_refused_without_touching_the_store() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_one", "product_one_SECRET");
+    publish_first_installation(&session, "product_one_SECRET").unwrap();
+    store.take_calls();
+
+    assert_eq!(publish_first_installation(&session, "product_one_SECRET").unwrap_err().code, RefusalCode::AuthUnavailable);
+    let calls = store.take_calls();
+    assert!(calls.iter().all(|call| matches!(call, Call::Get(_))), "an existing installation is never replaced by a new bootstrap: {calls:?}");
+    assert_eq!(WireCredentials::installation_credential(&session).unwrap().expose_secret(), FIRST_INSTALL_CREDENTIAL);
 }

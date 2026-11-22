@@ -287,7 +287,7 @@ fn expired_finalize_and_lookup_are_generic_no_state() {
 fn credentials_never_appear_in_url_logs_or_errors() {
     let credentials = FixedCredentials::none()
         .with_product_session("product_SECRET_abc")
-        .with_installation_credential("install_SECRET_def")
+        .with_installation_credential("installation_credential_SECRET_def_0000000000000000")
         .with_settlement_credential("settle_SECRET_ghi")
         .with_execution_session_proof("proof_SECRET_jkl");
     let (mut service, handoff) = scripted_with_log(
@@ -297,7 +297,7 @@ fn credentials_never_appear_in_url_logs_or_errors() {
             ok(401, error_body("AUTH_REQUIRED")),
             ok(
                 201,
-                json!({"installation_id": "inst_example_0001", "installation_credential": "install_SECRET_def", "created_at": "2026-01-01T00:00:00.000Z"}),
+                json!({"installation_id": "inst_example_0001", "installation_credential": "installation_credential_SECRET_def_0000000000000000", "created_at": "2026-01-01T00:00:00.000Z"}),
             ),
         ],
     );
@@ -307,12 +307,12 @@ fn credentials_never_appear_in_url_logs_or_errors() {
     let bootstrap = service.bootstrap_installation(&scope(), BootstrapPlatform::Linux, Some("workstation")).unwrap();
     let rendered =
         format!("{:?} {:?} {} {:?} {:?} {:?}", service, service.transport().take_requests(), error.message, error.code, bootstrap, handoff.borrow());
-    for secret in ["product_SECRET_abc", "install_SECRET_def", "settle_SECRET_ghi", "proof_SECRET_jkl"] {
+    for secret in ["product_SECRET_abc", "installation_credential_SECRET_def_0000000000000000", "settle_SECRET_ghi", "proof_SECRET_jkl"] {
         assert!(!rendered.contains(secret), "a credential leaked into observable output");
     }
     assert_eq!(format!("{:?}", Secret::new("super_secret")), "Secret(<redacted>)");
     assert_eq!(format!("{}", Secret::new("super_secret")), "<redacted>");
-    assert!(!format!("{bootstrap:?}").contains("install_SECRET_def"));
+    assert!(!format!("{bootstrap:?}").contains("installation_credential_SECRET_def_0000000000000000"));
 }
 
 #[test]
@@ -493,16 +493,16 @@ fn installation_handoff_is_secret_wrapped() {
         credentials(),
         vec![ok(
             201,
-            json!({"installation_id": "inst_example_0001", "installation_credential": "install_SECRET_def", "created_at": "2026-01-01T00:00:00.000Z"}),
+            json!({"installation_id": "inst_example_0001", "installation_credential": "installation_credential_SECRET_def_0000000000000000", "created_at": "2026-01-01T00:00:00.000Z"}),
         )],
     );
     let bootstrap = service.bootstrap_installation(&scope(), BootstrapPlatform::Linux, Some("workstation")).unwrap();
     let log = log.borrow();
     assert_eq!(log.installations.len(), 1);
     assert_eq!(log.installations[0].0, "inst_example_0001");
-    assert_eq!(log.installations[0].1.expose_secret(), "install_SECRET_def");
-    assert_eq!(bootstrap.into_credential().expose_secret(), "install_SECRET_def");
-    assert!(!format!("{log:?}").contains("install_SECRET_def"));
+    assert_eq!(log.installations[0].1.expose_secret(), "installation_credential_SECRET_def_0000000000000000");
+    assert_eq!(bootstrap.into_credential().expose_secret(), "installation_credential_SECRET_def_0000000000000000");
+    assert!(!format!("{log:?}").contains("installation_credential_SECRET_def_0000000000000000"));
 }
 
 #[test]
@@ -595,4 +595,133 @@ fn begin_forwards_optional_authorization_id() {
     service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap();
     let body: Value = serde_json::from_slice(service.transport().take_requests()[0].body().unwrap()).unwrap();
     assert!(body.get("authorization_id").is_none());
+}
+
+const FIRST_INSTALL_CREDENTIAL: &str = "installation_credential_example_0000000000000000";
+
+fn installation_body() -> Value {
+    json!({
+        "installation_id": "inst_example_0001",
+        "installation_credential": FIRST_INSTALL_CREDENTIAL,
+        "created_at": "2026-01-01T00:00:00.000Z"
+    })
+}
+
+fn product_only_credentials() -> FixedCredentials {
+    FixedCredentials::none().with_product_session("product_session_example_0000000000000000")
+}
+
+#[test]
+fn first_installation_bootstraps_from_a_verified_session_without_a_scope() {
+    let (mut service, log) = scripted_with_log(product_only_credentials(), vec![ok(201, installation_body())]);
+    let bootstrap = service.bootstrap_first_installation(BootstrapPlatform::Linux, Some("workstation")).unwrap();
+    let requests = service.transport().take_requests();
+    assert_eq!(requests.len(), 1, "one POST /v1/installations");
+    let request = &requests[0];
+    assert_eq!(request.method(), "POST");
+    assert_eq!(request.url(), "https://auth.intcad.invalid/v1/installations");
+    assert_eq!(request.header("Authorization"), Some("Bearer product_session_example_0000000000000000"));
+    assert!(request.header("X-Installation-Credential").is_none(), "a first installation has no credential yet");
+    let body: Value = serde_json::from_slice(request.body().unwrap()).unwrap();
+    assert_eq!(body, json!({"platform": "linux", "label": "workstation"}));
+    assert!(!request.url().contains("product_session"), "the product session never enters the URL");
+    assert_eq!(bootstrap.installation_id(), "inst_example_0001");
+    assert_eq!(bootstrap.created_at(), "2026-01-01T00:00:00.000Z");
+    assert_eq!(bootstrap.into_credential().expose_secret(), FIRST_INSTALL_CREDENTIAL);
+    let log = log.borrow();
+    assert_eq!(log.installations.len(), 1);
+    assert_eq!(log.installations[0].0, "inst_example_0001");
+    assert_eq!(log.installations[0].1.expose_secret(), FIRST_INSTALL_CREDENTIAL);
+    assert!(!format!("{log:?}").contains(FIRST_INSTALL_CREDENTIAL), "the raw credential is redacted");
+}
+
+#[test]
+fn first_installation_without_a_product_session_or_after_binding_sends_nothing() {
+    let (mut no_product, log) = scripted_with_log(FixedCredentials::none(), vec![ok(201, installation_body())]);
+    assert_eq!(no_product.bootstrap_first_installation(BootstrapPlatform::Linux, None).unwrap_err().code, RefusalCode::AuthRequired);
+    assert!(no_product.transport().take_requests().is_empty(), "a provider-only or empty session sends no bootstrap");
+    assert!(log.borrow().installations.is_empty());
+
+    let bound = product_only_credentials().with_installation_credential(FIRST_INSTALL_CREDENTIAL);
+    let (mut already_bound, log) = scripted_with_log(bound, vec![ok(201, installation_body())]);
+    assert_eq!(already_bound.bootstrap_first_installation(BootstrapPlatform::Linux, None).unwrap_err().code, RefusalCode::AuthRequired);
+    assert!(already_bound.transport().take_requests().is_empty(), "an existing installation is never replaced");
+    assert!(log.borrow().installations.is_empty());
+}
+
+#[test]
+fn first_installation_rejects_a_response_outside_the_frozen_bootstrap_schema() {
+    let valid = installation_body();
+    let mut missing_credential = valid.clone();
+    missing_credential.as_object_mut().unwrap().remove("installation_credential");
+    let mut extra_field = valid.clone();
+    extra_field["balance"] = json!(1000);
+    let mut short_id = valid.clone();
+    short_id["installation_id"] = json!("inst_short");
+    let mut wrong_id_prefix = valid.clone();
+    wrong_id_prefix["installation_id"] = json!("installation_example_0001");
+    let mut short_credential = valid.clone();
+    short_credential["installation_credential"] = json!("installation_credential");
+    let mut bad_credential_character = valid.clone();
+    bad_credential_character["installation_credential"] = json!("installation_credential_0000000000000000 with-space");
+    let mut malformed_time = valid.clone();
+    malformed_time["created_at"] = json!("not-a-time");
+    let mut empty_time = valid.clone();
+    empty_time["created_at"] = json!("");
+
+    let cases = [
+        (201, Value::Array(vec![])),
+        (201, missing_credential),
+        (201, extra_field),
+        (201, short_id),
+        (201, wrong_id_prefix),
+        (201, short_credential),
+        (201, bad_credential_character),
+        (201, malformed_time),
+        (201, empty_time),
+        (200, valid),
+    ];
+    for (status, body) in cases {
+        let (mut service, log) = scripted_with_log(product_only_credentials(), vec![ok(status, body)]);
+        assert_eq!(
+            service.bootstrap_first_installation(BootstrapPlatform::Linux, None).unwrap_err().code,
+            RefusalCode::AuthUnavailable,
+            "a response outside the frozen schema is never accepted"
+        );
+        assert_eq!(service.transport().take_requests().len(), 1, "the bootstrap request was sent once");
+        assert!(log.borrow().installations.is_empty(), "no credential is handed off from a malformed response");
+    }
+}
+
+#[test]
+fn first_installation_refuses_when_the_response_is_an_error_or_transport_fails() {
+    let (mut auth, log) = scripted_with_log(product_only_credentials(), vec![ok(401, error_body("AUTH_REQUIRED"))]);
+    assert_eq!(auth.bootstrap_first_installation(BootstrapPlatform::Linux, None).unwrap_err().code, RefusalCode::AuthRequired);
+    assert!(log.borrow().installations.is_empty());
+
+    let (mut disabled, log) = scripted_with_log(product_only_credentials(), vec![ok(403, error_body("ACCOUNT_DISABLED"))]);
+    assert_eq!(disabled.bootstrap_first_installation(BootstrapPlatform::Linux, None).unwrap_err().code, RefusalCode::AccountDisabled);
+    assert!(log.borrow().installations.is_empty());
+
+    let (mut unavailable, log) = scripted_with_log(product_only_credentials(), vec![ok(503, error_body("AUTH_UNAVAILABLE"))]);
+    assert_eq!(unavailable.bootstrap_first_installation(BootstrapPlatform::Linux, None).unwrap_err().code, RefusalCode::AuthUnavailable);
+    assert!(log.borrow().installations.is_empty());
+
+    let (mut timeout, log) = scripted_with_log(product_only_credentials(), vec![Err(TransportFailure::Timeout)]);
+    assert_eq!(timeout.bootstrap_first_installation(BootstrapPlatform::Linux, None).unwrap_err().code, RefusalCode::AuthUnavailable);
+    assert!(log.borrow().installations.is_empty());
+}
+
+#[test]
+fn first_installation_handoff_failure_returns_no_binding() {
+    let (handoff, log) = RecordingHandoff::failing();
+    let mut service = HttpAccountService::with_transport(
+        ScriptedTransport::new(vec![ok(201, installation_body())]),
+        WireConnection::new(BASE, "1.0.0").unwrap(),
+        Box::new(product_only_credentials()),
+        Box::new(handoff),
+        Box::new(TestClock::at(T0)),
+    );
+    assert_eq!(service.bootstrap_first_installation(BootstrapPlatform::Linux, None).unwrap_err().code, RefusalCode::AuthUnavailable);
+    assert!(log.borrow().installations.is_empty());
 }

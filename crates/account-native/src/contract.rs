@@ -729,7 +729,7 @@ mod tests {
                 _ => BootstrapPlatform::Unknown,
             };
             let label = body.get("label").and_then(Value::as_str);
-            return Ok(match service.bootstrap_installation(scope, platform, label) {
+            return Ok(match service.bootstrap_first_installation(platform, label) {
                 Ok(bootstrap) => Observed::Installation(bootstrap),
                 Err(error) => Observed::Refusal(error),
             });

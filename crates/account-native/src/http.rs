@@ -77,6 +77,12 @@ pub trait CredentialHandoff {
     fn settlement_credential(&mut self, operation: &OperationId, credential: Secret) -> Result<(), Refusal>;
     /// The one-time installation credential.
     fn installation_credential(&mut self, installation_id: &str, credential: Secret) -> Result<(), Refusal>;
+
+    /// Publish the first installation identity and its credential after a provider-verified
+    /// product session. `expected_product_session` is the exact bearer sent in the bootstrap
+    /// request; an implementation must refuse if the active session changed meanwhile. A failed
+    /// write must leave no readable half-binding.
+    fn first_installation_credential(&mut self, expected_product_session: &Secret, installation_id: &str, credential: Secret) -> Result<(), Refusal>;
 }
 
 /// The host-owned credentials for one account session.
@@ -87,6 +93,13 @@ pub trait WireCredentials {
     fn execution_session_proof(&self, operation: &OperationId) -> Option<Secret>;
     /// Initial lease proof, keyed by the server-issued authorization id.
     fn initial_lease_proof(&self, authorization: &GrantId) -> Option<Secret>;
+
+    /// Whether this session already has a durable installation identity. A store with a
+    /// partially written pair must answer `true` from the identity alone, so a caller never
+    /// posts a replacement bootstrap while the previous identity is still recorded.
+    fn installation_bound(&self) -> bool {
+        self.installation_credential().is_some()
+    }
 }
 
 /// A fixed credential set. Task 4 replaces this with the OS-protected store.
@@ -250,6 +263,12 @@ impl<T: Transport + ?Sized> Transport for Box<T> {
 }
 
 impl<T: Transport + ?Sized> Transport for std::sync::Arc<T> {
+    fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
+        (**self).send(request)
+    }
+}
+
+impl<T: Transport + ?Sized> Transport for &T {
     fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
         (**self).send(request)
     }
@@ -587,13 +606,38 @@ impl<T: Transport> HttpAccountService<T> {
         if status != 201 {
             return Err(error_refusal(status, &value));
         }
-        let installation_id = required_str(&value, "/installation_id")?;
-        let credential = Secret::new(required_str(&value, "/installation_credential")?);
-        let created_at = required_str(&value, "/created_at")?;
-        if installation_id.is_empty() || created_at.is_empty() || credential.is_empty() {
-            return Err(unavailable());
+        let (installation_id, credential, created_at) = validate_installation_bootstrap(&value)?;
+        self.handoff.installation_credential(&installation_id, Secret::new(credential.clone())).map_err(|_| unavailable())?;
+        Ok(InstallationBootstrap { installation_id, created_at, credential: Secret::new(credential) })
+    }
+
+    /// POST `/v1/installations` for the first installation of a provider-verified product
+    /// session. Unlike [`Self::bootstrap_installation`], this path needs no
+    /// [`AuthenticatedHostScope`]: the installation identity does not exist yet, so requiring a
+    /// scope would be circular. The active product session is the authority, and the response is
+    /// validated against the frozen bootstrap schema before the pair is published.
+    pub fn bootstrap_first_installation(&mut self, platform: BootstrapPlatform, label: Option<&str>) -> Result<InstallationBootstrap, Refusal> {
+        let product_session = self.credentials.product_session().ok_or_else(|| refusal(RefusalCode::AuthRequired))?;
+        if self.credentials.installation_bound() {
+            return Err(refusal(RefusalCode::AuthRequired));
         }
-        self.handoff.installation_credential(&installation_id, credential.clone()).map_err(|_| unavailable())?;
+        if label.is_some_and(|value| value.len() > 128 || value.contains(['\r', '\n'])) {
+            return Err(refusal(RefusalCode::AuthRequired));
+        }
+        let mut body = json!({"platform": platform.wire()});
+        if let Some(label) = label {
+            body["label"] = Value::String(label.to_owned());
+        }
+        let mut request = self.request("POST", "/v1/installations", Some(body));
+        // Send the exact token that will be rechecked at publication, not a refreshed read.
+        self.push_auth(&mut request, "Authorization", Some(Secret::new(format!("Bearer {}", product_session.expose_secret()))))?;
+        let (status, value) = self.exchange(request)?;
+        if status != 201 {
+            return Err(error_refusal(status, &value));
+        }
+        let (installation_id, credential, created_at) = validate_installation_bootstrap(&value)?;
+        let credential = Secret::new(credential);
+        self.handoff.first_installation_credential(&product_session, &installation_id, credential.clone()).map_err(|_| unavailable())?;
         Ok(InstallationBootstrap { installation_id, created_at, credential })
     }
 
@@ -1018,12 +1062,48 @@ impl BillingResultWire for BillingResult {
     }
 }
 
-fn required_str(value: &Value, pointer: &str) -> Result<String, Refusal> {
-    value.pointer(pointer).and_then(Value::as_str).map(str::to_owned).ok_or_else(unavailable)
-}
-
 fn required_u64(value: &Value, pointer: &str) -> Result<u64, Refusal> {
     value.pointer(pointer).and_then(Value::as_u64).ok_or_else(unavailable)
+}
+
+/// Validate the frozen `InstallationBootstrapResponse` before any credential is published.
+/// `additionalProperties: false` is enforced by requiring exactly the three schema fields, so a
+/// response cannot smuggle a balance, settlement credential or another binding.
+fn validate_installation_bootstrap(value: &Value) -> Result<(String, String, String), Refusal> {
+    let object = value.as_object().ok_or_else(unavailable)?;
+    if object.len() != 3
+        || !object.contains_key("installation_id")
+        || !object.contains_key("installation_credential")
+        || !object.contains_key("created_at")
+    {
+        return Err(unavailable());
+    }
+    let installation_id = object.get("installation_id").and_then(Value::as_str).ok_or_else(unavailable)?;
+    if !valid_installation_id(installation_id) {
+        return Err(unavailable());
+    }
+    let credential = object.get("installation_credential").and_then(Value::as_str).ok_or_else(unavailable)?;
+    if !valid_opaque_credential(credential) {
+        return Err(unavailable());
+    }
+    let created_at = object.get("created_at").and_then(Value::as_str).ok_or_else(unavailable)?;
+    if parse_rfc3339_utc_millis(created_at).is_none() {
+        return Err(unavailable());
+    }
+    Ok((installation_id.to_owned(), credential.to_owned(), created_at.to_owned()))
+}
+
+/// The frozen `InstallationId` grammar: `^inst_[A-Za-z0-9_-]{8,64}$`.
+fn valid_installation_id(value: &str) -> bool {
+    value.strip_prefix("inst_").is_some_and(|suffix| {
+        (8..=64).contains(&suffix.len()) && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    })
+}
+
+/// The frozen `OpaqueCredential` grammar: 32–4096 bytes from `[A-Za-z0-9._~+/=-]`.
+fn valid_opaque_credential(value: &str) -> bool {
+    (32..=4096).contains(&value.len())
+        && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'~' | b'+' | b'/' | b'=' | b'-'))
 }
 
 /// Parse `YYYY-MM-DDTHH:MM:SS[.fff]Z` into Unix milliseconds. Only UTC and the exact frozen shape
@@ -1208,5 +1288,14 @@ impl CredentialHandoff for RecordingHandoff {
         }
         self.log.borrow_mut().installations.push((installation_id.to_owned(), credential));
         Ok(())
+    }
+
+    fn first_installation_credential(
+        &mut self,
+        _expected_product_session: &Secret,
+        installation_id: &str,
+        credential: Secret,
+    ) -> Result<(), Refusal> {
+        self.installation_credential(installation_id, credential)
     }
 }

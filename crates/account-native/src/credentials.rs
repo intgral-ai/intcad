@@ -931,6 +931,33 @@ fn read_secret(state: &SessionState, key: &str) -> Option<Secret> {
     }
 }
 
+/// Adopt the account label a previous process persisted under the active product session. This
+/// does not require an installation identity, so a restart can complete a missing first install.
+fn adopt_persisted_account(state: &mut SessionState) -> Option<()> {
+    if state.account.is_some() {
+        return Some(());
+    }
+    let account = state.store.get(ACCOUNT_KEY).ok().flatten()?;
+    if !safe_token(&account, MAX_ACCOUNT_BYTES) {
+        return None;
+    }
+    read_secret(state, PRODUCT_SESSION_KEY)?;
+    state.account = Some(account);
+    Some(())
+}
+
+/// Best-effort removal of a first-install pair that a revocation raced. The caller returns a
+/// refusal either way; a failed delete locks the session so no half-binding becomes readable.
+fn remove_first_installation(state: &mut SessionState) {
+    if state.store.delete(INSTALLATION_ID_KEY).is_err() {
+        state.locked = true;
+    }
+    if state.store.delete(INSTALLATION_CREDENTIAL_KEY).is_err() {
+        state.locked = true;
+    }
+    state.installation = None;
+}
+
 /// Adopt the account and installation labels a previous process persisted under the active
 /// product session. This is a restart path only: nothing is written and a provider-only session
 /// has no product secret, so it cannot synthesize a scope.
@@ -1025,8 +1052,27 @@ impl WireCredentials for CredentialSession {
         self.epoch_unchanged(epoch).then_some(secret).flatten()
     }
 
+    fn installation_bound(&self) -> bool {
+        let Some((mut state, epoch)) = self.lock_if_authorized() else {
+            return false;
+        };
+        if state.account.is_none() || state.installation.is_none() {
+            let Some(()) = adopt_persisted_labels(&mut state) else {
+                return false;
+            };
+        }
+        let Some(installation) = state.installation.as_deref() else {
+            return false;
+        };
+        let persisted = state.store.get(INSTALLATION_ID_KEY).ok().flatten();
+        persisted.as_deref() == Some(installation) && self.epoch_unchanged(epoch)
+    }
+
     fn installation_credential(&self) -> Option<Secret> {
-        let (state, epoch) = self.lock_if_authorized()?;
+        let (mut state, epoch) = self.lock_if_authorized()?;
+        if state.account.is_none() || state.installation.is_none() {
+            adopt_persisted_labels(&mut state)?;
+        }
         let account = state.account.as_deref()?;
         let installation = state.installation.as_deref()?;
         if !safe_token(account, MAX_ACCOUNT_BYTES) || !safe_token(installation, MAX_IDENTIFIER_BYTES) {
@@ -1148,5 +1194,51 @@ impl CredentialHandoff for CredentialSession {
             return Err(handoff_refusal());
         }
         result
+    }
+
+    fn first_installation_credential(&mut self, expected_product_session: &Secret, installation_id: &str, credential: Secret) -> Result<(), Refusal> {
+        let (mut state, epoch) = self.lock_for_handoff()?;
+        adopt_persisted_account(&mut state).ok_or_else(handoff_refusal)?;
+        let account = state.account.as_deref().ok_or_else(handoff_refusal)?.to_owned();
+        if state.store.get(ACCOUNT_KEY).map_err(|_| handoff_refusal())?.as_deref() != Some(account.as_str()) {
+            return Err(handoff_refusal());
+        }
+        let active_product = read_secret(&state, PRODUCT_SESSION_KEY).ok_or_else(handoff_refusal)?;
+        if &active_product != expected_product_session {
+            return Err(handoff_refusal());
+        }
+        if !safe_token(installation_id, MAX_IDENTIFIER_BYTES) {
+            return Err(handoff_refusal());
+        }
+        if state.installation.is_some() || state.store.get(INSTALLATION_ID_KEY).map_err(|_| handoff_refusal())?.is_some() {
+            return Err(handoff_refusal());
+        }
+        // Publish the credential first and the identity last. The id is the marker that makes
+        // the pair readable, so a crash between the two writes leaves an unreadable orphan
+        // instead of an identity without its credential. Any scope keys left without an
+        // identity are unreachable too; drop them before the new binding is published.
+        clear_dynamic_prefix(&mut state, "scope/").map_err(|_| handoff_refusal())?;
+        if let Err(error) = state.store.delete(INSTALLATION_CREDENTIAL_KEY) {
+            let _ = store_failure(&mut state, error);
+            return Err(handoff_refusal());
+        }
+        if set_secret(&mut state, INSTALLATION_CREDENTIAL_KEY, credential.expose_secret()).is_err() {
+            return Err(handoff_refusal());
+        }
+        if !self.epoch_unchanged(epoch) {
+            remove_first_installation(&mut state);
+            return Err(handoff_refusal());
+        }
+        if let Err(error) = state.store.set(INSTALLATION_ID_KEY, installation_id) {
+            let _ = state.store.delete(INSTALLATION_CREDENTIAL_KEY);
+            let _ = store_failure(&mut state, error);
+            return Err(handoff_refusal());
+        }
+        state.installation = Some(installation_id.to_owned());
+        if !self.epoch_unchanged(epoch) {
+            remove_first_installation(&mut state);
+            return Err(handoff_refusal());
+        }
+        Ok(())
     }
 }
