@@ -1,7 +1,7 @@
 //! One disclosure drawing for sections, trees, cards and window folds.
 use crate::theme::Tokens;
 use crate::ui_kit::BackingTooltipExt as _;
-use egui::{Color32, Painter, Pos2, Rect, Response, Ui, pos2, vec2};
+use egui::{Color32, FontId, Painter, Pos2, Rect, Response, Sense, Ui, pos2, vec2};
 
 /// Content visible: down. Content hidden: right. No animation, matching kit sections.
 /// Tokens: form_section_icon_size; the caller supplies a semantic ink token.
@@ -37,6 +37,27 @@ fn disclosure_button_with_hover(ui: &mut Ui, rect: Rect, open: bool, label: &str
     }
     disclosure(ui.painter(), rect.center(), open, if response.hovered() || response.has_focus() { t.form_ink } else { t.form_dim });
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, ui.is_enabled(), open, label));
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).backing_on_hover_text(label)
+}
+
+/// A labelled secondary disclosure action in existing chrome. The chevron, typography, spacing
+/// and hover come from the kit; assistive technology receives the expanded state through the
+/// shared collapsing-header widget info. Tokens: `control_height, control_radius, hover,
+/// form_section_icon_size, space_6, space_8, font_label, form_ink/dim`.
+pub(crate) fn disclosure_label_button(ui: &mut Ui, label: &str, expanded: bool) -> Response {
+    let t = Tokens::get();
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(t.font_label), t.form_ink);
+    let icon = t.form_section_icon_size;
+    let width = (t.space_8 + icon + t.space_6 + galley.size().x + t.space_8).max(t.control_height);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, t.control_height), Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, t.control_radius, t.hover);
+    }
+    let ink = if response.hovered() || response.has_focus() { t.form_ink } else { t.form_dim };
+    let icon_rect = Rect::from_center_size(pos2(rect.left() + t.space_8 + icon / 2.0, rect.center().y), vec2(icon, icon));
+    disclosure(ui.painter(), icon_rect.center(), expanded, ink);
+    ui.painter().galley(pos2(icon_rect.right() + t.space_6, rect.center().y - galley.size().y / 2.0), galley, t.form_ink);
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::CollapsingHeader, ui.is_enabled(), expanded, label));
     response.on_hover_cursor(egui::CursorIcon::PointingHand).backing_on_hover_text(label)
 }
 

@@ -250,7 +250,7 @@ pub fn status_chip(app: &mut SolveApp, ui: &Ui, slot: Rect) {
     Container::new(ui.ctx(), Surface::Popup)
         .menu(&response)
         .frame(Menu::frame())
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .close_behavior(crate::ui_kit::KEEP_OPEN_ON_CLICK)
         .show(|ui| show_menu(app, ui));
 }
 
@@ -272,7 +272,8 @@ pub(crate) fn compact_menu_entry(app: &mut SolveApp, ui: &mut Ui) -> bool {
         return false;
     }
     let label = format!("{}…", app.tr("account.title"));
-    let entry = crate::ui_kit::Menu::button(ui, label, |ui| show_menu(app, ui));
+    // Match the caption chip: copy feedback and the manual disclosure need the popup to stay open.
+    let entry = crate::ui_kit::Menu::button_keep_open(ui, label, |ui| show_menu(app, ui));
     crate::scenario::publish_handle("account:overflow", entry.response.rect.center());
     crate::scenario::publish_rect("account:overflow", entry.response.rect);
     entry.inner == Some(true)
@@ -449,7 +450,7 @@ fn waiting_sign_in_controls(app: &mut SolveApp, ui: &mut Ui, view: &AccountView,
         })
         .inner;
     if let Some(address) = prompt.and_then(|code| manual_address(&code.verification_uri)) {
-        let response = button(ui, app.tr("account.sign_in_manually"), Button::Small);
+        let response = crate::ui_kit::disclosure_label_button(ui, app.tr("account.sign_in_manually"), manual);
         publish(&format!("{browser_handle}:manual"), &response);
         if response.clicked() {
             manual = !manual;
@@ -467,10 +468,12 @@ fn waiting_sign_in_controls(app: &mut SolveApp, ui: &mut Ui, view: &AccountView,
 
 /// The manual fallback shows only a safe HTTPS origin and path. Query and fragment can carry the
 /// provider's one-time code or other account data, so the disclosure never reveals them.
-fn manual_address(uri: &str) -> Option<&str> {
+pub(super) fn manual_address(uri: &str) -> Option<&str> {
     let address = uri.split(['?', '#']).next().unwrap_or_default();
     let rest = address.strip_prefix("https://")?;
-    (!rest.is_empty() && !rest.bytes().any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace() || byte == b'\\' || byte == b'@'))
+    let authority = rest.split('/').next().unwrap_or_default();
+    let host = authority.split(':').next().unwrap_or_default();
+    (!host.is_empty() && !rest.bytes().any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace() || byte == b'\\' || byte == b'@'))
         .then_some(address)
 }
 

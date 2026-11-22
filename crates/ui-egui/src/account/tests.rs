@@ -804,6 +804,87 @@ fn assert_surface_on_screen(surface: &str, screen: egui::Rect) {
 }
 
 #[test]
+fn narrow_file_account_menu_keeps_copy_and_manual_controls_in_the_open_popup() {
+    let mut code = future_device_code(300);
+    code.verification_uri = "https://auth.example/device?user_code=PRIVATE#fragment".into();
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = false;
+    harness.app.account = start_flow(&FlowPort::signed_out(Some(code)));
+    harness.call("ui.resize", json!({"width":700.0,"height":720.0}));
+    harness.frames(3);
+    assert!(crate::scenario::handle_at("titlebar:account_status").is_none(), "the narrow window has no caption chip");
+    open_compact_account_menu(&mut harness);
+    assert!(crate::scenario::handle_at("account:sign_in_browser:copy").is_some(), "handles: {:?}", crate::scenario::handles("account:"));
+    assert!(harness.output.commands.is_empty(), "clipboard requires a click");
+
+    native_click(&mut harness, "account:sign_in_browser:copy");
+    assert!(matches!(harness.output.commands.as_slice(), [egui::OutputCommand::CopyText(code)] if code == "BCDF-GHJK"));
+    harness.frames(1);
+    assert!(
+        harness.widget(crate::i18n::tr("account.device_code_copied")).is_some(),
+        "the File Account popup closed before copy feedback could render: {:?}",
+        crate::scenario::handles("account:")
+    );
+    assert!(!painted_text(&harness.shapes).contains("https://auth.example/device"), "the address is still hidden");
+    assert!(crate::scenario::handle_at("account:sign_in_browser:manual").is_some(), "the File Account popup closed after copy");
+
+    native_click(&mut harness, "account:sign_in_browser:manual");
+    harness.frames(1);
+    let text = painted_text(&harness.shapes).to_lowercase();
+    assert!(text.contains("https://auth.example/device"), "the File Account popup closed before the manual address rendered: {text}");
+    assert!(!text.contains("private"), "the manual address revealed the query: {text}");
+    assert!(!text.contains("fragment"), "the manual address revealed the fragment: {text}");
+}
+
+#[test]
+fn the_manual_disclosure_reports_its_expanded_state_to_accesskit() {
+    let (mut harness, _flow) = waiting_harness(true, future_device_code(300));
+    assert_eq!(manual_toggle_state(&harness), Some(egui::accesskit::Toggled::False), "collapsed disclosure state");
+    native_click(&mut harness, "account:sign_in_browser:manual");
+    harness.frames(1);
+    assert_eq!(manual_toggle_state(&harness), Some(egui::accesskit::Toggled::True), "expanded disclosure state");
+}
+
+fn manual_toggle_state(harness: &crate::scenario::Harness) -> Option<egui::accesskit::Toggled> {
+    let label = crate::i18n::tr("account.sign_in_manually");
+    harness.output.accesskit_update.as_ref()?.nodes.iter().find(|(_, node)| node.label() == Some(label)).and_then(|(_, node)| node.toggled())
+}
+
+#[test]
+fn a_waiting_state_without_a_prompt_stays_pending_instead_of_expired() {
+    let texts = render_view(AccountView { sign_in_state: SignInState::Waiting, sign_in_prompt: None, ..AccountView::signed_out() });
+    let text = joined(&texts);
+    assert!(text.contains(&crate::i18n::tr("account.sign_in_waiting").to_lowercase()), "{texts:?}");
+    assert!(!text.contains("sign-in code expired"), "{texts:?}");
+    assert!(!text.contains(&crate::i18n::tr("account.sign_in_retry").to_lowercase()), "{texts:?}");
+    assert!(crate::scenario::handle_at("account:sign_in_cancel").is_some(), "the pending challenge lost its cancel");
+    assert!(crate::scenario::handle_at("account:sign_in").is_none(), "a promptless wait offered a retry");
+    assert!(crate::scenario::handle_at("account:sign_in_browser").is_none(), "a promptless wait offered a browser");
+    assert!(crate::scenario::handle_at("account:sign_in_browser:copy").is_none(), "a promptless wait offered copy");
+}
+
+#[test]
+fn the_manual_address_rejects_untrusted_or_incomplete_https_urls() {
+    for uri in [
+        "",
+        "http://auth.example/device",
+        "https://",
+        "https://?user_code=BCDF-GHJK",
+        "https:///device",
+        "https://user:pass@auth.example/device",
+        "https://user@auth.example/device",
+        "https://auth.example\\device",
+        "https://auth.example/dev ice",
+        "https://auth.example/device\tcopy",
+        "https://auth.example/device\ncopy",
+    ] {
+        assert_eq!(super::panel::manual_address(uri), None, "{uri:?} must not be shown manually");
+    }
+    assert_eq!(super::panel::manual_address("https://auth.example/device?user_code=BCDF-GHJK#step"), Some("https://auth.example/device"));
+    assert_eq!(super::panel::manual_address("https://auth.example:443/device"), Some("https://auth.example:443/device"));
+}
+
+#[test]
 fn waiting_sign_in_shows_the_code_and_launches_the_browser_only_on_an_explicit_click() {
     let browser = Arc::new(Mutex::new(Vec::new()));
     let calls = Arc::new(Mutex::new(Vec::new()));
