@@ -266,6 +266,23 @@ class ReleasePackageEndToEnd(unittest.TestCase):
             data = self.record(directory, self.make_package(directory), "native")
             self.assertTrue(data["markers"], "a native package may not carry the agent's node or node_modules")
 
+    def test_a_derived_package_records_its_agent_carrying_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = self.make_package(directory)
+            out = Path(directory) / "contents.json"
+            result = subprocess.run([sys.executable, str(HERE / "package_contents.py"),
+                                     "--package-id", "release-flatpak-x86_64",
+                                     "--source-revision", "a" * 40,
+                                     "--distribution", "mastra-agent",
+                                     "--derived-from", "release-linux-x86_64",
+                                     "--source-artifact", str(source), "--out", str(out)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(out.read_text())
+            self.assertTrue(data["agent"]["present"] and data["agent"]["node"])
+            self.assertEqual(data["markers"], [], "the agent's own Node is not the source's marker")
+            self.assertEqual(data["unchecked"], [])
+
     def test_a_package_with_both_the_agent_and_the_legacy_runtime_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             data = self.record(directory, self.make_package(directory, legacy_runtime=True), "mastra-agent")

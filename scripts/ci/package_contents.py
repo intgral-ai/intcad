@@ -97,6 +97,14 @@ def inside_agent(entry):
     return AGENT_DIR in parts
 
 
+def inside_agent_markers_for(distribution, names):
+    """The runtime markers of a source artifact, given the distribution it is recorded for."""
+    markers = marker_entries(names)
+    if distribution == "native":
+        return markers
+    return [entry for entry in markers if not inside_agent(entry)]
+
+
 def agent_markers(names):
     """The markers outside the built-in agent's folder: a legacy ``mastra/`` runtime or enterprise
     content. The agent's own Node and ``node_modules`` are what the ``mastra-agent`` distribution
@@ -341,8 +349,14 @@ def main():
         except Exception as error:  # noqa: BLE001 - any failure is unverified content
             report["unchecked"].append({"name": source.name, "reason": str(error)})
         else:
-            report["markers"].extend(marker_entries(names))
+            # The source tarball carries the same agent the derived package will. Its folder is a
+            # marker only for a native distribution; for `mastra-agent` it is the point, and a Node
+            # outside it stays a marker either way.
+            report["markers"].extend(inside_agent_markers_for(args.distribution, names))
             report["agentMarkers"].extend(agent_markers(names))
+            found = agent_report(names)
+            if found["present"]:
+                report["agent"] = found
     else:
         for value in args.artifacts:
             path = Path(value)
