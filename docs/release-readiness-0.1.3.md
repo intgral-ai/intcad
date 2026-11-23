@@ -755,6 +755,24 @@ checksums.sh --require <tar> --require <msi> --require <dmg> -> 18 files, every 
 `checksums.sh` also stopped listing `build.json`/`contents.json`: they are per-package evidence, not
 downloads. Tests: `aliases_test.py` 4, `checksums_test.py` 11, both run by `packaging-lint.yml`.
 
+### 12.4.10 Secret scan of the candidate itself
+
+The release must not carry credentials. Checked on the real Linux tarball (the MSI install shows the
+same agent folder, and CI's `agent-package.mjs scan` runs at staging):
+
+```
+grep -rIl -E 'sk-[A-Za-z0-9]{20,}|ghp_…|AKIA…|BEGIN … PRIVATE KEY' over the agent's own files
+  -> no match (only library directories whose names contain auth/token/credential, e.g.
+     google-auth-library, @aws-sdk/credential-provider-*, which are package folders, not data)
+grep -rIl -E '/home/hyjing|/Users/hyjing|C:\\Users\\hyjing' over agent/ -> no match
+agent/secrets.mjs is the module that deletes provider keys from the environment before Mastra
+  starts (docs: "the agent's entry drops every provider key from its environment")
+agent.json holds target, node version, sdk versions and the enterprise removal note only
+```
+
+Not a substitute for rights clearance or for #7/#14's audits; it is the "no accidental credential in
+the artifact" check this role can run.
+
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
 The CTO supplied a DeepSeek API key for acceptance. It was used only in the throwaway VM, kept in
