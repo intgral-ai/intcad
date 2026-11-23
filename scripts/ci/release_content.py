@@ -141,6 +141,14 @@ def problems(source_revision, descriptors, contents, declaration="native"):
                     problem = _agent_problem(carried)
                     if problem:
                         failures.append(identity + ": " + name + ": " + problem)
+                # At least one of the package's own artifacts must carry it: a set that holds
+                # only the headless CLI archive has nothing a user can start the agent from.
+                app_artifacts = [
+                    name for name in per_artifact
+                    if not carries_no_agent(name) and not (per_artifact[name] or {}).get("coveredBy")
+                ]
+                if not any((per_artifact[name] or {}).get("present") for name in app_artifacts):
+                    failures.append(identity + ": no artifact of the package carries the agent")
             # A universal app's folder exists per CPU: both halves must be there, in the summary
             # and in every artifact's own answer.
             needed_slices = _slices_for(identity)
@@ -224,6 +232,7 @@ def problems(source_revision, descriptors, contents, declaration="native"):
     }
     for identity in sorted(derived):
         report = contents.get(identity)
+        build = descriptors.get(identity) or {}
         if not isinstance(report, dict):
             failures.append(identity + ": missing derived package content evidence (contents.json)")
             continue
@@ -264,6 +273,35 @@ def problems(source_revision, descriptors, contents, declaration="native"):
                 problem = _agent_problem(own[name])
                 if problem:
                     failures.append(identity + ": " + name + ": " + problem)
+        # The repack's bytes are checked like any other package's: every artifact inspected,
+        # none left unread, and every digest the one this job built.
+        unchecked = report.get("unchecked")
+        if not isinstance(unchecked, list):
+            failures.append(identity + ": unchecked artifact list is missing")
+            continue
+        if unchecked:
+            names = [item.get("name") if isinstance(item, dict) else item for item in unchecked]
+            failures.append(identity + ": content not inspected for " + _sample(names)
+                            + "; the derived package is unproven")
+        ignored = set(report.get("ignored") or [])
+        checked = {
+            item.get("name"): item.get("sha256")
+            for item in report.get("checked") or []
+            if isinstance(item, dict)
+        }
+        expected = {
+            name: digest
+            for name, digest in _artifacts(build).items()
+            if name not in ignored
+        }
+        if checked != expected:
+            missing = sorted(set(expected) - set(checked))
+            extra = sorted(set(checked) - set(expected))
+            changed = sorted(name for name in set(expected) & set(checked) if expected[name] != checked[name])
+            failures.append(identity + ": derived content evidence does not cover the built package bytes"
+                            + (f"; missing {_sample(missing)}" if missing else "")
+                            + (f"; unexpected {_sample(extra)}" if extra else "")
+                            + (f"; digest mismatch {_sample(changed)}" if changed else ""))
         # A derived package is the source tarball repacked: it carries what the source carries.
         if report.get("distribution") != (contents.get(source) or {}).get("distribution"):
             failures.append(identity + ": derived package distribution " + str(report.get("distribution"))

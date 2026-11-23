@@ -51,10 +51,21 @@ Four separate things held it back, and all four had to change together:
 - `.github/workflows/release-gate.yml`: declares `SOLIDCRAFT_DISTRIBUTION: "mastra-agent"` and
   passes it to the decision.
 - `scripts/ci/package_contents.py`, `scripts/ci/release_content.py`: a third distribution,
-  `mastra-agent`, proved from the built installers: the folder present, its Node present, none of
-  its required files missing, at least one `skills/<set>/<skill>/SKILL.md`, no legacy `mastra/`
-  runtime, no enterprise content or Node outside the folder, no unchecked artifact. `mastra` stays
-  refused; a derived package must match its source.
+  `mastra-agent`, proved from the built installers rather than the staging tree: at the place the
+  packager installs it (`usr/lib/intcad/mastra-agent`, the app's `Contents/Resources/mastra-agent`,
+  or the Windows tree's `mastra-agent/`), the folder present with its Node, every required file
+  and at least one `skills/<set>/<skill>/SKILL.md`; each macOS slice whole on its own; no legacy
+  `mastra/` runtime, no enterprise chunk and no Node outside that place; no unchecked artifact;
+  and an answer for every artifact, so a good archive cannot vouch for a broken sibling. A
+  universal app with one stand-in per slice, an empty Windows `mastra/` folder and the headless
+  CLI archive are recognised as what they are. `mastra` stays refused; a repack is inspected from
+  its own bytes as well as its source, and the Flatpak bundle is listed from the installation its
+  job makes of that file.
+- `packaging/linux/arch-agent.sh`: the `arch-package` action's PKGBUILD copies only `bin/` and
+  `share/` from the tarball, so `lib/intcad/mastra-agent` never reached the `.pkg.tar.zst`. The
+  release job adds that folder from the same tarball, regenerates the package's `.MTREE` and
+  repacks it, and the old `contents.json` only looked correct because the recorder read the
+  source tarball rather than the package.
 - `packages/mastra-runtime/scripts/agent-package.mjs`: `x86_64-apple-darwin` added as a target.
 - `packaging/mastra/stage-agent.sh`: forwards the test-only `--skills-root`.
 - Installed checks: `packaging/linux/installed-check-inside.sh`, `packaging/macos/installed-check.sh`,

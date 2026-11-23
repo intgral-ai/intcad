@@ -106,7 +106,8 @@ class NativeContentDecision(unittest.TestCase):
         }
         contents = {
             "release-linux-x86_64": report("release-linux-x86_64", [("solidcraft.tar.gz", DG)]),
-            "release-flatpak-x86_64": report("release-flatpak-x86_64", [], derived="release-linux-x86_64",
+            "release-flatpak-x86_64": report("release-flatpak-x86_64", [("solidcraft.flatpak", DG2)],
+                                             derived="release-linux-x86_64",
                                              source_name="solidcraft.tar.gz", source_sha=DG),
         }
         self.assertEqual(content.problems(SHA, descriptors, contents, "native"), [])
@@ -152,7 +153,9 @@ class NativeContentDecision(unittest.TestCase):
         }
         contents = {
             "release-linux-x86_64": report("release-linux-x86_64", [("intcad-0.1.0-beta.1-linux-x86_64.tar.gz", DG)]),
-            "release-arch-x86_64": report("release-arch-x86_64", [], derived="release-linux-x86_64",
+            "release-arch-x86_64": report("release-arch-x86_64",
+                                          [("intcad-0.1.0-beta.1-linux-x86_64.pkg.tar.zst", DG2)],
+                                          derived="release-linux-x86_64",
                                           source_name="intcad-0.1.0beta.1-linux-x86_64.tar.gz", source_sha=DG),
         }
         self.assertEqual(content.problems(SHA, descriptors, contents, "native"), [])
@@ -254,8 +257,8 @@ class AgentContentDecision(unittest.TestCase):
         descriptors, contents = self.evidence()
         identity = "release-flatpak-x86_64"
         descriptors[identity] = build(identity, [("pkg", DG2)])
-        contents[identity] = report(identity, [], distribution="native", derived="release-linux-x86_64",
-                                    source_name="pkg", source_sha=DG)
+        contents[identity] = report(identity, [("pkg", DG2)], distribution="native",
+                                    derived="release-linux-x86_64", source_name="pkg", source_sha=DG)
         problems = content.problems(SHA, descriptors, contents, "mastra-agent")
         self.assertTrue(any(identity in problem and "does not match its source" in problem for problem in problems), problems)
         contents[identity]["distribution"] = "mastra-agent"
@@ -265,6 +268,16 @@ class AgentContentDecision(unittest.TestCase):
         contents[identity]["sourceArtifact"] = "pkg-src"
         self.assertEqual(content.problems(SHA, descriptors, contents, "mastra-agent"), [])
 
+    def test_a_package_of_only_a_cli_archive_carries_no_agent(self):
+        # The headless CLI has no Assistant: a package set that is only that archive proves
+        # nothing about the app's agent.
+        descriptors = {"release-macos": build("release-macos", [("intcad-cli-0.1.2-macos-arm64.zip", DG)])}
+        contents = {"release-macos": report(
+            "release-macos", [("intcad-cli-0.1.2-macos-arm64.zip", DG)], distribution="mastra-agent",
+            agent={"present": False, "node": False, "nodeTargets": [], "missing": [], "skills": []})}
+        problems = content.problems(SHA, descriptors, contents, "mastra-agent")
+        self.assertTrue(any("no artifact of the package carries the agent" in problem for problem in problems), problems)
+
     def test_a_native_repack_is_not_asked_for_the_agent(self):
         # The agent is built for x86_64 Linux only; the aarch64 Flatpak is native on both sides.
         descriptors = {
@@ -273,7 +286,8 @@ class AgentContentDecision(unittest.TestCase):
         }
         contents = {
             "release-linux-aarch64": report("release-linux-aarch64", [("tarball", DG)]),
-            "release-flatpak-aarch64": report("release-flatpak-aarch64", [], derived="release-linux-aarch64",
+            "release-flatpak-aarch64": report("release-flatpak-aarch64", [("pkg", DG2)],
+                                              derived="release-linux-aarch64",
                                               source_name="tarball", source_sha=DG),
         }
         self.assertEqual(content.problems(SHA, descriptors, contents, "mastra-agent"), [])

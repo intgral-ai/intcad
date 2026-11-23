@@ -186,12 +186,12 @@ class AgentContents(unittest.TestCase):
         "usr/lib/intcad/mastra-agent/skills/modelling-skills/solidcraft-editing/SKILL.md",
     ]
 
-    def report(self, directory, names, distribution="mastra-agent"):
+    def report(self, directory, names, distribution="mastra-agent", package_id="release-linux-x86_64"):
         package = Path(directory) / "intcad-linux-x86_64.tar.gz"
         make_tar(package, names)
         out = Path(directory) / "contents.json"
         result = subprocess.run([sys.executable, str(HERE / "package_contents.py"),
-                                 "--package-id", "release-linux-x86_64",
+                                 "--package-id", package_id,
                                  "--source-revision", "a" * 40,
                                  "--distribution", distribution,
                                  "--out", str(out), str(package)],
@@ -228,9 +228,20 @@ class AgentContents(unittest.TestCase):
             for slice_ in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
                 base = "Intcad.app/Contents/Resources/mastra-agent/" + slice_
                 names.extend(base + "/" + name.split("mastra-agent/", 1)[1] for name in self.AGENT)
-            data = self.report(directory, names)
+            data = self.report(directory, names, package_id="release-macos")
             self.assertEqual(data["agent"]["nodeTargets"], ["aarch64-apple-darwin", "x86_64-apple-darwin"])
             self.assertEqual(data["agent"]["missing"], [])
+
+    def test_an_agent_folder_outside_the_apps_resources_does_not_count(self):
+        # The app looks beside its own resources: a copy an installer drops in `extras/` is not
+        # the agent it starts, so a package is not credited with one there.
+        with tempfile.TemporaryDirectory() as directory:
+            data = self.report(directory, ["usr/bin/intcad", *self.AGENT,
+                                           *[name.replace("mastra-agent/", "extras/mastra-agent/")
+                                             for name in self.AGENT]],
+                               package_id="release-macos")
+            self.assertIsNone(data["agent"], "an extras/ folder is not the agent the app starts")
+            self.assertTrue(data["markers"], "a Node outside the agent's install place is a marker")
 
     def test_a_legacy_runtime_or_a_stray_node_outside_the_agent_is_a_marker(self):
         with tempfile.TemporaryDirectory() as directory:

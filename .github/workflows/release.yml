@@ -380,13 +380,26 @@ jobs:
         env:
           PKG: dist/release/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
         run: packaging/linux/arch-depends.sh "$PKG" gtk3 webkit2gtk-4.1
+      # The arch-package action's PKGBUILD copies only bin/ and share/, so the agent's own folder
+      # (lib/intcad/mastra-agent, installed under usr/lib) never reaches the package. Put it there
+      # from the same tarball the package was built from, and keep .MTREE honest.
+      - name: The package carries the built-in agent
+        if: matrix.arch == 'x86_64'
+        env:
+          PKG: dist/release/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
+        run: packaging/linux/arch-agent.sh "$PKG" "dist/linux/intcad-${{ env.SOLIDCRAFT_VERSION }}-linux-${{ matrix.arch }}.tar.gz"
       - name: Check the package
         env:
           PKG: dist/release/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
+          ARCH: ${{ matrix.arch }}
         run: |
           # Each path on its own: an alternation passes as soon as one of them is there.
           listing="$(tar --zstd -tf "$PKG")"
-          for path in usr/bin/intcad usr/bin/intcad-cli usr/share/applications/ai.intgral.intcad.desktop; do
+          paths=(usr/bin/intcad usr/bin/intcad-cli usr/share/applications/ai.intgral.intcad.desktop)
+          if [ "$ARCH" = x86_64 ]; then
+            paths+=(usr/lib/intcad/mastra-agent/node usr/lib/intcad/mastra-agent/agent/main.mjs)
+          fi
+          for path in "${paths[@]}"; do
             grep -qxF "$path" <<<"$listing" || { echo "::error::$path is not in the package"; exit 1; }
           done
           info="$(mktemp)"
