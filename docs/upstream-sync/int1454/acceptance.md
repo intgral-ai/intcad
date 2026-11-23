@@ -243,6 +243,18 @@ pre-migration build cannot read a post-migration file. That is the existing newe
 silent coercion; it also means the migration cannot be rolled back by a build that only understands
 51 without losing access to files written in between.
 
+### 5.2 Real desktop round trip on `develop`
+
+The same checks ran through the running desktop app, not a headless session, on `9c24061c`.
+
+- Builds: `intcad` SHA-256 `d09dc11bfa756ca21d5896008fedc427a1ba28a3e9db01889a182502de024d11`, `intcad-cli` `d098a1547791d4285c19cf4f1d54a2785851d3c56ca7a8eb9f51ecc45934824c`, both Rust 1.99.1 `ci` profile from the pinned lockfile.
+- Harness: `cd1-verify.py` SHA-256 `aa2f2c5193a979a0ae743e60ec41a3bf219e7910f82ec3c5c65400b08c701c4a`, fixture SHA-256 `1a3b36bb…`. Binary, CLI, harness and fixture hashes were identical before and after the run.
+- Result: exit `0`; the server reported `backend: desktop app`. The `solidcraft/13` design opened, saved as `solidcraft/51`, and reopened with the same content digest `6922cc60…` as the headless run; the second save reported 7663 bytes with the same file digest `eb75cd2a…`; a truncated copy was refused (`HDR resource admission: EOF while parsing an object`) without replacing the active design. The record has no headless-session note. VM shut off afterwards.
+- Log SHA-256 `f5cfdade3b0f0344d46187ed2c73f46d0fe95757364029dacddb40c7bd4512f7`.
+
+This closes the desktop CD-1 round trip for the pre-migration `develop` build only. The equivalent
+run on the landed migration SHA, with the format and preference checks repeated there, remains open.
+
 This is tool validation on existing revisions. Final-SHA persistence acceptance still needs the same
 check run on the CLI built from the landed SHA, with the GUI round trip recaptured.
 
