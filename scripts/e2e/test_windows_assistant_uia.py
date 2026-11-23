@@ -187,6 +187,211 @@ class StandaloneSmoke(unittest.TestCase):
             if ($script:diagnostic) { throw 'unique Close should not emit a refusal diagnostic' }
         """)
 
+    def test_only_exact_cold_zero_compares_roots_and_preserves_the_exact_refusal(self) -> None:
+        self.fixture("""
+            $view = @{Window=[IntPtr]42; Rect=@{Left=10; Top=20; Right=110; Bottom=120}}
+            $refusal = 'no unique clickable page Close inside the live WebView'
+            $valid = @{Left=20; Top=30; Right=40; Bottom=50; Enabled=$true; Offscreen=$false}
+            $disabled = $valid.Clone(); $disabled.Enabled = $false
+            $counts = 'ok wrapper.close_name_any_role=0 wrapper.close_name_button=0 wrapper.documents=65 widget.close_name_any_role=1 widget.close_name_button=1 widget.documents=1'
+            function FindPageClose { $query }
+            function Click { throw 'diagnostics must not authorize input' }
+            function Write-Host($message) {
+                if ($case.LogFails -and $message -clike 'page Close UIA roots:*') { throw 'comparison logging failed' }
+                $script:messages.Add($message)
+            }
+            function ReadPageCloseComparison($target) {
+                if ($target.Window -ne $view.Window) { throw 'wrong WRY wrapper' }
+                $script:comparisons++
+                if ($readerThrows) { throw 'private provider text' }
+                $receipt
+            }
+            foreach ($case in @(
+                @{Query=('{"matched":0,"empty":0,"candidates":[]}' | ConvertFrom-Json -AsHashtable); Reader=$counts; Status=$counts},
+                @{Query=@{matched=0; empty=0; candidates=@()}; Throws=$true; Status='error'},
+                @{Query=@{matched=0; empty=0; candidates=@()}; Reader='unsupported'; Status='unsupported'},
+                @{Query=@{matched=0; empty=0; candidates=@()}; Reader='stale'; Status='stale'},
+                @{Query=@{matched=0; empty=0; candidates=@()}; Reader="$counts private title"; Status='error'},
+                @{Query=@{matched=0; empty=0; candidates=@()}; Reader=$counts.Replace('documents=65', 'documents=66'); Status='error'},
+                @{Query=@{matched=0; empty=0; candidates=@()}; Reader=$counts.Replace('widget.close_name_any_role=1', 'widget.close_name_any_role=0'); Status='error'},
+                @{Query=@{matched=0; empty=0; candidates=@()}; Reader=$counts; LogFails=$true},
+                @{Query=@{matched=0; empty=0; candidates=@(); unrelated='private'}},
+                @{Query=@{matched='0'; empty=0; candidates=@()}},
+                @{Query=@{matched=$false; empty=0; candidates=@()}},
+                @{Query=@{matched=0; empty=0; candidates=$null}},
+                @{Query=@{matched=0; empty=1; candidates=@()}},
+                @{Query=@{matched=0; empty=0; candidates=@($disabled)}},
+                @{Query=@{matched=1; empty=1; candidates=@()}},
+                @{Query=@{matched=1; empty=0; candidates=@($disabled)}},
+                @{Query=@{matched=2; empty=0; candidates=@($valid,$valid)}}
+            )) {
+                $query = $case.Query; $receipt = $case.Reader; $readerThrows = $case.Throws
+                $script:comparisons = 0
+                $script:messages = [Collections.Generic.List[string]]::new()
+                $errorText = try { ClosePage $view } catch { $_.Exception.Message }
+                if ($errorText -cne $refusal) { throw "changed refusal: $errorText" }
+                if ($case.LogFails) {
+                    if ($script:comparisons -ne 1 -or $script:messages.Count -ne 1) {
+                        throw 'a failed comparison log must leave only the original diagnostic'
+                    }
+                } elseif ($case.Status) {
+                    if ($script:comparisons -ne 1) { throw 'exact cold zero must run one comparison' }
+                    if ($script:messages.Count -ne 2 -or $script:messages[0] -cne "page Close UIA roots: $($case.Status)") {
+                        throw "unexpected or unsafe comparison output: $($script:messages -join '; ')"
+                    }
+                } elseif ($script:comparisons -ne 0 -or $script:messages.Count -ne 1) {
+                    throw 'a nonzero or inexact result invoked diagnostics'
+                }
+                if ($script:messages[-1] -cnotlike 'page Close UIA: matched=*; webview=10,20-110,120') {
+                    throw 'lost the original refusal diagnostic'
+                }
+            }
+        """)
+
+    def test_root_comparison_samples_only_a_unique_live_widget_and_rejects_stale_counts(self) -> None:
+        self.fixture("""
+            $frame = [IntPtr]10; $wrapper = [IntPtr]20; $widget = [IntPtr]30
+            $start = [datetime]::UtcNow
+            $owner = @{Id=100; HasExited=$false; StartTime=$start}
+            function ReadPageCloseWindow($native, $window) { $windows[$window.ToInt64()] }
+            function FindVisiblePageCloseWidgets($native, $scope) {
+                if ($scope -ne $wrapper) { throw 'native enumeration escaped the wrapper' }
+                $widgets
+            }
+            function ReadPageCloseCounts($root) {
+                $reads.Add($root.ToInt64())
+                if ($change -eq 'reparent' -and $root -eq $wrapper) { $windows[25L].Parent = [IntPtr]10 }
+                if ($change -eq 'change-owner' -and $root -eq $widget) { $windows[30L].Owner = 201 }
+                if ($change -eq 'hide' -and $root -eq $widget) { $windows[30L].Visible = $false }
+                if ($change -eq 'exit' -and $root -eq $wrapper) { $owner.HasExited = $true }
+                if ($change -eq 'throw' -and $root -eq $widget) { throw 'private UIA provider exception' }
+                if ($root -eq $wrapper) { NewPageCloseCounts 0 0 64 $true }
+                elseif ($root -eq $widget) { NewPageCloseCounts 80 66 0 $true }
+                else { throw 'UIA sample escaped the approved roots' }
+            }
+            if (-not (Get-Command ComparePageCloseRoots -ErrorAction SilentlyContinue)) {
+                throw 'missing bounded root comparison'
+            }
+            foreach ($case in @(
+                @{Mode='live'; Widgets=@($widget); Reads='20,30'; Report='ok wrapper.close_name_any_role=0 wrapper.close_name_button=0 wrapper.documents=65 widget.close_name_any_role=65 widget.close_name_button=65 widget.documents=1'},
+                @{Mode='missing'; Widgets=@(); Reads=''; Report='unsupported'},
+                @{Mode='multiple'; Widgets=@($widget,[IntPtr]31); Reads=''; Report='unsupported'},
+                @{Mode='unrelated'; Widgets=@([IntPtr]31); Reads=''; Report='stale'},
+                @{Mode='hidden'; Widgets=@($widget); Reads=''; Report='stale'},
+                @{Mode='stale-wrapper'; Widgets=@($widget); Reads=''; Report='stale'},
+                @{Mode='wrong-frame-owner'; Widgets=@($widget); Reads=''; Report='stale'},
+                @{Mode='reparent'; Widgets=@($widget); Reads='20'; Report='stale'},
+                @{Mode='change-owner'; Widgets=@($widget); Reads='20,30'; Report='stale'},
+                @{Mode='hide'; Widgets=@($widget); Reads='20,30'; Report='stale'},
+                @{Mode='exit'; Widgets=@($widget); Reads='20'; Report='stale'},
+                @{Mode='throw'; Widgets=@($widget); Reads='20,30'; Report='error'}
+            )) {
+                $change = $case.Mode; $widgets = $case.Widgets
+                $owner.HasExited = $false
+                $windows = @{
+                    10L=@{Owner=100; Thread=1; Parent=[IntPtr]::Zero; Class='fixture frame'; Visible=$true}
+                    20L=@{Owner=100; Thread=1; Parent=$frame; Class='WRY_WEBVIEW'; Visible=$true}
+                    25L=@{Owner=200; Thread=2; Parent=$wrapper; Class='fixture intermediate'; Visible=$true}
+                    30L=@{Owner=200; Thread=2; Parent=[IntPtr]25; Class='Chrome_WidgetWin_1'; Visible=$true}
+                    31L=@{Owner=200; Thread=2; Parent=$frame; Class='Chrome_WidgetWin_1'; Visible=$true}
+                }
+                if ($change -eq 'hidden') { $windows[30L].Visible = $false }
+                if ($change -eq 'stale-wrapper') { $windows[20L].Class = 'unrelated' }
+                if ($change -eq 'wrong-frame-owner') { $windows[10L].Owner = 200 }
+                $reads = [Collections.Generic.List[long]]::new()
+                $report = ComparePageCloseRoots $null $frame $wrapper $owner $start.ToUniversalTime().Ticks
+                if ($report -cne $case.Report -or ($reads -join ',') -cne $case.Reads) {
+                    throw "$change compared $($reads -join ',') and returned $report"
+                }
+            }
+        """)
+
+    def test_shared_reader_rejects_a_late_or_timed_out_diagnostic_and_disposes_only_its_process(self) -> None:
+        self.fixture("""
+            $env:SystemRoot = [IO.Path]::GetTempPath()
+            $text = '# fixture only; process start is mocked'
+            $clock = @{ElapsedMilliseconds=0L}
+            function StartPageCloseUiaReader($info) {
+                if (-not $info.RedirectStandardOutput -or -not $info.RedirectStandardError -or $info.UseShellExecute) {
+                    throw 'reader pipes are not private'
+                }
+                $script:starts++
+                $process
+            }
+            if (-not (Get-Command InvokePageCloseUiaReader -ErrorAction SilentlyContinue)) {
+                throw 'missing shared watchdog for the read-only comparison'
+            }
+            $stream = [pscustomobject]@{Text=''}
+            $stream | Add-Member ScriptMethod ReadToEndAsync { [Threading.Tasks.Task]::FromResult($this.Text) }
+            $output = $stream.PSObject.Copy(); $output.Text = '{"matched":0,"empty":0,"candidates":[]}'
+            $process = [pscustomobject]@{HasExited=$false; ExitCode=0; StandardError=$stream; StandardOutput=$output}
+            $process | Add-Member ScriptMethod WaitForExit {
+                param($milliseconds)
+                $waits.Add($milliseconds)
+                if ($this.HasExited) { return $true }
+                if ($mode -eq 'late') { $clock.ElapsedMilliseconds = 15000L }
+                if ($mode -eq 'timeout') { $clock.ElapsedMilliseconds = 13000L; return $false }
+                $this.HasExited = $true
+                $true
+            }
+            $process | Add-Member ScriptMethod Kill { $script:kills++; $this.HasExited = $true }
+            $process | Add-Member ScriptMethod Dispose { $script:disposals++ }
+            foreach ($mode in @('original','late','timeout')) {
+                $clock.ElapsedMilliseconds = 0L
+                $process.HasExited = $false
+                $waits = [Collections.Generic.List[int]]::new()
+                $script:starts = $script:kills = $script:disposals = 0
+                if ($mode -eq 'original') {
+                    $query = InvokePageCloseUiaReader $text
+                    if ($query.matched -ne 0 -or ($waits -join ',') -cne '15000' -or $script:kills -ne 0) {
+                        throw 'original wait or result changed'
+                    }
+                } else {
+                    Reject { InvokePageCloseUiaReader $text $clock } 'deadline'
+                    $wanted = if ($mode -eq 'late') { '13000' } else { '13000,2000' }
+                    if (($waits -join ',') -cne $wanted -or $script:kills -ne [int]($mode -eq 'timeout')) {
+                        throw "wrong watchdog deadline or cleanup: $($waits -join ',')"
+                    }
+                }
+                if ($script:starts -ne 1 -or $script:disposals -ne 1) { throw 'lost owned reader lifecycle' }
+            }
+        """)
+
+    def test_both_queries_use_the_same_watchdog_without_launching_a_reader(self) -> None:
+        self.fixture(r"""
+            $h = [IntPtr]10
+            $script:p = @{Id=100; StartTime=[datetime]::UtcNow}
+            $view = @{Window=[IntPtr]20}
+            $env:SystemRoot = [IO.Path]::GetTempPath()
+            function IsOwnedFrame { $true }
+            $script:launches = [Collections.Generic.List[string]]::new()
+            function StartPageCloseUiaReader($info) {
+                $encoded = $info.ArgumentList[-1]
+                if ($encoded.Length -gt 32000) { throw 'reader command line is too long for Windows' }
+                $text = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded))
+                [void][scriptblock]::Create($text)
+                $script:launches.Add($text)
+                $stream = [pscustomobject]@{Text=''}
+                $stream | Add-Member ScriptMethod ReadToEndAsync { [Threading.Tasks.Task]::FromResult($this.Text) }
+                $output = $stream.PSObject.Copy()
+                $output.Text = if ($script:launches.Count -eq 1) {
+                    '{"matched":0,"empty":0,"candidates":[]}'
+                } else { "unsupported`r`n" }
+                $reader = [pscustomobject]@{HasExited=$true; ExitCode=0; StandardOutput=$output; StandardError=$stream}
+                $reader | Add-Member ScriptMethod WaitForExit { $true }
+                $reader | Add-Member ScriptMethod Dispose {}
+                $reader
+            }
+            if (-not (Get-Command ReadPageCloseComparison -ErrorAction SilentlyContinue)) {
+                throw 'missing secondary reader integration'
+            }
+            $query = FindPageClose $view
+            if ($query.matched -ne 0 -or $query.candidates -isnot [array]) { throw 'lost cold JSON reply' }
+            if ((ReadPageCloseComparison $view) -cne 'unsupported' -or $script:launches.Count -ne 2) {
+                throw 'expected one cold reader and one comparison reader'
+            }
+        """)
+
     def test_focus_api_failure_is_blocked_but_null_and_wrong_focus_are_failures(self) -> None:
         self.fixture("""
             function Start-Sleep {}

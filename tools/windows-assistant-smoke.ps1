@@ -703,6 +703,15 @@ function PageClosePoint($page, $candidates, $query = $null) {
     }
 }
 
+function PageCloseUiaPredicate {
+    {
+        $name = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'Close')
+        $button = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
+        $condition = [Windows.Automation.AndCondition]::new($name, $button)
+    }.ToString()
+}
+
 function FindPageClose($view) {
     # Use Windows' inbox UIA assemblies via Windows PowerShell (.NET Framework).
     # This reader sends no input. A separate process bounds even a stalled UIA provider.
@@ -710,10 +719,7 @@ function FindPageClose($view) {
         $ErrorActionPreference = 'Stop'
         try { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase }
         catch { [Console]::Error.WriteLine($_.Exception.Message); exit 2 }
-        $name = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'Close')
-        $button = [Windows.Automation.PropertyCondition]::new(
-            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
-        $condition = [Windows.Automation.AndCondition]::new($name, $button)
+    }.ToString() + (PageCloseUiaPredicate) + {
         $element = [Windows.Automation.AutomationElement]::FromHandle($child)
         if ($null -eq $element) { throw 'the live WebView is not exposed to UI Automation' }
         $matches = $element.FindAll([Windows.Automation.TreeScope]::Descendants, $condition)
@@ -731,6 +737,16 @@ function FindPageClose($view) {
             candidates = $found
         } -Compress
     }.ToString()
+    InvokePageCloseUiaReader $scriptText
+}
+
+function StartPageCloseUiaReader($info) { [Diagnostics.Process]::Start($info) }
+
+function PageCloseReaderRemaining($clock, [int]$limit) {
+    [int][Math]::Max(0, ($limit - $clock.ElapsedMilliseconds))
+}
+
+function InvokePageCloseUiaReader([string]$scriptText, $clock = $null) {
     $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
@@ -740,29 +756,218 @@ function FindPageClose($view) {
             [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($scriptText)))) {
         [void]$info.ArgumentList.Add($arg)
     }
-    try { $uia = [Diagnostics.Process]::Start($info) }
+    # The diagnostic alone uses a single 15 s budget, with the last 2 s reserved for termination.
+    if ($clock -and (PageCloseReaderRemaining $clock 13000) -eq 0) { throw 'comparison deadline expired' }
+    try { $uia = StartPageCloseUiaReader $info }
     catch { throw "BLOCKED: Windows UI Automation reader cannot start: $($_.Exception.Message)" }
     try {
         $output = $uia.StandardOutput.ReadToEndAsync()
         $errorOutput = $uia.StandardError.ReadToEndAsync()
+        if ($clock) {
+            if (-not $uia.WaitForExit((PageCloseReaderRemaining $clock 13000)) -or
+                -not $errorOutput.Wait((PageCloseReaderRemaining $clock 13000)) -or
+                -not $output.Wait((PageCloseReaderRemaining $clock 13000)) -or
+                (PageCloseReaderRemaining $clock 13000) -eq 0) {
+                throw 'comparison deadline expired'
+            }
+            if ($uia.ExitCode -ne 0) { throw 'comparison reader failed' }
+            # No stderr or unvalidated stdout is printed in this mode.
+            return $output.Result -creplace '\r?\n\z', ''
+        }
         if (-not $uia.WaitForExit(15000)) { throw 'page Close UI Automation query timed out' }
         if (-not $errorOutput.Wait(1000) -or -not $output.Wait(1000)) { throw 'page Close UI Automation output did not end' }
         if ($uia.ExitCode -eq 2) { throw "BLOCKED: Windows UI Automation assemblies unavailable: $($errorOutput.Result)" }
         if ($uia.ExitCode -ne 0) { throw "page Close UI Automation query failed: $($errorOutput.Result)" }
         $output.Result | ConvertFrom-Json -AsHashtable
     } finally {
+        $comparisonCleanupFailed = $false
         try {
             if (-not $uia.HasExited) {
                 $uia.Kill()
-                if (-not $uia.WaitForExit(3000)) { throw 'owned UI Automation query did not exit after termination' }
+                $cleanupWait = if ($clock) { PageCloseReaderRemaining $clock 15000 } else { 3000 }
+                if (-not $uia.WaitForExit($cleanupWait)) { throw 'owned UI Automation query did not exit after termination' }
             }
-        } catch { RecordCleanupFailure 'page Close UI Automation' $_.Exception.Message }
+        } catch {
+            if ($clock) { $comparisonCleanupFailed = $true }
+            else { RecordCleanupFailure 'page Close UI Automation' $_.Exception.Message }
+        }
         $uia.Dispose()
+        if ($comparisonCleanupFailed) { throw 'comparison reader cleanup failed' }
     }
+}
+
+function ReadPageCloseWindow($native, [IntPtr]$window) {
+    if ($window -eq [IntPtr]::Zero -or -not $native::IsWindow($window)) { return }
+    $owner = [uint32]0
+    $thread = $native::GetWindowThreadProcessId($window, [ref]$owner)
+    $class = New-Object Text.StringBuilder 256
+    if (-not $owner -or -not $thread -or -not $native::GetClassNameW($window, $class, $class.Capacity)) { return }
+    @{
+        Owner = $owner; Thread = $thread; Class = $class.ToString()
+        Parent = $native::GetAncestor($window, 1) # GA_PARENT, not an owned top-level window's owner
+        Visible = $native::IsWindowVisible($window)
+    }
+}
+
+function FindVisiblePageCloseWidgets($native, [IntPtr]$wrapper) {
+    $native::VisibleWidgets($wrapper)
+}
+
+function GetPageCloseNativeRoute($native, [IntPtr]$from, [IntPtr]$to, $first) {
+    # Return a comparable HWND/PID/TID chain, not UIA data. Refuse a broken or cyclic chain.
+    $route = @()
+    $seen = [Collections.Generic.HashSet[IntPtr]]::new()
+    for ($at = $from; $at -ne $to; $at = $entry.Parent) {
+        if (-not $seen.Add($at)) { return }
+        $entry = if ($at -eq $from) { $first } else { ReadPageCloseWindow $native $at }
+        if (-not $entry -or -not $entry.Visible) { return }
+        $route += "$($at.ToInt64()):$($entry.Owner):$($entry.Thread)"
+    }
+    if ($route.Count) { $route -join '/' }
+}
+
+function GetPageCloseRootIdentity($native, [IntPtr]$frame, [IntPtr]$wrapper, $owner, [long]$startTicks) {
+    if ($owner.HasExited -or $owner.StartTime.ToUniversalTime().Ticks -ne $startTicks) { return 'stale' }
+    $f = ReadPageCloseWindow $native $frame
+    $w = ReadPageCloseWindow $native $wrapper
+    if (-not $f.Visible -or $f.Owner -ne $owner.Id -or -not $w.Visible -or
+        $w.Owner -ne $owner.Id -or $w.Class -cne 'WRY_WEBVIEW') { return 'stale' }
+
+    $wrapperRoute = GetPageCloseNativeRoute $native $wrapper $frame $w
+    if (-not $wrapperRoute) { return 'stale' }
+    $widgets = @(FindVisiblePageCloseWidgets $native $wrapper)
+    if ($widgets.Count -ne 1) { return 'unsupported' }
+    $widget = $widgets[0]
+    $c = ReadPageCloseWindow $native $widget
+    if (-not $c.Visible -or $c.Class -cne 'Chrome_WidgetWin_1') { return 'stale' }
+    $widgetRoute = GetPageCloseNativeRoute $native $widget $wrapper $c
+    if (-not $widgetRoute -or $owner.HasExited) { return 'stale' }
+    @{
+        Widget = $widget
+        Route = "$($frame.ToInt64()):$($f.Owner):$($f.Thread):$($f.Parent.ToInt64())/$wrapperRoute/$widgetRoute"
+    }
+}
+
+function NewPageCloseCounts([int]$anyRole, [int]$button, [int]$documents, [bool]$rootIsDocument) {
+    [ordered]@{
+        close_name_any_role = [Math]::Min(65, $anyRole)
+        close_name_button = [Math]::Min(65, $button)
+        documents = [Math]::Min(65L, ([long]$documents + [int]$rootIsDocument))
+    }
+}
+
+function ReadPageCloseCounts([IntPtr]$root) {
+    . ([scriptblock]::Create((PageCloseUiaPredicate)))
+    $element = [Windows.Automation.AutomationElement]::FromHandle($root)
+    if ($null -eq $element) { throw 'UIA root unavailable' }
+    $scope = [Windows.Automation.TreeScope]::Descendants
+    $document = [Windows.Automation.PropertyCondition]::new(
+        [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Document)
+    NewPageCloseCounts ($element.FindAll($scope, $name).Count) ($element.FindAll($scope, $condition).Count) `
+        ($element.FindAll($scope, $document).Count) ($element.Current.ControlType -eq [Windows.Automation.ControlType]::Document)
+}
+
+function ComparePageCloseRoots($native, [IntPtr]$frame, [IntPtr]$wrapper, $owner, [long]$startTicks) {
+    try {
+        $before = GetPageCloseRootIdentity $native $frame $wrapper $owner $startTicks
+        if ($before -is [string]) { return $before }
+        $wrapperCounts = ReadPageCloseCounts $wrapper
+        # The middle validation is both after the wrapper and before the widget.
+        $middle = GetPageCloseRootIdentity $native $frame $wrapper $owner $startTicks
+        if ($middle.Route -cne $before.Route) { return 'stale' }
+        $widgetCounts = ReadPageCloseCounts $before.Widget
+        $after = GetPageCloseRootIdentity $native $frame $wrapper $owner $startTicks
+        if ($after.Route -cne $before.Route) { return 'stale' }
+        $fields = foreach ($label in @('wrapper', 'widget')) {
+            $counts = if ($label -ceq 'wrapper') { $wrapperCounts } else { $widgetCounts }
+            foreach ($key in $counts.Keys) { "$label.$key=$($counts[$key])" }
+        }
+        "ok $($fields -join ' ')"
+    } catch { 'error' }
+}
+
+function ReadPageCloseComparison($view) {
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    if (-not (IsOwnedFrame)) { return 'stale' }
+    $scriptText = "`$frame = [IntPtr]$($h.ToInt64()); `$wrapper = [IntPtr]$($view.Window.ToInt64()); " +
+        "`$framePid = $($script:p.Id); `$startTicks = $($script:p.StartTime.ToUniversalTime().Ticks)L`n"
+    foreach ($functionName in @('PageCloseUiaPredicate', 'ReadPageCloseWindow', 'FindVisiblePageCloseWidgets',
+            'GetPageCloseNativeRoute', 'GetPageCloseRootIdentity', 'NewPageCloseCounts', 'ReadPageCloseCounts', 'ComparePageCloseRoots')) {
+        $scriptText += "function $functionName { $((Get-Command $functionName -CommandType Function).Definition) }`n"
+    }
+    $scriptText += {
+        $ErrorActionPreference = 'Stop'
+        $owner = $null
+        try {
+            try { $owner = [Diagnostics.Process]::GetProcessById($framePid) }
+            catch [ArgumentException] { [Console]::WriteLine('stale'); exit }
+            try { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase }
+            catch { [Console]::WriteLine('unsupported'); exit }
+            Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class PageCloseDiagnosticWindows {
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h, EnumProc f, IntPtr l);
+    public static IntPtr[] VisibleWidgets(IntPtr wrapper) {
+        var found = new List<IntPtr>();
+        var name = new StringBuilder(256);
+        EnumChildWindows(wrapper, (h, l) => {
+            if (IsWindowVisible(h) && GetClassNameW(h, name, name.Capacity) != 0 &&
+                    name.ToString() == "Chrome_WidgetWin_1") {
+                found.Add(h);
+            }
+            return found.Count < 2;
+        }, IntPtr.Zero);
+        return found.ToArray();
+    }
+}
+'@
+            [Console]::WriteLine((ComparePageCloseRoots ([PageCloseDiagnosticWindows]) $frame $wrapper $owner $startTicks))
+        } catch { [Console]::WriteLine('error') }
+        finally { if ($owner) { $owner.Dispose() } }
+    }.ToString()
+    $receipt = InvokePageCloseUiaReader $scriptText $clock
+    if (-not (IsOwnedFrame)) { return 'stale' }
+    if ((PageCloseReaderRemaining $clock 13000) -eq 0) { return 'error' }
+    $receipt
+}
+
+function PageCloseComparisonReceipt($receipt) {
+    if ($receipt -isnot [string] -or $receipt.Length -gt 256) { return 'error' }
+    if ($receipt -cin @('unsupported', 'stale', 'error')) { return $receipt }
+    $counter = '([1-5]?[0-9]|6[0-5])'
+    $fields = foreach ($root in @('wrapper', 'widget')) {
+        foreach ($key in @('close_name_any_role', 'close_name_button', 'documents')) {
+            "$root\.$key=$counter"
+        }
+    }
+    if ($receipt -cmatch ('\Aok ' + ($fields -join ' ') + '\z') -and
+        [int]$Matches[1] -ge [int]$Matches[2] -and [int]$Matches[4] -ge [int]$Matches[5]) {
+        return $receipt
+    }
+    'error'
 }
 
 function ClosePage($view) {
     $query = FindPageClose $view
+    if ($query -is [Collections.IDictionary] -and $query.psbase.Keys.Count -eq 3 -and
+        'matched' -cin $query.psbase.Keys -and 'empty' -cin $query.psbase.Keys -and 'candidates' -cin $query.psbase.Keys -and
+        ($query.matched -is [long] -or $query.matched -is [int]) -and $query.matched -eq 0 -and
+        ($query.empty -is [long] -or $query.empty -is [int]) -and $query.empty -eq 0 -and
+        $query.candidates -is [array] -and $query.candidates.Count -eq 0) {
+        # Diagnostic only: neither an alternate match nor a failed reader can affect the cold result.
+        try { $receipt = PageCloseComparisonReceipt (ReadPageCloseComparison $view) }
+        catch { $receipt = 'error' }
+        try { Write-Host "page Close UIA roots: $receipt" } catch { } # Preserve the primary refusal even if logging fails.
+    }
     $point = PageClosePoint $view.Rect $query.candidates $query
     Click $point.X $point.Y $view.Window
     $until = [datetime]::UtcNow.AddSeconds(15)
