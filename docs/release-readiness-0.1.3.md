@@ -12,6 +12,29 @@ its asset URLs must be GitHub release URLs); and the first `release.yml` candida
 and produced no artifacts. The "state after the CTO's decisions" paragraphs in §6 and §9 describe
 earlier moments in the day and are superseded by §12.4.1 and §13.
 
+## 0. Evidence index
+
+Every claim in this file points at one of these. Nothing below is a plan; each row is a run, a file
+or a measurement that exists on the machine or on GitHub.
+
+| Evidence | What it proves |
+|---|---|
+| `gh api repos/intgral-ai/intcad/releases/tags/v0.1.2` | the last published release and its six assets, including `SHA256SUMS` (no `.txt`) |
+| v0.1.2 tarball + MSI, hashes from `sha256sum --check SHA256SUMS` | the baseline package contents: 49 entries / 8 MSI files, **no** agent or Mastra runtime |
+| run 45230019033 (FreeBSD on #219) | the FreeBSD compile fix works; the job is `success` |
+| run 45248432170 (candidate, SHA `14a6c95ae`) | the first `release.yml` build carrying the agent: every platform `success` after the macOS rerun, DMG included |
+| `build.json` / `contents.json` of that run | `sourceRevision` = the candidate SHA; `agent.present`, `node`, five skill sets, `missing: []` on Linux, Windows and macOS |
+| `7z l` of the DMG | both Darwin slices carry `node`, `agent/main.mjs` and all five `SKILL.md` |
+| `checksums.sh --require` on the flattened set | 18-file list under both names, every hash OK; refuses a set that omits the DMG |
+| Ubuntu VM `…rc013` | CI tarball and AppImage installed and run; agent starts; five sets installed; 0.1.2 → CI 0.1.3 upgrade opens the design 0.1.2 saved |
+| Windows VM `…win013` | CI MSI installed; agent runs from `Program Files`; five sets in `%LOCALAPPDATA%`; published 0.1.2 → CI 0.1.3 upgrade leaves one ARP entry |
+| real DeepSeek turn (screenshots `key-*`) | a real model answers, and reads `solidcraft-modeling`; typing `/` or `/skill` shows no menu (B10) |
+| `cargo test -p xtask`, `cargo check --target wasm32`, `python3 -m unittest packaging/tests/*` | the branch's own checks: skill anchors, 3600-char limit, wasm cfg, 10 checksum tests, 4 alias tests, stage-agent 8/8 |
+| PR #217, #218, #219, #222 | the release-engineering changes and their CI |
+
+Not evidence, and marked so wherever it appears: a cancelled run, a skipped dependent job, a document
+that describes what should happen, and any result from a commit other than the one named.
+
 ## 1. Baseline
 
 | Item | Value | How it was checked |
