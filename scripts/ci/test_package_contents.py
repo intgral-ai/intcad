@@ -31,6 +31,32 @@ def make_zip(path, names):
             archive.writestr(name, "x")
 
 
+def make_zst_tar(case, path, names):
+    """A `.pkg.tar.zst` holding `names`, and how it was made.
+
+    Python's `tarfile` writes zstd only from 3.14; the CI runner's 3.12 does not, and a test that
+    just calls `w:zst` fails there on the interpreter instead of on the code under test. `zstd` on
+    the PATH is the fallback; with neither, the case is skipped and says why.
+    """
+    plain = Path(str(path)[: -len(".zst")])
+    with tarfile.open(plain, "w") as archive:
+        for name in names:
+            file = Path(path).parent / "payload"
+            file.write_text("x")
+            archive.add(file, arcname=name)
+    try:
+        with tarfile.open(path, "w:zst") as archive:
+            for name in names:
+                archive.add(Path(path).parent / "payload", arcname=name)
+    except (tarfile.CompressionError, NotImplementedError, ValueError):
+        done = subprocess.run(["zstd", "-q", "-f", str(plain), "-o", str(path)], capture_output=True)
+        if done.returncode != 0:
+            plain.unlink(missing_ok=True)
+            case.skipTest("this Python cannot write a zstd tar and no zstd command is available")
+    plain.unlink(missing_ok=True)
+    return path
+
+
 class PackageContents(unittest.TestCase):
     def test_a_native_linux_archive_has_no_runtime_markers(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -289,11 +315,7 @@ class ReleasePackageEndToEnd(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = self.make_package(directory)
             repack = Path(directory) / "intcad-0.1.2-linux-x86_64.pkg.tar.zst"
-            with tarfile.open(repack, "w:zst") as archive:
-                for name, text in {"usr/bin/intcad": "x", "usr/share/doc/intcad/NOTICE": "x"}.items():
-                    file = Path(directory) / "payload"
-                    file.write_text(text)
-                    archive.add(file, arcname=name)
+            make_zst_tar(self, repack, ["usr/bin/intcad", "usr/share/doc/intcad/NOTICE"])
             out = Path(directory) / "contents.json"
             result = subprocess.run([sys.executable, str(HERE / "package_contents.py"),
                                      "--package-id", "release-arch-x86_64",
