@@ -209,9 +209,12 @@ here. `actionlint .github/workflows/packaging-lint.yml` → exit 0.
 
 ## 9. Acceptance matrix for the candidate (not yet run)
 
+Rows marked *rehearsal* are the §12 tree (`develop` + #204 + this branch), not a versioned
+candidate: they show the path works, and they must be repeated for the candidate SHA.
+
 | Platform | Build | Package | Startup | Login | Mastra | Skills + commands | UI | Update | Evidence |
 |---|---|---|---|---|---|---|---|---|---|
-| Linux x86_64 | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | — |
+| Linux x86_64 | NOT TESTED (candidate); rehearsal: Ubuntu build, 10m47s | NOT TESTED (candidate); rehearsal: tar 210.9 MB with the agent | NOT TESTED (candidate); rehearsal: PASS | NOT TESTED | rehearsal: agent folder ships and runs; workflow runtime absent (B6) | rehearsal: installed and read, `skill/*` registered; slash list not seen (B5) | rehearsal: Assistant page renders | NOT TESTED | §12, §12.1 |
 | Windows x64 | NOT TESTED | NOT TESTED | NOT TESTED (blocked by B3 on #213) | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | — |
 | macOS universal | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | CI-only DMG mount, no DMG for a candidate yet |
 
