@@ -152,10 +152,50 @@ Receipts (output of the evaluator's `kernel-collect.py`, retained locally): `are
 SHA-256 `485961e9…`, `areas-db0.json` `531d9050…`, `areas-compare.json` `91bfefd3…`; second batch
 `rest-9c24061c.json`, `rest-db0.json`, `rest-compare.json` alongside them.
 
-**Not covered:** `fillets` (271), `booleans` (127), `sweeps` (97), `assemblies` (96),
-`sheet-metal` (78), `surfaces` (63), `construction` (53) and `import` (35) — 820 cases — were not
-run. This baseline therefore covers roughly a fifth of the rig and does not stand in for those
-areas.
+**Not covered:** `assemblies` (96), `sheet-metal` (78) and `construction` (53) — 227 cases. The
+whole rig now has a recorded two-build result except those three areas.
+
+### Heavy areas: fillets, booleans, sweeps, surfaces
+
+| Area | Cases | `9c24061c` | `db0b8dd35` |
+| --- | --- | --- | --- |
+| fillets | 271 | 250 pass, 16 fail, 5 unsupported | 254 pass, 8 fail, 9 unsupported |
+| booleans | 127 | 127 pass | 127 pass |
+| sweeps | 97 | 97 pass | 97 pass |
+| surfaces | 63 | 63 pass | 63 pass |
+
+`booleans`, `sweeps` and `surfaces` match exactly. **fillets differs on 11 cases**, and every one of
+those case directories is byte-identical at both SHAs — so the difference comes from the kernel and
+not from the cases or IntCAD code.
+
+**The two builds do not use the same kernel source.** `db0b8dd35` builds the vendored
+`solidcore/` tree `8b5c0144…`; `9c24061c` pins the git revision `8ddce901…`. Comparing the two
+`crates/solidcore/src` trees: 451 files differ, 153 exist only in the vendored copy (for example
+`blend/band_room.rs`, `blend/blend_corner/chamfer.rs`, `blend/carried_face.rs`), and 4 exist only in
+the pinned copy. The vendored copy's newest `plan/findings` dates are 2026-11-13 to 11-16 against
+2026-10-31 to 11-02 for the pinned one, so the vendored kernel is the later source. A file-by-file
+result across these two builds therefore measures **two different kernels**, not one kernel before
+and after an IntCAD change.
+
+Failure composition, checked against each revision's own `tests/kernel-cases/fillets/KNOWN_FAILING`:
+
+- `9c24061c`: 21 non-pass cases, 21 listed, none unlisted and none listed-but-passing.
+- `db0b8dd35`: 17 non-pass, 17 listed, same self-consistency.
+- So each build's own rig gate is self-consistent, and neither list contains the other's exact set.
+
+What the 11 differing cases do show, with the direction labelled:
+
+- **Worse on `develop` (`9c24061c`) than on the candidate (8):** `2893-chamfer-distance-and-angle-past-the-wall-refused` (pass → fail: refused for the wrong reason), `2893-chamfer-two-distances-elliptical-rim` (pass → fail: status 1001), `cov-junction-boss-tilt-40-root-round` (pass → fail), `cov-junction-tee-equal-round` (pass → fail: result not a closed solid), `report-drafted-peg-front-and-concave-rounds-together-r2` (pass → fail).
+- **Unsupported on the longer-lived kernel, failing on `develop`:** `cov-fillet-g2-pocket-corner`, `cov-junction-boss-tilt-20-root-round`, `report-fillet-curvature-three-edges-at-bar-corner`, `...-solver-residues` — all `unsupported` on the candidate and `fail` on `develop`.
+- **Worse on the candidate:** `cov-junction-y-junction-120-round` (fail → unsupported on `develop`, i.e. a concrete failure became a refusal).
+- **Better on `develop`:** `...-solver-residues-outside-setback` (unsupported → pass).
+
+Because the kernels differ, none of these is evidence of an IntCAD regression or fix, and none may be
+used to move a `KNOWN_FAILING` entry. They are a **kernel-source comparison** and must be re-derived
+once the pinned and vendored kernels are the same revision.
+
+Receipts: `heavy-9c24061c.json`, `heavy-db0.json`, `heavy-compare.json` (163 → 558 case batched runs,
+`kernel-collect.py`).
 
 This is a parity baseline for unchanged areas, not the required evidence for changed expectations.
 Those still need, on the landed SHA, the same cases with their inputs and the base-versus-landed
