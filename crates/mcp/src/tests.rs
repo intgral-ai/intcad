@@ -2601,6 +2601,43 @@ fn engine_command_id_typo_still_gets_closest_suggestions() {
     assert!(!text.contains("MCP tool"), "{text}");
 }
 
+#[test]
+fn describe_command_ranks_same_namespace_alternative_first() {
+    let mut s = server();
+    let response = raw_tool(&mut s, "describe_command", json!({"id": "file.create"}));
+    assert!(response.get("error").is_none(), "{response}");
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    let hints = text.strip_prefix("unknown command `file.create`").expect(text);
+    assert_eq!(hints.split('`').nth(1), Some("file.new"), "{text}");
+}
+
+#[test]
+fn inline_describe_command_ranks_same_namespace_alternative_first() {
+    let mut s = server();
+    let response = raw_tool(&mut s, "batch", json!({"commands": [{"command": "describe_command", "params": {"id": "file.create"}}]}));
+    assert!(response.get("error").is_none(), "{response}");
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    let body: Value = serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(body["completed"], 0, "{body}");
+    let text = body["failed"]["error"].as_str().unwrap();
+    let hints = text.strip_prefix("unknown command `file.create`").expect(text);
+    assert_eq!(hints.split('`').nth(1), Some("file.new"), "{text}");
+}
+
+#[test]
+fn command_suggestions_do_not_enable_execution_aliases() {
+    let mut s = server();
+    tool(&mut s, "execute", json!({"command": "file.new", "params": {"name": "Original"}}));
+    let response = raw_tool(&mut s, "execute", json!({"command": "file.create", "params": {"name": "Replacement"}}));
+    assert!(response.get("error").is_none(), "{response}");
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    let text = response["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("unknown command `file.create`"), "{text}");
+    let design = tool(&mut s, "inspect_design", json!({"measure": false, "sketches": false}));
+    assert_eq!(design["name"], "Original", "{design}");
+}
+
 /// #10678: a genuinely unknown id keeps the ordinary unknown-command error on both paths.
 #[test]
 fn genuinely_unknown_command_id_keeps_the_ordinary_error() {
