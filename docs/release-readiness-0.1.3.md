@@ -229,7 +229,10 @@ The update owner can veto this single change without touching the checksum scrip
 Against the real release: the two `v0.1.2` assets downloaded in §1, run through
 `packaging/checksums.sh`, produce lines byte-identical to the published `SHA256SUMS` for the same
 files, and both generated names are identical (`diff` of the published lines: empty;
-`cmp SHA256SUMS SHA256SUMS.txt`: equal).
+`cmp SHA256SUMS SHA256SUMS.txt`: equal). Re-run with the hardened script (2026-11-23, after the
+review fixes): `intcad-0.1.2-linux-x86_64.tar.gz` → `d6de276e94fed11e…`, the published hash, and
+`intcad-0.1.2-windows-x64.msi` → `b8d8037be8f36c00…`, also the published one; `sha256sum --check`
+on both names: `OK`.
 
 Verification on this machine: `python3 -B -m unittest packaging/tests/checksums_test.py` → 13
 tests, OK (it was 6 when §7 was first written; the failure-path cases were added after review) (`nightly_test.py` fails only without `jq` on `PATH`, and passes with it; the other
