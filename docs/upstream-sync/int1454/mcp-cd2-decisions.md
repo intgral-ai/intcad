@@ -35,8 +35,10 @@ Scope: IntCAD baseline `0fd92bea266e7dcea5ce09676ed9ff9ae6c66d7f` (A), upstream 
 The [owner accepted the proposed dispositions](https://linear.app/intgral/issue/INT-1454#comment-b67c8020-b61e-4ad7-8261-d48a8a6eab10):
 
 - Preserve the IntCAD baseline: M01, M02, M03, M06 (within CD-1 and CD-5), M08, M11.
-- Adopt only after each item's acceptance tests pass: M12, M13, M15, M16.
-- Defer this cycle: M04, M05, M07, M09, M10, M14, M17, M18. M17 and M18 remain separate shared-engine decisions.
+- Adopt only after each item's acceptance tests pass: M15, M16.
+- Defer this cycle: M04, M05, M07, M09, M10, M12, M13, M14, M17, M18. M17 and M18 remain separate shared-engine decisions.
+
+The [owner deferred M12 and M13](https://linear.app/intgral/issue/INT-1454#comment-8f0a864b-66d6-4c17-bfb4-35ff6467893b) after compatibility testing. With a legacy `μm = 2 mm` parameter, `μm * 3` is 6 mm and `250 μm` is 500 mm (test `95d49274`). A saved `(5 ft 3 in) / (1 mm * 1 mm)` evaluates to 116128.8 after reopening (test `3d6bc849`). Preserve the existing parser and do not normalize these inputs through MCP this cycle. Use `µm` or `um`, and `5 ft + 3 in`, to express the units explicitly.
 
 This records the decision, not implementation or acceptance evidence. No legacy aliases, broader permissions, or persistence-policy changes are approved.
 
@@ -69,7 +71,7 @@ Each ID is independently decidable. The evidence below is required for the selec
 - **E02:** A returns `path`, `bytes`, `name`; ordinary schema-valid C saves retain those fields. B/C add `kept_format` on newer-file saves and emit `warnings` and `not_kept` only when something could not be kept. The file write precedes the reply. C standalone and inline MCP forward only `path` and `format`. Candidate sources: `crates/mcp/src/tools.rs:1196,1465`; `crates/engine/src/cmd/file.rs:1704–1734`; `crates/engine/src/schema/save.rs:144–168`. The existing MCP encoding test (`crates/mcp/src/tests.rs:886–914`) does not assert the save reply.
 - **E03:** Default built-in query/paging and descriptor envelopes match in scope; changing command schema contents is not itself an MCP permission change. C accepts surrounding whitespace in command lookup; this was already present in merged SEC-1 `96a247ccb`, including the descriptor's use of `find_command`, and is not a new item here. C can admit suggestions that A would not have offered and change their ordering; M16 covers both. Candidate sources: `crates/mcp/src/tools.rs:1126–1135,1204–1296,1429–1438`; `crates/engine/src/cmd/inspect.rs:793–810`; `crates/engine/src/cmd/mod.rs:464–522`. Server-wide compact formatting remains M08; plugins remain excluded under CD-5.
 
-The E01–E03 comparison is source evidence only. No candidate runtime receipt closes these items, and M12–M16 are proposed follow-up requests, not owner approvals.
+The E01–E03 comparison is source evidence only. See the owner dispositions above; the comparison does not establish acceptance on an integrated SHA.
 
 ## Verification checklist
 
