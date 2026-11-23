@@ -163,10 +163,30 @@ Two defects were found by this run and fixed in the same branch:
 
 ## What the real run did not cover
 
-- A second ACP agent (OpenCode is detected and listed beside the built-in agent; it was not run).
-- Spec and DFM panels after the runtime switch; upgrade and reinstall over an older version.
-- Real Windows and macOS machines: their packages were installed on CI runners only.
-- INT-1473's project context: that is #212 (below).
+- A second ACP agent run end to end. OpenCode is detected, listed, selectable and reaches `ready`
+  (a real ACP session) in a probe; a full turn with it is not run.
+- Upgrade and reinstall over an older version.
+
+## Spec and DFM after the runtime switch
+
+The runtime switch does not touch either path; what was checked:
+
+| Surface | Check | Result |
+|---|---|---|
+| DFM | `cargo test --profile ci -p solidcraft-ui-egui --lib -- dfm` | 24 passed |
+| DFM (Review panel) | the installed package's screenshot | the Review entry and its report are in the right rail |
+| Text-to-CAD | packaged agent, real model | the `skill` tool and `intcad-app_skill_reference` were used; a washer was built and its volume matched π/4·(30²−10²)·3 |
+| Spec | there is no separate Spec editor in the app before or after this change; a spec is a file in the project, which the agent reads and writes through the same project-bounded file tools | #212's packaged smoke: V1 (brief and file list), V4 (a refused write leaves the file byte for byte, an allowed one is written) |
+
+## Owner decisions recorded (2026-11-23)
+
+- **Redistribution rights** are being discussed by the owner and the team. They are not a blocker
+  for this pull request.
+- **Windows and macOS real-machine acceptance** is done by the owner and colleagues after this
+  lands on `develop`; it is not a blocker for this pull request.
+- A repack's own agent is proved from its bytes, not by starting the agent inside the Flatpak,
+  Arch or Snap build; the owner accepts that scope.
+- The work is complete when these changes are merged into the existing pull request.
 
 ## Earlier note (kept for the record): before the real run
 
@@ -190,13 +210,15 @@ What is needed, and who can do it:
 
 Stand-in-model runs are not a substitute for this and are not reported as if they were.
 
-## Still open (release blockers, not code)
+## Still open (recorded, not blockers for this pull request)
 
-- **Redistribution rights** for the exact retained files, transitive licences and notices: owner
-  and legal review. A green scan is not permission to redistribute.
-- **Real machines**: Windows and macOS ran on CI runners only; a person installing the MSI/DMG and
-  a real-account conversation, CAD read and approved CAD edit on each platform remain.
-- **FreeBSD** is broken by #174's `egui_winit` call, not by the agent; it needs its own fix.
+- **Redistribution rights** for the exact retained files, transitive licences and notices: the
+  owner and the team are discussing them, and this is recorded rather than treated as a PR
+  blocker. A green scan is still not permission to redistribute.
+- **Real machines**: Windows and macOS ran on CI runners only. The owner and colleagues accept the
+  remaining real-machine run after this lands on `develop`; it is recorded, not a PR blocker.
+- **FreeBSD** was broken by #174's `egui_winit` call and is fixed on `develop` by #219; the agent
+  is not involved.
 - **#212** (project context, INT-1473): the objective puts INT-1473's agentic work in this
   release, and that work (Files list, newest DFM report, project-scoped reads as the default
   context) lives in #212. #212 is no longer a draft (`mergeable: MERGEABLE`,

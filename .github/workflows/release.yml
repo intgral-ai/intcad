@@ -249,8 +249,9 @@ jobs:
               if len(sources) != 1:
                   raise SystemExit('derived package needs exactly one source Linux tarball')
               command += ['--derived-from', 'release-linux-' + arch, '--source-artifact', str(sources[0])]
-          else:
-              command += [str(p) for p in files]
+          # The repack's own artifacts are inspected as well: the source tarball is what it was
+          # built from, not what a person installs.
+          command += [str(p) for p in files]
           subprocess.run(command, check=True)
       - &upload-package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

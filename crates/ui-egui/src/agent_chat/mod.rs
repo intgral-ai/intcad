@@ -1642,11 +1642,15 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.agent_chat.connect_at_start {
         return;
     }
-    // The built-in agent needs nothing to be looked for first; the agents on the computer are
-    // looked for when the Assistant or its Settings page is shown, so the switcher offers them.
+    // An agent the user started last may be one found on the computer, so that look has to finish
+    // before a launch can call it missing; the package's agent is there without a look.
     let builtin = agents::is_builtin(app);
-    if app.agent_chat.detection.is_none() && !builtin {
-        refresh(app, ctx);
+    let last = app.preferences.agent_last.clone();
+    let last_is_builtin = builtin && last == connections::AGENT_ID;
+    if app.agent_chat.detection.is_none() && (!builtin || (!last.is_empty() && !last_is_builtin)) {
+        if app.agent_chat.detecting.is_none() {
+            refresh(app, ctx);
+        }
         return;
     }
     app.agent_chat.connect_at_start = false;
@@ -1656,7 +1660,6 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
     // The agent a user started stays the one this launch starts, beside the built-in one too:
     // `agent_last` is never the built-in agent's (it does not set it), so a value there names an
     // agent the user chose, and it starts if it is found.
-    let last = app.preferences.agent_last.clone();
     if !last.is_empty() {
         if !agents::entries(app).iter().any(|e| e.id == last) {
             app.agent_chat.notice(trf("ui.agent_chat_last_missing", &[("agent", &last)]), true);

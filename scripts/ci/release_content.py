@@ -47,7 +47,15 @@ AGENT_PATHS = {
 SLICES = ("aarch64-apple-darwin", "x86_64-apple-darwin")
 
 
-def _agent_problem(carried, identity=None):
+# The headless CLI archives are not the app and never carry the agent: the app package beside them
+# does, and a command-line build has no Assistant in it. A standalone executable covered by an
+# inspected package is judged by that package (its bytes are a subset of it).
+def carries_no_agent(name):
+    lowered = str(name).lower()
+    return "-cli-" in lowered and lowered.endswith((".zip", ".tar.gz", ".tar.xz"))
+
+
+def _agent_problem(carried):
     """Why one artifact's agent does not work, or ``""`` when it does."""
     if not isinstance(carried, dict) or not carried.get("present"):
         return "carries no mastra-agent/ folder"
@@ -127,15 +135,23 @@ def problems(source_revision, descriptors, contents, declaration="native"):
                     failures.append(identity + ": " + str(name) + ": inspected without an agent "
                                     "verdict")
                 for name in sorted(per_artifact):
+                    if carries_no_agent(name) or (per_artifact[name] or {}).get("coveredBy"):
+                        continue
                     carried = per_artifact[name]
-                    problem = _agent_problem(carried, identity)
+                    problem = _agent_problem(carried)
                     if problem:
                         failures.append(identity + ": " + name + ": " + problem)
             # A universal app's folder exists per CPU: both halves must be there, in the summary
             # and in every artifact's own answer.
             needed_slices = _slices_for(identity)
             if needed_slices:
-                summaries = [agent] + [per_artifact[name] for name in sorted(per_artifact or {})]
+                # The app's own artifacts only: a CLI archive and a covered executable carry no
+                # slices of their own.
+                summaries = [agent] if isinstance(agent, dict) else []
+                for name in sorted(per_artifact or {}):
+                    if carries_no_agent(name) or (per_artifact[name] or {}).get("coveredBy"):
+                        continue
+                    summaries.append(per_artifact[name])
                 for carried in summaries:
                     if not isinstance(carried, dict):
                         continue
@@ -242,7 +258,9 @@ def problems(source_revision, descriptors, contents, declaration="native"):
                 failures.append(identity + ": no evidence from the repack's own bytes; only its "
                                 "source was looked at")
             for name in sorted(own):
-                problem = _agent_problem(own[name], identity)
+                if carries_no_agent(name) or (own[name] or {}).get("coveredBy"):
+                    continue
+                problem = _agent_problem(own[name])
                 if problem:
                     failures.append(identity + ": " + name + ": " + problem)
         # A derived package is the source tarball repacked: it carries what the source carries.

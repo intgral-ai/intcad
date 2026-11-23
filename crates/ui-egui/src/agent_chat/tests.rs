@@ -16868,7 +16868,15 @@ fn preferences_of_an_older_version_load_beside_the_built_in_agent_and_are_not_re
     // Mastra instead: a start the user did not ask for is not a fallback.
     begin(&mut app);
     poll(&mut app, &ctx);
-    assert!(app.agent_chat.detecting.is_none() && !app.agent_chat.connect_at_start);
+    // The look at the computer comes first: the agent started last may be one it finds. The
+    // launch waits for the answer instead of calling `claude` missing before the look returns.
+    assert!(app.agent_chat.connect_at_start, "the launch waits for the look");
+    assert!(app.agent_chat.detecting.is_some(), "the look is running");
+    // The look returns having found nothing this machine has.
+    app.agent_chat.detecting = None;
+    app.agent_chat.detection = Some(Default::default());
+    poll(&mut app, &ctx);
+    assert!(!app.agent_chat.connect_at_start);
     let said: Vec<String> =
         app.agent_chat.items.iter().filter_map(|item| if let Item::Notice { text, .. } = item { Some(text.clone()) } else { None }).collect();
     assert!(said.iter().any(|text| text.contains("claude")), "the agent started last is looked for: {said:?}");

@@ -103,15 +103,26 @@ STAND_IN = re.compile(r"(?:^|/)node_modules/@mastra/core/dist/ee-[A-Za-z0-9_-]+\
 
 
 def stand_in_paths(names):
-    """The one `ee-*` file a package may hold, when it holds exactly one.
+    """The `ee-*` stand-ins a package may hold: one per agent folder.
 
-    The package's own path carries a prefix (``usr/lib/intcad/mastra-agent/``), so the stand-in is
-    matched by its tail; a second file of that shape anywhere is enterprise content and turns the
-    allowance off.
+    The builder writes one stand-in per `@mastra/core` copy, and a universal app carries one copy
+    per CPU, so `mastra-agent/aarch64-apple-darwin/node_modules/...` and
+    `mastra-agent/x86_64-apple-darwin/node_modules/...` each hold their own. What is refused is a
+    *second* `ee-*` file under the same `@mastra/core/dist/`: that is enterprise content the
+    builder left behind, not the stand-in it wrote.
     """
-    found = sorted(name for name in (str(raw).replace("\\", "/").lstrip("./") for raw in names)
-                   if STAND_IN.search(name))
-    return frozenset(found) if len(found) == 1 else frozenset()
+    by_core = {}
+    for raw in names:
+        name = str(raw).replace("\\", "/").lstrip("./")
+        if not STAND_IN.search(name):
+            continue
+        core = name.rsplit("/@mastra/core/dist/", 1)[0]
+        by_core.setdefault(core, []).append(name)
+    allowed = set()
+    for core, found in by_core.items():
+        if len(found) == 1:
+            allowed.add(found[0])
+    return frozenset(allowed)
 
 
 def forbidden_parts(entry, stand_ins=frozenset()):
@@ -123,6 +134,17 @@ def forbidden_parts(entry, stand_ins=frozenset()):
         if part.startswith("ee-") and text not in stand_ins:
             bad.append(part)
     return bad
+
+
+def empty_legacy_folder(name, names):
+    """The Windows packages stage an empty ``mastra/`` so WiX has a directory to harvest; an empty
+    one is not a runtime."""
+    text = str(name).replace("\\", "/").rstrip("/")
+    parts = [part for part in text.split("/") if part]
+    if not parts or parts[-1] != "mastra":
+        return False
+    return not any(str(other).replace("\\", "/") != str(name).replace("\\", "/")
+                   and str(other).replace("\\", "/").startswith(text + "/") for other in names)
 
 
 def inside_agent(entry, stand_ins=()):
@@ -157,6 +179,8 @@ def agent_markers(names):
         if entry["path"] in seen:
             continue
         seen.add(entry["path"])
+        if empty_legacy_folder(name, names):
+            continue
         if forbidden_parts(entry, stand_ins) or (entry in marker_entries([name]) and not inside_agent(entry, stand_ins)):
             found.append(entry)
     return found
@@ -170,7 +194,7 @@ def _parts(name):
     return [part for part in str(name).replace("\\", "/").split("/") if part and part != "."]
 
 
-def agent_node(name, target=None, *, prefer=None):
+def agent_node(name, target=None):
     """Whether a package entry is the built-in agent's own Node program.
 
     A universal macOS app carries one folder per slice (``mastra-agent/<triple>/node``), so the
@@ -317,6 +341,30 @@ def names_dmg(path):
             subprocess.run([tool, "detach", str(mount)], capture_output=True, text=True)
 
 
+# The Flatpak bundle is an OSTree commit, which Python cannot read; the flatpak job installs the
+# bundle it has just built (`flatpak install --user --reinstall`, inside flatpak-bundle.sh) and its
+# smoke runs against it, so the installed tree is these bytes. The artifact's digest is recorded
+# beside the listing, and its absence is a failure, not a pass.
+FLATPAK_APP_ID = "ai.intgral.intcad"
+
+
+def names_flatpak(path):
+    tool = shutil.which("flatpak")
+    if not tool:
+        raise OSError("flatpak is unavailable")
+    try:
+        location = _run([tool, "info", "--user", "--show-location", FLATPAK_APP_ID]).strip()
+    except OSError as error:
+        raise OSError("the app is not installed from a bundle: " + str(error)) from error
+    root = Path(location) if location else None
+    if root is None or not root.is_dir():
+        raise OSError("the app is not installed from a bundle")
+    names = _walk(root)
+    if not names:
+        raise OSError("the installed app carries no files")
+    return names
+
+
 def names_msi(path):
     seven = shutil.which("7z") or shutil.which("7za")
     if seven:
@@ -354,6 +402,8 @@ def inspect(path):
         return "dmg", names_dmg(path)
     if name.endswith(".msi"):
         return "msi", names_msi(path)
+    if name.endswith(".flatpak"):
+        return "flatpak", names_flatpak(path)
     raise OSError("no content inspector for this artifact")
 
 
@@ -462,6 +512,10 @@ def main():
                     path = next(p for p in map(Path, args.artifacts) if p.name == item["name"])
                     report["checked"].append({"name": path.name, "sha256": digest(path), "format": "covered",
                                               "entries": 0, "coveredBy": covered})
+                    # One binary, a subset of the covering package's bytes: it has no folder of its
+                    # own to inspect, so its verdict is the covering package's.
+                    if covered in report.get("agents", {}):
+                        report["agents"][path.name] = dict(report["agents"][covered], coveredBy=covered)
                 else:
                     still_unchecked.append(item)
             report["unchecked"] = still_unchecked
