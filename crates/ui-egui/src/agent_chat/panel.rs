@@ -322,7 +322,7 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
     app.agent_chat.web_reveal = app.agent_chat.web_clips.then_some(height);
     // A layer of its own over the view, so a menu or a sheet over it hides the native view. It
     // holds only what is shown: above it the window's own view takes the pointer.
-    egui::Area::new(Id::new("sc_agent_chat_centre")).order(egui::Order::Middle).fixed_pos(rect.min).show(&ctx, |ui| {
+    Container::new(&ctx, Surface::Viewport).area(Id::new("sc_agent_chat_centre")).fixed_pos(rect.min).show(&ctx, |ui| {
         ui.allocate_rect(rect, Sense::hover());
         web::place(app, ui, view);
     });
