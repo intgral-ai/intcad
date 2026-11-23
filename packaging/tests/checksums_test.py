@@ -83,6 +83,54 @@ class ReleaseChecksums(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no release files", result.stderr)
 
+    def test_a_required_asset_must_be_listed(self):
+        # The failure this guards: a per-platform run publishes a list that omits the other
+        # platforms' files, and those users cannot update.
+        self.write("intcad-0.1.3-linux-x86_64.tar.gz", b"tar")
+        self.write("intcad-windows-x64.msi", b"msi")
+
+        result = self.run_script(
+            str(self.tmp),
+            "--require",
+            "intcad-0.1.3-linux-x86_64.tar.gz",
+            "--require",
+            "intcad-windows-x64.msi",
+            "--require",
+            "intcad-macos-universal.dmg",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("intcad-macos-universal.dmg", result.stderr)
+        self.assertFalse((self.tmp / "SHA256SUMS.txt").exists(), "a refused list is not written")
+
+    def test_a_required_name_is_matched_whole(self):
+        self.write("intcad-windows-x64.msi.part", b"part")
+
+        result = self.run_script(str(self.tmp), "--require", "intcad-windows-x64.msi")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("intcad-windows-x64.msi", result.stderr)
+
+    def test_a_symlinked_asset_is_refused(self):
+        self.write("intcad-0.1.3-linux-x86_64.tar.gz", b"tar")
+        (self.tmp / "intcad-windows-x64.msi").symlink_to(self.tmp / "intcad-0.1.3-linux-x86_64.tar.gz")
+
+        result = self.run_script(str(self.tmp))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("symlink", result.stderr)
+
+    def test_every_line_and_both_files_verify(self):
+        self.write("a.tgz", b"a")
+        self.write("b.msi", b"b")
+
+        result = self.run_script(str(self.tmp))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        listed = sorted((self.tmp / "SHA256SUMS.txt").read_text().splitlines())
+        self.assertEqual(listed, sorted([f"{sha256(b'a')}  a.tgz", f"{sha256(b'b')}  b.msi"]))
+        self.assertEqual((self.tmp / "SHA256SUMS").read_bytes(), (self.tmp / "SHA256SUMS.txt").read_bytes())
+
     def test_a_missing_folder_fails(self):
         result = self.run_script(str(self.tmp / "missing"))
 

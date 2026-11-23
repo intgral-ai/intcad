@@ -4,6 +4,14 @@ Owner: release manager. Written 2026-11-23. This file is a decision record, not 
 for a candidate: no candidate exists yet. Every claim below names the command, file or run that
 shows it; anything unverified says `UNKNOWN`, `BLOCKED` or `NOT TESTED`.
 
+**Corrections after the GPT-6.2-Sol final review (2026-11-23).** Three things in this document were
+wrong and are fixed below: E1 was described backwards (the shipped 0.1.2 client asks for
+`SHA256SUMS.txt` in the release it *fetches*, so what matters is the *new* release's naming, not
+0.1.2's); the update path is not "a constant with no override" (`SOLIDCRAFT_UPDATE_FEED` exists, but
+its asset URLs must be GitHub release URLs); and the first `release.yml` candidate run was cancelled
+and produced no artifacts. The "state after the CTO's decisions" paragraphs in §6 and §9 describe
+earlier moments in the day and are superseded by §12.4.1 and §13.
+
 ## 1. Baseline
 
 | Item | Value | How it was checked |
@@ -142,13 +150,12 @@ macOS universal, Windows x64/x86/arm64 and Arch all passed there, FreeBSD failed
 Severity follows the release brief's section 7: P0 blocks, P1 blocks unless the release owner
 explicitly excepts it, P2 may be deferred.
 
-**State on 2026-11-23 after the CTO's decisions:** #204 merged (`41089b60`). Three PRs are open and
-in the merge chain: #218 (cookie 0.18.3 for RUSTSEC-2026-0594; its `Dependency advisories` job is
-already green, and its branch was updated onto the new `develop`), #212 (INT-1473, retargeted to
-`develop` and updated to `6c7b81ab`), and #219 (FreeBSD compile fix, with `release.yml` run
-45230019033 building the FreeBSD job). The 0.1.3 version commit is prepared on
-`int1503-version-013`. #214 still needs its own two fixes; #213 still fails a Windows check; PP's
-UI has no PR.
+**State on 2026-11-23, evening, after the merge chain:** #204, #218, #219 and #212 are **merged**;
+`origin/develop` is `be9cb2c16` (carries the cookie fix, the FreeBSD fix, INT-1473 and both skill
+sets). #214 is the one open release PR: its three self-inflicted CI failures (skill anchors, the
+3600-character limit, and the stage-agent test that only built one skill set) are fixed on its
+branch. #213 still fails a Windows check; PP's UI has no PR. The 0.1.3 version commit is prepared
+on `int1503-version-013`, and the release.yml candidate branch is described in §12.4.1.
 
 | # | Sev | Blocker | Evidence |
 |---|---|---|---|
@@ -160,7 +167,7 @@ UI has no PR.
 | B6 | P1 | **The Mastra workflow runtime (`mastra/`) is still not in any package.** Only the agent folder ships. `--with-mastra` stays opt-in and fails closed until the runtime artifact is approved (DQ-7/#15), so "Mastra in the package" is true for the agent and not for the workflow runtime | `packaging/linux/package.sh:101-118`, `docs/mastra-packaging.md` |
 | B8 | P0 | **Every package build fails on a dependency advisory.** `Dependency advisories` fails with RUSTSEC-2026-0594: `cookie 0.18.2` via `wry 0.57.2` (private-cookie nonce reuse after `fork()`, which breaks AES-GCM). `release.yml` cannot pass for any branch until it is fixed; #218 moves it to 0.18.3 | run 45149031980 job 137606035774 |
 | B9 | P0 (scope) | **PP's UI has no PR.** The CTO requires it in 0.1.3, and there is no branch or PR to review, so this scope item cannot start from the release side | open PR list, 2026-11-23 |
-| E1 | P1, fixed on this branch | **The update check could not upgrade `v0.1.2`.** `install.rs` required an asset named `SHA256SUMS.txt`; `v0.1.2` publishes `SHA256SUMS` only, so `run()` stopped before downloading. The client now accepts either name and still verifies the hash; the release process writes both | release asset list; `install.rs` `SUMS_LEGACY`; the new test in §7 |
+| E1 | P2, fix landed (not a blocker) | **The 0.1.2 → 0.1.3 upgrade needs `SHA256SUMS.txt` in the 0.1.3 release.** The shipped 0.1.2 client (`65af7346`, `install.rs` `SUMS`) looks for `SHA256SUMS.txt` in the release it fetches, so what matters is the name 0.1.3 publishes — and `packaging/checksums.sh` writes it. My earlier entry had this backwards. The branch change (accept `SHA256SUMS` too) only makes future clients tolerant of a hand-made list; it cannot change an installed binary. Verified against the tag: `git show 65af7346:crates/ui-egui/src/update/install.rs` has `pub const SUMS: &str = "SHA256SUMS.txt"` | `install.rs` `SUMS_LEGACY`; §7 |
 | B7 | P1 | **The Windows candidate has no agent.** A Windows 0.1.3 exe and MSI now build here (§12.4), but the agent folder for Windows must be built on Windows (its `node.exe` has to run for the version check), and this VM has no Node; `HasMastraAgent=0` was used. The Windows agent is what `agent-test-packages.yml` builds on Windows runners and what #214's gate checks | §12.4, `agent-package.mjs` line 473 |
 | E2 | P1 | **No installed-artifact acceptance path for a candidate.** The VM harness builds from source; `accept` cannot take a package. Linux/Windows installed checks exist in CI and in `packaging/*/installed-check.*`, but they have not been run for a 0.1.3 candidate | §4; `intcad-e2e --help` |
 | E3 | P2 | Portable-ZIP updates replace only `intcad.exe` and `intcad-cli.exe`, so a `mastra-agent/` folder from #214 would be left stale or absent | `install.rs:302` `apply()`, `Method::PortableZip` |
@@ -229,8 +236,9 @@ candidate: they show the path works, and they must be repeated for the candidate
 | Windows x64 | 0.1.3 exe + cli built (cargo-xwin, 3m40s + 3m36s) | 0.1.3 MSI built in the guest (WiX 5.0.2), 100.7 MB, sha256 `894e04fb…` | PASS (window `v0.1.3`, sample design) | NOT TESTED | **no agent** (B7) | NOT TESTED | rail + Assistant page render | one-click NOT TESTED; in-place MSI 0.1.2→0.1.3 PASS (one ARP entry, `intcad-cli 0.1.3`) | §12.4 |
 | macOS universal | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | CI-only DMG mount, no DMG for a candidate yet |
 
-Verdict: **NO-GO**. B1–B4 alone are enough; E1 means even a perfect 0.1.3 package would not be
-reachable by one-click update from 0.1.2.
+Verdict: **NO-GO** at the time of writing: no release.yml candidate had been accepted, B9 (PP's UI) is
+missing from the scope, and Gate B has not run. E1 is **not** one of the reasons — see the corrected
+row above.
 
 ## 10. How each gate will be run
 
@@ -499,11 +507,13 @@ Evidence: `~/.local/state/intcad-e2e/runs/intcad-e2e-int1503-rc-rehearsal-3a92c4
 
 - Proves: a versioned 0.1.3 package is buildable from this tree with the agent and the four skills,
   it installs, starts, opens a design saved by 0.1.2, and its agent works.
-- Does **not** prove: the one-click update path (feed → download → checksum → apply). The feed URL is
-  a constant (`crates/ui-egui/src/update.rs` `LATEST_API`) with no override, and publishing a
-  prerelease is not authorised, so that path can only be exercised by the existing unit and scenario
-  tests plus the E1 name fix. Also untested here: preferences continuity (the 0.1.2 run created no
-  preferences file, so there was nothing to carry), and Windows/macOS 0.1.3.
+- Does **not** prove: the one-click update path end to end. There *is* a feed override
+  (`SOLIDCRAFT_UPDATE_FEED`, `update.rs:711`), but every asset URL in that feed must start with
+  `https://github.com/intgral-ai/intcad/releases/` (`is_release_url`, `update.rs:43`), so a local
+  payload needs DNS and TLS interception in the guest, and no release is authorised to point at.
+  That path is covered only by the unit and scenario tests. Also untested here: preferences
+  continuity (the 0.1.2 run created no preferences file, so there was nothing to carry), and
+  Windows/macOS 0.1.3.
 
 ### 12.4 Windows 0.1.3: built, upgraded from the published 0.1.2 (2026-11-23)
 
