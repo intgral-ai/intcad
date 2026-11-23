@@ -227,6 +227,25 @@ GUI-level round trip: the controller's session transcript recorded Linux opening
 `report.json`, log, saved file, or hash for those round trips was found** in the E2E state. Treat
 them as transcript-only, not acceptance evidence; recapture raw evidence at the final SHA.
 
+### 5.1 Headless cross-version check (candidate evidence, not final)
+
+A reusable headless check now covers the CD-1 round trip without a window, driving `intcad-cli mcp`
+over stdio. It opens a real `solidcraft/13` corpus design, saves it, reopens it, compares design
+content excluding evaluation timings and the derived name, asserts the ordinary save reply is exactly
+`path`, `bytes`, `name`, and confirms a truncated copy is refused without replacing the active design.
+
+- **`9c24061c`** (current `develop`, CLI SHA-256 `d098a1547791d4285c19cf4f1d54a2785851d3c56ca7a8eb9f51ecc45934824c`): pass. It writes `solidcraft/51` plus five `format_pending` names and reads formats up to 51.
+- **`db0b8dd35`** (historical candidate, CLI SHA-256 `b3a856e2e99886f2b1786d8561fea5df964060797bed86de1ae572c098d779f9`): pass. It writes `solidcraft/58`.
+- **Cross-version:** `db0b8dd35` opens a `51` file, saves it as `58`, and reopens it with the same content digest. `9c24061c` refuses a `58` file with `this design was saved by a newer Intcad (file format 58; this version reads formats up to 51)` and leaves the active design unchanged.
+
+So the format gap is one-way and explicit: the migration moves persistence from 51 to 58, and a
+pre-migration build cannot read a post-migration file. That is the existing newer-file policy, not
+silent coercion; it also means the migration cannot be rolled back by a build that only understands
+51 without losing access to files written in between.
+
+This is tool validation on existing revisions. Final-SHA persistence acceptance still needs the same
+check run on the CLI built from the landed SHA, with the GUI round trip recaptured.
+
 ## 5a. Independent review record (claims; no review artifact in the repo)
 
 These verdicts are recorded from the controller's session claims for source slices. No reviewer
