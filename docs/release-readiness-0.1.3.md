@@ -512,7 +512,22 @@ still needs a model credential.
 **Crash dialogs seen in these runs** are from force-stopping the app between installs (the report
 names the killed start time); they are not product crashes.
 
-## 13. Decisions needed from the CTO / owners
+## 13. Decisions from the CTO (2026-11-23)
+
+Recorded as given: **version 0.1.3**; **PP's UI must be in this release**; everything else is
+approved except what needs real Mac hardware. In practice that means:
+
+- 0.1.3 is the batch version; the version commit is prepared on `int1503-version-013`
+  (`Cargo.toml` + the 25 workspace entries in `Cargo.lock`) and will be carried by the
+  `release/v0.1.3` promotion PR once the scope is on `develop`.
+- The FreeBSD fix (#219) and the updater name fix (#217) are approved to land.
+- Publication is authorised in principle, but only after the gates pass. The Mac-dependent items
+  (native Intel hardware, Gatekeeper/quarantine first launch, real-Mac V2/V7 login runs) stay
+  NOT TESTED and are not exceptions to the rest.
+- **PP's UI still has no PR**, so the release cannot be complete: this is the one scope item that
+  cannot be started from here.
+
+## 14. Decisions still open / carried
 
 1. **Version and package plan:** one 0.1.3 with login, or 0.1.3 now without it and 0.1.4 later
    (INT-1503 raises both)? This decides whether #213 blocks the first package.
