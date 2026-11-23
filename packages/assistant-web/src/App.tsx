@@ -1387,7 +1387,8 @@ const ROW_HINT = 'ml-auto inline-block pl-4 whitespace-nowrap text-muted-foregro
 
 /**
  * The panel's own bar: the agent and what it runs with, its state, and the panel's controls. With
- * `onBack`, the connections page is open in place of the conversation, and its way back is here.
+ * `onBack`, the connections page is open in place of the conversation, and its way back stands
+ * where the connection and its state are named.
  */
 function AssistantBar({
   state,
@@ -1439,7 +1440,12 @@ function AssistantBar({
     <ChatShell.Bar>
       <ChatShell.Column className="flex-row items-center justify-between gap-2 py-2">
         <div className="-m-0.5 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-1.5 gap-y-2 overflow-hidden p-0.5">
-          {connect ? (
+          {onBack ? (
+            // On the connections page the page itself says what is connected and how it stands.
+            <Button type="button" size="sm" variant="primary" className="shrink-0" onClick={onBack}>
+              {strings.connBack}
+            </Button>
+          ) : connect ? (
             <ConnectionButton state={state} connect={connect} onOpen={onConnections} />
           ) : (
             <DropdownMenu>
@@ -1502,18 +1508,13 @@ function AssistantBar({
             </DropdownMenu>
           )}
           {/* It wraps out of sight when the name leaves it no room. With nothing connected the button beside it says so, and a state would only repeat it. */}
-          {!nothingConnected(state) && (
+          {!onBack && !nothingConnected(state) && (
             <Badge variant={badge.variant} emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
               {badge.label}
             </Badge>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          {onBack && (
-            <Button type="button" size="sm" variant="primary" className="shrink-0" onClick={onBack}>
-              {strings.connBack}
-            </Button>
-          )}
           {state.agent && !state.running && (
             <Button type="button" size="sm" variant="ghost" onClick={() => post({ type: 'connect' })}>
               {state.state === 'failed' ? strings.retry : strings.connect}
