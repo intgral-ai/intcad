@@ -358,13 +358,14 @@ try {
             Check ($v.Left -ge $w.Left -and $v.Top -ge $w.Top -and $v.Right -le $w.Right -and $v.Bottom -le $w.Bottom) 'the view lies inside the app window'
 
             # The keyboard: to the page on a click in it, back to the window on a click elsewhere.
-            # The message box: the text is above the row of buttons at the foot of the page (a
-            # click lower down, at 85 px from the foot, opened the menu of one of those buttons).
+            # The message box: the Assistant sits at the bottom centre of the window by default
+            # (agent_chat_centre), and its text lies between 47 and 87 px above the view's foot,
+            # above the row of buttons (41 px); 150 px up is the line above the message box.
             # (Measured at 100 %; the page is drawn larger at a larger display scale.)
             $scale = [AssistantWin]::GetDpiForWindow($h) / 96.0
             if ($scale -le 0) { $scale = 1.0 }
             Write-Host "display scale of the app's window: $([int]($scale * 100)) %"
-            $x = $v.Left + [int](90 * $scale); $y = $v.Bottom - [int](150 * $scale)
+            $x = $v.Left + [int](90 * $scale); $y = $v.Bottom - [int](67 * $scale)
             [void][AssistantWin]::SetCursorPos($x, $y)
             $pt = New-Object AssistantWin+POINT; [void][AssistantWin]::GetCursorPos([ref]$pt)
             if ($pt.X -ne $x -or $pt.Y -ne $y) {
