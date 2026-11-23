@@ -308,7 +308,11 @@ try {
     # curl.exe: a firewall that is off, or managed some other way, would let the app out too.
     $probe = Join-Path $Evidence 'network-probe.exe'
     Copy-Item (Join-Path $env:SystemRoot 'System32\curl.exe') $probe
+    # The built-in agent is a child process of its own: the package's Node must be under the same
+    # rule, or the "no network" check would let the agent out while the app stays in.
     $blocked = @($App, $probe)
+    $agentNode = Join-Path $Dir 'mastra-agent\node.exe'
+    if (Test-Path -LiteralPath $agentNode) { $blocked += $agentNode }
     # The web view's processes are the WebView2 runtime's, not the app's. A machine runtime lives
     # under Program Files (x86) or Program Files; a per-user runtime lives under LocalAppData.
     $webViewRoots = @()

@@ -91,10 +91,21 @@ def marker_entries(names):
     return found
 
 
+# What no package may carry, wherever it is: Mastra's enterprise-licensed content and the legacy
+# workflow runtime. Inside the agent's folder only its own Node and `node_modules` are expected.
+FORBIDDEN_ANYWHERE = frozenset(("ee", "mastra"))
+
+
+def forbidden_parts(entry):
+    """The forbidden components of one package entry, by name."""
+    parts = [part for part in str(entry.get("path", "")).replace("\\", "/").split("/") if part]
+    return [part for part in parts if part in FORBIDDEN_ANYWHERE or part.startswith("ee-")]
+
+
 def inside_agent(entry):
     """Whether a marker is the built-in agent's own Node or a package inside its folder."""
     parts = [part for part in str(entry.get("path", "")).replace("\\", "/").split("/") if part]
-    return AGENT_DIR in parts
+    return AGENT_DIR in parts and not forbidden_parts(entry)
 
 
 def inside_agent_markers_for(distribution, names):
@@ -106,12 +117,17 @@ def inside_agent_markers_for(distribution, names):
 
 
 def agent_markers(names):
-    """The markers outside the built-in agent's folder: a legacy ``mastra/`` runtime or enterprise
-    content. The agent's own Node and ``node_modules`` are what the ``mastra-agent`` distribution
-    is for, and are not markers of it.
+    """What a ``mastra-agent`` package may not carry besides its own agent folder: a legacy
+    ``mastra/`` runtime, enterprise content, or a Node program outside the folder. Enterprise
+    content and the legacy runtime are refused inside the folder too.
     """
-    return [entry for entry in marker_entries(names)
-            if AGENT_DIR not in [part for part in str(entry.get("path", "")).replace("\\", "/").split("/") if part]]
+    found = []
+    for entry in marker_entries(names):
+        if forbidden_parts(entry):
+            found.append(entry)
+        elif not inside_agent(entry):
+            found.append(entry)
+    return found
 
 
 def marker(path):
@@ -122,7 +138,7 @@ def _parts(name):
     return [part for part in str(name).replace("\\", "/").split("/") if part and part != "."]
 
 
-def agent_node(name, target=None):
+def agent_node(name, target=None, *, prefer=None):
     """Whether a package entry is the built-in agent's own Node program.
 
     A universal macOS app carries one folder per slice (``mastra-agent/<triple>/node``), so the
@@ -377,12 +393,12 @@ def main():
             report["markers"].extend(marker_entries(names) if args.distribution == "native" else [
                 entry for entry in marker_entries(names) if not inside_agent(entry)])
             report["agentMarkers"].extend(agent_markers(names))
-            # A package holds one agent folder, so the report names what the first artifact with
-            # one carries; another artifact with a different answer is a mismatch for the gate.
-            if report["agent"] is None:
-                found = agent_report(names)
-                if found["present"]:
-                    report["agent"] = found
+            # Every artifact is recorded, not only the first: the gate refuses a set whose
+            # artifacts disagree, so a correct zip cannot hide a broken MSI beside it.
+            found = agent_report(names)
+            report.setdefault("agents", {})[path.name] = found
+            if report["agent"] is None and found["present"]:
+                report["agent"] = found
 
         # A standalone app executable is one binary, not an install tree. Its bytes are
         # a subset of the MSI/zip payload built from the same stage; the covering

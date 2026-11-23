@@ -25,7 +25,7 @@ def build(identity, artifacts):
 
 
 def report(identity, checked, *, distribution="native", markers=(), unchecked=(), ignored=(), derived=None,
-           source_name=None, source_sha=None, agent=None, agent_markers=()):
+           source_name=None, source_sha=None, agent=None, agent_markers=(), agents=None):
     value = {
         "packageId": identity,
         "sourceRevision": SHA,
@@ -36,15 +36,25 @@ def report(identity, checked, *, distribution="native", markers=(), unchecked=()
         "markers": [{"name": "pkg", "path": path} for path in markers],
         "agentMarkers": [{"name": "pkg", "path": path} for path in agent_markers],
         "agent": agent,
+        # Every artifact's own answer, as `package_contents.py` records it.
+        "agents": agents if agents is not None else (
+            {name: agent for name, _ in checked} if agent is not None else {}),
         "derivedFrom": derived,
-        "sourceArtifact": source_name,
+        "sourceArtifact": name_of(source_name),
         "sourceSha256": source_sha,
     }
     return value
 
 
+def name_of(value):
+    return value
+
+
 WHOLE_AGENT = {"present": True, "node": True, "nodeTargets": [], "missing": [],
                "skills": ["modelling-skills/solidcraft-modeling"]}
+MAC_AGENT = {"present": True, "node": True, "missing": [],
+             "nodeTargets": ["aarch64-apple-darwin", "x86_64-apple-darwin"],
+             "skills": ["modelling-skills/solidcraft-modeling"]}
 
 
 class NativeContentDecision(unittest.TestCase):
@@ -146,9 +156,13 @@ class AgentContentDecision(unittest.TestCase):
 
     def evidence(self, agent=WHOLE_AGENT, **extra):
         descriptors = {identity: build(identity, [("pkg", DG)]) for identity in self.IDENTITIES}
-        contents = {identity: report(identity, [("pkg", DG)], distribution="mastra-agent",
-                                     agent=dict(agent) if agent else None, **extra)
-                    for identity in self.IDENTITIES}
+        contents = {}
+        for identity in self.IDENTITIES:
+            carried = MAC_AGENT if identity == "release-macos" else WHOLE_AGENT
+            if agent is not None and agent is not WHOLE_AGENT:
+                carried = dict(carried, **{k: v for k, v in agent.items() if v is not None})
+            contents[identity] = report(identity, [("pkg", DG)], distribution="mastra-agent",
+                                        agent=dict(carried) if carried else None, **extra)
         return descriptors, contents
 
     def test_a_release_with_the_agent_in_every_supported_package_is_supported(self):
@@ -158,6 +172,7 @@ class AgentContentDecision(unittest.TestCase):
     def test_a_supported_package_without_the_agent_fails_the_declaration(self):
         descriptors, contents = self.evidence()
         contents["release-macos"]["agent"] = None
+        contents["release-macos"]["agents"] = {"pkg": None}
         problems = content.problems(SHA, descriptors, contents, "mastra-agent")
         self.assertTrue(any("release-macos" in problem and "no mastra-agent/" in problem for problem in problems), problems)
 
@@ -172,7 +187,34 @@ class AgentContentDecision(unittest.TestCase):
     def test_an_agent_without_skills_fails_the_declaration(self):
         descriptors, contents = self.evidence(agent={**WHOLE_AGENT, "skills": []})
         problems = content.problems(SHA, descriptors, contents, "mastra-agent")
-        self.assertTrue(any("carries no skills" in problem for problem in problems), problems)
+        self.assertTrue(any("carries no modelling skill" in problem for problem in problems), problems)
+
+    def test_one_broken_artifact_fails_the_package_beside_a_good_one(self):
+        # A correct zip must not hide a broken MSI built from the same stage.
+        descriptors, contents = self.evidence()
+        identity = "release-windows-x64"
+        contents[identity]["agents"] = {
+            "pkg": WHOLE_AGENT,
+            "broken.msi": {"present": True, "node": False, "missing": [], "skills": ["modelling-skills/solidcraft-modeling"]},
+        }
+        problems = content.problems(SHA, descriptors, contents, "mastra-agent")
+        self.assertTrue(any("broken.msi" in problem and "no Node program" in problem for problem in problems), problems)
+
+    def test_a_universal_app_needs_a_node_for_each_slice(self):
+        descriptors, contents = self.evidence()
+        contents["release-macos"]["agent"] = dict(MAC_AGENT, nodeTargets=["aarch64-apple-darwin"])
+        problems = content.problems(SHA, descriptors, contents, "mastra-agent")
+        self.assertTrue(any("no Node for x86_64-apple-darwin" in problem for problem in problems), problems)
+
+    def test_a_skill_that_is_not_the_modelling_set_does_not_count(self):
+        descriptors, contents = self.evidence()
+        for identity in self.IDENTITIES:
+            carried = dict(MAC_AGENT if identity == "release-macos" else WHOLE_AGENT)
+            carried["skills"] = ["context-skills/intcad-context"]
+            contents[identity]["agent"] = carried
+            contents[identity]["agents"] = {"pkg": carried}
+        problems = content.problems(SHA, descriptors, contents, "mastra-agent")
+        self.assertTrue(any("carries no modelling skill" in problem for problem in problems), problems)
 
     def test_a_legacy_runtime_or_stray_node_still_fails_with_the_agent(self):
         descriptors, contents = self.evidence(markers=("usr/lib/intcad/mastra/runtime.json",))

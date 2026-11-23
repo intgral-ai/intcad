@@ -170,13 +170,21 @@ pub const BRIDGE_NAME: &str = "intcad-app";
 /// through the user's mode and remembered answers: agents that word their MCP tools differently,
 /// and a user's own MCP server, which the gate doesn't see.
 pub fn is_bridge_tool(title: &str, kind: Option<&str>) -> bool {
-    // Hosts name a server's tool in more than one way: `mcp__intcad-app__batch` (the ACP
-    // convention) and `intcad-app_batch` (Mastra Code's, as a real session sends it).
-    let tool = title
-        .strip_prefix("mcp__")
-        .and_then(|t| t.strip_prefix(BRIDGE_NAME))
-        .and_then(|t| t.strip_prefix("__"))
-        .or_else(|| title.strip_prefix(BRIDGE_NAME).and_then(|t| t.strip_prefix('_')).filter(|t| !t.starts_with('_')));
+    bridge_tool(title, kind, false)
+}
+
+/// [`is_bridge_tool`], for the conversation's own agent.
+///
+/// The packaged built-in agent is Mastra Code, which names a server's tool
+/// `intcad-app_<tool>`; no other agent gets that spelling read as Intcad's. A title is a string
+/// the agent writes, so an external agent could copy it: only the agent Intcad ships, whose MCP
+/// bridge Intcad starts itself, is trusted with the shorter name. Every other agent keeps the
+/// ACP spelling (`mcp__intcad-app__<tool>`) that the Claude adapter forms.
+pub fn bridge_tool(title: &str, kind: Option<&str>, built_in: bool) -> bool {
+    let tool =
+        title.strip_prefix("mcp__").and_then(|t| t.strip_prefix(BRIDGE_NAME)).and_then(|t| t.strip_prefix("__")).or_else(|| {
+            built_in.then(|| title.strip_prefix(BRIDGE_NAME).and_then(|t| t.strip_prefix('_')).filter(|t| !t.starts_with('_'))).flatten()
+        });
     let named = tool.is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'));
     named && matches!(kind, None | Some("other"))
 }
@@ -929,9 +937,14 @@ mod tests {
     fn only_the_bridges_exact_tool_names_are_its_tools() {
         for tool in ["batch", "inspect_design", "set_parameter"] {
             assert!(is_bridge_tool(&format!("mcp__intcad-app__{tool}"), None), "{tool}");
-            assert!(is_bridge_tool(&format!("intcad-app_{tool}"), None), "Mastra Code's name for {tool}");
-            assert!(is_bridge_tool(&format!("intcad-app_{tool}"), Some("other")), "Mastra Code's name for {tool}");
             assert!(is_bridge_tool(&format!("mcp__intcad-app__{tool}"), Some("other")), "{tool}");
+            // Mastra Code's spelling counts for the agent Intcad ships, and for no other: an
+            // external agent writes its own titles, so it cannot borrow Intcad's name.
+            assert!(bridge_tool(&format!("intcad-app_{tool}"), None, true), "the packaged agent's name for {tool}");
+            assert!(bridge_tool(&format!("intcad-app_{tool}"), Some("other"), true), "the packaged agent's name for {tool}");
+            assert!(!bridge_tool(&format!("intcad-app_{tool}"), None, false), "an external agent's {tool}");
+            assert!(!bridge_tool(&format!("intcad-app_{tool}"), Some("other"), false), "an external agent's {tool}");
+            assert!(!is_bridge_tool(&format!("intcad-app_{tool}"), None), "the default is not the packaged agent");
         }
         for title in [
             "",

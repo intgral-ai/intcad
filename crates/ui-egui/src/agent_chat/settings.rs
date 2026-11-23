@@ -492,15 +492,14 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
             // agents found on the computer and the ones the user added stay beside it.
             #[cfg(not(target_arch = "wasm32"))]
             {
-                // With the built-in agent and nothing beside it there is no list to manage; the
-                // other agents are found when they are, and then listed here too.
-                if !agents::is_builtin(app) || agents::entries(app).len() > 1 {
-                    let browsing = !crate::prefs_search::querying(ui) || app.prefs_window.section == crate::prefs::PAGE_ASSISTANT;
-                    if app.preferences.ai_features && browsing && app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
-                        refresh(app, &ui.ctx().clone());
-                    }
-                    agents_section(app, ui);
+                // The list stays: the built-in agent first, then the agents found on the computer
+                // and the ones the user added, with Add and Refresh. A package that carries an
+                // agent must not take away the others, nor the way to add one.
+                let browsing = !crate::prefs_search::querying(ui) || app.prefs_window.section == crate::prefs::PAGE_ASSISTANT;
+                if app.preferences.ai_features && browsing && app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
+                    refresh(app, &ui.ctx().clone());
                 }
+                agents_section(app, ui);
             }
             instructions_section(app, ui);
             panel_section(app, ui);
@@ -801,20 +800,17 @@ fn agents_section(app: &mut SolveApp, ui: &mut egui::Ui) {
                                 |ui| {
                                     let is_default = default.as_deref() == Some(entry.id.as_str());
                                     let carried = agents::is_builtin_entry(app, entry);
-                                    if carried {
-                                        // The package carries it: there is nothing to point at, edit or
-                                        // remove. It is the agent a new install starts with.
-                                        ui_kit::settings_badge(ui, tr("ui.ai_default"), false);
-                                    } else {
-                                        let choice = ui_kit::button(
-                                            ui,
-                                            tr(if is_default { "ui.ai_default" } else { "ai.prefs.make_default" }),
-                                            if is_default { ui_kit::Button::SmallSelected } else { ui_kit::Button::Small },
-                                        );
-                                        crate::scenario::publish_target(&format!("dialog:list:{}", entry.id), choice.rect);
-                                        if choice.clicked() {
-                                            app.preferences.agent_default = entry.id.clone();
-                                        }
+                                    // Every agent can be made the default, the carried one too: it is
+                                    // what a launch starts when nothing else was chosen, not a
+                                    // setting the user cannot change back.
+                                    let choice = ui_kit::button(
+                                        ui,
+                                        tr(if is_default { "ui.ai_default" } else { "ai.prefs.make_default" }),
+                                        if is_default { ui_kit::Button::SmallSelected } else { ui_kit::Button::Small },
+                                    );
+                                    crate::scenario::publish_target(&format!("dialog:list:{}", entry.id), choice.rect);
+                                    if choice.clicked() {
+                                        app.preferences.agent_default = entry.id.clone();
                                     }
                                     if !carried {
                                         let test_button = ui_kit::button(ui, tr("ui.ai_test"), ui_kit::Button::Small);

@@ -34,6 +34,39 @@ def _sample(items, limit=5):
     return shown + more
 
 
+# The payload a supported package must carry, per artifact class, at the path it installs to. A
+# name alone is not enough: the folder, its Node, its entry and its licences have to be at the
+# place the app looks, in each artifact that installs them.
+AGENT_PATHS = {
+    "linux": ("usr/lib/intcad/mastra-agent", "lib/intcad/mastra-agent"),
+    "macos": ("Contents/Resources/mastra-agent", "Resources/mastra-agent"),
+    "windows": ("mastra-agent",),
+}
+
+# The macOS slices a universal app must carry a Node for.
+SLICES = ("aarch64-apple-darwin", "x86_64-apple-darwin")
+
+
+def _agent_problem(carried):
+    """Why one artifact's agent does not work, or ``""`` when it does."""
+    if not isinstance(carried, dict) or not carried.get("present"):
+        return "carries no mastra-agent/ folder"
+    if not carried.get("node"):
+        return "the mastra-agent/ folder has no Node program"
+    if carried.get("missing"):
+        return "the agent is incomplete: missing " + _sample(carried.get("missing"))
+    # INT-1473's work starts from the skills, and the modelling set is the one the release
+    # promises; one unrelated skill is not it.
+    skills = carried.get("skills") or []
+    if not any(str(skill).startswith("modelling-skills/") for skill in skills):
+        return "the agent carries no modelling skill (mastra-agent/skills/modelling-skills/<skill>/SKILL.md)"
+    return ""
+
+
+def _slices_for(identity):
+    return SLICES if identity == "release-macos" else ()
+
+
 def problems(source_revision, descriptors, contents, declaration="native"):
     """Return every reason the declared distribution is not supported by the evidence.
 
@@ -76,21 +109,26 @@ def problems(source_revision, descriptors, contents, declaration="native"):
             continue
         agent = report.get("agent")
         if carrying_agent and identity in AGENT_IDENTITIES:
-            # The canonical packages must carry the agent whole, from their own bytes.
-            if not isinstance(agent, dict) or not agent.get("present"):
-                failures.append(identity + ": declared mastra-agent but the built package carries no "
-                                "mastra-agent/ folder")
+            # Every artifact of a supported package must carry the agent whole, from its own
+            # bytes: a correct zip beside a broken MSI is a failed package, not a passing one.
+            per_artifact = report.get("agents")
+            if not isinstance(per_artifact, dict) or not per_artifact:
+                failures.append(identity + ": no per-artifact agent evidence; the built package's "
+                                "contents were not recorded one by one")
             else:
-                if not agent.get("node"):
-                    failures.append(identity + ": the built package's mastra-agent/ folder has no Node program")
-                if agent.get("missing"):
-                    failures.append(identity + ": the built package's agent is incomplete: missing "
-                                    + _sample(agent.get("missing")))
-                # INT-1473's agentic work starts from the modelling skills: a package whose agent
-                # carries none ships an agent that cannot do the job it is packaged for.
-                if not agent.get("skills"):
-                    failures.append(identity + ": the built package's agent carries no skills "
-                                    "(mastra-agent/skills/<set>/<skill>/SKILL.md)")
+                for name in sorted(per_artifact):
+                    carried = per_artifact[name]
+                    problem = _agent_problem(carried)
+                    if problem:
+                        failures.append(identity + ": " + name + ": " + problem)
+            if isinstance(agent, dict) and agent.get("present"):
+                # A universal app's folder exists per CPU: both halves must be there.
+                needed_slices = _slices_for(identity)
+                got = set(agent.get("nodeTargets") or [])
+                absent = [slice_ for slice_ in needed_slices if slice_ not in got]
+                if absent:
+                    failures.append(identity + ": the package's agent has no Node for "
+                                    + _sample(absent) + " (found " + _sample(sorted(got)) + ")")
         elif isinstance(agent, dict) and agent.get("present"):
             failures.append(identity + ": carries mastra-agent/ but the release supports the agent on "
                             + _sample(AGENT_IDENTITIES) + " only")
