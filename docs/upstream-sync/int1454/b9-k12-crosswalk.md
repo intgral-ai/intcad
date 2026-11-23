@@ -112,3 +112,26 @@ Compared the exact JUnit IDs K:11–22 using the receipts above (artifact IDs `1
 | K:22 | Same | Same variable-round operation returns `Unsupported` before the balls-union comparison. |
 
 **7 same observed failures, 3 different, 2 insufficient.** No test was rerun. The separately approved Q:10–12 dispositions above and final K12 acceptance do not follow from this comparison.
+
+## Kernel area parity baseline
+
+The K12-relevant kernel areas were run case by case on both builds with the same CLI invocation the
+rig uses (`solidcraft-cli kernel-cases <case> --json`, one process per case), so a changed kernel
+expectation can later be compared against a recorded baseline.
+
+| Area | Cases | `9c24061c` | `db0b8dd35` |
+| --- | --- | --- | --- |
+| solids | 11 | 11 pass | 11 pass |
+| continuity | 13 | 13 pass | 13 pass |
+| threads | 31 | 31 pass | 31 pass |
+| **Total** | **55** | **55 pass** | **55 pass** |
+
+Comparison: **55 unchanged, 0 changed**. Slowest case 57.1 s on `9c24061c`, 37.7 s on the candidate.
+CLIs were `d098a154…` and `b3a856e2…`; both worktrees were clean at the stated SHAs.
+
+Receipts (output of the evaluator's `kernel-collect.py`, retained locally): `areas-9c24061c.json`
+SHA-256 `485961e9…`, `areas-db0.json` `531d9050…`, `areas-compare.json` `91bfefd3…`.
+
+This is a parity baseline for unchanged areas, not the required evidence for changed expectations.
+Those still need, on the landed SHA, the same cases with their inputs and the base-versus-landed
+comparison, alongside the 17 mapped ID outcomes and the separately approved Q:10–12 dispositions.
