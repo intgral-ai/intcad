@@ -306,54 +306,113 @@ class StandaloneSmoke(unittest.TestCase):
             }
         """)
 
-    def test_shared_reader_rejects_a_late_or_timed_out_diagnostic_and_disposes_only_its_process(self) -> None:
+    def test_shared_reader_contains_compiler_and_checks_the_whole_job_before_accepting(self) -> None:
         self.fixture("""
             $env:SystemRoot = [IO.Path]::GetTempPath()
             $text = '# fixture only; process start is mocked'
             $clock = @{ElapsedMilliseconds=0L}
+            $script:job = 'app job must not be touched'
+            function NewPageCloseReaderJob { $events.Add('create'); $jobHandle }
+            function AssignOwnedLauncher($job, $launcher) {
+                if ($job -cne $jobHandle -or $launcher -ne $process -or $stdin.Text) { throw 'unsafe assignment' }
+                $events.Add('assign')
+                if ($mode -eq 'denied') { throw 'job assignment denied' }
+                $process.InJob = $true
+            }
+            function TestPageCloseReaderJobMember($job, $reader) {
+                if ($job -cne $jobHandle -or $reader -ne $process -or $stdin.Text) { throw 'unsafe membership check' }
+                $events.Add('verify')
+                if ($mode -eq 'late-admission') { $clock.ElapsedMilliseconds = 13000L }
+                $mode -ne 'unverified'
+            }
+            function ReadPageCloseReaderJobActive($job) {
+                if ($job -cne $jobHandle) { throw 'queried another job' }
+                $events.Add("active=$($script:active)")
+                $script:active
+            }
+            function StopOwnedJob($job) {
+                if ($job -cne $jobHandle) { throw 'terminated another job' }
+                $events.Add('stop')
+                if ($mode -cne 'survivor') { $script:active = 0 }
+            }
+            function CloseOwnedJob($job) {
+                if ($job -cne $jobHandle) { throw 'disposed another job' }
+                $events.Add('close')
+            }
+            function Start-Sleep([int]$Milliseconds) { $clock.ElapsedMilliseconds += $Milliseconds }
             function StartPageCloseUiaReader($info) {
                 if (-not $info.RedirectStandardOutput -or -not $info.RedirectStandardError -or $info.UseShellExecute) {
                     throw 'reader pipes are not private'
                 }
-                $script:starts++
+                if ($mode -ne 'original' -and ($events -join ',') -cne 'create') {
+                    throw 'diagnostic job must exist before reader start'
+                }
+                if ($info.RedirectStandardInput -ne ($mode -ne 'original')) { throw 'wrong admission pipe mode' }
+                $events.Add('start')
+                if ($mode -eq 'start-error') { throw 'reader failed to start' }
                 $process
             }
-            if (-not (Get-Command InvokePageCloseUiaReader -ErrorAction SilentlyContinue)) {
-                throw 'missing shared watchdog for the read-only comparison'
-            }
+            $jobHandle = 'independent diagnostic job'
             $stream = [pscustomobject]@{Text=''}
             $stream | Add-Member ScriptMethod ReadToEndAsync { [Threading.Tasks.Task]::FromResult($this.Text) }
             $output = $stream.PSObject.Copy(); $output.Text = '{"matched":0,"empty":0,"candidates":[]}'
-            $process = [pscustomobject]@{HasExited=$false; ExitCode=0; StandardError=$stream; StandardOutput=$output}
+            $stdin = [pscustomobject]@{Text=''}
+            $stdin | Add-Member ScriptMethod WriteLine {
+                param($line)
+                if (-not $process.InJob -or $events[-1] -cne 'verify' -or $mode -eq 'unverified') {
+                    throw 'authorized before verified membership'
+                }
+                $events.Add('authorize')
+                $this.Text = $line
+                $script:active = 1
+            }
+            $stdin | Add-Member ScriptMethod Dispose { $events.Add('eof') }
+            $process = [pscustomobject]@{HasExited=$false; InJob=$false; ExitCode=0;
+                StandardError=$stream; StandardOutput=$output; StandardInput=$stdin}
             $process | Add-Member ScriptMethod WaitForExit {
                 param($milliseconds)
-                $waits.Add($milliseconds)
+                $events.Add("wait=$milliseconds")
                 if ($this.HasExited) { return $true }
                 if ($mode -eq 'late') { $clock.ElapsedMilliseconds = 15000L }
                 if ($mode -eq 'timeout') { $clock.ElapsedMilliseconds = 13000L; return $false }
                 $this.HasExited = $true
+                # The parent can exit with a compiler still active, even with both pipes closed.
+                $script:active = if ($mode -cin @('leftover', 'survivor')) { 1 } else { 0 }
                 $true
             }
-            $process | Add-Member ScriptMethod Kill { $script:kills++; $this.HasExited = $true }
-            $process | Add-Member ScriptMethod Dispose { $script:disposals++ }
-            foreach ($mode in @('original','late','timeout')) {
-                $clock.ElapsedMilliseconds = 0L
-                $process.HasExited = $false
-                $waits = [Collections.Generic.List[int]]::new()
-                $script:starts = $script:kills = $script:disposals = 0
+            $process | Add-Member ScriptMethod Kill { $events.Add('kill'); $this.HasExited = $true }
+            $process | Add-Member ScriptMethod Dispose { $events.Add('dispose') }
+            foreach ($case in @(
+                @{Mode='original'; Events='start,wait=15000,dispose'},
+                @{Mode='clean'; Events='create,start,assign,verify,authorize,eof,wait=13000,active=0,active=0,dispose,close'},
+                @{Mode='late'; Error='deadline'; Events='create,start,assign,verify,authorize,eof,wait=13000,active=0,dispose,close'},
+                @{Mode='timeout'; Error='deadline'; Events='create,start,assign,verify,authorize,eof,wait=13000,active=1,stop,active=0,dispose,close'},
+                @{Mode='leftover'; Error='did not empty'; Events='create,start,assign,verify,authorize,eof,wait=13000,active=1,active=1,stop,active=0,dispose,close'},
+                @{Mode='survivor'; Error='cleanup'; Events='create,start,assign,verify,authorize,eof,wait=13000,active=1,active=1,stop,active=1*,dispose,close'},
+                @{Mode='denied'; Error='denied'; Events='create,start,assign,eof,kill,wait=15000,active=0,dispose,close'},
+                @{Mode='unverified'; Error='membership'; Events='create,start,assign,verify,eof,kill,wait=15000,active=0,dispose,close'},
+                @{Mode='late-admission'; Error='deadline'; Events='create,start,assign,verify,eof,active=0,dispose,close'},
+                @{Mode='expired'; Error='deadline'; Events=''},
+                @{Mode='start-error'; Error='cannot start'; Events='create,start,active=0,close'}
+            )) {
+                $mode = $case.Mode
+                $clock.ElapsedMilliseconds = if ($mode -eq 'expired') { 13000L } else { 0L }
+                $process.HasExited = $process.InJob = $false
+                $stdin.Text = ''
+                $script:active = 0
+                $events = [Collections.Generic.List[string]]::new()
                 if ($mode -eq 'original') {
                     $query = InvokePageCloseUiaReader $text
-                    if ($query.matched -ne 0 -or ($waits -join ',') -cne '15000' -or $script:kills -ne 0) {
-                        throw 'original wait or result changed'
-                    }
+                    if ($query.matched -ne 0) { throw 'original result changed' }
+                } elseif ($case.Error) {
+                    Reject { InvokePageCloseUiaReader $text $clock } $case.Error
                 } else {
-                    Reject { InvokePageCloseUiaReader $text $clock } 'deadline'
-                    $wanted = if ($mode -eq 'late') { '13000' } else { '13000,2000' }
-                    if (($waits -join ',') -cne $wanted -or $script:kills -ne [int]($mode -eq 'timeout')) {
-                        throw "wrong watchdog deadline or cleanup: $($waits -join ',')"
-                    }
+                    if ((InvokePageCloseUiaReader $text $clock) -cne $output.Text) { throw 'clean reader lost its output' }
                 }
-                if ($script:starts -ne 1 -or $script:disposals -ne 1) { throw 'lost owned reader lifecycle' }
+                if (($events -join ',') -cnotlike $case.Events) { throw "$mode had wrong lifecycle: $($events -join ',')" }
+                if ($clock.ElapsedMilliseconds -gt 15000 -or ($mode -eq 'survivor' -and $clock.ElapsedMilliseconds -ne 15000)) {
+                    throw 'cleanup failed to use the same bounded deadline'
+                }
             }
         """)
 
@@ -364,12 +423,34 @@ class StandaloneSmoke(unittest.TestCase):
             $view = @{Window=[IntPtr]20}
             $env:SystemRoot = [IO.Path]::GetTempPath()
             function IsOwnedFrame { $true }
+            function NewPageCloseReaderJob { 'comparison job' }
+            function AssignOwnedLauncher {}
+            function TestPageCloseReaderJobMember { $true }
+            function ReadPageCloseReaderJobActive { 0 }
+            function CloseOwnedJob {}
             $script:launches = [Collections.Generic.List[string]]::new()
             function StartPageCloseUiaReader($info) {
                 $encoded = $info.ArgumentList[-1]
                 if ($encoded.Length -gt 32000) { throw 'reader command line is too long for Windows' }
                 $text = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded))
-                [void][scriptblock]::Create($text)
+                $payload = [scriptblock]::Create($text)
+                if ($script:launches.Count -eq 1) {
+                    $first = $payload.Ast.EndBlock.Statements[0]
+                    if ($first -isnot [System.Management.Automation.Language.IfStatementAst]) {
+                        throw 'secondary payload must gate compilation before any diagnostic work'
+                    }
+                    # Run the real gate with simulated stdin, but replace the Windows-only body.
+                    $gate = [scriptblock]::Create($first.Extent.Text + "`n'fixture reached diagnostic body'")
+                    foreach ($inputText in @('', "wrong`n", "compare`n")) {
+                        $savedIn = [Console]::In
+                        $inputReader = [IO.StringReader]::new($inputText)
+                        try { [Console]::SetIn($inputReader); $admitted = & $gate }
+                        finally { [Console]::SetIn($savedIn); $inputReader.Dispose() }
+                        if (($admitted -ceq 'fixture reached diagnostic body') -ne ($inputText -ceq "compare`n")) {
+                            throw 'incorrect diagnostic admission'
+                        }
+                    }
+                }
                 $script:launches.Add($text)
                 $stream = [pscustomobject]@{Text=''}
                 $stream | Add-Member ScriptMethod ReadToEndAsync { [Threading.Tasks.Task]::FromResult($this.Text) }
@@ -377,7 +458,8 @@ class StandaloneSmoke(unittest.TestCase):
                 $output.Text = if ($script:launches.Count -eq 1) {
                     '{"matched":0,"empty":0,"candidates":[]}'
                 } else { "unsupported`r`n" }
-                $reader = [pscustomobject]@{HasExited=$true; ExitCode=0; StandardOutput=$output; StandardError=$stream}
+                $reader = [pscustomobject]@{HasExited=$true; ExitCode=0; StandardOutput=$output; StandardError=$stream;
+                    StandardInput=[IO.StringWriter]::new()}
                 $reader | Add-Member ScriptMethod WaitForExit { $true }
                 $reader | Add-Member ScriptMethod Dispose {}
                 $reader

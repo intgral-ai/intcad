@@ -746,53 +746,97 @@ function PageCloseReaderRemaining($clock, [int]$limit) {
     [int][Math]::Max(0, ($limit - $clock.ElapsedMilliseconds))
 }
 
+function NewPageCloseReaderJob { [AssistantJob]::Create() }
+function TestPageCloseReaderJobMember($job, $reader) { [AssistantJob]::Contains($job, $reader.Handle) }
+function ReadPageCloseReaderJobActive($job) { [AssistantJob]::Active($job) }
+
+function InvokeContainedPageCloseUiaReader($info, $clock) {
+    # Use a separate no-breakaway, kill-on-close job. Do not touch the app's job.
+    if ((PageCloseReaderRemaining $clock 13000) -eq 0) { throw 'comparison deadline expired' }
+    $readerJob = NewPageCloseReaderJob
+    $reader = $null
+    $verified = $false
+    try {
+        if ((PageCloseReaderRemaining $clock 13000) -eq 0) { throw 'comparison deadline expired' }
+        try { $reader = StartPageCloseUiaReader $info }
+        catch { throw 'comparison reader cannot start' }
+        try {
+            AssignOwnedLauncher $readerJob $reader
+            $verified = TestPageCloseReaderJobMember $readerJob $reader
+            if (-not $verified) { throw 'comparison reader job membership not verified' }
+            if ((PageCloseReaderRemaining $clock 13000) -eq 0) { throw 'comparison deadline expired' }
+            $reader.StandardInput.WriteLine('compare')
+        } finally { $reader.StandardInput.Dispose() } # EOF instead of admission on failure.
+
+        $output = $reader.StandardOutput.ReadToEndAsync()
+        $errorOutput = $reader.StandardError.ReadToEndAsync()
+        if (-not $reader.WaitForExit((PageCloseReaderRemaining $clock 13000)) -or
+            -not $errorOutput.Wait((PageCloseReaderRemaining $clock 13000)) -or
+            -not $output.Wait((PageCloseReaderRemaining $clock 13000)) -or
+            (PageCloseReaderRemaining $clock 13000) -eq 0) {
+            throw 'comparison deadline expired'
+        }
+        if ($reader.ExitCode -ne 0) { throw 'comparison reader failed' }
+        if ((ReadPageCloseReaderJobActive $readerJob) -ne 0) { throw 'comparison job did not empty' }
+        return $output.Result -creplace '\r?\n\z', ''
+    } finally {
+        try {
+            # Only a reader that never got admission could be outside the job.
+            if ($reader -and -not $verified -and -not $reader.HasExited) {
+                $reader.Kill()
+                if (-not $reader.WaitForExit((PageCloseReaderRemaining $clock 15000))) { throw 'unadmitted reader still active' }
+            }
+            if ((ReadPageCloseReaderJobActive $readerJob) -ne 0) {
+                StopOwnedJob $readerJob
+                while ((ReadPageCloseReaderJobActive $readerJob) -ne 0) {
+                    $remaining = PageCloseReaderRemaining $clock 15000
+                    if ($remaining -eq 0) { throw 'comparison job still active' }
+                    Start-Sleep -Milliseconds ([Math]::Min(50, $remaining))
+                }
+            }
+        } catch { throw 'comparison reader cleanup failed' }
+        finally {
+            try { if ($reader) { $reader.Dispose() } }
+            finally { CloseOwnedJob $readerJob }
+        }
+    }
+}
+
 function InvokePageCloseUiaReader([string]$scriptText, $clock = $null) {
     $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
+    if ($clock) {
+        $info.RedirectStandardInput = $true
+        $info.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
+        $scriptText = 'if ([Console]::ReadLine() -cne ''compare'') { exit 0 }' + "`n" + $scriptText
+    }
     foreach ($arg in @('-NoProfile', '-NonInteractive', '-Mta', '-EncodedCommand',
             [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($scriptText)))) {
         [void]$info.ArgumentList.Add($arg)
     }
     # The diagnostic alone uses a single 15 s budget, with the last 2 s reserved for termination.
-    if ($clock -and (PageCloseReaderRemaining $clock 13000) -eq 0) { throw 'comparison deadline expired' }
+    if ($clock) { return (InvokeContainedPageCloseUiaReader $info $clock) }
     try { $uia = StartPageCloseUiaReader $info }
     catch { throw "BLOCKED: Windows UI Automation reader cannot start: $($_.Exception.Message)" }
     try {
         $output = $uia.StandardOutput.ReadToEndAsync()
         $errorOutput = $uia.StandardError.ReadToEndAsync()
-        if ($clock) {
-            if (-not $uia.WaitForExit((PageCloseReaderRemaining $clock 13000)) -or
-                -not $errorOutput.Wait((PageCloseReaderRemaining $clock 13000)) -or
-                -not $output.Wait((PageCloseReaderRemaining $clock 13000)) -or
-                (PageCloseReaderRemaining $clock 13000) -eq 0) {
-                throw 'comparison deadline expired'
-            }
-            if ($uia.ExitCode -ne 0) { throw 'comparison reader failed' }
-            # No stderr or unvalidated stdout is printed in this mode.
-            return $output.Result -creplace '\r?\n\z', ''
-        }
         if (-not $uia.WaitForExit(15000)) { throw 'page Close UI Automation query timed out' }
         if (-not $errorOutput.Wait(1000) -or -not $output.Wait(1000)) { throw 'page Close UI Automation output did not end' }
         if ($uia.ExitCode -eq 2) { throw "BLOCKED: Windows UI Automation assemblies unavailable: $($errorOutput.Result)" }
         if ($uia.ExitCode -ne 0) { throw "page Close UI Automation query failed: $($errorOutput.Result)" }
         $output.Result | ConvertFrom-Json -AsHashtable
     } finally {
-        $comparisonCleanupFailed = $false
         try {
             if (-not $uia.HasExited) {
                 $uia.Kill()
-                $cleanupWait = if ($clock) { PageCloseReaderRemaining $clock 15000 } else { 3000 }
-                if (-not $uia.WaitForExit($cleanupWait)) { throw 'owned UI Automation query did not exit after termination' }
+                if (-not $uia.WaitForExit(3000)) { throw 'owned UI Automation query did not exit after termination' }
             }
-        } catch {
-            if ($clock) { $comparisonCleanupFailed = $true }
-            else { RecordCleanupFailure 'page Close UI Automation' $_.Exception.Message }
-        }
+        } catch { RecordCleanupFailure 'page Close UI Automation' $_.Exception.Message }
         $uia.Dispose()
-        if ($comparisonCleanupFailed) { throw 'comparison reader cleanup failed' }
     }
 }
 
