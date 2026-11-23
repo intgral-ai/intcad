@@ -173,10 +173,12 @@ now reads `SHA256SUMS.txt` and falls back to `SHA256SUMS`, the name `v0.1.2` pub
 refuses anything whose hash does not match. Regression test:
 `a_release_that_lists_the_sums_under_the_old_name_still_updates` in
 `crates/ui-egui/src/update/install_tests.rs`, written first (it failed to compile with `SUMS_LEGACY`
-missing). The local pass run was interrupted when another process reclaimed this worktree's
-`target/` mid-build, so the passing evidence is the `ci` job on PR #217, not a local run; that is
-the trusted builder here anyway. The update owner can veto this single change without touching the
-checksum script.
+missing). Passing locally on 2026-11-23 with a private target directory:
+`cargo test --profile ci -p solidcraft-ui-egui --lib --locked a_release_that_lists_the_sums_under_the_old_name_still_updates`
+→ 1 passed; the whole `update::install` group → 10 passed; `cargo clippy --profile ci -p
+solidcraft-ui-egui --all-targets -- -D warnings` → no issues. The PR's `Native Linux selected
+regression gate` job does **not** cover this test for this change set (it selects `xtask` only).
+The update owner can veto this single change without touching the checksum script.
 
 Against the real release: the two `v0.1.2` assets downloaded in §1, run through
 `packaging/checksums.sh`, produce lines byte-identical to the published `SHA256SUMS` for the same
