@@ -281,7 +281,44 @@ names and hashes, `build.json` per target, installed-check logs and screenshots,
 `REPORT.md` paths, the known-issues list and every NOT TESTED or BLOCKED row. No row is PASS
 without its file.
 
-## 11. Decisions needed from the CTO / owners
+## 11. Published-artifact rehearsal (Linux, 2026-11-23)
+
+Done to prove the acceptance route before a candidate exists, using the **published** `v0.1.2`
+tarball, not a source build. Task `rel012`, VM
+`intcad-e2e-release-readiness-nov23-378d722a8f6a-rel012` (Ubuntu 24.04.5, XFCE, X11, llvmpipe).
+
+| Step | Result |
+|---|---|
+| Extract `intcad-0.1.2-linux-x86_64.tar.gz` in the guest | `bin/intcad`, `bin/intcad-cli` |
+| `bin/intcad-cli --version` / `bin/intcad --version` | `intcad-cli 0.1.2` / `intcad 0.1.2`, exit 0 |
+| Launch `bin/intcad --control 7879 --sample` on `DISPLAY=:0` | window 1440×900, `Vulkan · llvmpipe`, control server on 127.0.0.1:7879 |
+| `ui.inspect` | one document, `Plate` body, face hover, viewport 1440×866 |
+| `ui.click` on handle `titlebar:assistant` | Assistant panel opens |
+| Whole-VM screenshot | Assistant page rendered: "No agent found / Set up an assistant", agent list, composer |
+| `engine.execute` `sketch.create`, `sketch.rectangle.two_point`, `solid.extrude {distance:20}` | `body: Body1`, `ms:17.9`, no warning; the solid appears and the browser lists 2 bodies |
+
+Evidence (this machine):
+`~/.local/state/intcad-e2e/runs/intcad-e2e-release-readiness-nov23-378d722a8f6a-rel012/20261123T064236Z-2372381/screenshots/rel012-assistant.png`
+and `rel012-extrude.png`.
+
+Two method findings that change how Gate C/D evidence must be taken:
+
+1. **`ui.screenshot` cannot see the Assistant page.** It captures egui's own frame, so the native
+   web view (WebKitGTK/WebView2/WKWebView) comes out as a black rectangle — the repository's own
+   passing run has the same black `app-frame.png` while its `screen.png` shows the page. A black
+   panel in a control screenshot is **not** a UI failure. Use the whole-VM screenshot
+   (`intcad-e2e shot`) for anything inside the Assistant, or `packaging/assistant-check.py`.
+2. **No rebuild is needed to test a package.** Extracting the release tarball in a fresh VM and
+   launching it by hand with the harness's environment (display, `SOLIDCRAFT_CONTROL_DIR`,
+   `--control`, `--sample`) exercises the real published binary; `intcad-e2e accept` cannot,
+   because it builds the checkout first. This is the path to use for the candidate; making it a
+   scripted command is still open (E2), since the launch flags and the web-view capture had to be
+   worked out by hand here.
+
+Limits: Linux X11 on software rendering only; no Windows or macOS equivalent was run, and nothing
+here proves login, Mastra or the skills, which `v0.1.2` does not carry.
+
+## 12. Decisions needed from the CTO / owners
 
 1. **Version and package plan:** one 0.1.3 with login, or 0.1.3 now without it and 0.1.4 later
    (INT-1503 raises both)? This decides whether #213 blocks the first package.
