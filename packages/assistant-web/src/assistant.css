@@ -88,6 +88,15 @@ html.centre body,
 html.centre #root {
   background: transparent !important;
 }
+/* The message box there has no scroll bar: Mastra's input scrolls in a box that always scrolls, and
+   where the system shows scroll bars always (a mouse attached) the web view draws its track beside a
+   one-line message. A long message still scrolls with the wheel and the keys. */
+html.centre div:has(> div > [data-slot='composer-input']) {
+  scrollbar-width: none !important;
+}
+html.centre div:has(> div > [data-slot='composer-input'])::-webkit-scrollbar {
+  display: none;
+}
 /* The line over the message box there: one line tall; the text wraps and a full line scrolls up. */
 .centre-preview {
   height: 1lh;
