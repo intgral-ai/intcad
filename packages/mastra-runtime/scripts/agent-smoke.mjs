@@ -65,7 +65,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { SKILL_SETS } from "../agent/skills.mjs";
+import { SKILL_SETS, setsToInstall } from "../agent/skills.mjs";
 
 const self = fileURLToPath(import.meta.url);
 export const MARK = "intcad-smoke";
@@ -694,10 +694,11 @@ async function main(args) {
     return turn.stop === "end_turn" && turn.tools.includes("task_write") && shownFirst && JSON.stringify(asks) === JSON.stringify(["intcad-app_execute"]) && out.server === 1;
   });
 
-  // The skills come from the package's copies, or from the repository when the entry is the
-  // repository's own; what the agent installed in its home must be those files.
-  const packaged = join(dirname(entry), "..", "skills");
-  const original = (set, skill) => (existsSync(packaged) ? join(packaged, set.name, skill, "SKILL.md") : join(dirname(entry), "..", "..", "..", ...set.from.split("/"), skill, "SKILL.md"));
+  // Where each set is installed from, found as the entry finds it (the same call as main.mjs): the
+  // package's copies, or the repository's folders when the entry is the repository's own. The
+  // skills expected are SKILL_SETS's, and each installed SKILL.md must be its source byte for byte.
+  const sources = new Map(setsToInstall(join(dirname(entry), ".."), join(dirname(entry), "..", "..", "..")).map((set) => [set.name, set.root]));
+  const original = (set, skill) => (sources.has(set.name) ? join(sources.get(set.name), skill, "SKILL.md") : null);
   await run("the skill sets are listed and each SKILL.md is read", {}, async ({ out, prompt, agent, service, data }) => {
     const wanted = SKILL_SETS.flatMap((set) => set.skills.map((skill) => ({ set, skill })));
     // As commands: Mastra Code sends the session's skills as `skill/<name>` after the session opens.
@@ -713,7 +714,8 @@ async function main(args) {
     let all = first.stop === "end_turn";
     for (const { set, skill } of wanted) {
       const installed = join(data, "home", ".agents", "skills", skill, "SKILL.md");
-      const same = existsSync(installed) && existsSync(original(set, skill)) && readFileSync(installed, "utf8") === readFileSync(original(set, skill), "utf8");
+      const source = original(set, skill);
+      const same = existsSync(installed) && source !== null && existsSync(source) && readFileSync(installed, "utf8") === readFileSync(source, "utf8");
       const heading = /^# (.+)$/mu.exec(existsSync(installed) ? readFileSync(installed, "utf8") : "")?.[1]?.trim() ?? "";
       const turn = await prompt(`activate the skill: ${skill}`);
       const read = turn.stop === "end_turn" && turn.tools.length === 1 && heading !== "" && turn.answer.includes(heading.slice(0, 60));

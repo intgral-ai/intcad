@@ -6,7 +6,7 @@
  *   package the build leaves out, a package the lock file does not name or names at another
  *   version, a package under a refused licence or with none stated, or another session builder
  *   of the SDK than the one the agent's own follows; with `--read-only`, when a file can be written;
- * - it fails when a skill of a set is missing, its stamp is missing or names other skills, a copy
+ * - it fails when a skill of a set is missing, its stamp is missing or names other skills or another set, a copy
  *   was changed after the build, a file a copy does not carry or a folder of no set is there, and
  *   when the repository's folder has changed since the build (`--skills-root` stands for it); for
  *   both sets, the modelling skills from `skills/` and the context skill from
@@ -150,6 +150,14 @@ const breaks = [
       writeFileSync(path, JSON.stringify(stamp));
     },
     "skill-set.json names solidcraft-checking, solidcraft-mechanisms, solidcraft-modeling;",
+  ],
+  [
+    "a stamp that names another set",
+    ({ root }) => {
+      const path = join(root, "skills/modelling-skills/skill-set.json");
+      writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), set: "other-skills" }));
+    },
+    'names the set "other-skills", so the agent would start without modelling-skills',
   ],
 ];
 for (const [name, change, said] of breaks) {
