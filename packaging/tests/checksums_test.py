@@ -179,5 +179,30 @@ class EvidenceFilesAreNotAssets(ChecksumTestCase):
         self.assertEqual(elsewhere.read_text(), "not a list", "the old file is untouched")
 
 
+    def test_a_name_with_a_newline_is_refused(self):
+        self.write("intcad-0.1.3-linux-x86_64.tar.gz", b"tar")
+        (self.tmp / "intcad-0.1.3\nlosing.tar.gz").write_bytes(b"bad")
+
+        result = self.run_script(str(self.tmp))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("newline", result.stderr)
+        self.assertFalse((self.tmp / "SHA256SUMS.txt").exists(), "nothing is published")
+
+    def test_a_temporary_list_that_is_a_symlink_writes_nothing_through_it(self):
+        self.write("intcad-0.1.3-linux-x86_64.tar.gz", b"tar")
+        elsewhere = self.tmp.parent / f"{self.tmp.name}-new-list"
+        elsewhere.write_text("keep me")
+        self.addCleanup(elsewhere.unlink)
+        (self.tmp / "SHA256SUMS.txt.new").symlink_to(elsewhere)
+
+        result = self.run_script(str(self.tmp))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(elsewhere.read_text(), "keep me", "the symlink's target is untouched")
+        self.assertTrue((self.tmp / "SHA256SUMS.txt").is_file())
+        self.assertFalse((self.tmp / "SHA256SUMS.txt").is_symlink())
+
+
 if __name__ == "__main__":
     unittest.main()

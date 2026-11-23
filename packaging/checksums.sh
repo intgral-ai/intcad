@@ -51,7 +51,8 @@ found="$(mktemp "${TMPDIR:-/tmp}/checksums-find.XXXXXX")"
 # The temporary list is made in `$dir` only after the scan: a file created before it would be
 # found as a release file and listed with a hash of itself.
 tmp=
-trap 'rm -f "$found" ${tmp:+"$tmp"} "$dir/SHA256SUMS.txt.new" "$dir/SHA256SUMS.new"' EXIT
+odd=
+trap 'rm -f "$found" ${tmp:+"$tmp"} ${odd:+"$odd"} "$dir/SHA256SUMS.txt.new" "$dir/SHA256SUMS.new"' EXIT
 find "$dir" -mindepth 1 -maxdepth 1 -type f -print0 | LC_ALL=C sort -z >"$found"
 
 files=()
@@ -74,18 +75,22 @@ fi
 # Anything at the top level that is not a regular file would be left out of the list without a sign:
 # a symlink, a subdirectory (what `gh run download` makes), a socket. Refuse instead, and say what
 # to do — a short list that still looks successful is the failure this check exists to prevent.
-while IFS= read -r -d '' odd; do
-  name="${odd##*/}"
+# Its own file too, for the same reason as the asset scan: a failing `find` must stop the run.
+odd="$(mktemp "${TMPDIR:-/tmp}/checksums-odd.XXXXXX")"
+find "$dir" -mindepth 1 -maxdepth 1 ! -type f -print0 >"$odd"
+
+while IFS= read -r -d '' entry; do
+  name="${entry##*/}"
   is_list "$name" && continue
-  if [ -d "$odd" ]; then
-    echo "checksums.sh: $odd is a folder, so its files would not be listed; flatten the release assets into $dir first" >&2
-  elif [ -L "$odd" ]; then
-    echo "checksums.sh: $odd is a symlink, so it would not be listed; put the file itself in $dir" >&2
+  if [ -d "$entry" ]; then
+    echo "checksums.sh: $entry is a folder, so its files would not be listed; flatten the release assets into $dir first" >&2
+  elif [ -L "$entry" ]; then
+    echo "checksums.sh: $entry is a symlink, so it would not be listed; put the file itself in $dir" >&2
   else
-    echo "checksums.sh: $odd is not a regular file, so it would not be listed" >&2
+    echo "checksums.sh: $entry is not a regular file, so it would not be listed" >&2
   fi
   exit 1
-done < <(find "$dir" -mindepth 1 -maxdepth 1 ! -type f -print0)
+done <"$odd"
 
 # The two published names must be regular files: overwriting a symlink or a directory here would
 # write the list somewhere else while still looking like success.
@@ -101,7 +106,6 @@ for name in SHA256SUMS.txt SHA256SUMS; do
 done
 
 tmp="$(mktemp "${TMPDIR:-/tmp}/checksums-list.XXXXXX")"
-trap 'rm -f "$found" "$tmp" "$dir/SHA256SUMS.txt.new" "$dir/SHA256SUMS.new"' EXIT
 (
   cd "$dir"
   for file in "${files[@]}"; do
@@ -131,12 +135,25 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 
 # Both names are put in place from copies, so a failure on the second one does not leave the first
-# updated and the second stale.
-cp "$tmp" "$dir/SHA256SUMS.txt.new"
-cp "$tmp" "$dir/SHA256SUMS.new"
-chmod 644 "$dir/SHA256SUMS.txt.new" "$dir/SHA256SUMS.new"
-mv "$dir/SHA256SUMS.txt.new" "$dir/SHA256SUMS.txt"
-mv "$dir/SHA256SUMS.new" "$dir/SHA256SUMS"
+# updated and the second stale. The `.new` names are removed first: copying into an existing symlink
+# or hard link would write somewhere else and still look like it worked. If either rename fails,
+# both published names are removed rather than left describing different sets of files.
+for name in SHA256SUMS.txt SHA256SUMS; do
+  rm -f "$dir/$name.new"
+  cp "$tmp" "$dir/$name.new"
+  chmod 644 "$dir/$name.new"
+done
+for name in SHA256SUMS.txt SHA256SUMS; do
+  if ! mv "$dir/$name.new" "$dir/$name"; then
+    rm -f "$dir/SHA256SUMS.txt" "$dir/SHA256SUMS"
+    echo "checksums.sh: could not put $dir/$name in place; no checksum list was left" >&2
+    exit 1
+  fi
+done
+cmp -s "$dir/SHA256SUMS.txt" "$dir/SHA256SUMS" || {
+  echo "checksums.sh: the two published names do not hold the same bytes" >&2
+  exit 1
+}
 
 # Both names, as published: the same lines and the same bytes, each verified in its published
 # place (the output names every file, so the run shows what was checked).

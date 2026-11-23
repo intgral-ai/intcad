@@ -10,8 +10,8 @@
 #
 # A release that ships only `intcad-<version>-…` files leaves MSI, DMG, AppImage, deb, rpm, Flatpak,
 # Snap and portable-zip users unable to update: the update check finds no asset and stops. This
-# script writes the aliases as hard links (or copies, across file systems) and refuses to replace an
-# alias that already holds different bytes.
+# script writes the aliases as **copies** — a hard link would change its bytes if the versioned file
+# were rebuilt in place later — and refuses to replace an alias that already holds different bytes.
 #
 # Usage: packaging/aliases.sh <dist directory> <version>
 set -euo pipefail
@@ -61,7 +61,7 @@ for file in "$dir"/*; do
     exit 1
   fi
   # `-n` so a file that appears between the check above and the copy is never overwritten.
-  ln "$file" "$target" 2>/dev/null || cp -n "$file" "$target"
+  cp -n "$file" "$target"
   cmp -s "$file" "$target" || {
     echo "aliases.sh: $alias_name was not written to match $name; remove it and rerun" >&2
     exit 1

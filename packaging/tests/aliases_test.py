@@ -120,5 +120,16 @@ class ReleaseAliases(unittest.TestCase):
         self.assertEqual(elsewhere.read_bytes(), b"msi")
 
 
+    def test_the_alias_is_a_copy_so_rebuilding_the_asset_cannot_change_it(self):
+        self.write(f"intcad-{V}-windows-x64.msi", b"original")
+        self.assertEqual(self.run_script(str(self.tmp), V).returncode, 0)
+        alias = self.tmp / "intcad-windows-x64.msi"
+
+        # Rebuilding the versioned file in place must not reach the published alias.
+        (self.tmp / f"intcad-{V}-windows-x64.msi").write_bytes(b"rebuilt")
+
+        self.assertEqual(alias.read_bytes(), b"original")
+
+
 if __name__ == "__main__":
     unittest.main()

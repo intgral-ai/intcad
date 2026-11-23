@@ -31,7 +31,7 @@ or a measurement that exists on the machine or on GitHub.
 | Ubuntu VM `…rc013` | CI tarball and AppImage installed and run; agent starts; five sets installed; 0.1.2 → CI 0.1.3 upgrade opens the design 0.1.2 saved |
 | Windows VM `…win013` | CI MSI installed; agent runs from `Program Files`; five sets in `%LOCALAPPDATA%`; published 0.1.2 → CI 0.1.3 upgrade leaves one ARP entry |
 | real DeepSeek turn (screenshots `key-*`) | a real model answers, and reads `solidcraft-modeling`; typing `/` or `/skill` shows no menu (B10) |
-| `cargo test -p xtask`, `cargo check --target wasm32`, `python3 -m unittest packaging/tests/*` | the branch's own checks: skill anchors, 3600-char limit, wasm cfg, 13 checksum tests, 7 alias tests, stage-agent 8/8 |
+| `cargo test -p xtask`, `cargo check --target wasm32`, `python3 -m unittest packaging/tests/*` | the branch's own checks: skill anchors, 3600-char limit, wasm cfg, 15 checksum tests, 8 alias tests, stage-agent 8/8 |
 | PR #217, #218, #219, #222 | the release-engineering changes and their CI |
 
 Not evidence, and marked so wherever it appears: a cancelled run, a skipped dependent job, a document
@@ -194,7 +194,7 @@ on `int1503-version-013`, and the release.yml candidate branch is described in �
 | B8 | P0 | **Every package build fails on a dependency advisory.** `Dependency advisories` fails with RUSTSEC-2026-0594: `cookie 0.18.2` via `wry 0.57.2` (private-cookie nonce reuse after `fork()`, which breaks AES-GCM). `release.yml` cannot pass for any branch until it is fixed; #218 moves it to 0.18.3 | run 45149031980 job 137606035774 |
 | B9 | P1, PR open | **PP's UI is PR #221** (draft, `BEHIND`, 29 files, +1823/−224: the Assistant moves to the bottom centre, one message box, native clipping in `assistant_clip.rs`). Two red checks when reviewed: a `develop`-wide `lint` breakage inherited from #212 (fixed in #222) and `ui_containers` ("Use ui_kit::Container for outer hosts"), which is PP's code to fix. Integration still needs the visual pass | PR #221; §12.11 |
 | E1 | P2, fix landed (not a blocker) | **The 0.1.2 → 0.1.3 upgrade needs `SHA256SUMS.txt` in the 0.1.3 release.** The shipped 0.1.2 client (`65af7346`, `install.rs` `SUMS`) looks for `SHA256SUMS.txt` in the release it fetches, so what matters is the name 0.1.3 publishes — and `packaging/checksums.sh` writes it. My earlier entry had this backwards. The branch change (accept `SHA256SUMS` too) only makes future clients tolerant of a hand-made list; it cannot change an installed binary. Verified against the tag: `git show 65af7346:crates/ui-egui/src/update/install.rs` has `pub const SUMS: &str = "SHA256SUMS.txt"` | `install.rs` `SUMS_LEGACY`; §7 |
-| B11 | P1, tooling added | **A release needs unversioned asset aliases or those users cannot update.** `asset_name()` asks for `intcad-windows-x64.msi`, `intcad-macos-universal.dmg`, `intcad-linux-x86_64.{AppImage,deb,rpm,flatpak,snap}` and `intcad-windows-<arch>-portable.zip` without a version; `release.yml` produces only versioned names. Publishing them as-is would leave every MSI/DMG/AppImage/deb/rpm/Flatpak/Snap/portable-zip install unable to find its package. `packaging/aliases.sh` (4 tests, wired into packaging-lint) writes them, and `docs/beta-release.md` runs it before the list | `update.rs` `asset_name()`; §12.4.9 |
+| B11 | P1, tooling added | **A release needs unversioned asset aliases or those users cannot update.** `asset_name()` asks for `intcad-windows-x64.msi`, `intcad-macos-universal.dmg`, `intcad-linux-x86_64.{AppImage,deb,rpm,flatpak,snap}` and `intcad-windows-<arch>-portable.zip` without a version; `release.yml` produces only versioned names. Publishing them as-is leaves MSI/DMG/AppImage/deb/rpm/portable-zip installs unable to find their package; Flatpak and a store Snap are updated by their package managers rather than by reading these aliases, and the aliases are still published for them. `packaging/aliases.sh` (8 tests, wired into packaging-lint) writes them as copies, and `docs/beta-release.md` runs it before the list | `update.rs` `asset_name()`; §12.4.9 |
 | B7 | P1 | **The Windows candidate has no agent.** A Windows 0.1.3 exe and MSI now build here (§12.4), but the agent folder for Windows must be built on Windows (its `node.exe` has to run for the version check), and this VM has no Node; `HasMastraAgent=0` was used. The Windows agent is what `agent-test-packages.yml` builds on Windows runners and what #214's gate checks | §12.4, `agent-package.mjs` line 473 |
 | E2 | P1 | **No installed-artifact acceptance path for a candidate.** The VM harness builds from source; `accept` cannot take a package. Linux/Windows installed checks exist in CI and in `packaging/*/installed-check.*`, but they have not been run for a 0.1.3 candidate | §4; `intcad-e2e --help` |
 | E3 | P2 | Portable-ZIP updates replace only `intcad.exe` and `intcad-cli.exe`, so a `mastra-agent/` folder from #214 would be left stale or absent | `install.rs:302` `apply()`, `Method::PortableZip` |
@@ -580,13 +580,13 @@ script, and the first one whose workflow bundles the agent.
 
 | Item | Value |
 |---|---|
-| Branch | `int1503-rc-candidate`, a **local candidate** branch. First attempt: `develop` `3751144fc1` + #214 `054d51e4d`, SHA `3ffacdb1`, run 45241269258 — **cancelled** once `develop` moved on and the branch was rebuilt. It uploaded seven artifacts from the slices that finished (both Linux architectures, Web, and their evidence) and never reached Windows or macOS, so it is not a candidate. |
+| Branch | `int1503-rc-candidate`, a **local candidate** branch. First attempt: `develop` `3751144fc1` + #214 `054d51e4d`, SHA `3ffacdb1`, run 45241269258 — **cancelled** once `develop` moved on and the branch was rebuilt. It uploaded seven artifacts from the slices that finished (both Linux architectures, Web, and their evidence); the Windows and macOS jobs had started and were cancelled before uploading, so it is not a candidate. |
 | Current SHA | `14a6c95ae527b2f584035448513ae98455e2f709` = `develop` `be9cb2c16` (carries #218 cookie, #219 FreeBSD, #212 agentic and the `context-skills` set) + #214 `b71d51641` (packaging, agent, and the stage-agent test fix) + the 0.1.3 version commit |
 | How started | `gh workflow run release.yml --ref int1503-rc-candidate` → run **45248432170** |
 | Why not `release-gate` | it only starts for a `main`-target PR or a merge group, and this branch is not a promotion |
 | Workflow settings inherited from #214 | `SOLIDCRAFT_WITH_MASTRA_AGENT: "1"`, `SOLIDCRAFT_DISTRIBUTION: "mastra-agent"`, per-arch overrides (`x86_64` only), legacy `mastra/` still `"0"` |
 | What it produces | the nonpublishing packages for every target, `build.json`/`contents.json` per package, and the content scan that checks the agent is inside |
-| Note on the first attempt | that run was cancelled after uploading the seven artifacts above; it has no Windows or macOS package, so it cannot stand in for the candidate. Run 45248432170 itself is **attempt 2**: the first attempt lost the `macOS build x86_64` slice, the rerun rebuilt it and the whole run finished `success` |
+| Note on the first attempt | that run was cancelled after uploading the seven artifacts above; its Windows and macOS jobs were cancelled before they uploaded, so it has no such package and cannot stand in for the candidate. Run 45248432170 itself is **attempt 2**: the first attempt lost the `macOS build x86_64` slice, the rerun rebuilt it and the whole run finished `success` |
 
 This branch is **not** a release branch and must not be merged: it exists to prove that the merged
 tree plus #214 produces installable packages that carry the agent. The real candidate is the
@@ -783,7 +783,7 @@ checksums.sh --require <tar> --require <msi> --require <dmg> -> 18 files, every 
 ```
 
 `checksums.sh` also stopped listing `build.json`/`contents.json`: they are per-package evidence, not
-downloads. Tests: `aliases_test.py` 7, `checksums_test.py` 13, both run by `packaging-lint.yml`.
+downloads. Tests: `aliases_test.py` 8, `checksums_test.py` 15, both run by `packaging-lint.yml`.
 
 ### 12.4.10 Secret scan of the candidate itself
 
@@ -897,12 +897,12 @@ Recorded so the next reader knows which parts of this document were corrected an
 
 | Finding | Was | Now |
 |---|---|---|
-| Checksum list could omit a channel's asset | one run per platform, no completeness check | `packaging/checksums.sh --require <name>` per channel asset, whole-name match, list verified before it replaces anything, both published names written together; 13 tests, including the failure paths (subfolder, symlink, missing require, newline in a name) |
-| Top-level symlinks were silently left out | no check | refused with a message |
+| Checksum list could omit a channel's asset | one run per platform, no completeness check | `packaging/checksums.sh --require <name>` per channel asset, whole-name match, list verified before it replaces anything, both published names written together, and a failed rename removes both rather than leaving mismatched lists; 15 tests, including the failure paths (subfolder, symlink list, symlinked `.new`, hard-linked `.new`, missing require, newline in a name) |
+| Top-level symlinks were silently left out | no check | refused with a message; both scans (`-type f` and the nonregular entries) write to a temporary file first, so a failing `find` stops the run instead of shortening the list |
 | A failing `find` could shorten the list silently | read from a process substitution | names read into a temporary file first |
 | E1 described backwards | "0.1.2 cannot update because 0.1.2 published `SHA256SUMS`" | the shipped 0.1.2 asks for `SHA256SUMS.txt` in the release it **fetches**, so 0.1.3's naming is what matters; the branch fallback is tolerance for future clients only |
 | Feed override denied | "a constant with no override" | `SOLIDCRAFT_UPDATE_FEED` exists; asset URLs must be GitHub release URLs, which is what blocks a local payload |
-| A cancelled run read as evidence | run 45241269258 implied as the candidate | it was cancelled; its seven artifacts cover only the finished Linux/Web slices, not Windows or macOS; §12.4.1 names the current SHA |
+| A cancelled run read as evidence | run 45241269258 implied as the candidate | it was cancelled; its seven artifacts cover only the finished Linux/Web slices, and its Windows/macOS jobs stopped before uploading; §12.4.1 names the current SHA |
 
 Still unchanged and still open: PP's UI (#221) is not ready, login Gate B unrun (#213), slash menu missing
 (B10), macOS untested, one-click update only testable after a stable release exists.
@@ -1009,6 +1009,7 @@ changed: #214 is still unmerged, so no accepted candidate comes from a merged `d
 (#221) is not ready; Gate B has not run; B10 is open.
 
 To turn this into GO: land #214, rebuild from the merged `develop` SHA and repeat the Linux/Windows
-installs on that exact SHA (`~/.cache/int1503/rc-final.sh` does the rebuild, the package run, the
-download and the `--require` checksum list), then add PP's UI and the login run — or record them as
+installs on that exact SHA (`~/.cache/int1503/rc-chain.sh` does the rebuild, the package run, the
+download, the aliases and the `--require` checksum list, and exits non-zero if the list is
+incomplete), then add PP's UI and the login run — or record them as
 explicitly approved exceptions — and publish only after that.

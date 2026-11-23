@@ -32,7 +32,9 @@ new SHA.
    gh run download <run-id> -n release-windows-x86 -D dist
    gh run download <run-id> -n release-windows-arm64 -D dist
    gh run download <run-id> -n release-flatpak-x86_64 -D dist
+   gh run download <run-id> -n release-flatpak-aarch64 -D dist
    gh run download <run-id> -n release-snap-x86_64 -D dist
+   gh run download <run-id> -n release-snap-aarch64 -D dist
    gh run download <run-id> -n package-evidence-release-linux-x86_64 -D evidence
    ```
    `-n` with `-D` puts the artifact's own files directly in that folder, so `dist` stays flat;
@@ -49,8 +51,11 @@ new SHA.
    ```
 5. Before publishing, write the unversioned aliases the in-app update check resolves by name
    (`packaging/aliases.sh dist <version>`: AppImage, deb, rpm, Flatpak, Snap, MSI, portable zip,
-   DMG). Without them those installations find no package and never update; the tarball and the
-   standalone `.exe` keep their version because the updater asks for them by it. Then make the
+   DMG). For the self-updating kinds — AppImage, deb, rpm, MSI, portable zip, DMG — a missing alias
+   means the update check finds no package and stops. Flatpak and a store-installed Snap update
+   through `flatpak update` / `snap refresh` and do not read these aliases; their files still belong
+   on the release so those managers and direct downloads can find the new version. The tarball and
+   the standalone `.exe` keep their version because the updater asks for them by it. Then make the
    checksum list with `packaging/checksums.sh dist --require <name>` once per asset the channel
    publishes — the versioned files **and** the unversioned aliases clients resolve by name, across
    every platform. The list must cover the whole release, not one platform: an asset attached
