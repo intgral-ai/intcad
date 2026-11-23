@@ -247,15 +247,18 @@ if [ "$WITH_MASTRA_AGENT" = 1 ]; then
     stage_agent "${TARGETS[0]}" "$AGENT_DIR"
   fi
   mkdir -p "$APP/Contents/Resources/Licenses"
-  # The licences of what ships: one copy per set, when both CPUs carry the same set.
-  agent_licences="$(find "$AGENT_DIR" -path '*/licenses/THIRD-PARTY-LICENSES.txt' -print | sort | xargs -I{} shasum -a 256 {} | awk '{print $1}' | sort -u | wc -l | tr -d ' ')"
-  if [ "$agent_licences" != 1 ]; then
-    echo "error: the agent folders do not carry the same third-party licence texts" >&2
-    exit 1
-  fi
-  first="$(find "$AGENT_DIR" -path '*/licenses/THIRD-PARTY-LICENSES.txt' -print | sort | head -n 1)"
-  cp "$first" "$APP/Contents/Resources/Licenses/MASTRA-AGENT-THIRD-PARTY-LICENSES.txt"
-  cp "$(dirname "$first")/NODE-LICENSE.txt" "$APP/Contents/Resources/Licenses/MASTRA-AGENT-NODE-LICENSE.txt"
+  # Each CPU's folder carries the licences of the packages it was built from. The two halves can
+  # differ (their native modules differ), so each copy is named for its slice and each agent
+  # folder keeps its own as well.
+  find "$AGENT_DIR" -path '*/licenses/THIRD-PARTY-LICENSES.txt' -print | sort | while IFS= read -r licences; do
+    slice="$(dirname "$(dirname "$licences")")"
+    suffix=""
+    case "$slice" in
+      "$AGENT_DIR"/*) suffix="-$(basename "$slice")" ;;
+    esac
+    cp "$licences" "$APP/Contents/Resources/Licenses/MASTRA-AGENT-THIRD-PARTY-LICENSES$suffix.txt"
+    cp "$(dirname "$licences")/NODE-LICENSE.txt" "$APP/Contents/Resources/Licenses/MASTRA-AGENT-NODE-LICENSE$suffix.txt"
+  done
 else
   warn "the built-in agent is not bundled (--with-mastra-agent); a release package carries it"
 fi
