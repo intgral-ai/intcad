@@ -320,7 +320,67 @@ Two method findings that change how Gate C/D evidence must be taken:
 Limits: Linux X11 on software rendering only; no Windows or macOS equivalent was run, and nothing
 here proves login, Mastra or the skills, which `v0.1.2` does not carry.
 
-## 12. Decisions needed from the CTO / owners
+## 12. Candidate-shaped package rehearsal (Linux, 2026-11-23)
+
+Built to answer the two questions no document can: does the package carry the agent and the four
+skills, and does the agent that ships start and expose them. Tree: `develop` `1c3102f` + #204
+`b2cb0ef` + this branch, merged in a separate worktree `worktrees/int1503-rc-rehearsal` (nothing
+pushed, nothing merged).
+
+| Step | Result |
+|---|---|
+| `node packages/mastra-runtime/scripts/agent-package.mjs build --target x86_64-unknown-linux-gnu` | 782 npm packages, 10,733 files, 275,950,178 bytes, skills set `modelling-skills` = `sha256:0d7b9a61…`, no enterprise content, licence inventory written; needed Node 22.23.4 exactly, which this host lacks (see limits) |
+| `packaging/linux/package.sh --skip-build --formats tar --with-mastra-agent` | agent staged (291 MB), `check` and secret `scan` pass |
+| Tarball | 210.9 MB, **13,597 `mastra-agent` entries**; the four SKILL.md and `skill-set.json` at `lib/intcad/mastra-agent/skills/modelling-skills/` |
+| Extracted on clean Ubuntu 24.04.5 (VM `…int1503-rc-rehearsal…rel012`) | the packaged `node` runs: `v22.23.4`; skills folder present |
+| Start the packaged agent with `MASTRA_APP_DATA_DIR` | installs all four into `<data>/home/.agents/skills/` plus the `.modelling-skills.json` note; log: `[intcad] skills: installed solidcraft-checking, solidcraft-editing, solidcraft-mechanisms, solidcraft-modeling` |
+| `agent-smoke.mjs --only "skill sets"` against the **packaged** folder | `commands: skill/solidcraft-checking, skill/solidcraft-editing, skill/solidcraft-mechanisms, skill/solidcraft-modeling`; all four told to the model, `installedAsPackaged: true`, `read: true`, `permissionsAsked: 0`; `{"summary":"all passed"}` exit 0 |
+
+That is the first evidence in this release that the shipped agent carries the four skills, installs
+them, and offers the four `skill/<name>` commands — the part #204's PR could only show from a
+package-shaped folder. What it does **not** show is the Assistant drawing those commands in its
+slash menu, which needs the app (next rows) and is still open.
+
+**Limits found here, all build-host properties rather than package defects:**
+
+- `package.sh`'s own smoke cannot run on this NixOS host: the bundled Node needs
+  `libstdc++.so.6`, which NixOS does not expose to it (`error while loading shared libraries`).
+  The same case passes in the Ubuntu VM.
+- The app binary built on this host is linked to Nix's loader
+  (`[Requesting program interpreter: /nix/store/…-glibc-2.44-25/lib/ld-linux-x86-64.so.2]`), so it
+  cannot run on Ubuntu; the package's `bin/intcad` has to come from an Ubuntu build (`podman` with
+  the E2E builder image, or CI). The agent folder itself is portable.
+
+### 12.1 The app on the same installed shape
+
+The app binary has to come from an Ubuntu build, so it was built in the E2E builder container
+(`podman run … intcad-e2e-builder:24.04 cargo build --release -p solidcraft -p solidcraft-cli`,
+10m47s) and placed in the installed layout: `bin/intcad` beside `lib/intcad/mastra-agent/`.
+
+| Step | Result |
+|---|---|
+| `bin/intcad --version` on Ubuntu 24.04.5 | `intcad 0.1.2` |
+| Launch, open the Assistant | window 1440×900, Vulkan/llvmpipe, control server up |
+| Assistant entry | moved from the application bar to the right rail (`rail:assistant`) — the app had found the packaged agent, which is what switches that layout on; `v0.1.2` has no rail and only `titlebar:assistant` |
+| Click `rail:assistant` | the panel opens and the page renders: "Not connected: sign in here", model sign-ins and API keys |
+| After the click | the app is running the packaged agent: `…/mastra-agent/node …/mastra-agent/agent/main.mjs` (pid 3117) |
+| Agent's own data folder | `~/pkgrun/data/intcad/mastra/home/.agents/skills/` holds `solidcraft-{checking,editing,mechanisms,modeling}` and `.modelling-skills.json`, 100K/12K/40K/28K |
+| Second control port in the app log | `127.0.0.1:37059` — the agent's own channel, opened after the panel did |
+
+Evidence: `~/.local/state/intcad-e2e/runs/intcad-e2e-int1503-rc-rehearsal-3a92c4b6125c-rel012/20261123T075538Z-2614506/screenshots/rel012-pkg-assistant.png`.
+
+So the installed shape starts, finds the packaged agent, and that agent installs the four skills in
+the app's own data folder — Gate C's install half, end to end, from an installed layout rather than
+a test folder.
+
+**Still open for Gate C:** the slash list in the Assistant's composer. The panel here shows the
+Connections page because no model is signed in, and the composer is not drawn in that state, so
+`skill/<name>` entries cannot be seen without a model credential (an API key or a plan sign-in) or
+a stand-in model service. The ACP-level proof above (four `skill/<name>` commands, all read) is the
+agent side; the drawing is the only part left, and it needs a credential this role does not hold.
+The same run also cannot show a real turn, for the same reason.
+
+## 13. Decisions needed from the CTO / owners
 
 1. **Version and package plan:** one 0.1.3 with login, or 0.1.3 now without it and 0.1.4 later
    (INT-1503 raises both)? This decides whether #213 blocks the first package.
