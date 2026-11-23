@@ -308,6 +308,35 @@ function OpenAssistant([int]$seconds) {
     $state
 }
 
+# A release package carries the built-in agent: the installed app must offer it first, start it
+# out of the package, and start it again after it stopped. The other agents stay offered beside it.
+function CheckBuiltInAgent {
+    $state = Call 'ui.agent_chat'
+    $until = (Get-Date).AddSeconds(60)
+    while (-not ($state.connect -and $state.connect.plans) -and (Get-Date) -lt $until) {
+        Start-Sleep -Milliseconds 500
+        $state = Call 'ui.agent_chat'
+    }
+    $agents = @($state.agents)
+    $names = @($agents | ForEach-Object { $_.name })
+    Check ([bool]$agents -and $agents[0].id -eq 'mastra') "the built-in agent is offered first ($($names -join ', '))"
+    Check ($state.currentAgent -eq 'mastra') "the built-in agent is the conversation's agent ($($state.currentAgent))"
+    Check ([bool]($state.connect -and $state.connect.plans)) 'the built-in agent started out of the package and reported its connections'
+    # The control channel's own word for Stop is `stop` (the page uses `disconnect`).
+    [void](Call 'ui.agent_chat' @{ stop = $true })
+    $state = Call 'ui.agent_chat'
+    $stopped = $state.connect
+    Check ($state.state -eq 'off' -and -not ($stopped -and $stopped.plans) -and -not ($stopped -and $stopped.connected)) `
+        "a stopped agent reports no connections (state $($state.state))"
+    [void](Call 'ui.agent_chat' @{ connect = $true })
+    $until = (Get-Date).AddSeconds(60)
+    while (-not ($state.connect -and $state.connect.plans) -and (Get-Date) -lt $until) {
+        Start-Sleep -Milliseconds 500
+        $state = Call 'ui.agent_chat'
+    }
+    Check ([bool]($state.connect -and $state.connect.plans)) 'the built-in agent starts again after it stopped'
+}
+
 function Quit {
     $script:writer.WriteLine((@{ id = 9999; method = 'app.quit'; params = @{ force = $true } } | ConvertTo-Json -Compress))
     Write-Host "quit: $($script:reader.ReadLine())"
@@ -351,6 +380,13 @@ try {
         $made = $true
         Check $true 'the page in the web view reported to the app'
         Check ($null -ne $view) 'the web view is a visible window inside the app window'
+        # A package carries the built-in agent beside the program; a build tree does not. Only a
+        # package's copy is asked for it, and `installed-check.ps1` requires the folder there.
+        if (Test-Path -LiteralPath (Join-Path (Split-Path $Exe -Parent) 'mastra-agent\agent.json')) {
+            CheckBuiltInAgent
+        } else {
+            Write-Host 'note: this program carries no built-in agent (a build tree, not a package)'
+        }
         $w = Rect $h
         if ($view) {
             $v = $view.Rect

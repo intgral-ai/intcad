@@ -98,6 +98,26 @@ def missing_libraries(exe):
     return [line.split()[0] for line in result.stdout.splitlines() if "not found" in line]
 
 
+def agent_folders(exe):
+    """The packaged agent folders an installed program may have, as the app resolves them."""
+    exe = Path(exe).resolve()
+    here = exe.parent
+    return [here.parent / "lib" / "intcad" / "mastra-agent",       # Linux packages and AppImage
+            here.parent / "Resources" / "mastra-agent",            # macOS .app
+            here / "mastra-agent"]                                 # beside a Windows program
+
+
+def node_running(program):
+    """Whether a process runs this exact Node program. A cheap probe, not a full listing."""
+    if not Path(program).is_file():
+        return False
+    pgrep = shutil.which("pgrep")
+    if not pgrep:
+        return False
+    done = subprocess.run([pgrep, "-f", "--", str(program)], capture_output=True, text=True, check=False)
+    return done.returncode == 0
+
+
 def screen_picture(path):
     """A picture of the whole screen, with whatever tool this system has; the tool's name or None."""
     if sys.platform == "darwin":
@@ -199,14 +219,34 @@ def main():
 
         if args.built_in_agent:
             # The agent is found inside the package and started when its panel shows; what it tells
-            # the Connections page (its plans) arrives once it has answered.
+            # the Connections page (its plans) arrives once it has answered. The other agents stay
+            # offered beside it: the package carries one, it does not take the others away.
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline and app.poll() is None and not (state.get("connect") or {}).get("plans"):
                 time.sleep(0.5)
                 state = control.call("ui.agent_chat", {}).get("result") or {}
-            names = [agent.get("name") for agent in state.get("agents") or []]
-            checks.check(state.get("currentAgent") == "mastra" and names == ["Mastra"], f"the built-in agent is the only agent offered ({names})")
+            agents = state.get("agents") or []
+            names = [agent.get("name") for agent in agents]
+            checks.check(bool(agents) and agents[0].get("id") == "mastra", f"the built-in agent is offered first ({names})")
+            checks.check(state.get("currentAgent") == "mastra", f"the built-in agent is the conversation's agent ({state.get('currentAgent')})")
             checks.check(bool((state.get("connect") or {}).get("plans")), "the built-in agent started out of the package and reported its connections")
+            # Starting it again from a stopped state: the same app, the same package, a new session.
+            # The control channel's own word for Stop is `stop` (web.rs `disconnect` is the page's).
+            control.call("ui.agent_chat", {"stop": True})
+            state = control.call("ui.agent_chat", {}).get("result") or {}
+            stopped = state.get("connect") or {}
+            # A stopped agent keeps the page's empty shape (its keys, no plans) but says nothing
+            # about a running conversation: no plan is signed in and nothing is connected.
+            checks.check(state.get("state") == "off" and not stopped.get("plans")
+                         and not stopped.get("connected"),
+                         f"a stopped agent reports no connections (state {state.get('state')}, "
+                         f"plans {len(stopped.get('plans') or [])}, connected {stopped.get('connected')})")
+            control.call("ui.agent_chat", {"connect": True})
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline and app.poll() is None and not (state.get("connect") or {}).get("plans"):
+                time.sleep(0.5)
+                state = control.call("ui.agent_chat", {}).get("result") or {}
+            checks.check(bool((state.get("connect") or {}).get("plans")), "the built-in agent starts again after it stopped")
 
         # Pictures: what the app draws, and (asked for) the whole screen, which has the page in it.
         frame = evidence / "app-frame.png"
@@ -241,6 +281,12 @@ def main():
             # A crash leaves a folder with a report.json (crates/engine/src/crash.rs).
             crashes = sorted(str(p.parent.name) for p in (work / "crash").rglob("report.json"))
             checks.check(not crashes, "no crash report was written" + (f" ({', '.join(crashes[:5])})" if crashes else ""))
+            if args.built_in_agent:
+                # The app takes the agent with it: no copy of the packaged Node may outlive it.
+                leftovers = [str(folder) for folder in agent_folders(Path(args.exe))
+                             if folder.is_dir() and node_running(folder / "node")]
+                checks.check(not leftovers, "the agent stopped with the app"
+                             + (f" (still running: {', '.join(leftovers)})" if leftovers else ""))
         notes = [line for line in tail(log_path, 2000) if NOTE in line]
         if args.expect == "page" and reached:
             checks.check(not notes, "the app reported no web view problem")

@@ -23,14 +23,17 @@ env:
   CARGO_INCREMENTAL: 0
   # Release packages bind a real reviewed revision; source/Nix builds use the unbound sentinel.
   SOLIDCRAFT_RELEASE: "1"
-  # The Mastra runtime remains unapproved (DQ-7/#15). Ordinary release packaging must keep its
-  # previous contents; bundling the workflow is opt-in and needs an explicit owner decision on the
-  # release default (DQ-7/DQ-4) plus approved artifacts for every target.
+  # The legacy Mastra workflow runtime (the `mastra/` folder, its own ACP protocol and receipt)
+  # stays unapproved (DQ-7/#15): no release package carries it.
   SOLIDCRAFT_WITH_MASTRA: "0"
-  # The native release path. `package_contents.py` must still prove from the built
-  # installer bytes that no Mastra runtime, Node sidecar or old runtime dependency
-  # was bundled before the gate can mark #14/#15 not applicable.
-  SOLIDCRAFT_DISTRIBUTION: "native"
+  # The release carries the built-in agent in every supported package: Mastra Code's SDK, its
+  # pinned Node, its dependencies and the modelling skills, staged from the same reviewed lock on
+  # each platform's own runner. `package_contents.py` proves it from the built installer bytes.
+  SOLIDCRAFT_WITH_MASTRA_AGENT: "1"
+  SOLIDCRAFT_DISTRIBUTION: "mastra-agent"
+  # The agent's build uses exactly the pinned Node and npm the test packages use (.nvmrc).
+  NODE_VERSION: "22.23.4"
+  NPM_VERSION: "11.19.0"
 
 jobs:
   version:
@@ -92,9 +95,26 @@ jobs:
       NFPM_VERSION: 2.47.0
       PACKAGE_ID: release-linux-${{ matrix.arch }}
       PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+      # The built-in agent is built for x86_64 Linux; aarch64 packages stay native and say so.
+      SOLIDCRAFT_WITH_MASTRA_AGENT: ${{ matrix.arch == 'x86_64' && '1' || '0' }}
+      SOLIDCRAFT_DISTRIBUTION: ${{ matrix.arch == 'x86_64' && 'mastra-agent' || 'native' }}
     steps:
       - *checkout
       - run: scripts/ci/build-jobs.sh
+      - name: Set up the pinned Node for the built-in agent
+        if: matrix.arch == 'x86_64'
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build the built-in agent's folder and run it against stand-ins
+        if: matrix.arch == 'x86_64'
+        run: |
+          npm install -g "npm@${{ env.NPM_VERSION }}"
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target x86_64-unknown-linux-gnu --out "$RUNNER_TEMP/mastra-agent"
+          # Run a copy, so that the folder that is packaged is the one that was built.
+          cp -R "$RUNNER_TEMP/mastra-agent" "$RUNNER_TEMP/mastra-agent-run"
+          node packages/mastra-runtime/scripts/agent-smoke.mjs "$RUNNER_TEMP/mastra-agent-run"
+          echo "SOLIDCRAFT_MASTRA_AGENT_DIR=$RUNNER_TEMP/mastra-agent" >>"$GITHUB_ENV"
       - name: Install packaging tools
         run: |
           sudo apt-get update
@@ -247,6 +267,8 @@ jobs:
       SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
       PACKAGE_ID: release-flatpak-${{ matrix.arch }}
       PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+      # A derived package carries what the Linux tarball it is built from carries.
+      SOLIDCRAFT_DISTRIBUTION: ${{ matrix.arch == 'x86_64' && 'mastra-agent' || 'native' }}
       # aarch64's runtime GL under Xvfb needs the software driver; x86_64 passes without it.
       SOLIDCRAFT_SMOKE_SOFTWARE_GL: ${{ matrix.arch == 'aarch64' && '1' || '0' }}
     steps:
@@ -258,7 +280,9 @@ jobs:
       - name: Install flatpak-builder and smoke tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common xvfb xauth weston xwayland dbus-x11
+          # elfutils: flatpak-builder strips the ELF files the package carries, and the built-in
+          # agent brings many more of them than the app alone did.
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common elfutils xvfb xauth weston xwayland dbus-x11
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build and smoke-test the Flatpak in its network-denying sandbox
         # The existing manifest grants no network. Its desktop smoke stays inside
@@ -281,6 +305,7 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       PACKAGE_ID: release-arch-${{ matrix.arch }}
       PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+      SOLIDCRAFT_DISTRIBUTION: ${{ matrix.arch == 'x86_64' && 'mastra-agent' || 'native' }}
     steps:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -360,6 +385,7 @@ jobs:
       SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
       PACKAGE_ID: release-snap-${{ matrix.arch }}
       PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+      SOLIDCRAFT_DISTRIBUTION: ${{ matrix.arch == 'x86_64' && 'mastra-agent' || 'native' }}
     steps:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -438,6 +464,7 @@ jobs:
       SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
       PACKAGE_ID: release-freebsd-x86_64
       PACKAGE_TARGET: x86_64-unknown-freebsd
+      SOLIDCRAFT_DISTRIBUTION: "native"
     steps:
       - *checkout
       - name: Build and package in a FreeBSD VM (tar.gz)
@@ -510,8 +537,42 @@ jobs:
       SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
       PACKAGE_ID: release-macos
       PACKAGE_TARGET: universal-apple-darwin
+      SOLIDCRAFT_WITH_MASTRA_AGENT: "1"
+      SOLIDCRAFT_DISTRIBUTION: "mastra-agent"
     steps:
       - *checkout
+      - name: Set up the pinned Node for the built-in agent
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build the built-in agent's folder for each half of the universal app
+        run: |
+          set -euo pipefail
+          npm install -g "npm@${{ env.NPM_VERSION }}"
+          # This runner is Apple silicon: its own Node builds the arm64 folder. The Intel folder's
+          # Node comes from the same pinned release, checked against nodejs.org's checksums, so the
+          # folder carries an x86_64 Node rather than this machine's.
+          for arch in arm64 x64; do
+            name="node-v${{ env.NODE_VERSION }}-darwin-$arch.tar.xz"
+            curl -fsSL -o "$RUNNER_TEMP/$name" "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/$name"
+          done
+          curl -fsSL -o "$RUNNER_TEMP/SHASUMS256.txt" "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/SHASUMS256.txt"
+          (cd "$RUNNER_TEMP" && grep -E 'node-v${{ env.NODE_VERSION }}-darwin-(arm64|x64).tar.xz$' SHASUMS256.txt | shasum -a 256 -c -)
+          mkdir -p "$RUNNER_TEMP/node-arm64" "$RUNNER_TEMP/node-x64"
+          tar -xJf "$RUNNER_TEMP/node-v${{ env.NODE_VERSION }}-darwin-arm64.tar.xz" -C "$RUNNER_TEMP/node-arm64" --strip-components 1
+          tar -xJf "$RUNNER_TEMP/node-v${{ env.NODE_VERSION }}-darwin-x64.tar.xz" -C "$RUNNER_TEMP/node-x64" --strip-components 1
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target aarch64-apple-darwin \
+            --out "$RUNNER_TEMP/mastra-agent/aarch64-apple-darwin" --node "$RUNNER_TEMP/node-arm64/bin/node"
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target x86_64-apple-darwin \
+            --out "$RUNNER_TEMP/mastra-agent/x86_64-apple-darwin" --node "$RUNNER_TEMP/node-x64/bin/node"
+          # The arm64 folder is this machine's own: it is started against stand-ins. The Intel one
+          # is checked (whole, its target, its licences, no secret); running it needs an Intel Mac.
+          cp -R "$RUNNER_TEMP/mastra-agent/aarch64-apple-darwin" "$RUNNER_TEMP/mastra-agent-run"
+          node packages/mastra-runtime/scripts/agent-smoke.mjs "$RUNNER_TEMP/mastra-agent-run"
+          {
+            echo "SOLIDCRAFT_MASTRA_AGENT_DIR_AARCH64=$RUNNER_TEMP/mastra-agent/aarch64-apple-darwin"
+            echo "SOLIDCRAFT_MASTRA_AGENT_DIR_X86_64=$RUNNER_TEMP/mastra-agent/x86_64-apple-darwin"
+          } >>"$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-bin-aarch64-${{ github.sha }}
@@ -564,8 +625,27 @@ jobs:
       SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
       PACKAGE_ID: release-windows-${{ matrix.arch }}
       PACKAGE_TARGET: ${{ matrix.target }}
+      # The built-in agent is built for x64 Windows; x86 and arm64 packages stay native.
+      SOLIDCRAFT_WITH_MASTRA_AGENT: ${{ matrix.arch == 'x64' && '1' || '0' }}
+      SOLIDCRAFT_DISTRIBUTION: ${{ matrix.arch == 'x64' && 'mastra-agent' || 'native' }}
     steps:
       - *checkout
+      - name: Set up the pinned Node for the built-in agent
+        if: matrix.arch == 'x64'
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build the built-in agent's folder and run it against stand-ins
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          npm install -g "npm@${{ env.NPM_VERSION }}"
+          $out = Join-Path $env:RUNNER_TEMP 'mastra-agent'
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target ${{ matrix.target }} --out $out
+          $run = Join-Path $env:RUNNER_TEMP 'mastra-agent-run'
+          Copy-Item -Recurse $out $run
+          node packages/mastra-runtime/scripts/agent-smoke.mjs $run
+          "SOLIDCRAFT_MASTRA_AGENT_DIR=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: icons-${{ github.sha }}
@@ -616,6 +696,7 @@ jobs:
       TRUNK_VERSION: 0.21.14
       PACKAGE_ID: release-web
       PACKAGE_TARGET: wasm32-unknown-unknown
+      SOLIDCRAFT_DISTRIBUTION: "native"
     steps:
       - *checkout
       - run: scripts/ci/build-jobs.sh

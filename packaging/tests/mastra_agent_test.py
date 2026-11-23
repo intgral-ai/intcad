@@ -5,8 +5,8 @@ packaging/mastra/stage-agent.sh copies a folder that passes, and copies nothing 
 holds a stored sign-in, is for another target, or is not there. It does not build the real
 folder and says nothing about it. Needs `node` (any current version) for the check itself.
 
-The made-up folder is checked against a made-up lock file through the script's test-only `--pin`;
-without the test guard the script refuses that option.
+The made-up folder is checked against a made-up lock file and a made-up skills root through the
+script's test-only `--pin` and `--skills-root`; without the test guard the script refuses both.
 """
 import hashlib
 import json
@@ -43,7 +43,44 @@ def folder(root):
     write(root, "node_modules/@mastra/code-sdk/dist/acp/runtime.js", BUILDER)
     write(root, "node_modules/@mastra/core/dist/ee-AbC123-xY_z9.js", "export { requireFGA as y };\n")
     subprocess.run(["node", str(REMOVE), str(Path(root) / "node_modules")], check=True, capture_output=True)
+    # Every set the agent carries, each with the stamp the check reads. The sets' own files stand
+    # in for the repository's (the check compares them with `--skills-root`).
+    for spec in skill_sets():
+        write(root, f"skills/{spec['name']}/{SKILL_SET_STAMP}", json.dumps(set_stamp(spec)))
+        for skill in spec["skills"]:
+            write(root, f"skills/{spec['name']}/{skill}/SKILL.md", f"# {skill}\n")
     return Path(root)
+
+
+SKILL_SET_STAMP = "skill-set.json"
+
+
+def skill_sets():
+    """The sets `agent/skills.mjs` declares, as the package check reads them.
+
+    Asked of the module rather than copied, so a set added there is covered here too: the merge
+    that brought `context-skills` in left this test building only `modelling-skills`, and the
+    check then reported the missing stamp.
+    """
+    script = 'import { SKILL_SETS } from "./packages/mastra-runtime/agent/skills.mjs"; console.log(JSON.stringify(SKILL_SETS));'
+    done = subprocess.run(["node", "--input-type=module", "-e", script], cwd=ROOT, capture_output=True, text=True, check=True)
+    return json.loads(done.stdout)
+
+
+def list_hash(named):
+    """`skills.mjs`'s one hash for a list of named hashes, as `sha256sum` prints them."""
+    text = "".join(f"{named[name]}  {name}\n" for name in sorted(named))
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def set_stamp(spec):
+    """What `skill-set.json` holds for one made-up set: each skill's hash and the set's."""
+    skills = {}
+    for skill in sorted(spec["skills"]):
+        files = {"SKILL.md": hashlib.sha256(f"# {skill}\n".encode()).hexdigest()}
+        skills[skill] = {"sha256": list_hash(files), "files": files}
+    whole = {skill: skills[skill]["sha256"] for skill in skills}
+    return {"set": spec["name"], "from": spec["from"], "version": f"sha256:{list_hash(whole)}", "skills": skills}
 
 
 def pin(root):
@@ -52,6 +89,11 @@ def pin(root):
     entries = {f"node_modules/{name}": {"version": "1.0.0", "resolved": f"https://registry.npmjs.org/{name}/-/x-1.0.0.tgz", "integrity": "sha512-AAAA"} for name in PACKAGES}
     write(root, "package-lock.json", json.dumps({"packages": {"": {}, **entries}}))
     write(root, "adapted-from.json", json.dumps({"package": "@mastra/code-sdk", "version": "1.0.0", "file": "dist/acp/runtime.js", "sha256": hashlib.sha256(BUILDER.encode()).hexdigest(), "adaptedIn": "agent/session.mjs"}))
+    # The repository the skills are compared with: the same folders the made-up package carries,
+    # at each set's own `from` path.
+    for spec in skill_sets():
+        for skill in spec["skills"]:
+            write(root, f"{spec['from']}/{skill}/SKILL.md", f"# {skill}\n")
     return Path(root)
 
 
@@ -71,7 +113,8 @@ class StageAgent(unittest.TestCase):
             env["SOLIDCRAFT_MASTRA_STAGE_TEST"] = guard
         if built:
             env["SOLIDCRAFT_MASTRA_AGENT_DIR"] = built
-        return subprocess.run(["bash", str(STAGE), "--target", target, "--dest", str(self.dest), "--pin", str(self.pin), *extra], capture_output=True, text=True, env=env, check=False)
+        return subprocess.run(["bash", str(STAGE), "--target", target, "--dest", str(self.dest), "--pin", str(self.pin),
+                               "--skills-root", str(self.pin), *extra], capture_output=True, text=True, env=env, check=False)
 
     def test_a_folder_that_passes_is_copied_whole(self):
         done = self.stage("--from", str(self.built))
