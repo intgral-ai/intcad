@@ -540,12 +540,13 @@ script, and the first one whose workflow bundles the agent.
 
 | Item | Value |
 |---|---|
-| Branch | `int1503-rc-candidate`, a **local candidate** branch: `origin/develop` `3751144fc1` merged with #214's `054d51e4d` (its packaging and agent changes), then the 0.1.3 version commit |
-| SHA built | `3ffacdb153a0df3d78ac186428fd4cb197a5d3b2` |
-| How started | `gh workflow run release.yml --ref int1503-rc-candidate` → run 45241269258 |
+| Branch | `int1503-rc-candidate`, a **local candidate** branch. First attempt: `develop` `3751144fc1` + #214 `054d51e4d`, SHA `3ffacdb1`, run 45241269258 — **cancelled** once `develop` moved on and the branch was rebuilt, so it produced no artifacts. |
+| Current SHA | `14a6c95ae527b2f584035448513ae98455e2f709` = `develop` `be9cb2c16` (carries #218 cookie, #219 FreeBSD, #212 agentic and the `context-skills` set) + #214 `b71d51641` (packaging, agent, and the stage-agent test fix) + the 0.1.3 version commit |
+| How started | `gh workflow run release.yml --ref int1503-rc-candidate` → run **45248432170** |
 | Why not `release-gate` | it only starts for a `main`-target PR or a merge group, and this branch is not a promotion |
 | Workflow settings inherited from #214 | `SOLIDCRAFT_WITH_MASTRA_AGENT: "1"`, `SOLIDCRAFT_DISTRIBUTION: "mastra-agent"`, per-arch overrides (`x86_64` only), legacy `mastra/` still `"0"` |
 | What it produces | the nonpublishing packages for every target, `build.json`/`contents.json` per package, and the content scan that checks the agent is inside |
+| Note on the first attempt | that run was cancelled and its artifacts were never uploaded; the watch script's "no artifact matches" lines are that run, not a failure of the current one |
 
 This branch is **not** a release branch and must not be merged: it exists to prove that the merged
 tree plus #214 produces installable packages that carry the agent. The real candidate is the
