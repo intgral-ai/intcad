@@ -52,6 +52,29 @@ new SHA.
    Bash and GNU `sha256sum --strict`: run it on Linux (the release runner or a container), not on a
    stock macOS host.
 
+## The complete asset set for one version
+
+`release.yml` produces these per version (`<version>` without the `v`); `packaging/aliases.sh`
+adds the second column because the in-app update check resolves those names without a version.
+
+| Release workflow artifact name | Name the release must also carry |
+|---|---|
+| `intcad-<version>-linux-x86_64.tar.gz` | — (the updater asks for this name with the version) |
+| `intcad-<version>-linux-x86_64.AppImage` (+ `.zsync`) | `intcad-linux-x86_64.AppImage` |
+| `intcad-<version>-linux-x86_64.deb` | `intcad-linux-x86_64.deb` |
+| `intcad-<version>-linux-x86_64.rpm` | `intcad-linux-x86_64.rpm` |
+| `intcad-<version>-linux-x86_64.flatpak` | `intcad-linux-x86_64.flatpak` |
+| `intcad-<version>-linux-x86_64.snap` | `intcad-linux-x86_64.snap` |
+| `intcad-<version>-windows-x64.msi` | `intcad-windows-x64.msi` |
+| `intcad-<version>-windows-x64-portable.zip` | `intcad-windows-x64-portable.zip` |
+| `Intcad-<version>-windows-x64.exe` | — (the updater asks for this name with the version) |
+| `intcad-<version>-macos-universal.dmg` | `intcad-macos-universal.dmg` |
+| `intcad-cli-<version>-macos-universal.zip` | — |
+| `SHA256SUMS.txt` and `SHA256SUMS` | the same bytes under both names |
+
+For 0.1.3 that is the set the candidate run produced plus the eight aliases; `checksums.sh
+--require` for the three installers is the check that the list, not just the directory, is whole.
+
 ## What this entry does not prove
 
 - It is not a `main` release candidate.
