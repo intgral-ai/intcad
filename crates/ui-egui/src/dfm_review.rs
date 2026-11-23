@@ -21,7 +21,7 @@ use solidcraft_engine::entitlement::{
     BillingResult, OperationId, OperationStatus, OperationStoreError, RefusalCode, RunId, SaveOutcome, SettlementIntent,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use solidcraft_engine::entitlement::{Capability, EntryCategory, ReviewOperation, UnsettledOperation, UpperBound};
+use solidcraft_engine::entitlement::{Capability, EntryCategory, FreshIntent, ReviewOperation, TransportCorrelation, UnsettledOperation, UpperBound};
 
 use crate::SolveApp;
 use crate::dfm_chat::Card;
@@ -180,6 +180,71 @@ fn unverified_recovery_refusal(app: &SolveApp) -> Option<String> {
     })
 }
 
+/// Create the one durable row for a brand-new Review press.
+///
+/// A fresh press has no row yet: the host minted the id moments ago, so the row is created here,
+/// deliberately, before any grant is requested. The store may answer with the row it published;
+/// it is admissible only when it is exactly this operation's held Review/ReviewPanel row. A
+/// conflict, or a row for another intent, is refused rather than overwritten or retried into.
+#[cfg(not(target_arch = "wasm32"))]
+fn persist_fresh_review_row(app: &mut SolveApp, operation: &OperationId) -> Result<(), String> {
+    // A fresh row names the authenticated account that will be charged. Without a provable scope
+    // there is no account to bind, and inventing one would be inventing authority.
+    let scope = app
+        .commit_scope
+        .clone()
+        .ok_or_else(|| coded(RefusalCode::AuthUnavailable, "the host has no authenticated scope; a fresh Review operation cannot be bound"))?;
+    let intent = FreshIntent::new(operation.clone(), scope, TransportCorrelation::new(format!("review:{}", operation.as_str())));
+    let Some(store) = app.review_store.as_mut() else {
+        return Err(coded(RefusalCode::AuthUnavailable, "no durable Review journal is installed; the run cannot be bound before dispatch"));
+    };
+    match store.persist_fresh_intent(&intent, Capability::Review, EntryCategory::ReviewPanel) {
+        Ok(record)
+            if record.operation == *operation
+                && record.capability == Capability::Review
+                && record.entry == EntryCategory::ReviewPanel
+                && record.status == OperationStatus::Held
+                && record.review_run_id.is_none() => {}
+        Ok(_) => {
+            return Err(coded(
+                RefusalCode::OperationConflict,
+                format!("the fresh Review intent for {} conflicts with a different durable row", operation.as_str()),
+            ));
+        }
+        Err(SaveOutcome::Conflict | SaveOutcome::Existing | SaveOutcome::Saved) => {
+            return Err(coded(
+                RefusalCode::OperationConflict,
+                format!(
+                    "the fresh Review intent for {} is already bound or could not be created; it is never overwritten or retried into",
+                    operation.as_str()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Withdraw the row a fresh press just created when the server refuses its admission.
+///
+/// `admit` returned no grant, so this operation never held execution authority: there is no hold
+/// to release on the wire and no settlement intent to claim. The local row is marked terminal so
+/// it cannot later look like unsettled Review work. If that write fails, the row is reported as
+/// kept instead of pretending it is gone.
+#[cfg(not(target_arch = "wasm32"))]
+fn withdraw_fresh_row(app: &mut SolveApp, operation: &OperationId) -> Result<(), String> {
+    let Some(store) = app.review_store.as_mut() else { return Ok(()) };
+    let withdraw = match store.load(operation) {
+        Ok(Some(record)) => record.status == OperationStatus::Held && record.review_run_id.is_none(),
+        Ok(None) | Err(_) => false,
+    };
+    if !withdraw {
+        return Ok(());
+    }
+    store.mark_terminal(operation, OperationStatus::Released).map_err(|error| {
+        coded(RefusalCode::AuthUnavailable, format!("the refused Review operation {} could not be closed; it is kept: {error:?}", operation.as_str()))
+    })
+}
+
 /// The host's exact Review identity: a free-looking latest run or the service's active run is
 /// never used to infer this operation.
 #[cfg(not(target_arch = "wasm32"))]
@@ -214,20 +279,33 @@ fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(St
         .review_store
         .as_ref()
         .ok_or_else(|| coded(RefusalCode::AuthUnavailable, "no durable Review journal is installed; the run cannot be bound before dispatch"))?;
-    match store.load(&operation) {
-        Ok(Some(record)) if !record.status.is_terminal() => {}
+    // Fresh entry and recovery are different situations. A row that already exists came from an
+    // earlier attempt: non-terminal admits, terminal refuses, unreadable refuses. A missing row is
+    // this press's own brand-new operation, so the row is created deliberately before the grant.
+    let fresh = match store.load(&operation) {
+        Ok(Some(record)) if !record.status.is_terminal() => false,
         Ok(Some(_)) => return Err(coded(RefusalCode::OperationFinalized, "the Review operation is already terminal")),
-        Ok(None) => {
-            return Err(coded(
-                RefusalCode::AuthUnavailable,
-                format!("the Review operation {} has no durable row; it cannot be bound before dispatch", operation.as_str()),
-            ));
-        }
+        Ok(None) => true,
         Err(error) => return Err(coded(RefusalCode::AuthUnavailable, format!("the Review ledger is unavailable: {error:?}"))),
+    };
+    if fresh {
+        persist_fresh_review_row(app, &operation)?;
     }
-    let mut source =
-        app.billing_source().ok_or_else(|| coded(RefusalCode::AuthUnavailable, "no host billing authority is installed for the Review panel"))?;
-    let grant = source.port().admit(&operation, Capability::Review, EntryCategory::ReviewPanel).map_err(|error| coded(error.code, error.message))?;
+    let admitted = match app.billing_source() {
+        Some(mut source) => source.port().admit(&operation, Capability::Review, EntryCategory::ReviewPanel),
+        None => return Err(coded(RefusalCode::AuthUnavailable, "no host billing authority is installed for the Review panel")),
+    };
+    let grant = match admitted {
+        Ok(grant) => grant,
+        Err(error) => {
+            // No grant was issued, so nothing was dispatched. A fresh row that this call created
+            // is withdrawn rather than left looking like unsettled Review work.
+            if fresh {
+                withdraw_fresh_row(app, &operation)?;
+            }
+            return Err(coded(error.code, error.message));
+        }
+    };
     // The server's grant expiry bounds this run just as the measured window does. Reading it is
     // not storing authority: only the instant is kept, and the grant itself is dropped below.
     let grant_expiry = grant.expires_at();

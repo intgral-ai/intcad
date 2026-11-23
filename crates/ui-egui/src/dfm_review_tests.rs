@@ -74,6 +74,7 @@ struct ReviewLedger {
     fail_mapping: Arc<Mutex<bool>>,
     fail_lookup: Arc<Mutex<bool>>,
     fail_inventory: Arc<Mutex<bool>>,
+    fail_load: Arc<Mutex<bool>>,
 }
 
 impl ReviewLedger {
@@ -143,6 +144,14 @@ impl ReviewLedger {
         *self.fail_inventory.lock().expect("flag") = fail;
     }
 
+    fn fail_next_load(&self, fail: bool) {
+        *self.fail_load.lock().expect("flag") = fail;
+    }
+
+    fn row_count(&self) -> usize {
+        self.records.lock().expect("records").len()
+    }
+
     fn remove_record(&self, operation: &OperationId) {
         self.records.lock().expect("records").remove(operation.as_str());
     }
@@ -166,6 +175,9 @@ impl OperationStore for LedgerHandle {
     }
 
     fn load(&self, operation: &OperationId) -> Result<Option<OperationRecord>, OperationStoreError> {
+        if *self.0.fail_load.lock().expect("flag") {
+            return Err(OperationStoreError::Unavailable);
+        }
         Ok(self.0.records.lock().expect("records").get(operation.as_str()).cloned())
     }
 
@@ -203,13 +215,19 @@ impl OperationStore for LedgerHandle {
         Err(SaveOutcome::Conflict)
     }
 
-    fn persist_fresh_intent(
-        &mut self,
-        _intent: &FreshIntent,
-        _capability: Capability,
-        _entry: EntryCategory,
-    ) -> Result<OperationRecord, SaveOutcome> {
-        Err(SaveOutcome::Conflict)
+    fn persist_fresh_intent(&mut self, intent: &FreshIntent, capability: Capability, entry: EntryCategory) -> Result<OperationRecord, SaveOutcome> {
+        let operation = intent.host_minted_operation().clone();
+        if let Some(existing) = self.0.records.lock().expect("records").get(operation.as_str()).cloned() {
+            return if existing.common_identity_matches(&OperationRecord::held(operation, intent.scope().account().clone(), capability, entry, 0)) {
+                Ok(existing)
+            } else {
+                Err(SaveOutcome::Conflict)
+            };
+        }
+        let record = OperationRecord::held(operation.clone(), intent.scope().account().clone(), capability, entry, 0);
+        self.0.records.lock().expect("records").insert(operation.as_str().to_string(), record.clone());
+        self.0.scopes.lock().expect("scopes").insert(operation.as_str().to_string(), intent.scope().clone());
+        Ok(record)
     }
 
     fn lookup_original_retry(&self, _key: &RetryScopeKey) -> RetryDecision {
@@ -581,6 +599,94 @@ fn review_panel_press_is_one_operation() {
     assert_eq!(billing.commits(), 0);
     crate::dfm_review::release_unstarted(&mut h.app, RefusalCode::UnsafeToStart).expect("clean up the hold");
     assert_eq!(billing.releases(), 1);
+}
+
+/// A brand-new Review press with an empty journal creates exactly one durable row for its own
+/// host-minted id and then admits it.
+///
+/// Before the repair this press could never start: the row it was required to find was only
+/// created by `record_review` after admission had already succeeded.
+#[test]
+fn fresh_review_press_creates_one_durable_row_and_admits() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    install(&mut h.app, &billing, &ledger);
+    let operation = crate::control::mint_operation().expect("host entropy");
+    let (run, _stop) = crate::dfm_review::prepare_review_with(&mut h.app, operation.clone()).expect("a fresh Review press is admitted");
+
+    assert_eq!(ledger.row_count(), 1, "one press is one durable row");
+    let record = {
+        let records = ledger.records.lock().expect("records");
+        records.get(operation.as_str()).cloned().expect("the row is for this exact operation")
+    };
+    assert_eq!(record.capability, Capability::Review);
+    assert_eq!(record.entry, EntryCategory::ReviewPanel);
+    assert_eq!(record.status, solidcraft_engine::entitlement::OperationStatus::Held);
+    assert_eq!(billing.admits(), 1, "the fresh row is admitted once");
+    assert_eq!(ledger.operation_for(&run), Some(operation.clone()), "the run maps to the same operation");
+    assert_eq!(h.app.dfm_review.operation.as_ref(), Some(&operation));
+}
+
+/// The same id pressed twice neither creates a second row nor admits a second time.
+#[test]
+fn the_same_fresh_id_pressed_twice_does_not_admit_twice() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    install(&mut h.app, &billing, &ledger);
+    let operation = crate::control::mint_operation().expect("host entropy");
+    crate::dfm_review::prepare_review_with(&mut h.app, operation.clone()).expect("the first press is admitted");
+    let error = crate::dfm_review::prepare_review_with(&mut h.app, operation.clone()).unwrap_err();
+    assert!(error.starts_with("UNSAFE_TO_START:"), "the unsettled operation owns the press: {error}");
+    assert_eq!(ledger.row_count(), 1, "no second row is created");
+    assert_eq!(billing.admits(), 1, "one press is one admission");
+}
+
+/// A recovery row that already exists and is not terminal still admits, exactly as before.
+#[test]
+fn recovery_row_that_is_not_terminal_still_admits() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    install(&mut h.app, &billing, &ledger);
+    let operation = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record(operation.clone());
+    let (run, _stop) = crate::dfm_review::prepare_review_with(&mut h.app, operation.clone()).expect("a non-terminal recovery row admits");
+    assert_eq!(ledger.row_count(), 1, "recovery never creates a second row");
+    assert_eq!(billing.admits(), 1);
+    assert_eq!(ledger.operation_for(&run), Some(operation));
+}
+
+/// A terminal row still refuses with the same code and message as before.
+#[test]
+fn terminal_review_row_still_refuses_with_its_existing_code() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    install(&mut h.app, &billing, &ledger);
+    let operation = crate::control::mint_operation().expect("host entropy");
+    ledger.insert_record(operation.clone());
+    ledger.set_terminal(&operation, solidcraft_engine::entitlement::OperationStatus::Released);
+    let error = crate::dfm_review::prepare_review_with(&mut h.app, operation).unwrap_err();
+    assert_eq!(error, "OPERATION_FINALIZED: the Review operation is already terminal");
+    assert_eq!(billing.admits(), 0);
+}
+
+/// An unreadable journal still refuses before any row is created or any grant is requested.
+#[test]
+fn unreadable_review_journal_still_refuses() {
+    let mut h = Harness::new();
+    let billing = CountingBilling::default();
+    let ledger = ReviewLedger::default();
+    install(&mut h.app, &billing, &ledger);
+    let operation = crate::control::mint_operation().expect("host entropy");
+    ledger.fail_next_load(true);
+    let error = crate::dfm_review::prepare_review_with(&mut h.app, operation).unwrap_err();
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert!(error.contains("the Review ledger is unavailable"), "{error}");
+    assert_eq!(billing.admits(), 0, "an unreadable journal admits nothing");
+    assert_eq!(ledger.row_count(), 0, "an unreadable journal creates no row");
 }
 
 /// A finished report with zero violations still commits exactly once.
