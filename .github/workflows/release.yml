@@ -302,7 +302,9 @@ jobs:
             echo "apt-get update attempt $attempt failed or timed out" >&2
             sleep 10
           done
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common xvfb xauth weston xwayland dbus-x11
+          # elfutils: flatpak-builder strips the ELF files the package carries, and the built-in
+          # agent brings many more of them than the app alone did.
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common elfutils xvfb xauth weston xwayland dbus-x11
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build and smoke-test the Flatpak in its network-denying sandbox
         # The existing manifest grants no network. Its desktop smoke stays inside
