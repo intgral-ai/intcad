@@ -35,6 +35,9 @@ cleanup() {
   if [ "$MOUNTED" = 1 ]; then
     hdiutil detach "$MNT" -quiet || hdiutil detach "$MNT" -force || true
   fi
+  # The installed copy's agent folder is read-only, as the package makes it: a removal needs the
+  # owner's write bit back first.
+  chmod -R u+w "$APPS" 2>/dev/null || true
   rm -rf "$MNT" "$APPS"
 }
 trap cleanup EXIT INT TERM
