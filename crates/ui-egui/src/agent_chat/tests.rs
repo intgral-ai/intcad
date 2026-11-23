@@ -18882,3 +18882,29 @@ fn an_accepted_preview_runs_one_check_and_a_rejection_or_stale_accept_runs_none(
     assert!(review::accept(&mut app, id).is_err(), "the design moved since the preview");
     assert_eq!(app.agent_chat.dfm.fired, before, "a stale accept runs nothing");
 }
+
+/// INT-1473: the built-in agent is handed the Files panel's folder only when that folder is the
+/// project the shown design belongs to; any other pairing hands over nothing.
+#[test]
+fn the_agent_is_handed_the_files_folder_only_when_it_is_the_designs_project() {
+    let root = std::env::temp_dir().join(format!("sc-agent-chat-project-{}", std::process::id()));
+    let project = root.join("bracket");
+    let parts = project.join("parts");
+    let elsewhere = root.join("elsewhere");
+    for dir in [&project.join(".intcad"), &parts, &elsewhere] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(project.join(".intcad").join("project.toml"), "").unwrap();
+    let design = project.join("bracket.sc").to_string_lossy().into_owned();
+    let deeper = parts.join("tab.sc").to_string_lossy().into_owned();
+    let loose = elsewhere.join("loose.sc").to_string_lossy().into_owned();
+
+    assert_eq!(handed_project(Some(&design), Some(&project)), Some(project.clone()));
+    assert_eq!(handed_project(Some(&deeper), Some(&project)), Some(project.clone()), "a design in a subfolder belongs to the project above");
+    assert_eq!(handed_project(Some(&deeper), Some(&parts)), None, "the panel on a folder inside the project is not the project");
+    assert_eq!(handed_project(Some(&design), Some(&elsewhere)), None, "the panel on another folder");
+    assert_eq!(handed_project(Some(&loose), Some(&elsewhere)), None, "a design in no project");
+    assert_eq!(handed_project(None, Some(&project)), None, "no design shown");
+    assert_eq!(handed_project(Some(&design), None), None, "no folder in the panel");
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -562,6 +562,7 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
 // ---- The session builder (session.mjs): Mastra Code's ACP session, without a vector store ---------
 
 const { sessionBuilder } = await load("session.mjs");
+const { permissionRules } = await load("reads.mjs");
 
 /** A stand-in for what the entry loads from Mastra Code, recording what the builder does with it. */
 function fakeSdk(overrides: { failed?: Json[] } = {}) {
@@ -621,9 +622,11 @@ test("a session is made as Mastra Code's ACP server makes it, with no vector sto
   // The one difference from Mastra Code's own builder: no vector store, so nothing is ever embedded.
   assert.equal(config.vector, false);
   assert.equal(config.cwd, "/project");
-  assert.deepEqual(config.initialState, { projectPath: "/project", yolo: false, permissionRules: { categories: {}, tools: { ask_user: "deny" } } });
-  assert.deepEqual(config.disabledTools, ["ask_user"]);
-  assert.deepEqual([config.disableEnvFile, config.disableMcp, config.disableHooks, config.unixSocketPubSub, config.planApprovalStartsGoal], [true, false, false, false, false]);
+  // Intcad's (INT-1473): the rules of a session without a project (agent/reads.mjs), no
+  // `request_access`, no hooks.
+  assert.deepEqual(config.initialState, { projectPath: "/project", yolo: false, permissionRules: permissionRules(null) });
+  assert.deepEqual(config.disabledTools, ["ask_user", "request_access"]);
+  assert.deepEqual([config.disableEnvFile, config.disableMcp, config.disableHooks, config.unixSocketPubSub, config.planApprovalStartsGoal], [true, false, true, false, false]);
   assert.equal(config.subagents, "the subagents");
   assert.deepEqual(config.mcpServers, {
     app: { command: "intcad-cli", args: ["mcp"], env: { A: "1" }, cwd: "/project" },
