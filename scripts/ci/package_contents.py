@@ -23,8 +23,9 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import re
+import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -209,18 +210,16 @@ def _parts(name):
 
 # Where each platform's packager puts the agent: the app looks beside its own resources, so a
 # `mastra-agent/` folder anywhere else (an `extras/` tree, a stray copy) does not make a package
-# that can run one. The path before `mastra-agent/` is matched as whole components.
+# that can run one.
 AGENT_ROOTS = {
-    "linux": (("lib", "intcad", "mastra-agent"),),
-    "macos": (("Contents", "Resources", "mastra-agent"),),
+    "linux": ("lib", "intcad", "mastra-agent"),
+    "macos": ("Contents", "Resources", "mastra-agent"),
     # The MSI's file table names the install root (`PFiles64/Intcad/mastra-agent`); the portable
     # archive has one wrapper folder.
-    "windows": (("mastra-agent",),),
+    "windows": ("mastra-agent",),
 }
 
-# How many path components may precede the root: a tarball's wrapper folder, or (on Windows) the
-# install root the MSI records. A copy in an `extras/` directory is a stray Node, not the agent.
-MAX_LEADING_PARTS = {"linux": 1, "macos": 1, "windows": 2}
+APP_WRAPPER = re.compile(r"^intcad-\d")
 
 
 def platform_for(package_id):
@@ -235,72 +234,40 @@ def platform_for(package_id):
 
 
 def roots_for(package_id):
-    """The agent folder's install places and how many components may precede them."""
+    """The platform whose install place the package uses, or ``None`` to accept any."""
     platform = platform_for(package_id)
-    if platform is None:
-        return None
-    return AGENT_ROOTS[platform], MAX_LEADING_PARTS[platform]
+    return None if platform is None else (platform, AGENT_ROOTS[platform])
 
 
-def _agent_index(parts, roots):
-    """The index of `mastra-agent` in `parts` when it sits at one of `roots` (at most
-    ``MAX_LEADING_PARTS`` components before it), else ``None``."""
-    if roots is None:
-        return parts.index(AGENT_DIR) if AGENT_DIR in parts else None
-    places, leading = roots
-    # A wrapper folder in front of the root is the package's own (`intcad-<version>-...`, the
-    # app bundle, or the MSI's install root, which names Intcad); an `extras/` folder is not.
-    wrapped_by_app = index_is_app_wrapped
-    for root in places:
-        size = len(root)
-        for index in range(len(parts) - size + 1):
-            if index > leading:
-                break
-            if list(parts[index:index + size]) == list(root) and wrapped_by_app(parts, index):
-                return index + size - 1
-    return None
-
-
-APP_WRAPPER = re.compile(r"^intcad-\d")
-
-
-def index_is_app_wrapped(parts, index):
-    """Whether the components before `index` are the product's own: none, an FHS `usr`, the
-    package's wrapper folder (`intcad-<version>-...`), the app bundle (`Intcad.app`), the MSI's
-    install folder (`Intcad`), or an install root and that folder (`PFiles64/Intcad`). `extras/`,
-    `intcad-extras/` and the like are not: the app looks at its own root."""
-    leading = [part.lower() for part in parts[:index]]
-    if not leading:
+def _root_allowed(platform, parts, start):
+    """Whether the components before `start` are the product's own root for `platform`."""
+    before = [part.lower() for part in parts[:start]]
+    if platform == "macos":
+        # The app is `Intcad.app`; a bare `Contents/Resources` outside it is not what it loads.
+        return before == ["intcad.app"]
+    if platform == "windows":
+        if before == []:
+            return True
+        if len(before) == 1:
+            return before[0] == "intcad" or APP_WRAPPER.match(before[0]) is not None
+        return (len(before) == 2 and before[0] in ("pfiles64", "pfiles")
+                and before[1] == "intcad")
+    # linux: an FHS `usr`, or the package's own wrapper folder.
+    if before == []:
         return True
-    if len(leading) == 1:
-        part = leading[0]
-        return (part in ("usr", "intcad", "intcad.app")
-                or APP_WRAPPER.match(part) is not None)
-    if len(leading) == 2:
-        return leading[0] in ("pfiles64", "pfiles") and leading[1] == "intcad"
-    return False
+    return len(before) == 1 and (before[0] == "usr" or APP_WRAPPER.match(before[0]) is not None)
 
 
 def _agent_index(parts, roots):
-    """The index of `mastra-agent` in `parts` when it sits at one of `roots` (at most
-    ``MAX_LEADING_PARTS`` components before it), else ``None``."""
+    """The index of `mastra-agent` in `parts` when it sits at the platform's install place."""
     if roots is None:
         return parts.index(AGENT_DIR) if AGENT_DIR in parts else None
-    places, leading = roots
-    # A wrapper folder in front of the root is the package's own (`intcad-<version>-...`, the
-    # app bundle, or the MSI's install root, which names Intcad); an `extras/` folder is not.
-    wrapped_by_app = index_is_app_wrapped
-    for root in places:
-        size = len(root)
-        for index in range(len(parts) - size + 1):
-            if index > leading:
-                break
-            if list(parts[index:index + size]) == list(root) and wrapped_by_app(parts, index):
-                return index + size - 1
+    platform, root = roots
+    size = len(root)
+    for start in range(len(parts) - size + 1):
+        if list(parts[start:start + size]) == list(root) and _root_allowed(platform, parts, start):
+            return start + size - 1
     return None
-
-
-APP_WRAPPER = re.compile(r"^intcad-\d")
 
 
 def agent_node(name, target=None, roots=None):
@@ -341,28 +308,41 @@ def agent_report(names, target=None, roots=None):
     })
     found = {}
     skills = {}
+    nodes = set()
+
+    def place_of(entry):
+        index = _agent_index(entry, roots)
+        if index is None:
+            return None
+        rest = entry[index + 1:]
+        slice_ = ""
+        if rest and TARGET_SLICE.match(rest[0]):
+            slice_ = rest[0]
+            rest = rest[1:]
+        return ("/".join(entry[:index]), slice_), rest
+
+    # Every place the agent folder exists, even empty, is its own agent: a folder with nothing in
+    # it is incomplete, and two places may not split the required files between them.
+    with_files = {where[0][0] for where in map(place_of, files) if where is not None}
+    for entry in parts:
+        where = place_of(entry)
+        if where is not None and where[0][0] not in with_files:
+            found.setdefault((where[0][0], ""), set())
     for entry in files:
-        for index, part in enumerate(entry):
-            if part != AGENT_DIR or _agent_index(entry, roots) != index:
-                continue
-            # A folder's own place is part of its identity: two copies at different roots may
-            # not split the required files between them.
-            place = "/".join(entry[:index])
-            rest = entry[index + 1:]
-            slice_ = ""
-            if rest and TARGET_SLICE.match(rest[0]):
-                slice_ = rest[0]
-                rest = rest[1:]
-            if not rest:
-                # The agent folder itself; not a payload file.
-                continue
-            key = (place, slice_)
-            found.setdefault(key, set()).add("/".join([AGENT_DIR] + rest))
-            # The agent's own `mastra-agent/skills/<set>/<skill>/SKILL.md`: exactly that shape, so
-            # a package's own skill file (a dependency's `node_modules/.../skills/x/y/SKILL.md`)
-            # is not counted as one of the agent's.
-            if len(rest) == 4 and rest[0] == "skills" and entry[-1] == "SKILL.md":
-                skills.setdefault(key, set()).add("/".join(rest[1:3]))
+        where = place_of(entry)
+        if where is None:
+            continue
+        key, rest = where
+        if agent_node("/".join(entry), target, roots):
+            nodes.add(key)
+        if not rest:
+            continue
+        found.setdefault(key, set()).add("/".join([AGENT_DIR] + rest))
+        # The agent's own `mastra-agent/skills/<set>/<skill>/SKILL.md`: exactly that shape, so a
+        # package's own skill file (a dependency's `node_modules/.../skills/x/y/SKILL.md`) is not
+        # counted as one of the agent's.
+        if len(rest) == 4 and rest[0] == "skills" and entry[-1] == "SKILL.md":
+            skills.setdefault(key, set()).add("/".join(rest[1:3]))
     # A universal app carries one whole agent per CPU: each folder is checked on its own, so the
     # Intel folder cannot consist of a Node and borrow the ARM folder's entry, deps and skills.
     missing = []
@@ -370,6 +350,8 @@ def agent_report(names, target=None, roots=None):
         have = found[key]
         prefix = "" if not key[1] else key[1] + "/"
         missing.extend(prefix + required for required in AGENT_REQUIRED if required not in have)
+        if key not in nodes:
+            missing.append(prefix + AGENT_DIR + "/node")
         # INT-1473's work starts from the modelling skills; a slice that holds only some other
         # set cannot do it, even when the other slice holds the modelling ones.
         if not any(name.startswith("modelling-skills/") for name in skills.get(key, ())):
@@ -405,8 +387,12 @@ def _tar_members(path):
     mode = ("r:gz" if path.name.lower().endswith((".tar.gz", ".tgz"))
             else "r:xz" if path.name.lower().endswith((".tar.xz", ".txz")) else "r:")
     with tarfile.open(path, mode) as archive:
-        return [member.name + ("/" if member.isdir() and not member.name.endswith("/") else "")
-                for member in archive.getmembers() if member.name != "."]
+        names = []
+        for member in archive.getmembers():
+            if member.name == "." or not (member.isfile() or member.isdir()):
+                continue
+            names.append(member.name + ("/" if member.isdir() and not member.name.endswith("/") else ""))
+        return names
 
 
 def names_tar(path):
@@ -434,34 +420,51 @@ def names_tar(path):
 
 
 def names_zip(path):
+    names = []
     with zipfile.ZipFile(path) as archive:
-        return [item.filename + ("/" if item.is_dir() and not item.filename.endswith("/") else "")
-                for item in archive.infolist() if item.filename]
+        for item in archive.infolist():
+            if not item.filename:
+                continue
+            if (item.external_attr >> 16) & 0o170000 == 0o120000:
+                continue  # a symlink, not the file it points at
+            names.append(item.filename + ("/" if item.is_dir() and not item.filename.endswith("/") else ""))
+    return names
 
 
 def names_deb(path):
     tool = shutil.which("dpkg-deb")
     if not tool:
         raise OSError("dpkg-deb is unavailable")
-    names = []
-    for line in _lines(_run([tool, "-c", str(path)])):
-        fields = line.split(" -> ")[0].split()
-        if len(fields) >= 6:
-            name = fields[-1].lstrip("./")
-            names.append(name + ("/" if line.startswith("d") and not name.endswith("/") else ""))
-    return names
+    with tempfile.TemporaryDirectory(prefix="contents-deb-") as directory:
+        plain = Path(directory) / "fsys.tar"
+        with plain.open("wb") as out:
+            result = subprocess.run([tool, "--fsys-tarfile", str(path)], stdout=out, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            raise OSError((result.stderr or b"dpkg-deb failed").decode("utf-8", "replace")[:200])
+        return _tar_members(plain)
 
 
 def names_rpm(path):
     tool = shutil.which("rpm")
     if not tool:
         raise OSError("rpm is unavailable")
+    # Tab-separated, so a name with spaces stays one field; the mode says what each entry is.
+    listing = _run([tool, "-qp", "--qf", "[%{FILENAMES}\t%{FILEMODES}\n]", str(path)])
     names = []
-    for line in _lines(_run([tool, "-qlvp", str(path)])):
-        fields = line.split(" -> ")[0].split()
-        if len(fields) >= 2:
-            name = fields[-1].lstrip("./")
-            names.append(name + ("/" if fields[0].startswith("d") and not name.endswith("/") else ""))
+    for line in listing.splitlines():
+        name, _, mode = line.rpartition("\t")
+        if not name or not mode.strip():
+            continue
+        try:
+            kind = int(mode.strip())
+        except ValueError:
+            continue
+        if stat.S_ISLNK(kind) or not (stat.S_ISDIR(kind) or stat.S_ISREG(kind)):
+            continue
+        name = name.lstrip("./")
+        names.append(name + ("/" if stat.S_ISDIR(kind) and not name.endswith("/") else ""))
+    if not names:
+        raise OSError("rpm listed no files")
     return names
 
 
@@ -473,9 +476,11 @@ def names_snap(path):
     for line in _lines(_run([tool, "-ll", str(path)])):
         if "squashfs-root/" not in line:
             continue
-        token = line.split(" -> ")[0].split("squashfs-root/", 1)[-1]
-        is_dir = line.lstrip().startswith("d")
-        names.append(token + ("/" if is_dir and not token.endswith("/") else ""))
+        mode = line.lstrip()[:1]
+        if mode not in ("-", "d"):
+            continue
+        token = line.split("squashfs-root/", 1)[-1]
+        names.append(token + ("/" if mode == "d" and not token.endswith("/") else ""))
     return names
 
 
@@ -558,11 +563,16 @@ def names_msi(path):
         # A short root on Windows: the agent's node_modules paths are long, and the admin image
         # must not fail on the 260-character limit because of a deep %TEMP% folder.
         base = (os.environ.get("SystemDrive", "C:") + os.sep) if os.name == "nt" else None
-        with tempfile.TemporaryDirectory(prefix="ci-", dir=base) as directory:
-            _run([tool, "/a", str(path), "/qn", "TARGETDIR=" + directory])
-            names = _walk(directory)
-            if names:
-                return names
+        try:
+            with tempfile.TemporaryDirectory(prefix="ci-", dir=base) as directory:
+                _run([tool, "/a", str(path), "/qn", "TARGETDIR=" + directory])
+                names = _walk(directory)
+                if names:
+                    return names
+        except OSError:
+            # An image for another CPU can be refused on this runner; the 7-Zip view is the
+            # remaining, machine-readable listing.
+            pass
     seven = shutil.which("7z") or shutil.which("7za")
     if not seven:
         raise OSError("neither msiexec nor 7z is available")
@@ -667,7 +677,7 @@ def main():
             report["markers"].extend(inside_agent_markers_for(args.distribution, names, roots))
             report["agentMarkers"].extend(agent_markers(names, roots))
             found = agent_report(names, roots=roots)
-            report.setdefault("agents", {})[source.name] = found
+            report.setdefault("agents", {}).setdefault(source.name, found)
             if found["present"] and report["agent"] is None:
                 report["agent"] = found
     else:

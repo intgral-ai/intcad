@@ -292,8 +292,10 @@ jobs:
                   carries.append(str(name) + ': inspected without an agent verdict')
               # Only verdicts for artifacts this job inspected count: a source tarball recorded
               # beside a repack cannot vouch for the repack's own bytes.
+              source = data.get('sourceArtifact')
               app_artifacts = [name for name in inspected
-                               if name in verdicts
+                               if name != source
+                               and name in verdicts
                                and not release.carries_no_agent(name)
                                and not (verdicts[name] or {}).get('coveredBy')]
               for name in sorted(app_artifacts):
@@ -324,6 +326,8 @@ jobs:
           if-no-files-found: error
       - &upload-evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # A job that fails its own evidence still uploads the report that says why.
+        if: always()
         with:
           name: package-evidence-${{ env.PACKAGE_ID }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: |

@@ -145,7 +145,7 @@ Run [45112837415](https://github.com/intgral-ai/intcad/actions/runs/45112837415)
 | macOS universal (arm64 + x86_64) | pass — `contents.json`: `agent.nodeTargets` both slices, four skills, no marker |
 | Windows x64 MSI + zip | pass — `contents.json`: whole agent, four skills (run 45105758418) |
 | Windows x86, arm64 | pass — `native`, no agent |
-| Flatpak x86_64, Snap x86_64 | recorded as `mastra-agent` from the **source tarball** only (the old recorder read the source); their own bytes are proved from the run at this head |
+| Flatpak x86_64, Snap x86_64 | recorded as `mastra-agent` from the **source tarball** only (the old recorder read the source); the run at this head records their own bytes |
 | Arch x86_64 | recorded as `mastra-agent` from the **source tarball** only: the Arch action dropped `lib/`, so the package itself had none. Fixed in this branch by `packaging/linux/arch-agent.sh` |
 | Flatpak/Arch/Snap aarch64 | pass — `native` |
 | Web (wasm) | pass — `native` |

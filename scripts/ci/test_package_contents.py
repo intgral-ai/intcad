@@ -219,7 +219,7 @@ class AgentContents(unittest.TestCase):
             without_node = [name for name in self.AGENT if not name.endswith("/node")]
             data = self.report(directory, ["usr/bin/intcad", *without_node])
             self.assertFalse(data["agent"]["node"])
-            self.assertEqual(data["agent"]["missing"], [])
+            self.assertIn("mastra-agent/node", data["agent"]["missing"])
             data = self.report(directory, ["usr/bin/intcad", *self.AGENT[:2]])
             self.assertTrue(data["agent"]["missing"])
 
@@ -245,6 +245,23 @@ class AgentContents(unittest.TestCase):
             self.assertTrue(data["agent"]["present"])
             self.assertTrue(data["agent"]["node"])
             self.assertEqual(data["agent"]["missing"], [])
+
+    def test_two_copies_cannot_split_the_agent_between_them(self):
+        # One complete copy at `usr/lib` and a Node-less copy at `lib`: each place is its own
+        # agent, so the second is reported incomplete instead of borrowing the first's Node.
+        with tempfile.TemporaryDirectory() as directory:
+            names = list(self.AGENT)
+            names += [name.replace("usr/lib/", "lib/", 1) for name in self.AGENT
+                      if not name.endswith("/node")]
+            data = self.report(directory, ["usr/bin/intcad", *names])
+            self.assertTrue(data["agent"]["present"])
+            self.assertIn("mastra-agent/node", data["agent"]["missing"])
+
+    def test_a_macos_agent_outside_the_app_bundle_is_not_the_apps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            names = ["Contents/Resources/mastra-agent/node"]
+            data = self.report(directory, names, package_id="release-macos")
+            self.assertIsNone(data["agent"])
 
     def test_a_slice_without_the_modelling_skills_is_incomplete_beside_one_with_them(self):
         with tempfile.TemporaryDirectory() as directory:
