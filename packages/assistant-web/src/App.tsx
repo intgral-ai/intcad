@@ -2605,6 +2605,26 @@ function closePopups(dialogs: boolean) {
   (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 }
 
+/** What opens over the page and needs all the room the host gives it. */
+const POPUPS = '[data-slot="popover-content"], [data-slot="drawer-content"], [role="menu"], [role="dialog"]';
+/** The headers over the message box: the line, a row that needs the user, the opened body. */
+const HEADERS = ':scope > [data-slot="composer"] > [data-slot="composer-header"]';
+
+/** Where a header over the message box ends at the top once its opening transition is over. */
+function topOf(header: Element) {
+  const rect = header.getBoundingClientRect();
+  const surface = header.querySelector<HTMLElement>('[data-slot="composer-header-surface"]');
+  return surface ? Math.min(rect.top, rect.bottom - surface.offsetHeight) : rect.top;
+}
+
+/** How tall the page is: the message box and every header over it, each as tall as it is opening to. */
+function heightOf(element: HTMLElement) {
+  const box = element.getBoundingClientRect();
+  let top = box.top;
+  for (const header of element.querySelectorAll(HEADERS)) top = Math.min(top, topOf(header));
+  return Math.ceil(box.bottom - top);
+}
+
 function Centre({
   state,
   openConn,
@@ -2629,30 +2649,39 @@ function Centre({
   const most = useRef(500);
   most.current = state.centre ?? 500;
   centreNow = true;
-  // Asks the host for more height at once (set by the effect below).
+  // Asks the host for this much height at once and keeps it asked for until called with 0 (set by the effect below).
   const grow = useRef<(to: number) => void>(() => {});
+  // The body's room is measured before the page is drawn, so the body opens at its height and not a
+  // frame later. When the page has too little room the conversation gives way first, down to the bar
+  // with Collapse; the rows that need the user and the message box keep their height.
+  useLayoutEffect(() => {
+    const element = measured.current;
+    const inBody = element?.querySelector<HTMLElement>('[data-centre-body]');
+    if (!element || !inBody) return;
+    const bar = inBody.firstElementChild?.firstElementChild;
+    const next = Math.max(bar instanceof HTMLElement ? bar.offsetHeight : 0, Math.floor(most.current - (heightOf(element) - inBody.offsetHeight) - 2));
+    if (Math.abs(next - room) > 1) setRoom(next);
+  });
   // The page tells the host how tall it is; the host keeps it within `centre`. While a popup is open
   // (model picker, mode menu, a dialog) the page asks for all the room there is, from the press that
   // opens it, so the popup has room when it appears.
   useEffect(() => {
-    document.documentElement.classList.add('centre');
+    const root = document.documentElement;
+    root.classList.add('centre');
     const element = measured.current;
     if (!element) return;
     let menu = false;
     let check = 0;
-    // An overlay header floats over the message box, outside the layout: its top counts too.
-    const height = () => {
-      const box = element.getBoundingClientRect();
-      const over = document.querySelector('[data-slot="composer-header"][data-placement="overlay"]');
-      const top = over ? Math.min(box.top, over.getBoundingClientRect().top) : box.top;
-      return Math.ceil(box.bottom - top);
-    };
     // The host resizes the native view a frame or two after it is asked, so a view resized while
     // something animates jumps. Taller is asked at once, so what opens has its room as it is drawn;
     // shorter only once the page has been still for a moment, never under a closing animation.
+    // Never more than `centre`, which is all the host gives.
     let told = -1;
     let shrinkTo = -1;
     let shrink = 0;
+    // A height asked for ahead of what needs it (the conversation about to open): not given back before.
+    let floor = 0;
+    const wanted = () => Math.min(most.current, Math.max(menu ? most.current : heightOf(element), floor));
     const send = (next: number) => {
       window.clearTimeout(shrink);
       shrinkTo = -1;
@@ -2660,26 +2689,46 @@ function Centre({
       told = next;
       post({ type: 'size', height: next });
     };
+    // Nothing is drawn taller than the view. While the view grows to what the page asked for, a
+    // header whose top it would cut off, and any popup, waits unseen, and is shown in the frame the
+    // view has its room. It runs before the page is drawn: from the resize event, the observers'
+    // callbacks and the press that opens a popup. A host that never grows hides nothing past a second.
+    let since = 0;
+    let late = 0;
+    const fit = () => {
+      const view = window.innerHeight;
+      let growing = view + 1 < Math.min(told, most.current);
+      if (!growing) since = 0;
+      else if (!since) {
+        since = performance.now();
+        window.clearTimeout(late);
+        late = window.setTimeout(fit, 1000);
+      } else if (performance.now() - since > 990) growing = false;
+      for (const header of element.querySelectorAll(HEADERS)) header.toggleAttribute('data-centre-wait', growing && topOf(header) < -1);
+      for (const open of document.querySelectorAll(POPUPS)) open.toggleAttribute('data-centre-wait', growing);
+    };
     grow.current = to => {
-      if (to > told) send(to);
+      floor = Math.min(to, most.current);
+      if (floor > told) send(floor);
+      fit();
     };
     const tell = () => {
-      const whole = height();
-      const inBody = element.querySelector<HTMLElement>('[data-centre-body]');
-      if (inBody) {
-        const next = Math.max(140, Math.floor(most.current - (whole - inBody.offsetHeight) - 2));
-        setRoom(before => (Math.abs(next - before) > 1 ? next : before));
-      }
-      const next = menu ? most.current : whole;
+      const next = wanted();
       // A pixel or two less is rounding, not a change: shrinking for it, then growing back, made the
       // view flicker. Any growth is kept, or the top of the page would be cut off.
-      if (next < told && told - next <= 2) return;
-      if (next >= told) send(next);
+      if (next < told && told - next <= 2) {
+        window.clearTimeout(shrink);
+        shrinkTo = -1;
+      } else if (next >= told) send(next);
       else if (next !== shrinkTo) {
         shrinkTo = next;
         window.clearTimeout(shrink);
-        shrink = window.setTimeout(() => send(menu ? most.current : height()), 250);
+        shrink = window.setTimeout(() => {
+          send(wanted());
+          fit();
+        }, 250);
       }
+      fit();
     };
     // Headers open and close with a transition that changes no DOM: keep measuring until it settles.
     // A timer, not animation frames: those pause where the page is not drawn.
@@ -2694,7 +2743,7 @@ function Centre({
       window.clearTimeout(frame);
       frame = window.setTimeout(follow, 0);
     };
-    const popup = () => Boolean(document.querySelector('[data-slot="popover-content"], [data-slot="drawer-content"], [role="menu"], [role="dialog"]'));
+    const popup = () => Boolean(document.querySelector(POPUPS));
     const settle = () => {
       window.clearTimeout(check);
       check = window.setTimeout(() => {
@@ -2717,57 +2766,57 @@ function Centre({
     const picked = (event: globalThis.MouseEvent) => {
       if ((event.target as Element | null)?.closest('[role="menuitemradio"]')) window.setTimeout(() => closePopups(false), 120);
     };
+    // What changed is measured before it is drawn (a mutation observer's callback runs before the
+    // page is painted), then followed while its transition settles.
     const watch = new MutationObserver(() => {
-      if (popup()) {
-        if (!menu) {
-          menu = true;
-          tell();
-        }
-      } else if (!menu) {
-        settleSize();
-      }
+      if (popup()) menu = true;
+      tell();
+      if (!menu) settleSize();
       settle();
     });
     watch.observe(document.body, { childList: true, subtree: true });
     document.addEventListener('pointerdown', down, true);
     document.addEventListener('click', picked, true);
     window.addEventListener('blur', blur);
+    window.addEventListener('resize', tell);
     tell();
-    const observer = new ResizeObserver(() => {
-      if (!menu) tell();
-    });
+    const observer = new ResizeObserver(tell);
     observer.observe(element);
     return () => {
-      document.documentElement.classList.remove('centre');
+      root.classList.remove('centre');
       centreNow = false;
       observer.disconnect();
       watch.disconnect();
       document.removeEventListener('pointerdown', down, true);
       document.removeEventListener('click', picked, true);
       window.removeEventListener('blur', blur);
+      window.removeEventListener('resize', tell);
       window.clearTimeout(check);
       window.clearTimeout(frame);
       window.clearTimeout(shrink);
+      window.clearTimeout(late);
     };
   }, []);
   // The conversation opens only once the view has its height: opened into a view still growing, it
-  // would be cut off and jump into place.
+  // would be cut off. It waits for the view to be that tall, not for a time; a host that never grows
+  // has it opened after a second all the same.
   const roomFirst = (then: () => void) => {
-    if (window.innerHeight >= most.current - 1) {
+    const ready = () => window.innerHeight >= most.current - 1;
+    if (ready()) {
       then();
       return;
     }
     grow.current(most.current);
-    let done = false;
-    const go = () => {
-      if (done) return;
-      done = true;
-      window.removeEventListener('resize', go);
+    const go = (anyway: boolean) => {
+      if (!anyway && !ready()) return;
+      window.removeEventListener('resize', resized);
       window.clearTimeout(late);
+      grow.current(0);
       then();
     };
-    window.addEventListener('resize', go);
-    const late = window.setTimeout(go, 160);
+    const resized = () => go(false);
+    window.addEventListener('resize', resized);
+    const late = window.setTimeout(() => go(true), 1000);
   };
   const connections = () => roomFirst(openConn);
   // The connections page opens the body too.
@@ -2818,28 +2867,37 @@ function Centre({
       <ComposerHeaderActions>{toggle}</ComposerHeaderActions>
     </ComposerHeaderRow>
   );
-  const header = open ? (
-    <ComposerHeader open>
-      <div data-centre-body style={{ height: room }}>
-        {body}
-      </div>
-      {attention}
-    </ComposerHeader>
-  ) : attention ? (
-    // What needs the user is always the last row, right above the message box.
-    <ComposerHeader placement="overlay" open>
-      {toggleRow}
-      {attention}
-    </ComposerHeader>
-  ) : (
-    <ComposerHeader open>
-      <ComposerHeaderRow className="flex-nowrap">
-        <ComposerHeaderContent className="min-w-0">
-          <PreviewLine text={preview ? preview.text : idle} step={preview ? preview.step : false} />
-        </ComposerHeaderContent>
-        <ComposerHeaderActions>{toggle}</ComposerHeaderActions>
-      </ComposerHeaderRow>
-    </ComposerHeader>
+  // Closed, the line floats over the message box (Mastra's overlay header), and a row that needs the
+  // user floats in front of it: the line stays in sight until the row has the room to be drawn. Open,
+  // the body is in the page's flow, with what needs the user as its last row, right above the box;
+  // it comes in with a short fade (none where the system asks for less motion). The first header is
+  // the same element open or closed, and changes placement without Mastra's slide of its lower edge.
+  const header = (
+    <>
+      <ComposerHeader open placement={open ? 'stacked' : 'overlay'} inert={!open && Boolean(attention)} style={open ? { transition: 'none' } : undefined}>
+        {open ? (
+          <>
+            <div data-centre-body className="motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1" style={{ height: room }}>
+              {body}
+            </div>
+            {attention}
+          </>
+        ) : (
+          <ComposerHeaderRow className="flex-nowrap">
+            <ComposerHeaderContent className="min-w-0">
+              <PreviewLine text={preview ? preview.text : idle} step={preview ? preview.step : false} />
+            </ComposerHeaderContent>
+            <ComposerHeaderActions>{toggle}</ComposerHeaderActions>
+          </ComposerHeaderRow>
+        )}
+      </ComposerHeader>
+      {!open && attention && (
+        <ComposerHeader placement="overlay" open>
+          {toggleRow}
+          {attention}
+        </ComposerHeader>
+      )}
+    </>
   );
   return (
     <div className="flex h-dvh flex-col justify-end overflow-hidden">

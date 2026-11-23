@@ -95,3 +95,9 @@ html.centre #root {
   overflow-wrap: anywhere;
   scroll-behavior: smooth;
 }
+/* While the view grows to the height the page asked for there, what it would cut off at the top
+   waits unseen (Centre's `fit` in App.tsx). Not `visibility`: a popup must still take the focus. */
+html.centre [data-centre-wait] {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
