@@ -15,6 +15,26 @@ Scope: the ledger at integration candidate `db0b8dd350bbdffed8927845c86c5028d280
 | U17 — Windows policy | **Blocked — owner-approved deferral for this sync.** Do not adopt managed update checks, organization-name display, or ADMX/ADML templates. Preserve current update behavior. See the [owner disposition record](https://linear.app/intgral/issue/INT-1454#comment-5b68d6cf-6587-49b1-bc37-a359986312c2). | Before resuming, define which user choices an administrator may override and which deployment templates IntCAD will support. |
 | D5 — STEP move | Independent technical review passed at c5; see [acceptance §11.15](acceptance.md). The ledger records K1 as Adopted and the SEC-2 linear decoder as present, but the D5 row still contains the old K1 condition. | Reconcile that wording and complete final-SHA kernel/STEP checks, `cargo xtask layers`, `mesh-decisions`, `lists`, and related rule checks. This is an engineering gate, not a request to waive it. |
 
+## Owner decisions recorded 2026-11-23 (later round)
+
+**KVL — kernel vendoring.** The owner chose to land the vendored `solidcore` closure together with
+the kernel adaptation it requires, not the subtree alone. Measured reason: the sync candidate
+replaces the pinned kernel with a closure whose API differs, so `crates/smlib` (44 files),
+`crates/kernel` (109) and `crates/geom` (29) must change with it, and the candidate also removes
+`crates/step`. A subtree-only commit would leave `develop` uncompilable and CI red. Agreed shape:
+one PR carrying the vendored `solidcore/` tree, the `smlib`/`kernel`/`geom` adaptation, the
+`crates/step` removal, and the manifest/lockfile/`deny.toml` changes, split into reviewable commits.
+`solidcore/` must arrive as a `git subtree` per `docs/book/src/dev/kernel.md`, keeping upstream
+history and its Apache-2.0 licence with the NVIDIA copyright line. Generated files
+(`THIRD-PARTY-LICENSES.txt`, `ATTRIBUTION.md` rows) are updated by tooling, never by hand.
+Nothing is landed or enabled by this record.
+
+**K12 Q:10–12.** Q:10 is recorded as not applicable on the current code, where the native
+render-preparation retirement path does not exist; if the landed head gains `render_preparation`,
+Q:10 returns to required evidence. Q:11 (workspace shared-menu fixture) and Q:12 (shell scenario
+fixture) are deferred separately under U11/CD-6. None of the three counts as a pass and none grants
+an allowance.
+
 ## Separate unresolved gates
 
 - **Union naming:** retain the strict persisted-reference contract. Run `44675835996` did not pass; do not integrate the fallback. Reconsider only with a repair that passes the existing contract or a separately approved change to scope.
