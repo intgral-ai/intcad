@@ -82,7 +82,38 @@ Four separate things held it back, and all four had to change together:
 - `packaging/assistant-check.py --built-in-agent --screen` on the installed tarball copy in
   `fedora:latest`: 14 of 14 checks, including "the agent stopped with the app".
 
-## Release workflow evidence
+## Skills and read-only behaviour, from the shipped package
+
+From `intcad-0.1.2-linux-x86_64.tar.gz` (the tarball in `dist/release`), in `ubuntu:24.04` with
+`command -v node` empty:
+
+```
+system node: NONE
+{"case":"the skill sets are listed and each SKILL.md is read",
+ "commands":["skill/solidcraft-checking","skill/solidcraft-editing","skill/solidcraft-mechanisms","skill/solidcraft-modeling"],
+ "read":[{"skill":"solidcraft-checking","installedAsPackaged":true,"read":true,"permissionsAsked":0},
+         {"skill":"solidcraft-editing","installedAsPackaged":true,"read":true,"permissionsAsked":0},
+         ...],
+ "summary":"all passed"}
+```
+
+So the packaged agent tells the model about the four skills, the model asks for each, and each
+`SKILL.md` is read from the package with **no permission question** (`permissionsAsked: 0`): a
+read-only step needs no repeated approval, as required.
+
+## Release workflow evidence: what passed, in which run
+
+The three platform packages below each passed in a release-workflow run, but **not all in one
+run**: the full matrix at one SHA is still red because of FreeBSD (see below), which is why
+"all nonpublishing package builds" is red at every SHA tried so far.
+
+| Run | SHA | What it proves |
+|---|---|---|
+| [45112837415](https://github.com/intgral-ai/intcad/actions/runs/45112837415) | `77914e22` | Linux x86_64 (deb, rpm, AppImage, tar.gz) and macOS universal carry the agent whole; Linux aarch64, Windows x86/arm64, web are `native`; Flatpak/Arch/Snap x86_64 derive the agent from the Linux tarball |
+| [45105758418](https://github.com/intgral-ai/intcad/actions/runs/45105758418) | `9df38898` | Windows x64 MSI + portable zip + standalone exe carry the agent whole; Windows x86/arm64 MSI are `native`; the installed MSI starts, stops and restarts the agent |
+| [45086047185](https://github.com/intgral-ai/intcad/actions/runs/45086047185) | `9dd860eb` | Arch x86_64 with the writable-tarball fix; Flatpak/Arch/Snap aarch64 `native` |
+
+
 
 Run [45112837415](https://github.com/intgral-ai/intcad/actions/runs/45112837415) at `77914e22`
 (nonpublishing, `workflow_dispatch`):
@@ -103,6 +134,28 @@ The installed checks inside those jobs printed, for each platform: the built-in 
 first and current, started out of the package with its connections, stopped with none, started
 again, and no agent process left behind.
 
+## Real-function acceptance: not yet run
+
+The objective's C block (a real model conversation, a real read-only CAD tool through the agent, an
+approved edit and a rejected edit with the document unchanged, Text-to-CAD executed end to end) is
+**not evidenced**. This machine has no display, no provider key in the environment, no local model
+server and no Windows/macOS hardware. Using the account's own stored keychain entries would mean
+spending the user's production credentials and is not done here.
+
+What is needed, and who can do it:
+
+1. A display (X11/Wayland, or Xvfb) and a provider: either an API key pasted into the Assistant's
+   Connections page, or a plan signed in there.
+2. Install the built package, open the Assistant, send one message, then ask for a read-only CAD
+   question (for example "measure the open document") and check the tool result in the record.
+3. Ask for an edit, allow it, and check the model changed. Ask for another, reject it, and check
+   the design's file hash did not change.
+4. Ask for a small part in words, confirm Text-to-CAD is chosen and its `SKILL.md` is in the run,
+   and that the commands reach the real design.
+5. For INT-1473's context (#212), read the Files list and the newest DFM report from the same run.
+
+Stand-in-model runs are not a substitute for this and are not reported as if they were.
+
 ## Still open (release blockers, not code)
 
 - **Redistribution rights** for the exact retained files, transitive licences and notices: owner
@@ -110,4 +163,8 @@ again, and no agent process left behind.
 - **Real machines**: Windows and macOS ran on CI runners only; a person installing the MSI/DMG and
   a real-account conversation, CAD read and approved CAD edit on each platform remain.
 - **FreeBSD** is broken by #174's `egui_winit` call, not by the agent; it needs its own fix.
-- **#212** (project context, INT-1473) is a separate draft and stays out of this change.
+- **#212** (project context, INT-1473): the objective puts INT-1473's agentic work in this
+  release, and that work (Files list, newest DFM report, project-scoped reads as the default
+  context) lives in #212, which is still a draft and not on this branch. Either #212 lands before
+  this release, or the release ships without the context behaviour INT-1473 describes; that is an
+  owner/Tianwei decision, and the packaging change does not decide it.
