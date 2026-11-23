@@ -49,7 +49,7 @@ At `db0b8dd35`, 17 exact IDs are present in source. The three UI IDs below are a
 
 The owner accepted the recommended dispositions on 2026-11-23:
 
-- **Q:10 — required before sign-off.** Add an IntCAD-owned equivalent for disconnected retirement. Prove that another Check is refused before reset, that the window remains busy and retains renderer credit across document reset, and that app teardown releases the credit. Keep this open until the result is bound to the final SHA.
+- **Q:10 — not applicable on `develop`.** The upstream case exercises native render-preparation retirement, which IntCAD does not have: it can only be tested by porting that feature (see feasibility below). The owner recorded it as not applicable rather than porting the feature in this sync. Recheck on the final integration SHA; if that SHA gains `render_preparation`, this disposition no longer holds and the case returns to required evidence.
 - **Q:11 — deferred this cycle.** Exclude the upstream workspace menu fixture under U11/CD-6. This is not a pass or a waiver for unrelated workspace behavior.
 - **Q:12 — deferred this cycle.** Separately exclude the upstream shell scenario fixture under U11/CD-6. This is not a pass or a waiver for unrelated shell behavior.
 
@@ -60,7 +60,7 @@ Checked before writing the required test: the behaviour does not exist on `devel
 - `crates/engine/src/render_preparation.rs` and `crates/engine/src/render_preparation/batch.rs` exist at `db0b8dd35` and are absent at `9c24061c`. `render_preparation` is declared only in the historical candidate's `crates/engine/src/lib.rs:38`; its `Kind`, `Prepared`, `prepare`, `finish`, and `finish_retained` API is unavailable on `develop`.
 - `PathHost` on `develop` (`crates/ui-egui/src/render_workspace.rs:186–193`) is only `NotStarted`, `Preparing`, `Ready` or `Failed`. It has no admission credit, retirement channel, or `prepare::inspect`/`busy`/`begin_ui` accessors.
 
-Q:10 therefore cannot be closed by adding a test. The native render-preparation retirement path would have to be ported first, which is new user-visible scope across the engine and UI, not test coverage. Choosing between porting that feature and recording Q:10 as not applicable on `develop` needs an owner decision; neither option may be assumed from "add an equivalent test".
+Q:10 therefore cannot be closed by adding a test. The native render-preparation retirement path would have to be ported first, which is new user-visible scope across the engine and UI, not test coverage. The owner chose to record Q:10 as not applicable on `develop` and not to port that feature in this sync. This is a scope decision, not evidence that the upstream case passes.
 
 When authorized CI runs on the reviewed candidate, use the full-mode **Native Linux selected regression gate** (`rust` in `.github/workflows/ci.yml`) to obtain the 17 exact outcomes. The ordinary PR lane in `scripts/ci/main_merge.py` applies an affected-package partition and excludes `action_matrix_sample` (K:10). Use SHA-bound `evidence-rust/rust/{selection.json,junit.xml,commands.json,receipt.json}`, not the job conclusion; preserve raw failures even if the existing grader accepts them. This route is not a new dispatch or a waiver. Separate case-level before/after Kernel rig evidence remains required for changed K12 expectations.
 
