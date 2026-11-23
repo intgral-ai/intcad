@@ -3113,10 +3113,10 @@ pub fn refresh(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    let ctx = ctx.clone();
+    let wake = ctx.clone();
     std::thread::spawn(move || {
         let _ = tx.send(discover::detect());
-        ctx.request_repaint();
+        wake.request_repaint();
     });
     app.agent_chat.detecting = Some(rx);
     // Look again while the look is pending: a worker that dies without sending must not leave
