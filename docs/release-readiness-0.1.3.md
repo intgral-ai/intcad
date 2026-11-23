@@ -168,6 +168,7 @@ on `int1503-version-013`, and the release.yml candidate branch is described in �
 | B8 | P0 | **Every package build fails on a dependency advisory.** `Dependency advisories` fails with RUSTSEC-2026-0594: `cookie 0.18.2` via `wry 0.57.2` (private-cookie nonce reuse after `fork()`, which breaks AES-GCM). `release.yml` cannot pass for any branch until it is fixed; #218 moves it to 0.18.3 | run 45149031980 job 137606035774 |
 | B9 | P0 (scope) | **PP's UI has no PR.** The CTO requires it in 0.1.3, and there is no branch or PR to review, so this scope item cannot start from the release side | open PR list, 2026-11-23 |
 | E1 | P2, fix landed (not a blocker) | **The 0.1.2 → 0.1.3 upgrade needs `SHA256SUMS.txt` in the 0.1.3 release.** The shipped 0.1.2 client (`65af7346`, `install.rs` `SUMS`) looks for `SHA256SUMS.txt` in the release it fetches, so what matters is the name 0.1.3 publishes — and `packaging/checksums.sh` writes it. My earlier entry had this backwards. The branch change (accept `SHA256SUMS` too) only makes future clients tolerant of a hand-made list; it cannot change an installed binary. Verified against the tag: `git show 65af7346:crates/ui-egui/src/update/install.rs` has `pub const SUMS: &str = "SHA256SUMS.txt"` | `install.rs` `SUMS_LEGACY`; §7 |
+| B11 | P1, tooling added | **A release needs unversioned asset aliases or those users cannot update.** `asset_name()` asks for `intcad-windows-x64.msi`, `intcad-macos-universal.dmg`, `intcad-linux-x86_64.{AppImage,deb,rpm,flatpak,snap}` and `intcad-windows-<arch>-portable.zip` without a version; `release.yml` produces only versioned names. Publishing them as-is would leave every MSI/DMG/AppImage/deb/rpm/Flatpak/Snap/portable-zip install unable to find its package. `packaging/aliases.sh` (4 tests, wired into packaging-lint) writes them, and `docs/beta-release.md` runs it before the list | `update.rs` `asset_name()`; §12.4.9 |
 | B7 | P1 | **The Windows candidate has no agent.** A Windows 0.1.3 exe and MSI now build here (§12.4), but the agent folder for Windows must be built on Windows (its `node.exe` has to run for the version check), and this VM has no Node; `HasMastraAgent=0` was used. The Windows agent is what `agent-test-packages.yml` builds on Windows runners and what #214's gate checks | §12.4, `agent-package.mjs` line 473 |
 | E2 | P1 | **No installed-artifact acceptance path for a candidate.** The VM harness builds from source; `accept` cannot take a package. Linux/Windows installed checks exist in CI and in `packaging/*/installed-check.*`, but they have not been run for a 0.1.3 candidate | §4; `intcad-e2e --help` |
 | E3 | P2 | Portable-ZIP updates replace only `intcad.exe` and `intcad-cli.exe`, so a `mastra-agent/` folder from #214 would be left stale or absent | `install.rs:302` `apply()`, `Method::PortableZip` |
@@ -712,6 +713,34 @@ verifies every hash.
 What the DMG does **not** prove: first launch through Gatekeeper (ad-hoc signature only), a real
 Intel Mac, or the universal app being started by a person — CI mounts it, copies the app out and
 opens the Assistant in a sandbox with the network taken away. Those stay NOT TESTED.
+
+### 12.4.9 The complete asset set, with the aliases the updater needs (2026-11-23)
+
+The macOS DMG closed the last missing build (§12.4.8). Assembling the whole set then exposed a
+release-process gap: the updater resolves several assets **by an unversioned name**.
+
+| Written by `release.yml` | Asked for by `asset_name()` |
+|---|---|
+| `intcad-0.1.3-linux-x86_64.AppImage` | `intcad-linux-x86_64.AppImage` |
+| `intcad-0.1.3-linux-x86_64.deb` / `.rpm` | `intcad-linux-x86_64.deb` / `.rpm` |
+| `intcad-0.1.3-windows-x64.msi` | `intcad-windows-x64.msi` |
+| `intcad-0.1.3-windows-x64-portable.zip` | `intcad-windows-x64-portable.zip` |
+| `intcad-0.1.3-macos-universal.dmg` | `intcad-macos-universal.dmg` |
+| `intcad-0.1.3-linux-x86_64.tar.gz` | `intcad-0.1.3-linux-x86_64.tar.gz` (version kept) |
+| `Intcad-0.1.3-windows-x64.exe` | `Intcad-0.1.3-windows-x64.exe` (version kept) |
+
+`packaging/aliases.sh dist 0.1.3` wrote the six aliases for this candidate (AppImage, deb, rpm, DMG,
+MSI, portable zip — the Flatpak/Snap/Arch derived formats are built by their own jobs), and the list
+over the whole set then passed:
+
+```
+aliased intcad-linux-x86_64.AppImage, intcad-linux-x86_64.deb, intcad-linux-x86_64.rpm,
+        intcad-macos-universal.dmg, intcad-windows-x64.msi, intcad-windows-x64-portable.zip
+checksums.sh --require <tar> --require <msi> --require <dmg> -> 18 files, every hash OK
+```
+
+`checksums.sh` also stopped listing `build.json`/`contents.json`: they are per-package evidence, not
+downloads. Tests: `aliases_test.py` 4, `checksums_test.py` 11, both run by `packaging-lint.yml`.
 
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
