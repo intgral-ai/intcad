@@ -1816,16 +1816,32 @@ function KeyDialog({
   );
 }
 
-/** A key the app has just kept, said under its row and brought into sight: the row can be at the page's lower edge. */
-function KeySaved({ strings }: { strings: Strings }) {
+/** An element's ref that brings it into sight when it appears and when `news` changes: the page may be scrolled away from it. */
+function useInSight(news: unknown) {
   const ref = useRef<HTMLDivElement>(null);
   // A block body: scrolling can return a promise, which React would take for the effect's cleanup.
   useEffect(() => {
     ref.current?.scrollIntoView({ block: 'nearest' });
-  }, []);
+  }, [news]);
+  return ref;
+}
+
+/** A key the app has just kept, said under its row: the row can be at the page's lower edge. */
+function KeySaved({ strings }: { strings: Strings }) {
+  const ref = useInSight(null);
   return (
     <Notice ref={ref} variant="success" icon={<Check />} role="status" className="mt-1">
       <Notice.Message>{strings.connKeySaved}</Notice.Message>
+    </Notice>
+  );
+}
+
+/** What the app could not do, at the top of the connections page however far down it was asked. */
+function PageError({ text }: { text: string }) {
+  const ref = useInSight(text);
+  return (
+    <Notice ref={ref} variant="destructive" role="alert">
+      <Notice.Message>{text}</Notice.Message>
     </Notice>
   );
 }
@@ -2081,6 +2097,10 @@ function ConnectionsPage({ state, connect }: { state: AssistantState; connect: C
     <div className="flex min-w-0 flex-col gap-3 py-2">
       {/* The way back to the conversation is in the bar (AssistantBar's `onBack`). */}
       <h2 className="min-w-0 truncate text-sm font-medium">{strings.connTitle}</h2>
+      {/* What the app could not do outside the key dialog and the address form, which say it
+          themselves: a sign-in or sign-out the agent refused, a keychain that would not read a key
+          or remove one. */}
+      {connect.error && !keyEntry && !adding && <PageError text={connect.error} />}
       {/* What is in use is marked on its row below. */}
       {!connect.connected && (
         <Txt variant="caption" tone="muted">
