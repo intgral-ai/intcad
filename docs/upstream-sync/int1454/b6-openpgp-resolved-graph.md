@@ -62,6 +62,28 @@ The owner accepted two separate temporary exceptions for this migration candidat
   agreement there. The [crypto-bigint exception was accepted separately](https://linear.app/intgral/issue/INT-1454#comment-5a1493fa-86f3-4eef-857f-f60a27c1f9c2);
   reassess any consumer or feature changes and compare a patched graph.
 
+### Final-SHA gate
+
+Post-M16 `develop` at `9c24061cef48327d6d04663c24ecfd3b6a8c6e81` has no
+`pgp`, `rsa`, or `crypto-bigint` entries in its committed lockfile. All three
+are present on the historical candidate above. This is a lockfile
+comparison, not final-SHA approval or a finding that the migration risk
+has gone away.
+
+- [ ] Pin the actual, landed integration SHA and record the tree, clean
+  checkout, toolchain, and `Cargo.lock` and `deny.toml` hashes.
+- [ ] Recheck both dependency paths and resolved features on each native
+  and wasm product selection above. Record absence separately from an
+  exception that is present and still within scope.
+- [ ] Recheck the verification-only Rust path, the native GnuPG signing
+  boundary, and the absence of new production private-key operations on
+  the two audited dependency paths. Reassess changed consumers or
+  features separately for each advisory.
+- [ ] Record the advisory gate and independent review on that SHA. Reopen
+  either exception if its audited boundary changes or a compatible fix
+  is available. Do not change policy or dependency pins as part of this
+  verification.
+
 Raw reverse graphs, feature provenance and summary are retained at
 `/tmp/opencode/int1454-b6-graph.8e3pHV/`. `graphs.sha256` covers 67 text
 receipts, including standalone CLI normal/build graphs; its SHA-256 is
