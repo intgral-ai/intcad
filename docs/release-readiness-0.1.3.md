@@ -772,6 +772,27 @@ So the CI installed checks (which do **not** look at the agent, §12.4.2) prove 
 Assistant page on six Linux package/desktop combinations and on the Windows MSI; the agent's
 installed behaviour is what my VM runs in §12.4.3/§12.4.4 add.
 
+## 12.8 The reproducible candidate run, as a script
+
+The candidate is no longer assembled by hand. `~/.cache/int1503/rc-final.sh` does the whole run and
+logs to `~/.cache/int1503/rc-final.log`:
+
+1. wait until #214 is `MERGED`;
+2. reset the candidate worktree to `origin/develop` (so the agent packaging is the merged code, not a
+   local merge), set `[workspace.package] version = 0.1.3` and `cargo update --workspace --offline`
+   when it is not already there, commit, force-push with lease to `int1503-rc-candidate`;
+3. print the two agent settings the branch's `release.yml` carries, dispatch `release.yml` on that
+   SHA, watch it, and if the pass is not `success` list the red jobs, `gh run rerun --failed` once and
+   watch again;
+4. download `release-linux-x86_64`, `release-windows-x64`, `release-macos` and the three
+   `package-evidence-*` artifacts;
+5. flatten them and run `packaging/checksums.sh --require` for the tarball, the MSI **and** the
+   universal DMG, so an incomplete set is refused rather than published.
+
+That is the reproducible release flow this document owes the next person: the same five steps a
+release manager runs by hand, in one command, with the refusal behaviour tested in
+`packaging/tests/checksums_test.py`.
+
 ## 13. Decisions from the CTO (2026-11-23)
 
 Recorded as given: **version 0.1.3**; **PP's UI must be in this release**; everything else is
