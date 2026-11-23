@@ -8245,12 +8245,20 @@ fn agent_login_refresh_returns_to_unverified_discovery() {
 #[test]
 fn a_discovery_whose_worker_gone_finishes_with_nothing_found() {
     let (mut app, _keys, ctx) = app_with_builtin();
+    app.preferences.agent_last = "claude".into();
+    app.agent_chat.connect_at_start = true;
     let (tx, rx) = channel();
     app.agent_chat.detecting = Some(rx);
     drop(tx);
     poll(&mut app, &ctx);
     assert!(app.agent_chat.detecting.is_none(), "the look is finished");
     assert!(app.agent_chat.detection.is_some(), "with nothing found");
+    // And the launch proceeds: `claude` is not among what was found, so it is reported missing
+    // instead of waiting for an answer that will never come.
+    assert!(!app.agent_chat.connect_at_start, "the launch did not stay waiting");
+    let said: Vec<String> =
+        app.agent_chat.items.iter().filter_map(|item| if let Item::Notice { text, .. } = item { Some(text.clone()) } else { None }).collect();
+    assert!(said.iter().any(|text| text.contains("claude")), "{said:?}");
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -66,6 +66,12 @@ Four separate things held it back, and all four had to change together:
   release job adds that folder from the same tarball, regenerates the package's `.MTREE` and
   repacks it, and the old `contents.json` only looked correct because the recorder read the
   source tarball rather than the package.
+- Permission handling: a tool's ACP title decides only whether Intcad asks a second time. The
+  session gives the agent Intcad's own `intcad-app` MCP server, and every call that would change
+  the design is checked by the Rust host gate whatever the agent calls it; the shorter
+  `intcad-app_<tool>` spelling is trusted only from the packaged agent that is actually running
+  (`builtin_running`: the running id plus the package's own folder), never from an environment
+  variable's program.
 - `packages/mastra-runtime/scripts/agent-package.mjs`: `x86_64-apple-darwin` added as a target.
 - `packaging/mastra/stage-agent.sh`: forwards the test-only `--skills-root`.
 - Installed checks: `packaging/linux/installed-check-inside.sh`, `packaging/macos/installed-check.sh`,
@@ -120,7 +126,7 @@ run**: the full matrix at one SHA is still red because of FreeBSD (see below), w
 
 | Run | SHA | What it proves |
 |---|---|---|
-| [45112837415](https://github.com/intgral-ai/intcad/actions/runs/45112837415) | `77914e22` | Linux x86_64 (deb, rpm, AppImage, tar.gz) and macOS universal carry the agent whole; Linux aarch64, Windows x86/arm64, web are `native`; Flatpak/Arch/Snap x86_64 derive the agent from the Linux tarball |
+| [45112837415](https://github.com/intgral-ai/intcad/actions/runs/45112837415) | `77914e22` | Linux x86_64 (deb, rpm, AppImage, tar.gz) and macOS universal carry the agent whole; Linux aarch64, Windows x86/arm64, web are `native`. It also claimed Flatpak/Arch/Snap x86_64 carried it; that was the recorder reading the source tarball — the Arch package did not, which this branch now fixes |
 | [45105758418](https://github.com/intgral-ai/intcad/actions/runs/45105758418) | `9df38898` | Windows x64 MSI + portable zip + standalone exe carry the agent whole; Windows x86/arm64 MSI are `native`; the installed MSI starts, stops and restarts the agent |
 | [45086047185](https://github.com/intgral-ai/intcad/actions/runs/45086047185) | `9dd860eb` | Arch x86_64 with the writable-tarball fix; Flatpak/Arch/Snap aarch64 `native` |
 
