@@ -53,13 +53,17 @@ No two kernels coexist: zero `tangency-labs/solidcore` references remain in `Car
 rail task list (#213), the FreeBSD paste fix (#219), the dependency bumps (#211, #218) and the A6
 refusal delivery (#209).
 
-**No PR was opened, by owner decision, because `#185` already carries the identical subtree:**
-`git ls-tree c5f2f42fe -- solidcore` is `040000 tree 8b5c01445619305dcfc5072db3fe76b8cfea67be`, the
-same tree as this branch, with the same path dependencies in its root manifest. Opening a second PR
-for content a lower-numbered open PR already covers is what the contribution rules forbid, and #185
-is outside this task's scope. The slice therefore stands as verified reserve work: it proves the
-vendoring compiles on the current `develop`, and it can seed a repair of #185 if the owner later
-rescopes that PR. Nothing is landed, so B3 stays closed and no integration SHA exists.
+**Superseded same day: the owner rescoped `#185` and approved carrying its kernel part here.** The
+slice is now draft [#220](https://github.com/intgral-ai/intcad/pull/220) (base `develop`, head
+`090ed5fd9d`, three commits). The reason the earlier record withheld it still stands and is stated in
+the PR: `#185` already carries the identical tree (`git ls-tree c5f2f42fe -- solidcore` is
+`040000 tree 8b5c0144…`), so the two cannot diverge in content, and a second PR for content an open
+lower-numbered PR covers is what the contribution rules forbid — hence the owner rescope rather than
+a competing PR. The slice carries no Union swapped-operand retry: the string
+`the proto edge is not listed` does not appear anywhere in its code, so that decision is untouched.
+
+Opening the PR does not land anything: B3 stays closed, no integration SHA exists, and every
+final-acceptance gate listed elsewhere in this file is still unverified.
 
 ## Separate unresolved gates
 
