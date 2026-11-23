@@ -75,4 +75,27 @@ The source anchors are on historical candidate `db0b8dd35`. The observed results
 | Q:9 | `crates/engine/src/cmd/joints_tests.rs:1080` | Missing | Exact test absent from landed source and receipt; final unplaced-component migration result. |
 | Q:13 | `crates/ui-egui/src/viewport_appearance_tests.rs:342` | Pass | Final exact viewport cache/result, not full desktop acceptance. |
 
-Totals for the mapped cohort on `9c24061c`: **3 pass, 12 fail, 2 missing, 0 skipped**. The twelve failures agree with the c5/c14 **ID and outcome** comparison, not necessarily in failure mechanism. All 17 still lack an exact db0 result and final integration result. Changed kernel-case expectations require separate before/after evidence; no allowance or baseline update is authorized here.
+Totals for the mapped cohort on `9c24061c`: **3 pass, 12 fail, 2 missing, 0 skipped**. All 17 still lack an exact db0 result and final integration result. Changed kernel-case expectations require separate before/after evidence; no allowance or baseline update is authorized here.
+
+## Failure comparison: c5 and c14 versus post-M16 `develop`
+
+Compared the exact JUnit IDs K:11–22 using the receipts above (artifact IDs `14529416299`, `14664597624`, and `14802697491`, respectively). All ZIP and JUnit digests matched. c5 has no embedded native receipt; its run metadata binds the PR head, and the recorded test-merge and head trees match. c14 and `9c24061c` have embedded source receipts. The first panic payload, excluding the panic header and backtrace hint, matched between c5 and c14 for all 12 IDs.
+
+“Same” means the same observed rejection or failing assertion, not a proven underlying kernel cause. “Different” means a different failed case set, input, or execution stage, not proof of a new regression. “Insufficient” means the operation lines up but one receipt lacks the detail needed to compare causes.
+
+| ID | Classification | JUnit evidence |
+| --- | --- | --- |
+| K:11 | Different | c5/c14: 3 of 168 designs failed to load; `develop`: 2 of 159. Only `83-boundary-loop-thicken` overlaps. The other historical failures are `fuzz_seed_185_pattern` and `fuzz_seed_73_boolean_join`; `develop` reports `77-fillet-variable-linear`. The changed corpus does not establish fixes or regressions. |
+| K:12 | Same | The identical variable `solid.fillet` setup with two intermediate radii is rejected as unsupported before the control-insertion assertion. |
+| K:13 | Same | The same initial body-count assertion sees 2 instead of 1, before changing the hole diameter to 100 mm. |
+| K:14 | Different | c5/c14 reject a variable fillet with midpoint `waist` as unsupported. `develop` fails on the variable fillet with end radii 2 and 5 and no midpoint, with status 1001. |
+| K:15 | Insufficient | Same taper operation (`radius:16`) and status 1001. c5/c14 specify `Fillet Corner Error: Unable to Make Topology`; `develop` has only the generic status. |
+| K:16 | Insufficient | Same ordered edge pair fails. c5/c14 report that the fillet exceeds the space allowed by adjacent faces; `develop` reports only status 1001. |
+| K:17 | Same | Same edge `(-5.000, 87.200, 12.500)` is rejected as smooth/tangential. |
+| K:18 | Same | Same variable-fillet input is rejected with the same unsupported-exact-kernel message. |
+| K:19 | Same | Same box-containment assertion fails at setbacks 11–15, but the excursions differ (e.g., setback 11: `5.8754e-4` vs `7.0776e-4`). Not geometric parity. |
+| K:20 | Different | c5/c14 fail building the G2 fill because curvature error exceeds `1e-3`. `develop` reaches a later assertion on the native SMLib corner (`2.074735095770037` over 538 stations). |
+| K:21 | Same | Same AABB tolerance assertion (`1e-6`) fails. Bounds and measured topology differ: c5/c14 log 27 edges/19 vertices; `develop` logs 30/22. Not geometric parity. |
+| K:22 | Same | Same variable-round operation returns `Unsupported` before the balls-union comparison. |
+
+**7 same observed failures, 3 different, 2 insufficient.** No test was rerun. Q:10–12 remain [separate owner decisions](https://linear.app/intgral/issue/INT-1454#comment-3d6d7b0d-9bf7-46bd-8a4b-0a9961c539db); neither their disposition nor final K12 acceptance follows from this comparison.
