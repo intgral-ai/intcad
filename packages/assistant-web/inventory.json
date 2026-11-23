@@ -1503,8 +1503,8 @@
       "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
     },
     "style.css": {
-      "bytes": 352950,
-      "sha256": "7c90cc5bd196c2ab1209c28c2d65c0b6c833217c7722c18c550a4f5e8741bda1"
+      "bytes": 352895,
+      "sha256": "a895f31405cb491c85098a7cb48bb3f54af0b98f09cc2b30e2de5967ac51fc93"
     }
   }
 }

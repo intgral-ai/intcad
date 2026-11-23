@@ -88,14 +88,11 @@ html.centre body,
 html.centre #root {
   background: transparent !important;
 }
-/* The message box there has no scroll bar: Mastra's input scrolls in a box that always scrolls, and
-   where the system shows scroll bars always (a mouse attached) the web view draws its track beside a
-   one-line message. A long message still scrolls with the wheel and the keys. */
-html.centre div:has(> div > [data-slot='composer-input']) {
-  scrollbar-width: none !important;
-}
-html.centre div:has(> div > [data-slot='composer-input'])::-webkit-scrollbar {
-  display: none;
+/* The message box there has no scroll bar: Mastra's input scrolls in its own scroll area, whose bar
+   (drawn by the page, not the system) shows beside a one-line message while the pointer is over it.
+   A long message still scrolls with the wheel and the keys. */
+html.centre div:has(> div > div > [data-slot='composer-input']) > [data-slot='scroll-area-scrollbar'] {
+  display: none !important;
 }
 /* Closed, the conversation waits out of sight (Centre in App.tsx). Mastra's rows skip drawing off
    screen and hold a 10rem stand-in, so out of sight every row was 10rem tall, and on Expand the rows
