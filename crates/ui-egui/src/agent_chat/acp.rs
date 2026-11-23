@@ -180,6 +180,10 @@ pub const BRIDGE_NAME: &str = "intcad-app";
 /// text, and the kind is `other` (the kind an MCP tool has) or not given. Any other title goes
 /// through the user's mode and remembered answers: agents that word their MCP tools differently,
 /// and a user's own MCP server, which the gate doesn't see.
+///
+/// This only avoids asking twice: the session gives that agent the `intcad-app` server, and every
+/// call it makes is checked by Intcad's own gate before anything changes, whatever the title says.
+/// The name is not what protects the document; the gate is.
 pub fn is_bridge_tool(title: &str, kind: Option<&str>) -> bool {
     bridge_tool(title, kind, false)
 }

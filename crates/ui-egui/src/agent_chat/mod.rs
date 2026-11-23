@@ -2924,9 +2924,15 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     }
     settings::poll_tests(&mut app.agent_chat);
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(rx) = &app.agent_chat.detecting
-        && let Ok(d) = rx.try_recv()
-    {
+    let detected = app.agent_chat.detecting.as_ref().map(std::sync::mpsc::Receiver::try_recv);
+    // A look whose worker is gone is finished with nothing found: a launch must not wait on a
+    // thread that will never answer.
+    let finished = match detected {
+        Some(Ok(d)) => Some(d),
+        Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => None,
+        Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => Some(discover::Detection::default()),
+    };
+    if let Some(d) = finished {
         for found in &d.found {
             app.agent_chat.login_results.remove(found.id);
             app.agent_chat.settings.tests.remove(found.id);

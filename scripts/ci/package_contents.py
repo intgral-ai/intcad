@@ -180,7 +180,8 @@ def agent_markers(names, roots=None):
 
     Every entry is looked at, not only the runtime markers: an ``ee-`` file of Mastra's compiles
     to a name `marker_entries` does not recognise on its own, and that is exactly the content the
-    licence forbids. The one stand-in `agent.json` names is allowed.
+    licence forbids. One stand-in per `@mastra/core/dist/` folder is allowed, which a universal
+    app has one of per CPU.
     """
     stand_ins = stand_in_paths(names)
     seen = set()

@@ -8239,6 +8239,20 @@ fn agent_login_refresh_returns_to_unverified_discovery() {
     assert!(!app.agent_chat.settings.tests.contains_key("qwen"));
 }
 
+/// A look at the computer whose worker is gone must finish, not leave the launch waiting for an
+/// answer that will never come.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_discovery_whose_worker_gone_finishes_with_nothing_found() {
+    let (mut app, _keys, ctx) = app_with_builtin();
+    let (tx, rx) = channel();
+    app.agent_chat.detecting = Some(rx);
+    drop(tx);
+    poll(&mut app, &ctx);
+    assert!(app.agent_chat.detecting.is_none(), "the look is finished");
+    assert!(app.agent_chat.detection.is_some(), "with nothing found");
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_sign_in_proven_in_one_tab_holds_in_every_tab() {

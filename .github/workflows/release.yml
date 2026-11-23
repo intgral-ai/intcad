@@ -387,7 +387,8 @@ jobs:
         if: matrix.arch == 'x86_64'
         env:
           PKG: dist/release/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
-        run: packaging/linux/arch-agent.sh "$PKG" "dist/linux/intcad-${{ env.SOLIDCRAFT_VERSION }}-linux-${{ matrix.arch }}.tar.gz"
+          TARBALL: dist/linux/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.tar.gz
+        run: packaging/linux/arch-agent.sh "$PKG" "$TARBALL"
       - name: Check the package
         env:
           PKG: dist/release/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
