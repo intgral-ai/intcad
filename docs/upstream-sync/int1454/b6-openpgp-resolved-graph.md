@@ -74,7 +74,13 @@ has gone away.
   checkout, toolchain, and `Cargo.lock` and `deny.toml` hashes.
 - [ ] Recheck both dependency paths and resolved features on each native
   and wasm product selection above. Record absence separately from an
-  exception that is present and still within scope.
+  exception that is present and still within scope. The mechanical check
+  is `cargo tree --offline --locked --target T -p solidcraft -p solidcraft-cli
+  --edges normal,build` for each of the eight native targets, and
+  `-p solidcraft-web` for `wasm32-unknown-unknown`. Validated in both
+  directions: on `db0b8dd35` it reproduced all three packages on all nine
+  selections, and on a dependency-free fixture it reported absence without
+  treating it as a resolution failure.
 - [ ] Recheck the verification-only Rust path, the native GnuPG signing
   boundary, and the absence of new production private-key operations on
   the two audited dependency paths. Reassess changed consumers or
