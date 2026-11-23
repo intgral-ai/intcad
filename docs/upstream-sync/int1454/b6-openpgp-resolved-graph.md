@@ -85,6 +85,20 @@ has gone away.
   boundary, and the absence of new production private-key operations on
   the two audited dependency paths. Reassess changed consumers or
   features separately for each advisory.
+  Source review on `db0b8dd35`, to be repeated on the landed SHA:
+  `crates/io/src/design/provenance.rs` uses `pgp` only for verification —
+  `SignedPublicKey::from_reader_single`, `DetachedSignature::from_reader_single`,
+  `verify_bindings`, and `verify` (`:851–874`). No `rsa::` path, and no
+  `SignedSecretKey`/`SecretKeyParams` outside `#[cfg(test)]` (tests start at `:876`).
+  The only product OpenPGP signer is `crates/engine/src/gpg.rs:185`, which shells out to
+  `gpg --detach-sign` (`:67–108`) with a temporary manifest and never handles key material in
+  Rust; `file.save` requires that binary and fails with a clear message when it is absent
+  (`crates/engine/src/cmd/file.rs:1748`).
+  The lockfile paths are `solidcraft-io → pgp → rsa` and
+  `pgp → {dsa, ecdsa, ed25519-dalek, num-bigint-dig}` plus
+  `{cx448, elliptic-curve} → crypto-bigint`; nothing in the graph makes IntCAD call an RSA
+  private-key operation. `verify: false` on `doc.open` only skips *reporting*: the record parse
+  still verifies the chain, so a turned-off preference does not accept a bad signature.
 - [ ] Record the advisory gate and independent review on that SHA. Reopen
   either exception if its audited boundary changes or a compatible fix
   is available. Do not change policy or dependency pins as part of this

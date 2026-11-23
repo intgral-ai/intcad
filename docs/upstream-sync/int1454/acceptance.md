@@ -223,15 +223,16 @@ through the built CLI, the same invocation the rig uses.
 | solids, continuity, crashes, tessellation, inspect, plastic, history, threads | 170 | 170 pass | 170 pass |
 | booleans, sweeps, surfaces | 287 | 287 pass | 287 pass |
 | assemblies, sheet-metal, construction | 227 | 227 pass | 227 pass |
+| import | 35 | 35 pass | 35 pass |
 | shell | 37 | 36 pass, 1 fail | 37 pass |
 | fillets | 271 | 250 pass, 16 fail, 5 unsupported | 254 pass, 8 fail, 9 unsupported |
-| **Total** | **997** | **975 pass, 17 fail, 5 unsupported** | **980 pass, 8 fail, 9 unsupported** |
+| **Total (excluding ladder)** | **1032** | **1010 pass, 17 fail, 5 unsupported** | **1015 pass, 8 fail, 9 unsupported** |
 
-**Coverage:** 997 comparable cases on both builds, from the tree's 1044. `ladder` (12) was run but is
-excluded from these counts because those cases are graded against the ladder's golden and report
-`fail` on standalone replay on both builds; `import` (35) was not run.
+**Coverage is complete:** all 1044 cases of the tree ran on both builds, with identical case sets;
+`ladder` (12) is excluded from the totals because those cases are graded against the ladder's golden
+and report `fail` on standalone replay on both builds.
 
-**Differences: 12 cases — 11 in `fillets` and 1 in `shell`. 985 cases are identical in outcome.**
+**Differences: 12 cases — 11 in `fillets` and 1 in `shell`. 1032 cases are identical in outcome.**
 Every differing case directory is byte-identical at both SHAs.
 
 **The two builds do not run the same kernel source.** `db0b8dd35` builds the vendored `solidcore/`
