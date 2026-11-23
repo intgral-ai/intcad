@@ -10,13 +10,17 @@ its SDK and unchanged, with what the Assistant's Connections page needs added in
   sign-in or sign-out, and the reason on a turn that fails;
 - `models.mjs`, `problems.mjs`: the order of the model list, and the kinds of failure;
 - `secrets.mjs`: what keeps a key out of the commands a model runs and out of what is printed;
+- `skills.mjs`: the skill sets the package carries (`modelling-skills`: the repository's
+  `skills/solidcraft-modeling`, `-editing`, `-checking` and `-mechanisms`), how the build copies
+  them with a stamp, and how the entry puts them in `home/.agents/skills` at start, where Mastra
+  Code looks for skills (`docs/mastra-packaging.md`, "The skills, at start");
 - `session.mjs`: the session a `session/new` opens. It is Mastra Code's own ACP session builder
   (Apache-2.0), adapted so that the session has no vector store: nothing is embedded, and no
   embedding model is needed. `../agent-package/adapted-from.json` names the SDK file it follows;
   when a new SDK changes that file, the folder's build fails until the two are compared again.
 
-The tests are `../test/connections.test.ts`. They run these files against stand-ins: no test signs
-in anywhere, opens a browser or reads a key.
+The tests are `../test/connections.test.ts` and `../test/skills.test.ts`. They run these files
+against stand-ins: no test signs in anywhere, opens a browser or reads a key.
 
 This folder is not part of the runtime artifact that `scripts/runtime-artifact.mjs` builds and
 checks. A test package can carry the agent in a folder of its own, `mastra-agent`, built by
@@ -144,8 +148,9 @@ folder of its own inside it (`home/`): Mastra Code reads a person's own agent fi
 home folder (instructions for agents, MCP servers, its own settings), and none of that is meant for
 Intcad's assistant or for the model it talks to. The lease files Mastra Code keeps for its
 sessions, which it would put under `/tmp/mc` for every Mastra Code of the user, go to `signals/`
-in the same folder (`MASTRACODE_SIGNALS_SOCKET_ROOT`). Without `MASTRA_APP_DATA_DIR` (run by hand)
-nothing of this is changed. The browser is the exception: it is started with the user's own home
+in the same folder (`MASTRACODE_SIGNALS_SOCKET_ROOT`). The skill sets go to `home/.agents/skills`,
+one folder per skill and a note per set, before Mastra is loaded (`skills.mjs`). Without
+`MASTRA_APP_DATA_DIR` (run by hand) nothing of this is changed, and no skill is installed. The browser is the exception: it is started with the user's own home
 folder, so it is the browser they use, with the profile they are signed in with.
 
 ## The ChatGPT sign-in does not time out
