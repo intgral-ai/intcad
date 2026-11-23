@@ -252,6 +252,16 @@ The same checks ran through the running desktop app, not a headless session, on 
 - Result: exit `0`; the server reported `backend: desktop app`. The `solidcraft/13` design opened, saved as `solidcraft/51`, and reopened with the same content digest `6922cc60…` as the headless run; the second save reported 7663 bytes with the same file digest `eb75cd2a…`; a truncated copy was refused (`HDR resource admission: EOF while parsing an object`) without replacing the active design. The record has no headless-session note. VM shut off afterwards.
 - Log SHA-256 `f5cfdade3b0f0344d46187ed2c73f46d0fe95757364029dacddb40c7bd4512f7`.
 
+The run was repeated with a newer-file step added (harness SHA-256 `d89a363aba08724a410e2a02d595fa2daf343c029c1943b6d1f09816cf1383f6`):
+a copy of the saved file tagged `solidcraft/52` was refused with `this design was saved by a newer
+Intcad (file format 52; this version reads formats up to 51)`, the active design stayed unchanged,
+hashes again matched before and after, and the log SHA-256 is
+`1897b77905245369df382f6c9d9c6e1ff5f2cb13199e11194c7c195aa4c4c0cb`.
+
+`open_newer_files` does not exist on `develop`; the preference belongs to the sync candidate, so the
+preference path cannot be exercised on this build. The unconditional newer-file refusal above is
+the whole policy here. Preference on/off verification belongs to the landed SHA.
+
 This closes the desktop CD-1 round trip for the pre-migration `develop` build only. The equivalent
 run on the landed migration SHA, with the format and preference checks repeated there, remains open.
 
