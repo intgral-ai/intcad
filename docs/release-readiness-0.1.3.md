@@ -636,6 +636,19 @@ architecture, and the same on a machine without WebView2.
 
 Evidence: `~/.local/state/intcad-e2e/windows/runs/intcad-win-int1503-rc-rehearsal-3a92c4b6125c-win013/20261123T210203Z-622930/screenshots/ciwin-agent.png`.
 
+### 12.4.5 Two more #214 checks, fixed (2026-11-23, late)
+
+While the macOS slice was being rebuilt, #214's own CI surfaced two more failures. Both were in the
+PR, not in the packages:
+
+| Check | Failure | Fix on the branch |
+|---|---|---|
+| `Defaults line check` | the body said `Changes a default: yes — … kept behind the packaging switch …`, which the checker's grammar rejects; it wants `yes — <what>, old behaviour kept behind preference <name>` | description now: `Changes a default: yes — the release packages carry and start the built-in Mastra agent, old behaviour kept behind preference ai_features` |
+| `Format and repository checks` | `scripts/ci/test_package_contents.py` called `tarfile.open(..., "w:zst")`; Python writes zstd tars only from 3.14 and the runner has 3.12 → `tarfile.CompressionError: unknown compression type 'zst'` before the code under test ran | a helper writes the archive with `tarfile` when it can, falls back to the `zstd` command, and skips with a reason when neither exists; `python3 -B -m unittest scripts/ci/test_package_contents.py` → 19 tests, OK |
+
+Pushed as `f628596aa4`. #214 then showed 5 pass / 2 pending / 1 skipping and no failures, with a
+merge watcher waiting for the last two.
+
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
 The CTO supplied a DeepSeek API key for acceptance. It was used only in the throwaway VM, kept in
