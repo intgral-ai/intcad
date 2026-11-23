@@ -43,15 +43,21 @@ def folder(root):
     write(root, "node_modules/@mastra/code-sdk/dist/acp/runtime.js", BUILDER)
     write(root, "node_modules/@mastra/core/dist/ee-AbC123-xY_z9.js", "export { requireFGA as y };\n")
     subprocess.run(["node", str(REMOVE), str(Path(root) / "node_modules")], check=True, capture_output=True)
-    # The modelling skills the package carries, with the stamp its check reads. The set's own
-    # files stand in for the repository's (the check compares them with `--skills-root`).
-    write(root, f"skills/modelling-skills/{SKILL_SET_STAMP}", json.dumps(set_stamp()))
-    for skill in SKILL_NAMES:
-        write(root, f"skills/modelling-skills/{skill}/SKILL.md", f"# {skill}\n")
+    # The skill sets the package carries, each with the stamp its check reads. The sets' own files
+    # stand in for the repository's (the check compares them with `--skills-root`).
+    for name, skills in SKILL_SETS:
+        write(root, f"skills/{name}/{SKILL_SET_STAMP}", json.dumps(set_stamp(name, skills)))
+        for skill in skills:
+            write(root, f"skills/{name}/{skill}/SKILL.md", f"# {skill}\n")
     return Path(root)
 
 
-SKILL_NAMES = ("solidcraft-checking", "solidcraft-editing", "solidcraft-mechanisms", "solidcraft-modeling")
+# The sets the agent carries (packages/mastra-runtime/agent/skills.mjs): the four modelling skills
+# from the repository, and INT-1473's project-context skill from the agent's own folder.
+SKILL_SETS = (
+    ("modelling-skills", ("solidcraft-checking", "solidcraft-editing", "solidcraft-mechanisms", "solidcraft-modeling")),
+    ("context-skills", ("intcad-context",)),
+)
 SKILL_SET_STAMP = "skill-set.json"
 
 
@@ -61,14 +67,15 @@ def list_hash(named):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def set_stamp():
-    """What `skill-set.json` holds for the made-up skills: each file's hash and the set's."""
+def set_stamp(name, names):
+    """What `skill-set.json` holds for one made-up set: each file's hash and the set's."""
     skills = {}
-    for skill in sorted(SKILL_NAMES):
+    for skill in sorted(names):
         files = {"SKILL.md": hashlib.sha256(f"# {skill}\n".encode()).hexdigest()}
         skills[skill] = {"sha256": list_hash(files), "files": files}
     whole = {skill: skills[skill]["sha256"] for skill in skills}
-    return {"set": "modelling-skills", "from": "skills", "version": f"sha256:{list_hash(whole)}", "skills": skills}
+    from_ = "skills" if name == "modelling-skills" else "packages/mastra-runtime/agent-skills"
+    return {"set": name, "from": from_, "version": f"sha256:{list_hash(whole)}", "skills": skills}
 
 
 def pin(root):
@@ -78,8 +85,10 @@ def pin(root):
     write(root, "package-lock.json", json.dumps({"packages": {"": {}, **entries}}))
     write(root, "adapted-from.json", json.dumps({"package": "@mastra/code-sdk", "version": "1.0.0", "file": "dist/acp/runtime.js", "sha256": hashlib.sha256(BUILDER.encode()).hexdigest(), "adaptedIn": "agent/session.mjs"}))
     # The repository the skills are compared with: the same folders the made-up package carries.
-    for skill in SKILL_NAMES:
-        write(root, f"skills/{skill}/SKILL.md", f"# {skill}\n")
+    for name, skills in SKILL_SETS:
+        base = "skills" if name == "modelling-skills" else "packages/mastra-runtime/agent-skills"
+        for skill in skills:
+            write(root, f"{base}/{skill}/SKILL.md", f"# {skill}\n")
     return Path(root)
 
 
