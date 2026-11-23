@@ -52,20 +52,23 @@ Four separate things held it back, and all four had to change together:
   passes it to the decision.
 - `scripts/ci/package_contents.py`, `scripts/ci/release_content.py`: a third distribution,
   `mastra-agent`, proved from the built installers rather than the staging tree: at the place the
-  packager installs it (`usr/lib/intcad/mastra-agent`, the app's `Contents/Resources/mastra-agent`,
-  or the Windows tree's `mastra-agent/`), the folder present with its Node, every required file
-  and at least one `skills/<set>/<skill>/SKILL.md`; each macOS slice whole on its own; no legacy
-  `mastra/` runtime, no enterprise chunk and no Node outside that place; no unchecked artifact;
-  and an answer for every artifact, so a good archive cannot vouch for a broken sibling. A
-  universal app with one stand-in per slice, an empty Windows `mastra/` folder and the headless
-  CLI archive are recognised as what they are. `mastra` stays refused; a repack is inspected from
-  its own bytes as well as its source, and the Flatpak bundle is listed from the installation its
-  job makes of that file.
+  packager installs it (the FHS `usr/lib`/`lib` tree, the app's `Contents/Resources/mastra-agent`,
+  or the MSI's `PFiles64/Intcad/mastra-agent`; an `extras/` copy is a stray Node), the folder
+  present with its Node and every required file as files, not directories, and at least one
+  `skills/modelling-skills/<skill>/SKILL.md` in **each** macOS slice; no legacy `mastra/` runtime,
+  no enterprise chunk and no Node outside that place; no unchecked artifact; and an answer for
+  every artifact, so a good archive cannot vouch for a broken sibling. A universal app with one
+  stand-in per slice, an empty Windows `mastra/` folder and the headless CLI archive are
+  recognised as what they are. `mastra` stays refused; a repack is inspected from its own bytes
+  as well as its source, and a Flatpak bundle is listed from the install of the exact ref the
+  bundle reports, under the deployment's `files/` tree. Each package job also fails on its own
+  evidence, so the release gate is not the only check.
 - `packaging/linux/arch-agent.sh`: the `arch-package` action's PKGBUILD copies only `bin/` and
   `share/` from the tarball, so `lib/intcad/mastra-agent` never reached the `.pkg.tar.zst`. The
-  release job adds that folder from the same tarball, regenerates the package's `.MTREE` and
-  repacks it, and the old `contents.json` only looked correct because the recorder read the
-  source tarball rather than the package.
+  release job adds that folder from the same tarball, keeps the package's top-level names
+  (`usr/...`) and its recorded uid/gid, recomputes `.PKGINFO`'s installed size (each inode once),
+  regenerates `.MTREE` and repacks it. The old `contents.json` only looked correct because the
+  recorder read the source tarball rather than the package.
 - Permission handling: a tool's ACP title decides only whether Intcad asks a second time. The
   session gives the agent Intcad's own `intcad-app` MCP server, and every call that would change
   the design is checked by the Rust host gate whatever the agent calls it; the shorter
@@ -120,9 +123,9 @@ read-only step needs no repeated approval, as required.
 
 ## Release workflow evidence: what passed, in which run
 
-The three platform packages below each passed in a release-workflow run, but **not all in one
-run**: the full matrix at one SHA is still red because of FreeBSD (see below), which is why
-"all nonpublishing package builds" is red at every SHA tried so far.
+The runs below are the earlier ones, taken before this branch was rebased onto a `develop` that
+already had #219's FreeBSD fix; they are kept for the record. The run at this branch's head is the
+one that must be green as a whole; its verdict is recorded after the table.
 
 | Run | SHA | What it proves |
 |---|---|---|
@@ -142,10 +145,11 @@ Run [45112837415](https://github.com/intgral-ai/intcad/actions/runs/45112837415)
 | macOS universal (arm64 + x86_64) | pass — `contents.json`: `agent.nodeTargets` both slices, four skills, no marker |
 | Windows x64 MSI + zip | pass — `contents.json`: whole agent, four skills (run 45105758418) |
 | Windows x86, arm64 | pass — `native`, no agent |
-| Flatpak x86_64, Arch x86_64, Snap x86_64 | pass — derived from the Linux tarball, `mastra-agent`, source digest matches |
+| Flatpak x86_64, Snap x86_64 | pass — their own bytes carry the agent, and their source digest matches |
+| Arch x86_64 | recorded as `mastra-agent` from the **source tarball** only: the Arch action dropped `lib/`, so the package itself had none. Fixed in this branch by `packaging/linux/arch-agent.sh` |
 | Flatpak/Arch/Snap aarch64 | pass — `native` |
 | Web (wasm) | pass — `native` |
-| FreeBSD x86_64 | **fail** — `egui_winit` unresolved in `apps/solidcraft/src/main.rs`, introduced by #174; unchanged here and unrelated to the agent |
+| FreeBSD x86_64 | fail in that run — `egui_winit` unresolved in `apps/solidcraft/src/main.rs` (#174); fixed on `develop` by #219, which this branch's base contains |
 
 The installed checks inside those jobs printed, for each platform: the built-in agent offered
 first and current, started out of the package with its connections, stopped with none, started

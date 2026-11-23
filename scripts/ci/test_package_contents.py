@@ -14,6 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
+import package_contents  # noqa: E402  (after the path above)
 import package_contents as contents  # noqa: E402
 
 
@@ -259,6 +260,28 @@ class AgentContents(unittest.TestCase):
             self.assertEqual(data["agent"]["missing"],
                              ["aarch64-apple-darwin/mastra-agent/skills/modelling-skills/<skill>/SKILL.md"])
 
+    def test_a_directory_is_not_the_file_it_is_named(self):
+        # A tar lists a directory without a type of its own; it must not satisfy a required file
+        # (`node`) or a skill (`SKILL.md`).
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "intcad-linux-x86_64.tar.gz"
+            tree = Path(directory) / "tree"
+            (tree / "usr/lib/intcad/mastra-agent/node").mkdir(parents=True)
+            (tree / "usr/lib/intcad/mastra-agent/agent.json").write_text("{}")
+            (tree / "usr/lib/intcad/mastra-agent/skills/modelling-skills/x/SKILL.md").mkdir(parents=True)
+            with tarfile.open(package, "w:gz") as archive:
+                archive.add(tree / "usr", arcname="usr")
+            out = Path(directory) / "contents.json"
+            result = subprocess.run([sys.executable, str(HERE / "package_contents.py"),
+                                     "--package-id", "release-linux-x86_64",
+                                     "--source-revision", "a" * 40, "--distribution", "mastra-agent",
+                                     "--out", str(out), str(package)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(out.read_text())
+            self.assertFalse(data["agent"]["node"], "a directory named node is not a program")
+            self.assertEqual(data["agent"]["skills"], [], "a directory named SKILL.md is not a skill")
+
     def test_an_agent_folder_outside_the_apps_resources_does_not_count(self):
         # The app looks beside its own resources: a copy an installer drops in `extras/` is not
         # the agent it starts, so a package is not credited with one there.
@@ -268,6 +291,12 @@ class AgentContents(unittest.TestCase):
                                              for name in self.AGENT]],
                                package_id="release-macos")
             self.assertIsNone(data["agent"], "an extras/ folder is not the agent the app starts")
+            # A wrapper named after something else is not the package's own either.
+            for name in ("extras/Intcad/mastra-agent/node", "intcad-extras/lib/intcad/mastra-agent/node"):
+                self.assertFalse(
+                    package_contents.agent_report([name], roots=package_contents.roots_for(
+                        "release-windows-x64" if name.startswith("extras/") else "release-linux-x86_64"))["present"],
+                    name)
             self.assertTrue(data["markers"], "a Node outside the agent's install place is a marker")
 
     def test_a_legacy_runtime_or_a_stray_node_outside_the_agent_is_a_marker(self):

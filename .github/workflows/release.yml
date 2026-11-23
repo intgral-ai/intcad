@@ -254,26 +254,11 @@ jobs:
           command += [str(p) for p in files]
           subprocess.run(command, check=True)
           # The evidence's own verdict in the job log, so it can be read without downloading
-          # the artifact (the artifact holds the same file), and the job fails here if the package
-          # does not carry what its distribution promises: the release gate is not the only check.
+          # the artifact (the artifact holds the same file); printing before judging means a
+          # failing job still shows what it recorded.
           data = json.loads((directory / 'contents.json').read_text())
-          if os.environ.get('SOLIDCRAFT_DISTRIBUTION') == 'mastra-agent':
-              sys.path.insert(0, 'scripts/ci')
-              import release_content as release
-              carries = []
-              for name, carried in (data.get('agents') or {}).items():
-                  if release.carries_no_agent(name) or (carried or {}).get('coveredBy'):
-                      continue
-                  problem = release.agent_problem(carried)
-                  if problem:
-                      carries.append(name + ': ' + problem)
-              if data.get('markers') or data.get('agentMarkers'):
-                  carries.append('a runtime marker or a Node outside the agent')
-              if data.get('unchecked'):
-                  carries.append('an artifact not inspected')
-              if carries:
-                  raise SystemExit('this package does not carry the agent: ' + '; '.join(carries))
           agent = data.get('agent') or {}
+          verdicts = data.get('agents') or {}
           print('contents-evidence:', json.dumps({
               'packageId': data.get('packageId'),
               'distribution': data.get('distribution'),
@@ -290,11 +275,36 @@ jobs:
                   'node': (carried or {}).get('node'),
                   'missing': (carried or {}).get('missing'),
                   'skills': len((carried or {}).get('skills') or []),
-              } for name, carried in (data.get('agents') or {}).items()},
+              } for name, carried in verdicts.items()},
               'markers': [item.get('path') for item in data.get('markers') or []],
               'agentMarkers': [item.get('path') for item in data.get('agentMarkers') or []],
               'unchecked': [item.get('name') for item in data.get('unchecked') or []],
           }, sort_keys=True))
+          # And each job fails here if its own package does not carry what its distribution
+          # promises: every inspected artifact must have a verdict, one of the app's own
+          # artifacts must carry the agent, and its bytes must be complete.
+          if os.environ.get('SOLIDCRAFT_DISTRIBUTION') == 'mastra-agent':
+              sys.path.insert(0, 'scripts/ci')
+              import release_content as release
+              carries = []
+              inspected = {item.get('name') for item in data.get('checked') or []}
+              for name in sorted(inspected - set(verdicts)):
+                  carries.append(str(name) + ': inspected without an agent verdict')
+              app_artifacts = [name for name in verdicts
+                               if not release.carries_no_agent(name)
+                               and not (verdicts[name] or {}).get('coveredBy')]
+              for name in sorted(app_artifacts):
+                  problem = release.agent_problem(verdicts[name])
+                  if problem:
+                      carries.append(name + ': ' + problem)
+              if not any((verdicts[name] or {}).get('present') for name in app_artifacts):
+                  carries.append('no artifact of the package carries the agent')
+              if data.get('markers') or data.get('agentMarkers'):
+                  carries.append('a runtime marker or a Node outside the agent')
+              if data.get('unchecked'):
+                  carries.append('an artifact not inspected')
+              if carries:
+                  raise SystemExit('this package does not carry the agent: ' + '; '.join(carries))
       - &upload-package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

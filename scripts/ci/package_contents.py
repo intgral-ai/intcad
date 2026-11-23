@@ -261,11 +261,22 @@ def _agent_index(parts, roots):
     return None
 
 
+APP_WRAPPER = re.compile(r"^intcad-\d")
+WINDOWS_INSTALL_ROOTS = frozenset(("pfiles64", "pfiles", "program files", "program files (x86)"))
+
+
 def index_is_app_wrapped(parts, index):
-    """Whether the components before `index` are the product's own: an FHS `usr`, a wrapper folder
-    named for it (`intcad-<version>-...`), the app bundle, or the MSI's install root."""
-    return index == 0 or any(part.lower() == "usr" or "intcad" in part.lower()
-                             for part in parts[:index])
+    """Whether the components before `index` are the product's own: an FHS `usr`, a versioned
+    wrapper folder (`intcad-<version>-...`), the app bundle (`Intcad.app`), or the MSI's install
+    root. `extras/`, `intcad-extras/` and the like are not."""
+    for part in parts[:index]:
+        low = part.lower()
+        if low in ("usr", "intcad") or low in WINDOWS_INSTALL_ROOTS or low == "intcad.app":
+            continue
+        if APP_WRAPPER.match(low):
+            continue
+        return False
+    return True
 
 
 def agent_node(name, target=None, roots=None):
@@ -361,27 +372,43 @@ def _lines(text):
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def _tar_members(path):
+    """Names from a tar, with a trailing slash on directories."""
+    mode = ("r:gz" if path.name.lower().endswith((".tar.gz", ".tgz"))
+            else "r:xz" if path.name.lower().endswith((".tar.xz", ".txz")) else "r:")
+    with tarfile.open(path, mode) as archive:
+        return [member.name + ("/" if member.isdir() and not member.name.endswith("/") else "")
+                for member in archive.getmembers() if member.name != "."]
+
+
 def names_tar(path):
     name = path.name.lower()
     if name.endswith(".tar.zst") or name.endswith(".tzst"):
-        try:
-            listing = _run(["tar", "--zstd", "-tf", str(path)])
-        except OSError:
-            # GNU tar shells out to `zstd`; bsdtar reads zstd itself, and the Arch job installs
-            # it. A machine may have only one of them.
+        # Python's tarfile does not read zstd on every Python the runners use. Decompress with
+        # the tool the job installs, and read the plain tar so directories keep their type.
+        with tempfile.TemporaryDirectory(prefix="contents-tar-") as directory:
+            plain = Path(directory) / "package.tar"
+            zstd = shutil.which("zstd")
+            if zstd:
+                with plain.open("wb") as out:
+                    result = subprocess.run([zstd, "-dc", str(path)], stdout=out, stderr=subprocess.PIPE)
+                if result.returncode != 0:
+                    raise OSError((result.stderr or b"zstd failed").decode("utf-8", "replace")[:200])
+                return _tar_members(plain)
             bsdtar = shutil.which("bsdtar")
             if not bsdtar:
-                raise
-            listing = _run([bsdtar, "-tf", str(path)])
-        return [line for line in _lines(listing) if line != "."]
-    mode = "r:gz" if name.endswith((".tar.gz", ".tgz")) else "r:xz" if name.endswith((".tar.xz", ".txz")) else "r:"
-    with tarfile.open(path, mode) as archive:
-        return [member.name for member in archive.getmembers() if member.name != "."]
+                raise OSError("neither zstd nor bsdtar is available")
+            extracted = Path(directory) / "tree"
+            extracted.mkdir()
+            _run([bsdtar, "-xf", str(path), "-C", str(extracted)])
+            return _walk(extracted)
+    return _tar_members(path)
 
 
 def names_zip(path):
     with zipfile.ZipFile(path) as archive:
-        return [item.filename for item in archive.infolist() if item.filename]
+        return [item.filename + ("/" if item.is_dir() and not item.filename.endswith("/") else "")
+                for item in archive.infolist() if item.filename]
 
 
 def names_deb(path):
@@ -392,7 +419,8 @@ def names_deb(path):
     for line in _lines(_run([tool, "-c", str(path)])):
         fields = line.split()
         if len(fields) >= 6:
-            names.append(fields[-1].lstrip("./"))
+            name = fields[-1].lstrip("./")
+            names.append(name + ("/" if line.startswith("d") and not name.endswith("/") else ""))
     return names
 
 
@@ -400,7 +428,13 @@ def names_rpm(path):
     tool = shutil.which("rpm")
     if not tool:
         raise OSError("rpm is unavailable")
-    return [line.lstrip("./") for line in _lines(_run([tool, "-qlp", str(path)])) if line]
+    names = []
+    for line in _lines(_run([tool, "-qlvp", str(path)])):
+        fields = line.split()
+        if len(fields) >= 2:
+            name = fields[-1].lstrip("./")
+            names.append(name + ("/" if fields[0].startswith("d") and not name.endswith("/") else ""))
+    return names
 
 
 def names_snap(path):
@@ -408,10 +442,12 @@ def names_snap(path):
     if not tool:
         raise OSError("unsquashfs is unavailable")
     names = []
-    for line in _lines(_run([tool, "-l", str(path)])):
-        token = line.split()[-1] if line.split() else ""
-        if token and token != "squashfs-root" and not token.startswith("Parallel"):
-            names.append(token.split("squashfs-root/", 1)[-1])
+    for line in _lines(_run([tool, "-ll", str(path)])):
+        if "squashfs-root/" not in line:
+            continue
+        token = line.split("squashfs-root/", 1)[-1]
+        is_dir = line.lstrip().startswith("d")
+        names.append(token + ("/" if is_dir and not token.endswith("/") else ""))
     return names
 
 
@@ -460,20 +496,25 @@ def names_flatpak(path):
     # than waits if it is not.
     installed = _run([tool, "install", "--user", "-y", "--noninteractive", "--reinstall",
                       str(Path(path).resolve())], timeout=900)
-    # What was installed is what gets listed: the ref names the app, so a bundle of some other
-    # app cannot be attested by their deployment.
-    found = re.search(r"\bapp/([A-Za-z0-9._-]+)/", installed)
+    # The exact ref the install reported names the app, its architecture and its branch: a bundle
+    # of another app (or another branch of this one) cannot be attested by this deployment.
+    found = re.search(r"\bapp/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)", installed)
     if found is None:
         raise OSError("flatpak install did not name the app it installed")
     if found.group(1) != FLATPAK_APP_ID:
         raise OSError("the bundle is not " + FLATPAK_APP_ID + ": " + found.group(1))
+    ref = "app/" + "/".join(found.groups())
     try:
-        location = _run([tool, "info", "--user", "--show-location", FLATPAK_APP_ID]).strip()
+        location = _run([tool, "info", "--user", "--show-location", ref]).strip()
     except OSError as error:
         raise OSError("the app is not installed from a bundle: " + str(error)) from error
     root = Path(location) if location else None
     if root is None or not root.is_dir():
         raise OSError("the app is not installed from a bundle")
+    # `--show-location` names the deployment; the app's own tree is its `files/` folder.
+    payload = root / "files"
+    if payload.is_dir():
+        root = payload
     names = _walk(root)
     if not names:
         raise OSError("the installed app carries no files")
@@ -484,11 +525,14 @@ def names_msi(path):
     seven = shutil.which("7z") or shutil.which("7za")
     if seven:
         names = []
+        current = None
         for line in _lines(_run([seven, "l", "-slt", str(path)])):
             if line.startswith("Path = "):
-                value = line[len("Path = "):].strip()
-                if value:
-                    names.append(value)
+                current = line[len("Path = "):].strip()
+            elif line.startswith("Folder = ") and current:
+                folder = line[len("Folder = "):].strip() == "+"
+                names.append(current + ("/" if folder and not current.endswith("/") else ""))
+                current = None
         if names:
             return names
     tool = shutil.which("msiexec") or shutil.which("msiexec.exe")

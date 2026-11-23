@@ -2942,6 +2942,11 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
             app.agent_chat.detecting = None;
             app.agent_chat.looked = true;
         }
+        // A look whose worker dies sends nothing; keep asking for frames while one is pending,
+        // so the branch above runs on an idle window rather than waiting for an unrelated event.
+        if app.agent_chat.detecting.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
     }
     // AI features turned off: nothing keeps running, nothing is looked for.
     if !shown(app) {

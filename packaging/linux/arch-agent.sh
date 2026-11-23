@@ -45,17 +45,25 @@ cp -a "$SOURCE" "$WORK/pkg/usr/lib/intcad/mastra-agent"
 # entries it adds are part of the package's record rather than a stale file beside them.
 (
   cd "$WORK/pkg"
+  # The package's own ownership, as makepkg wrote it into .MTREE's set line; pacman ignores it,
+  # but the repack must not silently rewrite what the build recorded.
+  uid="$(zcat .MTREE 2>/dev/null | sed -n 's#.*uid=\([0-9][0-9]*\).*#\1#p' | head -n 1)"
+  gid="$(zcat .MTREE 2>/dev/null | sed -n 's#.*gid=\([0-9][0-9]*\).*#\1#p' | head -n 1)"
   rm -f .MTREE
-  size="$(find . -type f ! -name .PKGINFO ! -name .BUILDINFO ! -name .MTREE -printf '%s\n' |
-    awk '{ total += $1 } END { print total + 0 }')"
+  # Installed size counts each inode once (a hardlink is not a second copy).
+  size="$(find . -type f ! -path './.PKGINFO' ! -path './.BUILDINFO' ! -path './.MTREE' \
+    -printf '%i %s\n' | sort -u -k1,1 | awk '{ total += $2 } END { print total + 0 }')"
   sed -i "s/^size = .*/size = $size/" .PKGINFO
+  owner=()
+  [ -z "$uid" ] || owner+=(--uid "$uid")
+  [ -z "$gid" ] || owner+=(--gid "$gid")
   find . -mindepth 1 -maxdepth 1 ! -name .MTREE -print0 | sort -z |
-    bsdtar -czf .MTREE --format=mtree \
+    bsdtar -czf .MTREE --format=mtree "${owner[@]}" \
       --options='!all,use-set,type,uid,gid,mode,time,size,md5,sha256,link' --null -T -
   # The package's top-level names as makepkg writes them (`usr/...`, not `./usr/...`), and every
   # top-level entry the package carried (`.PKGINFO`, `.BUILDINFO`, `.MTREE`, `.INSTALL`).
   find . -mindepth 1 -maxdepth 1 -printf '%P\0' | sort -z |
-    bsdtar -cf - --null -T - | zstd -c -T0 --ultra -20 - > "$WORK/package.pkg.tar.zst"
+    bsdtar -cf - --null "${owner[@]}" -T - | zstd -c -T0 --ultra -20 - > "$WORK/package.pkg.tar.zst"
 )
 
 mv "$WORK/package.pkg.tar.zst" "$PKG"
