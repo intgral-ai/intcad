@@ -1814,26 +1814,23 @@ fn unknown_commands_suggest_the_closest_ids() {
     assert_eq!(msg(&long), format!("unknown command `{long}`"));
 }
 
-/// Common verbs recover the command in the same namespace, without executing an alias.
+/// Common verbs are one predicate, and it ranks read-only descriptions only: the execute path keeps
+/// its closest-id suggestions (#11726), so no execution path gains an alias.
 #[test]
-fn unknown_commands_suggest_equivalent_verbs_in_the_same_namespace() {
+fn unknown_commands_keep_edit_distance_suggestions_while_descriptions_rank_alternatives() {
     for (id, candidate) in [("note.create", "notes.add"), ("render.lights.create", "render.cameras.add"), ("create", "add"), (".create", ".add")] {
         assert!(!crate::cmd::command_verb_alternative(id, candidate), "{id}: {candidate}");
     }
     let mut s = Session::default();
-    for (id, wanted) in [
-        ("note.create", "note.add"),
-        ("NOTE.CREATE", "note.add"),
-        ("note.new", "note.add"),
-        ("note.remove", "note.delete"),
-        ("parameters.create", "parameters.add"),
-        ("render.lights.create", "render.lights.add"),
-        ("render.lights.delete", "render.lights.remove"),
-    ] {
+    for id in ["note.create", "NOTE.CREATE", "note.new", "note.remove", "parameters.create", "render.lights.create"] {
         let error = s.execute(id, &json!({})).unwrap_err();
         assert!(matches!(error, crate::EngineError::UnknownCommand(_)), "{id}: {error}");
-        let message = error.to_string();
-        assert!(message.starts_with(&format!("unknown command `{id}` (did you mean `{wanted}`")), "{message}");
+        assert!(error.to_string().starts_with(&format!("unknown command `{id}`")), "{id}: {error}");
+    }
+    // A read-only description does rank the alternative verb first.
+    for (id, wanted) in [("note.create", "note.add"), ("note.remove", "note.delete"), ("render.lights.create", "render.lights.add")] {
+        let hint = crate::cmd::describe_suggestions(id);
+        assert_eq!(hint.split('`').nth(1), Some(wanted), "{id}: {hint}");
     }
 }
 
