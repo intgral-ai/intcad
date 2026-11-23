@@ -62,6 +62,8 @@ const readPin = (dir) => ({
 /** The targets a test package is built for, as npm and Node name them. */
 const TARGETS = {
   "aarch64-apple-darwin": { os: "darwin", cpu: "arm64", node: "node" },
+  // The Intel half of a universal app: built with an x86_64 Node, checked here, run on an Intel Mac.
+  "x86_64-apple-darwin": { os: "darwin", cpu: "x64", node: "node" },
   "x86_64-unknown-linux-gnu": { os: "linux", cpu: "x64", libc: "glibc", node: "node" },
   "x86_64-pc-windows-msvc": { os: "win32", cpu: "x64", node: "node.exe" },
 };
