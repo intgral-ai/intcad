@@ -1,0 +1,342 @@
+name: INT-1497 Windows diagnostic artifact
+
+on:
+  push:
+    branches:
+      - diagnostic/int1497-windows-static-crt
+
+permissions:
+  contents: read
+
+jobs:
+  artifact:
+    if: >-
+      ${{
+        github.repository == 'intgral-ai/intcad' &&
+        github.event_name == 'push' &&
+        github.ref == 'refs/heads/diagnostic/int1497-windows-static-crt' &&
+        github.ref_type == 'branch' &&
+        github.run_attempt == '1' &&
+        toJSON(github.event.created) == 'true' &&
+        toJSON(github.event.deleted) == 'false' &&
+        github.event.before == '0000000000000000000000000000000000000000' &&
+        github.event.after == github.sha &&
+        github.event.ref == github.ref &&
+        github.event.repository.full_name == github.repository
+      }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      SOURCE_COMMIT: 22f427c8c0de3aec42299edc8c70056d8c86a870
+      SOURCE_TREE: 35480adef89428463fcd8b2c384926b48d343f5c
+      CARGO_LOCK_SHA256: 6a745252af4d7daf4d84fefbe7007a5b1159a73eb239d2ac37e14c7b20fed8ba
+      RESIZE_HELPER_SHA256: 5ac2808cae2ed99b7cea0f6a2fcd7d473ea412bd22a9edbbe129dd0515e3a596
+      # Preserve the pinned file bytes on Windows without editing Git config files.
+      GIT_CONFIG_COUNT: '1'
+      GIT_CONFIG_KEY_0: core.autocrlf
+      GIT_CONFIG_VALUE_0: 'false'
+    steps:
+      - name: Check out workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: workflow-tip
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Verify creation push and workflow commit
+        shell: pwsh
+        working-directory: workflow-tip
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          function Invoke-CheckedGit {
+            $lines = & git --no-replace-objects @args
+            if ($LASTEXITCODE -ne 0) { throw "Git failed ($LASTEXITCODE): $args" }
+            $lines
+          }
+
+          $ref = 'refs/heads/diagnostic/int1497-windows-static-crt'
+          $repository = 'intgral-ai/intcad'
+          $sha = $env:GITHUB_SHA
+          if ($env:GITHUB_EVENT_NAME -cne 'push' -or $env:GITHUB_REF -cne $ref -or
+              $env:GITHUB_REF_TYPE -cne 'branch' -or $env:GITHUB_REPOSITORY -cne $repository -or
+              $env:GITHUB_RUN_ATTEMPT -cne '1' -or $sha -cnotmatch '\A[0-9a-f]{40}\z' -or
+              $env:GITHUB_WORKFLOW_SHA -cne $sha) {
+            throw 'Unexpected GitHub context for the diagnostic build'
+          }
+
+          $payload = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw | ConvertFrom-Json -AsHashtable
+          if ($payload.created -isnot [bool] -or -not $payload.created -or
+              $payload.deleted -isnot [bool] -or $payload.deleted -or
+              $payload.before -isnot [string] -or $payload.before -cne ('0' * 40) -or
+              $payload.after -isnot [string] -or $payload.after -cne $sha -or
+              $payload.ref -isnot [string] -or $payload.ref -cne $ref -or
+              $payload.repository.full_name -isnot [string] -or $payload.repository.full_name -cne $repository) {
+            throw 'Expected the initial creation push of the diagnostic branch'
+          }
+
+          if ((Invoke-CheckedGit rev-list --parents -n 1 HEAD) -cne "$sha $env:SOURCE_COMMIT") {
+            throw 'Workflow checkout must be at the run SHA with the source pin as its sole parent'
+          }
+          $change = @(Invoke-CheckedGit diff-tree --no-commit-id --raw --no-abbrev --no-renames -r $env:SOURCE_COMMIT HEAD --)
+          if ($change.Count -ne 1 -or
+              $change[0] -cnotmatch '^:000000 100644 0{40} [0-9a-f]{40} A\t\.github/workflows/int1497-windows-diagnostic\.yml$') {
+            throw 'Workflow commit must add only this regular workflow file'
+          }
+
+      - name: Check out pinned build source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 22f427c8c0de3aec42299edc8c70056d8c86a870
+          path: build-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Build and seal Windows x64 diagnostic files
+        shell: pwsh
+        working-directory: build-source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version Latest
+
+          function Invoke-CheckedGit {
+            $lines = & git --no-replace-objects @args
+            if ($LASTEXITCODE -ne 0) { throw "Git failed ($LASTEXITCODE): $args" }
+            $lines
+          }
+
+          function Get-Sha256($path) {
+            (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+
+          function Assert-PinnedSource {
+            if ((Invoke-CheckedGit rev-parse --symbolic-full-name HEAD) -cne 'HEAD' -or
+                (Invoke-CheckedGit rev-parse HEAD) -cne $env:SOURCE_COMMIT -or
+                (Invoke-CheckedGit rev-parse 'HEAD^{tree}') -cne $env:SOURCE_TREE) {
+              throw 'Build source must be detached at the pinned commit and tree'
+            }
+            if ((Get-Sha256 'Cargo.lock') -cne $env:CARGO_LOCK_SHA256 -or
+                (Get-Sha256 'tools/windows-resize-smoke.ps1') -cne $env:RESIZE_HELPER_SHA256) {
+              throw 'Pinned lockfile or resize helper digest mismatch'
+            }
+            if (@(Invoke-CheckedGit status --porcelain=v1 --untracked-files=all --ignored=matching --ignore-submodules=none).Count -ne 0) {
+              throw 'Build source is not clean'
+            }
+          }
+
+          function Assert-StaticCrt($path) {
+            # Refuse a diagnostic build that needs the VC++ redistributable this
+            # image does not carry: the shipped package links the CRT statically.
+            # Reads only the PE headers and the import directory, not the image.
+            $banned = @('vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll')
+            $stream = [IO.File]::OpenRead($path)
+            try {
+              $reader = [IO.BinaryReader]::new($stream)
+              if ($stream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5a4d) { throw 'Missing DOS header' }
+              $stream.Position = 0x3c
+              $pe = [long]$reader.ReadUInt32()
+              if ($pe -lt 64 -or $pe -gt ($stream.Length - 24)) { throw 'PE header outside the file' }
+              $stream.Position = $pe
+              if ($reader.ReadUInt32() -ne 0x4550) { throw 'Missing PE signature' }
+              $null = $reader.ReadUInt16()
+              $sections = $reader.ReadUInt16()
+              $stream.Position += 12
+              $optionalSize = $reader.ReadUInt16()
+              $null = $reader.ReadUInt16()
+              $optStart = $stream.Position
+              if ($reader.ReadUInt16() -ne 0x020b) { throw 'Not a PE32+ image' }
+              $stream.Position = $optStart + 112
+              $null = $reader.ReadUInt32()
+              $null = $reader.ReadUInt32()
+              $importRva = $reader.ReadUInt32()
+              $importSize = $reader.ReadUInt32()
+              if ($importRva -eq 0 -or $importSize -eq 0) { return }
+              $stream.Position = $optStart + $optionalSize
+              $map = @()
+              for ($i = 0; $i -lt $sections; $i++) {
+                $null = $reader.ReadBytes(8)
+                $vsize = $reader.ReadUInt32()
+                $vaddr = $reader.ReadUInt32()
+                $rawSize = $reader.ReadUInt32()
+                $rawPtr = $reader.ReadUInt32()
+                $null = $reader.ReadBytes(16)
+                $map += [pscustomobject]@{ VAddr = $vaddr; VSize = $vsize; RawPtr = $rawPtr; RawSize = $rawSize }
+              }
+              function Convert-Rva([long] $rva) {
+                foreach ($s in $map) {
+                  $size = if ($s.VSize -gt 0) { $s.VSize } else { $s.RawSize }
+                  if ($rva -ge $s.VAddr -and $rva -lt ($s.VAddr + $size)) {
+                    return [long]($s.RawPtr + ($rva - $s.VAddr))
+                  }
+                }
+                throw 'Import directory is outside every section'
+              }
+              $walk = Convert-Rva $importRva
+              for ($entry = 0; $entry -lt 4096; $entry++) {
+                $stream.Position = $walk + ($entry * 20)
+                $null = $reader.ReadUInt32()
+                $null = $reader.ReadUInt32()
+                $null = $reader.ReadUInt32()
+                $nameRva = $reader.ReadUInt32()
+                $null = $reader.ReadUInt32()
+                if ($nameRva -eq 0) { break }
+                $stream.Position = Convert-Rva $nameRva
+                $chars = [Collections.Generic.List[byte]]::new()
+                while ($chars.Count -lt 256) {
+                  $b = $reader.ReadByte()
+                  if ($b -eq 0) { break }
+                  $chars.Add($b)
+                }
+                $name = [Text.Encoding]::ASCII.GetString($chars.ToArray())
+                if ($banned -contains $name.ToLowerInvariant()) {
+                  throw "Diagnostic executable imports $name"
+                }
+              }
+            } finally { $stream.Dispose() }
+          }
+
+          function Assert-Amd64Pe($path) {
+            $stream = [IO.File]::OpenRead($path)
+            try {
+              $reader = [IO.BinaryReader]::new($stream)
+              if ($stream.Length -lt 64 -or $reader.ReadUInt16() -ne 0x5a4d) {
+                throw 'Missing or truncated DOS header'
+              }
+              $stream.Position = 0x3c
+              $peOffset = [long]$reader.ReadUInt32()
+              if ($peOffset -lt 64 -or $peOffset -gt ($stream.Length - 24)) {
+                throw 'PE/COFF header is outside the file'
+              }
+              $stream.Position = $peOffset
+              if ($reader.ReadUInt32() -ne 0x00004550 -or $reader.ReadUInt16() -ne 0x8664) {
+                throw 'Expected an AMD64 PE signature and machine'
+              }
+              $sections = $reader.ReadUInt16()
+              $stream.Position = $peOffset + 20
+              $optionalSize = $reader.ReadUInt16()
+              $characteristics = $reader.ReadUInt16()
+              $sectionTable = $peOffset + 24 + $optionalSize
+              $headersEnd = $sectionTable + 40 * $sections
+              if ($sections -lt 1 -or $sections -gt 96 -or $optionalSize -lt 112 -or
+                  $headersEnd -gt $stream.Length -or $reader.ReadUInt16() -ne 0x20b -or
+                  ($characteristics -band 0x0002) -eq 0 -or ($characteristics -band 0x2000) -ne 0) {
+                throw 'Expected a complete PE32+ executable header and section table'
+              }
+              for ($i = 0; $i -lt $sections; $i++) {
+                $stream.Position = $sectionTable + 40 * $i + 16
+                $size = [long]$reader.ReadUInt32()
+                $start = [long]$reader.ReadUInt32()
+                if ($size -gt 0 -and ($start -lt $headersEnd -or $start + $size -gt $stream.Length)) {
+                  throw 'PE section data is outside the file'
+                }
+              }
+            } finally {
+              $stream.Dispose()
+            }
+          }
+
+          Assert-PinnedSource
+          if ($env:RUNNER_OS -cne 'Windows' -or $env:RUNNER_ARCH -cne 'X64' -or
+              $env:ImageOS -cnotmatch '^[a-zA-Z0-9._-]+$' -or
+              $env:ImageVersion -cnotmatch '^[a-zA-Z0-9._-]+$' -or
+              $env:GITHUB_RUN_ID -cnotmatch '^[1-9][0-9]*$') {
+            throw 'Missing run identity or unexpected Windows x64 runner metadata'
+          }
+
+          $target = Join-Path $env:RUNNER_TEMP 'int1497-windows-target'
+          $stage = Join-Path $env:RUNNER_TEMP 'int1497-windows-artifact'
+          if ((Test-Path -LiteralPath $target) -or (Test-Path -LiteralPath $stage)) {
+            throw 'Diagnostic target and staging paths must not already exist'
+          }
+          $env:CARGO_TARGET_DIR = (New-Item -ItemType Directory -Path $target).FullName
+
+          $version = '1.99.1'
+          $hostTriple = 'x86_64-pc-windows-msvc'
+          $toolchain = "$version-$hostTriple"
+          rustup toolchain install $toolchain --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw "Rustup install failed ($LASTEXITCODE)" }
+          $rustVersion = @(rustup run $toolchain rustc -vV)
+          if ($LASTEXITCODE -ne 0) { throw "rustc version check failed ($LASTEXITCODE)" }
+          $cargoVersion = @(rustup run $toolchain cargo -vV)
+          if ($LASTEXITCODE -ne 0) { throw "Cargo version check failed ($LASTEXITCODE)" }
+          if ($rustVersion[0] -cnotmatch '^rustc 1\.99\.1 ' -or
+              $cargoVersion[0] -cnotmatch '^cargo 1\.99\.1 ' -or
+              $rustVersion -cnotcontains "host: $hostTriple" -or
+              $cargoVersion -cnotcontains "host: $hostTriple") {
+            throw 'Expected Rust and Cargo 1.99.1 with the native Windows x64 MSVC host'
+          }
+
+          # Match the shipped Windows package, which links the C runtime
+          # statically so no VC++ redistributable is needed. Scoped to the
+          # target so the host and proc-macros are unaffected.
+          $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = '-C target-feature=+crt-static'
+          rustup run $toolchain cargo build -p solidcraft --profile ci --locked
+          if ($LASTEXITCODE -ne 0) { throw "Cargo build failed ($LASTEXITCODE)" }
+          Assert-PinnedSource
+
+          $exe = Get-Item -LiteralPath (Join-Path $target 'ci/intcad.exe') -Force
+          if ($exe -isnot [IO.FileInfo] -or ($exe.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Expected a regular intcad.exe'
+          }
+          Assert-Amd64Pe $exe.FullName
+          Assert-StaticCrt $exe.FullName
+          $exeSha = Get-Sha256 $exe.FullName
+
+          $null = New-Item -ItemType Directory -Path $stage
+          $stagedExe = Join-Path $stage 'intcad.exe'
+          $receipt = Join-Path $stage 'build.json'
+          $sums = Join-Path $stage 'SHA256SUMS'
+          Copy-Item -LiteralPath $exe.FullName -Destination $stagedExe
+          if ((Get-Sha256 $stagedExe) -cne $exeSha -or (Get-Item -LiteralPath $stagedExe).Length -ne $exe.Length) {
+            throw 'Staged executable differs from the verified build output'
+          }
+
+          [ordered]@{
+            source_commit = $env:SOURCE_COMMIT
+            source_tree = $env:SOURCE_TREE
+            cargo_lock_sha256 = $env:CARGO_LOCK_SHA256
+            resize_helper_sha256 = $env:RESIZE_HELPER_SHA256
+            workflow_commit = $env:GITHUB_SHA
+            repository = $env:GITHUB_REPOSITORY
+            ref = $env:GITHUB_REF
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            runner_image = $env:ImageOS
+            runner_image_version = $env:ImageVersion
+            rust_toolchain = $toolchain
+            rustc_version = $rustVersion[0]
+            cargo_version = $cargoVersion[0]
+            host_triple = $hostTriple
+            build_command = 'cargo build -p solidcraft --profile ci --locked (CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS=-C target-feature=+crt-static)'
+            architecture = 'x86_64'
+            pe_machine = '0x8664'
+            executable_size = $exe.Length
+            executable_sha256 = $exeSha
+          } | ConvertTo-Json | Set-Content -LiteralPath $receipt -Encoding utf8
+          $receiptSha = Get-Sha256 $receipt
+          @("$exeSha  intcad.exe", "$receiptSha  build.json") |
+            Set-Content -LiteralPath $sums -Encoding utf8
+
+          $files = @(Get-ChildItem -LiteralPath $stage -Force)
+          $expected = @('intcad.exe', 'build.json', 'SHA256SUMS')
+          if ($files.Count -ne $expected.Count) { throw 'Unexpected staging directory membership' }
+          foreach ($file in $files) {
+            if ($file -isnot [IO.FileInfo] -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                $expected -cnotcontains $file.Name -or $file.Length -le 0) {
+              throw 'Unexpected or empty staged artifact file'
+            }
+          }
+
+      - name: Upload diagnostic files only
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: int1497-windows-diagnostic-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/int1497-windows-artifact/intcad.exe
+            ${{ runner.temp }}/int1497-windows-artifact/build.json
+            ${{ runner.temp }}/int1497-windows-artifact/SHA256SUMS
+          retention-days: 3
+          if-no-files-found: error
+          overwrite: false
