@@ -35,7 +35,8 @@ Scope: IntCAD baseline `0fd92bea266e7dcea5ce09676ed9ff9ae6c66d7f` (A), upstream 
 The [owner accepted the proposed dispositions](https://linear.app/intgral/issue/INT-1454#comment-b67c8020-b61e-4ad7-8261-d48a8a6eab10):
 
 - Preserve the IntCAD baseline: M01, M02, M03, M06 (within CD-1 and CD-5), M08, M11.
-- Adopt only after each item's acceptance tests pass: M15, M16.
+- M15: [scoped Linux desktop and headless acceptance](https://linear.app/intgral/issue/INT-1454#comment-e6fbd354-1a12-496b-a645-6d10cb414bf9) passed on historical candidate `db0b8dd35`; verification on the final integration SHA is still pending.
+- M16: [#215](https://github.com/intgral-ai/intcad/pull/215) landed separately on `develop` at `9c24061cef48327d6d04663c24ecfd3b6a8c6e81`. Candidate `0872f6f6` passed required CI and independent integration review; the squash tree is identical. [Landed CI](https://github.com/intgral-ai/intcad/actions/runs/45128352679) started on the squash SHA; rollback is a normal revert PR, with no data migration.
 - Defer this cycle: M04, M05, M07, M09, M10, M12, M13, M14, M17, M18. M17 and M18 remain separate shared-engine decisions.
 
 The [owner deferred M12 and M13](https://linear.app/intgral/issue/INT-1454#comment-8f0a864b-66d6-4c17-bfb4-35ff6467893b) after compatibility testing. With a legacy `μm = 2 mm` parameter, `μm * 3` is 6 mm and `250 μm` is 500 mm (test `95d49274`). A saved `(5 ft 3 in) / (1 mm * 1 mm)` evaluates to 116128.8 after reopening (test `3d6bc849`). Preserve the existing parser and do not normalize these inputs through MCP this cycle. Use `µm` or `um`, and `5 ft + 3 in`, to express the units explicitly.
