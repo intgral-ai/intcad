@@ -10369,6 +10369,43 @@ fn a_typed_model_that_cannot_be_one_is_not_sent() {
     assert_eq!(app.agent_chat.models.first().map(|m| m.id.as_str()), Some("one-more"));
 }
 
+/// A model picked while the agent replies is shown as chosen at once and sent when the reply ends,
+/// before a queued message, so the next message runs on it. The agent would take it only after the
+/// reply anyway, and waiting on it held the picker busy for the whole reply (INT-1500).
+#[test]
+fn a_model_picked_while_the_agent_replies_is_shown_at_once_and_serves_the_next_message() {
+    let (mut app, script, ctx) = app_with_script();
+    app.agent_chat.running_id = "modern".into();
+    script.report(Event::ConfigOptions(modern_options("fast")));
+    poll(&mut app, &ctx);
+    send(&mut app, &ctx, "make a box".into());
+    assert_eq!(app.agent_chat.state(), State::Busy);
+    set_config_option(&mut app, "some.provider.model", "smart");
+    assert_eq!(script.calls(), ["prompt: make a box"], "nothing goes to the agent while it replies");
+    assert!(!app.agent_chat.config_pending, "and the picker is not held busy");
+    assert_eq!(app.agent_chat.model, "smart", "shown as chosen at once");
+    // The agent's own word on its options during the reply does not take the choice back.
+    script.report(Event::ConfigOptions(modern_options("fast")));
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.model, "smart");
+    // A second pick replaces the first.
+    set_config_option(&mut app, "some.provider.model", "fast");
+    set_config_option(&mut app, "some.provider.model", "smart");
+    send(&mut app, &ctx, "now round it".into());
+    ended(&script, "");
+    poll(&mut app, &ctx);
+    let calls = script.calls();
+    let set = calls.iter().position(|call| call == "set_config_option: some.provider.model=smart").expect("sent once the reply ended");
+    assert_eq!(calls.iter().filter(|call| call.starts_with("set_config_option")).count(), 1, "{calls:?}");
+    if let Some(next) = calls.iter().position(|call| call == "prompt: now round it") {
+        assert!(set < next, "before the queued message: {calls:?}");
+    }
+    script.report(Event::ConfigOptionFinished { id: "some.provider.model".into(), result: Ok(modern_options("smart")) });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.model, "smart");
+    assert!(!app.agent_chat.config_pending);
+}
+
 /// An agent with a model option gets a typed model through it. Nothing changes until it answers,
 /// and a refusal leaves the old model with the agent's reason in the chat.
 #[test]
