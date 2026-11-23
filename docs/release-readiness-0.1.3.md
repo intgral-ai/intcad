@@ -937,14 +937,17 @@ logs to `~/.cache/int1503/rc-chain.log`:
    SHA, watch it, and if the pass is not `success` list the red jobs, `gh run rerun --failed` once and
    watch again;
 4. download every channel artifact (`release-linux-{x86_64,aarch64}`, `release-windows-{x64,x86,arm64}`,
-   `release-macos`, `release-flatpak-x86_64`, `release-snap-x86_64`) into one folder, and the
-   evidence artifacts — named `package-evidence-release-<package id>`, not
+   `release-macos`, `release-flatpak-{x86_64,aarch64}`, `release-snap-{x86_64,aarch64}`) into one
+   folder, and the evidence artifacts — named `package-evidence-release-<package id>`, not
    `package-evidence-<platform>` — elsewhere;
 5. write the unversioned aliases with `packaging/aliases.sh`, then run `packaging/checksums.sh
-   --require` for every asset the release publishes (both Linux architectures' tar/AppImage/deb/
-   rpm/flatpak/snap, all three MSI and portable-zip names, the standalone exe and the DMG), and
-   **exit non-zero** if the list is incomplete, so a short list stops the run instead of being
-   logged and carried on.
+   --require` for **every name `asset_name()` returns** plus the versioned tarballs: both Linux
+   architectures' `tar.gz`, the unversioned `AppImage`/`deb`/`rpm`/`flatpak`/`snap`, all three
+   versioned MSIs and their unversioned aliases, all three portable zips, the versioned standalone
+   exe and both DMG names. It does **not** require the CLI zip or the `.zsync` files, because no
+   client fetches those by name; they are still in the list because the list covers every file in
+   the folder. It **exits non-zero** if a required name is missing, so a short list stops the run
+   instead of being logged and carried on.
 
 That is the reproducible release flow this document owes the next person: the same five steps a
 release manager runs by hand, in one command, with the refusal behaviour tested in
