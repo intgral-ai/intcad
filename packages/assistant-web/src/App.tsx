@@ -2672,13 +2672,24 @@ function Centre({
   // outside React, drawn at once), so a smaller window keeps the bar with Collapse in sight. When the
   // page has too little room the conversation gives way first, down to the bar; the rows that need
   // the user and the message box keep their height.
+  // The connections page opens the body too.
+  const open = conn || shown;
   const fitRoom = useRef<(now: boolean) => void>(() => {});
   fitRoom.current = now => {
     const element = measured.current;
     const inBody = element?.querySelector<HTMLElement>('[data-centre-body]');
     if (!element || !inBody) return;
     const bar = inBody.firstElementChild?.firstElementChild;
-    const next = Math.max(bar instanceof HTMLElement ? bar.offsetHeight : 0, Math.floor(most.current - (heightOf(element) - inBody.offsetHeight) - 2));
+    // Closed, the body waits out of sight at the height it opens at, and the line over the box takes
+    // its place: everything else is what stays. With a row floating over the box as well, the room
+    // measured last is kept.
+    let others = heightOf(element) - inBody.offsetHeight;
+    if (!open) {
+      const line = element.querySelector<HTMLElement>('[data-centre-line]');
+      if (!line || element.querySelectorAll(HEADERS).length > 1) return;
+      others = heightOf(element) - line.offsetHeight;
+    }
+    const next = Math.max(bar instanceof HTMLElement ? bar.offsetHeight : 0, Math.floor(most.current - others - 2));
     if (Math.abs(next - room) <= 1) return;
     if (now) flushSync(() => setRoom(next));
     else setRoom(next);
@@ -2846,8 +2857,6 @@ function Centre({
     const late = window.setTimeout(() => go(true), 1000);
   };
   const connections = () => roomFirst(openConn);
-  // The connections page opens the body too.
-  const open = conn || shown;
   const preview = previewOf(state);
   const agent = state.agents.find(entry => entry.id === state.agent);
   const badge = stateBadge(state);
@@ -2899,18 +2908,25 @@ function Centre({
   // the body is in the page's flow, with what needs the user as its last row, right above the box;
   // it comes in with a short fade (none where the system asks for less motion). The first header is
   // the same element open or closed, and changes placement without Mastra's slide of its lower edge.
+  // The body is never taken down: closed, it waits unseen above the line at the height it opens at
+  // (its negative margin takes back its height and the header's gap), so it opens as it was left,
+  // scrolled to the end with every row in place, and a running turn's rows do not come in again.
   const header = (
     <>
       <ComposerHeader open placement={open ? 'stacked' : 'overlay'} inert={!open && Boolean(attention)} style={open ? { transition: 'none' } : undefined}>
+        <div
+          data-centre-body
+          inert={!open}
+          aria-hidden={open ? undefined : true}
+          className={open ? 'motion-safe:animate-in motion-safe:fade-in-0' : 'invisible'}
+          style={open ? { height: room } : { height: room, marginTop: `calc(${-room}px - 0.75rem)` }}
+        >
+          {body}
+        </div>
         {open ? (
-          <>
-            <div data-centre-body className="motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1" style={{ height: room }}>
-              {body}
-            </div>
-            {attention}
-          </>
+          attention
         ) : (
-          <ComposerHeaderRow className="flex-nowrap">
+          <ComposerHeaderRow data-centre-line className="flex-nowrap">
             <ComposerHeaderContent className="min-w-0">
               <PreviewLine text={preview ? preview.text : idle} step={preview ? preview.step : false} />
             </ComposerHeaderContent>

@@ -97,6 +97,13 @@ html.centre div:has(> div > [data-slot='composer-input']) {
 html.centre div:has(> div > [data-slot='composer-input'])::-webkit-scrollbar {
   display: none;
 }
+/* Closed, the conversation waits out of sight (Centre in App.tsx). Mastra's rows skip drawing off
+   screen and hold a 10rem stand-in, so out of sight every row was 10rem tall, and on Expand the rows
+   took their real heights and the conversation moved under the reader. Closed, they are drawn; open,
+   Mastra's skipping holds the heights they were drawn at. */
+html.centre [data-centre-body][inert] [data-slot='message-scroller-item'] {
+  content-visibility: visible;
+}
 /* The line over the message box there: one line tall; the text wraps and a full line scrolls up. */
 .centre-preview {
   height: 1lh;
