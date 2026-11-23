@@ -271,7 +271,16 @@ def _lines(text):
 def names_tar(path):
     name = path.name.lower()
     if name.endswith(".tar.zst") or name.endswith(".tzst"):
-        return [line for line in _lines(_run(["tar", "--zstd", "-tf", str(path)])) if line != "."]
+        try:
+            listing = _run(["tar", "--zstd", "-tf", str(path)])
+        except OSError:
+            # GNU tar shells out to `zstd`; bsdtar reads zstd itself, and the Arch job installs
+            # it. A machine may have only one of them.
+            bsdtar = shutil.which("bsdtar")
+            if not bsdtar:
+                raise
+            listing = _run([bsdtar, "-tf", str(path)])
+        return [line for line in _lines(listing) if line != "."]
     mode = "r:gz" if name.endswith((".tar.gz", ".tgz")) else "r:xz" if name.endswith((".tar.xz", ".txz")) else "r:"
     with tarfile.open(path, mode) as archive:
         return [member.name for member in archive.getmembers() if member.name != "."]

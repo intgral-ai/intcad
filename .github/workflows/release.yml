@@ -335,7 +335,7 @@ jobs:
         with:
           name: release-linux-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: dist/linux
-      - name: Install libarchive (bsdtar) for .PKGINFO/.MTREE
+      - name: Install libarchive (bsdtar) and zstd for .PKGINFO/.MTREE and the built package
         run: |
           for attempt in 1 2 3; do
             timeout 180 sudo apt-get update \
@@ -344,7 +344,7 @@ jobs:
             echo "apt-get update attempt $attempt failed or timed out" >&2
             sleep 10
           done
-          sudo apt-get install -y --no-install-recommends libarchive-tools
+          sudo apt-get install -y --no-install-recommends libarchive-tools zstd
       - id: pkgver
         name: Arch version
         env:
@@ -464,7 +464,8 @@ jobs:
             echo "apt-get update attempt $attempt failed or timed out" >&2
             sleep 10
           done
-          sudo apt-get install -y --no-install-recommends xvfb xauth iproute2
+          # squashfs-tools lists the built .snap, which is a squashfs image.
+          sudo apt-get install -y --no-install-recommends xvfb xauth iproute2 squashfs-tools
           mkdir -p "$RUNNER_TEMP/snap-offline"
           set +e
           runner=$(id -un)

@@ -265,6 +265,19 @@ class AgentContentDecision(unittest.TestCase):
         contents[identity]["sourceArtifact"] = "pkg-src"
         self.assertEqual(content.problems(SHA, descriptors, contents, "mastra-agent"), [])
 
+    def test_a_native_repack_is_not_asked_for_the_agent(self):
+        # The agent is built for x86_64 Linux only; the aarch64 Flatpak is native on both sides.
+        descriptors = {
+            "release-linux-aarch64": build("release-linux-aarch64", [("tarball", DG)]),
+            "release-flatpak-aarch64": build("release-flatpak-aarch64", [("pkg", DG2)]),
+        }
+        contents = {
+            "release-linux-aarch64": report("release-linux-aarch64", [("tarball", DG)]),
+            "release-flatpak-aarch64": report("release-flatpak-aarch64", [], derived="release-linux-aarch64",
+                                              source_name="tarball", source_sha=DG),
+        }
+        self.assertEqual(content.problems(SHA, descriptors, contents, "mastra-agent"), [])
+
     def test_a_repack_without_the_agent_in_its_own_bytes_fails(self):
         # The source tarball carries the agent; the repack's own payload does not.
         descriptors, contents = self.evidence()

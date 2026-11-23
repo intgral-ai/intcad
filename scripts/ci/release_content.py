@@ -246,9 +246,10 @@ def problems(source_revision, descriptors, contents, declaration="native"):
         if not proven.get(source):
             failures.append(identity + ": derived package source is not a verified package: " + str(source))
             continue
-        # The repack is what a person installs: its own bytes must carry the agent, in every
-        # artifact of it, and its source's digest must be the one inspected.
-        if carrying_agent:
+        # The repack is what a person installs: when it is a `mastra-agent` package, its own bytes
+        # must carry the agent too, in every artifact of it. An architecture the agent is not
+        # built for is native on both sides and is not asked for one.
+        if report.get("distribution") == "mastra-agent":
             per_artifact = report.get("agents")
             own = {
                 name: carried for name, carried in (per_artifact or {}).items()
