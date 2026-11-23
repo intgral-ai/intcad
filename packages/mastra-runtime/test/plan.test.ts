@@ -1,5 +1,5 @@
 // Plan first (`agent/plan.mjs`), INT-1473 B2: in a chat on a project, the first change of a reply
-// waits until the user has been shown a numbered plan, and the model is told why. No Mastra, no
+// waits until the user has been shown a plan, its task list, and the model is told why. No Mastra, no
 // model, no network: the agent runs on a stand-in for Mastra Code's ACP agent.
 
 import assert from "node:assert/strict";
@@ -10,7 +10,7 @@ type Json = Record<string, any>;
 const compiled = import.meta.url.includes("/dist/test/");
 const agentFolder = compiled ? "../../agent/" : "../agent/";
 const load = (name: string): Promise<Json> => import(new URL(agentFolder + name, import.meta.url).href);
-const { PLAN_FIRST, PlanGate, hasPlan, isChange, planEntries } = await load("plan.mjs");
+const { PLAN_FIRST, PlanGate, isChange, planEntries } = await load("plan.mjs");
 const { askingOnlyWhenNeeded } = await load("reads.mjs");
 const { intcadAgent } = await load("agent.mjs");
 
@@ -22,41 +22,6 @@ let calls = 0;
 /** A permission request as Mastra Code sends it (`acp/event-mapper.js` of SDK 1.19.1). */
 const request = (title: string, args: unknown = {}, sessionId = "s1"): Json => ({ sessionId, toolCall: { toolCallId: `c${++calls}`, title, rawInput: JSON.stringify(args) }, options: ASK });
 const fillet = (sessionId = "s1") => request("intcad-app_execute", { command: "solid.fillet", params: { radius: 3 } }, sessionId);
-
-test("hasPlan: a numbered line in what the user was shown, in English or Chinese; not a number that starts a line", () => {
-  for (const text of ["1. Set the thickness to 2.5 mm; check with measure.", "Plan:\n1) thickness\n2) hole", "1、把板厚改成 2.5 mm", "**1.** Move the hole", "- 1. Move the hole", "第1步：改厚度", "第一步：改厚度", "一、改厚度", "  2. Then the hole"]) {
-    assert.equal(hasPlan(text), true, JSON.stringify(text));
-  }
-  for (const text of ["", "I'll read the project files first.", "2.5 mm is the lightest allowed.", "Version 1.19.1 of the SDK", "see step 1 below", "Thickness 1.5 → 2.5", undefined, null, 42]) {
-    assert.equal(hasPlan(text), false, JSON.stringify(text));
-  }
-});
-
-test("hasPlan: a plan written as a table or with its steps in one line counts too (the end-to-end run's model wrote both)", () => {
-  for (const text of ["| Step | Change | Check |\n|---|---|---|\n| 1 | Thickness → 2.5 mm | measure |", "| **1.** | Move the hole | body_topology |", "方案同上:1. thickness→2.5mm,2. 线缆孔移到 (110, 40)", "First 1) set the thickness; then 2) move the cable hole."]) {
-    assert.equal(hasPlan(text), true, JSON.stringify(text));
-  }
-  for (const text of ["| Requirement | Source |\n|---|---|\n| Outline 120 × 80 | requirements.md |", "| 120 | 80 |", "| 2.5 mm | ok |", "Thickness 1.5 → 2.5 mm, hole at (114, 40).", "see section 1. Then we look at 2.5 mm."]) {
-    assert.equal(hasPlan(text), false, JSON.stringify(text));
-  }
-});
-
-test("PlanGate: what the agent says after a tool call starts a line of its own, so a numbered line there is a plan", () => {
-  // Joined without a break the numbered line is no line of its own, and the plan was missed.
-  assert.equal(hasPlan("Reading the files." + "1. Thickness to 2.5 mm."), false);
-  const gate = new PlanGate(() => true);
-  gate.prompted("s1");
-  gate.said("s1", "Reading the files.");
-  gate.called("s1");
-  gate.called("s1");
-  gate.said("s1", "1. Thickness to 2.5 mm; check with measure.");
-  assert.equal(gate.holds(fillet()), false);
-  // A break before anything was said adds nothing.
-  const quiet = new PlanGate(() => true);
-  quiet.prompted("s1");
-  quiet.called("s1");
-  assert.equal(quiet.holds(fillet()), true);
-});
 
 test("isChange: the app's tools that change the design or write a file, and Mastra's file writes; not reads, looks, the shell or the web", () => {
   for (const r of [fillet(), request("intcad-app_batch", { commands: [] }), request("intcad-app_set_parameter", { name: "t", value: "2 mm" }), request("intcad-app_save"), request("intcad-app_export"), request("intcad-app_undo"), request("intcad-app_open"), request("intcad-app_new_design"), request("write_file"), request("string_replace_lsp"), request("delete_file")]) {
@@ -76,10 +41,7 @@ test("PlanGate: in a chat on a project, a change before any plan is held once, w
   assert.equal(gate.reasonFor(first.toolCall.toolCallId), undefined, "the reason is given once");
   assert.equal(gate.reasonFor("never-held"), undefined);
   assert.equal(gate.holds(request("intcad-app_execute", { command: "inspect.measure" })), false, "a read is never held");
-  // The plan arrives in pieces, as the text streams.
-  gate.said("s1", "Plan:\n");
-  gate.said("s1", "1");
-  gate.said("s1", ". Fillet the edge; check with measure.");
+  gate.listed("s1", [{ id: "t1", content: "Fillet the edge; check with measure", status: "pending" }]);
   assert.equal(gate.holds(fillet()), false);
   assert.equal(gate.holds(fillet()), false, "later changes of the same reply");
   // A chat not on a project is never held.
@@ -104,41 +66,33 @@ test("planEntries: a task list as an ACP plan, a step per task with text, status
   assert.equal(planEntries(Array.from({ length: 80 }, (_, i) => ({ content: `step ${i}` }))).length, 64);
 });
 
-test("PlanGate: a task list is a plan; an empty one is not; it carries over like a written plan", () => {
+test("PlanGate: a task list is a plan, an empty one is not", () => {
   const gate = new PlanGate(() => true);
   gate.prompted("s1");
   gate.listed("s1", []);
   assert.equal(gate.holds(fillet()), true, "an empty list is no plan");
   gate.listed("s1", [{ id: "t1", content: "Fillet the edge; check with measure", status: "pending" }]);
   assert.equal(gate.holds(fillet()), false);
-  // A list written, then a question, then the user's OK: no second plan asked for.
-  gate.prompted("s1");
-  gate.listed("s1", [{ id: "t1", content: "Thickness to 2.5 mm" }, { id: "t2", content: "Move the hole" }]);
-  gate.said("s1", "Shall I go ahead?");
-  gate.prompted("s1");
-  assert.equal(gate.holds(fillet()), false);
-  gate.prompted("s1");
-  assert.equal(gate.holds(fillet()), true, "a list from two messages ago, with changes since, is not this reply's plan");
 });
 
 test("PlanGate: a plan the last reply ended on, with no change after it, carries over to the user's answer; one with a change does not", () => {
   const gate = new PlanGate(() => true);
-  // The plan, then a question, then the user's "go ahead".
+  // The list, then a question, then the user's "go ahead".
   gate.prompted("s1");
-  gate.said("s1", "1. Thickness to 2.5 mm.\n2. Move the cable hole.\nShall I go ahead?");
+  gate.listed("s1", [{ id: "t1", content: "Thickness to 2.5 mm" }, { id: "t2", content: "Move the hole" }]);
   gate.prompted("s1");
   assert.equal(gate.holds(fillet()), false, "the plan was shown and nothing changed after it");
   // That reply made a change: the next message needs a plan of its own.
   gate.prompted("s1");
   assert.equal(gate.holds(fillet()), true);
   // A reply that planned and changed at once: no carry either.
-  gate.said("s1", "1. Fillet.");
+  gate.listed("s1", [{ id: "t1", content: "Fillet" }]);
   assert.equal(gate.holds(fillet()), false);
   gate.prompted("s1");
   assert.equal(gate.holds(fillet()), true);
 });
 
-test("askingOnlyWhenNeeded with a gate: a held change gets the request's own reject without reaching the app; the agent's words reach the gate and the app", async () => {
+test("askingOnlyWhenNeeded with a gate: a held change gets the request's own reject without reaching the app; the agent's words, numbered or not, are no plan", async () => {
   const sent: Json[] = [];
   const app = { requestPermission: async (asked: Json) => (sent.push({ asked }), { outcome: { outcome: "selected", optionId: "approve" } }), sessionUpdate: async (update: Json) => void sent.push({ update }) };
   const gate = new PlanGate(() => true);
@@ -146,14 +100,14 @@ test("askingOnlyWhenNeeded with a gate: a held change gets the request's own rej
   gate.prompted("s1");
   assert.deepEqual(await connection.requestPermission(fillet()), { outcome: { outcome: "selected", optionId: "reject" } });
   assert.deepEqual(sent, [], "the app was not asked");
-  // Text, a tool call, then the plan: the tool call puts the plan on a line of its own.
-  const before = { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Reading the files." } } };
-  const tool = { sessionId: "s1", update: { sessionUpdate: "tool_call", toolCallId: "t1", title: "view" } };
-  const words = { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "1. Fillet the edge." } } };
-  for (const update of [before, tool, words]) await connection.sessionUpdate(update);
+  // A numbered answer (the requirements as read) reaches the app, and the next change is still held.
+  const words = { sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "1. Wall at least 2 mm.\n2. Hole 6 mm from the edge." } } };
+  await connection.sessionUpdate(words);
+  assert.deepEqual(await connection.requestPermission(fillet()), { outcome: { outcome: "selected", optionId: "reject" } });
+  gate.listed("s1", [{ id: "t1", content: "Fillet the edge; check with measure" }]);
   const allowed = fillet();
   assert.deepEqual(await connection.requestPermission(allowed), { outcome: { outcome: "selected", optionId: "approve" } });
-  assert.deepEqual(sent, [{ update: before }, { update: tool }, { update: words }, { asked: allowed }]);
+  assert.deepEqual(sent, [{ update: words }, { asked: allowed }]);
 });
 
 /** Mastra Code's ACP agent as far as the gate needs it: sessions, a session's approvals, a turn. */
@@ -217,7 +171,11 @@ test("the agent: in a chat on a project the held change is declined with the pla
   // A decline the gate did not make keeps Mastra's own wording.
   entry.session.respondToToolApproval({ decision: "decline", toolCallId: "the-users-own" });
   assert.deepEqual(declined.at(-1), { decision: "decline", toolCallId: "the-users-own" });
+  // Words are not the plan; the task list is.
   await agent.connection.sessionUpdate({ sessionId: "s1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "1. Fillet the edge; check with measure." } } });
+  await agent.connection.requestPermission(fillet());
+  assert.equal(asked.length, 0, "a numbered line is no plan");
+  entry.emit({ type: "task_updated", tasks: [{ id: "t1", content: "Fillet the edge; check with measure", status: "pending" }] });
   await agent.connection.requestPermission(fillet());
   assert.equal(asked.length, 1, "after the plan the user is asked");
 });

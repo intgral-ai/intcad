@@ -14,10 +14,11 @@
 // - A change is a call of the app's tools that changes the design or writes a file, or of Mastra's
 //   file tools that write. Reads, screenshots, the shell, web tools, skills and the task tools are
 //   not held: they keep the card they have, or none.
-// - A plan is a task list written since the user's last message, or a numbered line in what the agent
-//   has said to the user since then (`hasPlan`). A plan the previous reply ended on, with no change
-//   after it (it was waiting for the user's word), still counts, so "plan, then the user's OK, then
-//   the change" asks for no second plan. One task, or one line, is a plan: a single change needs no more.
+// - A plan is a task list written since the user's last message. A plan the previous reply ended on,
+//   with no change after it (it was waiting for the user's word), still counts, so "plan, then the
+//   user's OK, then the change" asks for no second plan. One task is a plan: a single change needs
+//   no more. A numbered line in the reply does not count: a numbered answer (the requirements, the
+//   files read) would let the next change through with no plan shown.
 // - Only chats on a project are held, as only they are told to plan (brief.mjs).
 // A change before a plan is declined by the agent itself, the user not asked, and the model is told
 // why (`PLAN_FIRST`, in place of Mastra's "not approved by the user").
@@ -33,23 +34,6 @@ const APP_CHANGES = ["execute", "batch", "set_parameter", "undo", "redo", "new_d
 
 /** Mastra Code's file tools that write (SDK 1.19.1, `tool-names.js`). */
 const FILE_CHANGES = ["write_file", "string_replace_lsp", "ast_smart_edit", "delete_file", "mkdir"];
-
-/** A numbered line: "1. …", "1) …", "1、…", "**1.** …", "第1步", "第一步", "一、…"; not "2.5 mm …". */
-const NUMBERED = /^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?(?:\d{1,2}[ \t]*[.)、](?!\d)|第[ \t]*[0-9一二三四五六七八九十]+[ \t]*步|[一二三四五六七八九十][ \t]*[、.])/mu;
-
-/** A table row whose first cell is a step's number: "| 1 | …", "| **1.** | …". */
-const NUMBERED_ROW = /^[ \t]*\|[ \t]*(?:\*\*)?\d{1,2}[.)、]?(?:\*\*)?[ \t]*\|/mu;
-
-/** Steps 1 and 2 written in one line: "方案:1. 板厚 2.5 mm,2. 移孔", "first 1) …; then 2) …". */
-const INLINE_STEPS = /(?:^|[\s:：;；,，(（])(?:\*\*)?1[ \t]*[.)、](?!\d)[^\n]*?(?:[\s:：;；,，(（])(?:\*\*)?2[ \t]*[.)、](?!\d)/u;
-
-/**
- * Whether `text` holds a plan: a numbered line, a table row numbered as a step, or steps 1 and 2 in
- * one line (the end-to-end run's model wrote all three).
- */
-export function hasPlan(text) {
-  return typeof text === "string" && (NUMBERED.test(text) || NUMBERED_ROW.test(text) || INLINE_STEPS.test(text));
-}
 
 /**
  * A task list (Mastra's `task_updated` event) as the entries of an ACP `plan` update, which the app
@@ -76,9 +60,9 @@ export function isChange(request) {
 }
 
 /**
- * The state of every chat: what the agent has said since the user's last message, whether it wrote a
- * task list since then, and whether the reply before it ended on a plan with no change after it.
- * `onProject(sessionId)` says whether the chat is on a project.
+ * The state of every chat: whether the agent wrote a task list since the user's last message, and
+ * whether the reply before it ended on one with no change after it. `onProject(sessionId)` says
+ * whether the chat is on a project.
  */
 export class PlanGate {
   #chats = new Map();
@@ -91,36 +75,16 @@ export class PlanGate {
 
   #chat(sessionId) {
     let chat = this.#chats.get(sessionId);
-    if (!chat) this.#chats.set(sessionId, (chat = { said: "", tasks: false, changed: false, carried: false }));
+    if (!chat) this.#chats.set(sessionId, (chat = { tasks: false, changed: false, carried: false }));
     return chat;
-  }
-
-  #planned(chat) {
-    return chat.tasks || hasPlan(chat.said);
   }
 
   /** The user sent a message: a reply that showed a plan and changed nothing after it carries the plan over. */
   prompted(sessionId) {
     const chat = this.#chat(sessionId);
-    chat.carried = this.#planned(chat) && !chat.changed;
-    chat.said = "";
+    chat.carried = chat.tasks && !chat.changed;
     chat.tasks = false;
     chat.changed = false;
-  }
-
-  /** The agent said `text` to the user. */
-  said(sessionId, text) {
-    if (typeof text === "string") this.#chat(sessionId).said += text;
-  }
-
-  /**
-   * The agent called a tool: what it says next is a message of its own, which the app shows on a
-   * line of its own. Without the break, "…the files." and "1. Thickness…" read as one line, and the
-   * plan was missed (the end-to-end run).
-   */
-  called(sessionId) {
-    const chat = this.#chat(sessionId);
-    if (chat.said && !chat.said.endsWith("\n")) chat.said += "\n";
   }
 
   /** The agent's task list is now `tasks` (Mastra's `task_updated`): a list with a step in it is a plan shown. */
@@ -137,7 +101,7 @@ export class PlanGate {
     const sessionId = request?.sessionId;
     if (!isChange(request) || !this.#onProject(sessionId)) return false;
     const chat = this.#chat(sessionId);
-    if (chat.carried || this.#planned(chat)) {
+    if (chat.carried || chat.tasks) {
       chat.changed = true;
       return false;
     }
@@ -149,10 +113,5 @@ export class PlanGate {
   /** The reason to decline the call `toolCallId` with, once: `PLAN_FIRST` when it was held, else none. */
   reasonFor(toolCallId) {
     return this.#held.delete(toolCallId) ? PLAN_FIRST : undefined;
-  }
-
-  /** A chat that is gone. */
-  forget(sessionId) {
-    this.#chats.delete(sessionId);
   }
 }

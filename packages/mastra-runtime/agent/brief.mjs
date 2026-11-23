@@ -56,9 +56,9 @@ export const shownPath = (path) => path.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, 
 const byName = (a, b) => a.name.localeCompare(b.name, "en", { numeric: true, sensitivity: "base" }) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
 /**
- * The project's files as the Files panel shows them: a folder's files before the folders inside
- * it, so the files at the top come first when the list is cut. `complete` is false when the
- * reading stopped at its limits.
+ * The project's files, the ones the Files panel shows, with a folder's files before the folders
+ * inside it (the panel puts folders first), so the files at the top come first when the list is
+ * cut. `complete` is false when the reading stopped at its limits.
  */
 export function projectFiles(root) {
   const files = [];

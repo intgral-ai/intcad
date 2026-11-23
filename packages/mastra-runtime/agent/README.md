@@ -157,7 +157,7 @@ With a project:
   Mastra Code's own prompt says to just do it), check each requirement after a change, ask when requirements are
   missing or in conflict. It is made when the session opens; a file added later is found with
   the file tools.
-- The skill `intcad-context` says how to work from it: find the context first, plan in words,
+- The skill `intcad-context` says how to work from it: find the context first, plan as a task list,
   check each requirement with numbers from tools, ask when something is unclear.
 
 Besides the project, the file tools reach Mastra Code's own defaults: the temporary folder (the
@@ -210,8 +210,8 @@ a written plan, it planned in its thinking again, 4 to 11 times a run, before wr
   several steps. The agent sends each `task_updated` event, which Mastra Code's ACP agent leaves
   out, to the app as an ACP `plan` update: the app shows it as the reply's plan, a dot per step
   that fills as the step is under way and done. The task tools run without a card (`TASK_TOOLS`,
-  `reads.mjs`): they change only that list. A numbered line in what the agent says counts as a
-  plan too.
+  `reads.mjs`): they change only that list. A numbered line in what the agent says is no plan: a
+  numbered answer (the requirements as read) would let the next change through unplanned.
 - A change is a call of the app's tools that changes the design or writes a file (`execute` with a
   command that does not only read, `batch`, `set_parameter`, `undo`, `redo`, `new_design`, `open`,
   `save`, `export`), or one of Mastra's file writes. Reads, screenshots, the shell, web tools,

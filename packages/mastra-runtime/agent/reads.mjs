@@ -82,10 +82,9 @@ export function readsWithoutAsking(request) {
 /**
  * The connection the agent speaks to the app through, answering itself the permission requests
  * `readsWithoutAsking` takes, with the request's own "allow once". Mastra decides approval by a
- * tool's name alone, so a per-command rule for `execute` lives here. With a `gate` (plan.mjs), it is
- * told what the agent says to the user, and a change it holds is answered with the request's own
- * "reject once": the user is not asked. Every other request, and everything else the agent sends,
- * goes to the app unchanged.
+ * tool's name alone, so a per-command rule for `execute` lives here. With a `gate` (plan.mjs), a
+ * change it holds is answered with the request's own "reject once": the user is not asked. Every
+ * other request, and everything else the agent sends, goes to the app unchanged.
  */
 export function askingOnlyWhenNeeded(connection, gate) {
   if (connection === null || typeof connection !== "object") return connection;
@@ -100,14 +99,6 @@ export function askingOnlyWhenNeeded(connection, gate) {
             return reject ? { outcome: { outcome: "selected", optionId: reject.optionId } } : { outcome: { outcome: "cancelled" } };
           }
           return target.requestPermission(request);
-        };
-      }
-      if (key === "sessionUpdate" && gate) {
-        return (notification) => {
-          const update = notification?.update;
-          if (update?.sessionUpdate === "agent_message_chunk" && update.content?.type === "text") gate.said(notification.sessionId, update.content.text);
-          if (update?.sessionUpdate === "tool_call") gate.called(notification.sessionId);
-          return target.sessionUpdate(notification);
         };
       }
       const value = Reflect.get(target, key, target);

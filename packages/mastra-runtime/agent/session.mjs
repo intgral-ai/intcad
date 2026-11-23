@@ -20,9 +20,9 @@
 // - A project folder (`_meta.intcad.project`) is returned as `project`, for agent.mjs to add to the
 //   folders the file tools may reach (`sandboxAllowedPaths`, on the session's thread: one set in
 //   `initialState` is gone once Mastra Code opens that thread), and its brief (brief.mjs) follows
-//   the note. The session's own folder
-//   stays the app's empty one, so Mastra Code reads none of the project's agent files, MCP
-//   servers, hooks or skills: those it takes only from the session's folder and its home.
+//   the note. The session works in a new empty folder of its own (`sessionFolder`), not in the
+//   project, so Mastra Code reads none of the project's agent files, MCP servers, hooks or skills:
+//   those it takes only from the session's folder and its home.
 
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";

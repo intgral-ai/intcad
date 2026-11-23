@@ -292,8 +292,8 @@ pub const CLAUDE_DISALLOWED_TOOLS: &[&str] =
 /// The `session/new` parameters. `init` is the agent's `initialize` reply: agents read the system
 /// note from different places (#9811), and the standard field may only go to an agent offering it.
 /// `note` is the system note ([`system_note`]). `project`, for the built-in agent only, is the
-/// project folder the session may work in (INT-1473), sent as `_meta.intcad.project`; the session's
-/// own folder stays `cwd`.
+/// project folder the session may work in (INT-1473), sent as `_meta.intcad.project`. `cwd` stays
+/// the app's folder; the built-in agent runs its MCP servers there and works in a folder of its own.
 pub fn session_new_params(cwd: &std::path::Path, bridge: Option<&McpBridge>, init: &Value, note: &str, project: Option<&std::path::Path>) -> Value {
     let servers: Vec<Value> = bridge.map(McpBridge::to_json).into_iter().collect();
     let mut meta = json!({
