@@ -266,6 +266,35 @@ divergence is between kernels, not a broken allowance list on either side.
 Receipts: `cd1/kernel/{areas,rest,heavy,last}-{9c24061c,db0}.json` and their `*-compare.json`, all
 produced by `kernel-collect.py` and retained locally.
 
+### 4b. Current `develop` head: partial refresh of the same checks
+
+`be9cb2c163c46529a9a4b3472f6a5c69168390f8` is the `develop` head after M16 (19 commits later).
+The same tools were re-run there, so the rows in §4 above describe `9c24061c` and are **not**
+silently reused for this head.
+
+| Check | Result at `be9cb2c16` |
+| --- | --- |
+| Build (local) | `intcad` SHA-256 `facdad8fd66f67aa7aef1f5e0472725dc16a8312afe70c0a9754cf5c1e0b9004`, `intcad-cli` `0b9e3b6580f7540703ed39ae5de7176766f25c19fb03e24b2ac12c8f4c9b3493`, Rust 1.99.1 `ci` profile from the pinned lockfile; worktree clean afterwards |
+| B6 dependency graph | `b6-recheck.sh` exit `0`; all 8 native targets and the wasm web selection resolve, with `rsa`, `crypto-bigint` and `pgp` **absent** on every one. Lockfile SHA-256 `a95958a0…`, `deny.toml` `8d7988ff…` |
+| CD-1 headless | `cd1-verify.py` exit `0`: `solidcraft/13` opened, saved as `solidcraft/51`, reopened with the same content digest `6922cc60517786015f829b125fe4661504cb6545f0089befca946de1ddc1df84` as on `9c24061c`; truncated copy and a `solidcraft/52` copy both refused |
+| Kernel rig (diagnostic replay) | 656 cases run individually: **634 pass, 17 fail, 5 unsupported**. Compared with the same 656 cases on `9c24061c`: **656 identical, 0 changed**. All 22 non-pass cases are listed in this head's own `tests/kernel-cases/*/KNOWN_FAILING` (22 entries), with no unlisted failure and no listed case passing. |
+
+Receipts: `newhead/` (`built.sha256`, `b6-be9cb2c16.tsv`, `cd1-headless-report.json`,
+`kernel-be9cb2c16.json`, `selection-plan.zip`).
+
+**What this head does not yet carry.** It still has no tracked `solidcore/` subtree and still pins
+git revisions `8ddce901…` (solidcore) and `f5e8e9a2…` (record), so it is not an integration head:
+B3 stays closed, and the migration surface is still absent (`crates/format`, `crates/engine/src/gpg.rs`,
+`crates/io/src/design/provenance.rs`, and the `open_newer_files` preference do not exist here). The
+absence of `rsa`/`crypto-bigint`/`pgp` from this head's dependency graph therefore proves nothing about
+the migration's audited boundary — it is expected, and the B6 recheck must be repeated once the
+vendored closure lands.
+
+The CI run for this head, `45246045837` (`push`, attempt 1), selected **full validation**
+(`selection-plan` artifact `14859570456`, digest `sha256:873f45d7…`: `rustFull: true`, no deferred
+packages, no open obligations), so the K12 IDs do run there. At the time of this record the run was
+still `in_progress` with zero failures; its aggregate conclusion is not yet known and is not claimed.
+
 ## 5. Persistence (CD-1)
 
 The single implementation is `solidcraft_format`'s registry/container used by `doc`/`io`. Test
