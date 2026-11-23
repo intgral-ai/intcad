@@ -98,6 +98,26 @@ def missing_libraries(exe):
     return [line.split()[0] for line in result.stdout.splitlines() if "not found" in line]
 
 
+def agent_folders(exe):
+    """The packaged agent folders an installed program may have, as the app resolves them."""
+    exe = Path(exe).resolve()
+    here = exe.parent
+    return [here.parent / "lib" / "intcad" / "mastra-agent",       # Linux packages and AppImage
+            here.parent / "Resources" / "mastra-agent",            # macOS .app
+            here / "mastra-agent"]                                 # beside a Windows program
+
+
+def node_running(program):
+    """Whether a process runs this exact Node program. A cheap probe, not a full listing."""
+    if not Path(program).is_file():
+        return False
+    pgrep = shutil.which("pgrep")
+    if not pgrep:
+        return False
+    done = subprocess.run([pgrep, "-f", "--", str(program)], capture_output=True, text=True, check=False)
+    return done.returncode == 0
+
+
 def screen_picture(path):
     """A picture of the whole screen, with whatever tool this system has; the tool's name or None."""
     if sys.platform == "darwin":
@@ -261,6 +281,12 @@ def main():
             # A crash leaves a folder with a report.json (crates/engine/src/crash.rs).
             crashes = sorted(str(p.parent.name) for p in (work / "crash").rglob("report.json"))
             checks.check(not crashes, "no crash report was written" + (f" ({', '.join(crashes[:5])})" if crashes else ""))
+            if args.built_in_agent:
+                # The app takes the agent with it: no copy of the packaged Node may outlive it.
+                leftovers = [str(folder) for folder in agent_folders(Path(args.exe))
+                             if folder.is_dir() and node_running(folder / "node")]
+                checks.check(not leftovers, "the agent stopped with the app"
+                             + (f" (still running: {', '.join(leftovers)})" if leftovers else ""))
         notes = [line for line in tail(log_path, 2000) if NOTE in line]
         if args.expect == "page" and reached:
             checks.check(not notes, "the app reported no web view problem")
