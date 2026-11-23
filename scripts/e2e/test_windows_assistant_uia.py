@@ -250,6 +250,17 @@ class StandaloneSmoke(unittest.TestCase):
 
     def test_root_comparison_samples_only_a_unique_live_widget_and_rejects_stale_counts(self) -> None:
         self.fixture("""
+            class DiagnosticFocus {
+                static [IntPtr] $Foreground
+                static [IntPtr] $Focus
+                static [bool] $QueueOk
+                static [bool] $ChangeDuringRead
+                static [IntPtr] GetForegroundWindow() { return [DiagnosticFocus]::Foreground }
+                static [hashtable] InputQueue() {
+                    if ([DiagnosticFocus]::ChangeDuringRead) { [DiagnosticFocus]::Foreground = [IntPtr]20 }
+                    return @{Succeeded=[DiagnosticFocus]::QueueOk; hwndFocus=[DiagnosticFocus]::Focus}
+                }
+            }
             $frame = [IntPtr]10; $wrapper = [IntPtr]20; $widget = [IntPtr]30
             $start = [datetime]::UtcNow
             $owner = @{Id=100; HasExited=$false; StartTime=$start}
@@ -264,6 +275,11 @@ class StandaloneSmoke(unittest.TestCase):
                 if ($change -eq 'change-owner' -and $root -eq $widget) { $windows[30L].Owner = 201 }
                 if ($change -eq 'hide' -and $root -eq $widget) { $windows[30L].Visible = $false }
                 if ($change -eq 'exit' -and $root -eq $wrapper) { $owner.HasExited = $true }
+                if ($change -eq 'foreground-lost-between' -and $root -eq $wrapper) { [DiagnosticFocus]::Foreground = $wrapper }
+                if ($change -eq 'focus-lost-between' -and $root -eq $wrapper) { [DiagnosticFocus]::Focus = $wrapper }
+                if ($change -eq 'foreground-lost-after' -and $root -eq $widget) { [DiagnosticFocus]::Foreground = [IntPtr]::Zero }
+                if ($change -eq 'focus-lost-after' -and $root -eq $widget) { [DiagnosticFocus]::Focus = [IntPtr]::Zero }
+                if ($change -eq 'focus-unverified-after' -and $root -eq $widget) { [DiagnosticFocus]::QueueOk = $false }
                 if ($change -eq 'throw' -and $root -eq $widget) { throw 'private UIA provider exception' }
                 if ($root -eq $wrapper) { NewPageCloseCounts 0 0 64 $true }
                 elseif ($root -eq $widget) { NewPageCloseCounts 80 66 0 $true }
@@ -274,6 +290,15 @@ class StandaloneSmoke(unittest.TestCase):
             }
             foreach ($case in @(
                 @{Mode='live'; Widgets=@($widget); Reads='20,30'; Report='ok wrapper.close_name_any_role=0 wrapper.close_name_button=0 wrapper.documents=65 widget.close_name_any_role=65 widget.close_name_button=65 widget.documents=1'},
+                @{Mode='wrong-foreground-before'; Widgets=@($widget); Reads=''; Report='stale'},
+                @{Mode='wrong-focus-before'; Widgets=@($widget); Reads=''; Report='stale'},
+                @{Mode='focus-unverified-before'; Widgets=@($widget); Reads=''; Report='stale'},
+                @{Mode='unstable-foreground-before'; Widgets=@($widget); Reads=''; Report='stale'},
+                @{Mode='foreground-lost-between'; Widgets=@($widget); Reads='20'; Report='stale'},
+                @{Mode='focus-lost-between'; Widgets=@($widget); Reads='20'; Report='stale'},
+                @{Mode='foreground-lost-after'; Widgets=@($widget); Reads='20,30'; Report='stale'},
+                @{Mode='focus-lost-after'; Widgets=@($widget); Reads='20,30'; Report='stale'},
+                @{Mode='focus-unverified-after'; Widgets=@($widget); Reads='20,30'; Report='stale'},
                 @{Mode='missing'; Widgets=@(); Reads=''; Report='unsupported'},
                 @{Mode='multiple'; Widgets=@($widget,[IntPtr]31); Reads=''; Report='unsupported'},
                 @{Mode='unrelated'; Widgets=@([IntPtr]31); Reads=''; Report='stale'},
@@ -288,6 +313,10 @@ class StandaloneSmoke(unittest.TestCase):
             )) {
                 $change = $case.Mode; $widgets = $case.Widgets
                 $owner.HasExited = $false
+                [DiagnosticFocus]::Foreground = if ($change -eq 'wrong-foreground-before') { $wrapper } else { $frame }
+                [DiagnosticFocus]::Focus = if ($change -eq 'wrong-focus-before') { $wrapper } else { $frame }
+                [DiagnosticFocus]::QueueOk = $change -ne 'focus-unverified-before'
+                [DiagnosticFocus]::ChangeDuringRead = $change -eq 'unstable-foreground-before'
                 $windows = @{
                     10L=@{Owner=100; Thread=1; Parent=[IntPtr]::Zero; Class='fixture frame'; Visible=$true}
                     20L=@{Owner=100; Thread=1; Parent=$frame; Class='WRY_WEBVIEW'; Visible=$true}
@@ -299,7 +328,7 @@ class StandaloneSmoke(unittest.TestCase):
                 if ($change -eq 'stale-wrapper') { $windows[20L].Class = 'unrelated' }
                 if ($change -eq 'wrong-frame-owner') { $windows[10L].Owner = 200 }
                 $reads = [Collections.Generic.List[long]]::new()
-                $report = ComparePageCloseRoots $null $frame $wrapper $owner $start.ToUniversalTime().Ticks
+                $report = ComparePageCloseRoots ([DiagnosticFocus]) $frame $wrapper $owner $start.ToUniversalTime().Ticks
                 if ($report -cne $case.Report -or ($reads -join ',') -cne $case.Reads) {
                     throw "$change compared $($reads -join ',') and returned $report"
                 }
@@ -418,6 +447,10 @@ class StandaloneSmoke(unittest.TestCase):
 
     def test_both_queries_use_the_same_watchdog_without_launching_a_reader(self) -> None:
         self.fixture(r"""
+            class AssistantWin {
+                static [IntPtr] GetForegroundWindow() { return [IntPtr]10 }
+                static [hashtable] InputQueue() { return @{Succeeded=$true; hwndFocus=[IntPtr]10} }
+            }
             $h = [IntPtr]10
             $script:p = @{Id=100; StartTime=[datetime]::UtcNow}
             $view = @{Window=[IntPtr]20}
@@ -471,6 +504,42 @@ class StandaloneSmoke(unittest.TestCase):
             if ($query.matched -ne 0 -or $query.candidates -isnot [array]) { throw 'lost cold JSON reply' }
             if ((ReadPageCloseComparison $view) -cne 'unsupported' -or $script:launches.Count -ne 2) {
                 throw 'expected one cold reader and one comparison reader'
+            }
+        """)
+
+    def test_parent_discards_the_receipt_if_cad_focus_cannot_be_verified(self) -> None:
+        self.fixture("""
+            class AssistantWin {
+                static [IntPtr] $Foreground = [IntPtr]10
+                static [IntPtr] $Focus = [IntPtr]10
+                static [bool] $QueueOk = $true
+                static [IntPtr] GetForegroundWindow() { return [AssistantWin]::Foreground }
+                static [hashtable] InputQueue() {
+                    return @{Succeeded=[AssistantWin]::QueueOk; hwndFocus=[AssistantWin]::Focus}
+                }
+            }
+            $script:h = [IntPtr]10
+            $script:p = @{Id=100; StartTime=[datetime]::UtcNow}
+            $view = @{Window=[IntPtr]20}
+            $counts = 'ok wrapper.close_name_any_role=0 wrapper.close_name_button=0 wrapper.documents=0 widget.close_name_any_role=1 widget.close_name_button=1 widget.documents=1'
+            function IsOwnedFrame { $true }
+            function InvokePageCloseUiaReader {
+                $script:reads++
+                if ($mode -eq 'foreground-lost') { [AssistantWin]::Foreground = [IntPtr]20 }
+                if ($mode -eq 'focus-lost') { [AssistantWin]::Focus = [IntPtr]20 }
+                if ($mode -eq 'focus-unknown') { [AssistantWin]::QueueOk = $false }
+                $counts
+            }
+            foreach ($mode in @('before', 'foreground-lost', 'focus-lost', 'focus-unknown', 'live')) {
+                $script:reads = 0
+                [AssistantWin]::Foreground = [IntPtr]10
+                [AssistantWin]::Focus = if ($mode -eq 'before') { [IntPtr]::Zero } else { [IntPtr]10 }
+                [AssistantWin]::QueueOk = $true
+                $report = ReadPageCloseComparison $view
+                $wanted = if ($mode -eq 'live') { $counts } else { 'stale' }
+                if ($report -cne $wanted -or $script:reads -ne [int]($mode -ne 'before')) {
+                    throw "parent accepted or started a comparison with unverified CAD focus: $mode"
+                }
             }
         """)
 

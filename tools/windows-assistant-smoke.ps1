@@ -870,6 +870,13 @@ function GetPageCloseNativeRoute($native, [IntPtr]$from, [IntPtr]$to, $first) {
     if ($route.Count) { $route -join '/' }
 }
 
+function TestPageCloseFrameFocus($native, [IntPtr]$frame) {
+    if ($frame -eq [IntPtr]::Zero -or $native::GetForegroundWindow() -ne $frame) { return $false }
+    # InputQueue reads the foreground thread's queue. Reject a foreground change across that read.
+    $queue = $native::InputQueue()
+    $queue.Succeeded -eq $true -and $queue.hwndFocus -eq $frame -and $native::GetForegroundWindow() -eq $frame
+}
+
 function GetPageCloseRootIdentity($native, [IntPtr]$frame, [IntPtr]$wrapper, $owner, [long]$startTicks) {
     if ($owner.HasExited -or $owner.StartTime.ToUniversalTime().Ticks -ne $startTicks) { return 'stale' }
     $f = ReadPageCloseWindow $native $frame
@@ -885,7 +892,7 @@ function GetPageCloseRootIdentity($native, [IntPtr]$frame, [IntPtr]$wrapper, $ow
     $c = ReadPageCloseWindow $native $widget
     if (-not $c.Visible -or $c.Class -cne 'Chrome_WidgetWin_1') { return 'stale' }
     $widgetRoute = GetPageCloseNativeRoute $native $widget $wrapper $c
-    if (-not $widgetRoute -or $owner.HasExited) { return 'stale' }
+    if (-not $widgetRoute -or $owner.HasExited -or -not (TestPageCloseFrameFocus $native $frame)) { return 'stale' }
     @{
         Widget = $widget
         Route = "$($frame.ToInt64()):$($f.Owner):$($f.Thread):$($f.Parent.ToInt64())/$wrapperRoute/$widgetRoute"
@@ -932,11 +939,12 @@ function ComparePageCloseRoots($native, [IntPtr]$frame, [IntPtr]$wrapper, $owner
 
 function ReadPageCloseComparison($view) {
     $clock = [Diagnostics.Stopwatch]::StartNew()
-    if (-not (IsOwnedFrame)) { return 'stale' }
+    if (-not (IsOwnedFrame) -or -not (TestPageCloseFrameFocus ([AssistantWin]) $h)) { return 'stale' }
     $scriptText = "`$frame = [IntPtr]$($h.ToInt64()); `$wrapper = [IntPtr]$($view.Window.ToInt64()); " +
         "`$framePid = $($script:p.Id); `$startTicks = $($script:p.StartTime.ToUniversalTime().Ticks)L`n"
     foreach ($functionName in @('PageCloseUiaPredicate', 'ReadPageCloseWindow', 'FindVisiblePageCloseWidgets',
-            'GetPageCloseNativeRoute', 'GetPageCloseRootIdentity', 'NewPageCloseCounts', 'ReadPageCloseCounts', 'ComparePageCloseRoots')) {
+            'GetPageCloseNativeRoute', 'TestPageCloseFrameFocus', 'GetPageCloseRootIdentity',
+            'NewPageCloseCounts', 'ReadPageCloseCounts', 'ComparePageCloseRoots')) {
         $scriptText += "function $functionName { $((Get-Command $functionName -CommandType Function).Definition) }`n"
     }
     $scriptText += {
@@ -953,13 +961,27 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class PageCloseDiagnosticWindows {
+    [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] struct GUITHREADINFO {
+        public int cbSize; public int flags;
+        public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret;
+        public RECT rcCaret;
+    }
+    public struct QueueState { public bool Succeeded; public IntPtr hwndFocus; }
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint thread, ref GUITHREADINFO info);
     [DllImport("user32.dll")] public static extern IntPtr GetAncestor(IntPtr h, uint flags);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr h, StringBuilder s, int n);
     delegate bool EnumProc(IntPtr h, IntPtr l);
     [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h, EnumProc f, IntPtr l);
+    public static QueueState InputQueue() {
+        var info = new GUITHREADINFO { cbSize = Marshal.SizeOf(typeof(GUITHREADINFO)) };
+        bool ok = GetGUIThreadInfo(0, ref info);
+        return new QueueState { Succeeded = ok, hwndFocus = info.hwndFocus };
+    }
     public static IntPtr[] VisibleWidgets(IntPtr wrapper) {
         var found = new List<IntPtr>();
         var name = new StringBuilder(256);
@@ -979,7 +1001,7 @@ public static class PageCloseDiagnosticWindows {
         finally { if ($owner) { $owner.Dispose() } }
     }.ToString()
     $receipt = InvokePageCloseUiaReader $scriptText $clock
-    if (-not (IsOwnedFrame)) { return 'stale' }
+    if (-not (IsOwnedFrame) -or -not (TestPageCloseFrameFocus ([AssistantWin]) $h)) { return 'stale' }
     if ((PageCloseReaderRemaining $clock 13000) -eq 0) { return 'error' }
     $receipt
 }
