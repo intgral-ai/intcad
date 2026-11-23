@@ -50,3 +50,29 @@ At `db0b8dd35`, 17 exact IDs are present in source. The three UI IDs below are a
 Keep Q:11 and Q:12 open under U11/CD-6; do not import kit-coupled fixtures to close this table. Keep Q:10 open as a separate render-workspace evidence gap.
 
 When authorized CI runs on the reviewed candidate, use the full-mode **Native Linux selected regression gate** (`rust` in `.github/workflows/ci.yml`) to obtain the 17 exact outcomes. The ordinary PR lane in `scripts/ci/main_merge.py` applies an affected-package partition and excludes `action_matrix_sample` (K:10). Use SHA-bound `evidence-rust/rust/{selection.json,junit.xml,commands.json,receipt.json}`, not the job conclusion; preserve raw failures even if the existing grader accepts them. This route is not a new dispatch or a waiver. Separate case-level before/after Kernel rig evidence remains required for changed K12 expectations.
+
+## Independent evidence check: 17 mapped IDs
+
+The source anchors are on historical candidate `db0b8dd35`. The observed results below are from the existing post-M16 `develop` [run 45128352679](https://github.com/intgral-ai/intcad/actions/runs/45128352679), artifact `14802697491`, **not** the migration candidate or final integration SHA. The verified ZIP SHA-256 is `3f39dc38ae4800c4be9583f04e1b9c22a89ebee2c36854a52959bcf17f83d2e0`; its receipt pins `9c24061cef48327d6d04663c24ecfd3b6a8c6e81`, and its JUnit SHA-256 is `1badd4decd6fc8df3ede3fa0c67319db8f3b65b9bbff20713f96d840b9d920b2`. Raw nextest exited `100`; the existing grader exited `0`. No tests were rerun.
+
+| ID | `db0b8dd35` source anchor | `9c24061c` exact JUnit | Evidence still required |
+| --- | --- | --- | --- |
+| K:10 | `apps/solidcraft-cli/tests/action_matrix.rs:1114` | Pass | Exact sample outcome on final SHA, not shard or determinism evidence. |
+| K:11 | `apps/solidcraft-cli/tests/naming_corpus.rs:365` | Fail | Final exact result and failure comparison; not reference parity. |
+| K:12 | `crates/engine/src/cmd/edit_tests.rs:597` | Fail | Final exact result and failure comparison for fillet-control parameter preservation. |
+| K:13 | `crates/engine/src/hole_face_tests.rs:597` | Fail | Final exact result and failure comparison for full-removal diagnostic. |
+| K:14 | `crates/engine/src/tests.rs:4140` | Fail | Final exact result and failure comparison for chord/variable fillets. |
+| K:15 | `crates/engine/src/tests.rs:6779` | Fail | Final exact result and failure comparison for taper closure. |
+| K:16 | `crates/kernel/src/curvecorner_tests.rs:216` | Fail | Final exact result and failure comparison for sequential vs joined rounds. |
+| K:17 | `crates/kernel/src/blend_corner.rs:426` | Fail | Final exact result and failure comparison for vertical round after bottom rounds. |
+| K:18 | `crates/kernel/src/blend_variable.rs:584` | Fail | Final exact result and failure comparison for variable radius through a middle point. |
+| K:19 | `crates/kernel/src/corner_g2_tests.rs:252` | Fail | Final exact result and failure comparison for long-setback containment. |
+| K:20 | `crates/kernel/src/corner_g2_tests.rs:360` | Fail | Final exact result and failure comparison for rounds meeting at a G2 corner. |
+| K:21 | `crates/kernel/src/corner_g2_tests.rs:81` | Fail | Final exact result and failure comparison for closed G2 patch and neighbour continuity. |
+| K:22 | `crates/smlib/src/ops_tests.rs:324` | Fail | Final exact result and failure comparison against the balls-union assertion. |
+| Q:7 | `crates/engine/src/cmd/patterns_tests.rs:791` | Pass | Final exact pattern performance result. |
+| Q:8 | `crates/engine/src/cmd/joints_tests.rs:1054` | Missing | Exact test absent from landed source and receipt; final saved-placement migration result. |
+| Q:9 | `crates/engine/src/cmd/joints_tests.rs:1080` | Missing | Exact test absent from landed source and receipt; final unplaced-component migration result. |
+| Q:13 | `crates/ui-egui/src/viewport_appearance_tests.rs:342` | Pass | Final exact viewport cache/result, not full desktop acceptance. |
+
+Totals for the mapped cohort on `9c24061c`: **3 pass, 12 fail, 2 missing, 0 skipped**. The twelve failures agree with the c5/c14 **ID and outcome** comparison, not necessarily in failure mechanism. All 17 still lack an exact db0 result and final integration result. Changed kernel-case expectations require separate before/after evidence; no allowance or baseline update is authorized here.
