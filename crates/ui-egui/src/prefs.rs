@@ -1330,8 +1330,9 @@ preference_settings! {
     /// A thin bar along the window's bottom edge: what is being edited, the open sketch's state
     /// and the design's units (#7243). Off by default.
     status_bar: bool = false, PAGE_LAYOUT;
-    /// A rail along the window's right edge with Files, then Review, Simulation and Autocomplete;
-    /// an item opens its panel beside the rail. Off: no rail, as before it was added.
+    /// A rail along the window's right edge with the Assistant's button, Files, then Review,
+    /// Simulation and Autocomplete; an item opens its panel beside the rail. Off: no rail and
+    /// the Assistant's button in the application bar, as before the rail was added.
     right_rail: bool = true, PAGE_LAYOUT;
     /// The rail item whose panel is open (`files`, `review`, `simulation` or `autocomplete`);
     /// empty, or anything else, for none.

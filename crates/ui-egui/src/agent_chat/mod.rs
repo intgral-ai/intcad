@@ -1206,6 +1206,19 @@ pub(crate) enum AssistantMark {
     Waiting(usize),
 }
 
+impl From<AssistantMark> for crate::ui_kit::AssistantEntryState {
+    fn from(mark: AssistantMark) -> Self {
+        match mark {
+            AssistantMark::Quiet => Self::Quiet,
+            AssistantMark::Ready => Self::Ready,
+            AssistantMark::Busy => Self::Busy,
+            AssistantMark::NeedsAuth => Self::NeedsAuth,
+            AssistantMark::Stopped => Self::Stopped,
+            AssistantMark::Waiting(count) => Self::Waiting(count),
+        }
+    }
+}
+
 fn assistant_mark_for(state: State, login: &str, configured: bool, waiting: usize, stopped: bool, failed: bool) -> AssistantMark {
     if waiting > 0 {
         return AssistantMark::Waiting(waiting);

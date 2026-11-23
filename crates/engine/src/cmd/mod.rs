@@ -413,21 +413,39 @@ pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
 /// letters away (`solid.extrud` → `solid.extrude`) come before ids that end in the same word
 /// (`file.open` → `doc.open`). Empty when nothing is close.
 pub(crate) fn did_you_mean(id: &str) -> String {
+    suggest_command_ids(id, false)
+}
+
+/// Suggestions for read-only descriptions also include alternative verbs in the same namespace.
+pub(crate) fn describe_suggestions(id: &str) -> String {
+    suggest_command_ids(id, true)
+}
+
+fn same_namespace_alternative(id: &str, candidate: &str) -> bool {
+    let Some((namespace, verb)) = id.rsplit_once('.') else { return false };
+    let Some((other_namespace, other_verb)) = candidate.rsplit_once('.') else { return false };
+    namespace == other_namespace
+        && verb != other_verb
+        && [["add", "create", "new"].as_slice(), &["delete", "remove"]].iter().any(|group| group.contains(&verb) && group.contains(&other_verb))
+}
+
+fn suggest_command_ids(id: &str, include_alternatives: bool) -> String {
     let id = id.to_ascii_lowercase();
     if id.len() > 64 {
         return String::new();
     }
     let last = |s: &str| s.rsplit('.').next().unwrap_or(s).to_string();
     let near = (id.chars().count() / 4).max(2);
-    let mut found: Vec<(bool, usize, &str)> = command_specs()
+    let mut found: Vec<_> = command_specs()
         .iter()
         .filter_map(|c| {
             let d = edit_distance(&id, c.id);
-            (d <= near || last(&id) == last(c.id)).then_some((d > near, d, c.id))
+            let alternative = include_alternatives && same_namespace_alternative(&id, c.id);
+            (alternative || d <= near || last(&id) == last(c.id)).then_some((!alternative, d > near, d, c.id))
         })
         .collect();
     found.sort();
-    let ids: Vec<String> = found.iter().take(3).map(|(_, _, c)| format!("`{c}`")).collect();
+    let ids: Vec<String> = found.iter().take(3).map(|(_, _, _, c)| format!("`{c}`")).collect();
     match ids.as_slice() {
         [] => String::new(),
         [one] => format!(" (did you mean {one}?)"),

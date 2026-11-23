@@ -95,6 +95,8 @@ fn the_right_rail_and_its_panels_render_in_both_layouts_and_three_themes() {
     let (prefs, item) = open("review", "black");
     shots.push(("black-review".into(), wide, "floating", prefs, item, nothing()));
     shots.push(("black-closed".into(), wide, "floating", json!({"theme": "black"}), None, nothing()));
+    shots.push(("black-assistant-open".into(), wide, "floating", json!({"theme": "black"}), None, assistant("right")));
+    shots.push(("light-assistant-open".into(), wide, "floating", json!({"theme": "light"}), None, assistant("right")));
     let prefs = json!({"theme": "dark", "language": "zh", "right_rail_open": "files"});
     shots.push(("chinese-files".into(), wide, "floating", prefs, Some("files"), nothing()));
     let prefs = json!({"theme": "dark", "language": "ar", "right_rail_open": "autocomplete"});
@@ -113,9 +115,10 @@ fn the_right_rail_and_its_panels_render_in_both_layouts_and_three_themes() {
         if let Some(panel) = panel {
             assert!(inside(&image, panel) && panel.right() <= rail.left() + 1.0, "{name}: {panel:?} beside {rail:?}");
         }
-        for item in ["files", "review", "simulation", "autocomplete"] {
-            assert!(scenario::rect_of(&format!("rail:item:{item}")).is_some_and(|r| rail.contains_rect(r)), "{name}: {item}");
+        for row in ["rail:assistant", "rail:item:files", "rail:item:review", "rail:item:simulation", "rail:item:autocomplete"] {
+            assert!(scenario::rect_of(row).is_some_and(|r| rail.contains_rect(r)), "{name}: {row}");
         }
+        assert!(scenario::rect_of("titlebar:assistant").is_none(), "{name}: the application bar has no Assistant button beside the rail");
         if name.ends_with("files") && name.contains("floating") {
             for row in ["files:row:parts", "files:row:bracket.sc", "files:row:README.md"] {
                 assert!(scenario::rect_of(row).is_some_and(|r| panel.is_some_and(|p| p.contains_rect(r))), "{name}: {row}");

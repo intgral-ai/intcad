@@ -19,7 +19,8 @@ Everything about it is on one page: **Preferences → AI**.
   started. The page stays, so you can turn it back on.
 - **Show Assistant button in application bar** (on by default): the **Assistant** icon in the application bar
   row, which stays there however wide the window is. Turn it off to keep only the shortcut and
-  the menu entry.
+  the menu entry. Beside the right rail the bar has no such icon whatever this says: the
+  Assistant's button is the rail's first row there (see below).
 - **Connect the last-used agent when SolidCraft starts** (off by default): each launch starts
   the agent you connected last (the default one if you never connected), in the background,
   once SolidCraft has looked for the installed agents. The panel's header shows **Starting…**,
@@ -34,7 +35,9 @@ Neither applies when SolidCraft is started with `--control` for automation.
 
 With AI features on, the panel opens from:
 
-- the **Assistant** icon in the application bar;
+- **Assistant**, the first row of the right rail, which opens the panel and closes it again;
+  where no rail is drawn (Preferences › Interface › **Right rail** turned off, or the Render
+  workspace) the **Assistant** icon at the right of the application bar does the same;
 - **Ctrl+Shift+A** (Cmd+Shift+A on a Mac), which also works from the chat's own text box;
 - **View settings** (the last button of the navigation bar under the view) → **Agent chat**.
 
