@@ -55,6 +55,8 @@ jobs:
         run: python3 packaging/tests/mastra_runtime_test.py
       - name: Built-in agent staging regression
         run: python3 packaging/tests/mastra_agent_test.py
+      - name: Release checksum list regression
+        run: python3 packaging/tests/checksums_test.py
       - uses: dtolnay/rust-toolchain@1.99.1
       - name: Mastra source-build revision regression
         run: packaging/tests/mastra_revision.sh

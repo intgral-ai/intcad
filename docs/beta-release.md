@@ -37,9 +37,10 @@ new SHA.
    ```
    The `package-evidence-*` artifacts contain `build.json` and `contents.json`; the latter is the
    runtime-marker scan used by the release gate.
-5. If an asset is attached to a prerelease, update `SHA256SUMS` and the release notes with the exact
-   platform, signature state, verification scope and remaining gaps. Re-download and check the
-   hashes.
+5. If an asset is attached to a prerelease, make the checksum list with
+   `packaging/checksums.sh dist/<platform>` and attach both `SHA256SUMS.txt` (the name the in-app
+   update check reads) and `SHA256SUMS`, then update the release notes with the exact platform,
+   signature state, verification scope and remaining gaps. Re-download and check the hashes.
 
 ## What this entry does not prove
 
