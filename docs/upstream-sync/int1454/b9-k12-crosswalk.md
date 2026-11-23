@@ -53,6 +53,15 @@ The owner accepted the recommended dispositions on 2026-11-23:
 - **Q:11 — deferred this cycle.** Exclude the upstream workspace menu fixture under U11/CD-6. This is not a pass or a waiver for unrelated workspace behavior.
 - **Q:12 — deferred this cycle.** Separately exclude the upstream shell scenario fixture under U11/CD-6. This is not a pass or a waiver for unrelated shell behavior.
 
+### Q:10 feasibility on `develop`
+
+Checked before writing the required test: the behaviour does not exist on `develop` at `9c24061c`.
+
+- `crates/engine/src/render_preparation.rs` and `crates/engine/src/render_preparation/batch.rs` exist at `db0b8dd35` and are absent at `9c24061c`. `render_preparation` is declared only in the historical candidate's `crates/engine/src/lib.rs:38`; its `Kind`, `Prepared`, `prepare`, `finish`, and `finish_retained` API is unavailable on `develop`.
+- `PathHost` on `develop` (`crates/ui-egui/src/render_workspace.rs:186–193`) is only `NotStarted`, `Preparing`, `Ready` or `Failed`. It has no admission credit, retirement channel, or `prepare::inspect`/`busy`/`begin_ui` accessors.
+
+Q:10 therefore cannot be closed by adding a test. The native render-preparation retirement path would have to be ported first, which is new user-visible scope across the engine and UI, not test coverage. Choosing between porting that feature and recording Q:10 as not applicable on `develop` needs an owner decision; neither option may be assumed from "add an equivalent test".
+
 When authorized CI runs on the reviewed candidate, use the full-mode **Native Linux selected regression gate** (`rust` in `.github/workflows/ci.yml`) to obtain the 17 exact outcomes. The ordinary PR lane in `scripts/ci/main_merge.py` applies an affected-package partition and excludes `action_matrix_sample` (K:10). Use SHA-bound `evidence-rust/rust/{selection.json,junit.xml,commands.json,receipt.json}`, not the job conclusion; preserve raw failures even if the existing grader accepts them. This route is not a new dispatch or a waiver. Separate case-level before/after Kernel rig evidence remains required for changed K12 expectations.
 
 ## Independent evidence check: 17 mapped IDs
