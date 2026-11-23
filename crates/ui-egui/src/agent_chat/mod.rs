@@ -2611,7 +2611,9 @@ fn on_permission(app: &mut SolveApp, key: u64, title: String, kind: Option<&str>
     let agent = app.agent_chat.running_id.clone();
     let mode = agents::mode_for(&app.preferences, &agent);
     let remembered = agents::always_allowed(&app.preferences, &agent, &title);
-    let built_in = agents::builtin_current(app);
+    // Judged by the backend that asked, not by the picker: changing the default while an
+    // external agent runs must not make its short tool names count as Intcad's.
+    let built_in = agents::builtin_running(app);
     let why = if acp::bridge_tool(&title, kind, built_in) {
         Some("ui.ai_auto_ours")
     } else if remembered {

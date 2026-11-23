@@ -16600,7 +16600,7 @@ const BUILTIN_KEY: &str = "sk-builtin-7f2b9456-never-shown";
 const CUSTOM_KEY: &str = "sk-custom-25e93d10-never-shown";
 
 fn builtin_agent() -> agents::Builtin {
-    agents::Builtin { program: "/opt/intcad/mastra-agent".into(), args: Vec::new(), data: None }
+    agents::Builtin { program: "/opt/intcad/mastra-agent".into(), args: Vec::new(), packaged: true, data: None }
 }
 
 /// A snapshot as the built-in agent sends it: its five plans, all signed out, and its five keys,
@@ -17034,7 +17034,7 @@ fn connect_starts_the_built_in_agent_with_its_folder_and_its_keys_and_no_session
     let program = fake_agent_program(&dir, "mastra-agent", &snapshot);
 
     let (mut app, keys, ctx) = app_with_builtin();
-    app.builtin_agent = Some(agents::Builtin { program: program.clone(), args: Vec::new(), data: Some(data.clone()) });
+    app.builtin_agent = Some(agents::Builtin { program: program.clone(), args: Vec::new(), packaged: true, data: Some(data.clone()) });
     app.preferences.chat_execution = agents::Execution::Mastra;
     keys.set("mastra/key/openai", BUILTIN_KEY).unwrap();
     connect(&mut app, &ctx);
@@ -17071,7 +17071,7 @@ fn the_built_in_agent_is_not_started_without_its_data_folder() {
     std::fs::write(dir.join("settings"), b"not a folder").unwrap();
     for data in [Some(dir.join("settings").join("mastra")), None] {
         let (mut app, _keys, ctx) = app_with_builtin();
-        app.builtin_agent = Some(agents::Builtin { program: program.clone(), args: Vec::new(), data: data.clone() });
+        app.builtin_agent = Some(agents::Builtin { program: program.clone(), args: Vec::new(), packaged: true, data: data.clone() });
         app.preferences.chat_execution = agents::Execution::Mastra;
         connect(&mut app, &ctx);
         assert_eq!(app.agent_chat.state(), State::Failed, "{data:?}");
@@ -17104,7 +17104,7 @@ fn showing_the_assistant_starts_the_built_in_agent_once_and_no_other_agent() {
     };
     let mut h = crate::scenario::Harness::new();
     h.app.home.open = false;
-    h.app.builtin_agent = Some(agents::Builtin { program, args: Vec::new(), data: Some(dir.join("settings").join("mastra")) });
+    h.app.builtin_agent = Some(agents::Builtin { program, args: Vec::new(), packaged: true, data: Some(dir.join("settings").join("mastra")) });
     h.frames(3);
     assert!(h.app.agent_chat.state.is_none() && starts("mastra-agent") == 0, "closed, the panel starts nothing");
     h.call("ui.agent_chat", json!({"open": true, "minimized": true}));
@@ -17146,7 +17146,7 @@ fn showing_the_assistant_starts_the_built_in_agent_once_and_no_other_agent() {
     // A start that failed is not tried again by itself: Retry is the user's.
     let mut h = crate::scenario::Harness::new();
     h.app.home.open = false;
-    h.app.builtin_agent = Some(agents::Builtin { program: dir.join("no-such-program"), args: Vec::new(), data: None });
+    h.app.builtin_agent = Some(agents::Builtin { program: dir.join("no-such-program"), args: Vec::new(), packaged: true, data: None });
     h.call("ui.agent_chat", json!({"open": true}));
     h.frames(3);
     assert_eq!(h.app.agent_chat.state(), State::Failed);

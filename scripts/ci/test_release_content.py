@@ -259,7 +259,26 @@ class AgentContentDecision(unittest.TestCase):
         problems = content.problems(SHA, descriptors, contents, "mastra-agent")
         self.assertTrue(any(identity in problem and "does not match its source" in problem for problem in problems), problems)
         contents[identity]["distribution"] = "mastra-agent"
+        # The repack's own bytes carry the agent too, as the recorder records them.
+        contents[identity]["checked"] = [{"name": "pkg", "sha256": DG2, "format": "tar", "entries": 10}]
+        contents[identity]["agents"] = {"pkg": MAC_AGENT, "pkg-src": MAC_AGENT}
+        contents[identity]["sourceArtifact"] = "pkg-src"
         self.assertEqual(content.problems(SHA, descriptors, contents, "mastra-agent"), [])
+
+    def test_a_repack_without_the_agent_in_its_own_bytes_fails(self):
+        # The source tarball carries the agent; the repack's own payload does not.
+        descriptors, contents = self.evidence()
+        identity = "release-flatpak-x86_64"
+        descriptors[identity] = build(identity, [("pkg", DG2)])
+        contents[identity] = report(identity, [("pkg", DG2)], distribution="mastra-agent",
+                                    derived="release-linux-x86_64", source_name="src", source_sha=DG)
+        contents[identity]["agents"] = {
+            "pkg": {"present": False, "node": False, "nodeTargets": [], "missing": [], "skills": []},
+            "src": WHOLE_AGENT,
+        }
+        problems = content.problems(SHA, descriptors, contents, "mastra-agent")
+        self.assertTrue(any(identity in problem and "pkg: carries no mastra-agent/" in problem
+                            for problem in problems), problems)
 
     def test_a_declaration_the_packages_do_not_match_fails(self):
         descriptors, contents = self.evidence()

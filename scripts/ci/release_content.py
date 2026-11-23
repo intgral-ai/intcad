@@ -47,7 +47,7 @@ AGENT_PATHS = {
 SLICES = ("aarch64-apple-darwin", "x86_64-apple-darwin")
 
 
-def _agent_problem(carried):
+def _agent_problem(carried, identity=None):
     """Why one artifact's agent does not work, or ``""`` when it does."""
     if not isinstance(carried, dict) or not carried.get("present"):
         return "carries no mastra-agent/ folder"
@@ -112,23 +112,38 @@ def problems(source_revision, descriptors, contents, declaration="native"):
             # Every artifact of a supported package must carry the agent whole, from its own
             # bytes: a correct zip beside a broken MSI is a failed package, not a passing one.
             per_artifact = report.get("agents")
+            inspected = {
+                item.get("name")
+                for item in report.get("checked") or []
+                if isinstance(item, dict)
+            }
             if not isinstance(per_artifact, dict) or not per_artifact:
                 failures.append(identity + ": no per-artifact agent evidence; the built package's "
                                 "contents were not recorded one by one")
             else:
+                # Every inspected artifact needs its own answer; an artifact the recorder looked
+                # at but did not judge is a hole, not a pass.
+                for name in sorted(inspected - set(per_artifact)):
+                    failures.append(identity + ": " + str(name) + ": inspected without an agent "
+                                    "verdict")
                 for name in sorted(per_artifact):
                     carried = per_artifact[name]
-                    problem = _agent_problem(carried)
+                    problem = _agent_problem(carried, identity)
                     if problem:
                         failures.append(identity + ": " + name + ": " + problem)
-            if isinstance(agent, dict) and agent.get("present"):
-                # A universal app's folder exists per CPU: both halves must be there.
-                needed_slices = _slices_for(identity)
-                got = set(agent.get("nodeTargets") or [])
-                absent = [slice_ for slice_ in needed_slices if slice_ not in got]
-                if absent:
-                    failures.append(identity + ": the package's agent has no Node for "
-                                    + _sample(absent) + " (found " + _sample(sorted(got)) + ")")
+            # A universal app's folder exists per CPU: both halves must be there, in the summary
+            # and in every artifact's own answer.
+            needed_slices = _slices_for(identity)
+            if needed_slices:
+                summaries = [agent] + [per_artifact[name] for name in sorted(per_artifact or {})]
+                for carried in summaries:
+                    if not isinstance(carried, dict):
+                        continue
+                    got = set(carried.get("nodeTargets") or [])
+                    absent = [slice_ for slice_ in needed_slices if slice_ not in got]
+                    if absent:
+                        failures.append(identity + ": the package's agent has no Node for "
+                                        + _sample(absent) + " (found " + _sample(sorted(got)) + ")")
         elif isinstance(agent, dict) and agent.get("present"):
             failures.append(identity + ": carries mastra-agent/ but the release supports the agent on "
                             + _sample(AGENT_IDENTITIES) + " only")
@@ -215,6 +230,21 @@ def problems(source_revision, descriptors, contents, declaration="native"):
         if not proven.get(source):
             failures.append(identity + ": derived package source is not a verified package: " + str(source))
             continue
+        # The repack is what a person installs: its own bytes must carry the agent, in every
+        # artifact of it, and its source's digest must be the one inspected.
+        if carrying_agent:
+            per_artifact = report.get("agents")
+            own = {
+                name: carried for name, carried in (per_artifact or {}).items()
+                if name not in (report.get("sourceArtifact"),)
+            }
+            if not own:
+                failures.append(identity + ": no evidence from the repack's own bytes; only its "
+                                "source was looked at")
+            for name in sorted(own):
+                problem = _agent_problem(own[name], identity)
+                if problem:
+                    failures.append(identity + ": " + name + ": " + problem)
         # A derived package is the source tarball repacked: it carries what the source carries.
         if report.get("distribution") != (contents.get(source) or {}).get("distribution"):
             failures.append(identity + ": derived package distribution " + str(report.get("distribution"))
