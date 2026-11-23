@@ -792,6 +792,24 @@ Release-side consequence: the scope item is no longer missing, but it cannot joi
 that check is fixed and the branch is ready. When it is, the visual pass (Linux and Windows at 100 %
 and 150 %: themes, fonts, DPI, panel resize, clipping, basic CAD) is the acceptance this role owes.
 
+### 12.4.11 Linux Gate E with the CI artifact (2026-11-23, late)
+
+Redone with the **CI-built** tarball rather than the rehearsal one, in a clean Ubuntu 24.04 VM
+(`…rc013`), same user data folder throughout:
+
+```
+install published intcad-0.1.2-linux-x86_64.tar.gz
+  (sha256 d6de276e94fed11e172db214b702141aa9d3e193c47ea9782765607534c6854b)   -> intcad 0.1.2
+launch, save the sample as ~/upgci/from-012.sc (45,561 bytes), app.quit  -> "0.1.2 exited"
+replace the tree with the CI candidate's tarball                        -> intcad 0.1.3
+launch on that design -> ui.documents = [{"name": "from-012", "dirty": false}]
+open the Assistant    -> agent runs: ~/apps/intcad/lib/intcad/mastra-agent/node …/agent/main.mjs
+data folder           -> intcad-context, solidcraft-{checking,editing,mechanisms,modeling}
+```
+
+Both platforms now have the upgrade with release bytes: Linux here, Windows in §12.4.6. What neither
+shows is the one-click path, which needs a published release (§10).
+
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
 The CTO supplied a DeepSeek API key for acceptance. It was used only in the throwaway VM, kept in
