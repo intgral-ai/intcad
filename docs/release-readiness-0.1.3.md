@@ -371,7 +371,26 @@ The app binary has to come from an Ubuntu build, so it was built in the E2E buil
 | Agent's own data folder | `~/pkgrun/data/intcad/mastra/home/.agents/skills/` holds `solidcraft-{checking,editing,mechanisms,modeling}` and `.modelling-skills.json`, 100K/12K/40K/28K |
 | Second control port in the app log | `127.0.0.1:37059` — the agent's own channel, opened after the panel did |
 
-Evidence: `~/.local/state/intcad-e2e/runs/intcad-e2e-int1503-rc-rehearsal-3a92c4b6125c-rel012/20261123T075538Z-2614506/screenshots/rel012-pkg-assistant.png`.
+The same run repeated from the final tarball rather than a hand-made layout: the 461.8 MB
+`intcad-0.1.2-linux-x86_64.tar.gz` (sha256 `c8dcfabfcad3e6f98d9a7cb6bf0aa7fbcaec5da51423418fd809f91bd2a1d519`,
+built with the Ubuntu binaries and `SHA256SUMS.txt` written by `packaging/checksums.sh`) extracted in
+a fresh VM, `bin/intcad-cli --version` → `intcad-cli 0.1.2`, `bin/intcad --version` → `intcad 0.1.2`,
+bundled `node --version` → `v22.23.4`, then launched from `bin/intcad`: the agent started from
+inside the extracted tree (`/tmp/final/intcad-0.1.2-linux-x86_64/lib/intcad/mastra-agent/node …/agent/main.mjs`)
+and the four skills appeared under the app's data folder. The tarball still says `0.1.2`: the
+candidate needs its version bump before any of this is a release.
+
+Reproduce (Linux x86_64, from a worktree containing `develop` + #204 + #214's agent plumbing):
+
+```
+node packages/mastra-runtime/scripts/agent-package.mjs build --target x86_64-unknown-linux-gnu \
+  --out target/mastra-agent/x86_64-unknown-linux-gnu --node <node 22.23.4>
+packaging/linux/package.sh --skip-build --formats tar --with-mastra-agent   # after an Ubuntu build
+packaging/checksums.sh dist/
+```
+
+Evidence: `~/.local/state/intcad-e2e/runs/intcad-e2e-int1503-rc-rehearsal-3a92c4b6125c-rel012/20261123T075538Z-2614506/screenshots/rel012-pkg-assistant.png`
+and `rel012-final-tar.png`.
 
 So the installed shape starts, finds the packaged agent, and that agent installs the four skills in
 the app's own data folder — Gate C's install half, end to end, from an installed layout rather than
