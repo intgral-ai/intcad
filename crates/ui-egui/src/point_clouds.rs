@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use egui::{Painter, Shape};
 use solidcraft_engine::doc::point_cloud::Keep;
-use solidcraft_engine::doc::point_cloud::{ColorBy, PLAIN, PointCloud, Source, byte};
+use solidcraft_engine::doc::point_cloud::{ColorBy, On, PLAIN, PointCloud, Source, byte};
 use solidcraft_engine::doc::point_cloud_distribution::color_range_by;
-use solidcraft_gpu::view::{CloudFilter, CloudStyle, ColorMode, Dot, FILTERS, GpuCloud, cloud_dot};
+use solidcraft_viewport_gpu::view::{Cell, CloudFilter, CloudStyle, ColorMode, FILTERS, GpuCloud, cloud_cell};
 
 use crate::SolveApp;
 use crate::browser::point_cloud_tracks::{Ask, Paint, Tracks};
@@ -88,32 +88,33 @@ fn records(c: &PointCloud) -> Arc<Vec<u8>> {
     // The coloured property, then the filtered ones.
     let sources: [Option<Source>; 1 + FILTERS] = std::array::from_fn(|k| {
         let name = if k == 0 { c.colored_property() } else { c.filters.get(k - 1).map(|f| f.property.as_str()) };
-        name.and_then(|n| c.source(n))
+        name.and_then(|n| c.source(n, On::Point))
     });
-    let mut out = Vec::with_capacity(c.len() * solidcraft_gpu::view::DOT_SIZE);
+    let mut out = Vec::with_capacity(c.len() * solidcraft_viewport_gpu::view::CELL_SIZE);
     for i in 0..c.len() {
         // Placed in double precision: the cloud's origin may be far from the design's.
         let w = c.world_point(i).unwrap_or_default();
         let at = [w.x as f32, w.y as f32, w.z as f32];
         let values = sources.map(|s| {
             s.map(|s| match s {
-                Source::Coordinate(k) => at.get(k).copied().unwrap_or(0.0),
-                Source::Column(v) => v.get(i).copied().unwrap_or(0.0),
+                Source::Coordinate(k) => [at.get(k).copied().unwrap_or(0.0); 3],
+                Source::Corners(v) | Source::Element(v) => [v.get(i).copied().unwrap_or(0.0); 3],
             })
         });
-        let mut dot = Dot { at, rgb: own(i), ..Default::default() };
+        // A point is a cell whose three corners are its own (the shaders draw it as a dot).
+        let mut cell = Cell { corners: [at; 3], rgb: own(i), ..Default::default() };
         let [value, filtered @ ..] = values;
         if let Some(v) = value {
-            dot.value = v;
-            dot.has |= 1 << FILTERS;
+            cell.value = v;
+            cell.has |= 1 << FILTERS;
         }
         for (k, f) in filtered.into_iter().enumerate() {
-            if let (Some(f), Some(slot)) = (f, dot.filtered.get_mut(k)) {
+            if let (Some(f), Some(slot)) = (f, cell.filtered.get_mut(k)) {
                 *slot = f;
-                dot.has |= 1 << k;
+                cell.has |= 1 << k;
             }
         }
-        cloud_dot(&mut out, &dot);
+        cloud_cell(&mut out, &cell);
     }
     Arc::new(out)
 }
@@ -185,7 +186,7 @@ pub fn gpu_clouds(app: &SolveApp, ctx: &egui::Context) -> Vec<GpuCloud> {
                     }
                 };
                 let playing = |k: usize| app.tree.cloud_panel.as_ref().and_then(|p| p.playing(c.id, k));
-                GpuCloud { id: c.id, version, dots, style: style(ctx, c, playing) }
+                GpuCloud { id: c.id, version, dots, segments: Default::default(), triangles: Default::default(), style: style(ctx, c, playing) }
             })
             .collect()
     })
@@ -234,7 +235,7 @@ mod tests {
         assert!(crate::browser::is_open(&h.app, "point_clouds", true));
         let first = gpu_clouds(&h.app, &h.ctx);
         assert_eq!(first.len(), 1);
-        let size = solidcraft_gpu::view::DOT_SIZE;
+        let size = solidcraft_viewport_gpu::view::CELL_SIZE;
         assert_eq!(first[0].dots.len(), 2 * size);
         // The second point: at x = 10, green.
         assert_eq!(&first[0].dots[size..size + 4], &10f32.to_le_bytes());

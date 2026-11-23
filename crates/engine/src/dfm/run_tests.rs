@@ -967,6 +967,8 @@ fn a_real_overlapping_sheet_becomes_a_failed_app_finding_with_an_anchor() {
             ext: (0.0, 0.0),
             slope: (0.0, 0.0),
             tear: (false, false),
+            tear_curved: (false, false),
+            tear_ease: (0.0, 0.0),
             shape: Some(vec![Vec2::new(30.0, 5.0), Vec2::new(35.0, 5.0), Vec2::new(35.0, 9.0), Vec2::new(30.0, 9.0)]),
             exact: None,
             zone_shape: None,

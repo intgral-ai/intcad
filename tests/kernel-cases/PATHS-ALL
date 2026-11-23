@@ -35,7 +35,12 @@ crates/kernel/src/record.rs
 crates/kernel/src/shell_groups.rs
 crates/kernel/src/smlib_boolean.rs
 crates/kernel/src/smlib_sweeps.rs
-crates/kernel/src/tess/**
+# The vendored kernel itself: core modelling, ops, record and tessellation.
+solidcore/crates/solidcore/**
+solidcore/crates/solidcore-ops/**
+solidcore/crates/solidcore-record/**
+solidcore/crates/solidcore-convert/**
+solidcore/crates/solidcore-tess/**
 crates/kernel/src/topo.rs
 crates/kernel/src/validity.rs
 crates/kernel/src/watch.rs

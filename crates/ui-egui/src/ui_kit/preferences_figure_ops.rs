@@ -319,7 +319,7 @@ pub(crate) fn paint_navigation_axes(p: &Painter, rect: Rect) {
     let t = Tokens::get();
     let c = rect.center();
     p.circle(c, 46.0 * scale, t.overlay.gamma_multiply(0.35), Stroke::new(scale, t.border.gamma_multiply(0.75)));
-    let cam = solidcraft_engine::render::Camera::default();
+    let cam = solidcraft_viewport::Camera::default();
     let (right, up, back) = cam.basis();
     use solidcore_record::Vec3;
     use solidcraft_engine::geom::Vec3Geom;

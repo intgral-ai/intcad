@@ -63,12 +63,12 @@ pub fn now_ms() -> u64 {
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use store::{AdmissionRecord, RECORD_SCHEMA, StateRecord, Store, SubmissionRecord, WorkerRecord};
+use store::{AdmissionRecord, RECORD_SCHEMA, StateRecord, Store, SubmissionRecord, TombstoneRecord, TransactionGuard, WorkerRecord};
 
 use crate::schema::snapshot::CandidateRef;
 
@@ -213,8 +213,6 @@ pub struct ValidationPort {
     profiles: Mutex<BTreeMap<(String, String), CheckProfile>>,
     /// Serializes admission so concurrent same-key submits observe the first writer's key.
     admit: Mutex<()>,
-    /// Serializes terminal commits and cancellation markers.
-    commit: Mutex<()>,
     /// Serializes pin/unpin with the candidate sweep in `cleanup`.
     pins: Mutex<()>,
 }
@@ -264,7 +262,6 @@ impl ValidationPort {
             host_id: format!("host-{}", keys::uuid_v4()),
             profiles: Mutex::new(profiles),
             admit: Mutex::new(()),
-            commit: Mutex::new(()),
             pins: Mutex::new(()),
         };
         if reconcile {
@@ -308,6 +305,7 @@ impl ValidationPort {
     /// `submit` with the original turn/session owner binding.
     pub fn submit_for(&self, candidate: &CandidateRef, profile: &ProfileRef, request_id: &str, owner: &str) -> Result<SubmitResult> {
         let _guard = self.admit.lock().map_err(|_| ValidationError::internal("validation admission lock was poisoned"))?;
+        let transaction = self.store.transaction()?;
         let now = self.clock.now_ms();
         let key = SubmissionKey::parse(request_id, now)?;
         if owner.is_empty() || owner.len() > 128 {
@@ -326,7 +324,7 @@ impl ValidationPort {
             if submission.owner != owner {
                 return Err(ValidationError::invalid_request("this submission key belongs to another owner"));
             }
-            return self.resume_submission(&key, &submission, profile, now);
+            return self.resume_submission(&key, &submission, profile, now, &transaction);
         }
         // A crash between admission and the key file must not create a second job.
         if let Some((run_id, admission)) = self.find_admission_by_key(&key.text)? {
@@ -335,6 +333,9 @@ impl ValidationPort {
             }
             if admission.owner != owner {
                 return Err(ValidationError::invalid_request("this submission key belongs to another owner"));
+            }
+            if let Some(retired) = self.retirement(&run_id, &transaction)? {
+                return self.retired_result(&retired, &key, &admission.candidate, &admission.profile, now);
             }
             let record = SubmissionRecord {
                 schema_version: RECORD_SCHEMA.into(),
@@ -350,7 +351,7 @@ impl ValidationPort {
             if !key_path.is_file() {
                 self.store.write_json_new(&key_path, &record)?;
             }
-            self.repair_state(&run_id, &admission, now)?;
+            self.repair_state(&run_id, &admission, now, &transaction)?;
             let state = self.load_state(&run_id)?;
             if !state.state.is_terminal() {
                 self.pin_recovered(&run_id, &admission.candidate.candidate_id)?;
@@ -364,7 +365,7 @@ impl ValidationPort {
         if verified.manifest.get("engineVersion").and_then(Value::as_str) != Some(runner_engine.as_str()) {
             return Err(ValidationError::invalid_candidate("the runner engine version does not match the captured candidate manifest"));
         }
-        self.enforce_admission(now)?;
+        self.enforce_admission(now, &transaction)?;
         let run_id = keys::run_id(now);
         let record = SubmissionRecord {
             schema_version: RECORD_SCHEMA.into(),
@@ -410,7 +411,7 @@ impl ValidationPort {
                 if submission.owner != record.owner {
                     return Err(ValidationError::invalid_request("this submission key belongs to another owner"));
                 }
-                return self.resume_submission(&key, &submission, profile, now);
+                return self.resume_submission(&key, &submission, profile, now, &transaction);
             }
             Err(error) => return Err(error),
         }
@@ -438,10 +439,20 @@ impl ValidationPort {
 
     /// A key-mapped submission is resumed without touching the profile registry or candidate
     /// store unless the admission itself has to be repaired.
-    fn resume_submission(&self, key: &SubmissionKey, submission: &SubmissionRecord, profile: &ProfileRef, now: u64) -> Result<SubmitResult> {
+    fn resume_submission(
+        &self,
+        key: &SubmissionKey,
+        submission: &SubmissionRecord,
+        profile: &ProfileRef,
+        now: u64,
+        transaction: &TransactionGuard,
+    ) -> Result<SubmitResult> {
+        if let Some(retired) = self.retirement(&submission.run_id, transaction)? {
+            return self.retired_result(&retired, key, &submission.candidate, &submission.profile, now);
+        }
         match self.load_admission(&submission.run_id) {
             Ok(admission) => {
-                self.repair_state(&submission.run_id, &admission, now)?;
+                self.repair_state(&submission.run_id, &admission, now, transaction)?;
                 let state = self.load_state(&submission.run_id)?;
                 if !state.state.is_terminal() {
                     self.pin_recovered(&submission.run_id, &admission.candidate.candidate_id)?;
@@ -468,7 +479,7 @@ impl ValidationPort {
                 };
                 self.store.write_profile(&submission.run_id, &resolved)?;
                 self.store.ensure_json(&self.store.admission_path(&submission.run_id), &admission)?;
-                self.repair_state(&submission.run_id, &admission, now)?;
+                self.repair_state(&submission.run_id, &admission, now, transaction)?;
                 let state = self.load_state(&submission.run_id)?;
                 if !state.state.is_terminal() {
                     self.pin_recovered(&submission.run_id, &submission.candidate.candidate_id)?;
@@ -480,7 +491,10 @@ impl ValidationPort {
     }
 
     /// Repair a lost state file from the admission (queued) or an already committed report.
-    fn repair_state(&self, run_id: &str, admission: &AdmissionRecord, now: u64) -> Result<()> {
+    fn repair_state(&self, run_id: &str, admission: &AdmissionRecord, now: u64, transaction: &TransactionGuard) -> Result<()> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         if self.store.state_path(run_id).is_file() {
             return Ok(());
         }
@@ -580,9 +594,9 @@ impl ValidationPort {
         Ok(None)
     }
 
-    fn enforce_admission(&self, now: u64) -> Result<()> {
+    fn enforce_admission(&self, now: u64, transaction: &TransactionGuard) -> Result<()> {
         if self.store.count_admissions() >= self.limits.job_records {
-            self.purge_records(now);
+            self.purge_records(now, transaction);
             if self.store.count_admissions() >= self.limits.job_records {
                 return Err(ValidationError::resource_exhausted(
                     "the validation job-record cap is full",
@@ -591,7 +605,7 @@ impl ValidationPort {
                 ));
             }
         }
-        let (queued, running) = self.counts()?;
+        let (queued, running) = self.counts(transaction)?;
         if queued >= self.limits.queue && running >= self.limits.workers {
             return Err(ValidationError::resource_exhausted("the validation queue is full", "validationQueue", self.limits.queue as u64));
         }
@@ -601,10 +615,13 @@ impl ValidationPort {
         Ok(())
     }
 
-    fn counts(&self) -> Result<(usize, usize)> {
+    fn counts(&self, transaction: &TransactionGuard) -> Result<(usize, usize)> {
         let mut queued = 0;
         let mut running = 0;
         for run_id in self.store.run_ids() {
+            if self.retirement(&run_id, transaction)?.is_some() {
+                continue;
+            }
             if let Ok(state) = self.load_state(&run_id) {
                 match state.state {
                     ValidationState::Queued => queued += 1,
@@ -618,9 +635,13 @@ impl ValidationPort {
 
     /// `status(runId)`.
     pub fn status(&self, run_id: &str) -> Result<RunStatus> {
+        let transaction = self.store.transaction()?;
+        if self.retirement(run_id, &transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let admission = self.load_admission(run_id)?;
         if !self.store.state_path(run_id).is_file() {
-            self.repair_state(run_id, &admission, self.clock.now_ms())?;
+            self.repair_state(run_id, &admission, self.clock.now_ms(), &transaction)?;
         }
         let state = self.load_state(run_id)?;
         let report_available = self.report_available(run_id, &admission, &state);
@@ -648,17 +669,38 @@ impl ValidationPort {
     /// `cancel(runId)`: persist the marker before any signal, then finalize a queued job. A
     /// terminal state is preserved.
     pub fn cancel(&self, run_id: &str) -> Result<CancelResult> {
-        let _guard = self.commit.lock().map_err(|_| ValidationError::internal("validation commit lock was poisoned"))?;
+        let transaction = self.store.transaction()?;
+        self.cancel_locked(run_id, &transaction)
+    }
+
+    /// Bounded storage admission for the host's independent cancellation control worker.
+    /// Failure never claims a marker or terminal state was persisted.
+    pub fn cancel_until(&self, run_id: &str, deadline: Instant, stop: &AtomicBool) -> Result<CancelResult> {
+        let transaction = self.store.transaction_until(deadline, stop)?;
+        self.cancel_locked(run_id, &transaction)
+    }
+
+    fn cancel_locked(&self, run_id: &str, transaction: &TransactionGuard) -> Result<CancelResult> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let admission = self.load_admission(run_id)?;
         if !self.store.state_path(run_id).is_file() {
-            self.repair_state(run_id, &admission, self.clock.now_ms())?;
+            self.repair_state(run_id, &admission, self.clock.now_ms(), transaction)?;
         }
         let state = self.load_state(run_id)?;
         if state.state.is_terminal() {
+            self.unpin(run_id)?;
             return Ok(CancelResult { run_id: run_id.into(), state: state.state });
+        }
+        if self.adopt_report(run_id, &admission, transaction)? {
+            self.unpin(run_id)?;
+            return Ok(CancelResult { run_id: run_id.into(), state: self.load_state(run_id)?.state });
         }
         let marker = self.store.cancel_path(run_id);
         self.store.write_bytes_new(&marker, b"cancelled\n").or_else(|error| if marker.is_file() { Ok(()) } else { Err(error) })?;
+        #[cfg(test)]
+        tests::persisted("marker");
         let state = self.load_state(run_id)?;
         if !state.state.is_terminal() {
             let profile = self.store.read_profile(run_id)?;
@@ -668,8 +710,8 @@ impl ValidationPort {
                 ValidationState::Cancelled,
                 Some(ValidationError::cancelled("the job was cancelled before its result committed")),
             );
-            self.commit_report(run_id, report, ValidationState::Cancelled)?;
-            return Ok(CancelResult { run_id: run_id.into(), state: ValidationState::Cancelled });
+            let state = self.commit_report(run_id, report, ValidationState::Cancelled, transaction)?;
+            return Ok(CancelResult { run_id: run_id.into(), state });
         }
         Ok(CancelResult { run_id: run_id.into(), state: state.state })
     }
@@ -691,14 +733,17 @@ impl ValidationPort {
     /// Claim the oldest queued job and persist its worker identity. `None` when no worker slot or
     /// no queued job is available.
     pub fn start_next(&self) -> Result<Option<RunJob>> {
-        let _guard = self.commit.lock().map_err(|_| ValidationError::internal("validation commit lock was poisoned"))?;
-        let (_, running) = self.counts()?;
+        let transaction = self.store.transaction()?;
+        let (_, running) = self.counts(&transaction)?;
         if running >= self.limits.workers {
             return Ok(None);
         }
         let now = self.clock.now_ms();
         let mut queued: Vec<(u64, String)> = Vec::new();
         for run_id in self.store.run_ids() {
+            if self.retirement(&run_id, &transaction)?.is_some() {
+                continue;
+            }
             let state = match self.load_state(&run_id) {
                 Ok(state) => state,
                 Err(_) => continue,
@@ -707,10 +752,17 @@ impl ValidationPort {
                 continue;
             }
             let admission = self.load_admission(&run_id)?;
+            if self.adopt_report(&run_id, &admission, &transaction)? {
+                self.unpin(&run_id)?;
+                continue;
+            }
             queued.push((admission.created_at_ms, run_id));
         }
         queued.sort();
         for (_, run_id) in queued {
+            if self.retirement(&run_id, &transaction)?.is_some() {
+                continue;
+            }
             let state = match self.load_state(&run_id) {
                 Ok(state) => state,
                 Err(_) => continue,
@@ -727,7 +779,7 @@ impl ValidationPort {
                     ValidationState::InfrastructureError,
                     Some(ValidationError::report_mismatch("the frozen profile does not match its admitted digest")),
                 );
-                self.commit_report(&run_id, report, ValidationState::InfrastructureError)?;
+                self.commit_report(&run_id, report, ValidationState::InfrastructureError, &transaction)?;
                 continue;
             }
             if self.store.marker_exists(&run_id) {
@@ -737,7 +789,7 @@ impl ValidationPort {
                     ValidationState::Cancelled,
                     Some(ValidationError::cancelled("the job was cancelled before a worker started")),
                 );
-                self.commit_report(&run_id, report, ValidationState::Cancelled)?;
+                self.commit_report(&run_id, report, ValidationState::Cancelled, &transaction)?;
                 continue;
             }
             if now >= admission.queued_deadline_ms {
@@ -747,7 +799,7 @@ impl ValidationPort {
                     ValidationState::InfrastructureError,
                     Some(ValidationError::timeout("the job expired in the admission queue")),
                 );
-                self.commit_report(&run_id, report, ValidationState::InfrastructureError)?;
+                self.commit_report(&run_id, report, ValidationState::InfrastructureError, &transaction)?;
                 continue;
             }
             if profile.checks.len() > self.limits.checks {
@@ -757,7 +809,7 @@ impl ValidationPort {
                     ValidationState::InfrastructureError,
                     Some(ValidationError::resource_exhausted("the profile exceeds the host check limit", "checks", self.limits.checks as u64)),
                 );
-                self.commit_report(&run_id, report, ValidationState::InfrastructureError)?;
+                self.commit_report(&run_id, report, ValidationState::InfrastructureError, &transaction)?;
                 continue;
             }
             if let Err(error) = self.pin_run(&run_id, &admission.candidate.candidate_id) {
@@ -767,7 +819,7 @@ impl ValidationPort {
                     ValidationState::InfrastructureError,
                     Some(ValidationError::invalid_candidate(format!("the candidate inputs could not be pinned: {error}"))),
                 );
-                self.commit_report(&run_id, report, ValidationState::InfrastructureError)?;
+                self.commit_report(&run_id, report, ValidationState::InfrastructureError, &transaction)?;
                 continue;
             }
             let worker = WorkerRecord {
@@ -794,7 +846,7 @@ impl ValidationPort {
                     ValidationState::Cancelled,
                     Some(ValidationError::cancelled("the job was cancelled before the worker started")),
                 );
-                self.commit_report(&run_id, report, ValidationState::Cancelled)?;
+                self.commit_report(&run_id, report, ValidationState::Cancelled, &transaction)?;
                 continue;
             }
             let state = StateRecord {
@@ -805,6 +857,8 @@ impl ValidationPort {
                 report_available: false,
             };
             self.store.write_json_replace(&self.store.state_path(&run_id), &state)?;
+            #[cfg(test)]
+            tests::persisted("running");
             return Ok(Some(RunJob {
                 run_id,
                 candidate: admission.candidate,
@@ -823,11 +877,19 @@ impl ValidationPort {
     }
 
     pub(crate) fn complete_by(&self, run_id: &str, outcome: RunnerOutcome, runner: &RunnerIdentity) -> Result<ValidationState> {
-        let _guard = self.commit.lock().map_err(|_| ValidationError::internal("validation commit lock was poisoned"))?;
+        let transaction = self.store.transaction()?;
+        if self.retirement(run_id, &transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let admission = self.load_admission(run_id)?;
         let state = self.load_state(run_id)?;
         if state.state.is_terminal() {
+            self.unpin(run_id)?;
             return Ok(state.state);
+        }
+        if self.adopt_report(run_id, &admission, &transaction)? {
+            self.unpin(run_id)?;
+            return Ok(self.load_state(run_id)?.state);
         }
         let profile = self.store.read_profile(run_id)?;
         if runner != &admission.runner {
@@ -837,8 +899,7 @@ impl ValidationPort {
                 ValidationState::InfrastructureError,
                 Some(ValidationError::report_mismatch("the worker identity does not match the admitted runner")),
             );
-            self.commit_report(run_id, report, ValidationState::InfrastructureError)?;
-            return Ok(ValidationState::InfrastructureError);
+            return self.commit_report(run_id, report, ValidationState::InfrastructureError, &transaction);
         }
         if self.store.marker_exists(run_id) {
             let checks = match &outcome {
@@ -854,8 +915,7 @@ impl ValidationPort {
                 worker_started(run_id, &self.store).map(ids::timestamp),
                 self.clock.now_ms(),
             )?;
-            self.commit_report(run_id, report, ValidationState::Cancelled)?;
-            return Ok(ValidationState::Cancelled);
+            return self.commit_report(run_id, report, ValidationState::Cancelled, &transaction);
         }
         let started_at = worker_started(run_id, &self.store).map(ids::timestamp);
         match outcome {
@@ -871,8 +931,7 @@ impl ValidationPort {
                 };
                 let desired = aggregate_state(&report);
                 let report = finalize_state(report, desired);
-                self.commit_report(run_id, report, desired)?;
-                Ok(desired)
+                self.commit_report(run_id, report, desired, &transaction)
             }
             RunnerOutcome::Cancelled { finished_at_ms, checks, .. } => {
                 let report = match self.report_with_checks(
@@ -892,8 +951,7 @@ impl ValidationPort {
                         Some(ValidationError::cancelled(format!("the cancelled worker's output is malformed: {error}"))),
                     ),
                 };
-                self.commit_report(run_id, report, ValidationState::Cancelled)?;
-                Ok(ValidationState::Cancelled)
+                self.commit_report(run_id, report, ValidationState::Cancelled, &transaction)
             }
             RunnerOutcome::Infrastructure { finished_at_ms, message, .. } => {
                 let report = self.report_with_checks(
@@ -905,8 +963,7 @@ impl ValidationPort {
                     started_at,
                     finished_at_ms,
                 )?;
-                self.commit_report(run_id, report, ValidationState::InfrastructureError)?;
-                Ok(ValidationState::InfrastructureError)
+                self.commit_report(run_id, report, ValidationState::InfrastructureError, &transaction)
             }
             RunnerOutcome::TimedOut { finished_at_ms, message, .. } => {
                 let report = self.report_with_checks(
@@ -918,8 +975,7 @@ impl ValidationPort {
                     started_at,
                     finished_at_ms,
                 )?;
-                self.commit_report(run_id, report, ValidationState::InfrastructureError)?;
-                Ok(ValidationState::InfrastructureError)
+                self.commit_report(run_id, report, ValidationState::InfrastructureError, &transaction)
             }
             RunnerOutcome::Unknown { finished_at_ms, message, .. } => {
                 let report = self.report_with_checks(
@@ -931,17 +987,24 @@ impl ValidationPort {
                     started_at,
                     finished_at_ms,
                 )?;
-                self.commit_report(run_id, report, ValidationState::Unknown)?;
-                Ok(ValidationState::Unknown)
+                self.commit_report(run_id, report, ValidationState::Unknown, &transaction)
             }
         }
     }
 
     /// `report(runId)` with the persisted bytes verified and re-digested.
     pub fn report(&self, run_id: &str) -> Result<ReportResult> {
+        let transaction = self.store.transaction()?;
+        self.report_locked(run_id, &transaction)
+    }
+
+    fn report_locked(&self, run_id: &str, transaction: &TransactionGuard) -> Result<ReportResult> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let admission = self.load_admission(run_id)?;
         if !self.store.state_path(run_id).is_file() {
-            self.repair_state(run_id, &admission, self.clock.now_ms())?;
+            self.repair_state(run_id, &admission, self.clock.now_ms(), transaction)?;
         }
         let state = self.load_state(run_id)?;
         if !state.state.is_terminal() {
@@ -972,7 +1035,8 @@ impl ValidationPort {
     /// One verified evidence artifact's bytes from a terminal run. The report is verified first,
     /// so a caller never reads bytes the report no longer binds.
     pub fn evidence(&self, run_id: &str, artifact_id: &str) -> Result<Vec<u8>> {
-        let verified = self.report(run_id)?;
+        let transaction = self.store.transaction()?;
+        let verified = self.report_locked(run_id, &transaction)?;
         let artifact = verified
             .report
             .checks
@@ -1048,12 +1112,13 @@ impl ValidationPort {
     /// Remove completed records and unpinned candidate inputs older than the retention window.
     /// Active jobs and their pins are never evicted.
     pub fn cleanup(&self, now_ms: u64) -> usize {
+        let Ok(transaction) = self.store.transaction() else { return 0 };
         let Ok(_guard) = self.pins.lock() else { return 0 };
-        self.cleanup_locked(now_ms)
+        self.cleanup_locked(now_ms, &transaction)
     }
 
-    fn cleanup_locked(&self, now_ms: u64) -> usize {
-        let removed = self.purge_records_locked(now_ms);
+    fn cleanup_locked(&self, now_ms: u64, transaction: &TransactionGuard) -> usize {
+        let removed = self.purge_records_locked(now_ms, transaction);
         let now = UNIX_EPOCH.checked_add(Duration::from_millis(now_ms)).unwrap_or(SystemTime::UNIX_EPOCH);
         let _ = solidcraft_io::candidate::cleanup(&self.candidate_root, now, self.limits.retention);
         removed
@@ -1061,13 +1126,13 @@ impl ValidationPort {
 
     /// Remove expired records and their per-run pins, leaving candidate files for `cleanup`'s
     /// explicit candidate sweep.
-    fn purge_records(&self, now_ms: u64) -> usize {
+    fn purge_records(&self, now_ms: u64, transaction: &TransactionGuard) -> usize {
         let Ok(_guard) = self.pins.lock() else { return 0 };
-        self.purge_records_locked(now_ms)
+        self.purge_records_locked(now_ms, transaction)
     }
 
-    fn purge_records_locked(&self, now_ms: u64) -> usize {
-        let removed = self.store.purge_older_than(now_ms, duration_ms(self.limits.retention));
+    fn purge_records_locked(&self, now_ms: u64, transaction: &TransactionGuard) -> usize {
+        let removed = self.store.purge_older_than(now_ms, duration_ms(self.limits.retention), transaction);
         for (run_id, candidate) in &removed {
             if let Some(candidate) = candidate {
                 let _ = self.unpin_run_unlocked(run_id, candidate);
@@ -1090,6 +1155,33 @@ impl ValidationPort {
         self.store.read_json(&self.store.state_path(run_id), 1 << 20)
     }
 
+    /// One validated retirement decision for this run. A missing file is no tombstone; an
+    /// unreadable or structurally invalid file is an error, never absence. Expiry deliberately
+    /// does not erase the scheduling barrier here; only replay consults the key expiry.
+    fn retirement(&self, run_id: &str, _transaction: &TransactionGuard) -> Result<Option<TombstoneRecord>> {
+        if !keys::valid_run_id(run_id) {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
+        self.store.read_valid_tombstone(run_id)
+    }
+
+    fn retired_result(
+        &self,
+        record: &TombstoneRecord,
+        key: &SubmissionKey,
+        candidate: &CandidateRef,
+        profile: &ProfileRef,
+        now: u64,
+    ) -> Result<SubmitResult> {
+        if record.submission_key != key.text {
+            return Err(ValidationError::internal("the validation tombstone names another submission key"));
+        }
+        if now >= record.expires_at_ms {
+            return Err(ValidationError::request_expired("the retired submission key has expired"));
+        }
+        Ok(SubmitResult { run_id: record.run_id.clone(), state: record.state, candidate: candidate.clone(), profile: profile.clone() })
+    }
+
     fn resolve_profile(&self, reference: &ProfileRef) -> Result<CheckProfile> {
         if !ids::valid_id(&reference.profile_id) || !ids::valid_digest(&reference.digest) {
             return Err(ValidationError::profile_unsupported("profileId or digest is malformed"));
@@ -1102,52 +1194,46 @@ impl ValidationPort {
         Ok(profile.clone())
     }
 
-    fn commit_report(&self, run_id: &str, report: ValidationReport, state: ValidationState) -> Result<()> {
+    fn commit_report(
+        &self,
+        run_id: &str,
+        mut report: ValidationReport,
+        mut state: ValidationState,
+        transaction: &TransactionGuard,
+    ) -> Result<ValidationState> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let current = self.load_state(run_id)?;
         if current.state.is_terminal() {
-            if current.state != state {
-                return Err(ValidationError::report_mismatch("a terminal state cannot be paired with a report for another state"));
-            }
-            // A concurrent writer already committed this terminal state. Keep its report: a
-            // cancelled run's report is stable, and a second cancel must not fail with
-            // REPORT_MISMATCH (#88). A missing report still needs to be written.
-            if self.store.report_exists(run_id) {
-                return Ok(());
-            }
+            return Ok(current.state);
         }
-        let mut bytes = self.serialize_report(&report)?;
-        let path = self.store.report_path(run_id);
-        let mut created = false;
-        match self.store.write_bytes_new(&path, &bytes) {
-            Ok(()) => created = true,
-            Err(error) => {
-                let existing = self.store.read_bounded(&path, self.limits.report_bytes).map_err(|_| error)?;
-                if existing != bytes {
-                    // The other writer may have committed the same terminal state between our
-                    // state read and the report write. Its report is authoritative.
-                    let current = self.load_state(run_id)?;
-                    if current.state.is_terminal() && current.state == state {
-                        return Ok(());
-                    }
-                    return Err(ValidationError::report_mismatch("a different terminal report already exists for this run"));
-                }
+        let admission = self.load_admission(run_id)?;
+        if self.store.report_exists(run_id) {
+            if self.adopt_report(run_id, &admission, transaction)? {
+                self.unpin(run_id)?;
+                return Ok(self.load_state(run_id)?.state);
             }
+            return Err(ValidationError::report_mismatch("the existing terminal report could not be verified for this run"));
         }
-        // A cancellation marker written while finishing wins before the terminal commit.
-        if created && state != ValidationState::Cancelled && self.store.marker_exists(run_id) {
-            let _ = std::fs::remove_file(&path);
-            let mut cancelled = report;
-            cancelled.state = ValidationState::Cancelled;
-            cancelled.error = Some(ValidationError::cancelled("the job was cancelled before its result committed").wire());
-            bytes = self.serialize_report(&cancelled)?;
-            self.store.write_bytes_new(&path, &bytes)?;
-            self.write_terminal_state(run_id, ValidationState::Cancelled)?;
-            self.unpin(run_id)?;
-            return Ok(());
+        // Marker and report selection share the transaction. No cooperating writer can
+        // insert a marker between report publication and state publication.
+        if state != ValidationState::Cancelled && self.store.marker_exists(run_id) {
+            state = ValidationState::Cancelled;
+            report.state = state;
+            report.error = Some(ValidationError::cancelled("the job was cancelled before its result committed").wire());
         }
-        self.write_terminal_state(run_id, state)?;
+        let bytes = self.serialize_report(&report)?;
+        self.store.write_bytes_new(&self.store.report_path(run_id), &bytes)?;
+        #[cfg(test)]
+        tests::persisted("report");
+        self.write_terminal_state(run_id, state, transaction)?;
+        #[cfg(test)]
+        tests::persisted("state");
         self.unpin(run_id)?;
-        Ok(())
+        #[cfg(test)]
+        tests::persisted("unpin");
+        Ok(self.load_state(run_id)?.state)
     }
 
     fn serialize_report(&self, report: &ValidationReport) -> Result<Vec<u8>> {
@@ -1165,7 +1251,10 @@ impl ValidationPort {
     /// Keep an immutable terminal state but advertise that its report is not available. A
     /// missing or invalid report is never replaced by one whose state cannot bind the terminal
     /// state.
-    fn mark_report_unavailable(&self, run_id: &str) -> Result<()> {
+    fn mark_report_unavailable(&self, run_id: &str, transaction: &TransactionGuard) -> Result<()> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let mut current = self.load_state(run_id)?;
         if !current.state.is_terminal() || !current.report_available {
             return Ok(());
@@ -1175,7 +1264,10 @@ impl ValidationPort {
         self.store.write_json_replace(&self.store.state_path(run_id), &current)
     }
 
-    fn write_terminal_state(&self, run_id: &str, state: ValidationState) -> Result<()> {
+    fn write_terminal_state(&self, run_id: &str, state: ValidationState, transaction: &TransactionGuard) -> Result<()> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         let current = self.load_state(run_id)?;
         if current.state.is_terminal() && current.state != state {
             return Ok(());
@@ -1332,16 +1424,19 @@ impl ValidationPort {
     }
 
     fn reconcile(&self) -> Result<()> {
-        let _guard = self.commit.lock().map_err(|_| ValidationError::internal("validation commit lock was poisoned"))?;
+        let transaction = self.store.transaction()?;
         let now = self.clock.now_ms();
         for run_id in self.store.all_run_ids() {
+            if self.retirement(&run_id, &transaction)?.is_some() {
+                continue;
+            }
             let admission = match self.load_admission(&run_id) {
                 Ok(admission) => admission,
                 // A state without an admission is not a run this host can reconcile.
                 Err(_) => continue,
             };
             if !self.store.state_path(&run_id).is_file() {
-                self.repair_state(&run_id, &admission, now)?;
+                self.repair_state(&run_id, &admission, now, &transaction)?;
             }
             let state = self.load_state(&run_id)?;
             let worker = self.store.read_optional_json::<WorkerRecord>(&self.store.worker_path(&run_id), 1 << 20).ok().flatten();
@@ -1354,7 +1449,7 @@ impl ValidationPort {
                 self.host_owned_or_dead(&admission.host_id, admission.host_pid)
             };
             if state.state.is_terminal() {
-                if self.adopt_report(&run_id, &admission)? {
+                if self.adopt_report(&run_id, &admission, &transaction)? {
                     self.unpin(&run_id)?;
                 } else {
                     // The terminal state is immutable. Never write a report whose state cannot
@@ -1362,9 +1457,13 @@ impl ValidationPort {
                     if self.store.report_exists(&run_id) {
                         let _ = std::fs::remove_file(self.store.report_path(&run_id));
                     }
-                    self.mark_report_unavailable(&run_id)?;
+                    self.mark_report_unavailable(&run_id, &transaction)?;
                     self.unpin(&run_id)?;
                 }
+                continue;
+            }
+            if self.adopt_report(&run_id, &admission, &transaction)? {
+                self.unpin(&run_id)?;
                 continue;
             }
             if !owned_or_dead {
@@ -1379,7 +1478,7 @@ impl ValidationPort {
                         ValidationState::Cancelled,
                         Some(ValidationError::cancelled("the job was cancelled before a worker started")),
                     );
-                    self.commit_report(&run_id, report, ValidationState::Cancelled)?;
+                    self.commit_report(&run_id, report, ValidationState::Cancelled, &transaction)?;
                 } else {
                     let report = self.recovery_report(
                         &admission,
@@ -1387,16 +1486,12 @@ impl ValidationPort {
                         ValidationState::InfrastructureError,
                         Some(ValidationError::internal("the host restarted before the queued job started; it was not restarted")),
                     );
-                    self.commit_report(&run_id, report, ValidationState::InfrastructureError)?;
+                    self.commit_report(&run_id, report, ValidationState::InfrastructureError, &transaction)?;
                 }
                 continue;
             }
             // Running: never rerun. A verified completed report is adopted; anything else is
             // unknown (or cancelled), never a pass.
-            if self.adopt_report(&run_id, &admission)? {
-                self.unpin(&run_id)?;
-                continue;
-            }
             if self.store.report_exists(&run_id) {
                 let _ = std::fs::remove_file(self.store.report_path(&run_id));
             }
@@ -1407,7 +1502,7 @@ impl ValidationPort {
                     ValidationState::Cancelled,
                     Some(ValidationError::cancelled("the job was cancelled while running")),
                 );
-                self.commit_report(&run_id, report, ValidationState::Cancelled)?;
+                self.commit_report(&run_id, report, ValidationState::Cancelled, &transaction)?;
             } else {
                 let report = self.recovery_report(
                     &admission,
@@ -1415,7 +1510,7 @@ impl ValidationPort {
                     ValidationState::Unknown,
                     Some(ValidationError::outcome_unknown("the worker outcome is unknown after a host restart")),
                 );
-                self.commit_report(&run_id, report, ValidationState::Unknown)?;
+                self.commit_report(&run_id, report, ValidationState::Unknown, &transaction)?;
             }
         }
         Ok(())
@@ -1423,7 +1518,10 @@ impl ValidationPort {
 
     /// Adopt a committed terminal report only when it verifies against this run. Returns whether
     /// the state is terminal after adoption.
-    fn adopt_report(&self, run_id: &str, admission: &AdmissionRecord) -> Result<bool> {
+    fn adopt_report(&self, run_id: &str, admission: &AdmissionRecord, transaction: &TransactionGuard) -> Result<bool> {
+        if self.retirement(run_id, transaction)?.is_some() {
+            return Err(ValidationError::not_found("no such validation run"));
+        }
         if !self.store.report_exists(run_id) {
             return Ok(false);
         }
@@ -1442,7 +1540,14 @@ impl ValidationPort {
         if self.verify_report(run_id, admission, &prospective, &report).is_err() {
             return Ok(false);
         }
-        let current = self.load_state(run_id).ok();
+        let current = match self.load_state(run_id) {
+            Ok(state) => Some(state),
+            Err(error) if error.code == ErrorCode::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        if current.as_ref().is_some_and(|state| state.state.is_terminal() && state.state != report.state) {
+            return Ok(false);
+        }
         if current.as_ref().is_none_or(|state| !state.state.is_terminal()) {
             self.store.write_json_replace(&self.store.state_path(run_id), &prospective)?;
         }

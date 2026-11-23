@@ -228,7 +228,7 @@ impl PanelHost for EguiPanelHost<'_> {
         geometry.validate()?;
         presentation.validate()?;
         context.validate()?;
-        if geometry.instance != context.instance || geometry.outer != context.outer || geometry.body != context.usable_body {
+        if geometry.instance != context.instance || geometry.outer != context.outer || geometry.body != Some(context.usable_body) {
             return Err(error(Rule::Placement, "host geometry differs from presentation context"));
         }
         // This reference adapter draws/interacts with one full rectangular card.
@@ -242,7 +242,7 @@ impl PanelHost for EguiPanelHost<'_> {
         }
         let rect = |r: LogicalRect| egui::Rect::from_min_size(egui::pos2(r.origin.x, r.origin.y), egui::vec2(r.size.width, r.size.height));
         let outer = rect(geometry.outer);
-        let body = rect(geometry.body);
+        let body = rect(context.usable_body);
         let parent_clip = self.ui.clip_rect().intersect(outer);
         let container = crate::ui_kit::Container::new(self.ui.ctx(), crate::ui_kit::Surface::Panel);
         let frame = container.frame(self.ui.ctx(), crate::theme::Tokens::get().dialog_body, crate::frame::Side::Left).inner_margin(0);

@@ -226,6 +226,7 @@ fn send_repair(app: &mut SolveApp, prompt: String) {
         let turn_id = app.agent_chat.next_turn;
         app.agent_chat.turn = Some(super::Turn {
             id: turn_id,
+            owner: None,
             active: Arc::clone(&active),
             start_doc: app.session.doc.clone(),
             start_undo: app.session.undo.len(),
@@ -344,6 +345,7 @@ mod tests {
         let stamp = app.session.document_stamp();
         app.agent_chat.turn = Some(Turn {
             id: 1,
+            owner: None,
             active: Arc::clone(&active),
             start_doc: app.session.doc.clone(),
             start_undo: app.session.undo.len(),

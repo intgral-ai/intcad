@@ -172,18 +172,28 @@ fn unknown_pending_concepts_preserve_the_open_design_and_output_files() {
         for (extension, bytes) in [("json", io::write_design(&experimental)), ("solidcraft", io::write_design_container(&experimental).unwrap())] {
             let source = dir.0.join(format!("experimental-{version}.{extension}"));
             std::fs::write(&source, &bytes).unwrap();
-            let mut session = Session::default();
-            session.execute("solid.box", &json!({"length": 2, "width": 3, "height": 4})).unwrap();
-            let original = session.doc.clone();
-            let original_path = session.path.clone();
-            let undo = session.undo.len();
-            let dirty = session.is_dirty();
-            let err = session.execute("doc.open", &json!({"path": source})).unwrap_err().to_string();
+            // The default policy opens a newer file and keeps the concept this build doesn't know.
+            let mut opened = Session::default();
+            opened.execute("solid.box", &json!({"length": 2, "width": 3, "height": 4})).unwrap();
+            let reply = opened.execute("doc.open", &json!({"path": source})).unwrap();
+            assert!(reply["newer_file"]["unknown_changes"].to_string().contains("experimental-card"), "{reply}");
+            assert!(reply["warnings"].to_string().contains("experimental-card"), "{reply}");
+            assert!(opened.doc.format_pending.iter().any(|name| name.as_str() == "experimental-card"), "{:?}", opened.doc.format_pending);
+
+            // With the preference off, the old refusal leaves the open design as it was.
+            let mut refused = Session::default();
+            refused.execute("solid.box", &json!({"length": 2, "width": 3, "height": 4})).unwrap();
+            let original = refused.doc.clone();
+            let original_path = refused.path.clone();
+            let undo = refused.undo.len();
+            let dirty = refused.is_dirty();
+            refused.set_open_newer_files(false);
+            let err = refused.execute("doc.open", &json!({"path": source})).unwrap_err().to_string();
             assert!(err.contains("experimental-card") && err.contains("update Intcad"), "{err}");
-            assert_eq!(session.doc, original);
-            assert_eq!(session.path, original_path);
-            assert_eq!(session.undo.len(), undo);
-            assert_eq!(session.is_dirty(), dirty);
+            assert_eq!(refused.doc, original);
+            assert_eq!(refused.path, original_path);
+            assert_eq!(refused.undo.len(), undo);
+            assert_eq!(refused.is_dirty(), dirty);
 
             for existing in [false, true] {
                 let destination = dir.0.join(format!("output-{version}-{extension}-{existing}.{extension}"));
@@ -193,16 +203,21 @@ fn unknown_pending_concepts_preserve_the_open_design_and_output_files() {
                     std::fs::write(&backup, b"existing backup").unwrap();
                 }
                 let output = cli().args(["run", "--in"]).arg(&source).arg("--save").arg(&destination).output().unwrap();
-                assert_eq!(output.status.code(), Some(1));
-                let error = String::from_utf8_lossy(&output.stderr);
-                assert!(error.contains("experimental-card") && error.contains("update Intcad"), "{error}");
-                if existing {
-                    assert_eq!(std::fs::read(&destination).unwrap(), b"existing design");
-                    assert_eq!(std::fs::read(&backup).unwrap(), b"existing backup");
-                } else {
-                    assert!(!destination.exists() && !backup.exists());
-                }
+                assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+                // The source is not changed, and the saved design keeps the concept when read back.
                 assert_eq!(std::fs::read(&source).unwrap(), bytes);
+                let saved = io::read_design(&std::fs::read(&destination).unwrap()).unwrap();
+                assert!(saved.format_pending.iter().any(|name| name.as_str() == "experimental-card"), "{:?}", saved.format_pending);
+                assert!(
+                    saved.newer_file.as_ref().is_some_and(|file| file.unknown_changes.iter().any(|name| name.as_str() == "experimental-card")),
+                    "the concept is still named"
+                );
+                if existing {
+                    // Save As keeps the replaced file as the backup.
+                    assert_eq!(std::fs::read(&backup).unwrap(), b"existing design");
+                } else {
+                    assert!(!backup.exists());
+                }
             }
         }
     }
@@ -440,7 +455,7 @@ fn snapshot_runs_its_script_on_the_in_design() {
         std::fs::read(&png).unwrap()
     };
     // Pictures are drawn on the GPU: without an adapter only the option checks below run.
-    match solidcraft_gpu::capture::shared() {
+    match solidcraft_viewport_gpu::capture::shared(solidcraft_gpu::env::policy().unwrap_or_else(|e| panic!("{e}"))) {
         Ok(_) => {
             let alone = shot("alone.png", &[shifted.as_os_str()]);
             let on_base = shot("on_base.png", &[shifted.as_os_str(), "--in".as_ref(), base.as_os_str()]);
@@ -448,7 +463,7 @@ fn snapshot_runs_its_script_on_the_in_design() {
             assert_ne!(alone, on_base, "the script ran on the --in design");
             assert_ne!(base_only, on_base);
         }
-        Err(e @ solidcraft_gpu::GpuError::NoAdapter(_)) if std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_none() => {
+        Err(e @ solidcraft_viewport_gpu::GpuError::NoAdapter(_)) if std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_none() => {
             eprintln!("pictures left out: {e}")
         }
         Err(e) => panic!("{e}"),
@@ -466,7 +481,7 @@ fn unknown_command_suggests_the_closest_id() {
     let output = cli().args(["exec", "file.open"]).output().unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(
-        String::from_utf8_lossy(&output.stderr).contains("did you mean `doc.open` or `panel.open`?"),
+        String::from_utf8_lossy(&output.stderr).contains("did you mean `doc.open`, `panel.open` or `tab.view.open`?"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );

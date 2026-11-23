@@ -1517,10 +1517,12 @@ fn saved_surface_content(app: &mut SolveApp, ui: &mut egui::Ui, target: Option<&
             ui_kit::text(ui, app.tr("render.saved_maps_runtime_conflict"), ui_kit::Text::Note("render.saved_maps_runtime_conflict"));
         }
         for (index, binding) in bindings.iter().enumerate().filter(|(_, b)| target.is_none_or(|t| t == &b.target)) {
-            ui.label(format!(
-                "{} - {} ({}): {:?}",
-                binding.source.id, binding.target.definition, binding.target.feature, binding.target.occurrence_path
-            ));
+            // A built-in source by its id; an embedded one has none (its maps travel in the design).
+            let source = match &binding.source {
+                solidcraft_engine::doc::render_surface::SurfaceSource::Builtin(source) => source.id.clone(),
+                solidcraft_engine::doc::render_surface::SurfaceSource::Embedded(_) => "embedded".to_string(),
+            };
+            ui.label(format!("{} - {} ({}): {:?}", source, binding.target.definition, binding.target.feature, binding.target.occurrence_path));
             if ui_kit::button(ui, app.tr("render.inspector_replace"), ui_kit::Button::Normal).clicked() {
                 open_category(app, "surfaces");
             }

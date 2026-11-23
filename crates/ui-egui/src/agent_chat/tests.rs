@@ -8511,6 +8511,7 @@ fn merging_finds_the_turns_start_when_the_history_was_trimmed() {
         active_sketch: None,
         pending_moves: Default::default(),
         visibility: Default::default(),
+        section: None,
     };
     let docs: Vec<_> = (0..6).map(doc).collect();
     // The turn began at depth 3 with docs[3]; the history then lost its oldest step.
@@ -12785,6 +12786,53 @@ fn no_tool_turn_warning_does_not_follow_a_tool_call() {
 }
 
 #[test]
+fn a_retired_turns_validation_card_update_does_not_count_as_the_current_turns_tool() {
+    let (mut app, _script, _ctx) = app_with_script();
+    app.agent_chat.tools_port = Some(12345);
+    let card = |id: &str, owner: (&str, &str, &str), status: &str| Event::Tool {
+        id: id.into(),
+        title: Some("validation".into()),
+        kind: Some("validation".into()),
+        status: Some(ToolStatus::Failed),
+        input: None,
+        output: Some(
+            json!({
+                "stage": "validate",
+                "owner": {"sessionId": owner.0, "turnId": owner.1, "workflowRunId": owner.2},
+                "cancellation": status,
+            })
+            .to_string(),
+        ),
+    };
+    start_turn(&mut app, "first".into(), false, None, Vec::new());
+    app.agent_chat.on_event(Event::TurnOwner { session_id: "s-owner".into(), turn_id: "t-owner".into(), workflow_run_id: "w-owner".into() });
+    app.agent_chat.on_event(card("validation:run-owned", ("s-owner", "t-owner", "w-owner"), "queued; not yet persisted"));
+    app.agent_chat.on_event(Event::TurnEnded { reason: String::new() });
+    end_turn(&mut app);
+
+    start_turn(&mut app, "second".into(), false, None, Vec::new());
+    app.agent_chat.on_event(Event::TurnOwner { session_id: "s-next".into(), turn_id: "t-next".into(), workflow_run_id: "w-next".into() });
+    let before = app.agent_chat.items.len();
+    app.agent_chat.on_event(card("validation:run-owned", ("s-owner", "t-owner", "w-owner"), "persisted"));
+    assert_eq!(app.agent_chat.items.len(), before, "the retired turn's card is updated in place");
+    assert!(
+        app.agent_chat
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Tool { id, output: Some(output), .. } if id == "validation:run-owned" && output.contains("persisted")),),
+        "the retired turn's card keeps its durable status"
+    );
+    app.agent_chat.on_event(Event::TurnEnded { reason: String::new() });
+    end_turn(&mut app);
+    let expected = tr("ui.agent_chat_no_tool_call");
+    assert!(
+        app.agent_chat.items.iter().any(|item| matches!(item, Item::Notice { text, error: false } if text == expected)),
+        "the historical card update must not suppress the active turn's no-tool warning"
+    );
+    assert_eq!(status(&app)["turnWarning"], expected);
+}
+
+#[test]
 fn no_tool_turn_warning_leaves_answers_and_incomplete_turns_quiet() {
     for (prompt, reply, reason, tools) in [
         ("What is a fillet?", "A fillet rounds an edge.", "", true),
@@ -13208,6 +13256,7 @@ fn a_picture_only_prompt_and_a_thought_have_no_copy_message_action() {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod mastra_backend_tests {
+    use super::app_with_script;
     use crate::agent_chat::backend::ChatBackend;
     use crate::agent_chat::context::{self, Context, Entry, Kind as ContextKind};
     use crate::agent_chat::host_ai;
@@ -13215,10 +13264,11 @@ mod mastra_backend_tests {
     use crate::agent_chat::mastra_protocol::*;
     use crate::agent_chat::runtime_client;
     use crate::agent_chat::runtime_client::{ClientNotice, IdSource};
-    use crate::agent_chat::{self, Item, RuntimeStatus, State, agents, poll, send, send_now};
+    use crate::agent_chat::{self, Event, Item, RuntimeStatus, State, ToolStatus, agents, end_turn, poll, send, send_now, start_turn};
     use crate::{ControlRequest, SolveApp};
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc::channel;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
@@ -14223,6 +14273,165 @@ mod mastra_backend_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A host callback can enter after Stop retired its original turn. Storage must never
+    /// reopen that turn's admission simply because registration was delayed.
+    #[test]
+    fn mastra_validation_cancelled_turn_refuses_a_late_submission_without_storage() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("late-submit-cancel");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let profile = host.profile().unwrap();
+        let turn = turn_scope("s-late-cancel", "t-late-cancel", "w-late-cancel");
+        host.cancel_turn(&turn, Some(&live));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let result = host.submit(
+            &Scope::Turn(turn),
+            ValidationSubmitParams {
+                candidate,
+                profile,
+                request_id: SubmissionKey::parse(&solidcraft_engine::validation::generate_submission_key(now)).unwrap(),
+            },
+        );
+        assert!(result.is_err(), "retired turn admission must not reach the validation store");
+        assert_eq!(std::fs::read_dir(dir.join("validation/runs")).unwrap().count(), 0);
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mastra_validation_stop_does_not_wait_for_an_external_store_transaction() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("stop-storage-lock");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let turn = turn_scope("s-stop-storage", "t-stop-storage", "w-stop-storage");
+        let scope = Scope::Turn(turn.clone());
+        let key = solidcraft_engine::validation::generate_submission_key(solidcraft_engine::validation::now_ms());
+        let submitted = host
+            .submit(&scope, ValidationSubmitParams { candidate, profile: host.profile().unwrap(), request_id: SubmissionKey::parse(&key).unwrap() })
+            .unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).write(true).open(dir.join("validation/transaction.lock")).unwrap();
+        lock.lock().unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let stopping = Arc::clone(&host);
+        let retired = turn.clone();
+        let current = live.clone();
+        let window = std::thread::spawn(move || send.send(stopping.cancel_turn(&retired, Some(&current))).unwrap());
+        // Timeout is a deadlock guard, not a race-order mechanism: the external lock is held
+        // until the memory-only Stop has returned.
+        let identities = receive.recv_timeout(Duration::from_secs(2)).expect("Stop must not await the external store lock");
+        window.join().unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_ne!(identities[0].state, "cancelled", "queued cancellation is not a persisted terminal state");
+        assert_eq!(identities[0].cancellation_status.as_deref(), Some("queued; not yet persisted"));
+        assert!(!dir.join(format!("validation/runs/{}.cancel", submitted.run_id)).exists());
+        drop(lock);
+        host.wait_cancellations_for_test().unwrap();
+        let report = host.report(&scope, ValidationReportParams { run_id: submitted.run_id.clone() }).unwrap();
+        assert!(!host.accept(&turn, &submitted.run_id, &report.reference, Some(&live)).accepted);
+        assert_eq!(host.history_identity(submitted.run_id.as_str(), Some(&live)).unwrap().cancellation_status.as_deref(), Some("persisted"));
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mastra_validation_inflight_registration_inherits_original_turn_cancellation() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("cancel-inflight-registration");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let turn = turn_scope("s-inflight", "t-inflight", "w-inflight");
+        let scope = Scope::Turn(turn.clone());
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let submitter = Arc::clone(&host);
+        let submit_scope = scope.clone();
+        let submit_barrier = Arc::clone(&barrier);
+        let profile = host.profile().unwrap();
+        let key = solidcraft_engine::validation::generate_submission_key(solidcraft_engine::validation::now_ms());
+        let submit = std::thread::spawn(move || {
+            mastra_backend::HostValidation::pause_submission_for_test(submit_barrier);
+            submitter.submit(&submit_scope, ValidationSubmitParams { candidate, profile, request_id: SubmissionKey::parse(&key).unwrap() }).unwrap()
+        });
+        barrier.wait(); // admitted in memory, not yet at the disk port
+        assert!(host.cancel_turn(&turn, Some(&live)).is_empty());
+        assert_eq!(std::fs::read_dir(dir.join("validation/runs")).unwrap().count(), 0);
+        barrier.wait();
+        let submitted = submit.join().unwrap();
+        host.wait_cancellations_for_test().unwrap();
+        let identity = host.history_identity(submitted.run_id.as_str(), Some(&live)).unwrap();
+        assert_eq!(identity.cancellation_status.as_deref(), Some("persisted"), "late registration must enqueue its original run");
+        let report = host.report(&scope, ValidationReportParams { run_id: submitted.run_id.clone() }).unwrap();
+        assert!(!host.accept(&turn, &submitted.run_id, &report.reference, Some(&live)).accepted);
+        let other = Scope::Turn(turn_scope("s-inflight", "t-other", "w-other"));
+        assert!(host.status(&other, ValidationStatusParams { run_id: submitted.run_id }).is_err(), "cancellation cannot transfer ownership");
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mastra_validation_control_coalesces_and_reports_saturation_start_and_shutdown_failure() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("cancel-control-failures");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let turn = turn_scope("s-control", "t-control", "w-control");
+        let scope = Scope::Turn(turn.clone());
+        let profile = host.profile().unwrap();
+        let (run, _) = submit_validation(&host, &scope, &candidate, &profile);
+        let harness = host.cancellation_harness_for_test(&run).unwrap();
+        for n in 0..harness.capacity() {
+            harness.enqueue(&format!("queued-{n}")).unwrap();
+        }
+        harness.enqueue("queued-0").unwrap(); // duplicate does not consume another slot
+        assert!(harness.enqueue("overflow").unwrap_err().contains("full"));
+        harness.shutdown();
+        assert!(harness.enqueue("after-shutdown").unwrap_err().contains("shut down"));
+        assert!(host.cancellation_start_failure_for_test().contains("could not start"));
+        // A service can remain alive while its cancellation lane is shutting down. A later
+        // in-flight registration must report failure, never silently reopen the retired turn.
+        host.shutdown_cancellation_for_test();
+        host.cancel_turn(&turn, Some(&live));
+        assert!(
+            !host.accept(&turn, &run, &host.report(&scope, ValidationReportParams { run_id: run.clone() }).unwrap().reference, Some(&live)).accepted
+        );
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn mastra_validation_shutdown_records_failed_late_cancellation_without_reopening_authority() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("cancel-shutdown-registration");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let turn = turn_scope("s-shutdown", "t-shutdown", "w-shutdown");
+        let scope = Scope::Turn(turn.clone());
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let submit_barrier = Arc::clone(&barrier);
+        let submitter = Arc::clone(&host);
+        let profile = host.profile().unwrap();
+        let key = solidcraft_engine::validation::generate_submission_key(solidcraft_engine::validation::now_ms());
+        let submit_scope = scope.clone();
+        let submit = std::thread::spawn(move || {
+            mastra_backend::HostValidation::pause_submission_for_test(submit_barrier);
+            submitter.submit(&submit_scope, ValidationSubmitParams { candidate, profile, request_id: SubmissionKey::parse(&key).unwrap() }).unwrap()
+        });
+        barrier.wait();
+        host.cancel_turn(&turn, Some(&live));
+        host.shutdown_cancellation_for_test();
+        barrier.wait();
+        let submitted = submit.join().unwrap();
+        host.wait_cancellations_for_test().unwrap();
+        let identity = host.history_identity(submitted.run_id.as_str(), Some(&live)).unwrap();
+        assert!(identity.cancellation_status.unwrap().contains("shut down"));
+        assert!(!dir.join(format!("validation/runs/{}.cancel", submitted.run_id)).exists());
+        // This flag is presentation/authority only; it must not invent a durable Cancelled.
+        assert_ne!(host.status(&scope, ValidationStatusParams { run_id: submitted.run_id.clone() }).unwrap().state, ValidationState::Cancelled);
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn mastra_validation_host_accepts_only_the_matching_current_report() {
         let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -14293,6 +14502,174 @@ mod mastra_backend_tests {
         let mut cancelled = engine_report.clone();
         cancelled.state = solidcraft_engine::validation::ValidationState::Cancelled;
         assert!(host.verify_report_for_test(run_id.as_str(), &cancelled).is_err(), "a cancelled run with passing checks cannot pass");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A cancellation result for a retired turn can arrive after Reset started the next turn.
+    /// Its card must update only the owning turn's history; it must never appear as the new
+    /// turn's tool call.
+    #[test]
+    fn a_retired_turns_validation_card_never_appears_in_the_next_turns_history() {
+        let (mut app, _script, _ctx) = app_with_script();
+        let card = |id: &str, owner: (&str, &str, &str), status: &str| Event::Tool {
+            id: id.into(),
+            title: Some("validation".into()),
+            kind: Some("validation".into()),
+            status: Some(ToolStatus::Failed),
+            input: None,
+            output: Some(
+                json!({
+                    "stage": "validate",
+                    "owner": {"sessionId": owner.0, "turnId": owner.1, "workflowRunId": owner.2},
+                    "cancellation": status,
+                })
+                .to_string(),
+            ),
+        };
+        start_turn(&mut app, "first".into(), false, None, Vec::new());
+        app.agent_chat.on_event(Event::TurnOwner { session_id: "s-owner".into(), turn_id: "t-owner".into(), workflow_run_id: "w-owner".into() });
+        app.agent_chat.on_event(card("validation:run-owned", ("s-owner", "t-owner", "w-owner"), "queued; not yet persisted"));
+        assert!(app.agent_chat.items.iter().any(|item| matches!(item, Item::Tool { id, .. } if id == "validation:run-owned")));
+
+        app.agent_chat.on_event(Event::TurnEnded { reason: "cancelled".into() });
+        end_turn(&mut app);
+        start_turn(&mut app, "second".into(), false, None, Vec::new());
+        app.agent_chat.on_event(Event::TurnOwner { session_id: "s-next".into(), turn_id: "t-next".into(), workflow_run_id: "w-next".into() });
+        let before = app.agent_chat.items.len();
+
+        app.agent_chat.on_event(card("validation:run-late", ("s-owner", "t-owner", "w-owner"), "persisted"));
+        assert!(
+            !app.agent_chat.items.iter().any(|item| matches!(item, Item::Tool { id, .. } if id == "validation:run-late")),
+            "a retired turn's card is not the next turn's work"
+        );
+        assert_eq!(app.agent_chat.items.len(), before, "the next turn's history is unchanged");
+
+        app.agent_chat.on_event(card("validation:run-owned", ("s-owner", "t-owner", "w-owner"), "persisted"));
+        let owned = app
+            .agent_chat
+            .items
+            .iter()
+            .position(|item| matches!(item, Item::Tool { id, .. } if id == "validation:run-owned"))
+            .expect("the owning turn keeps its card");
+        assert!(
+            matches!(&app.agent_chat.items[owned], Item::Tool { output: Some(output), .. } if output.contains("persisted")),
+            "the owning turn's card is updated in place"
+        );
+        assert!(owned < before, "the updated card stays in the owning turn, not the new one");
+    }
+
+    /// Shutdown must take the same queue mutex that the worker holds while it checks the wait
+    /// predicate. Otherwise a notify between the check and the wait is lost and the control
+    /// worker never exits.
+    /// The guard clears the process-wide prewait barrier even when the fixture panics, so a
+    /// failing test cannot park another test's control worker.
+    struct BarrierCleanup;
+
+    impl Drop for BarrierCleanup {
+        fn drop(&mut self) {
+            mastra_backend::HostValidation::clear_prewait_barrier_for_test();
+        }
+    }
+
+    #[test]
+    fn mastra_validation_shutdown_takes_the_queue_predicate_lock() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("cancel-shutdown-lock");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        mastra_backend::HostValidation::install_prewait_barrier_for_test(Arc::clone(&barrier));
+        let _cleanup = BarrierCleanup;
+        let host = host_validation(&dir);
+        barrier.wait(); // the control worker holds the queue mutex before its wait
+        let (send, receive) = channel();
+        let stopper = Arc::clone(&host);
+        let shutdown = std::thread::spawn(move || {
+            stopper.shutdown_cancellation_for_test();
+            send.send(()).unwrap();
+        });
+        // The timeout is a liveness guard, not an ordering mechanism: on the fixed code the
+        // shutdown thread is blocked on the mutex the worker holds.
+        assert!(
+            receive.recv_timeout(Duration::from_millis(250)).is_err(),
+            "shutdown must wait for the queue predicate lock instead of racing the wait"
+        );
+        barrier.wait(); // let the worker enter its wait and release the mutex
+        receive.recv_timeout(Duration::from_secs(2)).expect("shutdown completes after the wait is armed");
+        shutdown.join().unwrap();
+        mastra_backend::HostValidation::clear_prewait_barrier_for_test();
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A duplicate callback for the same key can capture Queued before Stop, then register after
+    /// the control worker has persisted its cancellation. The settled result must stay monotonic;
+    /// the late registration must not rewrite it as queued, which would also coalesce away the
+    /// only future update. The book-level order is the exact interleaving without threads.
+    #[test]
+    fn mastra_validation_late_registration_does_not_downgrade_a_persisted_cancellation() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("late-registration-settled");
+        let (candidate, _live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        let turn = turn_scope("s-late-settled", "t-late-settled", "w-late-settled");
+        let profile = host.profile().unwrap();
+        let candidate_engine: solidcraft_engine::schema::snapshot::CandidateRef =
+            serde_json::from_value(serde_json::to_value(&candidate).unwrap()).unwrap();
+        let profile_engine: solidcraft_engine::validation::ProfileRef = serde_json::from_value(serde_json::to_value(&profile).unwrap()).unwrap();
+        let run_id = host.seed_queued_run_for_test(&turn, &candidate_engine, &profile_engine);
+        let (state, cancellation) = host.simulate_late_registration_for_test(&run_id).expect("the seeded run is in the book");
+        assert_eq!(state, "cancelled", "the captured Queued must not replace the persisted terminal state");
+        assert_eq!(cancellation.as_deref(), Some("persisted"), "a settled cancellation is monotonic");
+        drop(host);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A real status snapshot captured before Stop can lose the book-lock race to the control
+    /// worker and arrive after the cancellation is persisted. The worker is stopped first so the
+    /// run stays Queued; a barrier parks the real status call after it read the port. Both wire
+    /// status and wire cancel share the same monotone publication merge.
+    #[test]
+    fn mastra_validation_delayed_status_publication_does_not_dowgrade_settled_cancellation() {
+        let _store = crate::control_job::test_support::CANDIDATE_STORE_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = scratch_validation("late-status-publication");
+        let (candidate, live) = captured_candidate(&dir);
+        let host = host_validation(&dir);
+        host.stop_worker_and_wait_for_test();
+        let turn = turn_scope("s-late-status", "t-late-status", "w-late-status");
+        let scope = Scope::Turn(turn.clone());
+        let profile = host.profile().unwrap();
+        let key = solidcraft_engine::validation::generate_submission_key(solidcraft_engine::validation::now_ms());
+        let submitted = host
+            .submit(&scope, ValidationSubmitParams { candidate, profile, request_id: SubmissionKey::parse(&key).unwrap() })
+            .expect("validation.submit is routed");
+        let run_id = submitted.run_id.clone();
+        assert_eq!(
+            host.state_for_test(run_id.as_str()),
+            Some(solidcraft_engine::validation::ValidationState::Queued),
+            "the stopped worker leaves the submitted run queued"
+        );
+
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        host.install_status_gate_for_test(Arc::clone(&gate));
+        let status_host = Arc::clone(&host);
+        let status_scope = scope.clone();
+        let status_run = run_id.clone();
+        let status = std::thread::spawn(move || {
+            status_host.status(&status_scope, ValidationStatusParams { run_id: status_run }).expect("validation.status is routed")
+        });
+        gate.wait(); // the status call read Queued and is parked before publication
+
+        host.cancel_turn(&turn, Some(&live));
+        host.wait_cancellations_for_test().unwrap();
+        gate.wait(); // release the delayed status snapshot
+        host.clear_status_gate_for_test();
+        let delayed = status.join().unwrap();
+        assert!(matches!(delayed.state, ValidationState::Queued), "the delayed reply is the old snapshot");
+        assert_eq!(
+            host.state_for_test(run_id.as_str()),
+            Some(solidcraft_engine::validation::ValidationState::Cancelled),
+            "the settled control-lane cancellation must not be overwritten by the delayed status"
+        );
+        drop(host);
         let _ = std::fs::remove_dir_all(dir);
     }
 

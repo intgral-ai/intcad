@@ -1,5 +1,6 @@
 use super::*;
 use crate::scenario::Harness;
+use crate::section_view::SectionCut;
 use egui::Color32;
 use solidcraft_engine::Session;
 
@@ -285,7 +286,7 @@ fn environment_ring_fixture() -> Harness {
     enter(&mut h.app, true).unwrap();
     inspector::select_editor(&mut h.app, inspector::Editor::Environment);
     h.app.preferences.nav = crate::prefs::OPENSCAD_NAV.into();
-    h.app.cam.fit(&solidcraft_engine::product_scene::extract(&h.app.session).unwrap().bounds);
+    h.app.cam.fit(&solidcraft_engine::render::view_bounds(&solidcraft_engine::product_scene::extract(&h.app.session).unwrap().bounds));
     environment_ring_frame(&mut h, egui::Modifiers::NONE, vec![]);
     h
 }
@@ -1258,10 +1259,8 @@ mod async_path_host {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn opaque_pbr_product_gpu_and_cpu_share_color_and_material_semantics() {
-    use solidcraft_engine::render::{
-        StandardView,
-        job::{CancelToken, ImageRequest, ImageTask, TaskPoll},
-    };
+    use solidcraft_engine::render::job::{CancelToken, ImageRequest, ImageTask, TaskPoll};
+    use solidcraft_viewport::StandardView;
     let mut s = Session::default();
     s.execute("solid.sphere", &json!({"radius":10,"body_name":"Original sphere"})).unwrap();
     const SIZE: u32 = 256;
@@ -1280,7 +1279,7 @@ fn opaque_pbr_product_gpu_and_cpu_share_color_and_material_semantics() {
         previous = Some(key);
         let mut camera = Camera { fov: 0.0, ..Default::default() };
         camera.set_view(StandardView::Iso);
-        camera.fit(&scene.bounds);
+        camera.fit(&solidcraft_engine::render::view_bounds(&scene.bounds));
         let radius = scene.bounds.diagonal().max(10.0) + scene.bounds.center().dist(camera.target);
         let eye = camera.eye().to_f32();
         let mut task = ImageTask::new(
@@ -1456,7 +1455,7 @@ fn saved_camera_survives_frames_and_product_fit_ignores_selection() {
     let mut h = Harness::new();
     h.app.run("solid.box", json!({"length":10,"width":20,"height":5,"body_name":"Product"})).unwrap();
     h.app.run("solid.box", json!({"corner":[100,0,0],"length":10,"width":20,"height":5,"body_name":"Other"})).unwrap();
-    let camera = Camera { up: solidcraft_engine::render::UpAxis::Y, roll: 0.2, ..Default::default() };
+    let camera = Camera { up: solidcraft_viewport::UpAxis::Y, roll: 0.2, ..Default::default() };
     h.app.run("render.settings.set", json!({"name":"Studio","set":{"camera":camera,"background":[21,43,65]}})).unwrap();
     h.frames(3);
     let design = h.app.cam;
@@ -1634,13 +1633,13 @@ fn render_preview_tab_surfaces_preserve_scene_backplates_and_viewport_overrides(
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn progressive_image_controls_route_to_the_registered_host() {
-    let host = solidcraft_gpu::select::Policy::from_env()
-        .and_then(|policy| solidcraft_gpu::select::pick(policy).ok_or_else(|| "no qualifying adapter".to_string()))
+    let host = solidcraft_gpu::env::policy()
+        .and_then(|policy| solidcraft_viewport_gpu::select::pick(policy).ok_or_else(|| "no qualifying adapter".to_string()))
         .and_then(|(adapter, _)| solidcraft_gpu::path::host_on_adapter(&adapter).map_err(|e| e.to_string()));
     let host = match host {
         Ok(host) => host,
         Err(e) => {
-            let expected = !solidcraft_gpu::select::path_backends().is_empty();
+            let expected = !solidcraft_viewport_gpu::select::path_backends().is_empty();
             assert!(!expected || std::env::var_os("SOLIDCRAFT_REQUIRE_GPU").is_none(), "required GPU unavailable: {e}");
             eprintln!("skipping progressive UI device test: {e}");
             return;
@@ -1812,13 +1811,14 @@ fn product_gpu_buffers_preserve_opacity_and_never_contain_overlays() {
     assert!(gpu.tris.is_empty());
     assert!(!gpu.glass.is_empty());
     let color = |v: &[u8]| {
-        let i = v.get(crate::gpu::TRI_SIZE - 4..).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes)?;
+        // The palette index sits at TRI_COLOR_AT; after it comes the analysis value word.
+        let i = v.get(crate::gpu::TRI_COLOR_AT..crate::gpu::TRI_COLOR_AT + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes)?;
         gpu.palette.get(crate::gpu::PaletteIndex(i))
     };
     assert!(gpu.glass.as_chunks::<{ crate::gpu::TRI_SIZE }>().0.iter().all(|v| color(v) == Some([51, 102, 153, 102])));
     assert!(gpu.lines.is_empty() && gpu.overlay.is_empty() && gpu.under.is_empty() && gpu.hidden.is_empty() && gpu.ghost.is_empty());
     s.selection = vec![solidcraft_engine::Sel::Body { name: "Glass".into() }];
-    s.section = Some((solidcore_record::Vec3::ZERO, solidcore_record::Vec3::X));
+    s.set_cut(Some((solidcore_record::Vec3::ZERO, solidcore_record::Vec3::X)));
     let after = solidcraft_engine::product_scene::extract(&s).unwrap();
     assert_eq!(gpu_scene(&after).unwrap().0, key);
     s.execute("appearance.assign", &json!({"bodies":["Glass"],"color":"#336699","opacity":0.0})).unwrap();
@@ -2018,7 +2018,7 @@ fn cpu_checkpoints_replace_only_the_provisional_texture_and_keep_final_export_an
     let doc = h.app.session.doc.clone();
     let undo = h.app.session.undo.len();
     h.app.render_workspace.view.job = Some(second);
-    let mut info = PreviewInfo { frame_sequence: 1, samples_per_pixel: 1, frame: frame.info.clone() };
+    let mut info = PreviewInfo { frame_sequence: 1, samples_per_pixel: 1, adaptive: None, frame: frame.info.clone() };
     cache_preview_frame(&mut h.app, &ctx, &info, frame.png());
     remember_displayed_job(&mut h.app, false);
     assert_eq!(displayed_image(&h.app).unwrap().info.job, second);
@@ -2078,7 +2078,7 @@ fn cancelling_a_preview_returns_to_the_final_image_without_resetting_pan_or_expo
     let reply = h.app.run("render.start", json!({"settings":{"width":16,"height":16}})).unwrap();
     let pending = serde_json::from_value(reply["job"].clone()).unwrap();
     h.app.render_workspace.view.job = Some(pending);
-    let mut info = PreviewInfo { frame_sequence: 1, samples_per_pixel: 1, frame: frame.info.clone() };
+    let mut info = PreviewInfo { frame_sequence: 1, samples_per_pixel: 1, adaptive: None, frame: frame.info.clone() };
     cache_preview_frame(&mut h.app, &ctx, &info, frame.png());
     assert!(h.app.render_workspace.preview_image.is_none(), "a different job's checkpoint must be ignored");
     info.frame.job = pending;
@@ -2605,8 +2605,8 @@ fn nav_app(render: bool, preset: &str, around: crate::prefs::OrbitAround) -> cra
     app.preferences.zoom_to_cursor = true;
     app.ui.perspective = true;
     let mut cam = Camera { fov: 0.6, ..Default::default() };
-    cam.set_view(solidcraft_engine::render::StandardView::Iso);
-    cam.fit(&solidcraft_engine::product_scene::extract(&app.session).unwrap().bounds);
+    cam.set_view(solidcraft_viewport::StandardView::Iso);
+    cam.fit(&solidcraft_engine::render::view_bounds(&solidcraft_engine::product_scene::extract(&app.session).unwrap().bounds));
     app.cam = cam;
     app
 }
@@ -2694,7 +2694,7 @@ fn render_workspace_view_keys_double_middle_click_and_navigators_work() {
         inspector::select_editor(&mut h.app, inspector::Editor::Output);
         h.frames(3);
         let mut home = h.app.cam;
-        home.set_view(solidcraft_engine::render::StandardView::Iso);
+        home.set_view(solidcraft_viewport::StandardView::Iso);
         let off = |h: &mut Harness| {
             h.app.cam.yaw += 0.7;
             h.app.cam.pitch = 0.1;
@@ -2881,6 +2881,42 @@ fn gpu_material_recipes_use_exact_linear_absorption_without_changing_saved_appea
     let mut raster = json!({});
     materials::params(&h.app, &mut raster).unwrap();
     assert!(raster.get("raytrace").is_none());
+}
+
+/// A GPU image request that takes the runtime route (temporary material bindings, or an unsaved
+/// HDR) keeps the design's own directional and punctual light families, exactly as the saved
+/// snapshot does: editing the studio or rendering must not drop them.
+#[test]
+fn gpu_runtime_request_keeps_the_designs_directional_and_punctual_lights() {
+    use solidcraft_engine::render::job::{DirectionalLightOptions, DirectionalLights, PunctualLightOptions, PunctualLights};
+    let mut h = Harness::new();
+    h.app.run("solid.box", json!({"length":10,"width":10,"height":3,"body_name":"Target"})).unwrap();
+    enter(&mut h.app, true).unwrap();
+    select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    // Any temporary binding sends the request over the runtime API instead of a saved snapshot.
+    let target = materials::read_targets(&mut h.app).unwrap().remove(0);
+    let mut binding = materials::Binding::new(target, &h.app);
+    binding.maps_enabled = true;
+    binding.maps.color = "temporary-source.png".into();
+    h.app.render_workspace.view.materials.enabled = true;
+    h.app.render_workspace.view.materials.bindings.push(binding);
+    let studio = &mut h.app.render_workspace.view.studio;
+    studio.lighting_enabled = true;
+    studio.directional_lights =
+        DirectionalLights::new(&[DirectionalLightOptions { direction: [0.0, -1.0, 0.0], color: [1.0, 0.9, 0.8], intensity: 2.0 }]).unwrap();
+    studio.punctual_lights = PunctualLights::new(&[PunctualLightOptions {
+        position_mm: [10.0, 20.0, 30.0],
+        color: [1.0, 0.5, 0.25],
+        intensity: 4.0,
+        reference_distance_mm: 100.0,
+        minimum_distance_mm: 0.01,
+        cone: None,
+    }])
+    .unwrap();
+    let request = image_request(&h.app).unwrap();
+    assert!(request.get("settings").is_some(), "a temporary binding takes the runtime route: {request}");
+    assert_eq!(request["lighting"]["directional_lights"].as_array().map(Vec::len), Some(1), "the directional family is kept: {request}");
+    assert_eq!(request["lighting"]["punctual_lights"].as_array().map(Vec::len), Some(1), "the punctual family is kept: {request}");
 }
 
 #[test]
@@ -3301,6 +3337,8 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
                 denoise: true,
                 lens: Some(ThinLens { aperture_radius_mm: 0.5, focus_distance_mm: 123.0 }),
                 lighting: Some(StudioLighting {
+                    directional_lights: Default::default(),
+                    punctual_lights: Default::default(),
                     environment: [0.25, 0.5, 0.75],
                     sun: Some(Sun { direction: [2.0, 3.0, 4.0], angular_radius_rad: 0.0123456789, radiance: [11.0, 22.0, 33.0] }),
                     area_lights: AreaLights::new(&[AreaLight {
@@ -3317,6 +3355,7 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
                     intensity: 1.75,
                 }),
                 hdr: None,
+                ..Default::default()
             }),
         }),
         ..Default::default()
@@ -3392,7 +3431,12 @@ fn cpu_setup_reload_preserves_unedited_numeric_options_and_explicit_empty_values
         "area_samples":16,"seed":9123,"environment":{"color":[0.0,0.0,0.0],"intensity":2.0}
     }))
     .unwrap();
-    let mut expected = RenderSetup { camera: h.app.cam, exposure_ev: 1.5, job: Some(RenderJob::CpuRaytrace { options }), ..Default::default() };
+    let mut expected = RenderSetup {
+        camera: h.app.cam,
+        exposure_ev: 1.5,
+        job: Some(RenderJob::CpuRaytrace { transparent_background: false, options: Box::new(options) }),
+        ..Default::default()
+    };
     h.app.run("render.settings.set", json!({"name":"CPU numeric","set":expected})).unwrap();
     h.app.render_workspace.view.name = "CPU numeric".into();
     setups::load(&mut h.app);
@@ -3415,7 +3459,7 @@ fn cpu_setup_reload_preserves_unedited_numeric_options_and_explicit_empty_values
     assert!(json!(expected)["job"]["options"].get("exposure_ev").is_none());
     for value in [json!({}), json!({"lights":[],"punctual_lights":[],"area_lights":[],"environment":{"color":[0.0,0.0,0.0],"intensity":0.0}})] {
         let options: CpuJob = serde_json::from_value(value).unwrap();
-        expected.job = Some(RenderJob::CpuRaytrace { options });
+        expected.job = Some(RenderJob::CpuRaytrace { transparent_background: false, options: Box::new(options) });
         h.app.run("render.settings.set", json!({"name":"CPU numeric","set":expected})).unwrap();
         setups::load(&mut h.app);
         assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
@@ -3502,7 +3546,7 @@ fn cpu_progressive_setup_preserves_hidden_values_empty_lists_and_one_exposure() 
         width: 32,
         height: 16,
         exposure_ev: -1.5,
-        job: Some(RenderJob::CpuRaytrace { options }),
+        job: Some(RenderJob::CpuRaytrace { transparent_background: false, options: Box::new(options) }),
         ..Default::default()
     };
     h.app.run("render.settings.set", json!({"name":"Progressive hidden","set":expected})).unwrap();
@@ -3647,7 +3691,7 @@ fn hdr_ui_save_embeds_once_without_a_host_and_reload_never_reopens_the_source_pa
     assert_eq!(h.app.session.doc.render.resources.len(), 1, "both setups share one source payload");
     assert_eq!(h.app.session.doc.render.resources.total_bytes(), bytes.len());
     let cpu = h.app.session.doc.render.setups.get("HDR CPU").unwrap().clone();
-    assert!(matches!(&cpu.job, Some(RenderJob::CpuRaytrace { options })
+    assert!(matches!(&cpu.job, Some(RenderJob::CpuRaytrace { options, .. })
         if options.hdr.unwrap().samples == 64 && options.progressive.unwrap().samples_per_pixel == 7 && options.progressive.unwrap().seed == 84));
     let encoded = h.app.session.doc.to_json();
     assert!(!encoded.contains("original-embedded.hdr"), "the document never stores the source path");
@@ -3936,7 +3980,8 @@ fn product_preview_exact_payload_preserves_mixed_surfaces_and_refuses_overflow()
 fn full_detail_preview_source_can_exceed_legacy_128_mib_without_mesh_reduction() {
     use solidcore_record::Vec3;
     use solidcraft_engine::geom::Mesh;
-    use solidcraft_engine::render::{ProductMesh, surface::OpaqueSurface};
+    use solidcraft_engine::render::ProductMesh;
+    use solidcraft_viewport::surface::OpaqueSurface;
     // One immutable original triangle repeated in the index list; this tests
     // payload admission only. Actual SELENE upload is separate native evidence.
     let count = (128 * 1024 * 1024) / (3 * crate::gpu::PBR_SIZE) + 1;
@@ -5132,7 +5177,7 @@ fn navigation_bar_render_canvases_filter_slots_and_keep_product_fit() {
     assert_ne!(h.app.cam.target, panned.target, "Fit recentres the product");
     assert_product_fits_canvas(&h.app);
     let mut iso = h.app.cam;
-    iso.set_view(solidcraft_engine::render::StandardView::Iso);
+    iso.set_view(solidcraft_viewport::StandardView::Iso);
     h.app.cam.orbit(0.4, 0.2);
     h.step(&json!({"click":{"handle":"nav:slot:home"}})).unwrap();
     assert_eq!((h.app.cam.yaw, h.app.cam.pitch), (iso.yaw, iso.pitch), "Home returns to the isometric view");
@@ -5834,7 +5879,7 @@ fn render_workspace_shots_thumbnail_keys_include_name_scene_revision_and_complet
         Camera { yaw: camera.yaw + 0.1, ..camera },
         Camera { roll: camera.roll + 0.1, ..camera },
         Camera { fov: 0.7, ..camera },
-        Camera { up: solidcraft_engine::render::UpAxis::Y, ..camera },
+        Camera { up: solidcraft_viewport::UpAxis::Y, ..camera },
     ] {
         assert_ne!(key, thumbnails::Key::new("Hero".into(), 1, 2, changed));
     }
@@ -7127,7 +7172,7 @@ fn render_lighting_shadow_edits_are_undoable_and_preset_reviews_reject_changed_d
     assert!(!h.app.render_workspace.view.raytrace.shadows);
     assert_eq!(h.app.session.undo.len(), undo + 1);
     assert!(matches!(&h.app.session.doc.render.setups["Studio"].job,
-        Some(solidcraft_engine::doc::render_settings::RenderJob::CpuRaytrace { options }) if !options.shadows));
+        Some(solidcraft_engine::doc::render_settings::RenderJob::CpuRaytrace { options, .. }) if !options.shadows));
     h.app.run("edit.undo", json!({})).unwrap();
     setups::load(&mut h.app);
     assert_eq!(h.app.session.doc, before);
@@ -7169,7 +7214,7 @@ fn geometry_refusal_reports_scene_size_limit_and_recovery() {
             mesh: Arc::new(Mesh { triangles: vec![[0; 3]; 1 << 20], ..Default::default() }),
             color: [128; 3],
             opacity: 1.0,
-            surface: Some(solidcraft_engine::render::surface::OpaqueSurface::new(solidcore_record::Vec3::new(0.5, 0.5, 0.5), 0.0, 0.5, 1.5).unwrap()),
+            surface: Some(solidcraft_viewport::surface::OpaqueSurface::new(solidcore_record::Vec3::new(0.5, 0.5, 0.5), 0.0, 0.5, 1.5).unwrap()),
             transmission: None,
             faces: Vec::new(),
         }],
@@ -7245,13 +7290,14 @@ fn fit_aspect_keeps_the_product_inside_a_tall_image() {
     let radius = bounds.diagonal();
     for fov in [0.0, std::f64::consts::FRAC_PI_4] {
         let mut landscape = Camera { fov, ..Default::default() };
-        assert!(landscape.fit_aspect(&bounds, 2.0));
+        let view = solidcraft_engine::render::view_bounds(&bounds);
+        assert!(landscape.fit_aspect(&view, 2.0));
         let mut plain = Camera { fov, ..Default::default() };
-        plain.fit(&bounds);
+        plain.fit(&view);
         assert_eq!(landscape, plain, "a wide picture keeps the standard fit");
         for aspect in [0.5, 0.25] {
             let mut cam = Camera { fov, ..Default::default() };
-            assert!(cam.fit_aspect(&bounds, aspect));
+            assert!(cam.fit_aspect(&view, aspect));
             for p in corners(&bounds) {
                 let q = cam.view_proj(aspect, radius).apply(p);
                 let (x, y) = (q[0] / q[3], q[1] / q[3]);
@@ -7260,7 +7306,7 @@ fn fit_aspect_keeps_the_product_inside_a_tall_image() {
         }
         // Nothing to fit leaves the camera alone.
         let mut cam = Camera { fov, distance: 123.0, ..Default::default() };
-        assert!(!cam.fit_aspect(&Aabb3::EMPTY, 0.5));
+        assert!(!cam.fit_aspect(&solidcraft_engine::render::view_bounds(&Aabb3::EMPTY), 0.5));
         assert_eq!(cam.distance, 123.0);
     }
 }

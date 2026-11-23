@@ -737,6 +737,7 @@ fn mesh_and_solid_body_rows_have_different_icons_and_tooltips() {
                 name: "Mesh".into(),
                 positions: mesh.positions.iter().flat_map(|p| [p.x, p.y, p.z]).collect(),
                 triangles: mesh.triangles.iter().flatten().copied().collect(),
+                corner_normals: Default::default(),
                 color: None,
             }],
         },

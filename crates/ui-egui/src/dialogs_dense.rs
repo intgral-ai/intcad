@@ -20,6 +20,8 @@ pub(super) fn command(kind: &Kind) -> Option<&'static str> {
         Kind::ViewDxf { .. } => Some("file.export_view_dxf"),
         Kind::ViewNavigator(_) => Some("view.navigator"),
         Kind::InsertDrawing(p) => Some(if p.command.ends_with("dxf") { "sketch.insert_dxf" } else { "sketch.insert_svg" }),
+        // The tool itself: Plane, Axis or Point, which builds with the first method that fits.
+        Kind::ConstructAuto { tool } => Some(tool),
         Kind::Sketch => Some("sketch.create"),
         Kind::SketchIntersect { .. } => Some("sketch.intersect"),
         Kind::SketchProject { .. } => Some("sketch.project"),

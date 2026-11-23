@@ -4,6 +4,7 @@
 use serde_json::json;
 
 use crate::scenario::Harness;
+use solidcraft_engine::geom::MeshGeom;
 
 /// A design of `n` boxes (ten patterns of a box each), in a headless app, settled.
 fn grid(n: usize) -> Harness {
@@ -281,7 +282,10 @@ pub(crate) fn view_frame(
         view_proj: proj.vp.to_f32(),
         back: proj.cam.back().to_f32(),
         size_px: [size as f32; 2],
-        clip: [0.0; 4],
+        clip: [[0.0; 4]; solidcraft_viewport_gpu::view::MAX_SECTION_PLANES],
+        clip_hatch: [0; solidcraft_viewport_gpu::view::MAX_SECTION_PLANES],
+        turned_depth: None,
+        moving: None,
         cap: [0.0; 4],
         images: Vec::new(),
         clouds: Vec::new(),
@@ -291,7 +295,7 @@ pub(crate) fn view_frame(
         outline: false,
         eye: [e[0], e[1], e[2], if proj.cam.fov > 0.0 { 1.0 } else { 0.0 }],
         ao_radius: 0.0,
-        ao_samples: solidcraft_gpu::view::AO_SAMPLES,
+        ao_samples: solidcraft_viewport_gpu::view::AO_SAMPLES,
         sky: [0.0; 4],
         ssaa: 1.0,
         hover_tint: [f32::from(t.hover_face_lift) / 255.0; 3],
