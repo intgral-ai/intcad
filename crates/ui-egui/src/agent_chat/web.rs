@@ -38,6 +38,19 @@ pub fn set_problem(app: &mut SolveApp, problem: Problem) {
     app.agent_chat.web_problem = Some(problem);
 }
 
+/// The host shows only the foot of its view at the bottom centre of the window and takes presses
+/// there only (macOS): the panel then gives it a view as tall as the page may grow, and
+/// [`reveal`] says how much of it is shown.
+pub fn set_clips(app: &mut SolveApp, clips: bool) {
+    app.agent_chat.web_clips = clips;
+}
+
+/// With [`set_clips`], the height from the foot of the view [`placement`] gave that is shown and
+/// takes presses this frame, in points; `None`: all of it.
+pub fn reveal(app: &SolveApp) -> Option<f32> {
+    app.agent_chat.web_reveal
+}
+
 /// The panel's Retry: ask the host to try to make the view again, keeping the conversation.
 pub fn request_retry(app: &mut SolveApp) {
     app.agent_chat.web_retry = true;
@@ -127,6 +140,11 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
     if app.agent_chat.gallery.is_some() {
         return None;
     }
+    // What is shown of it: a layer over the rest of it covers nothing the page shows there.
+    let shown = app
+        .agent_chat
+        .web_reveal
+        .map_or(rect, |height| egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - height), rect.right_bottom()));
     let covered = ctx.memory(|memory| {
         // A panel docked to the window's edge is under every floating layer; a floating panel
         // is under the layers that come after it.
@@ -135,7 +153,7 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
         for other in memory.layer_ids() {
             if other == layer {
                 above = true;
-            } else if above && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(rect)) {
+            } else if above && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(shown)) {
                 covered = true;
             }
         }

@@ -510,6 +510,13 @@ pub struct AgentChat {
     pub(crate) web_height: Option<f32>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_centre: Option<f32>,
+    /// The host keeps its view at the bottom centre as tall as `web_centre` and shows and takes
+    /// presses in only its foot, `web_reveal` tall ([`web::set_clips`], macOS): the view never
+    /// changes size as the page grows, so no frame shows the page's old picture at its new top.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_clips: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_reveal: Option<f32>,
     /// A pointer press in the transcript owns keys just like a focused text editor.
     keyboard_owned: bool,
     /// Unreserved sheet space, shared by the actual dock and its drag preview.
@@ -668,6 +675,8 @@ impl AgentChat {
             std::mem::swap(&mut self.web_drag, &mut other.web_drag);
             std::mem::swap(&mut self.web_height, &mut other.web_height);
             std::mem::swap(&mut self.web_centre, &mut other.web_centre);
+            std::mem::swap(&mut self.web_clips, &mut other.web_clips);
+            std::mem::swap(&mut self.web_reveal, &mut other.web_reveal);
         }
         // Hit regions must be measured again for the incoming conversation.
         self.panel_rect = None;

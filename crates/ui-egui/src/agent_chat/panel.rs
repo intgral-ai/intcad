@@ -148,6 +148,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         app.agent_chat.web_centre = None;
+        app.agent_chat.web_reveal = None;
         if centred(app) && web::active(app, &ctx) {
             centre(app, ui);
             show_drop_hint(app, &ctx);
@@ -287,13 +288,18 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
     if app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
         refresh(app, &ctx);
     }
-    // A layer of its own over the view, so a menu or a sheet over it hides the native view.
+    // A host that shows only its view's foot keeps the view as tall as the page may grow, so it
+    // never changes size: the page's height is how much of it is shown and takes presses.
+    let view = if app.agent_chat.web_clips { Rect::from_min_max(pos2(rect.left(), bounds.bottom() - most), rect.right_bottom()) } else { rect };
+    app.agent_chat.web_reveal = app.agent_chat.web_clips.then_some(height);
+    // A layer of its own over the view, so a menu or a sheet over it hides the native view. It
+    // holds only what is shown: above it the window's own view takes the pointer.
     egui::Area::new(Id::new("sc_agent_chat_centre")).order(egui::Order::Middle).fixed_pos(rect.min).show(&ctx, |ui| {
         ui.allocate_rect(rect, Sense::hover());
-        web::place(app, ui, rect);
+        web::place(app, ui, view);
     });
     crate::scenario::publish_rect("agent_chat:panel", rect);
-    crate::scenario::publish_rect("agent_chat:web", rect);
+    crate::scenario::publish_rect("agent_chat:web", view);
     app.agent_chat.panel_rect = Some(rect);
     app.agent_chat.drop_rect = Some(rect);
     gallery_window(app, &ctx);

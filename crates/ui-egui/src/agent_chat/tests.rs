@@ -16276,6 +16276,45 @@ fn the_web_view_follows_its_panel_through_window_resizes() {
     assert_eq!(web::placement(&mut h.app, &h.ctx), places.last().copied(), "the last frame's place is the one the host takes, once");
 }
 
+/// A host that shows only its view's foot (macOS) is given a view as tall as the page may grow,
+/// so the view never changes size as the page opens: the page's height is how much of it is shown
+/// and takes presses, and the app's own layer holds only that (INT-1500).
+#[test]
+fn at_the_bottom_centre_a_host_that_shows_the_views_foot_keeps_the_view_as_tall_as_the_page_may_grow() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
+    h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    h.app.ui.show_navigation_bar = false;
+    web::set_host(&mut h.app, true);
+    web::set_clips(&mut h.app, true);
+    h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the page says how tall it is");
+    h.frames(3);
+    let most = serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["centre"].as_f64().expect("the most") as f32;
+    let view = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let shown = crate::scenario::rect_of("agent_chat:panel").expect("the part shown");
+    assert!((view.height() - most).abs() < 0.5, "the view as tall as the page may grow: {view:?}, most {most}");
+    assert!(
+        (shown.height() - 181.0).abs() < 0.5 && shown.bottom() == view.bottom(),
+        "the page's height of it shown, at its foot: {shown:?} {view:?}"
+    );
+    assert_eq!(web::reveal(&h.app), Some(181.0));
+    assert_eq!(web::placement(&mut h.app, &h.ctx), Some(view), "the whole view goes to the host");
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":420}"#).expect("the conversation opens");
+    h.frames(2);
+    assert_eq!(crate::scenario::rect_of("agent_chat:web"), Some(view), "opening changes what is shown, not the view");
+    assert_eq!(web::reveal(&h.app), Some(420.0_f32.min(most)));
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("and closes");
+    h.frames(2);
+    // Without it the view is the page's height again, as on the other systems.
+    web::set_clips(&mut h.app, false);
+    h.frames(2);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!((place.height() - 181.0).abs() < 0.5, "without: as tall as the page: {place:?}");
+    assert_eq!(web::reveal(&h.app), None);
+}
+
 /// At the bottom centre of the window (the `agent_chat_centre` preference, on by default) the
 /// host's view is the page's message box: centred on the window, not on the room beside the
 /// browser, above the history and left of the rail, as tall as the page says and never more than

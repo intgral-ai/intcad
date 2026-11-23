@@ -250,11 +250,17 @@ struct Placed {
     rect: egui::Rect,
     zoom: f32,
     pixels_per_point: f32,
+    /// How much of the view, from its foot, is shown and takes presses (`web::reveal`); `None`: all.
+    reveal: Option<f32>,
 }
 
 #[derive(Default)]
 pub struct AssistantWeb {
     view: Option<wry::WebView>,
+    /// The frame that shows only the view's foot (macOS, `assistant_clip`). Without it the view
+    /// changes size as the page grows, as it does on the other systems.
+    #[cfg(target_os = "macos")]
+    clip: Option<crate::assistant_clip::Clip>,
     /// What the page sent since the last frame.
     inbox: Rc<RefCell<Vec<String>>>,
     /// Files dragged over the view or dropped on it since the last frame.
@@ -319,6 +325,10 @@ impl AssistantWeb {
     /// The view goes before the window it is a child of does.
     pub fn close(&mut self) {
         self.view = None;
+        #[cfg(target_os = "macos")]
+        {
+            self.clip = None;
+        }
         #[cfg(target_os = "linux")]
         {
             self.gtk_window = None;
@@ -480,7 +490,7 @@ impl AssistantWeb {
             self.show(false);
             return;
         };
-        let at = Placed { rect, zoom: ctx.zoom_factor(), pixels_per_point: ctx.pixels_per_point() };
+        let at = Placed { rect, zoom: ctx.zoom_factor(), pixels_per_point: ctx.pixels_per_point(), reveal: web::reveal(solve) };
         #[cfg(target_os = "linux")]
         self.latest.set(Some(at));
         let backing = web::backing(solve, ctx);
@@ -492,6 +502,8 @@ impl AssistantWeb {
             ctx.request_repaint();
             return;
         }
+        #[cfg(target_os = "macos")]
+        web::set_clips(solve, self.clip.is_some());
         if self.placed != Some(at)
             && let Some(view) = &self.view
         {
@@ -499,7 +511,17 @@ impl AssistantWeb {
             if let Some(window) = self.gtk_window.as_ref() {
                 place_gtk(window, at);
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            if let Some(clip) = &self.clip {
+                use wry::WebViewExtMacOS;
+                let zoom = f64::from(at.zoom);
+                let (rect, shown) = (at.rect, at.reveal.unwrap_or(at.rect.height()));
+                let points = |value: f32| f64::from(value) * zoom;
+                clip.place(&view.webview(), points(rect.left()), points(rect.top()), points(rect.width()), points(rect.height()), points(shown));
+            } else if let Err(error) = view.set_bounds(place(at)) {
+                note(&format!("could not be moved: {error}"));
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             if let Err(error) = view.set_bounds(place(at)) {
                 note(&format!("could not be moved: {error}"));
             }
@@ -663,6 +685,14 @@ impl AssistantWeb {
                 {
                     self.gtk_window = gtk_window;
                 }
+                #[cfg(target_os = "macos")]
+                {
+                    use wry::WebViewExtMacOS;
+                    self.clip = crate::assistant_clip::Clip::new(&view.webview());
+                    if self.clip.is_none() {
+                        note("could not be put in a frame of its own: it changes size as the page grows");
+                    }
+                }
                 if let Err(error) = view.zoom(page_zoom(&view, at)) {
                     note(&format!("could not be zoomed: {error}"));
                 }
@@ -750,6 +780,11 @@ impl AssistantWeb {
         if let Some(window) = &self.gtk_window {
             use gtk::prelude::WidgetExt;
             if shown { window.show_all() } else { window.hide() }
+        }
+        // A hidden frame takes no press either.
+        #[cfg(target_os = "macos")]
+        if let Some(clip) = &self.clip {
+            clip.show(shown);
         }
         if let Some(view) = &self.view {
             if let Err(error) = view.set_visible(shown) {
@@ -1081,8 +1116,18 @@ mod tests {
     /// leaves the page outside the panel (INT-1472).
     #[test]
     fn the_delayed_placement_uses_the_panels_latest_place() {
-        let made = Placed { rect: egui::Rect::from_min_max(egui::pos2(1221.0, 165.8), egui::pos2(1591.0, 944.8)), zoom: 1.0, pixels_per_point: 1.25 };
-        let tiled = Placed { rect: egui::Rect::from_min_max(egui::pos2(638.6, 165.8), egui::pos2(1008.6, 1062.4)), zoom: 1.0, pixels_per_point: 2.0 };
+        let made = Placed {
+            rect: egui::Rect::from_min_max(egui::pos2(1221.0, 165.8), egui::pos2(1591.0, 944.8)),
+            zoom: 1.0,
+            pixels_per_point: 1.25,
+            reveal: None,
+        };
+        let tiled = Placed {
+            rect: egui::Rect::from_min_max(egui::pos2(638.6, 165.8), egui::pos2(1008.6, 1062.4)),
+            zoom: 1.0,
+            pixels_per_point: 2.0,
+            reveal: None,
+        };
         assert_eq!(delayed_place(Some(tiled), made), tiled, "the window was tiled after the view was made");
         assert_eq!(delayed_place(None, made), made, "before the host recorded a place, the made one stands");
     }
