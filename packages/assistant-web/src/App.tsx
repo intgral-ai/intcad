@@ -2790,6 +2790,8 @@ const POPUPS = [
 const OPEN = POPUPS.map(entry => entry.selector).join(', ');
 /** The popups a press outside the page closes. */
 const ON_BLUR = POPUPS.filter(entry => entry.blur).map(entry => entry.selector).join(', ');
+/** The dialogs, which keep the page as it is through a press outside it. */
+const DIALOGS = POPUPS.filter(entry => !entry.blur).map(entry => entry.selector).join(', ');
 
 /** Closes the page's open menus, selects and pickers, as a press outside them would; its dialogs stay. */
 function closePopups() {
@@ -2873,6 +2875,9 @@ function Centre({
     else setRoom(next);
   };
   useLayoutEffect(() => fitRoom.current(false));
+  // The page lost the focus with a popup open, which that closed: the press outside the page that
+  // the host tells of next is most likely the same press, and it only closes the popup.
+  const blurClosed = useRef(false);
   // The page tells the host how tall it is; the host keeps it within `centre`. While a popup is open
   // (model picker, mode menu, a dialog) the page asks for all the room there is, from the press that
   // opens it, so the popup has room when it appears.
@@ -2976,7 +2981,10 @@ function Centre({
     };
     // A press outside the page (the model, the window) closes its menus, as one inside would;
     // switching to another app to copy a key does not close the dialog it goes into.
-    const blur = () => closePopups();
+    const blur = () => {
+      blurClosed.current = Boolean(document.querySelector(ON_BLUR));
+      closePopups();
+    };
     // A mode picked from its menu closes the menu.
     const picked = (event: globalThis.MouseEvent) => {
       if ((event.target as Element | null)?.closest('[role="menuitemradio"]')) window.setTimeout(closePopups, 120);
@@ -3015,6 +3023,22 @@ function Centre({
       window.clearTimeout(late);
     };
   }, []);
+  // A primary press in the app's window outside the page (the model, the rail, the toolbar, the
+  // browser), as the host counts them: not `blur`, which switching to another app fires too. It
+  // closes the page's popups and collapses the opened conversation, unless all it does is close a
+  // popup, or a dialog, the connections page (a sign-in may be under way there) or New chat's
+  // question is open.
+  const presses = state.outsidePresses ?? 0;
+  const pressesSeen = useRef(presses);
+  useEffect(() => {
+    const pressed = presses > pressesSeen.current;
+    pressesSeen.current = presses;
+    if (!pressed) return;
+    const popup = blurClosed.current || Boolean(document.querySelector(ON_BLUR));
+    blurClosed.current = false;
+    closePopups();
+    if (open && !popup && !conn && !none && !state.confirmNew && !document.querySelector(DIALOGS)) collapse();
+  }, [presses]);
   // The conversation opens only once the view has its height: opened into a view still growing, it
   // would be cut off. It waits for the view to be that tall, not for a time; a host that never grows
   // has it opened after a second all the same.

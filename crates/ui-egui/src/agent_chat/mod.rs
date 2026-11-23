@@ -517,6 +517,10 @@ pub struct AgentChat {
     pub(crate) web_clips: bool,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_reveal: Option<f32>,
+    /// Primary presses in the app's window, outside the page, while it is shown at the bottom
+    /// centre (`panel::centre`): the page collapses its conversation when the count goes up.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_presses: u64,
     /// A pointer press in the transcript owns keys just like a focused text editor.
     keyboard_owned: bool,
     /// Unreserved sheet space, shared by the actual dock and its drag preview.
@@ -682,6 +686,7 @@ impl AgentChat {
             std::mem::swap(&mut self.web_centre, &mut other.web_centre);
             std::mem::swap(&mut self.web_clips, &mut other.web_clips);
             std::mem::swap(&mut self.web_reveal, &mut other.web_reveal);
+            std::mem::swap(&mut self.web_presses, &mut other.web_presses);
         }
         // Hit regions must be measured again for the incoming conversation.
         self.panel_rect = None;

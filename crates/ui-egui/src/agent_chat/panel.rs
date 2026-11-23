@@ -303,6 +303,13 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
         app.agent_chat.panel_rect = None;
         return;
     }
+    // The page's native view takes its own presses: a primary press that reaches the app is outside
+    // the Assistant (the model, the rail, the toolbar, the browser), and the page collapses its
+    // conversation on it. Switching to another app is no press. Not while the picture viewer the
+    // page opened has the window.
+    if app.agent_chat.gallery.is_none() && ctx.input(|input| input.pointer.primary_pressed()) {
+        app.agent_chat.web_presses = app.agent_chat.web_presses.saturating_add(1);
+    }
     if app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
         refresh(app, &ctx);
     }

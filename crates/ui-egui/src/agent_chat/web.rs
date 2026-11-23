@@ -629,7 +629,7 @@ pub fn state(app: &mut SolveApp) -> String {
         tr("ui.ai_model").to_string()
     };
     strings.insert("modelEffort".into(), Value::from(model_effort));
-    json!({
+    let mut page = json!({
         "items": items,
         // A text file open from a file card: the start of its text, read when the card was clicked.
         "filePreview": chat.file_preview.as_ref().map(|file| json!({"name": file.name, "text": file.text, "markdown": file.markdown})),
@@ -690,8 +690,14 @@ pub fn state(app: &mut SolveApp) -> String {
         "dark": crate::theme::is_dark(),
         "strings": strings,
         "dfm": dfm,
-    })
-    .to_string()
+    });
+    // At the bottom centre: the primary presses in the app's window outside the page so far; the
+    // page collapses its conversation on a new one. Apart: the object above is as long as `json!`
+    // expands.
+    if let Some(fields) = page.as_object_mut() {
+        fields.insert("outsidePresses".into(), Value::from(chat.web_presses));
+    }
+    page.to_string()
 }
 
 /// One message from the page, as JSON `{"type": …}`. Only these are acted on, each checked
