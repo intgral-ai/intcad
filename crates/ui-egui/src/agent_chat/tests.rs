@@ -17295,6 +17295,17 @@ fn everywhere_a_key_could_leak(app: &mut SolveApp, script: &Script) -> String {
     .join("\n")
 }
 
+/// What the page is told of a key save, from the connections it was told before: the count of
+/// answered saves has moved on by one, and the save's `error` (returned) is all else that changed.
+fn answered_save(before: &Value, after: Value) -> Value {
+    assert_eq!(after["keySaves"].as_u64(), before["keySaves"].as_u64().map(|count| count + 1), "the save is answered");
+    let mut rest = after.clone();
+    rest["keySaves"] = before["keySaves"].clone();
+    rest["error"] = before["error"].clone();
+    assert_eq!(&rest, before, "nothing else the page is told changed");
+    after["error"].clone()
+}
+
 /// B10: `conn_key` puts the key in the keychain and hands it to the agent with `setup`, and the
 /// key is nowhere else; `conn_key_remove` takes it out again. A keychain that refuses, or that
 /// is not there, is told to the page in the user's words, without the key.
@@ -17319,8 +17330,9 @@ fn a_key_goes_to_the_keychain_and_the_agent_and_nowhere_else() {
     }
     assert!(keys.get("mastra/key/openai").unwrap().is_none() && script.calls() == ["conn: setup"], "nothing refused was kept or sent");
     // A key the page could send and the app does not take is told to the page, so its dialog stops waiting.
+    let before = page_state(&mut app)["connect"].clone();
     conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "openai", "key": "k".repeat(4097)})).expect_err("too long");
-    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_refused"));
+    assert_eq!(answered_save(&before, page_state(&mut app)["connect"].clone()), tr("ui.agent_chat_conn_refused"));
 
     conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "openai", "key": format!("  {BUILTIN_KEY}\n")}))
         .expect("a key for one of the five");
@@ -17352,7 +17364,12 @@ fn a_key_goes_to_the_keychain_and_the_agent_and_nowhere_else() {
     app.services.secrets = Some(Arc::new(RefusingKeys));
     let calls = script.calls().len();
     conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": BUILTIN_KEY})).expect("the action itself is in range");
-    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.host_ai_key_unavailable"));
+    let refused = page_state(&mut app)["connect"].clone();
+    assert_eq!(refused["error"], tr("ui.host_ai_key_unavailable"));
+    // The same refusal again: its sentence is the one before, and the count of answered saves
+    // alone tells the dialog that this save has its answer.
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": BUILTIN_KEY})).expect("in range");
+    assert_eq!(answered_save(&refused, page_state(&mut app)["connect"].clone()), tr("ui.host_ai_key_unavailable"));
     poll(&mut app, &ctx);
     assert_eq!(script.calls().len(), calls, "no setup without the key kept");
     assert!(!everywhere_a_key_could_leak(&mut app, &script).contains(BUILTIN_KEY), "not even in the keychain's own words");
@@ -17365,8 +17382,13 @@ fn a_key_goes_to_the_keychain_and_the_agent_and_nowhere_else() {
     // The next thing that works clears the word.
     app.services.secrets = Some(keys.clone());
     conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": BUILTIN_KEY})).expect("in range");
-    assert_eq!(page_state(&mut app)["connect"]["error"], Value::Null);
+    let saved = page_state(&mut app)["connect"].clone();
+    assert_eq!(saved["error"], Value::Null);
     assert_eq!(keys.get("mastra/key/anthropic").unwrap().as_deref(), Some(BUILTIN_KEY));
+    // Saving a key that is kept again (an update) changes nothing else the page is told.
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": CUSTOM_KEY})).expect("an update");
+    assert_eq!(answered_save(&saved, page_state(&mut app)["connect"].clone()), Value::Null);
+    assert_eq!(keys.get("mastra/key/anthropic").unwrap().as_deref(), Some(CUSTOM_KEY));
 
     // A start whose keychain cannot be read says so and still starts, without the key.
     let (mut app, _keys, ctx) = app_with_builtin();
@@ -17598,7 +17620,8 @@ fn a_request_the_agent_refuses_is_told_to_the_page_until_the_next_action() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_built_in_agent_that_failed_or_ended_leaves_the_page_its_notice_and_no_connections() {
-    let nothing = json!({"plans": [], "keys": [], "custom": [], "login": null, "problem": null, "error": null, "dates": {}, "connected": false});
+    let nothing =
+        json!({"plans": [], "keys": [], "custom": [], "login": null, "problem": null, "error": null, "keySaves": 0, "dates": {}, "connected": false});
     let notices = |state: &Value| -> Vec<String> {
         let items = state["items"].as_array().expect("items");
         items

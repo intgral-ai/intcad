@@ -4,6 +4,7 @@
 import {
   ArrowUp,
   Camera,
+  Check,
   ChevronDown,
   ChevronRight,
   ClipboardCheck,
@@ -1742,41 +1743,41 @@ function Wrong({ children }: { children: ReactNode }) {
 
 /**
  * A key for one provider. What is typed stays in this box until Save hands it to the app, which
- * keeps it in the system keychain; nothing shows it again. A save is answered by a later state:
- * the key saved and no error, and the dialog is done; an error, and it stays to say so.
+ * keeps it in the system keychain; nothing shows it again. A save is answered when the app's
+ * count of answered saves moves on: with no error the key is kept and the dialog is done; with
+ * one it stays, with what was typed, to say so.
  */
 function KeyDialog({
   entry,
   error,
-  stamp,
+  saves,
   strings,
   onClose,
+  onSaved,
 }: {
   entry: Connect['keys'][number];
   error: string | null;
-  stamp: unknown;
+  saves: number;
   strings: Strings;
   onClose: () => void;
+  onSaved: () => void;
 }) {
   const [draft, setDraft] = useState('');
-  // Whether a save waits for its answer, and whether the last one was refused. An error that
-  // was there before this save is not about this key, so only an answer is shown.
-  const [waiting, setWaiting] = useState(false);
+  // The count of answered saves when Save was pressed (`null`: no save waits), and whether the
+  // last save was refused. An error that was there before this save is not about this key.
+  const [asked, setAsked] = useState<number | null>(null);
   const [refused, setRefused] = useState(false);
   useEffect(() => {
-    if (!waiting) return;
-    if (error) {
-      setWaiting(false);
-      setRefused(true);
-    } else if (entry.saved) {
-      onClose();
-    }
-  }, [stamp]);
+    if (asked === null || saves === asked) return;
+    setAsked(null);
+    if (error) setRefused(true);
+    else onSaved();
+  }, [saves, asked]);
   const title = entry.title;
   function save() {
     const key = draft.trim();
-    if (!key) return;
-    setWaiting(true);
+    if (!key || asked !== null) return;
+    setAsked(saves);
     setRefused(false);
     post({ type: 'conn_key', provider: entry.id, key });
   }
@@ -1804,13 +1805,28 @@ function KeyDialog({
           {refused && error && <Wrong>{error}</Wrong>}
         </DialogBody>
         <DialogFooter>
+          {/* Cancel stays: an answer that never comes must not keep the dialog open. */}
           <DialogCancel>{strings.cancel}</DialogCancel>
-          <DialogAction disabled={!draft.trim()} onConfirm={save}>
-            {strings.connSave}
+          <DialogAction disabled={!draft.trim() || asked !== null} onConfirm={save}>
+            {asked !== null ? strings.working : strings.connSave}
           </DialogAction>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** A key the app has just kept, said under its row and brought into sight: the row can be at the page's lower edge. */
+function KeySaved({ strings }: { strings: Strings }) {
+  const ref = useRef<HTMLDivElement>(null);
+  // A block body: scrolling can return a promise, which React would take for the effect's cleanup.
+  useEffect(() => {
+    ref.current?.scrollIntoView({ block: 'nearest' });
+  }, []);
+  return (
+    <Notice ref={ref} variant="success" icon={<Check />} role="status" className="mt-1">
+      <Notice.Message>{strings.connKeySaved}</Notice.Message>
+    </Notice>
   );
 }
 
@@ -2028,6 +2044,8 @@ function SignInProblem({ problem, busy, strings }: { problem: NonNullable<Connec
 function ConnectionsPage({ state, connect }: { state: AssistantState; connect: Connect }) {
   const { strings } = state;
   const [keyFor, setKeyFor] = useState<string | null>(null);
+  // The key whose save the app has just answered as kept: its row says so until something else is done here.
+  const [savedNow, setSavedNow] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const { option, current, ids } = modelChoice(state);
   const used = connectionOf(connect, current);
@@ -2055,7 +2073,10 @@ function ConnectionsPage({ state, connect }: { state: AssistantState; connect: C
       )
     );
   };
-  const askKey = (id: string) => setKeyFor(id);
+  const askKey = (id: string) => {
+    setSavedNow(null);
+    setKeyFor(id);
+  };
   return (
     <div className="flex min-w-0 flex-col gap-3 py-2">
       {/* The way back to the conversation is in the bar (AssistantBar's `onBack`). */}
@@ -2132,31 +2153,45 @@ function ConnectionsPage({ state, connect }: { state: AssistantState; connect: C
         <SettingsTitle>{strings.connKeys}</SettingsTitle>
       </SettingsHeader>
       <SettingsContainer>
-      {connect.keys.map(key => (
-        <ConnRow
-          key={key.id}
-          entry={key}
-          note={key.saved && key.shadowed ? strings.connShadowed : undefined}
-          status={key.saved ? standing(strings.connKeySaved, 'success') : undefined}
-          actions={
-            key.saved ? (
-              <>
-                {!key.shadowed && usedOrUse(key)}
+      {connect.keys.map(key => {
+        // A key the app has just kept is saved before the agent's next list says so.
+        const saved = key.saved || savedNow === key.id;
+        return (
+          <ConnRow
+            key={key.id}
+            entry={key}
+            note={saved && key.shadowed ? strings.connShadowed : undefined}
+            status={saved ? standing(strings.connKeySaved, 'success') : undefined}
+            actions={
+              saved ? (
+                <>
+                  {!key.shadowed && usedOrUse(key)}
+                  <Button type="button" size="sm" onClick={() => askKey(key.id)}>
+                    {strings.connKeyUpdate}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => {
+                      setSavedNow(null);
+                      post({ type: 'conn_key_remove', provider: key.id });
+                    }}
+                  >
+                    {strings.connRemove}
+                  </Button>
+                </>
+              ) : (
                 <Button type="button" size="sm" onClick={() => askKey(key.id)}>
-                  {strings.connKeyUpdate}
+                  {strings.connKeyAdd}
                 </Button>
-                <Button type="button" size="sm" onClick={() => post({ type: 'conn_key_remove', provider: key.id })}>
-                  {strings.connRemove}
-                </Button>
-              </>
-            ) : (
-              <Button type="button" size="sm" onClick={() => askKey(key.id)}>
-                {strings.connKeyAdd}
-              </Button>
-            )
-          }
-        />
-      ))}
+              )
+            }
+          >
+            {/* An update leaves the row as it was: the save is said under it, where the dialog was opened. */}
+            {savedNow === key.id && <KeySaved strings={strings} />}
+          </ConnRow>
+        );
+      })}
       </SettingsContainer>
       </SettingsGroup>
 
@@ -2194,7 +2229,19 @@ function ConnectionsPage({ state, connect }: { state: AssistantState; connect: C
       )}
       </SettingsContainer>
       </SettingsGroup>
-      {keyEntry && <KeyDialog entry={keyEntry} error={connect.error} stamp={state} strings={strings} onClose={() => setKeyFor(null)} />}
+      {keyEntry && (
+        <KeyDialog
+          entry={keyEntry}
+          error={connect.error}
+          saves={connect.keySaves}
+          strings={strings}
+          onClose={() => setKeyFor(null)}
+          onSaved={() => {
+            setSavedNow(keyEntry.id);
+            setKeyFor(null);
+          }}
+        />
+      )}
     </div>
   );
 }

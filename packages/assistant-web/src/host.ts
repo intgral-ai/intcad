@@ -142,6 +142,8 @@ export interface Connect {
   problem: { id: string; kind: 'port' | 'offline' | 'failed' } | null;
   /** A key or custom address the app could not keep, in the user's language. */
   error: string | null;
+  /** The key saves the app has answered (kept or refused), counted: a save is answered once it moves on. */
+  keySaves: number;
   /** Release date (`YYYY-MM-DD`) by model id. */
   dates: Record<string, string>;
   /** A plan signed in, a key saved, or a custom address: there is something to talk to. */
