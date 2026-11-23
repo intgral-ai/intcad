@@ -38,9 +38,15 @@ new SHA.
    The `package-evidence-*` artifacts contain `build.json` and `contents.json`; the latter is the
    runtime-marker scan used by the release gate.
 5. If an asset is attached to a prerelease, make the checksum list with
-   `packaging/checksums.sh dist/<platform>` and attach both `SHA256SUMS.txt` (the name the in-app
-   update check reads) and `SHA256SUMS`, then update the release notes with the exact platform,
-   signature state, verification scope and remaining gaps. Re-download and check the hashes.
+   `packaging/checksums.sh dist --require <name>` once per asset the channel promises — the
+   versioned files **and** the unversioned aliases clients resolve by name, across every platform.
+   The list must cover the whole release, not one platform: an asset attached without its line
+   leaves those users unable to update. The script refuses a list that omits a `--require`d name
+   and verifies every hash before writing. Attach both `SHA256SUMS.txt` (the name the in-app update
+   check reads) and `SHA256SUMS`, then update the release notes with the exact platform, signature
+   state, verification scope and remaining gaps. Re-download and check the hashes. The script needs
+   Bash and GNU `sha256sum --strict`: run it on Linux (the release runner or a container), not on a
+   stock macOS host.
 
 ## What this entry does not prove
 
