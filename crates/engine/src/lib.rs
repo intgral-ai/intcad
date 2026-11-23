@@ -78,6 +78,8 @@ pub enum EngineError {
     Panel(#[from] panels::PanelError),
     #[error("unknown command `{0}`{hint}", hint = cmd::did_you_mean(.0))]
     UnknownCommand(String),
+    #[error("unknown command `{0}`{hint}", hint = cmd::describe_suggestions(.0))]
+    UnknownCommandDescription(String),
     #[error("`{0}` is not available right now: {1}")]
     Disabled(String, String),
     #[error("invalid parameters for `{cmd}`: {msg}")]

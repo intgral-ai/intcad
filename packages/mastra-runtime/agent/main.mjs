@@ -8,16 +8,19 @@
 
 import http from 'node:http';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { intcadAgent } from './agent.mjs';
 import { holdCallbackPorts } from './callback.mjs';
 import { Connections, KEYS } from './connections.mjs';
+import { deniedFolders, keepFilesFrom } from './fence.mjs';
 import { releaseDates } from './models.mjs';
 import { keepKeysFromCommands, keyVariables, withoutParams } from './secrets.mjs';
-import { sessionBuilder } from './session.mjs';
+import { sessionBuilder, sweepSessionFolders } from './session.mjs';
+import { installSkillSets, setsToInstall } from './skills.mjs';
 
 // ACP's SDK prints a request it refuses, parameters and all. See secrets.mjs.
 const printError = console.error.bind(console);
@@ -28,6 +31,7 @@ console.error = (...args) => printError(...withoutParams(args));
 // Intcad's assistant or for the model it talks to, so when the app names a data folder the agent
 // gets a home of its own inside it. This has to happen before anything of Mastra's is loaded.
 const usersHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+const here = dirname(fileURLToPath(import.meta.url));
 if (process.env.MASTRA_APP_DATA_DIR) {
   const home = join(process.env.MASTRA_APP_DATA_DIR, 'home');
   mkdirSync(home, { recursive: true });
@@ -36,6 +40,29 @@ if (process.env.MASTRA_APP_DATA_DIR) {
   // Mastra Code keeps small lease files for its sessions under /tmp/mc, shared by every Mastra
   // Code of this user. Intcad's agent keeps its own, with the rest of its data.
   process.env.MASTRACODE_SIGNALS_SOCKET_ROOT = join(process.env.MASTRA_APP_DATA_DIR, 'signals');
+  // Mastra Code's file tools reach the system's temporary folder by themselves, as a scratch space
+  // (`DEFAULT_ALLOWED_PATHS` in its `agents/workspace.js`). The agent gets a temporary folder of its
+  // own, so the user's is not that scratch space (INT-1473: files only in the project folder).
+  // `/tmp` itself stays on Mastra Code's list on Linux and macOS.
+  const scratch = join(process.env.MASTRA_APP_DATA_DIR, 'tmp');
+  mkdirSync(scratch, { recursive: true });
+  for (const name of ['TMPDIR', 'TMP', 'TEMP']) process.env[name] = scratch;
+  // Each session works in a new folder under `sessions/` (session.mjs). Mastra Code looks for a git
+  // repository from there upwards, and would read the agent files, MCP servers and hooks of one it
+  // found (a data folder inside a checkout of the user's). Git stops at `sessions/`.
+  const sessions = join(process.env.MASTRA_APP_DATA_DIR, 'sessions');
+  mkdirSync(sessions, { recursive: true });
+  // What an agent stopped before it cleaned up left there goes now.
+  sweepSessionFolders(process.env.MASTRA_APP_DATA_DIR);
+  process.env.GIT_CEILING_DIRECTORIES = [sessions, process.env.GIT_CEILING_DIRECTORIES].filter(Boolean).join(delimiter);
+  // The skills the package carries (skills.mjs) go where Mastra Code looks in its home,
+  // `.agents/skills`, before a session reads that folder. Not into the session's folder: Mastra
+  // Code skips a link there that leads out of it. Run by hand, without a home of its own, the
+  // agent installs nothing: the person's own folder is theirs.
+  const log = line => process.stderr.write(`[intcad] ${line}\n`);
+  const sets = setsToInstall(join(here, '..'), join(here, '..', '..', '..'), log);
+  if (sets.length === 0) log('skills: the package carries no skill set');
+  installSkillSets({ sets, home, log });
 }
 
 // Mastra reports feature use to its own service unless this is set (`@mastra/core`, and Mastra
@@ -49,7 +76,6 @@ process.env.MASTRA_TELEMETRY_DISABLED = '1';
 // opens, and this switch leaves that as it is.
 process.env.MASTRA_OFFLINE = '1';
 
-const here = dirname(fileURLToPath(import.meta.url));
 const sdkRoot = resolve(process.env.SOLIDCRAFT_MASTRA_SDK || join(here, '..', 'node_modules'));
 // The files are named in full: an absolute path does not go through a package's export map, and a
 // bare name would be looked up from this folder, where the SDK need not be.
@@ -60,7 +86,7 @@ if (!existsSync(join(sdkRoot, '@mastra', 'code-sdk', 'package.json'))) {
   process.exit(1);
 }
 
-const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox }] =
+const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }] =
   await Promise.all([
     load('@agentclientprotocol/sdk/dist/acp.js'),
     load('@mastra/code-sdk/dist/acp/agent.js'),
@@ -94,6 +120,9 @@ for (const [id] of KEYS) for (const name of keyEnv(id)) keyNames.add(name);
 for (const name of keyNames) delete process.env[name];
 // And the keys the app does put there stay out of the commands a model runs.
 keepKeysFromCommands(LocalSandbox, keyNames);
+// And the file tools stay out of `/tmp`, which every program of the computer shares, and out of the
+// session's own folder, whose agent files Mastra Code reads on every turn (fence.mjs).
+keepFilesFrom(LocalFilesystem, deniedFolders(tmpdir()));
 
 // The browser is the user's own: it is started with their home folder, not the agent's, so it is
 // the browser they use and the profile they are signed in with. (The opener starts it before it

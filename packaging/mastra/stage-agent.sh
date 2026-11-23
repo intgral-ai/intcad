@@ -16,8 +16,9 @@
 #
 # Environment:
 #   SOLIDCRAFT_MASTRA_AGENT_DIR   the built folder (default: $CARGO_TARGET_DIR/mastra-agent/<triple>)
-#   SOLIDCRAFT_MASTRA_STAGE_TEST  TEST ONLY: allows --pin, a folder checked against in place of
-#                                 packages/mastra-runtime/agent-package
+#   SOLIDCRAFT_MASTRA_STAGE_TEST  TEST ONLY: allows --pin and --skills-root, a folder checked
+#                                 against in place of packages/mastra-runtime/agent-package and of
+#                                 the repository's skills
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -25,13 +26,15 @@ TARGET=
 DEST=
 FROM="${SOLIDCRAFT_MASTRA_AGENT_DIR:-}"
 PIN=
+SKILLS_ROOT=
 while [ $# -gt 0 ]; do
   case "$1" in
     --target) TARGET="${2:-}"; shift 2 ;;
     --dest) DEST="${2:-}"; shift 2 ;;
     --from) FROM="${2:-}"; shift 2 ;;
     --pin) PIN="${2:-}"; shift 2 ;;
-    -h | --help) sed -n '2,21p' "$0"; exit 0 ;;
+    --skills-root) SKILLS_ROOT="${2:-}"; shift 2 ;;
+    -h | --help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -43,6 +46,9 @@ die() {
 
 if [ -n "$PIN" ] && [ "${SOLIDCRAFT_MASTRA_STAGE_TEST:-0}" != 1 ]; then
   die "--pin is test-only; packaging always checks against packages/mastra-runtime/agent-package"
+fi
+if [ -n "$SKILLS_ROOT" ] && [ "${SOLIDCRAFT_MASTRA_STAGE_TEST:-0}" != 1 ]; then
+  die "--skills-root is test-only; packaging always checks the skills against the repository"
 fi
 [ -n "$TARGET" ] || die "--target is required"
 [ -n "$DEST" ] || die "--dest is required"
@@ -56,6 +62,7 @@ command -v node >/dev/null || die "node is needed to check the agent folder"
 echo "==> checking the built-in agent's folder ($TARGET)"
 check=(node "$ROOT/packages/mastra-runtime/scripts/agent-package.mjs" check --target "$TARGET")
 if [ -n "$PIN" ]; then check+=(--pin "$PIN"); fi
+if [ -n "$SKILLS_ROOT" ]; then check+=(--skills-root "$SKILLS_ROOT"); fi
 "${check[@]}" "$FROM" || die "the built-in agent's folder did not pass its check; nothing was staged"
 
 echo "==> staging the built-in agent in $DEST"
