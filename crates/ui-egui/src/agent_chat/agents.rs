@@ -284,6 +284,10 @@ impl Entry {
 /// The built-in agent, as found when the app starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Builtin {
+    /// The program is the package's own (`mastra-agent/` beside the app), not one a developer
+    /// named in `SOLIDCRAFT_MASTRA_AGENT`. Only a package's agent may be trusted with the shorter
+    /// tool names its MCP bridge uses.
+    pub packaged: bool,
     /// Its program: an absolute path.
     pub program: std::path::PathBuf,
     /// What the program is started with: nothing for a program named by the environment variable,
@@ -306,11 +310,19 @@ pub(crate) fn look_for_builtin() -> Option<Builtin> {
     if cfg!(test) {
         return None;
     }
-    let (program, args) = match builtin_program(solidcraft_engine::geom::env::var("MASTRA_AGENT")) {
-        Some(program) => (program, Vec::new()),
-        None => packaged_builtin(&std::env::current_exe().ok()?)?,
+    let (program, args, packaged) = match builtin_program(solidcraft_engine::geom::env::var("MASTRA_AGENT")) {
+        Some(program) => (program, Vec::new(), false),
+        None => {
+            let (program, args) = packaged_builtin(&std::env::current_exe().ok()?)?;
+            (program, args, true)
+        }
     };
-    Some(Builtin { program, args, data: builtin_data(std::env::var_os("SOLIDCRAFT_SETTINGS_DIR"), solidcraft_engine::recovery::data_dir()) })
+    Some(Builtin {
+        program,
+        args,
+        packaged,
+        data: builtin_data(std::env::var_os("SOLIDCRAFT_SETTINGS_DIR"), solidcraft_engine::recovery::data_dir()),
+    })
 }
 
 /// The browser build starts no agent.
@@ -374,6 +386,14 @@ pub fn is_builtin_entry(app: &crate::SolveApp, entry: &Entry) -> bool {
 /// and its data folder are its own, and no other agent's.
 pub fn builtin_current(app: &crate::SolveApp) -> bool {
     current(app).is_some_and(|entry| is_builtin_entry(app, &entry))
+}
+
+/// Whether the process actually running this conversation is the agent Intcad itself ships. The
+/// picker and the default can change while a conversation runs, so a permission question is
+/// judged by the backend that asked it (`running_id`), not by what is selected now; and a program
+/// named through `SOLIDCRAFT_MASTRA_AGENT` is a developer's own, not the package's.
+pub fn builtin_running(app: &crate::SolveApp) -> bool {
+    app.builtin_agent.as_ref().is_some_and(|found| found.packaged) && app.agent_chat.running_id == super::connections::AGENT_ID
 }
 
 /// The built-in agent as the agent list shows it.
@@ -716,7 +736,7 @@ mod tests {
             retired: false,
         };
         assert!(!is_builtin(&app) && !builtin_current(&app), "no package's agent: nothing is the built-in one");
-        app.builtin_agent = Some(Builtin { program: "/opt/intcad/mastra-agent".into(), args: Vec::new(), data: None });
+        app.builtin_agent = Some(Builtin { program: "/opt/intcad/mastra-agent".into(), args: Vec::new(), packaged: true, data: None });
         assert!(is_builtin(&app));
         let carried = builtin(&app).expect("the built-in agent");
         assert!(is_builtin_entry(&app, &carried) && !is_builtin_entry(&app, &external));

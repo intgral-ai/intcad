@@ -96,16 +96,39 @@ def marker_entries(names):
 FORBIDDEN_ANYWHERE = frozenset(("ee", "mastra"))
 
 
-def forbidden_parts(entry):
+# The stand-in the agent builder writes in place of Mastra's enterprise chunk:
+# `@mastra/core/dist/ee-<hash>.js`, the one file named `ee-*` a package may hold, and only when it
+# is the only one (a second `ee-*` file is enterprise content the builder did not remove).
+STAND_IN = re.compile(r"(?:^|/)node_modules/@mastra/core/dist/ee-[A-Za-z0-9_-]+\.js$")
+
+
+def stand_in_paths(names):
+    """The one `ee-*` file a package may hold, when it holds exactly one.
+
+    The package's own path carries a prefix (``usr/lib/intcad/mastra-agent/``), so the stand-in is
+    matched by its tail; a second file of that shape anywhere is enterprise content and turns the
+    allowance off.
+    """
+    found = sorted(name for name in (str(raw).replace("\\", "/").lstrip("./") for raw in names)
+                   if STAND_IN.search(name))
+    return frozenset(found) if len(found) == 1 else frozenset()
+
+
+def forbidden_parts(entry, stand_ins=frozenset()):
     """The forbidden components of one package entry, by name."""
-    parts = [part for part in str(entry.get("path", "")).replace("\\", "/").split("/") if part]
-    return [part for part in parts if part in FORBIDDEN_ANYWHERE or part.startswith("ee-")]
+    text = str(entry.get("path", "")).replace("\\", "/").lstrip("./")
+    parts = [part for part in text.split("/") if part]
+    bad = [part for part in parts if part in FORBIDDEN_ANYWHERE]
+    for part in parts:
+        if part.startswith("ee-") and text not in stand_ins:
+            bad.append(part)
+    return bad
 
 
-def inside_agent(entry):
+def inside_agent(entry, stand_ins=()):
     """Whether a marker is the built-in agent's own Node or a package inside its folder."""
     parts = [part for part in str(entry.get("path", "")).replace("\\", "/").split("/") if part]
-    return AGENT_DIR in parts and not forbidden_parts(entry)
+    return AGENT_DIR in parts and not forbidden_parts(entry, stand_ins)
 
 
 def inside_agent_markers_for(distribution, names):
@@ -113,19 +136,28 @@ def inside_agent_markers_for(distribution, names):
     markers = marker_entries(names)
     if distribution == "native":
         return markers
-    return [entry for entry in markers if not inside_agent(entry)]
+    stand_ins = stand_in_paths(names)
+    return [entry for entry in markers if not inside_agent(entry, stand_ins)]
 
 
 def agent_markers(names):
     """What a ``mastra-agent`` package may not carry besides its own agent folder: a legacy
     ``mastra/`` runtime, enterprise content, or a Node program outside the folder. Enterprise
     content and the legacy runtime are refused inside the folder too.
+
+    Every entry is looked at, not only the runtime markers: an ``ee-`` file of Mastra's compiles
+    to a name `marker_entries` does not recognise on its own, and that is exactly the content the
+    licence forbids. The one stand-in `agent.json` names is allowed.
     """
+    stand_ins = stand_in_paths(names)
+    seen = set()
     found = []
-    for entry in marker_entries(names):
-        if forbidden_parts(entry):
-            found.append(entry)
-        elif not inside_agent(entry):
+    for name in names:
+        entry = {"name": str(name), "path": str(name)}
+        if entry["path"] in seen:
+            continue
+        seen.add(entry["path"])
+        if forbidden_parts(entry, stand_ins) or (entry in marker_entries([name]) and not inside_agent(entry, stand_ins)):
             found.append(entry)
     return found
 
