@@ -688,6 +688,31 @@ Evidence: `~/.local/state/intcad-e2e/runs/intcad-e2e-int1503-rc-rehearsal-3a92c4
 With §12.4.3 (tarball), §12.4.4/§12.4.6 (MSI install + upgrade) and this, the candidate has been
 installed and started on both target platforms from three different package formats.
 
+### 12.4.8 The candidate is complete: the macOS DMG exists
+
+After `gh run rerun --failed`, run 45248432170 finished **success** with both slices built and the
+universal package produced:
+
+```
+macOS build x86_64      success
+macOS build aarch64     success
+macOS universal (ad-hoc only)  success
+intcad-0.1.3-macos-universal.dmg      489,745,075 B
+intcad-cli-0.1.3-macos-universal.zip  114,899,408 B
+contents.json (dmg) -> agent.present true, node true,
+  nodeTargets [aarch64-apple-darwin, x86_64-apple-darwin],
+  skills: the four modelling sets + context-skills/intcad-context; missing []
+```
+
+So the 0.1.3 candidate now has every asset the release promises: Linux tar/deb/rpm/AppImage and the
+two legacy zsync aliases, Windows MSI/portable zip/standalone exe, the universal DMG, and the macOS
+CLI zip. `packaging/checksums.sh` over that flattened set writes a 14-file list under both names and
+verifies every hash.
+
+What the DMG does **not** prove: first launch through Gatekeeper (ad-hoc signature only), a real
+Intel Mac, or the universal app being started by a person — CI mounts it, copies the app out and
+opens the Assistant in a sandbox with the network taken away. Those stay NOT TESTED.
+
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
 The CTO supplied a DeepSeek API key for acceptance. It was used only in the throwaway VM, kept in
