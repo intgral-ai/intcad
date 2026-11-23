@@ -910,6 +910,13 @@ required things do not exist yet and one is unverified.
 | E. Upgrade | **PARTIAL** | 0.1.2 → 0.1.3 in place passes on Linux tar and Windows MSI (one ARP entry, `intcad-cli 0.1.3`); the one-click path is untestable before publication (§10) |
 | F. Evidence | **PASS for what is claimed** | every row above names a run, file or screenshot; nothing is marked PASS without one |
 
-To turn this into GO: finish the macOS DMG (§12.4.2), land #214, rebuild from the merged `develop`
-SHA and repeat the Linux/Windows installs on that exact SHA, then add PP's UI and the login run (or
-record them as explicitly approved exceptions), and publish only after that.
+Since this verdict, the macOS DMG exists and every promised asset is present (§12.4.8, §12.4.9), the
+alias gap that would have blocked MSI/DMG/AppImage updates is closed (B11), and the CI Windows MSI was
+installed, upgraded from the published 0.1.2 and run with its agent (§12.4.6). What has **not**
+changed: #214 is still unmerged, so no accepted candidate comes from a merged `develop` SHA; PP's UI
+has no PR; Gate B has not run; B10 is open.
+
+To turn this into GO: land #214, rebuild from the merged `develop` SHA and repeat the Linux/Windows
+installs on that exact SHA (`~/.cache/int1503/rc-final.sh` does the rebuild, the package run, the
+download and the `--require` checksum list), then add PP's UI and the login run — or record them as
+explicitly approved exceptions — and publish only after that.
