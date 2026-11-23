@@ -35,6 +35,32 @@ Q:10 returns to required evidence. Q:11 (workspace shared-menu fixture) and Q:12
 fixture) are deferred separately under U11/CD-6. None of the three counts as a pass and none grants
 an allowance.
 
+**KVL outcome 2026-11-23 (owner decision).** The vendored-kernel slice was built and verified, then
+deliberately **left unlanded and without a PR**. Branch `prep/int1454-kvl` (pushed) holds three
+commits on `develop` `be9cb2c16`: the `git subtree` import `65fc039277` (tree `8b5c0144…`, 8457
+files), the kernel wiring `e9dca37fda` (five `solidcore*` deps moved from pinned git revisions to
+path dependencies, `crates/kernel`/`smlib`/`geom` adopting the closure API, `crates/step` removed,
+`deny.toml` losing its allowed git source), and the consumer alignment `090ed5fd9d` (engine, doc,
+io, render, gpu, ui-egui, sketch, dynamics, viewport*, CLI, apps, tests, examples plus the new
+`format`/`color`/`display-units`/`control`/`mcp-server` crates). Head
+`090ed5fd9d5ef6fbe922c4504203d557fb669750` (tree `31bf1ee3…`) passes
+`cargo check --locked --workspace --all-targets --profile ci` with exit `0` and no errors, and the
+lock file is byte-identical before and after that run (840 packages; `pgp 0.21.1`, `rsa 0.9.10`,
+`crypto-bigint 0.5.5`, `solidcore-step` and `solidcraft-format` present; `solidcraft-step` gone).
+No two kernels coexist: zero `tangency-labs/solidcore` references remain in `Cargo.toml` or
+`Cargo.lock`. Develop's later work was preserved by per-file three-way merges against the fork point
+`9714e5b3`: the right rail and Files work (#174, #210), the agent connection pages (#177, #178), the
+rail task list (#213), the FreeBSD paste fix (#219), the dependency bumps (#211, #218) and the A6
+refusal delivery (#209).
+
+**No PR was opened, by owner decision, because `#185` already carries the identical subtree:**
+`git ls-tree c5f2f42fe -- solidcore` is `040000 tree 8b5c01445619305dcfc5072db3fe76b8cfea67be`, the
+same tree as this branch, with the same path dependencies in its root manifest. Opening a second PR
+for content a lower-numbered open PR already covers is what the contribution rules forbid, and #185
+is outside this task's scope. The slice therefore stands as verified reserve work: it proves the
+vendoring compiles on the current `develop`, and it can seed a repair of #185 if the owner later
+rescopes that PR. Nothing is landed, so B3 stays closed and no integration SHA exists.
+
 ## Separate unresolved gates
 
 - **Union naming:** retain the strict persisted-reference contract. Run `44675835996` did not pass; do not integrate the fallback. Reconsider only with a repair that passes the existing contract or a separately approved change to scope.
