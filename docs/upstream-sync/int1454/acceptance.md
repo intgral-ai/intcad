@@ -211,6 +211,54 @@ record; each row gives the command to rerun.
 | Rules | CI `Format and repository checks` passed at `099e4360c` (gh, 2026-11-19); local `xtask` rule logs are older. Rerun: `cargo xtask layers`, `mesh-decisions`, `lists`, `assets`, `ui-containers`, `fmt`. |
 | CI | Snapshot 2026-11-19T08:49Z for run `44472128741` attempt 2 at old head `099e4360c` (test-merge `ceeb57bd…`): `Build full-baseline archive` success 48m22; `Native Linux selected regression gate` failure with exit 143 (runner shutdown during `cargo nextest list`, no test receipt); Action matrix 1/16 and 15/16 success; other shards, properties and determinism in flight; aggregate not created. This is a snapshot, not a current-status or pass claim; no test result was produced by the failing gate. Source: `/tmp/opencode/int1454-ci-current/SNAPSHOT-2026-11-19T0849Z.md`. |
 
+### 4a. Two-build kernel rig baseline and the kernel-source divergence
+
+A case-by-case rig baseline now exists for the whole `tests/kernel-cases` tree on two builds:
+post-M16 `develop` `9c24061c` and historical candidate `db0b8dd35`. Each case ran in its own process
+through the built CLI, the same invocation the rig uses.
+
+| Areas | Cases | `9c24061c` | `db0b8dd35` |
+| --- | --- | --- | --- |
+| frames | 6 | 6 pass | 6 pass |
+| solids, continuity, crashes, tessellation, inspect, plastic, history, threads | 170 | 170 pass | 170 pass |
+| booleans, sweeps, surfaces | 287 | 287 pass | 287 pass |
+| assemblies, sheet-metal, construction | 227 | 227 pass | 227 pass |
+| shell | 37 | 36 pass, 1 fail | 37 pass |
+| fillets | 271 | 250 pass, 16 fail, 5 unsupported | 254 pass, 8 fail, 9 unsupported |
+| **Total** | **997** | **975 pass, 17 fail, 5 unsupported** | **980 pass, 8 fail, 9 unsupported** |
+
+**Coverage:** 997 comparable cases on both builds, from the tree's 1044. `ladder` (12) was run but is
+excluded from these counts because those cases are graded against the ladder's golden and report
+`fail` on standalone replay on both builds; `import` (35) was not run.
+
+**Differences: 12 cases — 11 in `fillets` and 1 in `shell`. 985 cases are identical in outcome.**
+Every differing case directory is byte-identical at both SHAs.
+
+**The two builds do not run the same kernel source.** `db0b8dd35` builds the vendored `solidcore/`
+tree `8b5c0144…` (solidcore `524be9e1…`); `9c24061c` pins git revision `8ddce901…`. Comparing
+`crates/solidcore/src`: **451 files differ, 153 exist only in the vendored copy, 4 only in the pinned
+copy**. The vendored copy's newest `plan/findings` date is 2026-11-16 against 2026-11-02 for the
+pinned one, so the vendored kernel is the later source. The two crates both declare version `1.0.1`,
+so the version string does not distinguish them.
+
+**What this blocks, precisely:**
+
+- The rig differences above are **not** IntCAD before/after evidence. They compare two different
+  kernels, so they cannot show a regression, a fix, or justify changing any `KNOWN_FAILING` entry.
+  Under the same-kernel requirement, a fillets or shell difference may only be judged after the
+  pinned and vendored kernels are the same revision.
+- K12's before/after gate therefore has two separate prerequisites: the same kernel source on both
+  sides, and one named head SHA carrying every result.
+- The 17 mapped unit-test IDs and the three deferred UI IDs are unaffected by this, because they are
+  `cargo test` cases rather than rig cases; they still need their own same-head run.
+
+Each build's list is self-consistent: `9c24061c` has 21 non-pass fillets cases and lists 21;
+`db0b8dd35` has 17 and lists 17; neither has an unlisted failure or a listed case that passes. So the
+divergence is between kernels, not a broken allowance list on either side.
+
+Receipts: `cd1/kernel/{areas,rest,heavy,last}-{9c24061c,db0}.json` and their `*-compare.json`, all
+produced by `kernel-collect.py` and retained locally.
+
 ## 5. Persistence (CD-1)
 
 The single implementation is `solidcraft_format`'s registry/container used by `doc`/`io`. Test
