@@ -18,6 +18,7 @@ import { Connections, KEYS } from './connections.mjs';
 import { releaseDates } from './models.mjs';
 import { keepKeysFromCommands, keyVariables, withoutParams } from './secrets.mjs';
 import { sessionBuilder } from './session.mjs';
+import { installSkillSets, setsToInstall } from './skills.mjs';
 
 // ACP's SDK prints a request it refuses, parameters and all. See secrets.mjs.
 const printError = console.error.bind(console);
@@ -28,6 +29,7 @@ console.error = (...args) => printError(...withoutParams(args));
 // Intcad's assistant or for the model it talks to, so when the app names a data folder the agent
 // gets a home of its own inside it. This has to happen before anything of Mastra's is loaded.
 const usersHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+const here = dirname(fileURLToPath(import.meta.url));
 if (process.env.MASTRA_APP_DATA_DIR) {
   const home = join(process.env.MASTRA_APP_DATA_DIR, 'home');
   mkdirSync(home, { recursive: true });
@@ -36,6 +38,14 @@ if (process.env.MASTRA_APP_DATA_DIR) {
   // Mastra Code keeps small lease files for its sessions under /tmp/mc, shared by every Mastra
   // Code of this user. Intcad's agent keeps its own, with the rest of its data.
   process.env.MASTRACODE_SIGNALS_SOCKET_ROOT = join(process.env.MASTRA_APP_DATA_DIR, 'signals');
+  // The skills the package carries (skills.mjs) go where Mastra Code looks in its home,
+  // `.agents/skills`, before a session reads that folder. Not into the session's folder: Mastra
+  // Code skips a link there that leads out of it. Run by hand, without a home of its own, the
+  // agent installs nothing: the person's own folder is theirs.
+  const log = line => process.stderr.write(`[intcad] ${line}\n`);
+  const sets = setsToInstall(join(here, '..'), join(here, '..', '..', '..'), log);
+  if (sets.length === 0) log('skills: the package carries no skill set');
+  installSkillSets({ sets, home, log });
 }
 
 // Mastra reports feature use to its own service unless this is set (`@mastra/core`, and Mastra
@@ -49,7 +59,6 @@ process.env.MASTRA_TELEMETRY_DISABLED = '1';
 // opens, and this switch leaves that as it is.
 process.env.MASTRA_OFFLINE = '1';
 
-const here = dirname(fileURLToPath(import.meta.url));
 const sdkRoot = resolve(process.env.SOLIDCRAFT_MASTRA_SDK || join(here, '..', 'node_modules'));
 // The files are named in full: an absolute path does not go through a package's export map, and a
 // bare name would be looked up from this folder, where the SDK need not be.
