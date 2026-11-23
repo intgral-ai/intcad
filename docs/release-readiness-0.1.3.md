@@ -43,7 +43,7 @@ an installed 0.1.2, and the 0.1.2 client's own update check is what has to work 
 
 Intcad ships the same three platforms as `v0.1.2` (Linux x86_64, Windows x64, macOS universal).
 The workflow also builds Linux aarch64, Flatpak, Arch, Snap, FreeBSD, Windows x86/arm64 and web,
-and `package-builds` requires **all** of them, so a FreeBSD failure blocks the stable path (§7, B5).
+and `package-builds` requires **all** of them, so a FreeBSD failure blocks the stable path (§6, B2).
 
 ## 3. Packaging audit
 
@@ -97,7 +97,7 @@ What exists and what it proves:
 Local VM status on this tree: `intcad-e2e --source <this worktree> --task rc-audit status` and
 `doctor` report both task VMs **not created**; no build exists for the baseline SHA; the golden
 images and the Linux builder are present. Nothing was booted, because there is no candidate to
-test (§8, E2).
+test (§6, E2).
 
 Evidence that exists for older commits (not transferable to a new candidate):
 `~/.local/state/intcad-e2e/runs/intcad-e2e-int1454-ui-c28767d6c085-int1454/20261118T212022Z-681395/REPORT.md`
@@ -139,7 +139,7 @@ macOS universal, Windows x64/x86/arm64 and Arch all passed there, FreeBSD failed
 
 ## 6. Blockers
 
-Severity follows §7 of the release-runner brief: P0 blocks, P1 blocks unless the release owner
+Severity follows the release brief's section 7: P0 blocks, P1 blocks unless the release owner
 explicitly excepts it, P2 may be deferred.
 
 | # | Sev | Blocker | Evidence |
@@ -201,7 +201,7 @@ here. `actionlint .github/workflows/packaging-lint.yml` → exit 0.
    `develop` or #213's own CI will inherit the same failure.
 4. Merge PP's UI PR when it exists, after a visual pass on Linux and Windows at 100 % and 150 %.
 5. Cut the version commit, take the candidate SHA, run the three-platform package build, then
-   install and accept that exact SHA on all three platforms (§8 acceptance matrix below).
+   install and accept that exact SHA on all three platforms (§9 acceptance matrix).
 6. Only then ask the CTO for promotion and publication. This branch does none of that.
 
 ## 9. Acceptance matrix for the candidate (not yet run)
