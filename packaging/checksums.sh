@@ -42,6 +42,8 @@ trap 'rm -f "$tmp"' EXIT
 ) >"$tmp"
 mv "$tmp" "$dir/SHA256SUMS.txt"
 cp "$dir/SHA256SUMS.txt" "$dir/SHA256SUMS"
+# `mktemp` makes 0600; a published list is read by anyone.
+chmod 644 "$dir/SHA256SUMS.txt" "$dir/SHA256SUMS"
 trap - EXIT
 
 (cd "$dir" && sha256sum --check --strict SHA256SUMS.txt)
