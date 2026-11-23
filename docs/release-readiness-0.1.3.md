@@ -533,6 +533,24 @@ still needs a model credential.
 **Crash dialogs seen in these runs** are from force-stopping the app between installs (the report
 names the killed start time); they are not product crashes.
 
+## 12.4.1 The real release.yml candidate (2026-11-23, run 45241269258)
+
+The first package build in this release that comes from `release.yml` itself rather than a local
+script, and the first one whose workflow bundles the agent.
+
+| Item | Value |
+|---|---|
+| Branch | `int1503-rc-candidate`, a **local candidate** branch: `origin/develop` `3751144fc1` merged with #214's `054d51e4d` (its packaging and agent changes), then the 0.1.3 version commit |
+| SHA built | `3ffacdb153a0df3d78ac186428fd4cb197a5d3b2` |
+| How started | `gh workflow run release.yml --ref int1503-rc-candidate` → run 45241269258 |
+| Why not `release-gate` | it only starts for a `main`-target PR or a merge group, and this branch is not a promotion |
+| Workflow settings inherited from #214 | `SOLIDCRAFT_WITH_MASTRA_AGENT: "1"`, `SOLIDCRAFT_DISTRIBUTION: "mastra-agent"`, per-arch overrides (`x86_64` only), legacy `mastra/` still `"0"` |
+| What it produces | the nonpublishing packages for every target, `build.json`/`contents.json` per package, and the content scan that checks the agent is inside |
+
+This branch is **not** a release branch and must not be merged: it exists to prove that the merged
+tree plus #214 produces installable packages that carry the agent. The real candidate is the
+promotion PR `release/v0.1.3` once #212/#214 land through their own reviews.
+
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
 The CTO supplied a DeepSeek API key for acceptance. It was used only in the throwaway VM, kept in
