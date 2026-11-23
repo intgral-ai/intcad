@@ -403,6 +403,40 @@ a stand-in model service. The ACP-level proof above (four `skill/<name>` command
 agent side; the drawing is the only part left, and it needs a credential this role does not hold.
 The same run also cannot show a real turn, for the same reason.
 
+### 12.2 Windows: the published MSI, installed and launched (2026-11-23)
+
+Same idea as §11 but on Windows, to prove the Windows acceptance route with a real package instead
+of a source build. VM `intcad-win-…-win012` (Windows 11 Enterprise 24H2, WebView2 present).
+
+| Step | Result |
+|---|---|
+| Transfer the published `intcad-0.1.2-windows-x64.msi` over SSH | 108,363,776 bytes; in-guest SHA-256 `b8d8037be8f36c00d69e8bc9a1ca8cdc05346c1dc0a2badd0d891aeccbc828fd`, the release's own digest |
+| `msiexec /i … /qn /norestart` | exit 0 |
+| `C:\Program Files\Intcad` | exactly the MSI's files: `intcad.exe` 229,128,704; `intcad-cli.exe` 156,839,424; `ASSISTANT-THIRD-PARTY-NOTICES.txt`; `LICENSE-APACHE`, `LICENSE-MIT`, `NOTICE`, `THIRD-PARTY-LICENSES.txt`, `WEB-VIEW-PLATFORM-NOTICES.txt` |
+| `intcad-cli.exe --version` from the install folder | `intcad-cli 0.1.2`, exit 0 |
+| Launch | window 1024×768; log: `Dx12, MSAA 4x`, `control server listening on 127.0.0.1:7878` |
+| Assistant | panel opens; the **WebView2 page renders**: "No agent found / Set up an assistant", "Not installed", the composer "Ask the agent to change the design…" |
+
+Evidence: `~/.local/state/intcad-e2e/windows/runs/intcad-win-int1503-rc-rehearsal-3a92c4b6125c-win012/20261123T080432Z-2631759/screenshots/win012-assistant.png`
+and `win012-assistant-clean.png`.
+
+**A method finding, not a product defect:** a process started over SSH lands in the SSH session, so
+its window never appears on the console desktop; the app looks "not started" while its control
+server answers. The harness launches through a scheduled task with `-LogonType Interactive`, and
+that is what put the window on screen. The first, SSH-started instance was killed by hand, which
+left one "Closed unexpectedly" record in the app's crash folder — the report names the killed
+instance's start time, and no new record appeared for the session launched properly.
+
+**Local tooling drift worth fixing before the next release:** the Windows guest scripts in
+`.dev/e2e/guest/windows` (`run-app.ps1`, `run-app.cmd`, `run-app.vbs`) still name
+`C:\Program Files\SolidCraft\solidcraft.exe` and port 7878, so the harness path cannot launch an
+installed **Intcad** MSI as it stands; this run had to drive the install, the interactive launch and
+the control calls by hand. `.dev/e2e` is not tracked, so this is a local repair, not a PR.
+
+**Still open for Windows:** a machine without WebView2 (the app is expected to keep the built-in
+conversation there), SmartScreen/unsigned first launch, the upgrade from 0.1.2 to a versioned
+candidate, and anything the Assistant shows once a model is signed in.
+
 ## 13. Decisions needed from the CTO / owners
 
 1. **Version and package plan:** one 0.1.3 with login, or 0.1.3 now without it and 0.1.4 later
