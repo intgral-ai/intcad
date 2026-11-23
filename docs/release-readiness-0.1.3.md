@@ -142,11 +142,13 @@ macOS universal, Windows x64/x86/arm64 and Arch all passed there, FreeBSD failed
 Severity follows the release brief's section 7: P0 blocks, P1 blocks unless the release owner
 explicitly excepts it, P2 may be deferred.
 
-**State on 2026-11-23 after the CTO's decisions:** #204 merged (`41089b60`) and #212 updated onto
-`develop` (`6c7b81ab`, checks running). Two release-engineering PRs are open: #218 (cookie 0.18.3
-for RUSTSEC-2026-0594, which fails every package build) and #219 (FreeBSD compile fix). The
-version commit for 0.1.3 is prepared on `int1503-version-013`. #214 still needs its own two fixes;
-#213 still fails a Windows check; PP's UI has no PR.
+**State on 2026-11-23 after the CTO's decisions:** #204 merged (`41089b60`). Three PRs are open and
+in the merge chain: #218 (cookie 0.18.3 for RUSTSEC-2026-0594; its `Dependency advisories` job is
+already green, and its branch was updated onto the new `develop`), #212 (INT-1473, retargeted to
+`develop` and updated to `6c7b81ab`), and #219 (FreeBSD compile fix, with `release.yml` run
+45230019033 building the FreeBSD job). The 0.1.3 version commit is prepared on
+`int1503-version-013`. #214 still needs its own two fixes; #213 still fails a Windows check; PP's
+UI has no PR.
 
 | # | Sev | Blocker | Evidence |
 |---|---|---|---|
