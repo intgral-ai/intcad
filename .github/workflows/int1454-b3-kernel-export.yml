@@ -1,0 +1,72 @@
+# Temporary verification lane. Do not integrate into develop.
+name: INT-1454 B3 kernel export diagnostic
+
+on:
+  push:
+    branches: [diag/int1454-b3-kernel-export]
+    paths: [.github/workflows/int1454-b3-kernel-export.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  kernel-export:
+    name: Check exported solidcore workspace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: 3fb878ebc656be4393ed45c97b2da327a8f87e36
+      KERNEL_TREE: 8b5c01445619305dcfc5072db3fe76b8cfea67be
+      LOCK_SHA: cf24ebf5e89e42a6d73f655097139af609a902f42fe6a8a1c0a99e53a8a5c435
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 3fb878ebc656be4393ed45c97b2da327a8f87e36
+          persist-credentials: false
+      - name: Verify pins and export only solidcore
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+          test "$(git rev-parse HEAD:solidcore)" = "$KERNEL_TREE"
+          export_dir="$(mktemp -d "$RUNNER_TEMP/int1454-b3.XXXXXXXX")"
+          case "$(realpath "$export_dir")/" in
+            "$(realpath "$GITHUB_WORKSPACE")/"*) echo "Export must be outside the checkout" >&2; exit 1 ;;
+          esac
+          git archive --format=tar "$SOURCE_SHA" -- solidcore | tar -xf - -C "$export_dir"
+          test -f "$export_dir/solidcore/Cargo.toml"
+          test -f "$export_dir/solidcore/rust-toolchain.toml"
+          printf '%s  %s\n' "$LOCK_SHA" "$export_dir/solidcore/Cargo.lock" | sha256sum -c
+          mkdir "$RUNNER_TEMP/int1454-b3-evidence"
+          {
+            printf 'source=%s\ntree=%s\nlock_sha256=%s\n' "$SOURCE_SHA" "$KERNEL_TREE" "$LOCK_SHA"
+            printf 'workflow=%s\nrun=%s\nattempt=%s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf 'runner=%s/%s image=%s/%s\n' "$RUNNER_OS" "$RUNNER_ARCH" "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            printf '%s\n' 'command=cargo check --workspace --all-targets --locked'
+          } > "$RUNNER_TEMP/int1454-b3-evidence/source.txt"
+          printf 'KERNEL_EXPORT=%s\n' "$export_dir/solidcore" >> "$GITHUB_ENV"
+      - name: Check the isolated locked workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/int1454-b3-evidence"
+          cd "$KERNEL_EXPORT"
+          unset RUSTUP_TOOLCHAIN CARGO_TARGET_DIR
+          rustup toolchain install
+          [[ "$(cargo -V)" == "cargo 1.99.1 "* ]]
+          [[ "$(rustc -V)" == "rustc 1.99.1 "* ]]
+          { cargo -V; rustc -vV; } > "$evidence/toolchain.txt"
+          rc=0
+          cargo check --workspace --all-targets --locked 2>&1 | tee "$evidence/check.log" || rc=$?
+          printf '%s\n' "$rc" > "$evidence/check.exit"
+          sha256sum Cargo.lock > "$evidence/lock-after.txt"
+          printf '%s  Cargo.lock\n' "$LOCK_SHA" | sha256sum -c
+          exit "$rc"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: b3-kernel-export-${{ env.SOURCE_SHA }}
+          path: ${{ runner.temp }}/int1454-b3-evidence/
+          if-no-files-found: error
+          retention-days: 7
