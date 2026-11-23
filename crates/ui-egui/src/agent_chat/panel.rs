@@ -246,9 +246,15 @@ pub(crate) fn centred(_app: &SolveApp) -> bool {
     false
 }
 
-/// Whether the Assistant is on screen at the bottom centre of the window now.
-pub(crate) fn centred_shown(app: &SolveApp) -> bool {
-    centred(app) && shown(app) && app.agent_chat.open
+/// Whether the Assistant goes at the bottom centre of the window when it is shown (the preference,
+/// where the desktop's web view can show it).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn centre_preferred(app: &SolveApp) -> bool {
+    app.preferences.agent_chat_centre
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn centre_preferred(_app: &SolveApp) -> bool {
+    false
 }
 
 /// At the bottom of the window, centred on it: the page's message box, and above it what the

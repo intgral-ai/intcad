@@ -16375,6 +16375,13 @@ fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the
         assert!(bar.right() > layout.content.right() - 40.0, "the navigation bar at the bottom right at {width}: {bar:?}");
         assert!(bar.left() > place.right() || bar.top() > place.bottom(), "clear of the Assistant at {width}: {bar:?} {place:?}");
     }
+    // Closed, the bar keeps its place: it does not move as the Assistant comes and goes.
+    let bar = h.app.viewport.layout.clone().expect("the view's layout").navigation;
+    h.call("ui.agent_chat", json!({"open": false}));
+    h.frames(2);
+    assert_eq!(h.app.viewport.layout.clone().expect("the view's layout").navigation, bar, "the bar stays where it was with the Assistant closed");
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(2);
     let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
     let window = h.ctx.content_rect();
     h.call("ui.resize", json!({"width": 2200.0, "height": 1200.0}));
