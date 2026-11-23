@@ -968,6 +968,31 @@ approved except what needs real Mac hardware. In practice that means:
 - **PP's UI is PR #221** (draft, `BEHIND`, `ui_containers` red), so the release cannot be complete
   until it is ready or the CTO explicitly excepts it.
 
+## 13.1 Scope handed over on 2026-11-23 (after the CTO discussion)
+
+Tianwei's and PP's PRs were handed to this role to merge and prepare for packaging. The scope was
+decided explicitly:
+
+- **0.1.3 keeps its current scope plus PP's UI (#221).** The RC is cut from `develop` once #217,
+  #221, #189 and #214 are merged.
+- **Tianwei's stress-estimate series goes to 0.1.4, not 0.1.3.** #169–#208 are fifteen stacked
+  drafts based on each other; only #169 has ever had a CI run (its `ci` job is green), and the
+  children are based on feature branches, so no child has been built by CI at all. The chain also
+  adds external `gmsh`/`CalculiX` runtime tools, which needs its own packaging and dependency audit.
+  Merging starts only after the 0.1.3 candidate SHA has been dispatched, so the chain cannot leak
+  into 0.1.3.
+- **PP's #221 is merged here** (its `ui_containers` failure fixed in `87f9c7c630`: the Assistant's
+  centre layer is `ui_kit::Container`, not a raw `egui::Area`) after a green CI; the visual pass on
+  Linux and Windows follows.
+- **PP's #189 (the verification harness) is merged here**; it is tooling (`.agents/skills/verify-intcad`,
+  `.github/workflows/assistant-ui.yml`, `scripts/ci/affected.py`), not product behaviour.
+- **PP's #133, #139, #153 and #154 are not in 0.1.3.** The first three conflict with `develop`;
+  #154 renames the installers and programs (249 files). Each gets its own conflict resolution and
+  review round, then its own decision.
+- **A personal acceptance instance**: once the required PRs are on `develop`, this role builds
+  `intcad` from that SHA and opens it on the host for the user to verify by hand, while the
+  packaging run proceeds in CI.
+
 ## 14. Decisions resolved, and what is still open
 
 Resolved by the CTO on 2026-11-23 (see §13): version 0.1.3; PP's UI in scope; FreeBSD fixed rather
