@@ -710,6 +710,19 @@ two legacy zsync aliases, Windows MSI/portable zip/standalone exe, the universal
 CLI zip. `packaging/checksums.sh` over that flattened set writes a 14-file list under both names and
 verifies every hash.
 
+**Checked again from the DMG itself, not from CI's report** (`7z l` on the 489 MB image):
+
+```
+21501 files, 5743 folders
+Intcad.app/Contents/MacOS/intcad  and  …/MacOS/Intcad
+mastra-agent/aarch64-apple-darwin/node      mastra-agent/x86_64-apple-darwin/node
+agent/main.mjs  ×2  (one per slice)
+both slices carry context-skills/intcad-context and the four modelling skills' SKILL.md
+```
+
+So the universal image really holds a per-architecture agent with its own Node and all five sets —
+the same thing `contents.json` claimed, confirmed on the bytes.
+
 What the DMG does **not** prove: first launch through Gatekeeper (ad-hoc signature only), a real
 Intel Mac, or the universal app being started by a person — CI mounts it, copies the app out and
 opens the Assistant in a sandbox with the network taken away. Those stay NOT TESTED.
