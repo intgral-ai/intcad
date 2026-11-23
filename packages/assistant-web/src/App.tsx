@@ -2533,9 +2533,9 @@ function PreviewLine({ text, step }: { text: string; step: boolean }) {
     if (element) element.scrollTop = element.scrollHeight;
   }, [text]);
   return (
-    // In the body's own size and colour, as Mastra's Shimmer story shows it: the header's small grey
-    // text was hard to read.
-    <div ref={line} className="centre-preview text-body text-foreground">
+    // In the body's size, which reads (the header's small text was hard to read), and Mastra's quiet
+    // colour, so it stays a shade of the conversation behind it.
+    <div ref={line} className="centre-preview text-body text-muted-foreground">
       {step ? <Shimmer>{text}</Shimmer> : <span>{text}</span>}
     </div>
   );
@@ -2661,6 +2661,8 @@ function Centre({
   const { strings } = state;
   // The body's height: the host's most, less everything else the page shows.
   const [room, setRoom] = useState(300);
+  // The line over the closed box, as tall as it is drawn.
+  const [lineHeight, setLineHeight] = useState(28);
   const measured = useRef<HTMLDivElement>(null);
   const most = useRef(500);
   most.current = state.centre ?? 500;
@@ -2678,17 +2680,15 @@ function Centre({
   fitRoom.current = now => {
     const element = measured.current;
     const inBody = element?.querySelector<HTMLElement>('[data-centre-body]');
-    if (!element || !inBody) return;
+    const fold = element?.querySelector<HTMLElement>('[data-centre-fold]');
+    if (!element || !inBody || !fold) return;
+    const line = element.querySelector<HTMLElement>('[data-centre-line]');
+    if (line && line.offsetHeight > 0 && line.offsetHeight !== lineHeight) setLineHeight(line.offsetHeight);
     const bar = inBody.firstElementChild?.firstElementChild;
-    // Closed, the body waits out of sight at the height it opens at, and the line over the box takes
-    // its place: everything else is what stays. With a row floating over the box as well, the room
-    // measured last is kept.
-    let others = heightOf(element) - inBody.offsetHeight;
-    if (!open) {
-      const line = element.querySelector<HTMLElement>('[data-centre-line]');
-      if (!line || element.querySelectorAll(HEADERS).length > 1) return;
-      others = heightOf(element) - line.offsetHeight;
-    }
+    // Everything but the fold (the conversation open, the line closed, or between them while it
+    // moves) stays. Closed with a row floating over the box as well, the room measured last is kept.
+    if (!open && element.querySelectorAll(HEADERS).length > 1) return;
+    const others = heightOf(element) - fold.offsetHeight;
     const next = Math.max(bar instanceof HTMLElement ? bar.offsetHeight : 0, Math.floor(most.current - others - 2));
     if (Math.abs(next - room) <= 1) return;
     if (now) flushSync(() => setRoom(next));
@@ -2905,34 +2905,44 @@ function Centre({
   );
   // Closed, the line floats over the message box (Mastra's overlay header), and a row that needs the
   // user floats in front of it: the line stays in sight until the row has the room to be drawn. Open,
-  // the body is in the page's flow, with what needs the user as its last row, right above the box;
-  // it comes in with a short fade (none where the system asks for less motion). The first header is
-  // the same element open or closed, and changes placement without Mastra's slide of its lower edge.
-  // The body is never taken down: closed, it waits unseen above the line at the height it opens at
-  // (its negative margin takes back its height and the header's gap), so it opens as it was left,
-  // scrolled to the end with every row in place, and a running turn's rows do not come in again.
+  // the body is in the page's flow, with what needs the user as its last row, right above the box.
+  // The first header is the same element open or closed, and changes placement without Mastra's slide
+  // of its lower edge.
+  // The body is never taken down: closed, it waits unseen at the height it opens at, so it opens as
+  // it was left, scrolled to the end with every row in place, and a running turn's rows do not come
+  // in again. The fold over the box is as tall as the line closed and as the body open, and grows
+  // between them with Mastra's own motion (the header's tokens): the conversation rises from the box
+  // as the line gives way to it. The view keeps its height meanwhile where the host clips it.
   const header = (
     <>
       <ComposerHeader open placement={open ? 'stacked' : 'overlay'} inert={!open && Boolean(attention)} style={open ? { transition: 'none' } : undefined}>
-        <div
-          data-centre-body
-          inert={!open}
-          aria-hidden={open ? undefined : true}
-          className={open ? 'motion-safe:animate-in motion-safe:fade-in-0' : 'invisible'}
-          style={open ? { height: room } : { height: room, marginTop: `calc(${-room}px - 0.75rem)` }}
-        >
-          {body}
+        <div data-centre-fold className="centre-fold relative" style={{ height: open ? room : lineHeight }}>
+          <div
+            data-centre-body
+            data-open={open || undefined}
+            inert={!open}
+            aria-hidden={open ? undefined : true}
+            className="centre-fold-body absolute inset-x-0 bottom-0"
+            style={{ height: room }}
+          >
+            {body}
+          </div>
+          {!conn && (
+            <ComposerHeaderRow
+              data-centre-line
+              data-open={open || undefined}
+              inert={open}
+              aria-hidden={open ? true : undefined}
+              className="centre-fold-line absolute inset-x-0 bottom-0 flex-nowrap"
+            >
+              <ComposerHeaderContent className="min-w-0">
+                <PreviewLine text={preview ? preview.text : idle} step={preview ? preview.step : false} />
+              </ComposerHeaderContent>
+              <ComposerHeaderActions>{toggle}</ComposerHeaderActions>
+            </ComposerHeaderRow>
+          )}
         </div>
-        {open ? (
-          attention
-        ) : (
-          <ComposerHeaderRow data-centre-line className="flex-nowrap">
-            <ComposerHeaderContent className="min-w-0">
-              <PreviewLine text={preview ? preview.text : idle} step={preview ? preview.step : false} />
-            </ComposerHeaderContent>
-            <ComposerHeaderActions>{toggle}</ComposerHeaderActions>
-          </ComposerHeaderRow>
-        )}
+        {open && attention}
       </ComposerHeader>
       {!open && attention && (
         <ComposerHeader placement="overlay" open>

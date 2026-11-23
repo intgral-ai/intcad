@@ -101,6 +101,41 @@ html.centre div:has(> div > div > [data-slot='composer-input']) > [data-slot='sc
 html.centre [data-centre-body][inert] [data-slot='message-scroller-item'] {
   content-visibility: visible;
 }
+/* Expand there: the fold over the message box grows from the line's height to the conversation's
+   with Mastra's own motion tokens (its composer header opens the same way), the conversation fading
+   in at its foot as the line fades out; Collapse the other way. No motion where the system asks for
+   less. The conversation keeps its height throughout, anchored to the fold's foot, so nothing in it
+   moves. */
+.centre-fold {
+  overflow: hidden;
+  transition: height var(--duration-slow) var(--ease-out-custom);
+}
+.centre-fold-body {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--duration-normal) var(--ease-out-custom),
+    visibility 0s linear var(--duration-normal);
+}
+.centre-fold-body[data-open] {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity var(--duration-slow) var(--ease-out-custom);
+}
+.centre-fold-line {
+  transition: opacity var(--duration-fast) var(--ease-out-custom);
+}
+.centre-fold-line[data-open] {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .centre-fold,
+  .centre-fold-body,
+  .centre-fold-body[data-open],
+  .centre-fold-line {
+    transition: none;
+  }
+}
 /* The line over the message box there: one line tall; the text wraps and a full line scrolls up. */
 .centre-preview {
   height: 1lh;
