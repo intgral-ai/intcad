@@ -599,8 +599,19 @@ is a required asset. Recovery: when the run finishes, `gh run rerun <id> --faile
 cancelled slice (and then the skipped universal job). That is a runner-capacity failure, not a code
 failure, and it is why the macOS row stays NOT TESTED rather than PASS.
 
-The gate behaved correctly here: the cancelled slice did **not** silently produce a package; the
-dependent job was skipped and the aggregate job treats a skipped build as a failure.
+The gate behaved correctly here: the cancelled slice did **not** silently produce a package. The
+first pass ended `failure`, and the only red jobs were `macOS build x86_64` (cancelled) and
+`All nonpublishing package builds` (failure) — the aggregate in `release.yml` fails any job whose
+result is not `success`, so a cancelled slice cannot pass as a package. `gh run rerun --failed` then
+retried the cancelled slice and was queued.
+
+**Second finding, in CI's evidence rather than in a package:** none of the installed checks look at
+the agent. `rg 'mastra|agent' packaging/linux/installed-check.sh packaging/windows/installed-check.ps1
+packaging/macos/installed-check.sh` returns nothing, so the installed checks prove the app and the
+Assistant page, not the agent folder. What covers the agent in CI is the staging smoke inside
+`package.sh` and the package content scan; the installed behaviour of the agent (starts, installs the
+four skills, answers) is only proven by my VM runs in §12.1/§12.5. That is why those runs matter and
+why a packaged candidate still needs them.
 
 ## 12.6 What the final review changed (GPT-6.2-Sol, high)
 
