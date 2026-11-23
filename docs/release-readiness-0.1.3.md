@@ -440,6 +440,49 @@ this is a local repair, not part of any PR.
 conversation there), SmartScreen/unsigned first launch, the upgrade from 0.1.2 to a versioned
 candidate, and anything the Assistant shows once a model is signed in.
 
+### 12.3 A versioned candidate: 0.1.3 (Linux, 2026-11-23)
+
+The first artifact in this release that calls itself 0.1.3. Built in the rehearsal worktree only;
+nothing was pushed, tagged or published, and the release branch still says 0.1.2.
+
+| Step | Result |
+|---|---|
+| Version bump | `[workspace.package] version = "0.1.3"`; `cargo update --workspace --offline` changed exactly the 25 workspace crates in `Cargo.lock` and no dependency version (26 insertions, 26 deletions) |
+| Build | in the Ubuntu 24.04 E2E builder container, `cargo build --locked --release -p solidcraft -p solidcraft-cli`, 5m25s |
+| Package | the real `packaging/linux/package.sh --skip-build --formats tar --with-mastra-agent`, run inside `ubuntu:24.04` with the stock Node 22.23.4, so the script's own agent checks and smoke ran |
+| Agent checks | `check` and the secret `scan`: `problemCount: 0`; skills set `sha256:0d7b9a61…` |
+| **Agent smoke, all 8 cases** | `{"summary":"all passed","cases":8}` — three turns, a command after a permission request, an MCP tool, the skill sets (four `skill/<name>` commands, every SKILL.md read), a refused command, a refused write, and both cancellation cases |
+| Script's own CLI check | `intcad-cli 0.1.3` |
+| Artifact | `intcad-0.1.3-linux-x86_64.tar.gz`, 462 MB, sha256 `e30b1cf86fa1c4c0b39bb42ef16333c3d8256cfe01f7c44f61d887ddf1edf134`, 13,597 `mastra-agent` entries, the four `SKILL.md` and `skill-set.json` |
+| Checksum list | `packaging/checksums.sh` wrote `SHA256SUMS.txt` and `SHA256SUMS`, and its `sha256sum --check` passed on the artifact |
+
+**Upgrade from the published 0.1.2, in a clean Ubuntu 24.04 VM** (`…rel012`, same user data folder
+throughout):
+
+1. Extracted the published `0.1.2` tarball into `~/apps/intcad`, ran it → `intcad 0.1.2`, opened the
+   sample plate, saved it through the control channel as `~/upg/from-012.sc` (45,543 bytes), then
+   `app.quit` → `quitting: true` and the process exited.
+2. Replaced the install tree in place with the 0.1.3 tree → `~/apps/intcad/bin/intcad --version`
+   → `intcad 0.1.3`.
+3. Launched 0.1.3 on that saved design → `ui.documents` lists `from-012`; the window shows `v0.1.3`
+   with the plate and its sketches.
+4. Opened the Assistant → the agent starts from the new prefix
+   (`~/apps/intcad/lib/intcad/mastra-agent/node …/agent/main.mjs`) and installs the four skills into
+   the same `XDG_DATA_HOME/intcad/mastra/home/.agents/skills`.
+
+Evidence: `~/.local/state/intcad-e2e/runs/intcad-e2e-int1503-rc-rehearsal-3a92c4b6125c-rel012/20261123T075538Z-2614506/screenshots/win-upgrade-013.png`
+(the filename is a mistake in the run's label; it is the Linux 0.1.3 window).
+
+**What this proves and what it does not**
+
+- Proves: a versioned 0.1.3 package is buildable from this tree with the agent and the four skills,
+  it installs, starts, opens a design saved by 0.1.2, and its agent works.
+- Does **not** prove: the one-click update path (feed → download → checksum → apply). The feed URL is
+  a constant (`crates/ui-egui/src/update.rs` `LATEST_API`) with no override, and publishing a
+  prerelease is not authorised, so that path can only be exercised by the existing unit and scenario
+  tests plus the E1 name fix. Also untested here: preferences continuity (the 0.1.2 run created no
+  preferences file, so there was nothing to carry), and Windows/macOS 0.1.3.
+
 ## 13. Decisions needed from the CTO / owners
 
 1. **Version and package plan:** one 0.1.3 with login, or 0.1.3 now without it and 0.1.4 later
