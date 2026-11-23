@@ -594,6 +594,34 @@ Evidence: `~/.local/state/intcad-e2e/runs/intcad-e2e-int1503-rc-rehearsal-3a92c4
 queued, see §12.4.2), a real-model turn with this exact build (the key was removed after §12.5), the
 slash menu (B10), PP's UI (B9) and login (Gate B).
 
+### 12.4.4 The same candidate's Windows MSI, installed (2026-11-23)
+
+The Windows package of run 45248432170 (`intcad-0.1.3-windows-x64.msi`, 161,941,799 B, sha256
+`f467db171b45b474f230ff3af13c7b05ff84da1c2d3abdb28e6e553a6de36550`) installed on a Windows 11 24H2 VM
+(`…win013`), in-guest hash checked first.
+
+```
+msiexec /i … /qn /norestart -> exit 0
+C:\Program Files\Intcad: intcad.exe 233,363,456; intcad-cli.exe 158,796,288; six notice files
+agent_dir=True   agent_files=10739   agent_node=True (node.exe)
+  skill  context-skills/intcad-context
+  skill  modelling-skills/solidcraft-checking
+  skill  modelling-skills/solidcraft-editing
+  skill  modelling-skills/solidcraft-mechanisms
+  skill  modelling-skills/solidcraft-modeling
+intcad-cli --version -> intcad-cli 0.1.3 (exit 0)
+launch -> window v0.1.3, Dx12, control server on 127.0.0.1:7878
+```
+
+So the Windows installer from CI carries the agent folder with its bundled `node.exe` and all five
+skill sets in the install directory — the gap B7 recorded for my locally built MSI (`HasMastraAgent=0`)
+is closed for the CI package.
+
+What this does not yet show: the agent process running and the skills copied into the app's data
+folder on Windows (the Assistant panel starts the agent; that step was still being checked when this
+was written), a real-model turn with this build, and the `installed-check.ps1` run that CI itself
+performs for each architecture.
+
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
 The CTO supplied a DeepSeek API key for acceptance. It was used only in the throwaway VM, kept in
