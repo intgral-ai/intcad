@@ -427,6 +427,8 @@ test("a failed turn is put into one of the kinds the Assistant has words for", (
     ["OAuth token has expired. Please sign in again.", "auth"],
     ["You exceeded your current quota, please check your plan and billing details.", "quota"],
     ["429 insufficient_quota", "quota"],
+    // DeepSeek's words for a key with no money left on it.
+    ["Insufficient Balance", "quota"],
     ["Rate limit reached for requests", "rate"],
     ["429 Too Many Requests", "rate"],
     ["TypeError: fetch failed", "network"],
