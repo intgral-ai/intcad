@@ -151,7 +151,7 @@ explicitly excepts it, P2 may be deferred.
 | B5 | P1 | **The slash list is not seen in the Assistant.** The agent registers the four `skill/<name>` commands (ACP-level, `agent-smoke.mjs`, §12), but drawing them needs a model signed in: the panel shows the Connections page, and no credential is available to this role | §12, §12.1 |
 | B6 | P1 | **The Mastra workflow runtime (`mastra/`) is still not in any package.** Only the agent folder ships. `--with-mastra` stays opt-in and fails closed until the runtime artifact is approved (DQ-7/#15), so "Mastra in the package" is true for the agent and not for the workflow runtime | `packaging/linux/package.sh:101-118`, `docs/mastra-packaging.md` |
 | E1 | P1, fixed on this branch | **The update check could not upgrade `v0.1.2`.** `install.rs` required an asset named `SHA256SUMS.txt`; `v0.1.2` publishes `SHA256SUMS` only, so `run()` stopped before downloading. The client now accepts either name and still verifies the hash; the release process writes both | release asset list; `install.rs` `SUMS_LEGACY`; the new test in §7 |
-| B7 | P1 | **No Windows 0.1.3 binary from this host.** `cargo xwin` needs an MSVC-capable `clang-cl`; with the rustup MSVC std target installed the build still fails in `ring`: `clang: error: no such file or directory: '/imsvc'` and `unsupported option '-fPIC' for target 'x86_64-pc-windows-msvc'`. The Windows runner in `release.yml` is the builder that works; a local cross-build needs a proper LLVM/MSVC toolchain | this host's `cargo-xwin` attempt, 2026-11-23 |
+| B7 | P1 | **The Windows candidate has no agent.** A Windows 0.1.3 exe and MSI now build here (§12.4), but the agent folder for Windows must be built on Windows (its `node.exe` has to run for the version check), and this VM has no Node; `HasMastraAgent=0` was used. The Windows agent is what `agent-test-packages.yml` builds on Windows runners and what #214's gate checks | §12.4, `agent-package.mjs` line 473 |
 | E2 | P1 | **No installed-artifact acceptance path for a candidate.** The VM harness builds from source; `accept` cannot take a package. Linux/Windows installed checks exist in CI and in `packaging/*/installed-check.*`, but they have not been run for a 0.1.3 candidate | §4; `intcad-e2e --help` |
 | E3 | P2 | Portable-ZIP updates replace only `intcad.exe` and `intcad-cli.exe`, so a `mastra-agent/` folder from #214 would be left stale or absent | `install.rs:302` `apply()`, `Method::PortableZip` |
 | E4 | P2 | `.github/workflows/verify-beta-installers.yml` hard-codes `C:\Program Files\SolidCraft` and `SolidCraft.app/Contents/MacOS/SolidCraft`, so it cannot verify an Intcad release | lines 40 and 73 of that workflow |
@@ -216,7 +216,7 @@ candidate: they show the path works, and they must be repeated for the candidate
 | Platform | Build | Package | Startup | Login | Mastra | Skills + commands | UI | Update | Evidence |
 |---|---|---|---|---|---|---|---|---|---|
 | Linux x86_64 | 0.1.3 candidate built (Ubuntu 24.04, 5m25s) | 0.1.3 tar 462 MB, sha256 `e30b1cf8…`, checksum list written | PASS (0.1.3 window, sample design) | NOT TESTED | 0.1.3 agent ships, starts from the install prefix, installs the four skills; workflow runtime absent (B6) | 0.1.3 agent smoke 8/8 with the four `skill/<name>` commands; slash list not seen (B5) | Assistant page renders | one-click path NOT TESTED (feed URL is a constant); in-place 0.1.2→0.1.3 PASS, design saved by 0.1.2 opens in 0.1.3 | §12.3 |
-| Windows x64 | 0.1.3 NOT BUILT here (see B7); published 0.1.2 MSI verified | 0.1.2 MSI install PASS; 0.1.3 NOT TESTED | 0.1.2 PASS (window, Assistant page) | NOT TESTED | NOT TESTED (agent folder for Windows needs a Windows build) | NOT TESTED | Assistant page PASS on 0.1.2 | NOT TESTED | §12.2 |
+| Windows x64 | 0.1.3 exe + cli built (cargo-xwin, 3m40s + 3m36s) | 0.1.3 MSI built in the guest (WiX 5.0.2), 100.7 MB, sha256 `894e04fb…` | PASS (window `v0.1.3`, sample design) | NOT TESTED | **no agent** (B7) | NOT TESTED | rail + Assistant page render | one-click NOT TESTED; in-place MSI 0.1.2→0.1.3 PASS (one ARP entry, `intcad-cli 0.1.3`) | §12.4 |
 | macOS universal | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | CI-only DMG mount, no DMG for a candidate yet |
 
 Verdict: **NO-GO**. B1–B4 alone are enough; E1 means even a perfect 0.1.3 package would not be
@@ -483,6 +483,34 @@ Evidence: `~/.local/state/intcad-e2e/runs/intcad-e2e-int1503-rc-rehearsal-3a92c4
   prerelease is not authorised, so that path can only be exercised by the existing unit and scenario
   tests plus the E1 name fix. Also untested here: preferences continuity (the 0.1.2 run created no
   preferences file, so there was nothing to carry), and Windows/macOS 0.1.3.
+
+### 12.4 Windows 0.1.3: built, upgraded from the published 0.1.2 (2026-11-23)
+
+The Windows build that failed in the previous turn now works, without touching any other branch:
+
+| Step | Result |
+|---|---|
+| Toolchain | rustup 1.99.1 + `x86_64-pc-windows-msvc` std; nix's `clang` has no `clang-cl`, so a two-line shim runs it as `--driver-mode=cl` and adds LLVM's split C headers (`/imsvc …/clang/19/include`); `llvm-lib` and `lld-link` from LLVM 19/21; `cargo-xwin` |
+| Build | `cargo-xwin xwin build --release --target x86_64-pc-windows-msvc`: `intcad.exe` 222.1 MB (3m40s), `intcad-cli.exe` 139.1 MB (3m36s); only `LNK4099` warnings about xwin's CRT PDBs |
+| MSI | built **in the VM** with WiX 5.0.2 (installed there), PDB-free `wix build` of `assets/platforms/windows/solidcraft.wxs`, `-d Version=0.1.3 -d DisplayVersion=0.1.3 -d HasMastraAgent=0` → `Intcad-0.1.3-windows-x64.msi`, 100,716,544 bytes, sha256 `894e04fb735e71c7a2a95a882effeecccc8bd6bee2bde853ce884a79e7c8feb2`; `packaging/checksums.sh` wrote `SHA256SUMS.txt` |
+| Upgrade | `msiexec /i … /qn` over the installed published 0.1.2 → exit 0; `C:\Program Files\Intcad` holds the new `intcad.exe` 232,881,664 and `intcad-cli.exe` 145,908,736; `intcad-cli 0.1.3`; **one** uninstall entry (`Intcad 0.1.3`), so the old install was replaced, not duplicated; `%APPDATA%\Intcad` still present |
+| Launch | window `v0.1.3` with the sample plate and the new right rail; the Assistant panel opens and its WebView2 page renders (Connections) |
+
+Evidence: `~/.local/state/intcad-e2e/windows/runs/intcad-win-int1503-rc-rehearsal-3a92c4b6125c-win012/20261123T080432Z-2631759/screenshots/win013-later.png`
+and `win013-assistant.png`.
+
+**Not in this package:** the agent folder (B7). `HasMastraAgent=0` because the Windows agent must be
+built on Windows: `agent-package.mjs` runs the given `node.exe` to check its version, and this VM
+has no Node. On a real via-CI package the agent comes from `agent-test-packages.yml`, and #214's
+content gate is what proves it is there.
+
+**Slash list, again:** opening the composer and typing `/` on Windows (no agent) and on Linux (agent
+present) did not show a `skill/…` menu; the panel sits on the Connections page until a model is
+signed in. The four commands are registered by the agent (ACP evidence above), but drawing them
+still needs a model credential.
+
+**Crash dialogs seen in these runs** are from force-stopping the app between installs (the report
+names the killed start time); they are not product crashes.
 
 ## 13. Decisions needed from the CTO / owners
 
