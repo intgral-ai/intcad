@@ -17,4 +17,4 @@ Source comparison only: frozen upstream `e151d5ea6866fb055e011379153fb1cae0566f2
 
 ## Root CI rollout decision
 
-The owner accepted the recommended rollout on 2026-11-23: keep the root adapter disabled until a compliant `solidcore/` subtree is on `develop`, and initially run full CI for `solidcore/`-only changes. The [CI owner](https://linear.app/intgral/issue/INT-1454#comment-69364f91-23ca-43d6-951c-747429d11025) still needs to confirm activation timing. Verify root selection, archive execution, receipt binding, and aggregation before considering narrower coverage. This decision does not enable or merge the adapter.
+The owner accepted the recommended rollout on 2026-11-23: keep the root adapter disabled until a compliant `solidcore/` subtree is on `develop`, and initially run full CI for `solidcore/`-only changes. The owner also confirmed the same day that they are the CI owner for this fork, so the remaining activation confirmation is theirs. Activation stays closed until that subtree lands; nothing is enabled, merged, or narrowed by this record. Verify root selection, archive execution, receipt binding, and aggregation before considering narrower coverage.
