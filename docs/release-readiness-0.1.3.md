@@ -181,7 +181,64 @@ here. `actionlint .github/workflows/packaging-lint.yml` → exit 0.
 Verdict: **NO-GO**. B1–B4 alone are enough; E1 means even a perfect 0.1.3 package would not be
 reachable by one-click update from 0.1.2.
 
-## 10. Decisions needed from the CTO / owners
+## 10. How each gate will be run
+
+Each line names the command or the person; nothing here has been run for a candidate yet. A gate
+row is only PASS with the artifact, the SHA and the evidence path recorded beside it.
+
+**Gate A, build and package.** `release.yml` on the candidate SHA (through `release-gate` for a
+`main`-target PR). PASS needs: every job in `package-builds` green including FreeBSD, `build.json`
+naming the candidate SHA for each target, Mastra and the agent folder present in each installer
+(the `package_contents` scan, once #214 lands), and `packaging/checksums.sh dist/<platform>` run
+over the downloaded assets with every hash OK.
+
+**Gate B, login.** The functional part belongs to the login workstream on real accounts and real
+WorkOS/Railway configuration; this role only verifies what the installed package does. Map to PRD
+§9 and record per platform:
+
+1. Anonymous or offline: CAD, completion, save/export, undo/redo work — installed app, network
+   off.
+2. Anonymous cannot reach a controlled capability through any entry: GUI, `intcad-cli mcp`,
+   control channel, CLI. Each must return a recognizable error, never open a browser.
+3. Email + password sign-up, sign-in, email verification, password reset, sign-out, account
+   switch, deletion request: real email account, system browser, and AuthKit shows no Google or
+   GitHub entry.
+4. Signed-in, online, authorized: the existing controlled capabilities work with the user's own
+   key.
+5. A version the server no longer authorizes loses only the controlled capabilities.
+6. A long MCP/control session cannot run forever on the authorization it started with.
+7. Network loss mid-task stops further scheduling within the agreed limit.
+8. Sign-out, account switch and authorization withdrawal: queued, awaiting-approval and late
+   results cannot write; finished work stays.
+9. Network return does not replay a write of unknown state.
+10. Authorization traffic and logs carry no model key, full token, project content, prompt or
+    parameter.
+11. The three platforms behave the same, and nothing unimplemented is presented as available.
+
+**Gate C, skills.** In the installed app, on a clean profile: the four skill folders exist under
+`<MASTRA_APP_DATA_DIR>/home/.agents/skills` (and `intcad-text-to-cad` beside them once #204 adds
+its set); each `SKILL.md` is byte-identical to the package's copy (the `skill-set.json` stamp);
+`skill_search` finds them; one request per skill makes the agent read and use it; and the
+`skill/<name>` commands the Assistant actually shows are recorded as a screenshot. A file on disk
+is not evidence that the skill can be called.
+
+**Gate D, UI.** Installed app at 100 % and 150 % on Linux and Windows (and a Mac if a machine is
+available): every built-in theme, font and control size, no unexpected background or clipping, the
+Assistant web view positioned correctly, panel resize and move, and a basic CAD operation on each.
+
+**Gate E, upgrade.** Install the published `v0.1.2`, then update to the candidate with the
+one-click path and record: the update check finds the release, the download matches the checksum
+list, the package applies, the app restarts, a design from 0.1.2 opens, preferences survive, and
+the login and skill state matches the product design. With E1 fixed on this branch the 0.1.2
+client can read a new release's list only if that release also carries `SHA256SUMS` (the 0.1.2
+binary knows that name); the release must therefore publish both names, which `checksums.sh` does.
+
+**Gate F, evidence.** Keep: the `release-gate` run URL for the candidate SHA, the package artefact
+names and hashes, `build.json` per target, installed-check logs and screenshots, the VM E2E
+`REPORT.md` paths, the known-issues list and every NOT TESTED or BLOCKED row. No row is PASS
+without its file.
+
+## 11. Decisions needed from the CTO / owners
 
 1. **Version and package plan:** one 0.1.3 with login, or 0.1.3 now without it and 0.1.4 later
    (INT-1503 raises both)? This decides whether #213 blocks the first package.
