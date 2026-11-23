@@ -121,16 +121,41 @@ expectation can later be compared against a recorded baseline.
 
 | Area | Cases | `9c24061c` | `db0b8dd35` |
 | --- | --- | --- | --- |
+| frames | 6 | 6 pass | 6 pass |
 | solids | 11 | 11 pass | 11 pass |
 | continuity | 13 | 13 pass | 13 pass |
+| crashes | 12 | 12 pass | 12 pass |
+| tessellation | 14 | 14 pass | 14 pass |
+| inspect | 25 | 25 pass | 25 pass |
+| plastic | 18 | 18 pass | 18 pass |
+| history | 45 | 45 pass | 45 pass |
+| shell | 37 | 36 pass, 1 fail | 37 pass |
 | threads | 31 | 31 pass | 31 pass |
-| **Total** | **55** | **55 pass** | **55 pass** |
+| **Total** | **212** | **211 pass, 1 fail** | **212 pass** |
 
-Comparison: **55 unchanged, 0 changed**. Slowest case 57.1 s on `9c24061c`, 37.7 s on the candidate.
-CLIs were `d098a154…` and `b3a856e2…`; both worktrees were clean at the stated SHAs.
+**Ladder (12) is excluded:** those cases are graded against the ladder's recorded golden by
+`cargo xtask kernel-cases --ladder`, and all 12 report `fail` when replayed standalone on both
+builds. That is the harness, not a kernel difference.
+
+**One case differs:** `shell/cov-shell-again-open-at-an-inner-wall-of-a-shelled-box` passes on
+`db0b8dd35` and fails on `9c24061c` with `step 9 (solid.shell): SMLib shell: operation: SMLib
+failed (status 1001)`. The case directory is byte-identical at both SHAs (tree `c6cf2004…`), so the
+difference comes from the kernel below them, not from the case or from IntCAD product code:
+`db0b8dd35` builds the vendored `solidcore/` tree `8b5c0144…`, while `9c24061c` pins the git revision
+`8ddce901…`. Treat it as a kernel-source difference to recheck on the landed SHA, not as a
+user-visible IntCAD regression or fix.
+
+Comparison over the 163-case second batch: **162 unchanged, 1 changed**. CLIs `d098a154…` and
+`b3a856e2…`; both worktrees clean at the stated SHAs.
 
 Receipts (output of the evaluator's `kernel-collect.py`, retained locally): `areas-9c24061c.json`
-SHA-256 `485961e9…`, `areas-db0.json` `531d9050…`, `areas-compare.json` `91bfefd3…`.
+SHA-256 `485961e9…`, `areas-db0.json` `531d9050…`, `areas-compare.json` `91bfefd3…`; second batch
+`rest-9c24061c.json`, `rest-db0.json`, `rest-compare.json` alongside them.
+
+**Not covered:** `fillets` (271), `booleans` (127), `sweeps` (97), `assemblies` (96),
+`sheet-metal` (78), `surfaces` (63), `construction` (53) and `import` (35) — 820 cases — were not
+run. This baseline therefore covers roughly a fifth of the rig and does not stand in for those
+areas.
 
 This is a parity baseline for unchanged areas, not the required evidence for changed expectations.
 Those still need, on the landed SHA, the same cases with their inputs and the base-versus-landed
