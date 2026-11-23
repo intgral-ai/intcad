@@ -166,7 +166,7 @@ on `int1503-version-013`, and the release.yml candidate branch is described in �
 | B5 / B10 | P1 | **The Assistant has no slash menu for `skill/<name>`.** With a working key and a live session, typing `/` or `/skill` draws no command menu, and no code in the app or the Assistant page consumes ACP `available_commands_update`. The agent registers the four commands (ACP evidence) and they work when typed as text, but "displayed as a command" is not implemented — an app-side feature, not packaging | §12.5 |
 | B6 | P1 | **The Mastra workflow runtime (`mastra/`) is still not in any package.** Only the agent folder ships. `--with-mastra` stays opt-in and fails closed until the runtime artifact is approved (DQ-7/#15), so "Mastra in the package" is true for the agent and not for the workflow runtime | `packaging/linux/package.sh:101-118`, `docs/mastra-packaging.md` |
 | B8 | P0 | **Every package build fails on a dependency advisory.** `Dependency advisories` fails with RUSTSEC-2026-0594: `cookie 0.18.2` via `wry 0.57.2` (private-cookie nonce reuse after `fork()`, which breaks AES-GCM). `release.yml` cannot pass for any branch until it is fixed; #218 moves it to 0.18.3 | run 45149031980 job 137606035774 |
-| B9 | P0 (scope) | **PP's UI has no PR.** The CTO requires it in 0.1.3, and there is no branch or PR to review, so this scope item cannot start from the release side | open PR list, 2026-11-23 |
+| B9 | P1, PR open | **PP's UI is PR #221** (draft, `BEHIND`, 29 files, +1823/−224: the Assistant moves to the bottom centre, one message box, native clipping in `assistant_clip.rs`). Two red checks when reviewed: a `develop`-wide `lint` breakage inherited from #212 (fixed in #222) and `ui_containers` ("Use ui_kit::Container for outer hosts"), which is PP's code to fix. Integration still needs the visual pass | PR #221; §12.11 |
 | E1 | P2, fix landed (not a blocker) | **The 0.1.2 → 0.1.3 upgrade needs `SHA256SUMS.txt` in the 0.1.3 release.** The shipped 0.1.2 client (`65af7346`, `install.rs` `SUMS`) looks for `SHA256SUMS.txt` in the release it fetches, so what matters is the name 0.1.3 publishes — and `packaging/checksums.sh` writes it. My earlier entry had this backwards. The branch change (accept `SHA256SUMS` too) only makes future clients tolerant of a hand-made list; it cannot change an installed binary. Verified against the tag: `git show 65af7346:crates/ui-egui/src/update/install.rs` has `pub const SUMS: &str = "SHA256SUMS.txt"` | `install.rs` `SUMS_LEGACY`; §7 |
 | B11 | P1, tooling added | **A release needs unversioned asset aliases or those users cannot update.** `asset_name()` asks for `intcad-windows-x64.msi`, `intcad-macos-universal.dmg`, `intcad-linux-x86_64.{AppImage,deb,rpm,flatpak,snap}` and `intcad-windows-<arch>-portable.zip` without a version; `release.yml` produces only versioned names. Publishing them as-is would leave every MSI/DMG/AppImage/deb/rpm/Flatpak/Snap/portable-zip install unable to find its package. `packaging/aliases.sh` (4 tests, wired into packaging-lint) writes them, and `docs/beta-release.md` runs it before the list | `update.rs` `asset_name()`; §12.4.9 |
 | B7 | P1 | **The Windows candidate has no agent.** A Windows 0.1.3 exe and MSI now build here (§12.4), but the agent folder for Windows must be built on Windows (its `node.exe` has to run for the version check), and this VM has no Node; `HasMastraAgent=0` was used. The Windows agent is what `agent-test-packages.yml` builds on Windows runners and what #214's gate checks | §12.4, `agent-package.mjs` line 473 |
@@ -772,6 +772,25 @@ agent.json holds target, node version, sdk versions and the enterprise removal n
 
 Not a substitute for rights clearance or for #7/#14's audits; it is the "no accidental credential in
 the artifact" check this role can run.
+
+### 12.11 PP's UI PR arrived (2026-11-23, late)
+
+PR #221 "Assistant moves to the bottom centre of the window: one message box, the conversation opens
+above it (INT-1500)", 29 files, +1823/−224: `assistant_clip.rs` (native clipping), `assistant_web.rs`,
+`agent_chat/{mod,panel,web,connections,settings}.rs`, the checked-in Assistant page
+(`packages/assistant-web/dist/*`, `inventory.json`), `packages/mastra-runtime/agent/agent.mjs`, and
+`tools/windows-assistant-smoke.ps1`. Draft and `BEHIND` against `develop`.
+
+Two red checks, reviewed and reported on the PR:
+
+| Check | Cause | Owner |
+|---|---|---|
+| `lint` | **not PP's**: `develop` has been red since #212 added `context-skills` while `packaging/tests/mastra_agent_test.py` still built only `modelling-skills`; every PR inherits it | fixed in #222 (test asks `SKILL_SETS`; test-only `--skills-root`), verified 8/8 where `develop` fails 2 |
+| `Format and repository checks` | `cargo xtask ui-containers`: "Use ui_kit::Container for outer hosts" — the new outer host draws its own frame | PP |
+
+Release-side consequence: the scope item is no longer missing, but it cannot join the candidate until
+that check is fixed and the branch is ready. When it is, the visual pass (Linux and Windows at 100 %
+and 150 %: themes, fonts, DPI, panel resize, clipping, basic CAD) is the acceptance this role owes.
 
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
