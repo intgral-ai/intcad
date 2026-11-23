@@ -562,6 +562,38 @@ This branch is **not** a release branch and must not be merged: it exists to pro
 tree plus #214 produces installable packages that carry the agent. The real candidate is the
 promotion PR `release/v0.1.3` once #212/#214 land through their own reviews.
 
+### 12.4.3 The release.yml candidate, verified on Linux (2026-11-23)
+
+The artifacts of run 45248432170 for SHA `14a6c95ae527b2f584035448513ae98455e2f709` were downloaded
+and checked. This is the first *CI-built* package this release has installed and run.
+
+| Item | Value |
+|---|---|
+| `build.json` `sourceRevision` | `14a6c95ae527b2f584035448513ae98455e2f709` |
+| Linux tarball | 222,072,327 B, sha256 `35f114b267946d381b77be7c3ee11e91f426fd8bb19e7aa6a75bb89a381dae7f`; 13,656 entries, **13,605 under `mastra-agent`** |
+| Windows MSI | 161,941,799 B, sha256 `f467db171b45b474f230ff3af13c7b05ff84da1c2d3abdb28e6e553a6de36550` |
+| Also produced | Linux deb/rpm/AppImage(+zsync, plus the two legacy zsync aliases), Windows portable zip and standalone exe |
+| `contents.json`, both platforms | `agent.present: true`, `node: true`, `missing: []`, skills: `modelling-skills/{solidcraft-checking,editing,mechanisms,modeling}` **and** `context-skills/intcad-context` |
+| Checksum list, whole candidate | `packaging/checksums.sh` over the flattened set with `--require` per channel asset: 10 files, 1015 B, every hash OK |
+| The guard works | with `--require intcad-macos-universal.dmg` and no DMG present it **refused**: "the list would omit these release assets: intcad-macos-universal.dmg" and wrote nothing |
+
+**Installed and run from that tarball on a clean Ubuntu 24.04 VM** (`…rc013`):
+
+```
+bin/intcad-cli --version -> intcad-cli 0.1.3
+bin/intcad --version     -> intcad 0.1.3
+lib/intcad/mastra-agent/node --version -> v22.23.4
+launch, open Assistant -> agent runs: /tmp/ci/…/mastra-agent/node …/agent/main.mjs
+app data folder         -> intcad-context, solidcraft-checking, solidcraft-editing,
+                           solidcraft-mechanisms, solidcraft-modeling   (five sets)
+```
+
+Evidence: `~/.local/state/intcad-e2e/runs/intcad-e2e-int1503-rc-rehearsal-3a92c4b6125c-rc013/20261123T205537Z-596622/screenshots/ci013-running.png`.
+
+**Still not in this candidate:** the macOS DMG (the cancelled slice; `gh run rerun --failed` was
+queued, see §12.4.2), a real-model turn with this exact build (the key was removed after §12.5), the
+slash menu (B10), PP's UI (B9) and login (Gate B).
+
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
 The CTO supplied a DeepSeek API key for acceptance. It was used only in the throwaway VM, kept in

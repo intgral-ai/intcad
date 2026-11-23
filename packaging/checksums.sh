@@ -94,9 +94,9 @@ verify "$tmp"
 
 missing=()
 for name in "${required[@]}"; do
-  # A line is `<hash>  <name>`, so compare the name field whole: a prefix would pass for
-  # `intcad-windows-x64.msi` when only `intcad-windows-x64.msi.part` were listed.
-  awk -v want="$name" 'index($0, "  " want) == length($0) - length(want) + 1 { found = 1 } END { exit !found }' "$tmp" \
+  # A line is `<64 hex>  <name>`, so compare the trailing name field whole: a prefix must not
+  # pass (`intcad-windows-x64.msi` matching only `intcad-windows-x64.msi.part`).
+  awk -v want="$name" 'index($0, "  " want) == length($0) - length(want) - 1 { found = 1 } END { exit !found }' "$tmp" \
     || missing+=("$name")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
