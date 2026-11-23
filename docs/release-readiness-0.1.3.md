@@ -38,7 +38,7 @@ an installed 0.1.2, and the 0.1.2 client's own update check is what has to work 
 | Modelling skills in the built-in agent (#198, INT-1473 prerequisite) | Tianwei | PR #204, open, head `b2cb0ef0e0317c9273f771ade89e1c8892331778` | Review comments closed, Text-to-CAD as a second set, installed-app evidence |
 | Agentic behaviour over the right rail (INT-1473) | Tianwei | PR #212, open, head `31eae3957c35f78381ef9b1a4cab70b09b6465f9`, based on #204's branch | #204 merged first, then rebase onto `develop` |
 | UI changes | PP | **No PR exists.** No open PR is authored by `pp`; the only `paipeline` PR that is not a sync is #189, the verification harness (`.agents/skills/verify-intcad/**`), not a UI change | PR opened, reviewed, visual regression run |
-| Release engineering, packages, RC, acceptance | this role | This branch `release/int1503-readiness-20261123` from `develop` | — |
+| Release engineering, packages, RC, acceptance | this role | This branch `int1503-release-readiness` from `develop` (PR #217; `release/` is reserved for a `release/vX.Y.Z` promotion by the branch-admission policy, which rejected the first branch name) | — |
 | Version scope, promotion, publishing | CTO | — | Explicit approval before any tag or GitHub Release |
 
 Intcad ships the same three platforms as `v0.1.2` (Linux x86_64, Windows x64, macOS universal).
@@ -174,7 +174,7 @@ refuses anything whose hash does not match. Regression test:
 `a_release_that_lists_the_sums_under_the_old_name_still_updates` in
 `crates/ui-egui/src/update/install_tests.rs`, written first (it failed to compile with `SUMS_LEGACY`
 missing). The local pass run was interrupted when another process reclaimed this worktree's
-`target/` mid-build, so the passing evidence is the `ci` job on PR #216, not a local run; that is
+`target/` mid-build, so the passing evidence is the `ci` job on PR #217, not a local run; that is
 the trusted builder here anyway. The update owner can veto this single change without touching the
 checksum script.
 
