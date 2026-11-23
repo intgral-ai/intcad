@@ -2924,14 +2924,20 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     }
     settings::poll_tests(&mut app.agent_chat);
     #[cfg(not(target_arch = "wasm32"))]
+    // The detection worker, its channel and the fields it writes exist only off wasm: the browser
+    // build has no installed agents to look for. Without the cfg the wasm build refers to
+    // `detected`, `discover` and three fields that are not compiled there.
+    #[cfg(not(target_arch = "wasm32"))]
     let detected = app.agent_chat.detecting.as_ref().map(std::sync::mpsc::Receiver::try_recv);
     // A look whose worker is gone is finished with nothing found: a launch must not wait on a
     // thread that will never answer.
+    #[cfg(not(target_arch = "wasm32"))]
     let finished = match detected {
         Some(Ok(d)) => Some(d),
         Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => None,
         Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => Some(discover::Detection::default()),
     };
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(d) = finished {
         for found in &d.found {
             app.agent_chat.login_results.remove(found.id);
