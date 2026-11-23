@@ -241,7 +241,16 @@ Assistant web view positioned correctly, panel resize and move, and a basic CAD 
 **Gate E, upgrade.** Install the published `v0.1.2`, then update to the candidate with the
 one-click path and record: the update check finds the release, the download matches the checksum
 list, the package applies, the app restarts, a design from 0.1.2 opens, preferences survive, and
-the login and skill state matches the product design. With E1 fixed on this branch the 0.1.2
+the login and skill state matches the product design.
+
+What the installer already guarantees, from the source rather than a run: the MSI keeps one
+`UpgradeCode` with `MajorUpgrade AllowSameVersionUpgrades="yes"`
+(`assets/platforms/windows/solidcraft.wxs:25,31`), so a new MSI replaces the old install instead of
+sitting beside it, and a downgrade is refused; the scope is `perMachine`, so the install needs
+administrator rights. The tarball, deb, rpm, Flatpak and Snap are never replaced in place
+(`install.rs` `method()`), so for those the record is a reinstall or a package-manager upgrade,
+and the one-click path only has to be proven for the AppImage, the MSI, the portable zip and the
+DMG. With E1 fixed on this branch the 0.1.2
 client can read a new release's list only if that release also carries `SHA256SUMS` (the 0.1.2
 binary knows that name); the release must therefore publish both names, which `checksums.sh` does.
 
