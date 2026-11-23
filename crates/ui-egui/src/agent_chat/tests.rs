@@ -16775,17 +16775,27 @@ fn with_the_built_in_agent_the_list_starts_with_it_and_keeps_the_others() {
     assert!(state["connect"].is_object(), "the built-in agent's page: {}", state["connect"]);
 }
 
-/// A1: Settings shows no list of agents and no execution choice beside the built-in agent; the
-/// rest of the Assistant page stays. Without it both are there.
+/// A1: Settings keeps the agent list beside the agent the package carries: the list, Add and
+/// Refresh are the way to see and add the other agents, so a package that ships one does not take
+/// them away. The execution choice appears once there is another agent for it to run; with the
+/// package's agent alone there is nothing for it to choose.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn with_the_built_in_agent_settings_has_no_agent_list_and_no_execution_choice() {
-    let drawn = |builtin: bool| {
+fn with_the_built_in_agent_settings_still_lists_agents_and_offers_the_execution_choice() {
+    let drawn = |builtin: bool, other: bool| {
         let mut h = crate::scenario::Harness::new();
         h.app.home.open = false;
         h.app.agent_chat.detection = Some(Default::default());
         if builtin {
             h.app.builtin_agent = Some(builtin_agent());
+        }
+        if other {
+            h.app.preferences.agents.push(agents::AgentConfig {
+                id: "custom-1".into(),
+                name: "Mine".into(),
+                command: "mine --acp".into(),
+                ..Default::default()
+            });
         }
         crate::scenario::clear_handles();
         h.call("ui.resize", json!({"width": 1600, "height": 4000}));
@@ -16804,8 +16814,9 @@ fn with_the_built_in_agent_settings_has_no_agent_list_and_no_execution_choice() 
         assert!(h.app.agent_chat.detecting.is_none(), "drawing the page started no look");
         (section("agents"), execution)
     };
-    assert_eq!(drawn(false), (true, true), "without the built-in agent both are shown");
-    assert_eq!(drawn(true), (false, false), "with it neither is");
+    assert_eq!(drawn(false, false), (true, true), "without the built-in agent both are shown");
+    assert_eq!(drawn(true, false), (true, false), "with it the list stays; nothing else runs, so no execution choice");
+    assert_eq!(drawn(true, true), (true, true), "another agent beside it brings the execution choice back");
 }
 
 /// A2: preferences an older version wrote (other agents, a default and a last agent, per-agent
@@ -16852,15 +16863,15 @@ fn preferences_of_an_older_version_load_beside_the_built_in_agent_and_are_not_re
     expected["mastra_custom"] = json!([]);
     assert_eq!(kept(&app), expected, "what is saved back is what was loaded");
 
-    // The launch: connect at start neither waits for a look at the computer nor misses the
-    // agent started last, and the saved execution choice does not stop the built-in agent.
+    // The launch: the agent the user started last is the one it tries, beside the package's own
+    // agent. `claude` is not installed here, so the launch says so rather than quietly starting
+    // Mastra instead: a start the user did not ask for is not a fallback.
     begin(&mut app);
     poll(&mut app, &ctx);
     assert!(app.agent_chat.detecting.is_none() && !app.agent_chat.connect_at_start);
     let said: Vec<String> =
         app.agent_chat.items.iter().filter_map(|item| if let Item::Notice { text, .. } = item { Some(text.clone()) } else { None }).collect();
-    assert!(!said.iter().any(|text| text == tr("ui.mastra_acp_tasks_unavailable") || text.contains("claude")), "{said:?}");
-    // The program named here does not exist, so the start itself fails, as a start does.
+    assert!(said.iter().any(|text| text.contains("claude")), "the agent started last is looked for: {said:?}");
     assert_eq!(app.agent_chat.state(), State::Failed);
     assert_eq!(kept(&app), expected, "a start that failed rewrote nothing");
 

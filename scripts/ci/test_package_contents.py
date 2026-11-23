@@ -283,6 +283,35 @@ class ReleasePackageEndToEnd(unittest.TestCase):
             self.assertEqual(data["markers"], [], "the agent's own Node is not the source's marker")
             self.assertEqual(data["unchecked"], [])
 
+    def test_a_repack_is_inspected_itself_not_only_its_source(self):
+        # The .flatpak/.pkg.tar.zst a person installs is recorded on its own bytes; a repack that
+        # dropped the agent is refused even when the source tarball carried it.
+        with tempfile.TemporaryDirectory() as directory:
+            source = self.make_package(directory)
+            repack = Path(directory) / "intcad-0.1.2-linux-x86_64.pkg.tar.zst"
+            with tarfile.open(repack, "w:zst") as archive:
+                for name, text in {"usr/bin/intcad": "x", "usr/share/doc/intcad/NOTICE": "x"}.items():
+                    file = Path(directory) / "payload"
+                    file.write_text(text)
+                    archive.add(file, arcname=name)
+            out = Path(directory) / "contents.json"
+            result = subprocess.run([sys.executable, str(HERE / "package_contents.py"),
+                                     "--package-id", "release-arch-x86_64",
+                                     "--source-revision", "a" * 40,
+                                     "--distribution", "mastra-agent",
+                                     "--derived-from", "release-linux-x86_64",
+                                     "--source-artifact", str(source),
+                                     "--out", str(out), str(repack)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(out.read_text())
+            checked = [item["name"] for item in data["checked"]]
+            self.assertIn(repack.name, checked, "the repack's own bytes are recorded")
+            self.assertIn(source.name, data["agents"], "and the source it was built from")
+            self.assertFalse(data["agents"][repack.name]["present"],
+                             "the repack without an agent is recorded as carrying none")
+            self.assertTrue(data["agents"][source.name]["present"])
+
     def test_a_package_with_both_the_agent_and_the_legacy_runtime_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
             data = self.record(directory, self.make_package(directory, legacy_runtime=True), "mastra-agent")
