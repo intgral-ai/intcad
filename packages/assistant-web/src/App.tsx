@@ -22,6 +22,7 @@ import {
   Plug,
   Plus,
   ShieldCheck,
+  Sparkles,
   Square,
   SquarePen,
   Target,
@@ -29,6 +30,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import { flushSync } from 'react-dom';
@@ -37,7 +39,9 @@ import { pictureUrl, post } from './host';
 import { ModelPicker as MastraModelPicker } from '@/domains/llm/model-picker';
 import type { ModelPickerProvider } from '@/domains/llm/model-picker-types';
 import { ProviderLogoMonogram } from '@/domains/llm/provider-logo-monogram';
-import { Activity, ActivityContent, ActivityHeadline, ActivityTrigger } from '@/ds/components/ai/activity';
+import { agentGlyph } from '@/ds/components/AgentIndicator';
+import { Activity, ActivityContent, ActivityDetail, ActivityDisclosure, ActivityHeader, ActivityHeadline, ActivityIcon, ActivityLabel, ActivitySpacer, ActivityTrigger } from '@/ds/components/ai/activity';
+import { messagePreview } from '@/ds/components/ai/activity/presets/message-preview';
 import type { TaskListItem } from '@/ds/components/ai/task-list';
 import { TaskList, TaskListContainer } from '@/ds/components/ai/task-list';
 import { ToolCallBody, ToolCallGroup, ToolCallOutput, presentTool } from '@/ds/components/ai/tool-call';
@@ -77,7 +81,6 @@ import { MessageScrollerItem } from '@/ds/components/MessageScroller';
 import { Notice } from '@/ds/components/Notice';
 import { PendingIndicator } from '@/ds/components/PendingIndicator';
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/ds/components/Select';
-import { Shimmer } from '@/ds/components/Shimmer';
 import { Status } from '@/ds/components/StatusIndicators/status';
 import { Textarea } from '@/ds/components/Textarea';
 import { ThinkingLevelPicker } from '@/ds/components/ThinkingLevel';
@@ -85,6 +88,7 @@ import type { ThinkingLevelOption } from '@/ds/components/ThinkingLevel';
 import { Txt } from '@/ds/components/Txt';
 import { SettingsContainer } from '@/ds/new/settings/settings-container';
 import { SettingsGroup, SettingsHeader, SettingsTitle } from '@/ds/new/settings/settings-header';
+import { humanize } from '@/lib/string';
 import { cn } from '@/lib/utils';
 import { compareModelReleaseDates, formatModelName } from '@/utils/model';
 
@@ -2551,11 +2555,13 @@ export function App({ state }: { state: AssistantState | null }) {
 
 // ---- At the bottom centre of the window (INT-1500) ----
 // The host puts the page there with `centre` (the most height it may take). At rest the page is the
-// message box and, above it, one line: what the agent is doing or saying now, or the last thing it
-// said, or which agent this is and its state. Only that line's Expand opens the panel's own body
-// (bar, conversation, dock) above the message box, in Mastra's ComposerHeader. What needs the user
-// (an approval, an agent that is not running or must sign in, files dragged over) floats over the
-// message box in an overlay header while the body is closed, and is the last row above it while open.
+// message box and, above it, one line: the state of the agent's activity, as a row of Mastra's
+// Activity (PreviewLine). Only that row, or Expand over a row that needs the user, opens the panel's
+// own body (bar, conversation, dock) above the message box, in Mastra's ComposerHeader. What needs
+// the user (an approval, an agent that is not running or must sign in, a sign-in under way, a turn
+// that failed on its connection, files dragged over) floats over the message box in an overlay
+// header while the body is closed, and is the last row above it while open (a failed turn is then at
+// the conversation's end).
 
 /** Whether the host shows the page at the bottom centre of the window. */
 const centred = (state: AssistantState | null) => typeof state?.centre === 'number';
@@ -2584,34 +2590,125 @@ function oneLine(box: HTMLTextAreaElement | null, text: string) {
   return `${text.slice(0, end).trimEnd()}…`;
 }
 
-/** The line over the message box: the step the agent is on, what it is saying, or the last thing it said. */
-function previewOf(state: AssistantState): { text: string; step: boolean } | null {
-  const { items, strings } = state;
-  const last = items.at(-1);
-  if (!last) return null;
-  if (state.state === 'busy') {
-    if (last.kind === 'tool' && (last.status === 'running' || last.status === 'pending')) return { text: `${last.title}…`, step: true };
-    if (last.kind === 'check' && (last.status === 'running' || last.status === 'pending')) return { text: strings.dfmRunning, step: true };
-    if (last.kind === 'text' && !last.thought) return { text: plain(last.text), step: false };
-    return { text: state.turn ?? strings.working, step: true };
-  }
-  const said = [...items].reverse().find((item): item is Of<'text'> => item.kind === 'text' && !item.thought);
-  return said ? { text: plain(said.text), step: false } : null;
+/**
+ * What the line over the closed message box shows: the state of the agent's activity, as a row of
+ * Mastra's Activity. Never the words it streams: in CAD the result shows in the view, and what one
+ * wants from the line is what the agent is at. While it works, the most pressing first: an answer it
+ * waits for, the tool or the check it runs, else working (with its plan's step). At rest: a turn
+ * that failed, a turn done (what it changed, or its reply's first line), or which agent this is.
+ */
+interface Line {
+  kind: 'empty' | 'done' | 'note' | 'working' | 'tool' | 'check' | 'waiting' | 'error';
+  icon: LucideIcon;
+  /** What, in plain words: the action, the state. */
+  label?: string;
+  /** What it acts on, or more of it: cut to one line as Mastra cuts a preview. */
+  detail?: string;
+  /** The agent is at it: the row shimmers. */
+  live: boolean;
+  /** Where the agent is in its plan ("2/3"), while it follows one. */
+  step?: string;
+  /** A turn that failed on its connection: what failed, for its ways on (ProblemWays). */
+  problem?: TurnProblem;
 }
 
-/** One line tall: the text wraps, and a full line scrolls up as the next is written. */
-function PreviewLine({ text, step }: { text: string; step: boolean }) {
-  const line = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    const element = line.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }, [text]);
+// Mastra's agent indicator's poses held still, as its own rows use them.
+const IdleGlyph = agentGlyph('idle');
+const DoneGlyph = agentGlyph('done');
+const NoticeGlyph = agentGlyph('notice');
+const FailedGlyph = agentGlyph('error');
+
+/** A tool Mastra's presenter does not know by name, by the kind the host gives it (an ACP tool kind). */
+const KIND_TOOLS: Record<string, string> = { read: 'read_file', edit: 'edit_file', delete: 'delete_file', search: 'grep', execute: 'execute_command', fetch: 'web_fetch' };
+
+/** A tool's own name in words, without the server an MCP tool is named after: "intcad-app_export" is "Export". */
+const toolWords = (name: string) => humanize(name.replace(/^mcp__.+?__/, '').replace(/^\w+-[\w-]+?_(?=\w)/, ''));
+
+/** A running tool as the conversation's row names it (ToolRow): its icon, the action, what it acts on. */
+function toolLine(tool: Tool, own: boolean, step: string | undefined): Line {
+  const { name, detail } = nameOf(tool.title);
+  const args = (own ? argsOf(tool.input) : undefined) ?? {};
+  const named = presentTool(name, args);
+  const known = named.pose !== 'tool';
+  const kindTool = known ? undefined : KIND_TOOLS[tool.toolKind];
+  const byKind = kindTool ? presentTool(kindTool, args) : undefined;
+  const line: Line = { kind: 'tool', icon: (byKind ?? named).icon, live: true, step };
+  // The app's own words for what its tool does, in the user's language.
+  if (tool.words) return { ...line, label: tool.words };
+  if (known) return { ...line, label: named.description ?? named.label, detail: named.description ? undefined : (detail ?? named.detail) };
+  // What it acts on: the title's own detail, else the first of its arguments that is a word or a path.
+  const first = Object.values(args).find((value): value is string => typeof value === 'string' && value.trim() !== '');
+  return byKind ? { ...line, label: byKind.label, detail: detail ?? byKind.detail ?? toolWords(name) } : { ...line, label: toolWords(name), detail: detail ?? first };
+}
+
+function previewOf(state: AssistantState): Line {
+  const { items, strings } = state;
+  const busy = state.state === 'busy';
+  // This turn: everything since the last message sent.
+  const turn = items.slice(items.findLastIndex(item => item.kind === 'user') + 1);
+  // What the agent did last: a tool, a check, something it said or thought, what the app said.
+  const now = turn.findLast(item => item.kind === 'tool' || item.kind === 'check' || item.kind === 'notice' || (item.kind === 'text' && item.text.trim() !== ''));
+  const steps = turn.findLast((item): item is Of<'plan'> => item.kind === 'plan')?.steps ?? [];
+  const at = busy ? steps.findIndex(step => step.status === 'in_progress') : -1;
+  const step = at >= 0 ? `${at + 1}/${steps.length}` : undefined;
+  if (busy) {
+    const asked = turn.findLast((item): item is Approval | Of<'permission'> => (item.kind === 'approval' && item.answer === null) || (item.kind === 'permission' && item.answered === null));
+    if (asked || state.waiting > 0) {
+      return { kind: 'waiting', icon: ShieldCheck, label: strings.waiting, detail: asked && (asked.kind === 'approval' ? asked.title : asked.heading), live: false, step };
+    }
+    if (now?.kind === 'tool' && (now.status === 'running' || now.status === 'pending')) return toolLine(now, Boolean(state.connect), step);
+    if (now?.kind === 'check' && (now.status === 'running' || now.status === 'pending')) {
+      return { kind: 'check', icon: ClipboardCheck, label: strings.dfmCheckTitle, detail: strings.dfmRunning, live: true, step };
+    }
+    // Thinking, or writing its reply: working, on its plan's step if it follows one.
+    return { kind: 'working', icon: Sparkles, label: strings.working, detail: steps[at]?.text, live: true, step };
+  }
+  if (now?.kind === 'notice' && now.error) return { kind: 'error', icon: FailedGlyph, detail: plain(now.text), live: false, problem: now.problem ?? undefined };
+  if (now?.kind === 'check' && now.status === 'error') return { kind: 'error', icon: FailedGlyph, detail: strings.dfmError, live: false };
+  if (now?.kind === 'notice') return { kind: 'note', icon: NoticeGlyph, detail: plain(now.text), live: false };
+  if (items.some(item => item.kind === 'user')) {
+    // What the turn changed (the app counts it only when there is something), or its reply's first line.
+    const changed = turn.findLast((item): item is Of<'changes'> => item.kind === 'changes' && !item.undone);
+    const said = turn.findLast((item): item is Of<'text'> => item.kind === 'text' && !item.thought && item.text.trim() !== '');
+    const first = said?.text.split('\n').find(row => row.trim() !== '');
+    return { kind: 'done', icon: DoneGlyph, label: strings.dfmDone, detail: changed?.label ?? (first && plain(first)), live: false };
+  }
+  const agent = state.agents.find(entry => entry.id === state.agent);
+  return { kind: 'empty', icon: IdleGlyph, label: agent?.name ?? strings.noneFound, detail: agent ? stateBadge(state).label : undefined, live: false };
+}
+
+/**
+ * The line over the closed message box: a row of Mastra's Activity in its own looks, shimmering while
+ * the agent is at it and still at rest, in the body's size (the header's small text was hard to read).
+ * The whole row opens the conversation, with Mastra's disclosure chevron at its end.
+ */
+function PreviewLine({ line, open, strings, onExpand }: { line: Line; open: boolean; strings: Strings; onExpand: () => void }) {
+  const Icon = line.icon;
   return (
-    // In the body's size, which reads (the header's small text was hard to read), and Mastra's quiet
-    // colour, so it stays a shade of the conversation behind it.
-    <div ref={line} className="centre-preview text-body text-muted-foreground">
-      {step ? <Shimmer>{text}</Shimmer> : <span>{text}</span>}
-    </div>
+    <Activity
+      open={false}
+      onOpenChange={next => next && onExpand()}
+      // Under the open conversation the line is out of sight, and still.
+      status={line.kind === 'error' ? 'error' : line.live && !open ? 'running' : 'idle'}
+      className="w-full"
+    >
+      <ActivityTrigger title={strings.expand}>
+        <ActivityHeader>
+          <ActivityIcon className={cn(line.kind === 'waiting' && 'text-warning-foreground')}>
+            <Icon aria-hidden />
+          </ActivityIcon>
+          {line.label && <ActivityLabel className="text-body">{line.label}</ActivityLabel>}
+          {line.step && (
+            <Badge size="sm" className="shrink-0 tabular-nums">
+              {line.step}
+            </Badge>
+          )}
+          {line.detail && <ActivityDetail className="text-body">{messagePreview(line.detail)}</ActivityDetail>}
+          <ActivitySpacer />
+          <ActivityDisclosure />
+        </ActivityHeader>
+      </ActivityTrigger>
+    </Activity>
   );
 }
 
@@ -2934,18 +3031,35 @@ function Centre({
   const preview = previewOf(state);
   const agent = state.agents.find(entry => entry.id === state.agent);
   const badge = stateBadge(state);
-  const idle = agent ? `${agent.name} · ${badge.label}` : strings.noneFound;
   const waitingItem = [...state.items]
     .reverse()
     .find((item): item is Approval | Of<'permission'> => (item.kind === 'approval' && item.answer === null) || (item.kind === 'permission' && item.answered === null));
   const stopped = Boolean(state.agent) && !state.running;
   const signIn = state.state === 'auth';
+  // A sign-in under way goes on on the connections page (a code to paste, a browser to come back
+  // from): closed, or in the conversation, the way back there stays in sight.
+  const login = conn ? null : (state.connect?.login ?? null);
+  // A turn that failed on its connection, with its ways on (sign in again, the connections, send it
+  // again): closed, it is the row over the box; open, the conversation shows it at its end.
+  const failed = !open && preview.kind === 'error' && preview.problem && state.connect ? { problem: preview.problem, connect: state.connect } : null;
   const attention = state.dragging ? (
     <ComposerHeaderRow>
       <ComposerHeaderContent className="text-foreground">{strings.dropHint}</ComposerHeaderContent>
     </ComposerHeaderRow>
   ) : waitingItem ? (
     <WaitingRow item={waitingItem} strings={strings} />
+  ) : login ? (
+    <ComposerHeaderRow>
+      <Badge variant="info" emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
+        {strings.connSigningIn}
+      </Badge>
+      <ComposerHeaderContent className="truncate text-foreground">{state.connect?.plans.find(plan => plan.id === login.id)?.name ?? login.id}</ComposerHeaderContent>
+      <ComposerHeaderActions>
+        <Button type="button" size="sm" variant="primary" icon={<KeyRound aria-hidden />} onClick={connections}>
+          {strings.connTitle}
+        </Button>
+      </ComposerHeaderActions>
+    </ComposerHeaderRow>
   ) : stopped || signIn || (none && !conn) ? (
     <ComposerHeaderRow>
       <Badge variant={badge.variant} emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
@@ -2965,8 +3079,16 @@ function Centre({
         )}
       </ComposerHeaderActions>
     </ComposerHeaderRow>
+  ) : failed ? (
+    <ComposerHeaderRow tone="destructive" className="flex-nowrap items-start">
+      <FailedGlyph aria-hidden className="mt-0.5" />
+      <ComposerHeaderContent className="flex min-w-0 flex-col">
+        <span className="line-clamp-2">{preview.detail}</span>
+        <ProblemWays problem={failed.problem} connect={failed.connect} busy={false} strings={strings} onConnections={connections} />
+      </ComposerHeaderContent>
+    </ComposerHeaderRow>
   ) : null;
-  // Expand, while the conversation is closed; open, Collapse is in the bar's top right.
+  // Expand over a row that needs the user, which covers the line; open, Collapse is in the bar's top right.
   const toggle = conn ? null : (
     <Button type="button" variant="ghost" size="sm" icon={<Maximize2 />} onClick={() => roomFirst(() => setShown(true))}>
       {strings.expand}
@@ -3010,9 +3132,8 @@ function Centre({
               className="centre-fold-line absolute inset-x-0 bottom-0 flex-nowrap"
             >
               <ComposerHeaderContent className="min-w-0">
-                <PreviewLine text={preview ? preview.text : idle} step={preview ? preview.step : false} />
+                <PreviewLine line={preview} open={open} strings={strings} onExpand={() => roomFirst(() => setShown(true))} />
               </ComposerHeaderContent>
-              <ComposerHeaderActions>{toggle}</ComposerHeaderActions>
             </ComposerHeaderRow>
           )}
         </div>

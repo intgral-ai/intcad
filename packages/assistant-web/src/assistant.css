@@ -136,13 +136,6 @@ html.centre [data-centre-body][inert] [data-slot='message-scroller-item'] {
     transition: none;
   }
 }
-/* The line over the message box there: one line tall; the text wraps and a full line scrolls up. */
-.centre-preview {
-  height: 1lh;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  scroll-behavior: smooth;
-}
 /* While the view grows to the height the page asked for there, what it would cut off at the top
    waits unseen (Centre's `fit` in App.tsx). Not `visibility`: a popup must still take the focus. */
 html.centre [data-centre-wait] {

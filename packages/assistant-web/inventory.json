@@ -113,6 +113,7 @@
       "packages/playground-ui/src/ds/components/Tooltip/tooltip.tsx",
       "packages/playground-ui/src/ds/components/Txt/Txt.tsx",
       "packages/playground-ui/src/ds/components/ai/activity/activity.tsx",
+      "packages/playground-ui/src/ds/components/ai/activity/presets/message-preview.ts",
       "packages/playground-ui/src/ds/components/ai/activity/use-relative-paths.ts",
       "packages/playground-ui/src/ds/components/ai/task-list/task-graph-node.ts",
       "packages/playground-ui/src/ds/components/ai/task-list/task-graph.tsx",
@@ -820,7 +821,7 @@
       "name": "lucide-react",
       "version": "1.67.0",
       "licence": "ISC",
-      "modulesInScript": 53,
+      "modulesInScript": 54,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -1495,16 +1496,16 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1759337,
-      "sha256": "56df8455673245dad0e7e4cd97325787a3e35048638e93f4f72a6b40c867eb67"
+      "bytes": 1762889,
+      "sha256": "73096882eaa2ab51253b4d262d55aa93c9acc228799cfa7a012882e5c4766fd8"
     },
     "index.html": {
       "bytes": 822,
       "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
     },
     "style.css": {
-      "bytes": 353472,
-      "sha256": "939bab1913343f9f892ea95edf39440e07501d9b23ea7dd3ffd9b5875dd7ce15"
+      "bytes": 353383,
+      "sha256": "eedb5c243d79c91b99348cdd823dc1a926ccc9a01aee72ccfe8c51f1fee003d9"
     }
   }
 }
