@@ -1653,9 +1653,10 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
     if app.agent_chat.state.is_some() || !app.preferences.agent_connect_at_start {
         return;
     }
-    // The agent a user started stays the one this launch starts; the built-in agent was never
-    // one, so a value an older version saved is kept for that version and is not looked for here.
-    let last = if builtin { String::new() } else { app.preferences.agent_last.clone() };
+    // The agent a user started stays the one this launch starts, beside the built-in one too:
+    // `agent_last` is never the built-in agent's (it does not set it), so a value there names an
+    // agent the user chose, and it starts if it is found.
+    let last = app.preferences.agent_last.clone();
     if !last.is_empty() {
         if !agents::entries(app).iter().any(|e| e.id == last) {
             app.agent_chat.notice(trf("ui.agent_chat_last_missing", &[("agent", &last)]), true);
@@ -2610,7 +2611,8 @@ fn on_permission(app: &mut SolveApp, key: u64, title: String, kind: Option<&str>
     let agent = app.agent_chat.running_id.clone();
     let mode = agents::mode_for(&app.preferences, &agent);
     let remembered = agents::always_allowed(&app.preferences, &agent, &title);
-    let why = if acp::is_bridge_tool(&title, kind) {
+    let built_in = agents::builtin_current(app);
+    let why = if acp::bridge_tool(&title, kind, built_in) {
         Some("ui.ai_auto_ours")
     } else if remembered {
         Some("ui.ai_auto_remembered")
@@ -3081,7 +3083,9 @@ pub(super) fn look_on_open(app: &mut SolveApp, ctx: &egui::Context) {
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn start_builtin_when_shown(app: &mut SolveApp, ctx: &egui::Context) {
     // `None`: nothing was ever started in this conversation. Stopped, failed and ended are states.
-    if agents::is_builtin(app) && app.agent_chat.state.is_none() && !app.preferences.agent_chat_minimized {
+    // Only the conversation whose agent is the package's starts this way: an agent the user
+    // picked beside it is not started by opening the panel.
+    if agents::builtin_current(app) && app.agent_chat.state.is_none() && !app.preferences.agent_chat_minimized {
         connect(app, ctx);
     }
 }
