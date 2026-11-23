@@ -25,7 +25,7 @@ an installed 0.1.2, and the 0.1.2 client's own update check is what has to work 
 | Login, accounts, capability authorization (INT-1497) | Huaiyuan | PR #213, draft, head `22f427c8c0de3aec42299edc8c70056d8c86a870` | CI green on the promotion SHA, then the Gate B checks |
 | Modelling skills in the built-in agent (#198, INT-1473 prerequisite) | Tianwei | PR #204, open, head `b2cb0ef0e0317c9273f771ade89e1c8892331778` | Review comments closed, Text-to-CAD as a second set, installed-app evidence |
 | Agentic behaviour over the right rail (INT-1473) | Tianwei | PR #212, open, head `31eae3957c35f78381ef9b1a4cab70b09b6465f9`, based on #204's branch | #204 merged first, then rebase onto `develop` |
-| UI changes | PP | **No PR exists.** No open PR is authored by `pp`; the newest UI PRs are #189, #185, #154 | PR opened, reviewed, visual regression run |
+| UI changes | PP | **No PR exists.** No open PR is authored by `pp`; the only `paipeline` PR that is not a sync is #189, the verification harness (`.agents/skills/verify-intcad/**`), not a UI change | PR opened, reviewed, visual regression run |
 | Release engineering, packages, RC, acceptance | this role | This branch `release/int1503-readiness-20261123` from `develop` | — |
 | Version scope, promotion, publishing | CTO | — | Explicit approval before any tag or GitHub Release |
 
@@ -104,7 +104,9 @@ new chat) are user-visible and belong in the release notes if #212 ships.
 
 **#214** is the release-engineering PR that makes packages carry the built-in agent. It is not mine
 to merge, and it overlaps the packaging files I would otherwise edit, so this branch deliberately
-does not touch `release.yml`, `release-gate.yml` or the packaging scripts.
+does not touch `release.yml`, `release-gate.yml` or the packaging scripts. Its last package run
+(45112837415) built `77914e22`, a merge/test SHA rather than the PR head: Linux x86_64/aarch64,
+macOS universal, Windows x64/x86/arm64 and Arch all passed there, FreeBSD failed.
 
 ## 6. Blockers
 
@@ -138,8 +140,13 @@ file another workstream is editing, and can be verified without a release:
   of E1 for future releases; the client change needed to read the old name is left to the update
   owner because `install.rs` is product code.
 
-Verification: `python3 -B -m unittest packaging/tests/checksums_test.py` → 6 tests, OK;
-`actionlint .github/workflows/packaging-lint.yml` → exit 0.
+Verification on this machine: `python3 -B -m unittest packaging/tests/checksums_test.py` → 6
+tests, OK (`nightly_test.py` fails only without `jq` on `PATH`, and passes with it; the other
+suites below are unchanged). Re-ran, unchanged and passing: `nightly_test.py` (12), `apprun_test.py`,
+`flatpak_test.py`, `web_channels_test.py`, `mastra_runtime_test.py`, `mastra_agent_test.py`,
+`scripts/ci/test_gate.py`. `windows_icon_test.py` and the workflow's PowerShell parse need
+PowerShell, which this machine does not have: they run in `packaging-lint.yml` and are NOT TESTED
+here. `actionlint .github/workflows/packaging-lint.yml` → exit 0.
 
 ## 8. Integration order once the workstreams land
 
