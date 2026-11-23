@@ -24,6 +24,10 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/arch-agent.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/pkg" "$WORK/src"
 
+# The archive's own header ownership, before extraction loses it; the package's `.MTREE` names a
+# different owner for its file list, and both are kept as they were.
+zstd -dc "$PKG" > "$WORK/pkg.tar"
+archive_owner="$(python3 -c 'import sys, tarfile; m = tarfile.open(sys.argv[1]).getmembers()[0]; print(m.uid, m.gid)' "$WORK/pkg.tar" 2>/dev/null || true)"
 bsdtar -xf "$PKG" -C "$WORK/pkg"
 if [ -d "$WORK/pkg/usr/lib/intcad/mastra-agent" ]; then
   echo "the agent is already in $PKG"
@@ -62,8 +66,14 @@ cp -a "$SOURCE" "$WORK/pkg/usr/lib/intcad/mastra-agent"
       --options='!all,use-set,type,uid,gid,mode,time,size,md5,sha256,link' --null -T -
   # The package's top-level names as makepkg writes them (`usr/...`, not `./usr/...`), and every
   # top-level entry the package carried (`.PKGINFO`, `.BUILDINFO`, `.MTREE`, `.INSTALL`).
+  # The archive keeps the ownership its headers had; the `.MTREE` keeps its own set line.
+  header_owner=()
+  if [ -n "${archive_owner:-}" ]; then
+    read -r a_uid a_gid <<<"$archive_owner"
+    header_owner=(--uid "$a_uid" --gid "$a_gid")
+  fi
   find . -mindepth 1 -maxdepth 1 -printf '%P\0' | sort -z |
-    bsdtar -cf - --null "${owner[@]}" -T - | zstd -c -T0 --ultra -20 - > "$WORK/package.pkg.tar.zst"
+    bsdtar -cf - --null "${header_owner[@]}" -T - | zstd -c -T0 --ultra -20 - > "$WORK/package.pkg.tar.zst"
 )
 
 mv "$WORK/package.pkg.tar.zst" "$PKG"

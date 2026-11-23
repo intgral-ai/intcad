@@ -290,8 +290,11 @@ jobs:
               inspected = {item.get('name') for item in data.get('checked') or []}
               for name in sorted(inspected - set(verdicts)):
                   carries.append(str(name) + ': inspected without an agent verdict')
-              app_artifacts = [name for name in verdicts
-                               if not release.carries_no_agent(name)
+              # Only verdicts for artifacts this job inspected count: a source tarball recorded
+              # beside a repack cannot vouch for the repack's own bytes.
+              app_artifacts = [name for name in inspected
+                               if name in verdicts
+                               and not release.carries_no_agent(name)
                                and not (verdicts[name] or {}).get('coveredBy')]
               for name in sorted(app_artifacts):
                   problem = release.agent_problem(verdicts[name])
@@ -299,6 +302,14 @@ jobs:
                       carries.append(name + ': ' + problem)
               if not any((verdicts[name] or {}).get('present') for name in app_artifacts):
                   carries.append('no artifact of the package carries the agent')
+              # A universal app carries one whole agent per CPU.
+              if str(data.get('packageId', '')).startswith('release-macos'):
+                  for name in sorted(app_artifacts):
+                      got = set((verdicts[name] or {}).get('nodeTargets') or [])
+                      absent = [slice_ for slice_ in ('aarch64-apple-darwin', 'x86_64-apple-darwin')
+                                if slice_ not in got]
+                      if absent:
+                          carries.append(name + ': no Node for ' + ', '.join(absent))
               if data.get('markers') or data.get('agentMarkers'):
                   carries.append('a runtime marker or a Node outside the agent')
               if data.get('unchecked'):

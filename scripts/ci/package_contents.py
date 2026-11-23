@@ -262,21 +262,45 @@ def _agent_index(parts, roots):
 
 
 APP_WRAPPER = re.compile(r"^intcad-\d")
-WINDOWS_INSTALL_ROOTS = frozenset(("pfiles64", "pfiles", "program files", "program files (x86)"))
 
 
 def index_is_app_wrapped(parts, index):
-    """Whether the components before `index` are the product's own: an FHS `usr`, a versioned
-    wrapper folder (`intcad-<version>-...`), the app bundle (`Intcad.app`), or the MSI's install
-    root. `extras/`, `intcad-extras/` and the like are not."""
-    for part in parts[:index]:
-        low = part.lower()
-        if low in ("usr", "intcad") or low in WINDOWS_INSTALL_ROOTS or low == "intcad.app":
-            continue
-        if APP_WRAPPER.match(low):
-            continue
-        return False
-    return True
+    """Whether the components before `index` are the product's own: none, an FHS `usr`, the
+    package's wrapper folder (`intcad-<version>-...`), the app bundle (`Intcad.app`), the MSI's
+    install folder (`Intcad`), or an install root and that folder (`PFiles64/Intcad`). `extras/`,
+    `intcad-extras/` and the like are not: the app looks at its own root."""
+    leading = [part.lower() for part in parts[:index]]
+    if not leading:
+        return True
+    if len(leading) == 1:
+        part = leading[0]
+        return (part in ("usr", "intcad", "intcad.app")
+                or APP_WRAPPER.match(part) is not None)
+    if len(leading) == 2:
+        return leading[0] in ("pfiles64", "pfiles") and leading[1] == "intcad"
+    return False
+
+
+def _agent_index(parts, roots):
+    """The index of `mastra-agent` in `parts` when it sits at one of `roots` (at most
+    ``MAX_LEADING_PARTS`` components before it), else ``None``."""
+    if roots is None:
+        return parts.index(AGENT_DIR) if AGENT_DIR in parts else None
+    places, leading = roots
+    # A wrapper folder in front of the root is the package's own (`intcad-<version>-...`, the
+    # app bundle, or the MSI's install root, which names Intcad); an `extras/` folder is not.
+    wrapped_by_app = index_is_app_wrapped
+    for root in places:
+        size = len(root)
+        for index in range(len(parts) - size + 1):
+            if index > leading:
+                break
+            if list(parts[index:index + size]) == list(root) and wrapped_by_app(parts, index):
+                return index + size - 1
+    return None
+
+
+APP_WRAPPER = re.compile(r"^intcad-\d")
 
 
 def agent_node(name, target=None, roots=None):
@@ -321,6 +345,9 @@ def agent_report(names, target=None, roots=None):
         for index, part in enumerate(entry):
             if part != AGENT_DIR or _agent_index(entry, roots) != index:
                 continue
+            # A folder's own place is part of its identity: two copies at different roots may
+            # not split the required files between them.
+            place = "/".join(entry[:index])
             rest = entry[index + 1:]
             slice_ = ""
             if rest and TARGET_SLICE.match(rest[0]):
@@ -329,22 +356,23 @@ def agent_report(names, target=None, roots=None):
             if not rest:
                 # The agent folder itself; not a payload file.
                 continue
-            found.setdefault(slice_, set()).add("/".join([AGENT_DIR] + rest))
+            key = (place, slice_)
+            found.setdefault(key, set()).add("/".join([AGENT_DIR] + rest))
             # The agent's own `mastra-agent/skills/<set>/<skill>/SKILL.md`: exactly that shape, so
             # a package's own skill file (a dependency's `node_modules/.../skills/x/y/SKILL.md`)
             # is not counted as one of the agent's.
             if len(rest) == 4 and rest[0] == "skills" and entry[-1] == "SKILL.md":
-                skills.setdefault(slice_, set()).add("/".join(rest[1:3]))
+                skills.setdefault(key, set()).add("/".join(rest[1:3]))
     # A universal app carries one whole agent per CPU: each folder is checked on its own, so the
     # Intel folder cannot consist of a Node and borrow the ARM folder's entry, deps and skills.
     missing = []
-    for slice_ in sorted(found):
-        have = found[slice_]
-        prefix = "" if not slice_ else slice_ + "/"
+    for key in sorted(found):
+        have = found[key]
+        prefix = "" if not key[1] else key[1] + "/"
         missing.extend(prefix + required for required in AGENT_REQUIRED if required not in have)
         # INT-1473's work starts from the modelling skills; a slice that holds only some other
         # set cannot do it, even when the other slice holds the modelling ones.
-        if not any(name.startswith("modelling-skills/") for name in skills.get(slice_, ())):
+        if not any(name.startswith("modelling-skills/") for name in skills.get(key, ())):
             missing.append(prefix + AGENT_DIR + "/skills/modelling-skills/<skill>/SKILL.md")
     return {"present": present, "node": node, "nodeTargets": node_targets,
             "missing": missing, "skills": sorted({name for names in skills.values() for name in names})}
@@ -417,7 +445,7 @@ def names_deb(path):
         raise OSError("dpkg-deb is unavailable")
     names = []
     for line in _lines(_run([tool, "-c", str(path)])):
-        fields = line.split()
+        fields = line.split(" -> ")[0].split()
         if len(fields) >= 6:
             name = fields[-1].lstrip("./")
             names.append(name + ("/" if line.startswith("d") and not name.endswith("/") else ""))
@@ -430,7 +458,7 @@ def names_rpm(path):
         raise OSError("rpm is unavailable")
     names = []
     for line in _lines(_run([tool, "-qlvp", str(path)])):
-        fields = line.split()
+        fields = line.split(" -> ")[0].split()
         if len(fields) >= 2:
             name = fields[-1].lstrip("./")
             names.append(name + ("/" if fields[0].startswith("d") and not name.endswith("/") else ""))
@@ -445,7 +473,7 @@ def names_snap(path):
     for line in _lines(_run([tool, "-ll", str(path)])):
         if "squashfs-root/" not in line:
             continue
-        token = line.split("squashfs-root/", 1)[-1]
+        token = line.split(" -> ")[0].split("squashfs-root/", 1)[-1]
         is_dir = line.lstrip().startswith("d")
         names.append(token + ("/" if is_dir and not token.endswith("/") else ""))
     return names
@@ -522,25 +550,31 @@ def names_flatpak(path):
 
 
 def names_msi(path):
-    seven = shutil.which("7z") or shutil.which("7za")
-    if seven:
-        names = []
-        current = None
-        for line in _lines(_run([seven, "l", "-slt", str(path)])):
-            if line.startswith("Path = "):
-                current = line[len("Path = "):].strip()
-            elif line.startswith("Folder = ") and current:
-                folder = line[len("Folder = "):].strip() == "+"
-                names.append(current + ("/" if folder and not current.endswith("/") else ""))
-                current = None
-        if names:
-            return names
+    # `msiexec /a` extracts the installed tree, which is what the gate must judge. 7-Zip's view of
+    # an MSI can be the compound document's own streams rather than the files it installs, so it
+    # is only the fallback on a machine without msiexec (the Linux runners).
     tool = shutil.which("msiexec") or shutil.which("msiexec.exe")
-    if not tool:
-        raise OSError("neither 7z nor msiexec is available")
-    with tempfile.TemporaryDirectory(prefix="contents-msi-") as directory:
-        _run([tool, "/a", str(path), "/qn", "TARGETDIR=" + directory])
-        return _walk(directory)
+    if tool:
+        with tempfile.TemporaryDirectory(prefix="contents-msi-") as directory:
+            _run([tool, "/a", str(path), "/qn", "TARGETDIR=" + directory])
+            names = _walk(directory)
+            if names:
+                return names
+    seven = shutil.which("7z") or shutil.which("7za")
+    if not seven:
+        raise OSError("neither msiexec nor 7z is available")
+    names = []
+    current = None
+    for line in _lines(_run([seven, "l", "-slt", str(path)])):
+        if line.startswith("Path = "):
+            current = line[len("Path = "):].strip()
+        elif line.startswith("Folder = ") and current:
+            folder = line[len("Folder = "):].strip() == "+"
+            names.append(current + ("/" if folder and not current.endswith("/") else ""))
+            current = None
+    if not names:
+        raise OSError("7z listed no files in the MSI")
+    return names
 
 
 def inspect(path):

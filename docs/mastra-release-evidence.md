@@ -66,8 +66,8 @@ Four separate things held it back, and all four had to change together:
 - `packaging/linux/arch-agent.sh`: the `arch-package` action's PKGBUILD copies only `bin/` and
   `share/` from the tarball, so `lib/intcad/mastra-agent` never reached the `.pkg.tar.zst`. The
   release job adds that folder from the same tarball, keeps the package's top-level names
-  (`usr/...`) and its recorded uid/gid, recomputes `.PKGINFO`'s installed size (each inode once),
-  regenerates `.MTREE` and repacks it. The old `contents.json` only looked correct because the
+  (`usr/...`), the ownership its archive headers had and the uid/gid its `.MTREE` set line names,
+  recomputes `.PKGINFO`'s installed size (each inode once), regenerates `.MTREE` and repacks it. The old `contents.json` only looked correct because the
   recorder read the source tarball rather than the package.
 - Permission handling: a tool's ACP title decides only whether Intcad asks a second time. The
   session gives the agent Intcad's own `intcad-app` MCP server, and every call that would change
@@ -145,7 +145,7 @@ Run [45112837415](https://github.com/intgral-ai/intcad/actions/runs/45112837415)
 | macOS universal (arm64 + x86_64) | pass — `contents.json`: `agent.nodeTargets` both slices, four skills, no marker |
 | Windows x64 MSI + zip | pass — `contents.json`: whole agent, four skills (run 45105758418) |
 | Windows x86, arm64 | pass — `native`, no agent |
-| Flatpak x86_64, Snap x86_64 | pass — their own bytes carry the agent, and their source digest matches |
+| Flatpak x86_64, Snap x86_64 | recorded as `mastra-agent` from the **source tarball** only (the old recorder read the source); their own bytes are proved from the run at this head |
 | Arch x86_64 | recorded as `mastra-agent` from the **source tarball** only: the Arch action dropped `lib/`, so the package itself had none. Fixed in this branch by `packaging/linux/arch-agent.sh` |
 | Flatpak/Arch/Snap aarch64 | pass — `native` |
 | Web (wasm) | pass — `native` |
