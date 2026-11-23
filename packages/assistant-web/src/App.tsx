@@ -1157,6 +1157,10 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
   const picked = state.picked.groups.length > 0 || state.picked.omitted !== null;
   const selected = state.selection.groups.length > 0 || state.selection.omitted !== null;
   const chips = state.attachments.length + state.loading.length > 0 || picked || selected || (state.attachView && state.images);
+  // At the bottom centre the box is 520 wide and as tall as it was at rest whatever happens: its
+  // controls stay on one row (the model's name is cut short instead) and its placeholder on one line.
+  const centre = centred(state);
+  const hint = busy ? strings.placeholderBusy : strings.placeholder;
 
   function submit(now = false) {
     if (!canSend) return;
@@ -1260,8 +1264,9 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
           )}
           <ComposerInput
             ref={input}
+            className={centre ? 'placeholder:truncate' : undefined}
             aria-label={strings.messageBox}
-            placeholder={busy ? strings.placeholderBusy : strings.placeholder}
+            placeholder={centre ? oneLine(input.current, hint) : hint}
             value={text}
             onChange={event => setText(event.target.value)}
             onKeyDown={onKeyDown}
@@ -1274,7 +1279,7 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
               }
             }}
           />
-          <ComposerActions>
+          <ComposerActions className={centre ? 'flex-nowrap' : undefined}>
             <ComposerActionsStart className="gap-1">
               <DropdownMenu>
                 <DropdownMenu.Trigger variant="ghost" size="icon-sm" aria-label={strings.add} tooltip={strings.add}>
@@ -2487,6 +2492,21 @@ const realMatchMedia = window.matchMedia.bind(window);
 window.matchMedia = (query: string) => (centreNow && /max-width:\s*639px/.test(query) ? realMatchMedia('(max-width: 0px)') : realMatchMedia(query));
 
 const plain = (text: string) => text.replace(/\*+|__|`/g, '').replace(/\s*\n+\s*/g, ' ').trim();
+
+let measure: CanvasRenderingContext2D | null = null;
+
+/** A placeholder that fits on one line of the message box, cut short with an ellipsis: a textarea's placeholder takes no `text-overflow`. */
+function oneLine(box: HTMLTextAreaElement | null, text: string) {
+  measure ??= document.createElement('canvas').getContext('2d');
+  if (!box || !measure) return text;
+  const style = getComputedStyle(box);
+  const room = box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  measure.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  if (!(room > 0) || measure.measureText(text).width <= room) return text;
+  let end = text.length;
+  while (end > 0 && measure.measureText(`${text.slice(0, end)}…`).width > room) end -= 1;
+  return `${text.slice(0, end).trimEnd()}…`;
+}
 
 /** The line over the message box: the step the agent is on, what it is saying, or the last thing it said. */
 function previewOf(state: AssistantState): { text: string; step: boolean } | null {
