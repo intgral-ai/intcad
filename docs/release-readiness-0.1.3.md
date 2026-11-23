@@ -61,6 +61,23 @@ lose. The parts that can go missing are Mastra, the skills and the checksum list
 | Icons, version, AppStream | `assets/platforms/**`, `[workspace.package] version` | `icons` and `version` jobs; `build.json` per package | in the package and its metadata | the OS / `build.json` | `packaging-lint.yml` XML/desktop/AppStream checks; `scripts/ci/test_gate.py` |
 | Update check | `crates/ui-egui/src/update/**` | compiled in | inside the executable | GitHub Releases API | unit and scenario tests; **cannot work against `v0.1.2` as published** (§6, E1) |
 
+**The four skills, as the package would carry them** (checked on `develop`, and again in #204's
+tree):
+
+| Skill | Source | Front matter `name` | Installed to (with #204) |
+|---|---|---|---|
+| `solidcraft-modeling` | `skills/solidcraft-modeling/SKILL.md` | `solidcraft-modeling` (matches the folder, as Mastra requires) | `<MASTRA_APP_DATA_DIR>/home/.agents/skills/solidcraft-modeling` |
+| `solidcraft-editing` | `skills/solidcraft-editing/SKILL.md` | `solidcraft-editing` | same root, `solidcraft-editing` |
+| `solidcraft-checking` | `skills/solidcraft-checking/SKILL.md` | `solidcraft-checking` | same root, `solidcraft-checking` |
+| `solidcraft-mechanisms` | `skills/solidcraft-mechanisms/SKILL.md` | `solidcraft-mechanisms` | same root, `solidcraft-mechanisms` |
+
+Runtime requirements: the agent needs Node 22.19 or later (`packages/mastra-runtime/agent/README.md:27`;
+the packaged workspace pins `>=22.23.4 <23`), is started from `agent/main.mjs` beside the app, and
+installs the set only when `MASTRA_APP_DATA_DIR` is set — run by hand without it, nothing is
+installed. `packages/mastra-runtime/agent/skills.mjs`, the registry and the installer exist only in
+#204: `develop` has no code that puts a skill anywhere, so Gate C has nothing to test until #204
+and #214 are in the candidate.
+
 Three answers therefore matter for this release: Mastra and the agent must actually be in the
 package (#214), the four skills must be installed and called from an installed build (#204, #212),
 and the checksum asset must carry the name the client fetches (§6).
