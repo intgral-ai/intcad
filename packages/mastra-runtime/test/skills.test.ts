@@ -193,7 +193,7 @@ test("a note or a stamp that names a path outside the folder moves nothing outsi
   assert.ok(existsSync(join(root, "data", "home", "outside", "keep.txt")));
 });
 
-test("with no package and no repository nothing is installed; a home that cannot hold the folder does not stop the agent", () => {
+test("with no package and no repository nothing is installed; a home that cannot hold the folder, or a package's skills that is a file, does not stop the agent", () => {
   const empty = mkdtempSync(join(work, "empty-"));
   assert.deepEqual(setsToInstall(empty, null), []);
   assert.deepEqual(setsToInstall(empty, empty), []);
@@ -208,6 +208,12 @@ test("with no package and no repository nothing is installed; a home that cannot
   const done = installSkillSets({ sets: setsToInstall(agent, null), home: blocked, log: (line: string) => void lines.push(line) });
   assert.equal(done.failed.length, 1);
   assert.match(lines.join("\n"), /could not make/u);
+  // A package whose `skills` is a file, not a folder: logged, and the agent starts with no set.
+  const broken = mkdtempSync(join(work, "broken-"));
+  writeFileSync(join(broken, "skills"), "a file where the folder would be\n");
+  lines.length = 0;
+  assert.deepEqual(setsToInstall(broken, repoRoot, (line: string) => void lines.push(line)), []);
+  assert.match(lines.join("\n"), /skills folder cannot be read/u);
 });
 
 test("run out of the repository, the agent installs the repository's folders", () => {
