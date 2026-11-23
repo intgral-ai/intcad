@@ -134,7 +134,41 @@ The installed checks inside those jobs printed, for each platform: the built-in 
 first and current, started out of the package with its connections, stopped with none, started
 again, and no agent process left behind.
 
-## Real-function acceptance: not yet run
+## Real-function acceptance: the Linux run
+
+Run on this machine, 2026-11-23, with the agent folder from
+`intcad-0.1.2-linux-x86_64.tar.gz` and the app built from this branch. The machine is NixOS, which
+cannot execute the package's generic-Linux Node, so that one file was replaced with Node 22.23.5
+built for this host; every other file is the package's. The DeepSeek key the machine already keeps
+in its keyring was used for the provider; it was not copied into the repository, and the keyring
+entry and the agent data folder the run created were removed afterwards.
+
+| Step | Result |
+|---|---|
+| Real model, one message | the built-in agent answered through `deepseek/deepseek-flash` |
+| Read-only CAD tool | `intcad-app_inspect_design` ran with **no permission question**; it reported the sample plate's one body, its revision and its volume; `document.revision` unchanged |
+| Approved edit, mode "ask" | the approval `solid.box` was asked and allowed; the model created `solid.box` as `E2EBox` and confirmed it by inspection; `document.revision` 1 → 2 |
+| Rejected edit, mode "ask" | a second `solid.box` was asked and **declined**; the model reported "the request was declined, so nothing changed"; `document.revision` stayed 2 |
+| Modelling skill | the model activated `solidcraft-modeling` (the `skill` tool and `intcad-app_skill_reference`), built a washer OD 30 / ID 10 / 3 mm, and its own check matched π/4·(30²−10²)·3 = 1,884.956 mm³; `document.revision` 1 → 2 |
+
+Two defects were found by this run and fixed in the same branch:
+
+1. `acp::is_bridge_tool` only knew the ACP spelling `mcp__intcad-app__<tool>`. A real session
+   names the tool `intcad-app_<tool>`, so a **read-only** bridge tool asked the user for
+   permission, and the double question the host is meant to remove came back. Both spellings count
+   now, with the same one-word rule; the host gate still decides what a call may change.
+2. The control channel's item list did not carry an approval's id or a permission's index, so a
+   program could see a request but not answer it. Both are there now, and `docs/control-protocol.md`
+   says so.
+
+## What the real run did not cover
+
+- A second ACP agent (OpenCode is detected and listed beside the built-in agent; it was not run).
+- Spec and DFM panels after the runtime switch; upgrade and reinstall over an older version.
+- Real Windows and macOS machines: their packages were installed on CI runners only.
+- INT-1473's project context: that is #212 (below).
+
+## Earlier note (kept for the record): before the real run
 
 The objective's C block (a real model conversation, a real read-only CAD tool through the agent, an
 approved edit and a rejected edit with the document unchanged, Text-to-CAD executed end to end) is

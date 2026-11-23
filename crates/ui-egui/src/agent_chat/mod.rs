@@ -3541,7 +3541,8 @@ pub fn status(app: &SolveApp) -> Value {
     let items: Vec<Value> = c
         .items
         .iter()
-        .map(|i| match i {
+        .enumerate()
+        .map(|(index, i)| match i {
             Item::User { text, image, pictures, context, files } => json!({"user": text, "image": image, "pictures": pictures.len(), "files": files, "context": context.items.iter().map(|i| json!({"label": i.label, "detail": i.detail})).collect::<Vec<_>>(), "context_omitted": context.omitted}),
             Item::Agent { thought, text } => json!({"agent": text, "thought": thought}),
             Item::AgentRefs { text, refs } => json!({"agent": text, "objectRefs": refs.iter().map(|r| json!({"label": r.label, "kind": format!("{:?}", r.kind), "revision": r.revision})).collect::<Vec<_>>()}),
@@ -3553,9 +3554,9 @@ pub fn status(app: &SolveApp) -> Value {
                 json!({"skill": title, "version": version, "documentId": document_id, "revision": revision, "model": model, "selection": selection, "support": format!("{support:?}"), "terminal": terminal})
             }
             Item::Permission { title, options, answer, .. } => {
-                json!({"permission": title, "options": options.iter().map(|o| json!({"id": o.id, "name": o.name, "kind": o.kind})).collect::<Vec<_>>(), "answer": answer})
+                json!({"permission": title, "index": index, "options": options.iter().map(|o| json!({"id": o.id, "name": o.name, "kind": o.kind})).collect::<Vec<_>>(), "answer": answer})
             }
-            Item::Approval { title, answer, .. } => json!({"approval": title, "answer": answer}),
+            Item::Approval { id, title, answer, .. } => json!({"approval": title, "id": id, "answer": answer}),
             Item::Changes { steps, undone, .. } => json!({"changes": steps, "undone": undone}),
             Item::Notice { text, error } => json!({"notice": text, "error": error}),
             Item::Problem { kind, name, .. } => json!({"notice": kind.words(name), "error": true}),
