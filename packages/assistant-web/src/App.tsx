@@ -2429,6 +2429,11 @@ export function App({ state }: { state: AssistantState | null }) {
   }));
   // At the bottom centre the same body (bar, conversation, dock) opens above the centre's own message box.
   const centre = centred(state);
+  // Back to the message box there: the bar's Collapse and the strip at the top of the opened body.
+  const collapse = () => {
+    setCentreOpen(false);
+    setConnOpen(false);
+  };
   const shell = (
       <ChatShell
         className="h-full"
@@ -2440,10 +2445,7 @@ export function App({ state }: { state: AssistantState | null }) {
           state={state}
           onSetup={setSetup}
           onConnections={openConn}
-          onCollapse={() => {
-            setCentreOpen(false);
-            setConnOpen(false);
-          }}
+          onCollapse={collapse}
           // With nothing connected the page is the panel, and there is no conversation to go back to.
           onBack={connect && showConn && connect.connected ? () => setConnOpen(false) : undefined}
         />
@@ -2543,6 +2545,7 @@ export function App({ state }: { state: AssistantState | null }) {
         none={none}
         shown={centreOpen}
         setShown={setCentreOpen}
+        collapse={collapse}
       />
     );
   return (
@@ -2822,6 +2825,7 @@ function Centre({
   none,
   shown,
   setShown,
+  collapse,
 }: {
   state: AssistantState;
   openConn: () => void;
@@ -2830,6 +2834,7 @@ function Centre({
   none: boolean;
   shown: boolean;
   setShown: (shown: boolean) => void;
+  collapse: () => void;
 }) {
   const { strings } = state;
   // The body's height: the host's most, less everything else the page shows.
@@ -3092,7 +3097,8 @@ function Centre({
       </ComposerHeaderContent>
     </ComposerHeaderRow>
   ) : null;
-  // Expand over a row that needs the user, which covers the line; open, Collapse is in the bar's top right.
+  // Expand over a row that needs the user, which covers the line; open, Collapse is in the bar's top
+  // right, and the whole top edge of the body (the strip, over the header's top padding) collapses it too.
   const toggle = conn ? null : (
     <Button type="button" variant="ghost" size="sm" icon={<Maximize2 />} onClick={() => roomFirst(() => setShown(true))}>
       {strings.expand}
@@ -3116,6 +3122,23 @@ function Centre({
   const header = (
     <>
       <ComposerHeader open placement={open ? 'stacked' : 'overlay'} inert={!open && Boolean(attention)} style={open ? { transition: 'none' } : undefined}>
+        {/* Opening is the whole line; closing is as easy: the full width of the body's top edge, with
+            Mastra's drawer handle. It lies over the header's top padding and takes no height. */}
+        <button
+          type="button"
+          data-centre-strip
+          data-open={open || undefined}
+          inert={!open}
+          aria-hidden={open ? undefined : true}
+          aria-label={strings.collapse}
+          onClick={collapse}
+          className="centre-strip group absolute inset-x-0 top-0 z-10 flex h-5 cursor-pointer items-center justify-center rounded-t-[23px] outline-none hover:bg-fill-subtle"
+        >
+          <span
+            aria-hidden
+            className="h-1 w-12 rounded-full bg-border-strong transition-colors duration-fast ease-out-custom group-hover:bg-muted-foreground/60 group-focus-visible:bg-muted-foreground/60 group-focus-visible:ring-1 group-focus-visible:ring-border-focus motion-reduce:transition-none"
+          />
+        </button>
         <div data-centre-fold className="centre-fold relative" style={{ height: open ? room : lineHeight }}>
           <div
             data-centre-body
