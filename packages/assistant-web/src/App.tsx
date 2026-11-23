@@ -1385,17 +1385,22 @@ function notReadyOf(state: AssistantState) {
 /** What is known of an agent, at the end of its row in the menu. */
 const ROW_HINT = 'ml-auto inline-block pl-4 whitespace-nowrap text-muted-foreground first-letter:uppercase';
 
-/** The panel's own bar: the agent and what it runs with, its state, and the panel's controls. */
+/**
+ * The panel's own bar: the agent and what it runs with, its state, and the panel's controls. With
+ * `onBack`, the connections page is open in place of the conversation, and its way back is here.
+ */
 function AssistantBar({
   state,
   onSetup,
   onConnections,
   onCollapse,
+  onBack,
 }: {
   state: AssistantState;
   onSetup: (id: string) => void;
   onConnections: () => void;
   onCollapse?: () => void;
+  onBack?: () => void;
 }) {
   const { strings } = state;
   const agent = state.agents.find(entry => entry.id === state.agent);
@@ -1504,6 +1509,11 @@ function AssistantBar({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
+          {onBack && (
+            <Button type="button" size="sm" variant="primary" className="shrink-0" onClick={onBack}>
+              {strings.connBack}
+            </Button>
+          )}
           {state.agent && !state.running && (
             <Button type="button" size="sm" variant="ghost" onClick={() => post({ type: 'connect' })}>
               {state.state === 'failed' ? strings.retry : strings.connect}
@@ -2014,7 +2024,7 @@ function SignInProblem({ problem, busy, strings }: { problem: NonNullable<Connec
  * it stands and what can be done. A new user lands here, and the button in the bar comes back to
  * it at any time.
  */
-function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; connect: Connect; onClose: () => void }) {
+function ConnectionsPage({ state, connect }: { state: AssistantState; connect: Connect }) {
   const { strings } = state;
   const [keyFor, setKeyFor] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -2047,14 +2057,8 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
   const askKey = (id: string) => setKeyFor(id);
   return (
     <div className="flex min-w-0 flex-col gap-3 py-2">
-      <div className="flex min-w-0 items-center justify-between gap-2">
-        <h2 className="min-w-0 truncate text-sm font-medium">{strings.connTitle}</h2>
-        {connect.connected && (
-          <Button type="button" size="sm" variant="primary" className="shrink-0" onClick={onClose}>
-            {strings.connBack}
-          </Button>
-        )}
-      </div>
+      {/* The way back to the conversation is in the bar (AssistantBar's `onBack`). */}
+      <h2 className="min-w-0 truncate text-sm font-medium">{strings.connTitle}</h2>
       {/* What is in use is marked on its row below. */}
       {!connect.connected && (
         <Txt variant="caption" tone="muted">
@@ -2307,7 +2311,7 @@ export function App({ state }: { state: AssistantState | null }) {
   const [setup, setSetup] = useState<string | null>(null);
   // The built-in agent's connections page takes the conversation's place while it is open. With
   // the agent running and nothing connected it is the panel; once a connection is there it is not
-  // taken away behind the user's back: they go to the conversation with its button.
+  // taken away behind the user's back: they go to the conversation with the button in the bar.
   const [connOpen, setConnOpen] = useState(false);
   // At the bottom centre: whether the conversation is open above the message box.
   const [centreOpen, setCentreOpen] = useState(false);
@@ -2368,12 +2372,14 @@ export function App({ state }: { state: AssistantState | null }) {
             setCentreOpen(false);
             setConnOpen(false);
           }}
+          // With nothing connected the page is the panel, and there is no conversation to go back to.
+          onBack={connect && showConn && connect.connected ? () => setConnOpen(false) : undefined}
         />
         {connect && showConn && (
           <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
             {/* The bar's New chat asks here too: the conversation it is asked in is out of sight. */}
             {confirmNew}
-            <ConnectionsPage state={state} connect={connect} onClose={() => setConnOpen(false)} />
+            <ConnectionsPage state={state} connect={connect} />
           </div>
         )}
         {/* Out of sight, not gone: what is typed in the message box is still there on the way back. */}
