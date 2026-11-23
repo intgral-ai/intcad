@@ -617,10 +617,24 @@ So the Windows installer from CI carries the agent folder with its bundled `node
 skill sets in the install directory — the gap B7 recorded for my locally built MSI (`HasMastraAgent=0`)
 is closed for the CI package.
 
-What this does not yet show: the agent process running and the skills copied into the app's data
-folder on Windows (the Assistant panel starts the agent; that step was still being checked when this
-was written), a real-model turn with this build, and the `installed-check.ps1` run that CI itself
-performs for each architecture.
+Running it closed that gap too: with the Assistant opened (Ctrl+Shift+A), the packaged agent started
+and copied its sets into the app's own data folder.
+
+```
+node      C:\Program Files\Intcad\mastra-agent\node.exe        (the packaged node, not a system one)
+skills    %LOCALAPPDATA%\Intcad\mastra\home\.agents\skills\
+          intcad-context, solidcraft-checking, solidcraft-editing,
+          solidcraft-mechanisms, solidcraft-modeling
+stamp     .modelling-skills.json present
+```
+
+So on Windows, from the CI-built MSI: install → start → Assistant → agent runs from the install
+directory → five skill sets land in the user's data folder.
+
+Not shown for this Windows build: a real-model turn, the `installed-check.ps1` result CI produces per
+architecture, and the same on a machine without WebView2.
+
+Evidence: `~/.local/state/intcad-e2e/windows/runs/intcad-win-int1503-rc-rehearsal-3a92c4b6125c-win013/20261123T210203Z-622930/screenshots/ciwin-agent.png`.
 
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
