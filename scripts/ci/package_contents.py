@@ -360,6 +360,23 @@ def main():
             raise SystemExit("source artifact is missing: " + str(source))
         report["sourceArtifact"] = source.name
         report["sourceSha256"] = digest(source)
+        # The repack's own bytes are what a person installs: they are inspected and recorded like
+        # any other artifact, and the gate binds them to this report by digest.
+        for value in args.artifacts:
+            path = Path(value)
+            if not path.is_file() or path.name.lower().endswith(IGNORED_SUFFIXES):
+                continue
+            try:
+                kind, names = inspect(path)
+            except Exception as error:  # noqa: BLE001 - any failure is unverified content
+                report["unchecked"].append({"name": path.name, "reason": str(error)})
+                continue
+            report["checked"].append({"name": path.name, "sha256": digest(path), "format": kind, "entries": len(names)})
+            report["markers"].extend(inside_agent_markers_for(args.distribution, names))
+            report["agentMarkers"].extend(agent_markers(names))
+            report.setdefault("agents", {})[path.name] = agent_report(names)
+        # And the source tarball it was built from: the same agent, from the bytes that were
+        # already inspected when the Linux package was made.
         try:
             _, names = inspect(source)
         except Exception as error:  # noqa: BLE001 - any failure is unverified content
@@ -371,7 +388,8 @@ def main():
             report["markers"].extend(inside_agent_markers_for(args.distribution, names))
             report["agentMarkers"].extend(agent_markers(names))
             found = agent_report(names)
-            if found["present"]:
+            report.setdefault("agents", {})[source.name] = found
+            if found["present"] and report["agent"] is None:
                 report["agent"] = found
     else:
         for value in args.artifacts:
