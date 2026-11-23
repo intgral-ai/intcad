@@ -597,13 +597,14 @@ pub fn admit_control_request(req: &ControlRequest, budget: &BudgetTable, billing
     }
 }
 
-/// Admit a request against the app's installed authority. No port is installed by default, so
-/// every controlled entry is refused before dispatch until the desktop composition root
-/// supplies one (Task 11). Free GUI, browser CAD and ordinary local commands are unaffected.
+/// Admit a request against the app's installed authority: an explicitly installed billing port
+/// when a host supplied one, otherwise the verified commit authority. With neither, controlled
+/// entries stay refused before dispatch; free GUI, browser CAD and ordinary local commands are
+/// unaffected either way.
 fn admit_for_app(app: &mut SolveApp, req: &ControlRequest) -> Admission {
     let budget = app.budget.clone();
-    match app.billing.as_mut() {
-        Some(billing) => admit_control_request(req, &budget, billing.as_mut()),
+    match app.billing_source() {
+        Some(mut source) => admit_control_request(req, &budget, source.port()),
         None => admit_control_request(req, &budget, &mut NoAuthorityBilling),
     }
 }
@@ -704,8 +705,8 @@ fn release_admission(app: &mut SolveApp, admission: &Admission, reason: RefusalC
         app.account.control_finished(operation);
     }
     if let Admission::NewlyAdmitted { operation, .. } = admission
-        && let Some(billing) = app.billing.as_mut()
-        && let Err(refusal) = billing.release(operation, reason)
+        && let Some(mut source) = app.billing_source()
+        && let Err(refusal) = source.port().release(operation, reason)
     {
         app.pending_settlements.push(SettlementNotice {
             operation: operation.clone(),
@@ -1202,7 +1203,7 @@ fn settle_result(
             }
         }
     }
-    let Some(billing) = app.billing.as_mut() else {
+    let Some(mut source) = app.billing_source() else {
         let notice = SettlementNotice {
             operation: operation.clone(),
             kind: SettlementNoticeKind::TransportFailed { action, code: RefusalCode::AuthUnavailable },
@@ -1210,6 +1211,7 @@ fn settle_result(
         app.pending_settlements.push(notice.clone());
         return Some(notice);
     };
+    let billing = source.port();
     let failure = |code| SettlementNotice { operation: operation.clone(), kind: SettlementNoticeKind::TransportFailed { action, code } };
     match action {
         SettlementAction::Release(reason) => match billing.release(operation, reason) {

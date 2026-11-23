@@ -135,6 +135,24 @@ fn verified_review_bound(app: &SolveApp) -> Result<Duration, String> {
     }
 }
 
+/// The persisted stop deadline for one Review run: the earlier of the measured
+/// safe-stop window and what is left of the server's execution grant.
+///
+/// `Reservation.stop_at_ms` is a wall-clock absolute millisecond value that the
+/// host persists and the DFM service compares against `now_ms()`, so the
+/// grant's monotonic remaining time is passed in already converted. Passing
+/// `None` means no monotonic clock is installed, and only the measured window
+/// applies — the same shape as `control.rs::authorization_bound`.
+#[cfg(not(target_arch = "wasm32"))]
+fn review_stop_at_ms(now_ms: u64, bound: Duration, grant_remaining: Option<Duration>) -> u64 {
+    let window = u64::try_from(bound.as_millis()).unwrap_or(u64::MAX);
+    let allowed = match grant_remaining {
+        Some(remaining) => u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX).min(window),
+        None => window,
+    };
+    now_ms.saturating_add(allowed)
+}
+
 /// Why a Review press cannot start. This is checked before any operation is admitted, so a
 /// missing authority or durable journal never reaches an execution path.
 #[cfg(not(target_arch = "wasm32"))]
@@ -142,7 +160,7 @@ fn authority_error(app: &SolveApp) -> Option<String> {
     if let Err(error) = verified_review_bound(app) {
         return Some(error);
     }
-    if app.billing.is_none() {
+    if !app.has_commit_authority() && app.billing.is_none() {
         return Some(coded(RefusalCode::AuthUnavailable, "no host billing authority is installed for the Review panel"));
     }
     if app.review_store.is_none() {
@@ -207,15 +225,19 @@ fn prepare_review_with(app: &mut SolveApp, operation: OperationId) -> Result<(St
         }
         Err(error) => return Err(coded(RefusalCode::AuthUnavailable, format!("the Review ledger is unavailable: {error:?}"))),
     }
-    let grant = app
-        .billing
-        .as_mut()
-        .ok_or_else(|| coded(RefusalCode::AuthUnavailable, "no host billing authority is installed for the Review panel"))?
-        .admit(&operation, Capability::Review, EntryCategory::ReviewPanel)
-        .map_err(|error| coded(error.code, error.message))?;
+    let mut source =
+        app.billing_source().ok_or_else(|| coded(RefusalCode::AuthUnavailable, "no host billing authority is installed for the Review panel"))?;
+    let grant = source.port().admit(&operation, Capability::Review, EntryCategory::ReviewPanel).map_err(|error| coded(error.code, error.message))?;
+    // The server's grant expiry bounds this run just as the measured window does. Reading it is
+    // not storing authority: only the instant is kept, and the grant itself is dropped below.
+    let grant_expiry = grant.expires_at();
     drop(grant); // Execution authority, never a value the panel stores or logs.
     let now = solidcraft_engine::validation::now_ms();
-    let stop_at_ms = now.saturating_add(u64::try_from(bound.as_millis()).unwrap_or(u64::MAX));
+    // Take the earlier of the measured safe-stop window and the server grant (control.rs does
+    // the same at `authorization_bound`). `Reservation.stop_at_ms` is a persisted absolute
+    // millisecond deadline, so the monotonic remaining time is anchored onto the wall clock once.
+    let grant_remaining = app.commit_clock.as_deref().map(|clock| grant_expiry.as_duration().saturating_sub(clock.now().as_duration()));
+    let stop_at_ms = review_stop_at_ms(now, bound, grant_remaining);
     let run = solidcraft_engine::validation::generate_run_id(now);
     let recorded = match app.review_store.as_mut() {
         Some(store) => store.record_review(&ReviewOperation::new(RunId::new(&run), operation.clone())),
@@ -304,9 +326,10 @@ fn apply_settlement(app: &mut SolveApp, operation: &OperationId, intent: Settlem
             }
         }
     }
-    let Some(billing) = app.billing.as_mut() else {
+    let Some(mut source) = app.billing_source() else {
         return Err(coded(RefusalCode::AuthUnavailable, "no host billing authority is installed for the Review panel"));
     };
+    let billing = source.port();
     let outcome = match intent {
         SettlementIntent::Commit(result) => billing.commit(operation, result).map(|_| ()),
         SettlementIntent::Release(reason) => billing.release(operation, reason),

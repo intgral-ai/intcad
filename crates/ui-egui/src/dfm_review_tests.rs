@@ -1395,3 +1395,42 @@ fn review_empty_inventory_keeps_fresh_start_available() {
     crate::dfm_review::prepare_review_with(&mut h.app, operation).expect("an empty inventory admits a fresh operation");
     assert_eq!(billing.admits(), 1);
 }
+
+/// The Review stop bound must be the earlier of the measured window and the
+/// server grant's remaining time, exactly as `control.rs::authorization_bound`
+/// takes the earlier of the request deadline and the grant expiry.
+#[test]
+fn review_stop_bound_takes_the_earlier_of_window_and_grant() {
+    let now = 1_700_000_000_000u64;
+    let window = Duration::from_secs(60);
+
+    // A grant with more time left than the window: the window decides.
+    assert_eq!(crate::dfm_review::review_stop_at_ms(now, window, Some(Duration::from_secs(300))), now + 60_000);
+    // A grant that expires sooner than the window: the grant decides.
+    assert_eq!(crate::dfm_review::review_stop_at_ms(now, window, Some(Duration::from_secs(5))), now + 5_000);
+    // No monotonic clock installed: only the measured window applies.
+    assert_eq!(crate::dfm_review::review_stop_at_ms(now, window, None), now + 60_000);
+    // An already expired grant stops the run immediately rather than granting the window.
+    assert_eq!(crate::dfm_review::review_stop_at_ms(now, window, Some(Duration::ZERO)), now);
+}
+
+/// The bound is a persisted absolute deadline, so the grant's monotonic
+/// remainder is anchored to the same wall clock reading once.
+#[test]
+fn review_stop_bound_anchors_the_earlier_limit_on_the_wall_clock() {
+    struct At(u64);
+    impl MonotonicClock for At {
+        fn now(&self) -> MonotonicInstant {
+            MonotonicInstant::from_millis(self.0)
+        }
+        fn wall_now(&self) -> SystemTime {
+            UNIX_EPOCH
+        }
+    }
+    let clock = At(10_000);
+    let grant_expiry = MonotonicInstant::from_millis(14_000);
+    let remaining = grant_expiry.as_duration().saturating_sub(clock.now().as_duration());
+    let now = 1_700_000_000_000u64;
+    // 4 s of grant left, 60 s window: the grant bounds the run.
+    assert_eq!(crate::dfm_review::review_stop_at_ms(now, Duration::from_secs(60), Some(remaining)), now + 4_000);
+}

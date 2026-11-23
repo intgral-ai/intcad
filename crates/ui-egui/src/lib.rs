@@ -15,6 +15,7 @@ pub mod agent_chat;
 pub mod agent_cursor;
 pub mod ai_connect;
 pub mod bidi;
+pub mod billing_adapter;
 pub mod blur;
 pub mod bom_panel;
 pub mod browser;
@@ -1063,6 +1064,28 @@ impl SolveApp {
     #[cfg(target_arch = "wasm32")]
     pub fn install_review_store(&mut self, store: Box<dyn solidcraft_engine::entitlement::OperationStore + Send>) {
         drop(store);
+    }
+
+    /// Whether a verified commit authority is installed. Controlled entries need
+    /// a billing authority; the commit authority is one, so its presence is what
+    /// lets Review and Control admit instead of refusing for lack of a port.
+    pub(crate) fn has_commit_authority(&self) -> bool {
+        self.commit_scope.is_some() && self.commit_account.is_some() && self.commit_clock.is_some()
+    }
+
+    /// The billing authority controlled entries should use: the explicitly
+    /// installed port when a host supplied one, otherwise the verified commit
+    /// authority. `None` keeps every controlled entry refused.
+    pub(crate) fn billing_source(&mut self) -> Option<crate::billing_adapter::BillingSource<'_>> {
+        if self.billing.is_none() && self.has_commit_authority() {
+            let scope = self.commit_scope.as_ref()?;
+            let clock = self.commit_clock.as_deref()?;
+            let account = self.commit_account.as_deref_mut()?;
+            return Some(crate::billing_adapter::BillingSource::Authority(crate::billing_adapter::CommitAuthorityBilling::new(
+                scope, clock, account,
+            )));
+        }
+        self.billing.as_mut().map(|billing| crate::billing_adapter::BillingSource::Installed(billing.as_mut()))
     }
 
     /// Install the host's current authenticated identity, account status and monotonic clock for
