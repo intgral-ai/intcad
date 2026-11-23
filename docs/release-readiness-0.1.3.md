@@ -156,7 +156,7 @@ UI has no PR.
 | B2 | P0, fix in #219 | **FreeBSD package build fails, and `package-builds` requires it.** `apps/solidcraft/src/main.rs` called `egui_winit::set_emit_empty_paste_events` unconditionally while `apps/solidcraft/Cargo.toml` declares `egui-winit` only for Windows/Linux/macOS. #219 puts the dependency's `cfg` on the call; `release.yml` run 45230019033 on that branch is building FreeBSD as this is written | run 45112837415; #219 |
 | B3 | P1 | **Login PR #213 has a failing required check on Windows.** `Windows app startup` → `tools/windows-resize-smoke.ps1`: `WM_NCHITTEST failed (Win32 error 1460) at (20,330) within the 2 s limit` after the window was moved to 20,20–1004,640. The same job passes on `develop` `1c3102f` (run 45087015186) and on `56e805f` (run 45035941855), so it is a regression in #213's range, not a flake observed twice | run 45109730998 job 137479303661 |
 | B4 | P1, code merged | **Skills need a package that carries the agent.** #204 merged into `develop` (`41089b60`), so the code that installs the four sets is in; a *release* still needs #214, which puts the agent folder into the packages | #204 merged, §12, §12.1 |
-| B5 | P1 | **The slash list is not seen in the Assistant.** The agent registers the four `skill/<name>` commands (ACP-level, `agent-smoke.mjs`, §12), but drawing them needs a model signed in: the panel shows the Connections page, and no credential is available to this role | §12, §12.1 |
+| B5 / B10 | P1 | **The Assistant has no slash menu for `skill/<name>`.** With a working key and a live session, typing `/` or `/skill` draws no command menu, and no code in the app or the Assistant page consumes ACP `available_commands_update`. The agent registers the four commands (ACP evidence) and they work when typed as text, but "displayed as a command" is not implemented — an app-side feature, not packaging | §12.5 |
 | B6 | P1 | **The Mastra workflow runtime (`mastra/`) is still not in any package.** Only the agent folder ships. `--with-mastra` stays opt-in and fails closed until the runtime artifact is approved (DQ-7/#15), so "Mastra in the package" is true for the agent and not for the workflow runtime | `packaging/linux/package.sh:101-118`, `docs/mastra-packaging.md` |
 | B8 | P0 | **Every package build fails on a dependency advisory.** `Dependency advisories` fails with RUSTSEC-2026-0594: `cookie 0.18.2` via `wry 0.57.2` (private-cookie nonce reuse after `fork()`, which breaks AES-GCM). `release.yml` cannot pass for any branch until it is fixed; #218 moves it to 0.18.3 | run 45149031980 job 137606035774 |
 | B9 | P0 (scope) | **PP's UI has no PR.** The CTO requires it in 0.1.3, and there is no branch or PR to review, so this scope item cannot start from the release side | open PR list, 2026-11-23 |
@@ -532,6 +532,31 @@ still needs a model credential.
 
 **Crash dialogs seen in these runs** are from force-stopping the app between installs (the report
 names the killed start time); they are not product crashes.
+
+## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
+
+The CTO supplied a DeepSeek API key for acceptance. It was used only in the throwaway VM, kept in
+a 0600 file, never echoed into logs and never committed. Cost: three short requests on a 3 USD
+credit.
+
+| Step | Result |
+|---|---|
+| Key reachable from the guest | `curl https://api.deepseek.com/models` → HTTP 200 |
+| Saved through the app's own **Add key → DeepSeek → Save** | `Key saved`, `In use`, with Update/Remove: **the system keychain path works** |
+| Why the first Save did nothing | the guest's `gnome-keyring` ran without an unwritten login collection; `dbus` showed only `…/collection/session`, and the app is `keyring`-backed. After unlocking a login keyring (`gnome-keyring-daemon --unlock`, collections then show `…/collection/login`) the same Save worked. That is the environment, not the app: a desktop session normally has an unlocked login keyring |
+| Connection state | `Connection DeepSeek` / `Ready`, model `DeepSeek Flash` at the composer |
+| **Real turn** | "Reply with the single word: ready" → the answer "ready" rendered in the Assistant |
+| **Skill used by the real model** | "Read the solidcraft-modeling skill with your skill tool…" → the turn shows a `Skill  solidcraft-modeling` card and an accurate summary of what that skill is for. So the four installed skills are not only discoverable but usable from the packaged agent on a real provider |
+| **Slash list** | typing `/` or `/skill` shows the composer with the text and **no command menu**; Tab opened the attach menu ("Choose a file…", "Attach view", "Attach selection", "Pick context"). `rg` over the app and the Assistant page finds no consumer of ACP `available_commands_update`, so the app never receives or draws a skill menu: the four `skill/<name>` commands exist at agent level only. Typing `/skill…` as text still worked, but that is the model reading the word, not a picked command |
+
+Evidence: `key-12-saved.png` (key saved), `key-15-turn.png` (real answer), `key-18-skillturn.png`
+(skill card and answer), `key-16-skillmenu.png` (`/skill` typed, no menu) in
+`~/.local/state/intcad-e2e/runs/intcad-e2e-int1503-rc-rehearsal-3a92c4b6125c-rel012/20261123T075538Z-2614506/screenshots/`.
+
+**Consequence for the release:** Gate C's "slash command correctly displayed" **fails as a product
+gap** — the commands are registered but the Assistant has no slash menu for them. This is B10, and
+it is an app-side feature (a command menu fed by `available_commands_update`), not a packaging
+defect. Gate C's other two halves (installed, discoverable, callable) now have real-model evidence.
 
 ## 13. Decisions from the CTO (2026-11-23)
 
