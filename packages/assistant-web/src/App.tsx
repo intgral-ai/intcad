@@ -1127,7 +1127,8 @@ function SessionMode({ state, session }: { state: AssistantState; session: NonNu
           {current?.name ?? option.currentValue}
         </ComposerToneLabel>
       </SelectTrigger>
-      <SelectContent>
+      {/* Named, so the page can tell an open select from one closed and kept mounted (Base UI hides it). */}
+      <SelectContent data-slot="select-content">
         {option.options.map(choice => (
           <SelectItem key={choice.value} value={choice.value}>
             {choice.name}
@@ -2597,17 +2598,31 @@ function WaitingRow({ item, strings }: { item: Approval | Of<'permission'>; stri
   );
 }
 
-/** Closes the page's open popups, as a press outside them would (`dialogs`: its dialogs too). */
-function closePopups(dialogs: boolean) {
-  const open = document.querySelector(dialogs ? '[data-slot="popover-content"], [role="menu"], [role="dialog"]' : '[data-slot="popover-content"], [role="menu"]');
-  if (!open) return;
+/**
+ * What opens over the page, and whether a press outside the page closes it (`blur`) as a press
+ * outside it within the page would: menus, selects and the model and effort pickers do; a dialog
+ * keeps what was typed into it (a key copied from another app) and closes from its own buttons.
+ */
+const POPUPS = [
+  { selector: '[data-slot="popover-content"]', blur: true },
+  { selector: '[data-slot="drawer-content"]', blur: true },
+  { selector: '[role="menu"]', blur: true },
+  { selector: '[data-slot="select-content"][data-open]', blur: true },
+  { selector: '[data-slot="dialog-content"]', blur: false },
+];
+/** Every popup that is open. */
+const OPEN = POPUPS.map(entry => entry.selector).join(', ');
+/** The popups a press outside the page closes. */
+const ON_BLUR = POPUPS.filter(entry => entry.blur).map(entry => entry.selector).join(', ');
+
+/** Closes the page's open menus, selects and pickers, as a press outside them would; its dialogs stay. */
+function closePopups() {
+  if (!document.querySelector(ON_BLUR)) return;
   document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
   document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
   (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 }
 
-/** What opens over the page and needs all the room the host gives it. */
-const POPUPS = '[data-slot="popover-content"], [data-slot="drawer-content"], [role="menu"], [role="dialog"]';
 /** The headers over the message box: the line, a row that needs the user, the opened body. */
 const HEADERS = ':scope > [data-slot="composer"] > [data-slot="composer-header"]';
 
@@ -2712,7 +2727,7 @@ function Centre({
         late = window.setTimeout(fit, 1000);
       } else if (performance.now() - since > 990) growing = false;
       for (const header of element.querySelectorAll(HEADERS)) header.toggleAttribute('data-centre-wait', growing && topOf(header) < -1);
-      for (const open of document.querySelectorAll(POPUPS)) open.toggleAttribute('data-centre-wait', growing);
+      for (const open of document.querySelectorAll(OPEN)) open.toggleAttribute('data-centre-wait', growing);
     };
     grow.current = to => {
       floor = Math.min(to, most.current);
@@ -2751,7 +2766,7 @@ function Centre({
       window.clearTimeout(frame);
       frame = window.setTimeout(follow, 0);
     };
-    const popup = () => Boolean(document.querySelector(POPUPS));
+    const popup = () => Boolean(document.querySelector(OPEN));
     const settle = () => {
       window.clearTimeout(check);
       check = window.setTimeout(() => {
@@ -2768,11 +2783,12 @@ function Centre({
         settle();
       }
     };
-    // A press outside the page (the model, the window) closes its popups, as one inside would.
-    const blur = () => closePopups(true);
+    // A press outside the page (the model, the window) closes its menus, as one inside would;
+    // switching to another app to copy a key does not close the dialog it goes into.
+    const blur = () => closePopups();
     // A mode picked from its menu closes the menu.
     const picked = (event: globalThis.MouseEvent) => {
-      if ((event.target as Element | null)?.closest('[role="menuitemradio"]')) window.setTimeout(() => closePopups(false), 120);
+      if ((event.target as Element | null)?.closest('[role="menuitemradio"]')) window.setTimeout(closePopups, 120);
     };
     // What changed is measured before it is drawn (a mutation observer's callback runs before the
     // page is painted), then followed while its transition settles.
