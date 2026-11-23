@@ -179,6 +179,8 @@ export interface AssistantState {
   selection: ContextGroups;
   /** The corner radius of the page's own surface, in points: the floating panel's, 0 when docked. */
   radius: number;
+  /** At the bottom centre of the window: the most height the page may take, in points; absent in the side panel. */
+  centre?: number | null;
   permissions: 'ask' | 'edits' | 'all';
   skill: string;
   skills: { id: string; title: string }[];
@@ -224,7 +226,7 @@ export type StringKey =
   | 'approval' | 'title' | 'add' | 'addFile' | 'attachView'
   | 'attachSelection' | 'pickContext' | 'modeAsk' | 'modeEdits' | 'modeAll' | 'queued' | 'viewAttached' | 'waiting'
   | 'connect' | 'disconnect' | 'retry' | 'newChat' | 'newChatConfirm' | 'cancel' | 'close' | 'minimize'
-  | 'dockLeft' | 'dockRight' | 'addAgent' | 'settings' | 'switchAgent' | 'detecting' | 'noneFound' | 'notInstalled'
+  | 'dockLeft' | 'dockRight' | 'expand' | 'collapse' | 'addAgent' | 'settings' | 'switchAgent' | 'detecting' | 'noneFound' | 'notInstalled'
   | 'notReady' | 'notSetUp'
   | 'refresh' | 'authTitle' | 'authNeeded' | 'authNone' | 'authTerminal' | 'authRetry' | 'setupTitle'
   | 'setupBody' | 'openSettings' | 'model' | 'queuedStopped' | 'sendNow' | 'sendNowTip' | 'edit'
@@ -293,6 +295,8 @@ export type Action =
   | { type: 'settings' }
   | { type: 'close' }
   | { type: 'minimize' }
+  /** At the bottom centre: how tall the page wants to be, in points (the host keeps it within `centre`). */
+  | { type: 'size'; height: number }
   | { type: 'side'; left: boolean }
   | { type: 'surface'; color: string }
   | { type: 'copy'; text: string }

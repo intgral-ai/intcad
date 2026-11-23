@@ -504,6 +504,12 @@ pub struct AgentChat {
     /// Files are being dragged over the host's web view ([`web::dragging`]).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_drag: bool,
+    /// The height the page asked for at the bottom centre of the window, in points ([`web::act`],
+    /// `size`), and while it is shown there, the most it may take (`panel::centre`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_height: Option<f32>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_centre: Option<f32>,
     /// A pointer press in the transcript owns keys just like a focused text editor.
     keyboard_owned: bool,
     /// Unreserved sheet space, shared by the actual dock and its drag preview.
@@ -660,6 +666,8 @@ impl AgentChat {
             std::mem::swap(&mut self.web_host, &mut other.web_host);
             std::mem::swap(&mut self.web_canvas, &mut other.web_canvas);
             std::mem::swap(&mut self.web_drag, &mut other.web_drag);
+            std::mem::swap(&mut self.web_height, &mut other.web_height);
+            std::mem::swap(&mut self.web_centre, &mut other.web_centre);
         }
         // Hit regions must be measured again for the incoming conversation.
         self.panel_rect = None;

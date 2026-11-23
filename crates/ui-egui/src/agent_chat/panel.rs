@@ -145,6 +145,15 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     // The built-in agent starts by itself once its panel is shown.
     #[cfg(not(target_arch = "wasm32"))]
     start_builtin_when_shown(app, &ctx);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        app.agent_chat.web_centre = None;
+        if centred(app) && web::active(app, &ctx) {
+            centre(app, ui);
+            show_drop_hint(app, &ctx);
+            return;
+        }
+    }
     if Container::for_layout(app.ui.layout, Surface::Panel).floating() {
         floating(app, ui);
         show_drop_hint(app, &ctx);
@@ -188,6 +197,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
 /// Horizontal room reserved before the history and browser when Assistant is on the left.
 pub(crate) fn left_inset(app: &SolveApp, available: Rect) -> f32 {
     if Container::for_layout(app.ui.layout, Surface::Panel).floating()
+        && !centred(app)
         && shown(app)
         && app.agent_chat.open
         && app.preferences.agent_chat_side == "left"
@@ -203,6 +213,7 @@ pub(crate) fn left_inset(app: &SolveApp, available: Rect) -> f32 {
 /// ordinary tool panels never reserve an outside rail for themselves.
 pub(crate) fn tool_space(app: &SolveApp, mut available: Rect) -> Rect {
     if Container::for_layout(app.ui.layout, Surface::Panel).floating()
+        && !centred(app)
         && shown(app)
         && app.agent_chat.open
         && let Some(chat) = app.agent_chat.panel_rect.filter(|r| r.is_finite() && r.is_positive())
@@ -214,6 +225,66 @@ pub(crate) fn tool_space(app: &SolveApp, mut available: Rect) -> Rect {
         }
     }
     available
+}
+
+/// The Assistant's width at the bottom centre of the window: its message box.
+#[cfg(not(target_arch = "wasm32"))]
+const CENTRE_WIDTH: f32 = 520.0;
+/// Its height until the page has said how tall it is: the message box alone.
+#[cfg(not(target_arch = "wasm32"))]
+const CENTRE_HEIGHT: f32 = 140.0;
+
+/// Whether the Assistant sits at the bottom centre of the window: only where the host shows its
+/// page, which is all of it there.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn centred(app: &SolveApp) -> bool {
+    app.preferences.agent_chat_centre && app.agent_chat.web_host
+}
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn centred(_app: &SolveApp) -> bool {
+    false
+}
+
+/// At the bottom of the window, centred on it: the page's message box, and above it what the
+/// page opens (the conversation, a menu), as tall as the page says, at most half the window.
+/// It keeps inside the room the panels leave, above the history.
+#[cfg(not(target_arch = "wasm32"))]
+fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
+    let gap = crate::shell::SHELL_GAP;
+    let available = ui.available_rect_before_wrap();
+    app.agent_chat.dock_space = Some(available);
+    let mut bounds = available.shrink(gap);
+    if let Some(history) = app.shell.history.filter(|_| app.ui.show_timeline && !app.preferences.timeline_left) {
+        bounds.max.y = (history.top() - gap).min(bounds.bottom()).max(bounds.top());
+    }
+    if let Some(rail) = app.shell.right_rail.filter(|_| crate::right_rail::shown(app)) {
+        bounds.max.x = (rail.left() - gap).min(bounds.right()).max(bounds.left());
+    }
+    let window = ctx.content_rect();
+    let most = (window.height() / 2.0).min(bounds.height()).max(0.0);
+    app.agent_chat.web_centre = Some(most);
+    let width = CENTRE_WIDTH.min(bounds.width().max(0.0));
+    let height = app.agent_chat.web_height.unwrap_or(CENTRE_HEIGHT).min(most);
+    let left = crate::shell::within(window.center().x - width / 2.0, bounds.left(), bounds.right() - width);
+    let rect = Rect::from_min_size(pos2(left, bounds.bottom() - height), vec2(width, height));
+    if !rect.is_positive() {
+        app.agent_chat.panel_rect = None;
+        return;
+    }
+    if app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
+        refresh(app, &ctx);
+    }
+    // A layer of its own over the view, so a menu or a sheet over it hides the native view.
+    egui::Area::new(Id::new("sc_agent_chat_centre")).order(egui::Order::Middle).fixed_pos(rect.min).show(&ctx, |ui| {
+        ui.allocate_rect(rect, Sense::hover());
+        web::place(app, ui, rect);
+    });
+    crate::scenario::publish_rect("agent_chat:panel", rect);
+    crate::scenario::publish_rect("agent_chat:web", rect);
+    app.agent_chat.panel_rect = Some(rect);
+    app.agent_chat.drop_rect = Some(rect);
+    gallery_window(app, &ctx);
 }
 
 /// The same outer rectangle is used for the floating sheet and its docking preview.

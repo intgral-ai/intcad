@@ -653,6 +653,14 @@ fn panel_section(app: &mut SolveApp, ui: &mut egui::Ui) {
             .map(|label| ui_kit::ContentWidth::label(ui, label) + t.space_4)
             .fold(0.0, f32::max);
         ui_kit::settings_form(ui, label_width, |ui| {
+            // Where the app shows the Assistant's page: at the bottom centre of the window, or
+            // the side panel below.
+            ui_kit::row(ui, "", |ui| {
+                let response = ui_kit::checkbox(ui, tr("ui.agent_chat_centre"), &mut app.preferences.agent_chat_centre)
+                    .backing_on_hover_text(tr("ui.agent_chat_centre_tip"));
+                crate::scenario::publish_handle("prefs:agent_chat_centre", response.rect.center());
+                ui_kit::help_icon(ui, tr("ui.agent_chat_centre_tip"));
+            });
             ui_kit::row(ui, tr("ui.agent_chat_side"), |ui| {
                 // The Assistant stays in the app's window: there is no window of its own to pick.
                 let p = &mut app.preferences;

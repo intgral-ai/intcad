@@ -459,6 +459,8 @@ pub fn state(app: &mut SolveApp) -> String {
         ("minimize", "ui.agent_chat_minimize"),
         ("dockLeft", "ui.agent_chat_dock_left"),
         ("dockRight", "ui.agent_chat_dock_right"),
+        ("expand", "ui.expand"),
+        ("collapse", "ui.collapse"),
         ("addAgent", "ui.ai_add_agent"),
         ("settings", "ui.ai_settings"),
         ("switchAgent", "ui.ai_switch_tip"),
@@ -638,6 +640,8 @@ pub fn state(app: &mut SolveApp) -> String {
         "selected": selected,
         "selection": context_json(&selection),
         "radius": radius,
+        // At the bottom centre of the window: the most height the page may take, in points.
+        "centre": chat.web_centre,
         "permissions": mode(app).id(),
         "skill": chat.skill.id(),
         "skills": skill::Skill::ALL.iter().map(|skill| json!({"id": skill.id(), "title": skill.title()})).collect::<Vec<_>>(),
@@ -691,7 +695,8 @@ pub fn state(app: &mut SolveApp) -> String {
 /// `conn_cancel`, `conn_logout` (`id`), `conn_key` (`provider`, `key`), `conn_key_remove`
 /// (`provider`), `conn_custom` (`name`, `url`, `key`, `models`), `conn_custom_remove` (`id`),
 /// `conn_retry`. The panel: `close`, `minimize`,
-/// `side` (`left`); the page cannot move the Assistant to a window of its own. And `surface`
+/// `side` (`left`), `size` (`height`: how tall the page is at the bottom centre); the page
+/// cannot move the Assistant to a window of its own. And `surface`
 /// (`color`, `#rrggbb`: the page's own surface, for the frame around it), `copy` (`text`) and
 /// `open_link` (`url`, web addresses only). Anything else is refused with the reason.
 pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::result::Result<(), String> {
@@ -997,6 +1002,11 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
         "settings" => crate::prefs::open_at(app, crate::prefs::PAGE_ASSISTANT),
         "close" => app.agent_chat.open = false,
         "minimize" => app.preferences.agent_chat_minimized = true,
+        // At the bottom centre, the page is as tall as it says; the panel keeps it in its bounds.
+        "size" => {
+            let height = action.get("height").and_then(Value::as_f64).filter(|height| height.is_finite()).ok_or("size: no height")?;
+            app.agent_chat.web_height = Some(height.clamp(0.0, 100_000.0) as f32);
+        }
         "side" => {
             let left = action.get("left").and_then(Value::as_bool).ok_or("side: no left")?;
             app.preferences.agent_chat_side = if left { "left" } else { "right" }.into();

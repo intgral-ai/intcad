@@ -11,8 +11,11 @@ import {
   FileImage,
   FileText,
   Hammer,
+  KeyRound,
   Map as MapIcon,
+  Maximize2,
   MessageSquare,
+  Minimize2,
   MousePointerClick,
   Pencil,
   Plug,
@@ -25,7 +28,7 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import type { AssistantState, Connect, ContextChip, ContextGroups, Item, MissingAgent, PermissionOption, PictureRef, QueuedMessage, Strings, TurnProblem } from './host';
 import { pictureUrl, post } from './host';
@@ -50,6 +53,10 @@ import {
   ComposerActionsStart,
   ComposerAttachments,
   ComposerBox,
+  ComposerHeader,
+  ComposerHeaderActions,
+  ComposerHeaderContent,
+  ComposerHeaderRow,
   ComposerInput,
   ComposerRing,
   ComposerStatus,
@@ -68,6 +75,7 @@ import { MessageScrollerItem } from '@/ds/components/MessageScroller';
 import { Notice } from '@/ds/components/Notice';
 import { PendingIndicator } from '@/ds/components/PendingIndicator';
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/ds/components/Select';
+import { Shimmer } from '@/ds/components/Shimmer';
 import { Status } from '@/ds/components/StatusIndicators/status';
 import { Textarea } from '@/ds/components/Textarea';
 import { ThinkingLevelPicker } from '@/ds/components/ThinkingLevel';
@@ -983,7 +991,8 @@ function ProviderPicker({ state, connect, onConnections }: { state: AssistantSta
   const at = current ? placeOf(connect, current) : null;
   const inUse = at ? groups.get(at.group) : undefined;
   // Before the agent has a model there is no connection in use to keep to: every connection's models, a group each.
-  const providers = inUse ? [inUse] : [...groups.values()].sort((a, b) => rank(a.id) - rank(b.id));
+  // At the bottom centre, every connection's models: the picker's provider filter switches between them.
+  const providers = inUse && !centred(state) ? [inUse] : [...groups.values()].sort((a, b) => rank(a.id) - rank(b.id));
   const effort = effortOf(state);
   const mark = (group: string) => <Mark name={names.get(group) ?? group} size={14} />;
   // Mastra's picker has no property for its own words: the build puts these in their place
@@ -1006,6 +1015,7 @@ function ProviderPicker({ state, connect, onConnections }: { state: AssistantSta
       }}
       renderProviderIcon={mark}
       addProvider={{ label: strings.connTitle, render: <button type="button" onClick={onConnections} /> }}
+      header={centred(state) ? <PickerConnection via={at?.via} strings={strings} onConnections={onConnections} /> : undefined}
       busy={state.configPending}
       side="top"
       align="end"
@@ -1127,7 +1137,7 @@ function SessionMode({ state, session }: { state: AssistantState; session: NonNu
   );
 }
 
-function AssistantComposer({ state, onConnections }: { state: AssistantState; onConnections: () => void }) {
+function AssistantComposer({ state, onConnections, header }: { state: AssistantState; onConnections: () => void; header?: ReactNode }) {
   const { strings } = state;
   const [text, setText] = useState('');
   const [sent, setSent] = useState(0);
@@ -1179,6 +1189,7 @@ function AssistantComposer({ state, onConnections }: { state: AssistantState; on
         submit();
       }}
     >
+      {header}
       <ComposerRing tone={session?.tone} busy={busy}>
         <ComposerBox sendingPulseKey={sent}>
           {chips && (
@@ -1489,10 +1500,15 @@ function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState
               <Ellipsis />
             </DropdownMenu.Trigger>
             <DropdownMenu.Content align="end">
-              <DropdownMenu.Item onClick={() => post({ type: 'side', left: !state.left })}>
-                {state.left ? strings.dockRight : strings.dockLeft}
-              </DropdownMenu.Item>
-              <DropdownMenu.Item onClick={() => post({ type: 'minimize' })}>{strings.minimize}</DropdownMenu.Item>
+              {/* At the bottom centre the Assistant neither docks to a side nor folds to a strip. */}
+              {!centred(state) && (
+                <>
+                  <DropdownMenu.Item onClick={() => post({ type: 'side', left: !state.left })}>
+                    {state.left ? strings.dockRight : strings.dockLeft}
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item onClick={() => post({ type: 'minimize' })}>{strings.minimize}</DropdownMenu.Item>
+                </>
+              )}
               {/* The built-in agent has no menu of its own in the bar: what that menu held for the agent is here. */}
               {connect && (
                 <>
@@ -2270,7 +2286,8 @@ export function App({ state }: { state: AssistantState | null }) {
   const [connOpen, setConnOpen] = useState(false);
   const none = nothingConnected(state);
   useEffect(() => {
-    if (none) setConnOpen(true);
+    // At the bottom centre a row over the message box offers the connections instead.
+    if (none && !centred(state)) setConnOpen(true);
   }, [none]);
   if (!state) return null;
   const { strings } = state;
@@ -2307,10 +2324,15 @@ export function App({ state }: { state: AssistantState | null }) {
     activeForm: step.text,
     status: step.status === 'completed' || step.status === 'in_progress' ? step.status : 'pending',
   }));
-  return (
-    <div className="h-dvh overflow-hidden bg-background" style={{ borderRadius: state.radius }}>
-      <FilePreviewDialog file={state.filePreview ?? null} />
-      <ChatShell className="h-full" style={ROOM} scroller={{ autoScroll: true, defaultScrollPosition: 'end' }}>
+  // At the bottom centre the same body (bar, conversation, dock) opens above the centre's own message box.
+  const centre = centred(state);
+  const shell = (
+      <ChatShell
+        className="h-full"
+        // There the veil above the message box ramps to the header's surface (ChatShell's `--chat-surface`).
+        style={centre ? ({ ...ROOM, '--chat-surface': 'var(--color-card)' } as CSSProperties) : ROOM}
+        scroller={{ autoScroll: true, defaultScrollPosition: 'end' }}
+      >
         <AssistantBar state={state} onSetup={setSetup} onConnections={openConn} />
         {connect && showConn && (
           <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
@@ -2391,12 +2413,320 @@ export function App({ state }: { state: AssistantState | null }) {
                     </span>
                   )}
                 </ComposerStatus>
-                <AssistantComposer state={state} onConnections={openConn} />
+                {!centre && <AssistantComposer state={state} onConnections={openConn} />}
               </ChatShell.Column>
             </ChatShell.Dock>
           </ChatShell.Viewport>
         </ChatShell.Stage>
       </ChatShell>
+  );
+  if (centre) return <Centre state={state} openConn={openConn} body={shell} conn={connect ? listed(connect) && connOpen : false} none={none} />;
+  return (
+    <div className="h-dvh overflow-hidden bg-background" style={{ borderRadius: state.radius }}>
+      <FilePreviewDialog file={state.filePreview ?? null} />
+      {shell}
+    </div>
+  );
+}
+
+// ---- At the bottom centre of the window (INT-1500) ----
+// The host puts the page there with `centre` (the most height it may take). At rest the page is the
+// message box and, above it, one line: what the agent is doing or saying now, or the last thing it
+// said, or which agent this is and its state. Only that line's Expand opens the panel's own body
+// (bar, conversation, dock) above the message box, in Mastra's ComposerHeader. What needs the user
+// (an approval, an agent that is not running or must sign in, files dragged over) floats over the
+// message box in an overlay header while the body is closed, and is the last row above it while open.
+
+/** Whether the host shows the page at the bottom centre of the window. */
+const centred = (state: AssistantState | null) => typeof state?.centre === 'number';
+
+// A desktop page in a small box: Mastra's phone layouts (the model picker's bottom sheet below 640)
+// do not apply at the bottom centre. The page's width there is the box's, so its width query never
+// matches; in the side panel queries are answered as they are.
+let centreNow = false;
+const realMatchMedia = window.matchMedia.bind(window);
+window.matchMedia = (query: string) => (centreNow && /max-width:\s*639px/.test(query) ? realMatchMedia('(max-width: 0px)') : realMatchMedia(query));
+
+const plain = (text: string) => text.replace(/\*+|__|`/g, '').replace(/\s*\n+\s*/g, ' ').trim();
+
+/** The line over the message box: the step the agent is on, what it is saying, or the last thing it said. */
+function previewOf(state: AssistantState): { text: string; step: boolean } | null {
+  const { items, strings } = state;
+  const last = items.at(-1);
+  if (!last) return null;
+  if (state.state === 'busy') {
+    if (last.kind === 'tool' && (last.status === 'running' || last.status === 'pending')) return { text: `${last.title}…`, step: true };
+    if (last.kind === 'check' && (last.status === 'running' || last.status === 'pending')) return { text: strings.dfmRunning, step: true };
+    if (last.kind === 'text' && !last.thought) return { text: plain(last.text), step: false };
+    return { text: state.turn ?? strings.working, step: true };
+  }
+  const said = [...items].reverse().find((item): item is Of<'text'> => item.kind === 'text' && !item.thought);
+  return said ? { text: plain(said.text), step: false } : null;
+}
+
+/** One line tall: the text wraps, and a full line scrolls up as the next is written. */
+function PreviewLine({ text, step }: { text: string; step: boolean }) {
+  const line = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = line.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [text]);
+  return (
+    <div ref={line} className="centre-preview">
+      {step ? <Shimmer>{text}</Shimmer> : <span>{text}</span>}
+    </div>
+  );
+}
+
+/** The model picker's header (Mastra's `header` slot): the connection the model runs on, and the way to sign in or add one. */
+function PickerConnection({ via, strings, onConnections }: { via: Connection | null | undefined; strings: Strings; onConnections: () => void }) {
+  const account = via && 'account' in via && via.account ? via.account : null;
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-2 px-2 pt-1 pb-2">
+      <Txt as="span" variant="caption" tone="muted" className="min-w-0 truncate">
+        {via ? `${via.name}${account ? ` · ${account}` : ''}` : strings.connTitle}
+      </Txt>
+      <Button
+        type="button"
+        size="sm"
+        icon={<KeyRound aria-hidden />}
+        onClick={event => {
+          onConnections();
+          // Closes the picker, as its own "+" does.
+          event.currentTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        }}
+      >
+        {strings.connTitle}
+      </Button>
+    </div>
+  );
+}
+
+/** A waiting approval or permission with its answers, small enough for the header over the message box. */
+function WaitingRow({ item, strings }: { item: Approval | Of<'permission'>; strings: Strings }) {
+  return (
+    <ComposerHeaderRow>
+      <ComposerHeaderContent className="flex min-w-0 flex-col gap-2 text-foreground">
+        <span className="flex min-w-0 items-start gap-2">
+          <Badge variant="warning" emphasis="subtle" size="sm" icon={<ShieldCheck aria-hidden />}>
+            {strings.approval}
+          </Badge>
+          <span className="line-clamp-2 min-w-0">{item.kind === 'approval' ? item.title : item.heading}</span>
+        </span>
+        {item.kind === 'approval' ? (
+          <ApprovalChoices approval={item} strings={strings} />
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            {item.options.map(option => (
+              <Button
+                key={option.id}
+                type="button"
+                size="sm"
+                variant={option.kind === 'allow_once' ? 'primary' : 'default'}
+                onClick={() => post({ type: 'permission', index: item.index, option: option.id })}
+              >
+                {option.name}
+              </Button>
+            ))}
+          </div>
+        )}
+      </ComposerHeaderContent>
+    </ComposerHeaderRow>
+  );
+}
+
+/** Closes the page's open popups, as a press outside them would (`dialogs`: its dialogs too). */
+function closePopups(dialogs: boolean) {
+  const open = document.querySelector(dialogs ? '[data-slot="popover-content"], [role="menu"], [role="dialog"]' : '[data-slot="popover-content"], [role="menu"]');
+  if (!open) return;
+  document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+}
+
+function Centre({ state, openConn, body, conn, none }: { state: AssistantState; openConn: () => void; body: ReactNode; conn: boolean; none: boolean }) {
+  const { strings } = state;
+  const [shown, setShown] = useState(false);
+  // The body's height: the host's most, less everything else the page shows.
+  const [room, setRoom] = useState(300);
+  const measured = useRef<HTMLDivElement>(null);
+  const most = useRef(500);
+  most.current = state.centre ?? 500;
+  centreNow = true;
+  // The page tells the host how tall it is; the host keeps it within `centre`. While a popup is open
+  // (model picker, mode menu, a dialog) the page asks for all the room there is, from the press that
+  // opens it, so the popup has room when it appears.
+  useEffect(() => {
+    document.documentElement.classList.add('centre');
+    const element = measured.current;
+    if (!element) return;
+    let menu = false;
+    let check = 0;
+    // An overlay header floats over the message box, outside the layout: its top counts too.
+    const height = () => {
+      const box = element.getBoundingClientRect();
+      const over = document.querySelector('[data-slot="composer-header"][data-placement="overlay"]');
+      const top = over ? Math.min(box.top, over.getBoundingClientRect().top) : box.top;
+      return Math.ceil(box.bottom - top);
+    };
+    let told = -1;
+    const tell = () => {
+      const whole = height();
+      const inBody = element.querySelector<HTMLElement>('[data-centre-body]');
+      if (inBody) {
+        const next = Math.max(140, Math.floor(most.current - (whole - inBody.offsetHeight) - 2));
+        setRoom(before => (Math.abs(next - before) > 1 ? next : before));
+      }
+      const next = menu ? most.current : whole;
+      if (next === told) return;
+      told = next;
+      post({ type: 'size', height: next });
+    };
+    // Headers open and close with a transition that changes no DOM: keep measuring until it settles.
+    // A timer, not animation frames: those pause where the page is not drawn.
+    let until = 0;
+    let frame = 0;
+    const follow = () => {
+      tell();
+      if (performance.now() < until) frame = window.setTimeout(follow, 16);
+    };
+    const settleSize = () => {
+      until = performance.now() + 700;
+      window.clearTimeout(frame);
+      frame = window.setTimeout(follow, 0);
+    };
+    const popup = () => Boolean(document.querySelector('[data-slot="popover-content"], [data-slot="drawer-content"], [role="menu"], [role="dialog"]'));
+    const settle = () => {
+      window.clearTimeout(check);
+      check = window.setTimeout(() => {
+        if (menu && !popup()) {
+          menu = false;
+          tell();
+        }
+      }, 400);
+    };
+    const down = (event: PointerEvent) => {
+      if (!menu && (event.target as Element | null)?.closest('[aria-haspopup], [aria-expanded]')) {
+        menu = true;
+        tell();
+        settle();
+      }
+    };
+    // A press outside the page (the model, the window) closes its popups, as one inside would.
+    const blur = () => closePopups(true);
+    // A mode picked from its menu closes the menu.
+    const picked = (event: globalThis.MouseEvent) => {
+      if ((event.target as Element | null)?.closest('[role="menuitemradio"]')) window.setTimeout(() => closePopups(false), 120);
+    };
+    const watch = new MutationObserver(() => {
+      if (popup()) {
+        if (!menu) {
+          menu = true;
+          tell();
+        }
+      } else if (!menu) {
+        settleSize();
+      }
+      settle();
+    });
+    watch.observe(document.body, { childList: true, subtree: true });
+    document.addEventListener('pointerdown', down, true);
+    document.addEventListener('click', picked, true);
+    window.addEventListener('blur', blur);
+    tell();
+    const observer = new ResizeObserver(() => {
+      if (!menu) tell();
+    });
+    observer.observe(element);
+    return () => {
+      document.documentElement.classList.remove('centre');
+      centreNow = false;
+      observer.disconnect();
+      watch.disconnect();
+      document.removeEventListener('pointerdown', down, true);
+      document.removeEventListener('click', picked, true);
+      window.removeEventListener('blur', blur);
+      window.clearTimeout(check);
+      window.clearTimeout(frame);
+    };
+  }, []);
+  // The connections page opens the body too.
+  const open = conn || shown;
+  const preview = previewOf(state);
+  const agent = state.agents.find(entry => entry.id === state.agent);
+  const badge = stateBadge(state);
+  const idle = agent ? `${agent.name} · ${badge.label}` : strings.noneFound;
+  const waitingItem = [...state.items]
+    .reverse()
+    .find((item): item is Approval | Of<'permission'> => (item.kind === 'approval' && item.answer === null) || (item.kind === 'permission' && item.answered === null));
+  const stopped = Boolean(state.agent) && !state.running;
+  const signIn = state.state === 'auth';
+  const attention = state.dragging ? (
+    <ComposerHeaderRow>
+      <ComposerHeaderContent className="text-foreground">{strings.dropHint}</ComposerHeaderContent>
+    </ComposerHeaderRow>
+  ) : waitingItem ? (
+    <WaitingRow item={waitingItem} strings={strings} />
+  ) : stopped || signIn || (none && !conn) ? (
+    <ComposerHeaderRow>
+      <Badge variant={badge.variant} emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
+        {badge.label}
+      </Badge>
+      <ComposerHeaderContent className="truncate text-foreground">{agent?.name ?? strings.noneFound}</ComposerHeaderContent>
+      <ComposerHeaderActions>
+        {stopped && (
+          <Button type="button" size="sm" variant="primary" onClick={() => post({ type: 'connect' })}>
+            {state.state === 'failed' ? strings.retry : strings.connect}
+          </Button>
+        )}
+        {none && !stopped && (
+          <Button type="button" size="sm" variant="primary" icon={<KeyRound aria-hidden />} onClick={openConn}>
+            {strings.connTitle}
+          </Button>
+        )}
+      </ComposerHeaderActions>
+    </ComposerHeaderRow>
+  ) : null;
+  const toggle = conn ? null : (
+    <Button type="button" variant="ghost" size="sm" icon={shown ? <Minimize2 /> : <Maximize2 />} onClick={() => setShown(value => !value)}>
+      {shown ? strings.collapse : strings.expand}
+    </Button>
+  );
+  const toggleRow = toggle && (
+    <ComposerHeaderRow className="justify-end">
+      <ComposerHeaderActions>{toggle}</ComposerHeaderActions>
+    </ComposerHeaderRow>
+  );
+  const header = open ? (
+    <ComposerHeader open>
+      <div data-centre-body style={{ height: room }}>
+        {body}
+      </div>
+      {toggleRow}
+      {attention}
+    </ComposerHeader>
+  ) : attention ? (
+    // What needs the user is always the last row, right above the message box.
+    <ComposerHeader placement="overlay" open>
+      {toggleRow}
+      {attention}
+    </ComposerHeader>
+  ) : (
+    <ComposerHeader open>
+      <ComposerHeaderRow className="flex-nowrap">
+        <ComposerHeaderContent className="min-w-0">
+          <PreviewLine text={preview ? preview.text : idle} step={preview ? preview.step : false} />
+        </ComposerHeaderContent>
+        <ComposerHeaderActions>{toggle}</ComposerHeaderActions>
+      </ComposerHeaderRow>
+    </ComposerHeader>
+  );
+  return (
+    <div className="flex h-dvh flex-col justify-end overflow-hidden">
+      <FilePreviewDialog file={state.filePreview ?? null} />
+      <div ref={measured} className="mx-auto w-full">
+        <AssistantComposer state={state} onConnections={openConn} header={header} />
+      </div>
     </div>
   );
 }

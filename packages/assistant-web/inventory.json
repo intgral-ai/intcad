@@ -48,6 +48,7 @@
       "packages/playground-ui/src/ds/components/Combobox/combobox-styles.ts",
       "packages/playground-ui/src/ds/components/Combobox/combobox.tsx",
       "packages/playground-ui/src/ds/components/Command/command.tsx",
+      "packages/playground-ui/src/ds/components/Composer/composer-header.tsx",
       "packages/playground-ui/src/ds/components/Composer/composer.tsx",
       "packages/playground-ui/src/ds/components/Composer/use-composer-pointer.ts",
       "packages/playground-ui/src/ds/components/CopyButton/copy-button.tsx",
@@ -819,7 +820,7 @@
       "name": "lucide-react",
       "version": "1.67.0",
       "licence": "ISC",
-      "modulesInScript": 50,
+      "modulesInScript": 53,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -1494,16 +1495,16 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1747084,
-      "sha256": "137b5aa43433e4a29ad491d5c5ad9b2136b9f73c0320418e1dd1e68864922fa5"
+      "bytes": 1755672,
+      "sha256": "2de5966cfbe6cc4d23bd14628b4e1dcabb5b23f5376743ad75e97ad9c17e1192"
     },
     "index.html": {
       "bytes": 822,
       "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
     },
     "style.css": {
-      "bytes": 351393,
-      "sha256": "0d8b8dca6b8c488459c3c3c807c773af36f99e2b2cc13e6455cdea00ccfddc37"
+      "bytes": 352462,
+      "sha256": "7970fa622bd7872e7da437792033b8085cf486dabd7b546e3a80064a901b7101"
     }
   }
 }

@@ -81,3 +81,17 @@ body {
     border-radius: 2px;
   }
 }
+
+/* At the bottom centre of the window the page floats over the model: only its message box is drawn. */
+html.centre,
+html.centre body,
+html.centre #root {
+  background: transparent !important;
+}
+/* The line over the message box there: one line tall; the text wraps and a full line scrolls up. */
+.centre-preview {
+  height: 1lh;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  scroll-behavior: smooth;
+}

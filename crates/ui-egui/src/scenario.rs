@@ -201,6 +201,9 @@ impl Harness {
         // width from the view and the ribbon. It stays on that window, which is also the one the
         // `right_rail` preference keeps; the rail's own tests turn the rail on.
         h.app.preferences.right_rail = false;
+        // The same for the Assistant: the suite's web view tests measure the side panel, which
+        // the `agent_chat_centre` preference keeps; the centred box has its own tests.
+        h.app.preferences.agent_chat_centre = false;
         h.install();
         h.ctx.enable_accesskit();
         h.frames(3);

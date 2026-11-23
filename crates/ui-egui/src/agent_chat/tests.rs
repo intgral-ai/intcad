@@ -16276,6 +16276,52 @@ fn the_web_view_follows_its_panel_through_window_resizes() {
     assert_eq!(web::placement(&mut h.app, &h.ctx), places.last().copied(), "the last frame's place is the one the host takes, once");
 }
 
+/// At the bottom centre of the window (the `agent_chat_centre` preference, on by default) the
+/// host's view is the page's message box: centred on the window, not on the room beside the
+/// browser, above the history and left of the rail, as tall as the page says and never more than
+/// half the window, which the page is told. Off, the Assistant is the side panel again (INT-1500).
+#[test]
+fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the_page() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
+    h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    web::set_host(&mut h.app, true);
+    h.frames(3);
+    let told =
+        |h: &mut crate::scenario::Harness| serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["centre"].as_f64();
+    for (width, height) in [(1600.0, 1000.0), (1100.0, 700.0)] {
+        h.call("ui.resize", json!({"width": width, "height": height}));
+        h.frames(2);
+        let window = h.ctx.content_rect();
+        let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+        assert!((place.center().x - window.center().x).abs() < 1.0, "centred on the window at {width}x{height}: {place:?} in {window:?}");
+        assert!(place.width() <= 520.0 + 0.5 && place.width() > 400.0, "the message box's width: {place:?}");
+        let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
+        assert!(place.right() < rail.left(), "left of the rail: {place:?} {rail:?}");
+        let history = h.app.shell.history.expect("the history below the view");
+        assert!(place.bottom() <= history.top() && place.bottom() > history.top() - 40.0, "just above the history: {place:?} {history:?}");
+        let most = told(&mut h).expect("the page is told how tall it may be");
+        assert!(most <= f64::from(window.height()) / 2.0 + 0.5, "at most half the window: {most} of {window:?}");
+        assert_eq!(web::placement(&mut h.app, &h.ctx), Some(place));
+    }
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":260}"#).expect("the page says how tall it is");
+    h.frames(2);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!((place.height() - 260.0).abs() < 0.5, "as tall as the page: {place:?}");
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":5000}"#).expect("however tall");
+    h.frames(2);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!(place.height() <= h.ctx.content_rect().height() / 2.0 + 0.5, "never more than half the window: {place:?}");
+    assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"size"}"#).is_err(), "a size without a height is refused");
+
+    h.call("ui.prefs", json!({"agent_chat_centre": false}));
+    h.frames(3);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the side panel's place");
+    assert!(place.height() > h.ctx.content_rect().height() / 2.0, "off: the side panel, as before: {place:?}");
+    assert_eq!(told(&mut h), None, "and the page is not at the centre");
+}
+
 /// Files dropped on the host's web view are attached to the next message as files dropped on the
 /// panel are, and one that cannot be says why; while they are over the view the page is told.
 #[test]
