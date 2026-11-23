@@ -934,12 +934,27 @@ fn remaining_covers(bound: Option<AuthorizationBound<'_>>, now: MonotonicInstant
     }
 }
 
+/// A Direct Control operation the host minted for this request, before any admission or forwarded
+/// host context. Its durable row cannot exist yet, and the native account client only hands over
+/// the per-operation settlement credential when `begin` admits it, so a lookup here cannot
+/// succeed. Such a request goes straight to admission: `begin` creates the server-side operation,
+/// hands over the credential and answers a duplicate with `Admission::AlreadyExists`, which the
+/// billing adapter refuses rather than granting a second time.
+fn fresh_direct_control(req: &ControlRequest) -> bool {
+    req.entry == EntryCategory::DirectControl
+        && req.operation.is_some()
+        && req.trusted.is_none()
+        && req.admission.is_none()
+        && req.admission_scope.is_none()
+}
+
 /// Scheduling check before a grant is taken or work starts.
 ///
 /// The current account snapshot is re-read (so a revocation observed before scheduling stops the
 /// request), the forwarded scope must match the host's current account/installation/session, and
-/// a measured request window must still be open. The grant's own expiry is checked by
-/// [`authority_refusal`] once the server has admitted the operation.
+/// a measured request window must still be open. A fresh host-minted Direct Control operation
+/// skips the durable row lookup (see [`fresh_direct_control`]); recovery keeps it. The grant's own
+/// expiry is checked by [`authority_refusal`] once the server has admitted the operation.
 fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Refusal> {
     if free_entry(req.entry) || req.helper.is_some() {
         return None;
@@ -986,7 +1001,13 @@ fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Re
         Ok(required) => required,
         Err(refusal) => return Some(refusal),
     };
-    if let Some(operation) = req.operation.as_ref() {
+    // A fresh Direct Control operation has no durable row yet. The native client's `operation()`
+    // needs the settlement credential that only `begin` hands off, so looking it up before
+    // admission would refuse the operation itself. A recovery request (one carrying a stored
+    // admission or a forwarded host context) keeps the lookup, including the terminal check.
+    if !fresh_direct_control(req)
+        && let Some(operation) = req.operation.as_ref()
+    {
         match account.operation(scope, operation) {
             Ok(OperationStatus::Charged | OperationStatus::Released | OperationStatus::Expired) => {
                 return Some(Refusal::new(RefusalCode::OperationFinalized, "this operation is already settled"));
@@ -3069,6 +3090,10 @@ pub(crate) mod test_support {
         status: Arc<AtomicU8>,
         version_supported: Arc<AtomicBool>,
         lookups: Arc<AtomicUsize>,
+        /// When set, the count of billing admissions: `operation()` refuses until it is above
+        /// zero, modelling the native client, where the settlement credential arrives with
+        /// `begin` and does not exist before admission.
+        lookup_needs_admission: Option<Arc<AtomicUsize>>,
     }
 
     fn status_from_code(code: u8) -> OperationStatus {
@@ -3132,6 +3157,11 @@ pub(crate) mod test_support {
 
         fn operation(&self, _scope: &AuthenticatedHostScope, _operation: &OperationId) -> Result<OperationStatus, Refusal> {
             self.lookups.fetch_add(1, Ordering::Relaxed);
+            if let Some(admissions) = &self.lookup_needs_admission
+                && admissions.load(Ordering::Relaxed) == 0
+            {
+                return Err(Refusal::new(RefusalCode::AuthRequired, "the test account has no settlement credential before admission"));
+            }
             Ok(status_from_code(self.status.load(Ordering::Relaxed)))
         }
     }
@@ -3165,6 +3195,7 @@ pub(crate) mod test_support {
         status: Arc<AtomicU8>,
         version_supported: Arc<AtomicBool>,
         lookups: Arc<AtomicUsize>,
+        lookup_needs_admission: Option<Arc<AtomicUsize>>,
         now_ms: Arc<AtomicU64>,
         advance_ms: Arc<AtomicU64>,
         advances_left: Arc<AtomicUsize>,
@@ -3186,6 +3217,7 @@ pub(crate) mod test_support {
                 status: Arc::new(AtomicU8::new(0)),
                 version_supported: Arc::new(AtomicBool::new(true)),
                 lookups: Arc::new(AtomicUsize::new(0)),
+                lookup_needs_admission: None,
                 now_ms: Arc::new(AtomicU64::new(0)),
                 advance_ms: Arc::new(AtomicU64::new(0)),
                 advances_left: Arc::new(AtomicUsize::new(0)),
@@ -3200,6 +3232,7 @@ pub(crate) mod test_support {
                     status: Arc::clone(&self.status),
                     version_supported: Arc::clone(&self.version_supported),
                     lookups: Arc::clone(&self.lookups),
+                    lookup_needs_admission: self.lookup_needs_admission.clone(),
                 }),
                 Box::new(TestClock {
                     now_ms: Arc::clone(&self.now_ms),
@@ -3207,6 +3240,17 @@ pub(crate) mod test_support {
                     advances_left: Arc::clone(&self.advances_left),
                 }),
             );
+        }
+
+        pub(crate) fn scope(&self) -> &AuthenticatedHostScope {
+            &self.scope
+        }
+
+        /// Model the native client: `operation()` refuses until the billing port has admitted
+        /// `admissions` times, because only `begin` hands over the settlement credential.
+        pub(crate) fn lookup_needs_admission(mut self, admissions: Arc<AtomicUsize>) -> Self {
+            self.lookup_needs_admission = Some(admissions);
+            self
         }
 
         pub(crate) fn revoke(&self) {
@@ -3342,15 +3386,115 @@ mod tests {
     }
 
     fn app_with_billing() -> (SolveApp, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
+        let (app, _authority, admits, releases) = app_with_billing_and_authority();
+        (app, admits, releases)
+    }
+
+    fn app_with_billing_and_authority() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
+        app_with_billing_budget(verified_budget())
+    }
+
+    fn app_with_billing_budget(
+        budget: BudgetTable,
+    ) -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
         let admits = std::sync::Arc::new(AtomicUsize::new(0));
         let releases = std::sync::Arc::new(AtomicUsize::new(0));
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
-        app.install_billing(
-            Box::new(SharedCounting { admits: std::sync::Arc::clone(&admits), releases: std::sync::Arc::clone(&releases) }),
-            verified_budget(),
+        app.install_billing(Box::new(SharedCounting { admits: std::sync::Arc::clone(&admits), releases: std::sync::Arc::clone(&releases) }), budget);
+        let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session");
+        authority.install(&mut app);
+        (app, authority, admits, releases)
+    }
+
+    /// [`app_with_billing`] over a native-like authority: the durable lookup has no settlement
+    /// credential until the billing port admits, exactly as `HttpAccountService` behaves before
+    /// `begin` hands the per-operation credential over.
+    fn app_with_lookup_before_admission() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
+        let (mut app, authority, admits, releases) = app_with_billing_and_authority();
+        let authority = authority.lookup_needs_admission(std::sync::Arc::clone(&admits));
+        authority.install(&mut app);
+        (app, authority, admits, releases)
+    }
+
+    /// The forwarded host context a recovered operation carries (the request is not a fresh mint).
+    fn recovered_operation(authority: &test_support::TestAuthority, operation: &str) -> TrustedContext {
+        TrustedContext::mint(authority.scope(), operation, Capability::Control, EntryCategory::DirectControl).expect("host mint")
+    }
+
+    #[test]
+    fn a_fresh_direct_control_operation_is_admitted_once_without_a_durable_row() {
+        let (mut app, _authority, admits, releases) = app_with_lookup_before_admission();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        let admission = admit_once(&mut app, &mut req).expect("a fresh Direct Control operation is admitted before it has a durable row");
+        assert!(matches!(admission, Admission::NewlyAdmitted { .. }), "{admission:?}");
+        assert_eq!(admits.load(Ordering::Relaxed), 1, "the fresh operation is admitted exactly once");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "an admitted operation is not released");
+        assert!(req.admission.is_some(), "the admission is stored for dispatch");
+    }
+
+    #[test]
+    fn recovery_of_a_terminal_row_is_refused_without_admitting_or_settling_again() {
+        let (mut app, authority, admits, releases) = app_with_billing_and_authority();
+        authority.set_status(OperationStatus::Charged);
+        let trusted = recovered_operation(&authority, "op_recovery_terminal_0001");
+        let (mut req, _rx) =
+            ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"solid.box","params":{}}), trusted, None, None);
+        let refusal = admit_once(&mut app, &mut req).expect_err("a terminal row is already settled");
+        assert_eq!(refusal.code, RefusalCode::OperationFinalized);
+        assert_eq!(admits.load(Ordering::Relaxed), 0, "a terminal row is never admitted again");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a terminal row is never settled again");
+        assert!(req.admission.is_none(), "a refused recovery stores no admission");
+        assert!(authority.operation_lookups() >= 1, "recovery still reads the durable row");
+    }
+
+    #[test]
+    fn recovery_of_a_non_terminal_row_keeps_the_existing_settlement_path() {
+        let (mut app, authority, admits, releases) = app_with_billing_and_authority();
+        authority.set_status(OperationStatus::Pending);
+        let trusted = recovered_operation(&authority, "op_recovery_pending_0001");
+        let (mut req, _rx) =
+            ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"solid.box","params":{}}), trusted, None, None);
+        let admission = admit_once(&mut app, &mut req).expect("a non-terminal row follows the existing admission path");
+        assert!(matches!(admission, Admission::NewlyAdmitted { .. }), "{admission:?}");
+        assert_eq!(admits.load(Ordering::Relaxed), 1, "the recovery is admitted once");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "recovery admission itself settles nothing");
+        assert!(authority.operation_lookups() >= 2, "recovery keeps its pre-admission and post-admission durable reads");
+    }
+
+    #[test]
+    fn a_fresh_operation_without_billing_authority_still_refuses() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        // The production fail-closed port for a host that installed no billing authority.
+        app.install_billing(Box::new(NoAuthorityBilling), verified_budget());
+        let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session")
+            .lookup_needs_admission(std::sync::Arc::new(AtomicUsize::new(0)));
+        authority.install(&mut app);
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(reply["errorDetails"]["code"], "AuthUnavailable", "{reply}");
+        assert!(
+            reply["error"].as_str().is_some_and(|error| error.contains("no host billing authority")),
+            "the refusal is the missing billing authority, not the absent durable row: {reply}"
         );
-        test_support::TestAuthority::new("test-account", "test-installation", "test-session").install(&mut app);
-        (app, admits, releases)
+        assert_eq!(authority.operation_lookups(), 0, "the missing credential never stands in for the billing refusal");
+        assert_eq!(bodies(&app), 0, "nothing ran without billing authority");
+    }
+
+    #[test]
+    fn a_fresh_operation_without_a_verified_bound_still_refuses_before_admission() {
+        let (mut app, authority, admits, _releases) = app_with_billing_budget(BudgetTable::unverified_default());
+        let authority = authority.lookup_needs_admission(std::sync::Arc::clone(&admits));
+        authority.install(&mut app);
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(admits.load(Ordering::Relaxed), 0, "an unmeasured path never reaches admission");
+        assert_eq!(authority.operation_lookups(), 0, "the budget refusal comes before any durable read");
+        assert_eq!(bodies(&app), 0, "nothing ran");
     }
 
     #[test]
