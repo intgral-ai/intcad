@@ -555,7 +555,10 @@ def names_msi(path):
     # is only the fallback on a machine without msiexec (the Linux runners).
     tool = shutil.which("msiexec") or shutil.which("msiexec.exe")
     if tool:
-        with tempfile.TemporaryDirectory(prefix="contents-msi-") as directory:
+        # A short root on Windows: the agent's node_modules paths are long, and the admin image
+        # must not fail on the 260-character limit because of a deep %TEMP% folder.
+        base = (os.environ.get("SystemDrive", "C:") + os.sep) if os.name == "nt" else None
+        with tempfile.TemporaryDirectory(prefix="ci-", dir=base) as directory:
             _run([tool, "/a", str(path), "/qn", "TARGETDIR=" + directory])
             names = _walk(directory)
             if names:
