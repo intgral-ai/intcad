@@ -1,7 +1,7 @@
 //! Validation port tests: state machine, profiles, idempotency, reports and the local runner.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -147,6 +147,99 @@ impl Runner for FixedRunner {
     fn run(&self, _job: &RunJob, _control: &RunControl) -> RunnerOutcome {
         self.outcome.clone()
     }
+}
+
+struct StopRecordingRunner {
+    identity: RunnerIdentity,
+    outcome: RunnerOutcome,
+    seen_stop: Arc<Mutex<Option<u64>>>,
+}
+
+impl Runner for StopRecordingRunner {
+    fn identity(&self) -> RunnerIdentity {
+        self.identity.clone()
+    }
+
+    fn run(&self, _job: &RunJob, control: &RunControl) -> RunnerOutcome {
+        if let Ok(mut seen) = self.seen_stop.lock() {
+            *seen = Some(control.stop_at_ms());
+        }
+        self.outcome.clone()
+    }
+}
+
+#[test]
+fn a_claimed_job_exposes_the_host_safe_stop_seam() {
+    let root = scratch("host-stop-seam");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-host-stop", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let seen_stop = Arc::new(Mutex::new(None));
+    let runner: Arc<dyn Runner> = Arc::new(StopRecordingRunner {
+        identity: LocalRunner::identity(),
+        outcome: RunnerOutcome::Finished { started_at_ms: 1, finished_at_ms: 2, checks: pass_checks(&profile) },
+        seen_stop: Arc::clone(&seen_stop),
+    });
+    let port = port_with(&store, &candidates, runner, Limits::default(), clock.clone());
+    port.register_profile(profile).unwrap();
+    let submitted = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    let job = port.start_next().unwrap().expect("a worker claims the queued job");
+    let stop = clock.now_ms().saturating_add(500);
+    port.run_claimed_with_stop(&job, Some(stop)).unwrap();
+    assert_eq!(seen_stop.lock().unwrap().as_ref().copied(), Some(stop), "the host stop reaches the runner as the effective stop");
+    assert_eq!(port.status(&submitted.run_id).unwrap().state, ValidationState::Passed);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_controlled_host_claims_only_the_run_it_admitted() {
+    let root = scratch("host-exact-claim");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let first = write_candidate(&candidates, "cand-exact-claim-a", analytic_design());
+    let second = write_candidate(&candidates, "cand-exact-claim-b", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    let reference = port.register_profile(profile.clone()).unwrap();
+    let first_run = port
+        .submit_controlled_for(
+            &first,
+            &reference,
+            &generate_submission_key(clock.now_ms()),
+            "local",
+            &generate_run_id(clock.now_ms()),
+            "op_exact_claim_a",
+            clock.now_ms().saturating_add(500),
+        )
+        .unwrap();
+    let second_run = port
+        .submit_controlled_for(
+            &second,
+            &reference,
+            &generate_submission_key(clock.now_ms().saturating_add(1)),
+            "local",
+            &generate_run_id(clock.now_ms().saturating_add(1)),
+            "op_exact_claim_b",
+            clock.now_ms().saturating_add(500),
+        )
+        .unwrap();
+    assert_eq!(port.status(&first_run.run_id).unwrap().state, ValidationState::Queued);
+    assert_eq!(port.status(&second_run.run_id).unwrap().state, ValidationState::Queued);
+    assert!(port.start_next().unwrap().is_none(), "an ordinary pump never claims controlled work");
+
+    let job = port.start_controlled_run(&second_run.run_id, "op_exact_claim_b").unwrap().expect("the named run is claimed");
+    assert_eq!(job.run_id, second_run.run_id);
+    assert_eq!(port.status(&first_run.run_id).unwrap().state, ValidationState::Queued, "unrelated queued work is not claimed");
+    assert_eq!(port.status(&second_run.run_id).unwrap().state, ValidationState::Running);
+
+    port.run_claimed_with_stop(&job, Some(clock.now_ms().saturating_add(500))).unwrap();
+    assert_eq!(port.status(&second_run.run_id).unwrap().state, ValidationState::Passed);
+    assert_eq!(port.status(&first_run.run_id).unwrap().state, ValidationState::Queued);
+    let _ = std::fs::remove_dir_all(root);
 }
 
 fn runner_with(checks: Vec<CheckOutcome>) -> Arc<dyn Runner> {
@@ -1716,5 +1809,138 @@ fn skill_validation_refuses_a_weakened_profile_or_an_unsupported_required_check(
     let error = validate_skill_snapshot(&port, narrowed).unwrap_err();
     assert_eq!(error.code, ErrorCode::ProfileUnsupported, "a narrowed coverage list cannot silently approve");
     assert_eq!(port.store.count_admissions(), 0, "a refused profile is never admitted");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_controlled_stop_bound_ends_the_run_before_its_execution_deadline() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let control = RunControl { clock: clock.clone(), deadline_ms: 10_000, stop_at_ms: Some(3_000), cancel_path: PathBuf::from("never") };
+    assert_eq!(control.stop_at_ms(), 3_000, "the earlier measured bound wins");
+    assert!(!control.timed_out());
+    clock.set(3_000);
+    assert!(control.timed_out(), "a started controlled check stops at its measured safe stop");
+}
+
+#[test]
+fn a_free_run_keeps_only_its_execution_deadline() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let control = RunControl { clock: clock.clone(), deadline_ms: 10_000, stop_at_ms: None, cancel_path: PathBuf::from("never") };
+    assert_eq!(control.stop_at_ms(), 10_000);
+    assert!(!control.timed_out());
+    clock.set(10_000);
+    assert!(control.timed_out());
+}
+
+#[test]
+fn an_upper_bound_beyond_the_execution_deadline_does_not_fit() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let control = RunControl { clock, deadline_ms: 10_000, stop_at_ms: None, cancel_path: PathBuf::from("never") };
+    assert!(control.fits_before_deadline(Duration::from_secs(9)), "9 s from t=1 s fits the 10 s deadline");
+    assert!(!control.fits_before_deadline(Duration::from_secs(10)), "10 s from t=1 s would pass the deadline");
+}
+
+#[test]
+fn an_upper_bound_uses_the_earlier_controlled_stop() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let control = RunControl { clock, deadline_ms: 10_000, stop_at_ms: Some(5_000), cancel_path: PathBuf::from("never") };
+    assert!(control.fits_before_deadline(Duration::from_secs(4)), "4 s from t=1 s ends at the controlled stop");
+    assert!(!control.fits_before_deadline(Duration::from_secs(5)), "5 s from t=1 s would pass the controlled stop");
+    assert!(!control.fits_before_deadline(Duration::from_secs(9)), "fits the execution deadline but not the earlier stop");
+}
+
+fn dfm_stub_profile() -> CheckProfile {
+    CheckProfile {
+        schema_version: "1.0".into(),
+        profile_id: "task-dfm-stub".into(),
+        version: "1.0.0".into(),
+        checks: vec![
+            CheckRequirement { check_id: "dfm.stub.001".into(), kind: "dfm.stub".into(), required: true, parameters: json!({}) },
+            CheckRequirement { check_id: "input.integrity".into(), kind: "input.integrity".into(), required: true, parameters: json!({}) },
+            CheckRequirement { check_id: "native.rebuild".into(), kind: "native.rebuild".into(), required: true, parameters: json!({}) },
+        ],
+    }
+}
+
+/// Red for the repair: the ordinary worker path must never claim a resolved profile containing a
+/// DFM check, even when the job was submitted through the old unreserved API.
+#[test]
+fn ordinary_pump_never_claims_a_dfm_profile() {
+    let root = scratch("ordinary-dfm-refusal");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-dfm-refusal", analytic_design());
+    let profile = dfm_stub_profile();
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    let reference = port.register_profile(profile).unwrap();
+    let submitted = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    assert_eq!(port.status(&submitted.run_id).unwrap().state, ValidationState::Queued);
+    assert!(port.start_next_free().unwrap().is_none(), "an ordinary free worker must not claim DFM work");
+    assert_eq!(port.status(&submitted.run_id).unwrap().state, ValidationState::Queued, "the DFM job is left for the controlled path");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A controlled marker is durable across reopen: ordinary and free workers skip it, while the
+/// host that names the same operation can still claim it.
+#[test]
+fn controlled_run_stays_out_of_ordinary_pumps_across_restart() {
+    let root = scratch("controlled-restart");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-controlled-restart", analytic_design());
+    let profile = native_basic_profile();
+    let port =
+        ValidationPort::open_with(store.clone(), candidates.clone(), runner_with(pass_checks(&profile)), Limits::default(), Arc::new(SystemClock))
+            .unwrap();
+    let reference = port.register_profile(profile).unwrap();
+    let now = crate::validation::now_ms();
+    let run = generate_run_id(now);
+    let submitted = port
+        .submit_controlled_for(
+            &candidate,
+            &reference,
+            &generate_submission_key(now),
+            "local",
+            &run,
+            "op_restart_controlled",
+            now.saturating_add(30_000),
+        )
+        .unwrap();
+    assert_eq!(submitted.run_id, run);
+    drop(port);
+
+    // A fresh read-only observer does not reconcile or execute; it still sees the marker.
+    let reopened = ValidationPort::open_read_only(store, candidates).unwrap();
+    assert!(reopened.start_next().unwrap().is_none(), "an ordinary worker skips the controlled run");
+    assert!(reopened.start_next_free().unwrap().is_none(), "a free CLI worker skips the controlled run");
+    let job = reopened.start_controlled_run(&run, "op_restart_controlled").unwrap().expect("the named host can claim it");
+    assert_eq!(job.run_id, run);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn controlled_claim_rejects_another_operation_or_expired_stop() {
+    let root = scratch("controlled-gate");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-controlled-gate", analytic_design());
+    let profile = native_basic_profile();
+    let port = ValidationPort::open_with(store, candidates, runner_with(pass_checks(&profile)), Limits::default(), Arc::new(SystemClock)).unwrap();
+    let reference = port.register_profile(profile).unwrap();
+    let now = crate::validation::now_ms();
+    let run = generate_run_id(now);
+    port.submit_controlled_for(&candidate, &reference, &generate_submission_key(now), "local", &run, "op_gate_original", now.saturating_add(30_000))
+        .unwrap();
+    assert!(port.start_controlled_run(&run, "op_gate_other").is_err(), "another operation cannot claim it");
+    assert_eq!(port.status(&run).unwrap().state, ValidationState::Queued);
+
+    let expired = generate_run_id(now.saturating_add(1));
+    let expired_profile = dfm_stub_profile();
+    let expired_ref = port.register_profile(expired_profile).unwrap();
+    let expired_error = port
+        .submit_controlled_for(&candidate, &expired_ref, &generate_submission_key(now.saturating_add(1)), "local", &expired, "op_gate_expired", now)
+        .unwrap_err();
+    assert_eq!(expired_error.code, ErrorCode::RequestExpired, "an expired safe stop cannot even be admitted");
     let _ = std::fs::remove_dir_all(root);
 }

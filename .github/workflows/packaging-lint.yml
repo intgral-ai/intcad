@@ -8,9 +8,29 @@ name: Packaging lint
 on:
   push:
     branches: [main, develop]
-    paths: [".github/workflows/**", "packaging/**", "assets/**", "packages/assistant-web/**"]
+    paths:
+      - ".github/workflows/**"
+      - ".github/config/intcad-staging-account.json"
+      - "packaging/**"
+      - "assets/**"
+      - "packages/assistant-web/**"
+      - "scripts/ci/staging_account_config.py"
+      - "scripts/ci/test_release_content.py"
+      - "scripts/e2e/test_windows_assistant_uia.py"
+      - "scripts/e2e/windows_assistant_uia.py"
+      - "tools/windows-assistant-smoke.ps1"
   pull_request:
-    paths: [".github/workflows/**", "packaging/**", "assets/platforms/**", "packages/assistant-web/**"]
+    paths:
+      - ".github/workflows/**"
+      - ".github/config/intcad-staging-account.json"
+      - "packaging/**"
+      - "assets/platforms/**"
+      - "packages/assistant-web/**"
+      - "scripts/ci/staging_account_config.py"
+      - "scripts/ci/test_release_content.py"
+      - "scripts/e2e/test_windows_assistant_uia.py"
+      - "scripts/e2e/windows_assistant_uia.py"
+      - "tools/windows-assistant-smoke.ps1"
   workflow_dispatch:
 
 permissions:
@@ -43,8 +63,14 @@ jobs:
         run: python3 packaging/tests/nightly_test.py
       - name: Source-bound release evidence regression
         run: python3 -I scripts/ci/test_gate.py
+      - name: Staging configuration and package evidence regression
+        run: /usr/bin/python3 -I scripts/ci/test_release_content.py
+      - name: Validate the committed public staging configuration
+        run: GITHUB_OUTPUT="$RUNNER_TEMP/staging-config-lint" python3 -I scripts/ci/staging_account_config.py snapshot
       - name: Windows executable icon validation regression
         run: python3 packaging/tests/windows_icon_test.py
+      - name: Windows Assistant smoke regression
+        run: python3 -m unittest scripts/e2e/test_windows_assistant_uia.py
       - name: AppImage CLI wrapper regression
         run: python3 packaging/tests/apprun_test.py
       - name: Flatpak desktop smoke validation regression

@@ -2235,8 +2235,8 @@ mod tests {
             h.step(&json!({"key": "Escape"})).unwrap();
             h.step(&json!({"click": {"handle": format!("timeline:{name}")}, "button": "right"})).unwrap();
             let [x, y] = h.widget("Copy Warning Message").unwrap();
-            let (request, _reply) = crate::control::ControlRequest::new("ui.click", json!({"x": x, "y": y}));
-            crate::control::handle(&mut h.app, &h.ctx, &request);
+            let (mut request, _reply) = crate::control::ControlRequest::trusted_gui("ui.click", json!({"x": x, "y": y}));
+            crate::control::handle(&mut h.app, &h.ctx, &mut request);
             let mut copied = Vec::new();
             for _ in 0..8 {
                 h.frame();

@@ -184,6 +184,13 @@ pub trait ChatBackend {
     /// The trusted cancellation flag of the turn about to start. Backends that bridge tool calls
     /// attach it at the host boundary; model/runtime arguments never supply it.
     fn set_turn_control(&mut self, _active: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
+    /// The authenticated host scope this backend can bind to forwarded Intcad operations.
+    ///
+    /// `None` means the backend has no proven account/installation/session binding and must fail
+    /// closed at every charged entry. Secrets are separate and unaffected.
+    fn host_scope(&self) -> Option<solidcraft_engine::entitlement::AuthenticatedHostScope> {
+        None
+    }
     /// What this backend can prove for a built-in skill. Unknown backends stay unverified; a
     /// backend that cannot run the skill refuses before the model call.
     fn skill_support(&self, _skill: super::skill::Skill) -> SkillSupport {

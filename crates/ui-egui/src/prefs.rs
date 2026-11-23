@@ -11214,8 +11214,8 @@ mod perspective_fov_tests {
         h.frames(2);
         let distance = h.app.cam.distance;
         let mut raw = |method: &str, params: serde_json::Value| {
-            let (req, _rx) = crate::control::ControlRequest::new(method, params);
-            match crate::control::handle(&mut h.app, &h.ctx, &req) {
+            let (mut req, _rx) = crate::control::ControlRequest::trusted_gui(method, params);
+            match crate::control::handle(&mut h.app, &h.ctx, &mut req) {
                 crate::control::Outcome::Done(v) => v,
                 _ => serde_json::Value::Null,
             }

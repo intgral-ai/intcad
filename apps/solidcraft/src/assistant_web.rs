@@ -252,11 +252,31 @@ struct Placed {
     pixels_per_point: f32,
 }
 
+/// A mailbox for exactly one WebView. Its Wry callback cannot keep it alive or send to
+/// the next WebView: both queued messages and late callbacks are retired with the mailbox.
+#[derive(Default)]
+struct PageIpc {
+    inbox: Rc<RefCell<Vec<String>>>,
+    surface: web::Surface,
+}
+
+impl PageIpc {
+    fn callback(&self, ctx: &egui::Context) -> impl Fn(Request<String>) + 'static {
+        let inbox = Rc::downgrade(&self.inbox);
+        let repaint = ctx.clone();
+        move |message| {
+            if let Some(inbox) = inbox.upgrade() {
+                inbox.borrow_mut().push(message.into_body());
+                repaint.request_repaint();
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct AssistantWeb {
+    page: Option<PageIpc>,
     view: Option<wry::WebView>,
-    /// What the page sent since the last frame.
-    inbox: Rc<RefCell<Vec<String>>>,
     /// Files dragged over the view or dropped on it since the last frame.
     drags: Rc<RefCell<Vec<Drag>>>,
     /// The pictures the page was last told of.
@@ -318,7 +338,7 @@ impl AssistantWeb {
 
     /// The view goes before the window it is a child of does.
     pub fn close(&mut self) {
-        self.view = None;
+        self.retire_page();
         #[cfg(target_os = "linux")]
         {
             self.gtk_window = None;
@@ -331,6 +351,16 @@ impl AssistantWeb {
             self.page_focused.set(false);
             self.turn_gtk();
         }
+    }
+
+    fn retire_page(&mut self) {
+        self.page = None;
+        self.view = None;
+    }
+
+    fn install_page(&mut self, solve: &mut SolveApp, page: PageIpc) {
+        page.surface.bind(solve);
+        self.page = Some(page);
     }
 
     /// GTK's turns (Linux): what the page drew, sent and was told moves in them, and the app's
@@ -375,7 +405,7 @@ impl AssistantWeb {
         #[cfg(target_os = "linux")]
         self.turn_gtk();
         web::advance(solve, ctx);
-        let messages: Vec<String> = self.inbox.borrow_mut().drain(..).collect();
+        let messages = self.page.as_ref().map_or_else(Vec::new, |page| std::mem::take(&mut *page.inbox.borrow_mut()));
         #[cfg(target_os = "linux")]
         if !messages.is_empty() {
             self.at_work.set(true);
@@ -422,7 +452,7 @@ impl AssistantWeb {
         // The panel's Retry: the conversation is the app's state, so a new view picks it up
         // whole; only the view and its place are made again.
         if web::take_retry(solve) {
-            self.view = None;
+            self.retire_page();
             self.placed = None;
             self.shown = false;
             web::set_host(solve, true);
@@ -484,7 +514,7 @@ impl AssistantWeb {
         #[cfg(target_os = "linux")]
         self.latest.set(Some(at));
         let backing = web::backing(solve, ctx);
-        if self.view.is_none() && !self.create(ctx, frame, at, backing) {
+        if self.view.is_none() && !self.create(solve, ctx, frame, at, backing) {
             // No web view on this machine: the panel says why and offers Retry; it does not draw
             // a second conversation.
             web::set_host(solve, false);
@@ -535,14 +565,16 @@ impl AssistantWeb {
             Some("focus") => self.focused = value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false),
             Some("log") => note(&value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(600).collect::<String>()),
             _ => {
-                if let Err(reason) = web::act(solve, ctx, message) {
+                if let Some(page) = &self.page
+                    && let Err(reason) = page.surface.act(solve, ctx, message)
+                {
                     note(&format!("refused: {reason}"));
                 }
             }
         }
     }
 
-    fn create(&mut self, ctx: &egui::Context, frame: &eframe::Frame, at: Placed, backing: egui::Color32) -> bool {
+    fn create(&mut self, solve: &mut SolveApp, ctx: &egui::Context, frame: &eframe::Frame, at: Placed, backing: egui::Color32) -> bool {
         #[cfg(target_os = "linux")]
         {
             if !self.gtk && !start_gtk() {
@@ -553,8 +585,7 @@ impl AssistantWeb {
         // The windows inside the app's before the view's is made among them.
         #[cfg(target_os = "linux")]
         let before = Keyboard::before(frame);
-        let inbox = self.inbox.clone();
-        let repaint = ctx.clone();
+        let page = PageIpc::default();
         let (drags, dragged) = (self.drags.clone(), ctx.clone());
         let pictures = self.pictures.clone();
         // Only files are the app's to take; text dragged within the page stays the page's.
@@ -616,10 +647,7 @@ impl AssistantWeb {
                 dragged.request_repaint();
                 files.get()
             })
-            .with_ipc_handler(move |message| {
-                inbox.borrow_mut().push(message.into_body());
-                repaint.request_repaint();
-            });
+            .with_ipc_handler(page.callback(ctx));
         // See-through outside what the page draws, where a view can be: the page rounds its own
         // corners, and the panel's frame (its border and shadow) shows around them.
         let builder = if SEE_THROUGH { builder.with_transparent(true) } else { builder.with_background_color(opaque(backing)) };
@@ -730,6 +758,7 @@ impl AssistantWeb {
                     });
                 }
                 self.view = Some(view);
+                self.install_page(solve, page);
                 self.placed = Some(at);
                 self.backed = Some(backing);
                 self.shown = true;
@@ -946,6 +975,80 @@ fn opaque(colour: egui::Color32) -> wry::RGBA {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn surface_ready(solve: &mut SolveApp, ctx: &egui::Context) -> bool {
+        use solidcraft_ui_egui::control::{ControlRequest, Outcome, handle};
+        let (mut request, _) = ControlRequest::trusted_control("ui.inspect", serde_json::json!({}));
+        let Outcome::Done(reply) = handle(solve, ctx, &mut request) else { panic!("inspection must answer synchronously") };
+        reply["result"]["assistant"]["surface_ready"].as_bool().expect("an Assistant readiness boolean")
+    }
+
+    #[test]
+    fn retired_page_callbacks_cannot_ready_a_replacement() {
+        let mut solve = SolveApp::new(Default::default(), Default::default());
+        web::set_host(&mut solve, true);
+        let mut host = AssistantWeb::default();
+        let ctx = egui::Context::default();
+        let surface = || Request::new(r##"{"type":"surface","color":"#0e0e0e"}"##.to_owned());
+
+        let first = PageIpc::default();
+        let send_old = first.callback(&ctx);
+        host.install_page(&mut solve, first);
+        send_old(surface());
+        host.logic(&mut solve, &ctx);
+        assert!(surface_ready(&mut solve, &ctx), "the current view spoke");
+
+        send_old(surface()); // Pending when Retry disposes of the old view.
+        host.retire_page();
+        assert!(!surface_ready(&mut solve, &ctx), "no WebView, even with its cached backing");
+
+        let failed = PageIpc::default();
+        let send_failed = failed.callback(&ctx);
+        send_failed(surface()); // A callback can arrive during the native build.
+        drop(failed); // A failed build never installs its mailbox.
+        assert!(!surface_ready(&mut solve, &ctx), "a failed build cannot certify a view");
+
+        let replacement = PageIpc::default();
+        let send_new = replacement.callback(&ctx);
+        host.install_page(&mut solve, replacement);
+        send_old(surface()); // Wry can also deliver a retired callback after replacement.
+        send_failed(surface());
+        send_new(Request::new(r#"{"type":"ready"}"#.to_owned()));
+        send_new(Request::new(r##"{"type":"surface","color":"#oops"}"##.to_owned()));
+        host.logic(&mut solve, &ctx);
+        assert!(!surface_ready(&mut solve, &ctx), "old surface, ready and malformed surface prove nothing");
+
+        send_new(surface());
+        host.logic(&mut solve, &ctx);
+        assert!(surface_ready(&mut solve, &ctx), "the replacement spoke");
+        host.close();
+        assert!(!surface_ready(&mut solve, &ctx), "native shutdown also retires the page");
+    }
+
+    #[test]
+    fn hiding_a_retained_page_does_not_discard_its_surface_proof() {
+        let mut solve = SolveApp::new(Default::default(), Default::default());
+        web::set_host(&mut solve, true);
+        let mut host = AssistantWeb::default();
+        let ctx = egui::Context::default();
+        let page = PageIpc::default();
+        let send = page.callback(&ctx);
+        host.install_page(&mut solve, page);
+        solve.agent_chat.open = true;
+        host.show(true);
+        send(Request::new(r##"{"type":"surface","color":"#0e0e0e"}"##.to_owned()));
+        host.logic(&mut solve, &ctx);
+        assert!(surface_ready(&mut solve, &ctx));
+
+        send(Request::new(r#"{"type":"close"}"#.to_owned()));
+        host.logic(&mut solve, &ctx);
+        assert!(!solve.agent_chat.open);
+        host.show(false);
+        assert!(surface_ready(&mut solve, &ctx), "page Close hides but does not dispose");
+        solve.agent_chat.open = true;
+        host.show(true);
+        assert!(surface_ready(&mut solve, &ctx), "reopening does not need another surface message");
+    }
 
     fn get_with(path: &str, pictures: &Pictures) -> Response<Cow<'static, [u8]>> {
         serve(&Request::builder().uri(format!("openskyfall-assistant://localhost{path}")).body(Vec::new()).unwrap(), pictures)

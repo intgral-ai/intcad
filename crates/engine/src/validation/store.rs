@@ -65,6 +65,18 @@ pub(super) struct StateRecord {
     pub report_available: bool,
 }
 
+/// A durable classification of a controlled job. Ordinary workers must never claim a run with
+/// this marker; only the host that names the same operation and an unexpired stop may run it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ControlledRecord {
+    pub schema_version: String,
+    pub run_id: String,
+    pub operation_id: String,
+    /// The measured safe-stop instant for this run, in the host clock's milliseconds.
+    pub stop_at_ms: u64,
+}
+
 /// The identity and deadline of the worker that claimed a running job.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -128,6 +140,10 @@ impl Store {
 
     pub fn worker_path(&self, run_id: &str) -> PathBuf {
         self.runs_dir().join(format!("{run_id}.worker.json"))
+    }
+
+    pub fn controlled_path(&self, run_id: &str) -> PathBuf {
+        self.runs_dir().join(format!("{run_id}.controlled.json"))
     }
 
     pub fn cancel_path(&self, run_id: &str) -> PathBuf {
@@ -230,6 +246,7 @@ impl Store {
                     && !name.contains(".profile.")
                     && !name.contains(".worker.")
                     && !name.contains(".report.")
+                    && !name.contains(".controlled.")
                 {
                     name.strip_suffix(".json").map(str::to_string)
                 } else {

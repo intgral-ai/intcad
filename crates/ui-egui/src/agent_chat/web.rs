@@ -3,6 +3,9 @@
 //! things the page may ask for. The host owns the web view itself; the page is not trusted with
 //! more than the actions listed in [`act`], and every action is checked against the chat's state.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use serde_json::{Value, json};
 
 use super::*;
@@ -29,6 +32,8 @@ pub fn set_host(app: &mut SolveApp, available: bool) {
     app.agent_chat.web_host = available;
     if available {
         app.agent_chat.web_problem = None;
+    } else {
+        app.agent_chat.web_surface = Default::default();
     }
 }
 
@@ -36,6 +41,27 @@ pub fn set_host(app: &mut SolveApp, available: bool) {
 /// chat interface.
 pub fn set_problem(app: &mut SolveApp, problem: Problem) {
     app.agent_chat.web_problem = Some(problem);
+}
+
+/// Owned by one native view's IPC mailbox. The UI holds only a weak reference, so dropping the
+/// mailbox before dropping the view also invalidates its proof, without clearing the backing colour.
+#[derive(Default)]
+pub struct Surface(Rc<Cell<bool>>);
+
+impl Surface {
+    /// Bind only after native creation succeeds.
+    pub fn bind(&self, app: &mut SolveApp) {
+        app.agent_chat.web_surface = Rc::downgrade(&self.0);
+    }
+
+    /// Act on a message from this view's mailbox, recording only a validated surface.
+    pub fn act(&self, app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::result::Result<(), String> {
+        act_from(app, ctx, message, Some(self))
+    }
+}
+
+pub(super) fn surface_ready(app: &SolveApp) -> bool {
+    app.agent_chat.web_host && app.agent_chat.web_problem.is_none() && app.agent_chat.web_surface.upgrade().is_some_and(|surface| surface.get())
 }
 
 /// The panel's Retry: ask the host to try to make the view again, keeping the conversation.
@@ -695,6 +721,10 @@ pub fn state(app: &mut SolveApp) -> String {
 /// (`color`, `#rrggbb`: the page's own surface, for the frame around it), `copy` (`text`) and
 /// `open_link` (`url`, web addresses only). Anything else is refused with the reason.
 pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::result::Result<(), String> {
+    act_from(app, ctx, message, None)
+}
+
+fn act_from(app: &mut SolveApp, ctx: &egui::Context, message: &str, surface: Option<&Surface>) -> std::result::Result<(), String> {
     let _language = crate::i18n::scope(&app.preferences.language);
     if message.len() > MAX_MESSAGE * 4 {
         return Err("message too long".into());
@@ -734,9 +764,10 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             if body.trim().is_empty() && app.agent_chat.attachments.is_empty() {
                 return Err("send: nothing to send".into());
             }
-            // A check asked for in words runs the button's command, not a model turn.
+            // A check asked for in words uses the same guarded entry as the button, not a model turn.
             if crate::dfm_chat::is_check_request(body) {
                 run_check(app);
+                ctx.request_repaint();
                 return Ok(());
             }
             send(app, ctx, body.trim_end_matches('\n').to_string());
@@ -1002,10 +1033,15 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             app.preferences.agent_chat_side = if left { "left" } else { "right" }.into();
         }
         "surface" => {
-            let hex = text("color").and_then(|colour| colour.strip_prefix('#')).filter(|hex| hex.len() == 6);
+            let hex = text("color")
+                .and_then(|colour| colour.strip_prefix('#'))
+                .filter(|hex| hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()));
             let rgb = hex.and_then(|hex| u32::from_str_radix(hex, 16).ok()).ok_or("surface: color must be #rrggbb")?;
             let [_, r, g, b] = rgb.to_be_bytes();
             app.agent_chat.web_canvas = Some(egui::Color32::from_rgb(r, g, b));
+            if let Some(surface) = surface {
+                surface.0.set(true);
+            }
         }
         "copy" => {
             let body = text("text").ok_or("copy: no text")?;
@@ -1024,28 +1060,15 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
     Ok(())
 }
 
-/// Run `dfm.check` for the button and the chat phrase, and keep one Tool row per run so the page
-/// can show running, done or error.
+/// The button and chat shortcut ask to start a new controlled check, not read a report.
 fn run_check(app: &mut SolveApp) {
-    let n = app.dfm_chat.next;
-    app.dfm_chat.next = app.dfm_chat.next.saturating_add(1);
-    let id = format!("dfm-check-{n}");
-    app.agent_chat.push(Item::Tool {
-        id: id.clone(),
-        title: tr("ui.dfm_check.title").to_string(),
-        kind: "dfm.check".into(),
-        status: Some(backend::ToolStatus::InProgress),
-        input: None,
-        output: None,
-    });
-    let card = crate::dfm_chat::run(app);
-    let failed = card.status == "error";
-    set_check_item(app, &id, card);
-    if !failed {
-        // The run may already be finished (a small sheet); ask once, then the page polls.
-        poll_check(app);
-    }
-    app.agent_chat.notice(tr("ui.dfm_check.title"), failed);
+    let refusal = assistant_dfm_refusal(app);
+    let text = if refusal == solidcraft_engine::entitlement::RefusalCode::UnsafeToStart {
+        tr("ui.dfm_check.assistant_unavailable").to_string()
+    } else {
+        crate::account::refusal_text(app, refusal)
+    };
+    app.agent_chat.notice(text, true);
 }
 
 /// Ask `inspect.dfm` for the live report and update the newest check row. The page calls this
@@ -1062,7 +1085,7 @@ fn poll_check(app: &mut SolveApp) {
 }
 
 /// While a check row says running, refresh it from the saved report on each frame; the page's
-/// poll action is not the only driver (a host-sent shortcut starts the row itself).
+/// poll action is not the only driver.
 pub(crate) fn poll_running_checks(app: &mut SolveApp) {
     let running = app
         .agent_chat
@@ -1268,17 +1291,13 @@ mod tests {
         }));
         assert_eq!(failed.status, "error");
         assert_eq!(failed.error.as_deref(), Some("the sheet could not be read"));
-
-        let queued = crate::dfm_chat::Card::from_check(&json!({"projectId": "p", "candidateDigest": "c", "configDigest": "g", "sheets": 1}));
-        assert_eq!(queued.status, "running");
-        assert_eq!(queued.project_id, "p");
     }
 
     /// Chat's "检查一下当前设计" calls the same entry as the card's refresh button; the sheet
     /// metal wording the same, while a negative, a question about an earlier check and a
     /// repeated phrase are not requests.
     #[test]
-    fn the_chat_phrase_runs_the_same_check_entry_as_the_button() {
+    fn only_explicit_check_phrases_are_recognised() {
         for request in [
             "检查一下当前设计",
             "检查当前设计",
@@ -1307,15 +1326,11 @@ mod tests {
         ] {
             assert!(!crate::dfm_chat::is_check_request(not_request), "{not_request}");
         }
+    }
+
+    #[test]
+    fn dfm_display_and_finding_actions_keep_validating_input() {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
-        let before = app.agent_chat.items.len();
-        act(&mut app, &egui::Context::default(), r#"{"type":"send","text":"检查一下当前钣金件"}"#).expect("send");
-        assert_eq!(app.agent_chat.items.len(), before + 2, "a check row and its notice");
-        assert_eq!(app.agent_chat.items.iter().filter(|item| matches!(item, Item::Tool { kind, .. } if kind == "dfm.check")).count(), 1);
-        // The command is C's; until it lands the card says why, and the row is an error, not a result.
-        let card = app.dfm_chat.card.as_ref().expect("a card");
-        assert_eq!(card.status, "error");
-        assert!(card.error.as_deref().is_some_and(|why| why.contains("dfm.check")));
         act(&mut app, &egui::Context::default(), r#"{"type":"dfm_display","mode":"off"}"#).expect("display");
         assert_eq!(app.dfm_chat.display.id(), "off");
         assert!(act(&mut app, &egui::Context::default(), r#"{"type":"dfm_display","mode":"nope"}"#).is_err());

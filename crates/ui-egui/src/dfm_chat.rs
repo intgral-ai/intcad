@@ -45,10 +45,9 @@ pub struct State {
     pub card: Option<Card>,
     pub selected: Option<(String, String)>,
     pub display: Display,
-    pub next: u64,
 }
 
-/// One run's result, from `inspect.dfm` (a report) or `dfm.check` (a queued run).
+/// One run's result from `inspect.dfm`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Card {
@@ -69,6 +68,9 @@ pub struct Card {
     pub error: Option<String>,
     /// Whether a saved report exists (`inspect.dfm.available`).
     pub available: bool,
+    /// Whether `inspect.dfm` carried a parsed findings report for this exact run. A stopped or
+    /// failed run has terminal metadata but no findings; that is not a produced report.
+    pub report_produced: bool,
 }
 
 impl Card {
@@ -102,6 +104,7 @@ impl Card {
             card.findings = report.findings;
             card.rules = report.rules;
             card.not_checked = report.not_checked;
+            card.report_produced = true;
         }
         card.status = match (running, outcome.as_deref(), available) {
             (true, _, _) => "running",
@@ -116,22 +119,6 @@ impl Card {
             card.error = reason.or_else(|| Some("the check failed".into()));
         }
         card
-    }
-
-    /// Parse the `dfm.check` reply: the run was queued and is running.
-    pub fn from_check(value: &Value) -> Self {
-        Self {
-            run_id: String::new(),
-            candidate_digest: text(value, "candidateDigest"),
-            config_digest: text(value, "configDigest"),
-            model_version: String::new(),
-            project_id: text(value, "projectId"),
-            source: Value::Null,
-            freshness: "unknown".into(),
-            status: "running".into(),
-            available: false,
-            ..Self::default()
-        }
     }
 
     pub fn error(reason: String) -> Self {
@@ -258,15 +245,6 @@ pub fn model_context(card: &Card) -> Value {
             "anchor": finding.anchor, "flat": finding.flat, "faces": finding.faces, "outline": finding.outline,
         })).collect::<Vec<_>>(),
     })
-}
-
-/// Queue the same `dfm.check` entry the button runs. The card starts running; [`refresh`] asks
-/// `inspect.dfm` for the report until the run finishes.
-pub fn run(app: &mut SolveApp) -> Card {
-    match app.run("dfm.check", json!({})) {
-        Ok(reply) => Card::from_check(&reply),
-        Err(error) => Card::error(error),
-    }
 }
 
 /// Read the live run's report. A refusal is an error card, never a made-up result.
