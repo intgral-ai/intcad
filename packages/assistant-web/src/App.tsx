@@ -2651,11 +2651,12 @@ function previewOf(state: AssistantState): Line {
   const steps = turn.findLast((item): item is Of<'plan'> => item.kind === 'plan')?.steps ?? [];
   const at = busy ? steps.findIndex(step => step.status === 'in_progress') : -1;
   const step = at >= 0 ? `${at + 1}/${steps.length}` : undefined;
+  // An answer the agent waits for, whatever the state says (the state's badge puts it first too).
+  const asked = turn.findLast((item): item is Approval | Of<'permission'> => (item.kind === 'approval' && item.answer === null) || (item.kind === 'permission' && item.answered === null));
+  if (asked || state.waiting > 0) {
+    return { kind: 'waiting', icon: ShieldCheck, label: strings.waiting, detail: asked && (asked.kind === 'approval' ? asked.title : asked.heading), live: false, step };
+  }
   if (busy) {
-    const asked = turn.findLast((item): item is Approval | Of<'permission'> => (item.kind === 'approval' && item.answer === null) || (item.kind === 'permission' && item.answered === null));
-    if (asked || state.waiting > 0) {
-      return { kind: 'waiting', icon: ShieldCheck, label: strings.waiting, detail: asked && (asked.kind === 'approval' ? asked.title : asked.heading), live: false, step };
-    }
     if (now?.kind === 'tool' && (now.status === 'running' || now.status === 'pending')) return toolLine(now, Boolean(state.connect), step);
     if (now?.kind === 'check' && (now.status === 'running' || now.status === 'pending')) {
       return { kind: 'check', icon: ClipboardCheck, label: strings.dfmCheckTitle, detail: strings.dfmRunning, live: true, step };
@@ -2697,7 +2698,8 @@ function PreviewLine({ line, open, strings, onExpand }: { line: Line; open: bool
           <ActivityIcon className={cn(line.kind === 'waiting' && 'text-warning-foreground')}>
             <Icon aria-hidden />
           </ActivityIcon>
-          {line.label && <ActivityLabel className="text-body">{line.label}</ActivityLabel>}
+          {/* A label alone takes the row, as in Mastra's ActivityHeadline; beside a detail it keeps Mastra's cap. */}
+          {line.label && <ActivityLabel className={cn('text-body', !line.detail && 'max-w-none min-w-0 shrink')}>{line.label}</ActivityLabel>}
           {line.step && (
             <Badge size="sm" className="shrink-0 tabular-nums">
               {line.step}
@@ -2958,8 +2960,10 @@ function Centre({
         }
       }, 400);
     };
+    // The line's own row (Mastra's disclosure, `aria-expanded`) opens the conversation, which asks for its room itself.
     const down = (event: PointerEvent) => {
-      if (!menu && (event.target as Element | null)?.closest('[aria-haspopup], [aria-expanded]')) {
+      const at = event.target as Element | null;
+      if (!menu && at?.closest('[aria-haspopup], [aria-expanded]') && !at.closest('[data-centre-line]')) {
         menu = true;
         tell();
         settle();
