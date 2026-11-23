@@ -199,6 +199,18 @@ Stand-in-model runs are not a substitute for this and are not reported as if the
 - **FreeBSD** is broken by #174's `egui_winit` call, not by the agent; it needs its own fix.
 - **#212** (project context, INT-1473): the objective puts INT-1473's agentic work in this
   release, and that work (Files list, newest DFM report, project-scoped reads as the default
-  context) lives in #212, which is still a draft and not on this branch. Either #212 lands before
-  this release, or the release ships without the context behaviour INT-1473 describes; that is an
-  owner/Tianwei decision, and the packaging change does not decide it.
+  context) lives in #212. #212 is no longer a draft (`mergeable: MERGEABLE`,
+  `mergeStateStatus: CLEAN`, base `tianwei/modelling-skills-40c32c`, the same #204 head this
+  branch sits on). Measured integration, on a local branch only, not merged and not pushed:
+
+  | Check | Result |
+  |---|---|
+  | `git merge pr212` onto this branch | clean, no conflicts |
+  | `cargo test --profile ci -p solidcraft-ui-egui --lib -- agent_chat` | 700 passed; the only failures are the base's two host-environment ones (`cat` missing from the tests' minimal PATH) |
+  | `cargo clippy -p solidcraft-ui-egui --all-targets -- -D warnings` | clean; `cargo fmt` only re-wrapped one #212 test |
+  | agent folder built from the merged tree | both skill sets: `modelling-skills` (4) and `context-skills` (`intcad-context`) |
+  | `agent-smoke.mjs` on that package | 22 of 22 cases pass: project brief and file list (V1, V3), a refused write leaving the file byte for byte and an allowed one (V4), a file beside the project unreadable through its path or a link (V5), read tools asking nothing inside the project (F1), project agent files/MCP/hooks not loaded (V6), no agent files written to a session folder (R3), no earlier session's project files through `recall` (R9), `/tmp` untouched (R1), no brief without a project (V8) |
+
+  So #212 is ready to land and the packaging takes it up unchanged. Landing it is a review and
+  owner decision; this branch does not merge another PR's commits. If it does not land before the
+  release, the release ships without the Files/DFM context INT-1473 describes.
