@@ -34,14 +34,15 @@ test("permissionRules: the app's tools that only look and the task tools run una
   }
 });
 
-test("the app's server is the one the app names, and the tools taken as only looking are those its server marks read-only, less crash_reports", () => {
+test("the app's server is the one the app names, and the tools taken as only looking are those its server marks read-only, less crash_reports and version", () => {
   assert.equal(/pub const BRIDGE_NAME: &str = "([^"]+)";/u.exec(source("crates/ui-egui/src/agent_chat/acp.rs"))?.[1], APP_SERVER);
   const effects = new Map([...source("crates/mcp/src/tools.rs").matchAll(/\btool\(\s*"([a-z_]+)",[\s\S]*?Effect::(\w+)/gu)].map((match) => [match[1], match[2]]));
   assert.ok(effects.size >= 20 && effects.get("execute") === "Files", `the tool list was read: ${[...effects].join(", ")}`);
   for (const name of APP_READS) assert.equal(effects.get(name), "ReadOnly", name);
   // A new read-only tool of the server is a decision: add it to APP_READS, or here.
   const readOnly = [...effects].filter(([, effect]) => effect === "ReadOnly").map(([name]) => name);
-  assert.deepEqual(readOnly.filter((name) => !APP_READS.includes(name)), ["crash_reports"]);
+  // `version` is read-only but still asks: adding it to APP_READS would widen what runs unasked.
+  assert.deepEqual(readOnly.filter((name) => !APP_READS.includes(name)), ["version", "crash_reports"]);
 });
 
 test("commandReadsOnly: inspection, lists and measurements, as the engine resolves an id; nothing that changes the design or writes a file", () => {
