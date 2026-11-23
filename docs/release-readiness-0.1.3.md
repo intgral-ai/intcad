@@ -587,6 +587,21 @@ gap** — the commands are registered but the Assistant has no slash menu for th
 it is an app-side feature (a command menu fed by `available_commands_update`), not a packaging
 defect. Gate C's other two halves (installed, discoverable, callable) now have real-model evidence.
 
+## 12.4.2 A cancelled macOS slice removed the DMG from the candidate
+
+The run 45248432170 candidate has **no macOS package**. `macOS build x86_64` was cancelled by the
+runner before its steps ran (`steps: []`, 19:25 → 19:40), and `macOS universal` then reported
+`skipped` because it needs both slices. The aarch64 slice succeeded and Linux, FreeBSD and Arch
+succeeded; Windows x64/x86/arm64, Linux x86_64 and Web were still running when this was written.
+
+Consequence: this candidate cannot be a release, even if every remaining job passes, because the DMG
+is a required asset. Recovery: when the run finishes, `gh run rerun <id> --failed` retries the
+cancelled slice (and then the skipped universal job). That is a runner-capacity failure, not a code
+failure, and it is why the macOS row stays NOT TESTED rather than PASS.
+
+The gate behaved correctly here: the cancelled slice did **not** silently produce a package; the
+dependent job was skipped and the aggregate job treats a skipped build as a failure.
+
 ## 12.6 What the final review changed (GPT-6.2-Sol, high)
 
 Recorded so the next reader knows which parts of this document were corrected and why.
