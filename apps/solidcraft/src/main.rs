@@ -197,8 +197,9 @@ impl eframe::App for App {
         // Explicit account actions run before any paint, network or controlled dispatch this
         // frame. The port is local and nonblocking in this build; a sign-out or switch closes the
         // old session's commit authority before the control queue is read below.
-        self.solve.account.process_actions();
-        self.solve.drain_account_lifecycle();
+        if account::poll(&mut self.solve) {
+            ctx.request_repaint();
+        }
         // Keep polling the cached restart result and pending login or cleanup at a bounded rate.
         if self.solve.account.startup_waiting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));

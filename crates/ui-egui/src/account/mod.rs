@@ -11,7 +11,7 @@ mod panel;
 #[cfg(test)]
 pub(crate) mod tests;
 
-use solidcraft_engine::entitlement::{Refusal, RefusalCode};
+use solidcraft_engine::entitlement::{AccountService, AuthenticatedHostScope, MonotonicClock, Refusal, RefusalCode};
 
 pub use panel::{PromptContext, show_inline_sign_in, show_product_prompt, show_summary, status_chip};
 pub(crate) use panel::{compact_menu_entry, refusal_text, status_chip_width};
@@ -56,13 +56,16 @@ impl SignInState {
 
 /// A host event that ends the authority of the account session that admitted controlled work.
 ///
-/// The desktop composition root raises it after an explicit sign-out or account switch. The app
-/// then clears commit authority and invalidates queued admissions before a new session can run.
+/// The app clears commit authority and invalidates queued admissions before a new session can run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LifecycleEvent {
     SignedOut,
     AccountSwitched,
+    SignInRefused,
 }
+
+/// The host's one-time handover for a verified session.
+pub type CommitAuthority = (AuthenticatedHostScope, Box<dyn AccountService + Send>, Box<dyn MonotonicClock + Send>);
 
 /// Guidance for deleting an account by hand: where to ask and the steps to follow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,9 +237,15 @@ pub trait AccountPort: Send + Sync {
     /// Take the host event that ends the old session's authority, if one occurred.
     ///
     /// The default is no event, so a port that never signs out needs no extra method. The desktop
-    /// composition root reports sign-out and account switch here; the app drains it outside a
-    /// frame and closes the old authority before another action runs.
+    /// composition root reports sign-out, account switch and sign-in refusal here; the app
+    /// drains it before controlled dispatch, outside the paint pass.
     fn take_lifecycle_event(&mut self) -> Option<LifecycleEvent> {
+        None
+    }
+
+    /// Move the verified session's authority to the app once, after polling and lifecycle
+    /// handling. This only takes already-prepared state and must not perform I/O.
+    fn take_commit_authority(&mut self) -> Option<CommitAuthority> {
         None
     }
 
@@ -474,6 +483,11 @@ impl State {
             self.guide = Some(port.delete_account_guide());
         }
         Some(event)
+    }
+
+    /// Drain the verified session's authority outside the paint pass.
+    pub fn take_commit_authority(&mut self) -> Option<CommitAuthority> {
+        self.port.as_mut()?.take_commit_authority()
     }
 
     /// Wait for the host's account cleanup on a normal exit. Called after authority is closed,

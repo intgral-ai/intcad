@@ -31,7 +31,7 @@ use solidcraft_engine::entitlement::{
 };
 use solidcraft_ui_egui::SolveApp;
 use solidcraft_ui_egui::account::{
-    AccountPort, AccountView, DeleteAccountGuide, DeviceCode, LifecycleEvent, OwnModelView, SignInState, State, Timestamp,
+    AccountPort, AccountView, CommitAuthority, DeleteAccountGuide, DeviceCode, LifecycleEvent, OwnModelView, SignInState, State, Timestamp,
 };
 
 #[derive(Clone, Default)]
@@ -811,9 +811,8 @@ pub struct AccountRuntime {
     budget: BudgetTable,
     clock: Option<Arc<dyn MonotonicClock + Send + Sync>>,
     service: Option<Box<dyn AccountService + Send + Sync>>,
-    /// The exact scope the installed `service` was proved for. It is cleared with the service,
-    /// so a later sign-out, switch or expired session can never reuse a stale identity.
-    verified_scope: Option<AuthenticatedHostScope>,
+    /// The scope checked against the live credentials and its revocation generation.
+    service_proof: Option<(AuthenticatedHostScope, u64)>,
     control_renewal: Option<ControlRenewalJob>,
     control_renewal_factory: Option<ControlRenewalFactory>,
     control_renewal_source: Option<ControlRenewalSource>,
@@ -911,7 +910,7 @@ impl AccountRuntime {
             budget: BudgetTable::unverified_default(),
             clock: Some(Arc::new(SystemMonotonicClock::new())),
             service: None,
-            verified_scope: None,
+            service_proof: None,
             control_renewal: None,
             control_renewal_factory: None,
             control_renewal_source: None,
@@ -1032,10 +1031,11 @@ impl AccountRuntime {
     /// Install the account service only when `scope` is provable and is still the live session's
     /// binding. A repeated call for the same scope keeps the installed service.
     fn install_verified_service_for(&mut self, scope: &AuthenticatedHostScope) -> bool {
-        if !scope.is_provable() || self.authenticated_scope().as_ref() != Some(scope) {
+        let generation = self.credentials.authority_generation();
+        if !scope.is_provable() || self.authenticated_scope().as_ref() != Some(scope) || self.credentials.authority_generation() != generation {
             return false;
         }
-        if self.service.is_some() && self.verified_scope.as_ref() == Some(scope) {
+        if self.service.is_some() && self.service_proof.as_ref().is_some_and(|(proved, epoch)| proved == scope && *epoch == generation) {
             return true;
         }
         let Some(config) = self.config.as_ref() else { return false };
@@ -1048,15 +1048,15 @@ impl AccountRuntime {
             None => Arc::new(|| Box::new(UreqTransport::with_limits(RESTART_STATUS_TIMEOUT, RESTART_STATUS_CONNECT_TIMEOUT))),
         };
         self.service = Some(Box::new(HttpSessionAccountService { connection, transport, credentials: self.credentials.clone(), clock }));
-        self.verified_scope = Some(scope.clone());
+        self.service_proof = Some((scope.clone(), generation));
         true
     }
 
     /// Drop the installed service when its session is gone, revoked or different from the one it
     /// was proved for. Called on the host's logic tick, never from a paint pass.
     fn clear_stale_service(&mut self) {
-        let stale = match self.verified_scope.as_ref() {
-            Some(scope) => self.authenticated_scope().as_ref() != Some(scope),
+        let stale = match self.service_proof.as_ref() {
+            Some((scope, generation)) => self.credentials.authority_generation() != *generation || self.authenticated_scope().as_ref() != Some(scope),
             None => self.service.is_some(),
         };
         if stale {
@@ -1068,32 +1068,27 @@ impl AccountRuntime {
     /// run on the old identity.
     fn clear_account_service(&mut self) {
         self.service = None;
-        self.verified_scope = None;
+        self.service_proof = None;
     }
 
     /// Take the installed account service and clock only for the exact scope this runtime proved
     /// with a completed sign-in or the bounded restart check. A local candidate alone, an
     /// unprovable scope or a conflicting synchronous `restored` scope yields nothing.
-    fn take_commit_authority(
-        &mut self,
-        startup: &AccountStartup,
-    ) -> Option<(AuthenticatedHostScope, Box<dyn AccountService + Send>, Box<dyn MonotonicClock + Send>)> {
-        // With no installed service, do no credential read while the window is being created.
-        self.service.as_ref()?;
-        let verified = self.verified_scope.clone()?;
-        if let Some(restored) = startup.restored.as_ref()
-            && restored != &verified
+    fn take_commit_authority(&mut self, restored: Option<&AuthenticatedHostScope>) -> Option<CommitAuthority> {
+        let (scope, generation) = self.service_proof.as_ref()?;
+        // The installation checked the exact live scope. Check the revocation barrier here
+        // without returning to the keyring; subsequent service calls read live credentials.
+        if restored.is_some_and(|restored| restored != scope)
+            || self.credentials.is_revoked()
+            || self.credentials.authority_generation() != *generation
         {
             return None;
         }
-        let current = self.authenticated_scope()?;
-        if current != verified || !current.is_provable() {
-            return None;
-        }
-        let service = self.service.take()?;
+        let scope = scope.clone();
         let clock = self.clock.as_ref().map(|clock| SharedClock(Arc::clone(clock)))?;
-        self.verified_scope = None;
-        Some((verified, service, Box::new(clock)))
+        let service = self.service.take()?;
+        self.service_proof = None;
+        Some((scope, service, Box::new(clock)))
     }
 }
 
@@ -1384,6 +1379,7 @@ struct DesktopAccountPort {
     runtime: AccountRuntime,
     view: AccountView,
     lifecycle: Option<LifecycleEvent>,
+    restored: Option<AuthenticatedHostScope>,
     /// `true` until a reviewed sign-in path or confirmed cleanup has cleared a durable logout
     /// marker. It keeps the failed-cleanup identity fail-closed across this process too.
     logout: StartupLogout,
@@ -1394,6 +1390,8 @@ struct DesktopAccountPort {
     /// verified result installs the account service for that exact scope; any explicit sign-in,
     /// sign-out, switch or shutdown retires it.
     restart: Option<RestartJob>,
+    /// The same restart result remains available for the view but can prepare authority only once.
+    restart_service_installed: bool,
     workers: Vec<std::thread::JoinHandle<()>>,
     login_attempt: u64,
     login_status: Arc<Mutex<LoginStatus>>,
@@ -1418,11 +1416,13 @@ impl DesktopAccountPort {
             runtime,
             view,
             lifecycle: None,
+            restored: startup.restored.clone(),
             logout: startup.logout,
             secure_store: startup.secure_store,
             generation: 0,
             cleanup: Arc::new(Mutex::new(CleanupStatus::default())),
             restart: None,
+            restart_service_installed: false,
             workers: Vec::new(),
             login_attempt: 0,
             login_status: Arc::new(Mutex::new(LoginStatus::default())),
@@ -1617,7 +1617,7 @@ impl DesktopAccountPort {
                 solidcraft_engine::note!("account: the verified sign-in produced no provable scope; commit authority stays closed");
             }
         } else if cleared {
-            self.runtime.clear_account_service();
+            self.refuse_sign_in();
         }
         Some(self.view.clone())
     }
@@ -1786,12 +1786,19 @@ impl DesktopAccountPort {
     /// Install the account service for an online-verified restart, or drop one whose session has
     /// expired or been revoked. Called from the host's logic tick, never from a paint pass.
     fn reconcile_account_service(&mut self) {
-        match self.verified_restart_scope() {
-            Some(scope) => {
-                self.runtime.install_verified_service_for(&scope);
-            }
-            None => self.runtime.clear_stale_service(),
+        if !self.restart_service_installed
+            && let Some(scope) = self.verified_restart_scope()
+        {
+            self.restart_service_installed = self.runtime.install_verified_service_for(&scope);
+        } else {
+            self.runtime.clear_stale_service();
         }
+    }
+
+    fn refuse_sign_in(&mut self) {
+        self.runtime.clear_account_service();
+        self.retire_control_renewal();
+        self.lifecycle.get_or_insert(LifecycleEvent::SignInRefused);
     }
 }
 
@@ -1844,6 +1851,10 @@ pub fn poll_repaint_after(view: &AccountView) -> Option<Duration> {
 }
 
 impl AccountPort for DesktopAccountPort {
+    fn take_commit_authority(&mut self) -> Option<CommitAuthority> {
+        self.runtime.take_commit_authority(self.restored.as_ref())
+    }
+
     fn control_admitted(
         &mut self,
         scope: &AuthenticatedHostScope,
@@ -1937,76 +1948,7 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn sign_in(&mut self) -> Result<(), Refusal> {
-        if self.logout != StartupLogout::Clear {
-            return Err(account_unavailable("previous sign-out must be confirmed before signing in"));
-        }
-        if self.restart_waiting() {
-            return Err(account_unavailable("the previous session is still being checked or settled"));
-        }
-        if self.login_pending() {
-            return Err(account_unavailable("a sign-in is already in progress"));
-        }
-        if self.view().signed_in {
-            // Lifecycle rule: a new provider login never replaces an active account implicitly.
-            return Err(account_unavailable("sign out or switch account before signing in again"));
-        }
-        if !self.secure_store {
-            return Err(account_unavailable("no secure credential store is available"));
-        }
-        if let Ok(mut status) = self.cleanup.lock() {
-            if status.pending.is_some() {
-                return Err(account_unavailable("the sign-out cleanup is still running"));
-            }
-            if let Some(error) = &status.error {
-                return Err(error.clone());
-            }
-            // A new attempt supersedes an unadopted cleanup confirmation, so the later poll can
-            // never overwrite the signed-in view with the previous sign-out.
-            status.completed = false;
-        } else {
-            return Err(account_unavailable("the account cleanup state is unavailable"));
-        }
-        if self.runtime.credentials.is_revoked() {
-            return Err(account_unavailable("the account authority is revoked"));
-        }
-        let config = self.runtime.config.clone().ok_or_else(|| account_unavailable("no configured product-session verification origin"))?;
-        if self.retired_login_workers() >= MAX_LOGIN_WORKERS {
-            return Err(account_unavailable("previous sign-in workers are still finishing"));
-        }
-
-        self.cancel_restart();
-        self.login_attempt = self.login_attempt.wrapping_add(1);
-        let attempt = self.login_attempt;
-        match self.login_status.lock() {
-            Ok(mut status) => {
-                *status = LoginStatus { attempt, phase: LoginPhase::Starting, prompt: None, account: None };
-            }
-            Err(_) => return Err(account_unavailable("the sign-in state is unavailable")),
-        }
-        self.view = AccountView { sign_in_state: SignInState::Starting, ..AccountView::signed_out() };
-
-        let task = LoginTask {
-            attempt,
-            client: config.client,
-            connection: config.product,
-            verification_origin: config.verification_origin,
-            credentials: self.runtime.credentials.clone(),
-            status: Arc::clone(&self.login_status),
-            persist_gate: Arc::clone(&self.persist_gate),
-            bootstrap_transport: None,
-        };
-        match (self.runner)(task) {
-            Ok(worker) => {
-                self.login_workers.push(worker);
-                Ok(())
-            }
-            Err(error) => {
-                // A failed spawn is not a pending login and must not leave the menu in Starting.
-                self.invalidate_login();
-                self.view = AccountView::signed_out();
-                Err(error)
-            }
-        }
+        self.start_sign_in().inspect_err(|_| self.refuse_sign_in())
     }
 
     fn open_sign_in_browser(&mut self) -> Result<(), Refusal> {
@@ -2101,18 +2043,88 @@ impl AccountPort for DesktopAccountPort {
     }
 }
 
+impl DesktopAccountPort {
+    fn start_sign_in(&mut self) -> Result<(), Refusal> {
+        if self.logout != StartupLogout::Clear {
+            return Err(account_unavailable("previous sign-out must be confirmed before signing in"));
+        }
+        if self.restart_waiting() {
+            return Err(account_unavailable("the previous session is still being checked or settled"));
+        }
+        if self.login_pending() {
+            return Err(account_unavailable("a sign-in is already in progress"));
+        }
+        if self.view().signed_in {
+            // Lifecycle rule: a new provider login never replaces an active account implicitly.
+            return Err(account_unavailable("sign out or switch account before signing in again"));
+        }
+        if !self.secure_store {
+            return Err(account_unavailable("no secure credential store is available"));
+        }
+        if let Ok(mut status) = self.cleanup.lock() {
+            if status.pending.is_some() {
+                return Err(account_unavailable("the sign-out cleanup is still running"));
+            }
+            if let Some(error) = &status.error {
+                return Err(error.clone());
+            }
+            // A new attempt supersedes an unadopted cleanup confirmation, so the later poll can
+            // never overwrite the signed-in view with the previous sign-out.
+            status.completed = false;
+        } else {
+            return Err(account_unavailable("the account cleanup state is unavailable"));
+        }
+        if self.runtime.credentials.is_revoked() {
+            return Err(account_unavailable("the account authority is revoked"));
+        }
+        let config = self.runtime.config.clone().ok_or_else(|| account_unavailable("no configured product-session verification origin"))?;
+        if self.retired_login_workers() >= MAX_LOGIN_WORKERS {
+            return Err(account_unavailable("previous sign-in workers are still finishing"));
+        }
+
+        self.cancel_restart();
+        self.login_attempt = self.login_attempt.wrapping_add(1);
+        let attempt = self.login_attempt;
+        match self.login_status.lock() {
+            Ok(mut status) => {
+                *status = LoginStatus { attempt, phase: LoginPhase::Starting, prompt: None, account: None };
+            }
+            Err(_) => return Err(account_unavailable("the sign-in state is unavailable")),
+        }
+        self.view = AccountView { sign_in_state: SignInState::Starting, ..AccountView::signed_out() };
+
+        let task = LoginTask {
+            attempt,
+            client: config.client,
+            connection: config.product,
+            verification_origin: config.verification_origin,
+            credentials: self.runtime.credentials.clone(),
+            status: Arc::clone(&self.login_status),
+            persist_gate: Arc::clone(&self.persist_gate),
+            bootstrap_transport: None,
+        };
+        match (self.runner)(task) {
+            Ok(worker) => {
+                self.login_workers.push(worker);
+                Ok(())
+            }
+            Err(error) => {
+                // A failed spawn is not a pending login and must not leave the menu in Starting.
+                self.invalidate_login();
+                self.view = AccountView::signed_out();
+                Err(error)
+            }
+        }
+    }
+}
+
 /// Install the desktop account runtime into the app.
 ///
 /// The UI port is always installed so the start page and title bar have one host-owned seam. The
-/// durable ledgers are installed when they opened. Commit and billing authority are installed only
-/// when the runtime already holds a service for a scope it proved; a local candidate alone installs
-/// nothing. The bounded restart check installs that service in the port after it verifies the
-/// session, and a completed sign-in installs it during the same poll.
-pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: AccountStartup) {
-    if let Some((scope, service, clock)) = runtime.take_commit_authority(&startup) {
-        app.install_commit_authority(scope, service, clock);
-        solidcraft_engine::note!("account: authenticated commit authority installed for the verified session");
-    } else if startup.logout == StartupLogout::ReadableTombstone {
+/// durable ledgers are installed when they opened. Commit authority is handed over by the port
+/// on the logic tick only after a bounded restart check or sign-in verifies the session.
+pub fn install(app: &mut SolveApp, runtime: AccountRuntime, startup: AccountStartup) {
+    if startup.logout == StartupLogout::ReadableTombstone {
         solidcraft_engine::note!(
             "account: a readable sign-out marker is present; recovery is offered and no prior identity or authority is restored"
         );
@@ -2130,6 +2142,17 @@ pub fn install(app: &mut SolveApp, mut runtime: AccountRuntime, startup: Account
         app.install_review_store(Box::new(ledger));
     }
     app.account = State::with_port(Box::new(port));
+}
+
+/// Adopt worker results, retire any old authority, then install authority for a proved session.
+/// Runs before controlled dispatch, never in the paint pass.
+pub fn poll(app: &mut SolveApp) -> bool {
+    app.account.process_actions();
+    app.drain_account_lifecycle();
+    let Some((scope, service, clock)) = app.account.take_commit_authority() else { return false };
+    app.install_commit_authority(scope, service, clock);
+    solidcraft_engine::note!("account: authenticated commit authority installed for the verified session");
+    true
 }
 
 #[cfg(test)]
@@ -3376,21 +3399,19 @@ mod tests {
         install(&mut app, runtime, startup);
         wait_for_counter(&entered, 1);
         // The transport is still blocked. Both installation and this logic tick already returned.
-        app.account.process_actions();
+        assert!(!poll(&mut app), "the app has no authority while the check is pending");
         assert!(!app.account.view().signed_in, "a pending check is never presented as signed in");
         assert!(app.account.startup_waiting(), "the host should wake while the bounded check runs");
 
         gate_tx.send(()).unwrap();
-        wait_until("the gated restart view", || {
-            app.account.process_actions();
-            app.account.view().signed_in
-        });
+        wait_until("the gated restart authority", || poll(&mut app));
         assert_eq!(app.account.view().account_label.as_deref(), Some("acct_desktop_0001"));
         assert!(!app.account.startup_waiting(), "a finished check stops the bounded wake");
         assert_eq!(product.requests().len(), 1, "one status read and no bootstrap or replay");
         assert_eq!(product.requests()[0].method(), "GET");
         assert_eq!(product.requests()[0].url(), "https://api.example/v1/status");
         assert!(opener.urls().is_empty(), "the restart check never opens a browser");
+        app.end_controlled_session();
         app.account.shutdown();
     }
 
@@ -3595,7 +3616,10 @@ mod tests {
 
         let entries = store.entries.lock().unwrap().clone();
         let mutations = store.mutation_count();
-        for action in [LifecycleEvent::SignedOut, LifecycleEvent::AccountSwitched] {
+        for (action, revoke) in [
+            (LifecycleEvent::SignedOut, DesktopAccountPort::sign_out as fn(&mut DesktopAccountPort) -> Result<(), Refusal>),
+            (LifecycleEvent::AccountSwitched, DesktopAccountPort::switch_account),
+        ] {
             let runtime = AccountRuntime::with_session(CredentialSession::new(Box::new(store.clone())));
             let startup = runtime.startup();
             assert!(!startup.secure_store, "the failed probe is visible at startup");
@@ -3604,10 +3628,7 @@ mod tests {
             assert!(!port.view().sign_out_recovery, "a failed probe must not offer recovery");
             assert!(!port.view().sign_in_visible, "a failed probe must not offer sign-in");
             let before = port.view().clone();
-            let refused = match action {
-                LifecycleEvent::SignedOut => port.sign_out(),
-                LifecycleEvent::AccountSwitched => port.switch_account(),
-            };
+            let refused = revoke(&mut port);
             assert!(refused.is_err(), "{action:?} must fail closed without a secure store");
             assert_eq!(port.view(), before, "{action:?} changed the view");
             assert!(port.lifecycle.is_none(), "{action:?} raised a lifecycle event");
@@ -4533,12 +4554,16 @@ mod tests {
         let startup = unverified.startup();
         assert!(startup.candidate.is_some());
         assert!(startup.restored.is_none(), "startup carries no synchronously verified scope");
-        assert!(unverified.take_commit_authority(&startup).is_none(), "a local candidate alone installs no authority");
+        let mut port = DesktopAccountPort::new(unverified, &startup);
+        assert!(port.take_commit_authority().is_none(), "a local candidate alone installs no authority");
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.account = State::with_port(Box::new(port));
+        assert!(!poll(&mut app), "there is no authority to install before verification");
     }
 
     /// A complete sign-in through the real worker and a scripted product service, including the
     /// installation bootstrap, so the persisted session has a provable scope.
-    fn verified_sign_in_port() -> (DesktopAccountPort, AccountStartup) {
+    fn verified_sign_in_port() -> DesktopAccountPort {
         let device = ScriptedDevice::scripted(vec![(200, device_body()), (200, token_body())]);
         let product = ScriptedProduct::scripted(vec![
             Ok(WireResponse::new(200, status_body().to_string().into_bytes())),
@@ -4550,7 +4575,7 @@ mod tests {
         port.sign_in().unwrap();
         wait_for_login(&mut port, true);
         assert!(port.runtime.service.is_some(), "the completed sign-in installed the account service");
-        (port, startup)
+        port
     }
 
     #[test]
@@ -4570,21 +4595,42 @@ mod tests {
         let scope = port.runtime.authenticated_scope().expect("the installed pair gives a provable scope");
         assert!(scope.is_provable());
         assert!(port.runtime.service.is_some(), "the verified sign-in installs the account service");
-        let (installed, mut service, _clock) = port.runtime.take_commit_authority(&startup).expect("the verified sign-in gives commit authority");
+        let runtime_clock = port.runtime.clock.clone().unwrap();
+        let before = runtime_clock.now();
+        let (installed, service, clock) = port.take_commit_authority().expect("the verified sign-in gives commit authority");
+        let drained = clock.now();
+        let after = runtime_clock.now();
+        assert!((before..=after).contains(&drained), "the handover did not keep the runtime clock's epoch");
         assert_eq!(installed, scope);
         let availability = service.status().expect("the installed service talks to the same product origin");
         assert!(availability.online, "the served status is parsed as the online snapshot");
+        assert!(port.take_commit_authority().is_none(), "the same sign-in can hand over authority only once");
         port.shutdown();
     }
 
     #[test]
-    fn sign_out_clears_the_installed_commit_authority() {
-        let (mut port, startup) = verified_sign_in_port();
-        port.sign_out().unwrap();
-        assert!(port.runtime.service.is_none(), "sign-out drops the account service");
-        assert!(port.runtime.take_commit_authority(&startup).is_none(), "a later controlled entry cannot reuse the old identity");
-        wait_for_cleanup(&port);
-        port.shutdown();
+    fn session_end_clears_the_apps_commit_authority() {
+        for action in [Some(Action::SignOut), Some(Action::SwitchAccount), Some(Action::SignIn), None] {
+            let port = verified_sign_in_port();
+            // The runtime and installed service share this clock. The handover gives the app
+            // a separate handle to the same clock, and teardown drops the service and that handle.
+            let runtime_clock = port.runtime.clock.clone().unwrap();
+            let prepared = Arc::strong_count(&runtime_clock);
+            let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+            app.account = State::with_port(Box::new(port));
+            assert!(poll(&mut app), "the completed sign-in hands authority to the app");
+            assert_eq!(Arc::strong_count(&runtime_clock), prepared + 1, "the app holds the service and its clock");
+            assert!(!poll(&mut app), "the next frame must not reinstall authority");
+            if let Some(action) = action {
+                app.account.request(action);
+                assert!(!poll(&mut app), "{action:?} must not reinstall authority");
+            } else {
+                app.end_controlled_session(); // The desktop exit hook closes authority first.
+            }
+            assert_eq!(Arc::strong_count(&runtime_clock), prepared - 1, "{action:?} must drop both app handles");
+            assert!(app.account.take_commit_authority().is_none(), "{action:?} must leave nothing to hand over");
+            app.account.shutdown();
+        }
     }
 
     #[test]
@@ -4611,19 +4657,21 @@ mod tests {
         wait_for_counter(&gated.entered, 1);
         let _ = port.poll();
         assert!(port.runtime.service.is_none(), "an unfinished online check installs no account service");
-        assert!(port.runtime.take_commit_authority(&startup).is_none(), "a pending check yields no authority");
+        assert!(port.take_commit_authority().is_none(), "a pending check yields no authority");
 
         gate_tx.send(()).unwrap();
         wait_for_restart(&port);
         let _ = port.poll();
         assert!(port.runtime.service.is_some(), "the completed check installs the account service");
-        assert!(port.runtime.take_commit_authority(&startup).is_some(), "the verified restart yields authority");
+        assert!(port.take_commit_authority().is_some(), "the verified restart yields authority");
+        let _ = port.poll();
+        assert!(port.take_commit_authority().is_none(), "polling must not replay the same restart proof");
         port.shutdown();
     }
 
     #[test]
     fn an_unproven_or_mismatched_scope_never_installs_commit_authority() {
-        let (mut port, startup) = verified_sign_in_port();
+        let mut port = verified_sign_in_port();
         let other =
             AuthenticatedHostScope::new(AccountId::new("acct_other"), InstallationId::new("inst_other"), HostSessionBinding::new("binding_other"));
         let unprovable = AuthenticatedHostScope::new(AccountId::new(""), InstallationId::new(""), HostSessionBinding::new(""));
@@ -4632,28 +4680,37 @@ mod tests {
         assert!(!port.runtime.install_verified_service_for(&unprovable), "an unprovable scope installs nothing");
         assert!(port.runtime.service.is_some(), "a refused scope does not disturb the proved service");
 
-        let mut mismatched = startup.clone();
-        mismatched.restored = Some(other);
-        assert!(port.runtime.take_commit_authority(&mismatched).is_none(), "a conflicting restored scope yields no authority");
-        assert!(port.runtime.take_commit_authority(&startup).is_some(), "the scope the runtime proved still yields authority");
+        port.restored = Some(other);
+        assert!(port.take_commit_authority().is_none(), "a conflicting restored scope yields no authority");
+        port.restored = None;
+        assert!(port.take_commit_authority().is_some(), "the scope the runtime proved still yields authority");
         port.shutdown();
     }
 
     #[test]
-    fn installing_the_runtime_starts_the_port_before_any_authority() {
+    fn the_app_installs_restart_authority_but_paid_entries_still_need_bounds() {
         let runtime = verified_restart_runtime(active_session());
         let startup = runtime.startup();
         let mut app = solidcraft_ui_egui::SolveApp::new(solidcraft_engine::Session::default(), solidcraft_ui_egui::Services::default());
         install(&mut app, runtime, startup);
         assert!(app.account.is_installed(), "the desktop port is installed");
-        wait_until("the background restart view", || {
-            app.account.process_actions();
-            app.account.view().signed_in
-        });
+        wait_until("the background restart authority", || poll(&mut app));
         assert!(app.account.view().signed_in, "the online-verified restart is shown");
+        assert!(!poll(&mut app), "the next frame cannot reinstall the same authority");
+
+        let operation = OperationId::parse("op_bound_fixture").unwrap();
+        let review = solidcraft_ui_egui::dfm_review::start_with_operation(&mut app, operation).unwrap_err();
+        assert_eq!(review, "UNSAFE_TO_START: this Review path has no verified safe-stop bound");
+        let (mut control, _) = solidcraft_ui_egui::ControlRequest::trusted_control("engine.execute", json!({"command": "document.inspect"}));
+        let control::Outcome::Done(reply) = control::handle(&mut app, &egui::Context::default(), &mut control) else {
+            panic!("expected an immediate refusal");
+        };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart");
+        assert_eq!(reply["error"], "this controlled entry has no verified safe-stop bound");
 
         let (gui, _) = solidcraft_ui_egui::ControlRequest::trusted_gui("engine.execute", json!({"command": "document.inspect"}));
         assert!(matches!(control::admit_control_request(&gui, &BudgetTable::unverified_default(), &mut NoBilling), Admission::Allowed));
+        app.end_controlled_session();
         app.account.shutdown();
     }
 
