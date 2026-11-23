@@ -16357,7 +16357,7 @@ fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the
     assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"size"}"#).is_err(), "a size without a height is refused");
 
     // It is no side panel: in the floating layout the axis view keeps the view's top right, and the
-    // navigation bar leaves the bottom centre to it for the view's bottom left.
+    // navigation bar leaves the bottom centre to it for the view's bottom right.
     h.call("ui.set", json!({"layout": "floating"}));
     h.app.ui.show_navigation_bar = true;
     for (width, height) in [(1600.0, 1000.0), (1100.0, 700.0)] {
@@ -16372,8 +16372,8 @@ fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the
             layout.content
         );
         let bar = layout.navigation;
-        assert!(bar.left() < layout.content.left() + 40.0, "the navigation bar at the bottom left at {width}: {bar:?}");
-        assert!(bar.right() < place.left(), "clear of the Assistant at {width}: {bar:?} {place:?}");
+        assert!(bar.right() > layout.content.right() - 40.0, "the navigation bar at the bottom right at {width}: {bar:?}");
+        assert!(bar.left() > place.right() || bar.top() > place.bottom(), "clear of the Assistant at {width}: {bar:?} {place:?}");
     }
     let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
     let window = h.ctx.content_rect();
@@ -16381,7 +16381,7 @@ fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the
     h.frames(3);
     let wide = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
     assert!((wide.center().x - h.ctx.content_rect().center().x).abs() < 1.0, "a wide window has it centred again: {wide:?}");
-    assert!(place.center().x >= window.center().x - 0.5, "a narrow one moves it right of the bar, never left: {place:?} in {window:?}");
+    assert!(place.center().x <= window.center().x + 0.5, "a narrow one moves it left of the bar, never right: {place:?} in {window:?}");
 
     h.call("ui.prefs", json!({"agent_chat_centre": false}));
     h.frames(3);

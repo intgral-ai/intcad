@@ -139,10 +139,10 @@ pub(crate) fn editor_layout(stage: Rect, prefs: &NavigationBar, label_width: imp
 pub(crate) fn measured(app: &SolveApp, ctx: &egui::Context, content: Rect) -> BarLayout {
     let t = Tokens::get();
     // The Assistant at the bottom centre of the window has the bar's default place: while it is
-    // shown there, a bar at the bottom centre goes to the view's bottom left.
+    // shown there, a bar at the bottom centre goes to the view's bottom right.
     let mut prefs = std::borrow::Cow::Borrowed(&app.preferences.navigation_bar);
     if prefs.position == Position::Centre && prefs.edge == Edge::Bottom && crate::agent_chat::centred_shown(app) {
-        prefs.to_mut().position = Position::Left;
+        prefs.to_mut().position = Position::Right;
     }
     measure(content, &prefs, navigation_bar::canvas_caps(app), |slot| {
         ctx.fonts_mut(|fonts| fonts.layout_no_wrap(slot_text(app, slot).to_owned(), crate::fonts::medium(ui_kit::NAV_TEXT), t.form_ink).size().x)

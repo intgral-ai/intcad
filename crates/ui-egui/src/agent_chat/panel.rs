@@ -268,12 +268,24 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
         bounds.max.x = (rail.left() - gap).min(bounds.right()).max(bounds.left());
     }
     let window = ctx.content_rect();
-    // The view's navigation bar leaves the bottom centre for the bottom left while the box is here
-    // (`navigation_bar_view::measured`); in a narrow window the box keeps clear of it.
+    // The view's navigation bar leaves the bottom centre for the bottom right while the box is here
+    // (`navigation_bar_view::measured`), or keeps the bottom left or right it was given. The box goes
+    // beside it while the whole box fits there, and above the bar's row in a window too narrow for
+    // both: never squeezed, so its controls stay on one row.
     if let Some(bar) =
         app.viewport.layout.as_ref().map(|layout| layout.navigation).filter(|bar| bar.is_positive() && bar.center().y > window.center().y)
     {
-        bounds.min.x = (bar.right() + gap).min(bounds.right()).max(bounds.left());
+        let mut beside = bounds;
+        if bar.center().x < window.center().x {
+            beside.min.x = (bar.right() + gap).min(bounds.right()).max(bounds.left());
+        } else {
+            beside.max.x = (bar.left() - gap).max(bounds.left()).min(bounds.right());
+        }
+        if beside.width() >= CENTRE_WIDTH.min(bounds.width()) {
+            bounds = beside;
+        } else {
+            bounds.max.y = (bar.top() - gap).min(bounds.bottom()).max(bounds.top());
+        }
     }
     let most = (window.height() / 2.0).min(bounds.height()).max(0.0);
     app.agent_chat.web_centre = Some(most);
