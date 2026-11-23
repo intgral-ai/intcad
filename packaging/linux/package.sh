@@ -9,7 +9,7 @@
 #   $DIST/intcad-<version>-linux-<arch>.rpm             Fedora, openSUSE, RHEL, ...
 #   $DIST/intcad-<version>-linux-<arch>.tar.gz          plain FHS-style tree (bin/, share/)
 #
-# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"] [--with-mastra]
+# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"] [--with-mastra] [--with-mastra-agent]
 #
 # Needs: cargo; nfpm for deb/rpm (https://nfpm.goreleaser.com); appimagetool for the AppImage
 # (downloaded into $CARGO_TARGET_DIR if missing). Build on an old distro (CI: Ubuntu 22.04,
@@ -24,12 +24,14 @@ HERE="$ROOT/packaging/linux"
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
 WITH_MASTRA="${SOLIDCRAFT_WITH_MASTRA:-0}"
+WITH_MASTRA_AGENT="${SOLIDCRAFT_WITH_MASTRA_AGENT:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --formats) FORMATS="$2"; shift 2 ;;
     --with-mastra) WITH_MASTRA=1; shift ;;
     --without-mastra) WITH_MASTRA=0; shift ;;
+    --with-mastra-agent) WITH_MASTRA_AGENT=1; shift ;;
     -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -64,6 +66,8 @@ else
 fi
 WORK="$CARGO_TARGET_DIR/linux-package"
 STAGE="$WORK/root"
+# An earlier run may have left the built-in agent's folder, which nothing may write.
+if [ -d "$WORK" ]; then chmod -R u+w "$WORK"; fi
 rm -rf "$WORK"
 
 # ---- stage an FHS tree (shared by every format) -------------------------------------------------
@@ -111,6 +115,28 @@ if [ "$WITH_MASTRA" = 1 ]; then
 else
   mkdir -p "$STAGE/usr/lib/intcad"
   warn "the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)"
+fi
+
+# ---- Built-in agent (opt-in, for test packages) -------------------------------------------------
+# Its own folder beside `mastra/`: the app starts the Node in it with agent/main.mjs when no
+# environment variable names an agent. stage-agent.sh checks the folder before copying it, and
+# the staged tree is then looked through for anything like a secret or a stored sign-in.
+if [ "$WITH_MASTRA_AGENT" = 1 ]; then
+  case "$ARCH" in
+    x86_64)
+      "$HERE/../mastra/stage-agent.sh" --target x86_64-unknown-linux-gnu --dest "$STAGE/usr/lib/intcad/mastra-agent"
+      cp "$STAGE/usr/lib/intcad/mastra-agent/licenses/THIRD-PARTY-LICENSES.txt" "$STAGE/usr/share/doc/intcad/MASTRA-AGENT-THIRD-PARTY-LICENSES.txt"
+      cp "$STAGE/usr/lib/intcad/mastra-agent/licenses/NODE-LICENSE.txt" "$STAGE/usr/share/doc/intcad/MASTRA-AGENT-NODE-LICENSE.txt"
+      # Nothing in the folder may be written once it is installed: the agent keeps what it
+      # writes in the user's data folder. Every format carries these modes.
+      chmod -R a-w "$STAGE/usr/lib/intcad/mastra-agent"
+      node "$ROOT/packages/mastra-runtime/scripts/agent-package.mjs" check --read-only --target x86_64-unknown-linux-gnu "$STAGE/usr/lib/intcad/mastra-agent"
+      node "$ROOT/packages/mastra-runtime/scripts/agent-package.mjs" scan "$STAGE"
+      # The agent as the packages will carry it, started and answering against stand-ins.
+      node "$ROOT/packages/mastra-runtime/scripts/agent-smoke.mjs" "$STAGE/usr/lib/intcad/mastra-agent"
+      ;;
+    *) echo "error: the built-in agent's folder is built for Linux x86_64 only; drop --with-mastra-agent for $ARCH" >&2; exit 2 ;;
+  esac
 fi
 
 has() { case " $FORMATS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }

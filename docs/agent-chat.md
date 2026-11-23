@@ -19,7 +19,8 @@ Everything about it is on one page: **Preferences → AI**.
   started. The page stays, so you can turn it back on.
 - **Show Assistant button in application bar** (on by default): the **Assistant** icon in the application bar
   row, which stays there however wide the window is. Turn it off to keep only the shortcut and
-  the menu entry.
+  the menu entry. Beside the right rail the bar has no such icon whatever this says: the
+  Assistant's button is the rail's first row there (see below).
 - **Connect the last-used agent when SolidCraft starts** (off by default): each launch starts
   the agent you connected last (the default one if you never connected), in the background,
   once SolidCraft has looked for the installed agents. The panel's header shows **Starting…**,
@@ -34,7 +35,9 @@ Neither applies when SolidCraft is started with `--control` for automation.
 
 With AI features on, the panel opens from:
 
-- the **Assistant** icon in the application bar;
+- **Assistant**, the first row of the right rail, which opens the panel and closes it again;
+  where no rail is drawn (Preferences › Interface › **Right rail** turned off, or the Render
+  workspace) the **Assistant** icon at the right of the application bar does the same;
 - **Ctrl+Shift+A** (Cmd+Shift+A on a Mac), which also works from the chat's own text box;
 - **View settings** (the last button of the navigation bar under the view) → **Agent chat**.
 
@@ -52,8 +55,8 @@ everything it started), the state, **Connect** while the agent is not running, *
 chat**, the panel's menu (dock on the other side, fold to a strip) and **Close**;
 the conversation, with tool calls as rows that fold, a request for approval with **Allow once**,
 **Always allow** and **Deny** always in view, the plan as a task list above the message box, and
-**Undo these changes**; and the message box, whose **+** menu has **Choose a file…**, **Paste a
-picture**, **Attach view**, **Attach selection** and **Pick context**, next to the permission
+**Undo these changes**; and the message box, whose **+** menu has **Choose a file…**, **Attach view**, **Attach selection**
+and **Pick context**, and which takes a picture pasted from the clipboard, next to the permission
 mode and the skill, and the agent's model beside **Send**: a list you search by typing, which
 also offers what you typed as a model of your own when the agent takes one. What the page shows
 and may ask for is described in `crates/ui-egui/src/agent_chat/web.rs`.
@@ -180,8 +183,9 @@ turn limit. Queue, Send now and Stop keep their existing behavior.
 A message can carry up to eight files, to show the agent what you mean: a concept picture, a
 sketch, a brief, a part to fit around.
 
-- **+** next to **Send** has **Choose a file…** (a file dialog for the types below) and **Paste a
-  picture** (the picture on the clipboard).
+- **+** next to **Send** has **Choose a file…** (a file dialog for the types below). A picture on
+  the clipboard is pasted into the message box with the keyboard; text on the clipboard is pasted
+  as text.
 - **Drop files on the chat.** Files dropped on the panel (or its folded strip) attach to the
   next message, and the app doesn't open them too. While files are dragged over the chat, it says
   so. The window gives no position while something is dragged, so the drop is the chat's when the
@@ -474,6 +478,99 @@ working folder and the `intcad-app` server's program as WSL shows them (`C:\User
 `/mnt/c/Users/…`). The server itself still runs on Windows and reaches the app at `127.0.0.1`, so
 this works with WSL's default networking. If you moved WSL's drive mounts away from `/mnt`
 (`automount.root` in `/etc/wsl.conf`), those paths won't match and the agent can't start the server.
+
+## The built-in agent
+
+Intcad can run with an agent of its own in place of the agents on the computer: Mastra Code's ACP
+agent with Intcad's additions. The environment variable `SOLIDCRAFT_MASTRA_AGENT` names its
+program: the absolute path of an executable that takes no arguments. It is read once, when the app
+starts. Without it, or when it does not name a file, the app looks in the package it runs from for
+a folder `mastra-agent` (`Contents/Resources/mastra-agent` in a macOS app, `lib/intcad/mastra-agent`
+beside `bin` on Linux, `mastra-agent` beside the program on Windows) holding a Node program
+(`node`, `node.exe`), the agent's entry (`agent/main.mjs`) and Mastra Code's SDK (`node_modules`),
+and starts that Node with the entry. A package that has the folder has the built-in agent and
+nothing else: if the folder is damaged the agent fails to start and the Assistant says so, and
+the agents found on the computer are not offered. Only a test package built with
+`--with-mastra-agent` carries the folder
+([mastra-packaging.md](mastra-packaging.md#the-built-in-agent-in-test-packages)); ordinary
+packages do not. With neither, nothing changes: the chat uses the agents it finds and the ones
+you added, as described above.
+
+With the built-in agent the agent list is that agent alone, **Mastra**. Nothing is looked for on
+the computer, and Preferences → AI shows neither **Agents** nor the choice of how turns run. The
+agents, the default agent and the other choices of earlier preferences are not offered, and they
+stay in the preferences file as they were. The agent starts by itself the first time its panel is
+shown in a conversation. After **Disconnect**, a start that failed, or its end, it starts again
+with **Connect**, **Retry** or the next message.
+
+Signing in, API keys and custom addresses are on the Assistant's **Connections** page, and what
+they need is kept in three places:
+
+- **Plan sign-ins** are Mastra's own: it keeps them in its data folder. The app names that folder
+  to the agent in `MASTRA_APP_DATA_DIR`, so the agent shares nothing with a Mastra Code you
+  installed yourself. It is `mastra` in the app's settings folder: the folder
+  `SOLIDCRAFT_SETTINGS_DIR` names when a run was given one, otherwise the app's per-user data
+  folder (`~/Library/Application Support/Intcad`, `$XDG_DATA_HOME/intcad`, `%LOCALAPPDATA%\Intcad`).
+  It is made when the agent first starts. When it cannot be made, the agent is not started and the
+  Assistant says why: the agent is never run in your own home folder instead.
+- **API keys** are in the system keychain and nowhere else, one entry for each: `mastra/key/` and
+  the provider (`anthropic`, `openai`, `google`, `openrouter`, `deepseek`), and
+  `mastra/custom/` and the name for a custom address that has a key. The app hands every key to
+  the agent when it starts and whenever one changes. A key is not written to the preferences, not
+  shown again, and not in what the control channel reports.
+- **Custom addresses** (the name, the address, the models, and whether a key is kept for it) are
+  the `mastra_custom` preference. An address is `http` or `https` with a host, and carries no
+  user name, password or query: a secret belongs in the key box, which goes to the keychain.
+
+Each open design's conversation has an agent of its own, and all of them read the same keychain,
+the same custom addresses and Mastra's same sign-ins. A key, an address or a sign-in changed in
+one conversation reaches another's agent when that conversation is next shown: it is handed
+everything again.
+
+The model is picked at the lower right of the message box, in Mastra's own model picker: the
+models of the connection in use, newest first, with a search box and a row that opens the
+Connections page. Another provider is taken with **Switch** on its row there; the model list then
+holds that provider's models. The picker's own words (its search box, its empty list and its **All**
+filter) are in the app's language.
+
+A tool the agent calls is a row of the conversation, drawn as Mastra draws it: the row names the
+tool and the argument worth a glance (a command, a path), and opened it shows the details, a
+command with what it printed, or the arguments and the result. The agent sends a tool's arguments
+as JSON text and its result as `rawOutput`; the app reads both (as it reads an object and
+`content` from other agents), so a row is not left empty. A picture the agent reads (PNG, JPEG,
+WebP) comes back as a file's bytes in base64 inside that result: the row then says the file's name
+and size, and the picture is under the row in Mastra's attachment card. A picture an MCP tool
+returns (the app's own `screenshot` and `compare_picture`) is shown the same way: the row names it,
+what the tool said in text follows, and the picture is under the row. A click opens it in the
+app's own viewer, as a picture sent with a message. The bytes are served to the page by the app
+and are never part of the page's state; a picture over 4 MiB is not kept (its row still names
+it), and only the newest 16 are.
+
+A file the agent reads from its own working folder has a card under the row too, with its name
+and type. A click on a text file's card (Markdown, plain text, CSV, JSON, YAML, XML, HTML, a log)
+shows the start of the file in the panel, at most 64 KiB of it as it is on disk now: Markdown is
+drawn as an answer's is, and anything else, HTML too, is shown as it is written. A click on a
+document's card (PDF, Word, Excel, PowerPoint, RTF, OpenDocument) opens it in the program the
+system has for it. No other kind of file has a card, so nothing the system would run is opened;
+and a file outside the agent's folder, or a link that leads out of it, has none either. The page
+names only the row: the app looks the file up again on each click.
+
+The agent's reasoning effort is the button beside the model picker, Mastra's
+thinking-level picker: the levels the agent names, **Off** to **Max**, in the app's language.
+The agent's session mode (**Build**, **Plan**, **Explore**, by the agent's own names) is a select at
+the lower left of the message box, as in Mastra's composer: the label and the box's ring take the
+mode's colour.
+
+While nothing is connected the agent has no session and the panel reads **Sign-in needed**. A turn
+that fails for its connection (a plan's sign-in that expired, an API key that was refused, a plan
+or key with nothing left, too many requests, no network, a model the connection may not use) is
+told in a sentence that names the connection. After an expired sign-in the message is kept and
+sent again once that plan is signed in; after a network failure **Retry** sends it again. A
+refused key is mended on the Connections page, and the message is then sent by hand.
+
+The agent's own side (its program, the requests it answers, what it keeps and where) is described
+in `packages/mastra-runtime/agent/README.md`. A script reaches the Connections page's actions
+through `ui.agent_chat` ([control protocol](control-protocol.md)).
 
 ## Signing in
 

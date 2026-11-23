@@ -418,6 +418,67 @@ pub(crate) fn reuse_path(app: &mut SolveApp, path: &str) -> Result<bool, String>
     Ok(true)
 }
 
+/// The tab index of the open design saved at `path` (the shown design too); `None` when no
+/// tab has that file.
+pub(crate) fn index_at(app: &SolveApp, path: &str) -> Option<usize> {
+    let matches = |s: &Session| s.path.as_deref().is_some_and(|p| same_path(p, path));
+    if matches(&app.session) {
+        return Some(app.docs.active);
+    }
+    app.docs.slots.iter().position(|s| s.as_ref().is_some_and(|s| matches(&s.session)))
+}
+
+/// A file or folder inside the tree was renamed or moved: every open design at `from`, or below
+/// it, takes its new path. The tab, the design's name on save and its file all follow; unsaved
+/// edits stay unsaved. Answers how many designs moved.
+pub(crate) fn retarget_paths(app: &mut SolveApp, from: &std::path::Path, to: &std::path::Path) -> usize {
+    let moved = |path: &str| -> Option<String> {
+        let path = std::path::Path::new(path);
+        if path == from {
+            return Some(to.to_string_lossy().into_owned());
+        }
+        path.strip_prefix(from).ok().map(|rest| to.join(rest).to_string_lossy().into_owned())
+    };
+    let mut moved_count = 0;
+    let mut rewrite = |session: &mut Session| {
+        let Some(path) = session.path.clone() else { return };
+        let Some(new_path) = moved(&path) else { return };
+        // The engine owns the design's name and its file: a borrowed name follows the file, a
+        // name the person chose stays. The unsaved edits are kept.
+        session.follow_file_move(&path, &new_path);
+        moved_count += 1;
+    };
+    rewrite(&mut app.session);
+    for slot in app.docs.slots.iter_mut().flatten() {
+        rewrite(&mut slot.session);
+    }
+    for path in &mut app.preferences.open_designs {
+        if let Some(new_path) = moved(path) {
+            *path = new_path;
+        }
+    }
+    moved_count
+}
+
+/// Close every tab whose file is one of `paths` (or inside one of them), as after a delete.
+pub(crate) fn close_paths(app: &mut SolveApp, paths: &[String]) {
+    for _ in 0..MAX_OPEN {
+        let found = (0..app.docs.count()).find(|i| {
+            let session = if *i == app.docs.active || app.docs.slots.is_empty() {
+                &app.session
+            } else {
+                match app.docs.slots.get(*i).and_then(Option::as_ref) {
+                    Some(slot) => &slot.session,
+                    None => return false,
+                }
+            };
+            session.path.as_deref().is_some_and(|path| paths.iter().any(|deleted| std::path::Path::new(path).starts_with(deleted)))
+        });
+        let Some(index) = found else { break };
+        close(app, index, true);
+    }
+}
+
 pub(crate) fn same_path(a: &str, b: &str) -> bool {
     if a == b {
         return true;

@@ -607,24 +607,28 @@ fn services(cc: &eframe::CreationContext<'_>, folder: &DialogFolder) -> Services
         #[cfg(not(target_arch = "wasm32"))]
         agent_ai: new_window_ai(),
         secrets: Some(std::sync::Arc::new(Keychain)),
-        show_in_folder: Some(Box::new(|path| {
-            let folder = std::path::Path::new(path).parent().unwrap_or_else(|| std::path::Path::new("."));
-            let mut command = std::process::Command::new(if cfg!(target_os = "windows") {
-                "explorer"
-            } else if cfg!(target_os = "macos") {
-                "open"
-            } else {
-                "xdg-open"
-            });
-            command.arg(folder);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                command.creation_flags(0x08000000);
-            }
-            let _ = command.spawn();
-        })),
+        show_in_folder: Some(Box::new(|path| system_open(std::path::Path::new(path).parent().unwrap_or_else(|| std::path::Path::new("."))))),
+        open_file: Some(Box::new(|path| system_open(std::path::Path::new(path)))),
     }
+}
+
+/// Hand a folder or a document to the system: the file manager shows a folder, and a document
+/// opens in the program the system has for it.
+fn system_open(path: &std::path::Path) {
+    let mut command = std::process::Command::new(if cfg!(target_os = "windows") {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    });
+    command.arg(path);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let _ = command.spawn();
 }
 
 /// One admission pool per process; catalogs belong to individual windows, never this static.
@@ -1237,6 +1241,12 @@ fn main() -> eframe::Result {
         "SolidCraft",
         options,
         Box::new(move |cc| {
+            // File-only clipboards have no text. Keep one Paste intent for core UI ownership;
+            // auxiliary native text viewports retain upstream's default behavior. `egui-winit` is a
+            // dependency only on the three desktop targets (Cargo.toml); elsewhere there is no
+            // root viewport to configure, and the call must not exist at all.
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+            egui_winit::set_emit_empty_paste_events(&cc.egui_ctx, egui::ViewportId::ROOT, true);
             created_in_app.store(true, std::sync::atomic::Ordering::SeqCst);
             solidcraft_engine::crash::phase("app setup");
             mark("window and device ready");

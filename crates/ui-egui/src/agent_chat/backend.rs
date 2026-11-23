@@ -82,6 +82,12 @@ pub enum Event {
         input: Option<Value>,
         output: Option<String>,
     },
+    /// A picture a tool call handed back (a file it read), as the encoded bytes of the file.
+    /// Comes after the [`Event::Tool`] that carries the call's result line.
+    ToolPicture {
+        id: String,
+        bytes: Vec<u8>,
+    },
     /// Its plan, replaced whole: each entry with its status.
     Plan(Vec<(String, String)>),
     /// It asks before running something of its own; answered with [`ChatBackend::answer_permission`].
@@ -118,6 +124,17 @@ pub enum Event {
         id: String,
         result: Result<Vec<ConfigOption>, String>,
     },
+    /// The built-in agent's connections, as it now reports them: the answer to a
+    /// [`ChatBackend::connections`] request, or its own word that something changed.
+    Connections(super::connections::Snapshot),
+    /// A [`ChatBackend::connections`] request the agent refused (`code`: its JSON-RPC error code,
+    /// 0 for an answer that was no snapshot). Its words are not passed on: they could repeat a key.
+    ConnectionsFailed {
+        what: super::connections::What,
+        code: i64,
+    },
+    /// The message failed for a reason its connection gave; [`Event::TurnEnded`] follows.
+    TurnProblem(super::connections::TurnProblem),
     /// The message is answered (`reason`: why it stopped, empty for a normal end).
     TurnEnded {
         reason: String,
@@ -157,6 +174,10 @@ pub trait ChatBackend {
     /// The user's custom instructions (#8220), added to the system note of every session that
     /// starts after this call. The panel sets them before the first session and before New chat.
     fn set_instructions(&mut self, _text: &str) {}
+    /// The project folder every session that starts after this call may work in (INT-1473): the
+    /// Files panel's folder, when it is the project of the shown design. Only the built-in agent
+    /// takes one; every other backend ignores it. `None`: the session works as it always has.
+    fn set_project(&mut self, _root: Option<&std::path::Path>) {}
     /// The open document a turn is about to bind to: its identity and actual revision, read when
     /// the turn starts. Backends that pin a document use it; the others ignore it.
     fn set_document(&mut self, _document_id: &str, _revision: u64) {}
@@ -181,6 +202,12 @@ pub trait ChatBackend {
     /// An endpoint's new reasoning effort (empty: send nothing), from the next request on.
     fn set_reasoning_effort(&mut self, _effort: &str) {}
     fn set_config_option(&mut self, _id: &str, _value: &str) {}
+    /// Ask the built-in agent about its connections, or change them; [`Event::Connections`]
+    /// answers. Only the built-in agent has any: every other backend ignores the request.
+    fn connections(&mut self, _request: super::connections::Request) {}
+    /// Stop using the open session without ending the agent: what it still sends for that
+    /// session is no longer taken in. [`ChatBackend::new_session`] opens the next one.
+    fn forget_session(&mut self) {}
     /// Its process, for status and tests.
     fn pid(&self) -> Option<u32> {
         None

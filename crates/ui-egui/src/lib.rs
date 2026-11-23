@@ -175,6 +175,7 @@ mod extrude_edit_tests;
 mod extrude_preview;
 mod file_load;
 mod file_picker;
+pub(crate) mod file_tree;
 pub(crate) mod frame_watch;
 #[cfg(test)]
 mod history_off_thread_tests;
@@ -459,6 +460,9 @@ pub struct Services {
     /// Open a dialog asking for a program (a slicer); `None` when the host has no such dialog.
     pub pick_program: Option<Box<dyn Fn() -> FilePickerFuture>>,
     pub show_in_folder: Option<Box<dyn Fn(&str)>>,
+    /// Open a document with the program the system has for it (the Assistant's file cards);
+    /// `None` when the host cannot.
+    pub open_file: Option<Box<dyn Fn(&str)>>,
     /// Where the host reads the anti-aliasing preference at start (a small JSON file).
     pub graphics_path: Option<String>,
     /// Linux: the window system this run uses, `wayland` or `x11` (Preferences shows it, #3083).
@@ -590,6 +594,8 @@ pub struct SolveApp {
     pub gesture: mouse_gesture::State,
     /// Browser tree state (reveal, groups being edited, occurrence moves).
     pub tree: browser::TreeState,
+    /// The Files panel: one local folder as a tree, the designs it opens, and file operations.
+    pub(crate) file_tree: file_tree::FileTree,
     /// A saved design copied for insertion into another open document.
     pub linked_design_clipboard: Option<String>,
     /// The S box (command search at the cursor): recent and pinned commands.
@@ -656,6 +662,7 @@ pub struct SolveApp {
     /// Text a copy left for the system clipboard, written on the next frame (so a paste event
     /// follows: the window system sends one only while the clipboard holds text).
     pub(crate) clipboard_text: Option<String>,
+    pub(crate) clipboard_input: edit_clipboard::InputBatch,
     /// Component placements copied with Copy (by path): Paste places new instances of them in
     /// the active component, Paste New (Ctrl+Shift+V) independent copies.
     pub copied_placements: Vec<Vec<u64>>,
@@ -765,6 +772,15 @@ pub struct SolveApp {
     pub agent: agent_cursor::AgentCursor,
     /// The agent chat panel (docs/design/in-app-agent-chat.md).
     pub agent_chat: agent_chat::AgentChat,
+    /// The chat's built-in agent, looked for once when the app starts
+    /// ([`agent_chat::agents::look_for_builtin`]); `None`: the chat has none. It is the window's,
+    /// not one conversation's, so every tab's chat sees the same.
+    pub builtin_agent: Option<agent_chat::agents::Builtin>,
+    /// How often what the built-in agent is handed has changed in this window: a key or a
+    /// custom address kept or removed, a plan signed in or out. Each design's conversation has
+    /// an agent of its own, and one that is behind this count is set up again when it is shown
+    /// ([`agent_chat::connections`]).
+    pub(crate) builtin_changes: u64,
     /// Making SolidCraft available to the AI apps installed here ([`ai_connect`]).
     pub ai_connect: ai_connect::State,
     pending_shots: Vec<(u64, Option<String>, std::sync::mpsc::Sender<Value>, f64)>,
@@ -869,6 +885,7 @@ impl SolveApp {
             menu: context_menu::MenuState::default(),
             gesture: mouse_gesture::State::default(),
             tree,
+            file_tree: file_tree::FileTree::new(),
             linked_design_clipboard: None,
             sbox: shortcut_box::ShortcutBox::default(),
             keymap: keymap::Keymap::default(),
@@ -902,6 +919,7 @@ impl SolveApp {
             last_command: None,
             copied_bodies: Vec::new(),
             clipboard_text: None,
+            clipboard_input: edit_clipboard::InputBatch::default(),
             copied_placements: Vec::new(),
             cut: Default::default(),
             clipboard_stamp: 0,
@@ -949,6 +967,8 @@ impl SolveApp {
             control_rx: None,
             guarded_context: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             agent_chat: Default::default(),
+            builtin_agent: agent_chat::agents::look_for_builtin(),
+            builtin_changes: 0,
             ai_connect: Default::default(),
             control_held: Default::default(),
             control_job: None,
@@ -2974,6 +2994,7 @@ impl SolveApp {
         let _language = crate::i18n::scope(&self.preferences.language);
         self.frame_clock.record(ctx.input(|i| f64::from(i.unstable_dt)));
         panel_runtime::tick_app(self);
+        crate::file_tree::drain_documents(self, ctx);
         // Sleep/wake often skips frames without a device-lost signal; refresh egui GPU textures
         // when the frame clock jumps so the chrome is not stuck blank (#8749).
         let frame_time = ctx.input(|i| i.time);
@@ -3041,6 +3062,7 @@ impl SolveApp {
         issue_report::tick(self, ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
+        edit_clipboard::begin_input(self, ctx);
         if self.issue_report.draft.is_none() && self.file_picker.is_none() {
             // Completion owns its keys before either CAD shortcuts or text editors see them.
             if !keymap::capturing(self) {
@@ -3163,6 +3185,7 @@ impl SolveApp {
         if self.file_picker.is_none() {
             issue_report::show(self, ui.ctx());
         }
+        edit_clipboard::finish_input(self, ui.ctx());
         if !self.home.open {
             agent_cursor::paint(self, ui.ctx());
         }

@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 
 use super::acp::{self, Incoming};
 use super::backend::{ChatBackend, Event, PromptPart, StartContext, TestError};
+use super::connections;
 use super::process::{AgentProcess, FromAgent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -20,6 +21,8 @@ enum Pending {
     SetMode,
     SetModel,
     SetConfig,
+    /// One of the built-in agent's `_intcad/connections/*` requests.
+    Connections(connections::What),
 }
 
 /// Give a cancelled prompt time to finish before disconnecting an unresponsive agent.
@@ -28,6 +31,13 @@ const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// Variables the agent doesn't inherit: a control token set for the app's own `--control` port
 /// would otherwise reach the agent and outrank the chat endpoint's own token file.
 const ENV_REMOVE: &[&str] = &["SOLIDCRAFT_CONTROL_TOKEN"];
+
+/// The variable that tells the built-in agent where to keep its sign-ins and its own data.
+pub const DATA_DIR_ENV: &str = "MASTRA_APP_DATA_DIR";
+
+/// Mastra's own switch for its usage reporting. The built-in agent is always started with it
+/// set, whatever program it is; the agent's entry sets it for itself as well.
+pub const TELEMETRY_OFF_ENV: &str = "MASTRA_TELEMETRY_DISABLED";
 
 pub struct AcpBackend {
     proc: AgentProcess,
@@ -51,13 +61,41 @@ pub struct AcpBackend {
     exited: bool,
     config_pending: Option<(u64, String)>,
     modern_config: bool,
+    /// The agent is the built-in one: after `initialize` it is handed its keys and custom
+    /// addresses (`setup`), and a session is opened only when the panel asks for one, since the
+    /// agent refuses a session while nothing is connected.
+    built_in: bool,
+    /// `initialize` is answered.
+    initialized: bool,
+    /// The `setup` given before `initialize` was answered: it goes right after.
+    setup: Option<connections::Request>,
+    /// The project folder the next session may work in ([`ChatBackend::set_project`]). Only the
+    /// built-in agent is handed it.
+    project: Option<std::path::PathBuf>,
 }
 
 impl AcpBackend {
+    /// Start the built-in agent and say hello. Nothing follows by itself: the panel hands over
+    /// the keys ([`ChatBackend::connections`]) and opens the session ([`ChatBackend::new_session`]).
+    /// `data`: the folder of the app's own where the agent keeps its sign-ins and its other
+    /// data (`MASTRA_APP_DATA_DIR`), so it shares none with a Mastra Code the user installed.
+    /// It is not optional: without it the entry leaves the agent in the user's own home.
+    /// Mastra's usage reporting is switched off for it ([`TELEMETRY_OFF_ENV`]).
+    pub fn start_builtin(argv: &[String], ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
+        let env = [(DATA_DIR_ENV, data.as_os_str()), (TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1"))];
+        let mut backend = AcpBackend::start_with_env(argv, ctx, &env)?;
+        backend.built_in = true;
+        Ok(backend)
+    }
+
     /// Start `argv` and say hello (`initialize`); the session follows when the agent answers.
     pub fn start(argv: &[String], ctx: StartContext) -> Result<AcpBackend, String> {
+        AcpBackend::start_with_env(argv, ctx, &[])
+    }
+
+    fn start_with_env(argv: &[String], ctx: StartContext, env: &[(&str, &std::ffi::OsStr)]) -> Result<AcpBackend, String> {
         let wake = ctx.wake;
-        let proc = AgentProcess::spawn(argv, &ctx.cwd, ENV_REMOVE, wake)?;
+        let proc = AgentProcess::spawn_with_env(argv, &ctx.cwd, ENV_REMOVE, env, wake)?;
         // An agent inside WSL is told the same folder and bridge as WSL shows them (#5546).
         let (cwd, bridge) =
             if acp::runs_in_wsl(argv) { (acp::wsl_path(&ctx.cwd), ctx.bridge.as_ref().map(acp::McpBridge::in_wsl)) } else { (ctx.cwd, ctx.bridge) };
@@ -80,6 +118,10 @@ impl AcpBackend {
             exited: false,
             config_pending: None,
             modern_config: false,
+            built_in: false,
+            initialized: false,
+            setup: None,
+            project: None,
         };
         b.request(Pending::Initialize, "initialize", acp::initialize_params(env!("CARGO_PKG_VERSION")));
         Ok(b)
@@ -103,7 +145,11 @@ impl AcpBackend {
     fn new_session(&mut self) {
         self.config_pending = None;
         self.pending.retain(|_, request| *request != Pending::SetConfig);
-        let params = acp::session_new_params(&self.cwd, self.bridge.as_ref(), &self.init, &self.note);
+        // INT-1473: the built-in agent's file tools reach a project it is handed, and its note
+        // says what they are for. Any other agent's session is as it was.
+        let project = self.project.as_deref().filter(|_| self.built_in);
+        let note = if project.is_some() { acp::project_note(&self.note) } else { self.note.clone() };
+        let params = acp::session_new_params(&self.cwd, self.bridge.as_ref(), &self.init, &note, project);
         self.request(Pending::SessionNew, "session/new", params);
     }
 
@@ -121,7 +167,12 @@ impl AcpBackend {
                         self.documents = acp::takes_documents(&v);
                         self.auth = acp::auth_methods(&v);
                         self.init = v;
-                        self.new_session();
+                        self.initialized = true;
+                        if !self.built_in {
+                            self.new_session();
+                        } else if let Some(setup) = self.setup.take() {
+                            self.send_connections(&setup);
+                        }
                     }
                     (Pending::SessionNew, Ok(v)) => match v.get("sessionId").and_then(Value::as_str) {
                         Some(s) => {
@@ -170,6 +221,13 @@ impl AcpBackend {
                             out.push(Event::ConfigOptionFinished { id: config_id, result });
                         }
                     }
+                    (Pending::Connections(what), Ok(v)) => out.push(match connections::Snapshot::parse(&v) {
+                        Some(snapshot) => Event::Connections(snapshot),
+                        None => Event::ConnectionsFailed { what, code: 0 },
+                    }),
+                    // Before the general arm: `busy` has the code of ACP's "authentication
+                    // required", and a refused request for a sign-in is no reason to drop the session.
+                    (Pending::Connections(what), Err((code, _))) => out.push(Event::ConnectionsFailed { what, code }),
                     // `session/set_model` is still unstable in ACP: an agent can list `models` and
                     // still not serve it (#9970). It keeps its own model; that is no error to show.
                     (Pending::SetModel, Err((acp::METHOD_NOT_FOUND, message))) => {
@@ -205,8 +263,11 @@ impl AcpBackend {
                 }
             }
             Incoming::Text { session, thought, text } if self.accepts_session(&session) => out.push(Event::Text { thought, text }),
-            Incoming::Tool { session, id, title, kind, status, input, output } if self.accepts_session(&session) => {
-                out.push(Event::Tool { id, title, kind, status, input, output })
+            Incoming::Tool { session, id, title, kind, status, input, output, picture } if self.accepts_session(&session) => {
+                out.push(Event::Tool { id: id.clone(), title, kind, status, input, output });
+                if let Some(bytes) = picture {
+                    out.push(Event::ToolPicture { id, bytes });
+                }
             }
             Incoming::Plan { session, steps } if self.accepts_session(&session) => out.push(Event::Plan(steps)),
             Incoming::Permission { session, rpc, title, kind, options } => {
@@ -221,6 +282,24 @@ impl AcpBackend {
                 out.push(Event::Permission { key: self.next_key, title, kind, options });
             }
             Incoming::Text { .. } | Incoming::Tool { .. } | Incoming::Plan { .. } => {}
+            // The built-in agent says why a turn failed. Its kind decides what the panel shows,
+            // so the general arm's guess from the error's code and words is not made, and the
+            // session stays: the user signs in again and goes on in it.
+            Incoming::Refused { id, error, problem } if self.pending.get(&id) == Some(&Pending::Prompt) => {
+                self.pending.remove(&id);
+                if self.cancelling.is_some_and(|(request, _)| request == id) {
+                    self.cancelling = None;
+                }
+                if problem.kind == connections::TurnKind::Other {
+                    out.push(Event::TurnEnded { reason: "error".into() });
+                    out.push(Event::Error(error.1));
+                } else {
+                    out.push(Event::TurnProblem(problem));
+                    out.push(Event::TurnEnded { reason: "error".into() });
+                }
+            }
+            Incoming::Refused { id, error, .. } => self.handle(Incoming::Reply { id, result: Err(error) }, out),
+            Incoming::Connections(snapshot) => out.push(Event::Connections(snapshot)),
             Incoming::AuthStatus(s) => out.push(Event::AuthStatus(s)),
             Incoming::ModeChanged(m) if !self.modern_config => out.push(Event::Modes { current: m, available: Vec::new() }),
             Incoming::ModelChanged(m) if !self.modern_config => out.push(Event::Models { current: m, available: Vec::new() }),
@@ -233,6 +312,11 @@ impl AcpBackend {
             }
             Incoming::Ignored => {}
         }
+    }
+
+    fn send_connections(&mut self, request: &connections::Request) {
+        let what = request.what();
+        self.request(Pending::Connections(what), what.method(), request.params());
     }
 
     fn finish_exit(&mut self, tail: Vec<String>) -> Event {
@@ -252,7 +336,8 @@ impl AcpBackend {
         for _ in 0..512 {
             match self.proc.from_agent.try_recv() {
                 Ok(FromAgent::Line(l)) => {
-                    if let Some(m) = acp::parse(&l) {
+                    let read = if self.built_in { acp::parse_builtin(&l) } else { acp::parse(&l) };
+                    if let Some(m) = read {
                         self.handle(m, &mut out);
                     }
                 }
@@ -313,6 +398,12 @@ impl ChatBackend for AcpBackend {
         self.note = acp::system_note(text);
     }
 
+    fn set_project(&mut self, root: Option<&std::path::Path>) {
+        if self.project.as_deref() != root {
+            self.project = root.map(std::path::Path::to_path_buf);
+        }
+    }
+
     fn answer_permission(&mut self, key: u64, option: Option<&str>) {
         if let Some(rpc) = self.permissions.remove(&key) {
             self.proc.send(&acp::permission_reply(rpc, option));
@@ -343,6 +434,25 @@ impl ChatBackend for AcpBackend {
             self.request(Pending::SetConfig, "session/set_config_option", acp::set_config_option_params(&s, id, value));
             self.config_pending = Some((self.next_id, id.to_string()));
         }
+    }
+
+    fn connections(&mut self, request: connections::Request) {
+        if !self.built_in {
+            return;
+        }
+        if self.initialized {
+            self.send_connections(&request);
+        } else if request.what() == connections::What::Setup {
+            // The newest replaces one still waiting: `setup` hands over everything each time.
+            self.setup = Some(request);
+        }
+    }
+
+    fn forget_session(&mut self) {
+        self.session = None;
+        self.modern_config = false;
+        self.config_pending = None;
+        self.pending.retain(|_, request| *request != Pending::SetConfig);
     }
 
     fn pid(&self) -> Option<u32> {
@@ -387,7 +497,7 @@ pub fn test_agent(argv: &[String], cwd: &std::path::Path) -> Result<String, Test
     let init = wait_for(&p, 1);
     let session_cwd = if acp::runs_in_wsl(argv) { acp::wsl_path(cwd) } else { cwd.to_path_buf() };
     let result = init.and_then(|v| {
-        p.send(&acp::request(2, "session/new", acp::session_new_params(&session_cwd, None, &v, acp::SYSTEM_NOTE)));
+        p.send(&acp::request(2, "session/new", acp::session_new_params(&session_cwd, None, &v, acp::SYSTEM_NOTE, None)));
         wait_for(&p, 2).map(|_| {
             let who = acp::agent_info(&v);
             crate::i18n::format("ui.ai_test_acp_ok", &[("agent", if who.is_empty() { "?" } else { &who })])
@@ -469,6 +579,326 @@ mod tests {
         backend.handle(Incoming::Reply { id: old_prompt, result: Ok(json!({"stopReason":"cancelled"})) }, &mut events);
         assert!(events.is_empty(), "an old reply must not end the new turn or clear its cancellation deadline");
         assert!(matches!(backend.poll_at(Instant::now() + CANCEL_GRACE).as_slice(), [Event::Exited { .. }]));
+    }
+
+    /// The built-in agent, started on a program that swallows what it is sent; `initialize` is
+    /// answered when `ready`.
+    fn builtin_backend(ready: bool) -> Result<AcpBackend, String> {
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut backend =
+            AcpBackend::start_builtin(&["sh".into(), "-c".into(), "while IFS= read -r line; do :; done".into()], ctx, &std::env::temp_dir())?;
+        if ready {
+            backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut Vec::new());
+        }
+        Ok(backend)
+    }
+
+    fn connections_snapshot(plan: &str) -> Value {
+        json!({
+            "plans": [{"id": "openai-codex", "name": "ChatGPT Plus/Pro (Codex Subscription)", "state": plan, "account": null, "prefix": "openai"}],
+            "keys": [{"id": "openai", "name": "OpenAI", "saved": false, "shadowed": false, "prefix": "openai"}],
+            "custom": [], "login": null, "problem": null, "dates": {},
+        })
+    }
+
+    fn setup(key: &str) -> connections::Request {
+        connections::Request::Setup(connections::Setup { keys: vec![("openai".into(), key.into())], ..Default::default() })
+    }
+
+    fn sent(backend: &AcpBackend) -> Vec<Pending> {
+        let mut ids: Vec<(&u64, &Pending)> = backend.pending.iter().collect();
+        ids.sort_by_key(|(id, _)| **id);
+        ids.into_iter().map(|(_, what)| *what).collect()
+    }
+
+    /// B14, on the wire: after `initialize` the built-in agent is handed its keys, and no session
+    /// is asked for until the panel opens one (the agent refuses a session while nothing is
+    /// connected). A `setup` given before `initialize` is answered waits for that answer.
+    #[test]
+    fn the_built_in_agent_is_set_up_after_initialize_and_gets_no_session_by_itself() {
+        let mut backend = builtin_backend(false).unwrap();
+        backend.connections(setup("k1"));
+        backend.connections(connections::Request::List);
+        assert_eq!(sent(&backend), [Pending::Initialize], "nothing goes before the agent has answered initialize");
+        let mut events = Vec::new();
+        backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut events);
+        assert!(events.is_empty(), "{events:?}");
+        assert_eq!(sent(&backend), [Pending::Connections(connections::What::Setup)], "setup follows initialize; no session/new");
+        backend.handle(Incoming::Reply { id: 2, result: Ok(connections_snapshot("out")) }, &mut events);
+        assert!(matches!(events.as_slice(), [Event::Connections(snapshot)] if !snapshot.connected()), "{events:?}");
+        assert!(backend.pending.is_empty() && backend.session.is_none(), "still no session asked for");
+        // The panel opens it once something is connected.
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(sent(&backend), [Pending::SessionNew]);
+        events.clear();
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"s1"})) }, &mut events);
+        assert!(matches!(events.last(), Some(Event::Ready { .. })));
+        // Another agent ignores the requests altogether.
+        let mut other = ready_backend().unwrap();
+        other.connections(setup("k1"));
+        assert!(other.pending.is_empty());
+        other.shutdown(true);
+        backend.shutdown(true);
+    }
+
+    /// The requests of contract section 2 as they go out, and the snapshot as it comes back:
+    /// in a reply and in the agent's own `changed` notification.
+    #[test]
+    fn connection_requests_carry_their_parameters_and_answers_are_snapshots() {
+        use connections::{Request, What};
+        let cases = [
+            (Request::List, What::List, "_intcad/connections/list", json!({})),
+            (Request::Login("openai-codex".into()), What::Login, "_intcad/connections/login", json!({"id": "openai-codex"})),
+            (
+                Request::Code { id: "anthropic".into(), code: "abc#def".into() },
+                What::Code,
+                "_intcad/connections/code",
+                json!({"id": "anthropic", "code": "abc#def"}),
+            ),
+            (Request::Reopen, What::Reopen, "_intcad/connections/reopen", json!({})),
+            (Request::Cancel, What::Cancel, "_intcad/connections/cancel", json!({})),
+            (Request::Logout("xai".into()), What::Logout, "_intcad/connections/logout", json!({"id": "xai"})),
+        ];
+        let mut backend = builtin_backend(true).unwrap();
+        for (request, what, method, params) in cases {
+            assert_eq!((request.what(), request.what().method(), request.params()), (what, method, params));
+            backend.connections(request);
+            assert_eq!(backend.pending.get(&backend.next_id), Some(&Pending::Connections(what)));
+        }
+        let custom = connections::SetupCustom {
+            name: "my-llm".into(),
+            url: "http://localhost:11434/v1".into(),
+            api_key: None,
+            models: vec!["llama3.2".into()],
+        };
+        let keyed = connections::SetupCustom { api_key: Some("k2".into()), ..custom.clone() };
+        let mut all = connections::Setup { keys: vec![("openai".into(), "k1".into())], custom: vec![custom, keyed], ..Default::default() };
+        let handed = json!({"keys": {"openai": "k1"}, "custom": [
+            {"name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2"]},
+            {"name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2"], "apiKey": "k2"},
+        ]});
+        assert_eq!(Request::Setup(all.clone()).params(), handed, "without words of the app's, the agent keeps its own");
+        // The sentence the browser shows after the sign-in page has called back goes with it.
+        all.callback = "Go back to Intcad.".into();
+        let mut worded = handed.clone();
+        worded["words"] = json!({"callback": "Go back to Intcad."});
+        assert_eq!(Request::Setup(all).params(), worded);
+        let mut events = Vec::new();
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(connections_snapshot("in")) }, &mut events);
+        assert!(matches!(events.as_slice(), [Event::Connections(snapshot)] if snapshot.connected()), "{events:?}");
+        events.clear();
+        let changed = json!({"jsonrpc": "2.0", "method": "_intcad/connections/changed", "params": connections_snapshot("expired")}).to_string();
+        backend.handle(acp::parse_builtin(&changed).unwrap(), &mut events);
+        assert!(
+            matches!(events.as_slice(), [Event::Connections(snapshot)] if snapshot.plans[0].state == connections::PlanState::Expired),
+            "{events:?}"
+        );
+        // An agent that is not the built-in one is not read this way: the notification means nothing from it.
+        assert_eq!(acp::parse(&changed), Some(Incoming::Ignored));
+        backend.shutdown(true);
+    }
+
+    /// A refused connection request is reported as that and nothing else. `busy` (a second
+    /// sign-in while one is under way) has the code of ACP's "authentication required": it must
+    /// not drop the session or ask for a sign-in, and the agent's words (which could repeat what
+    /// it was sent) go nowhere.
+    #[test]
+    fn a_refused_connection_request_keeps_the_session_and_says_nothing_of_its_words() {
+        let mut backend = builtin_backend(true).unwrap();
+        ChatBackend::new_session(&mut backend);
+        let mut events = Vec::new();
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"s1"})) }, &mut events);
+        events.clear();
+        backend.connections(connections::Request::Login("openai-codex".into()));
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Err((acp::AUTH_REQUIRED, "busy".into())) }, &mut events);
+        assert_eq!(events, [Event::ConnectionsFailed { what: connections::What::Login, code: acp::AUTH_REQUIRED }]);
+        assert_eq!(backend.session.as_deref(), Some("s1"), "the session stays");
+        events.clear();
+        backend.connections(setup("sk-never-shown"));
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Err((-32602, "bad key sk-never-shown: authentication".into())) }, &mut events);
+        assert_eq!(events, [Event::ConnectionsFailed { what: connections::What::Setup, code: -32602 }]);
+        assert!(!format!("{events:?}").contains("sk-never-shown"));
+        // An answer that is no snapshot is a failure too, not a silent nothing.
+        events.clear();
+        backend.connections(connections::Request::List);
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"plans": "none"})) }, &mut events);
+        assert_eq!(events, [Event::ConnectionsFailed { what: connections::What::List, code: 0 }]);
+        backend.shutdown(true);
+    }
+
+    /// B15/B16, on the wire: a prompt the built-in agent refuses with `data.intcad` is reported
+    /// by its kind, the session stays (the user signs in again and goes on), and the general
+    /// guess from the error's code and words is not made. `other` is shown in the agent's words.
+    #[test]
+    fn a_failed_turn_of_the_built_in_agent_is_reported_by_its_kind() {
+        use connections::{TurnKind, TurnProblem};
+        let refusal = |id: u64, code: i64, kind: &str| {
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": "authentication failed upstream", "data": {"intcad": {"kind": kind, "prefix": "openai"}}}}).to_string()
+        };
+        let kinds = [
+            ("auth", TurnKind::Auth),
+            ("quota", TurnKind::Quota),
+            ("rate", TurnKind::Rate),
+            ("network", TurnKind::Network),
+            ("model", TurnKind::Model),
+        ];
+        for (word, kind) in kinds {
+            let mut backend = builtin_backend(true).unwrap();
+            ChatBackend::new_session(&mut backend);
+            let mut events = Vec::new();
+            backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"s1"})) }, &mut events);
+            events.clear();
+            backend.prompt(&[PromptPart::Text("make a box".into())]);
+            // The code and the words would read as "sign in" to the general arm.
+            backend.handle(acp::parse_builtin(&refusal(backend.next_id, acp::AUTH_REQUIRED, word)).unwrap(), &mut events);
+            assert_eq!(
+                events,
+                [Event::TurnProblem(TurnProblem { kind, prefix: "openai".into() }), Event::TurnEnded { reason: "error".into() }],
+                "{word}"
+            );
+            assert_eq!(backend.session.as_deref(), Some("s1"), "{word}: the session stays");
+            assert!(backend.pending.is_empty());
+            backend.shutdown(true);
+        }
+        let mut backend = builtin_backend(true).unwrap();
+        ChatBackend::new_session(&mut backend);
+        let mut events = Vec::new();
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"s1"})) }, &mut events);
+        events.clear();
+        backend.prompt(&[PromptPart::Text("make a box".into())]);
+        backend.handle(acp::parse_builtin(&refusal(backend.next_id, -32603, "other")).unwrap(), &mut events);
+        assert_eq!(events, [Event::TurnEnded { reason: "error".into() }, Event::Error("authentication failed upstream".into())]);
+        assert_eq!(backend.session.as_deref(), Some("s1"));
+        // The same error from any other agent is read as before: by its code and words.
+        let mut other = ready_backend().unwrap();
+        other.prompt(&[PromptPart::Text("make a box".into())]);
+        events.clear();
+        other.handle(acp::parse(&refusal(other.next_id, acp::AUTH_REQUIRED, "quota")).unwrap(), &mut events);
+        assert!(matches!(events.as_slice(), [Event::TurnEnded { reason }, Event::AuthRequired { .. }] if reason == "auth"), "{events:?}");
+        other.shutdown(true);
+        backend.shutdown(true);
+    }
+
+    /// Forgetting the session stops what the agent still sends for it from being taken in; the
+    /// next one opens as usual.
+    #[test]
+    fn a_forgotten_session_takes_in_nothing_more() {
+        let mut backend = builtin_backend(true).unwrap();
+        ChatBackend::new_session(&mut backend);
+        let mut events = Vec::new();
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(snapshot("s1", "fast")) }, &mut events);
+        backend.forget_session();
+        events.clear();
+        let update = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"late"}}}}"#;
+        backend.handle(acp::parse_builtin(update).unwrap(), &mut events);
+        backend.prompt(&[PromptPart::Text("nobody to ask".into())]);
+        assert!(events.is_empty() && backend.pending.is_empty(), "{events:?}");
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(sent(&backend), [Pending::SessionNew]);
+        backend.shutdown(true);
+    }
+
+    /// The built-in agent's process is told where to keep its sign-ins and its own data
+    /// (`MASTRA_APP_DATA_DIR`) and is started with Mastra's usage reporting off, and what the
+    /// entry reads for itself is not taken from it.
+    #[test]
+    fn the_built_in_agent_is_started_with_its_data_folder() {
+        let dir = std::env::temp_dir().join(format!("intcad-builtin-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (seen, data) = (dir.join("seen"), dir.join("settings").join("mastra"));
+        let script = r#"printf '%s|%s\n' "$MASTRA_APP_DATA_DIR" "$MASTRA_TELEMETRY_DISABLED" > "$0"; while IFS= read -r line; do :; done"#;
+        let argv = ["sh".to_string(), "-c".to_string(), script.to_string(), seen.to_string_lossy().into_owned()];
+        let ctx = || StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let read = |seen: &std::path::Path| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                if let Ok(text) = std::fs::read_to_string(seen)
+                    && text.ends_with('\n')
+                {
+                    return text;
+                }
+                assert!(Instant::now() < deadline, "the agent did not start");
+                std::thread::yield_now();
+            }
+        };
+        let mut backend = AcpBackend::start_builtin(&argv, ctx(), &data).unwrap();
+        assert_eq!(read(&seen).trim_end(), format!("{}|1", data.to_string_lossy()));
+        backend.shutdown(true);
+        // Any other agent gets no such variable from the app: only what this process has itself.
+        std::fs::remove_file(&seen).unwrap();
+        let mut other = AcpBackend::start(&argv, ctx()).unwrap();
+        assert_eq!(
+            read(&seen).trim_end(),
+            format!("{}|{}", std::env::var(DATA_DIR_ENV).unwrap_or_default(), std::env::var(TELEMETRY_OFF_ENV).unwrap_or_default())
+        );
+        other.shutdown(true);
+        assert!(!ENV_REMOVE.contains(&"SOLIDCRAFT_MASTRA_SDK") && !ENV_REMOVE.contains(&DATA_DIR_ENV), "{ENV_REMOVE:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// INT-1473, on the wire: the built-in agent handed a project names it in `session/new`
+    /// (`_meta.intcad.project`, the session's own folder staying `cwd`) and its note says what file
+    /// tools are for. Once the project is taken back, and for any other agent handed one, the
+    /// session is opened as before: no project and the note that keeps file tools off.
+    #[test]
+    fn only_the_built_in_agent_is_handed_its_project_and_only_while_it_has_one() {
+        let dir = std::env::temp_dir().join(format!("intcad-builtin-project-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = dir.join("bracket");
+        // A fake agent that writes down every line it is sent, in the file named by `$0`.
+        let agent = |log: &std::path::Path| {
+            let script = r#"while IFS= read -r line; do printf '%s\n' "$line" >> "$0"; done"#;
+            ["sh".to_string(), "-c".to_string(), script.to_string(), log.to_string_lossy().into_owned()]
+        };
+        let ctx = || StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        // The parameters of the `session/new` with this id, as the agent read them.
+        let session_new = |log: &std::path::Path, id: u64| -> Value {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let text = std::fs::read_to_string(log).unwrap_or_default();
+                let sent = text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|v| v["method"] == "session/new" && v["id"] == id);
+                if let Some(request) = sent {
+                    return request["params"].clone();
+                }
+                assert!(Instant::now() < deadline, "the agent was sent no session/new {id}: {text}");
+                std::thread::yield_now();
+            }
+        };
+        let note = |params: &Value| params["_meta"]["systemPrompt"]["append"].as_str().unwrap_or_default().to_string();
+        let cwd = std::env::temp_dir().to_string_lossy().into_owned();
+
+        let log = dir.join("built-in");
+        let mut backend = AcpBackend::start_builtin(&agent(&log), ctx(), &dir).unwrap();
+        backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut Vec::new());
+        backend.set_project(Some(project.as_path()));
+        ChatBackend::new_session(&mut backend);
+        let handed = session_new(&log, backend.next_id);
+        assert_eq!(handed["_meta"]["intcad"]["project"], json!(project.to_string_lossy()), "{handed}");
+        assert_eq!(handed["cwd"], cwd.as_str(), "the session's own folder stays the work folder");
+        let handed_note = note(&handed);
+        assert!(handed_note.contains(acp::PROJECT_FILE_TOOLS) && !handed_note.contains(acp::NO_FILE_TOOLS), "{handed_note}");
+
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"s1"})) }, &mut Vec::new());
+        backend.set_project(None);
+        ChatBackend::new_session(&mut backend);
+        let taken_back = session_new(&log, backend.next_id);
+        assert!(taken_back["_meta"].get("intcad").is_none(), "{taken_back}");
+        let taken_back_note = note(&taken_back);
+        assert!(taken_back_note.contains(acp::NO_FILE_TOOLS) && !taken_back_note.contains(acp::PROJECT_FILE_TOOLS), "{taken_back_note}");
+        backend.shutdown(true);
+
+        // Any other agent opens its session as soon as `initialize` is answered: a project it
+        // was given before goes nowhere.
+        let log = dir.join("other");
+        let mut other = AcpBackend::start(&agent(&log), ctx()).unwrap();
+        other.set_project(Some(project.as_path()));
+        other.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut Vec::new());
+        let ignored = session_new(&log, other.next_id);
+        assert!(ignored["_meta"].get("intcad").is_none(), "{ignored}");
+        let ignored_note = note(&ignored);
+        assert!(ignored_note.contains(acp::NO_FILE_TOOLS) && !ignored_note.contains(acp::PROJECT_FILE_TOOLS), "{ignored_note}");
+        other.shutdown(true);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn snapshot(session: &str, value: &str) -> Value {

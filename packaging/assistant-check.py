@@ -14,6 +14,9 @@ from the app it starts (docs/releasing.md): `--run-with` is where a sandbox goes
 none. `--expect diagnostic` is for a run where the Assistant is meant to say why it has no
 web view (a native Wayland window, or a missing WebView2 runtime); it must still open the
 panel, not crash, and print the reason.
+`--built-in-agent` is for a package that carries the built-in agent (a test package made with
+--with-mastra-agent): the app must offer that agent alone and start it out of the package when
+the Assistant opens. No message is sent.
 `--screen` also saves a picture of the whole screen, which is the only picture the page is in:
 the app's own screenshot holds what the app draws, and the page is another window's. Leave it
 out on a person's machine. Windows has its own check, tools/windows-assistant-smoke.ps1.
@@ -120,6 +123,7 @@ def main():
     parser.add_argument("--port", type=int, default=17979)
     parser.add_argument("--wait", type=float, default=90, help="seconds to wait for the page")
     parser.add_argument("--screen", action="store_true", help="also save a picture of the whole screen")
+    parser.add_argument("--built-in-agent", action="store_true", help="the package carries the built-in agent: expect it alone, started")
     parser.add_argument("--run-with", default="", help='a command to start the app with: a sandbox, "arch -x86_64"')
     args = parser.parse_args()
 
@@ -192,6 +196,17 @@ def main():
         else:
             checks.check(web.get("host") is False, "the app has no web view here")
             checks.check(web.get("page") is False, "no page is shown without a host")
+
+        if args.built_in_agent:
+            # The agent is found inside the package and started when its panel shows; what it tells
+            # the Connections page (its plans) arrives once it has answered.
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline and app.poll() is None and not (state.get("connect") or {}).get("plans"):
+                time.sleep(0.5)
+                state = control.call("ui.agent_chat", {}).get("result") or {}
+            names = [agent.get("name") for agent in state.get("agents") or []]
+            checks.check(state.get("currentAgent") == "mastra" and names == ["Mastra"], f"the built-in agent is the only agent offered ({names})")
+            checks.check(bool((state.get("connect") or {}).get("plans")), "the built-in agent started out of the package and reported its connections")
 
         # Pictures: what the app draws, and (asked for) the whole screen, which has the page in it.
         frame = evidence / "app-frame.png"

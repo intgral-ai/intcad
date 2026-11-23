@@ -25,6 +25,7 @@ mod api_client;
 pub mod ask_here;
 pub mod attach;
 pub mod backend;
+pub mod connections;
 pub mod context;
 pub(crate) mod dfm_runtime;
 #[cfg(not(target_arch = "wasm32"))]
@@ -47,6 +48,7 @@ mod panel;
 pub mod paste;
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
+pub mod read_file;
 pub mod review;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runtime_client;
@@ -87,6 +89,10 @@ const VIEW_IMAGE: (u32, u32) = (960, 600);
 const MAX_PICTURE_BYTES: usize = 4 << 20;
 /// A tool call's arguments kept for its card, at most this big (as JSON text).
 const MAX_TOOL_INPUT: usize = 64 << 10;
+/// How many pictures handed back by tool calls are kept, the newest ones.
+const MAX_TOOL_PICTURES: usize = 16;
+/// How many files read by tool calls keep a card, the newest ones.
+const MAX_TOOL_FILES: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -231,6 +237,15 @@ impl std::fmt::Debug for Picture {
     }
 }
 
+/// A text file open in the panel: its name, the start of its text, and whether that is drawn as
+/// Markdown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilePreview {
+    pub name: String,
+    pub text: String,
+    pub markdown: bool,
+}
+
 /// The viewer: the pictures of one message, and the one shown.
 #[derive(Clone, Debug)]
 pub struct Gallery {
@@ -305,6 +320,13 @@ pub enum Item {
     Notice {
         text: String,
         error: bool,
+    },
+    /// A turn the built-in agent's connection refused: why, whose connection and its name. The
+    /// sentence is [`connections::TurnKind::words`], and the page offers the way out by the kind.
+    Problem {
+        kind: connections::TurnKind,
+        prefix: String,
+        name: String,
     },
     /// A turn whose changes ran on a copy of the design: what it would do, Accept and Reject
     /// ([`review`]).
@@ -399,6 +421,19 @@ pub struct AgentChat {
     pub input: String,
     /// The viewer, open on one message's pictures.
     gallery: Option<Gallery>,
+    /// The pictures tool calls handed back (files the agent read), by the call's id, oldest
+    /// first. Only the newest [`MAX_TOOL_PICTURES`] are kept: an older call keeps its line.
+    tool_pictures: Vec<(String, Picture)>,
+    /// The folder the agent was started in: its own files are those inside it.
+    work_dir: Option<std::path::PathBuf>,
+    /// The project folder the built-in agent's next session is handed ([`handed_project`]), with
+    /// the shown design's path and the Files panel's folder it was worked out from.
+    project: Option<(Option<String>, Option<std::path::PathBuf>, Option<std::path::PathBuf>)>,
+    /// The files tool calls read that get a card ([`read_file`]), by the call's id, oldest first;
+    /// the newest [`MAX_TOOL_FILES`] are kept.
+    tool_files: Vec<(String, std::path::PathBuf, read_file::Act)>,
+    /// A text file open in the panel, from one of those cards.
+    file_preview: Option<FilePreview>,
     state: Option<State>,
     agent: String,
     images: bool,
@@ -508,6 +543,8 @@ pub struct AgentChat {
     pub connection_auth: Option<bool>,
     /// The running backend hands turns to a Mastra workflow, so [`Event::Ready`] is not a sign-in.
     mastra: bool,
+    /// The built-in agent's connections, while it is the running agent ([`connections`]).
+    pub(crate) conn: connections::Conn,
     /// The popped-out chat window was given its saved place (it is open); see `panel::window_builder`.
     pub(crate) window_placed: bool,
     /// The agent's own modes, and the current one.
@@ -639,6 +676,8 @@ impl AgentChat {
         self.runtime_version = None;
         self.connection_auth = None;
         self.mastra = false;
+        // The next agent says what is connected itself; nothing of this one's word is kept.
+        self.conn = connections::Conn::default();
         if self.state.is_some() {
             self.state = Some(State::Off);
         }
@@ -744,6 +783,30 @@ impl AgentChat {
         {
             pictures.push(Picture::shared(Arc::new(png), "", true));
         }
+    }
+    /// A read that has finished keeps a card for its file, when that is one of the agent's own
+    /// files that has one ([`read_file`]). A call that handed a picture back has that card instead.
+    fn keep_read_file(&mut self, id: &str) {
+        let file = self.items.iter().rev().find_map(|item| match item {
+            Item::Tool { id: shown, kind, status, input, .. } if shown == id => {
+                Some(read_file::named(kind, *status == Some(ToolStatus::Completed), input.as_ref()).map(str::to_string))
+            }
+            _ => None,
+        });
+        let Some(Some(path)) = file else { return };
+        let Some((file, act)) = self.work_dir.as_deref().and_then(|work| read_file::resolve(work, &path)) else { return };
+        self.tool_files.retain(|(shown, ..)| shown != id);
+        self.tool_files.push((id.to_string(), file, act));
+        let over = self.tool_files.len().saturating_sub(MAX_TOOL_FILES);
+        self.tool_files.drain(..over);
+    }
+    /// The file a tool call read that has a card, and what a click on it does. A call with a
+    /// picture has none: the picture is its card.
+    pub(crate) fn read_file_of(&self, id: &str) -> Option<(&std::path::Path, read_file::Act)> {
+        if self.tool_pictures.iter().any(|(call, _)| call == id) {
+            return None;
+        }
+        self.tool_files.iter().find(|(call, ..)| call == id).map(|(_, file, act)| (file.as_path(), *act))
     }
     /// Say that the agent refused a model, and in its words why.
     fn model_refused(&mut self, model: &str, error: &str) {
@@ -877,6 +940,9 @@ impl AgentChat {
                 self.images = images;
                 self.state = Some(State::Ready);
                 self.picking = Some(false);
+                if self.conn.active {
+                    self.conn.session = connections::Session::Open;
+                }
                 // Keep the mode across a new chat.
                 if self.config_options.is_none()
                     && let Some(m) = self.restore_mode.take()
@@ -922,7 +988,25 @@ impl AgentChat {
                         *o = output;
                     }
                 } else {
-                    self.push(Item::Tool { id, title: title.unwrap_or_default(), kind: kind.unwrap_or_default(), status, input, output });
+                    self.push(Item::Tool { id: id.clone(), title: title.unwrap_or_default(), kind: kind.unwrap_or_default(), status, input, output });
+                }
+                self.keep_read_file(&id);
+            }
+            Event::ToolPicture { id, bytes } => {
+                // Named as the first line of the call's result names the file: "<path> (<n> bytes, <type>)".
+                let line = self.items.iter().rev().find_map(|item| match item {
+                    Item::Tool { id: shown, output, .. } if *shown == id => {
+                        Some(output.as_deref().unwrap_or_default().lines().next().unwrap_or_default().to_string())
+                    }
+                    _ => None,
+                });
+                if let Some(line) = line.filter(|_| bytes.len() <= MAX_PICTURE_BYTES) {
+                    let path = line.rsplit_once(" (").map_or(line.as_str(), |(path, _)| path);
+                    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
+                    self.tool_pictures.retain(|(shown, _)| *shown != id);
+                    self.tool_pictures.push((id, Picture::new(bytes, name)));
+                    let over = self.tool_pictures.len().saturating_sub(MAX_TOOL_PICTURES);
+                    self.tool_pictures.drain(..over);
                 }
             }
             Event::Plan(entries) => {
@@ -1001,7 +1085,12 @@ impl AgentChat {
             }
             Event::AuthRequired { methods } => {
                 self.clear_config();
-                self.auth = methods;
+                // The built-in agent's sign-ins are its connections: its own methods are not offered.
+                self.auth = if self.conn.active { Vec::new() } else { methods };
+                if self.conn.active {
+                    self.conn.session = connections::Session::None;
+                    self.conn.refused = true;
+                }
                 self.state = Some(State::NeedsAuth);
                 self.picking = Some(false);
                 // What was asked goes again once the login is done.
@@ -1010,6 +1099,32 @@ impl AgentChat {
                 }
             }
             Event::AuthStatus(s) => self.auth_status = Some(s),
+            Event::Connections(snapshot) => self.conn.take_in(snapshot),
+            Event::ConnectionsFailed { what, code } => {
+                // Without the first snapshot the agent cannot be used: starting has failed. Later
+                // refusals change nothing here (a second sign-in while one is under way, say).
+                if what == connections::What::Setup && self.conn.snapshot.is_none() {
+                    self.notice(trf("ui.agent_chat_failed_start", &[("error", &format!("{} ({code})", what.method()))]), true);
+                    self.state = Some(State::Failed);
+                } else {
+                    // The page waits for an answer to what it asked (a key dialog, the address
+                    // form): it is told that this did not work. Never in the agent's words.
+                    self.conn.error = Some(connections::REFUSED);
+                    log::debug!("the agent refused {} ({code})", what.method());
+                }
+            }
+            Event::TurnProblem(problem) => {
+                // The agent's `auth` is a plan's sign-in or a key: the connection says which.
+                let problem = problem.as_told(self.conn.snapshot.as_ref());
+                if problem.kind.sentence().is_some() {
+                    let name = match &self.conn.snapshot {
+                        Some(snapshot) => snapshot.name_of(&problem.prefix),
+                        None => connections::AGENT_NAME.to_string(),
+                    };
+                    self.conn.keep(&problem);
+                    self.push(Item::Problem { kind: problem.kind, prefix: problem.prefix, name });
+                }
+            }
             Event::TurnEnded { reason } => {
                 if self.state() == State::Busy {
                     self.state = Some(State::Ready);
@@ -1038,6 +1153,7 @@ impl AgentChat {
             }
             Event::Exited { tail } => {
                 self.clear_config();
+                self.conn = connections::Conn::default();
                 if self.mastra {
                     self.runtime = Some(RuntimeStatus::Stopped);
                 }
@@ -1088,6 +1204,19 @@ pub(crate) enum AssistantMark {
     NeedsAuth,
     Stopped,
     Waiting(usize),
+}
+
+impl From<AssistantMark> for crate::ui_kit::AssistantEntryState {
+    fn from(mark: AssistantMark) -> Self {
+        match mark {
+            AssistantMark::Quiet => Self::Quiet,
+            AssistantMark::Ready => Self::Ready,
+            AssistantMark::Busy => Self::Busy,
+            AssistantMark::NeedsAuth => Self::NeedsAuth,
+            AssistantMark::Stopped => Self::Stopped,
+            AssistantMark::Waiting(count) => Self::Waiting(count),
+        }
+    }
 }
 
 fn assistant_mark_for(state: State, login: &str, configured: bool, waiting: usize, stopped: bool, failed: bool) -> AssistantMark {
@@ -1162,6 +1291,36 @@ pub(crate) fn find_cli() -> Option<std::path::PathBuf> {
         .or_else(|| discover::find_in("intcad-cli", &discover::search_dirs()))
 }
 
+/// The project folder the built-in agent may work in (INT-1473): the Files panel's folder, when it
+/// is the project the shown design belongs to (the nearest folder at or above the design that
+/// holds `.intcad/project.toml`). A design in no project, a panel on another folder or on none,
+/// hands over nothing, and the agent works as it did before.
+pub(crate) fn handed_project(design: Option<&str>, files_root: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    let root = files_root?;
+    let project = solidcraft_engine::project::Project::locate(std::path::Path::new(design?))?;
+    let same = |a: &std::path::Path, b: &std::path::Path| match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    };
+    same(&project, root).then_some(project)
+}
+
+/// Keep the backend's project ([`ChatBackend::set_project`]) on what the window shows now. Worked
+/// out again only when the design or the Files panel's folder changes.
+fn follow_project(app: &mut SolveApp) {
+    let (design, files) = (app.session.path.clone(), app.file_tree.root().map(std::path::Path::to_path_buf));
+    let chat = &mut app.agent_chat;
+    let stale = chat.project.as_ref().is_none_or(|(d, f, _)| *d != design || *f != files);
+    if stale {
+        let root = handed_project(design.as_deref(), files.as_deref());
+        chat.project = Some((design, files, root));
+    }
+    let root = chat.project.as_ref().and_then(|(_, _, root)| root.clone());
+    if let Some(backend) = chat.backend.as_mut() {
+        backend.set_project(root.as_deref());
+    }
+}
+
 /// The agent's working folder: an empty folder of SolidCraft's own, so an agent's own file tools
 /// (where it has them) see nothing of the user's.
 fn working_dir() -> std::path::PathBuf {
@@ -1205,7 +1364,10 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         chat.picking = Some(true);
         return;
     };
-    let execution = app.preferences.chat_execution;
+    let builtin = agents::is_builtin(app);
+    // The built-in agent answers by itself. The execution choice is not offered with it, so one
+    // an older version saved must not apply: nobody could change it back.
+    let execution = if builtin { agents::Execution::Direct } else { app.preferences.chat_execution };
     // ACP tasks exist in HostAi, but this panel cannot yet show the agent's sign-in methods or
     // answer its permission requests. Do not offer a Mastra workflow on an ACP agent until that
     // wiring lands; direct chat with the same agent keeps working.
@@ -1273,6 +1435,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     chat.tools_available = Some(bridge.is_some());
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
+    chat.work_dir = Some(start.cwd.clone());
     let started: Result<Box<dyn ChatBackend>, String> = match (execution, entry.kind) {
         (agents::Execution::Mastra, agents::Kind::Acp) => Err(tr("ui.mastra_acp_tasks_unavailable").to_string()),
         (agents::Execution::Mastra, agents::Kind::Api | agents::Kind::Anthropic) => (|| -> Result<Box<dyn ChatBackend>, String> {
@@ -1324,6 +1487,16 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             mastra_backend::MastraBackend::start(config, launch, host_ai, ids, admission).map(|b| Box::new(b) as Box<dyn ChatBackend>)
         })(),
         (agents::Execution::Direct, agents::Kind::Acp) if entry.argv.is_empty() => Err(tr("ui.agent_chat_none_found").to_string()),
+        (agents::Execution::Direct, agents::Kind::Acp) if builtin => {
+            // Made when the agent first starts, not when the app does: a run that never opens
+            // the Assistant leaves no folder behind. Without the folder the agent is not started:
+            // it would keep its sign-ins in, and read the agent files of, the user's own home.
+            let data = app.builtin_agent.as_ref().and_then(|found| found.data.clone());
+            match data.filter(|folder| std::fs::create_dir_all(folder).is_ok()) {
+                Some(folder) => acp_client::AcpBackend::start_builtin(&entry.argv, start, &folder).map(|b| Box::new(b) as Box<dyn ChatBackend>),
+                None => Err(tr("ui.agent_chat_no_data_folder").to_string()),
+            }
+        }
         (agents::Execution::Direct, agents::Kind::Acp) => {
             acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>)
         }
@@ -1342,38 +1515,53 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         },
     };
     match started {
-        Ok(mut b) => {
-            b.set_instructions(&app.preferences.agent_instructions);
-            app.preferences.agent_last = entry.id.clone();
-            chat.backend = Some(b);
-            chat.argv = entry.argv.clone();
-            chat.running_id = entry.id.clone();
-            chat.mastra = execution == agents::Execution::Mastra;
-            chat.runtime = chat.mastra.then_some(RuntimeStatus::Starting);
-            chat.runtime_version = None;
-            chat.connection_auth = None;
-            chat.modes.clear();
-            chat.mode.clear();
-            chat.models.clear();
-            chat.model.clear();
-            chat.models_note = None;
-            chat.model_revert = None;
-            chat.running_endpoint = if entry.kind.is_api() && !chat.mastra { entry.base_url.clone() } else { String::new() };
-            // An endpoint's models from the last time, until the new list arrives.
-            if let Some(list) = chat.models_cache.get(&chat.running_endpoint) {
-                chat.models = list.clone();
-                chat.model = entry.model.clone();
-            }
-            chat.state = Some(State::Starting);
-            chat.auth.clear();
-            chat.auth_status = None;
-            chat.agent.clear();
-        }
+        Ok(b) => started_with(app, ctx, b, &entry, execution),
         Err(e) => {
             chat.notice(trf("ui.agent_chat_failed_start", &[("error", &e)]), true);
             chat.state = Some(State::Failed);
         }
     }
+}
+
+/// The agent's process is up: the conversation starts on it. The built-in agent is handed its
+/// keys and custom addresses first and gets its session once it says something is connected
+/// ([`connections::settle`]); every other agent opens its session by itself.
+#[cfg(not(target_arch = "wasm32"))]
+fn started_with(app: &mut SolveApp, ctx: &egui::Context, mut b: Box<dyn ChatBackend>, entry: &agents::Entry, execution: agents::Execution) {
+    let builtin = agents::is_builtin(app);
+    b.set_instructions(&app.preferences.agent_instructions);
+    // The built-in agent is not what "the agent started last" means to a version without it:
+    // what an older version saved there stays for that version to find.
+    if !builtin {
+        app.preferences.agent_last = entry.id.clone();
+    }
+    let chat = &mut app.agent_chat;
+    chat.backend = Some(b);
+    chat.argv = entry.argv.clone();
+    chat.running_id = entry.id.clone();
+    chat.mastra = execution == agents::Execution::Mastra;
+    chat.runtime = chat.mastra.then_some(RuntimeStatus::Starting);
+    chat.runtime_version = None;
+    chat.connection_auth = None;
+    chat.modes.clear();
+    chat.mode.clear();
+    chat.models.clear();
+    chat.model.clear();
+    chat.models_note = None;
+    chat.model_revert = None;
+    chat.running_endpoint = if entry.kind.is_api() && !chat.mastra { entry.base_url.clone() } else { String::new() };
+    // An endpoint's models from the last time, until the new list arrives.
+    if let Some(list) = chat.models_cache.get(&chat.running_endpoint) {
+        chat.models = list.clone();
+        chat.model = entry.model.clone();
+    }
+    chat.state = Some(State::Starting);
+    chat.auth.clear();
+    chat.auth_status = None;
+    chat.agent.clear();
+    chat.conn = connections::Conn::default();
+    chat.conn.active = builtin;
+    connections::begin_setup(app, ctx);
 }
 
 /// The launch, once the window is up (the desktop host; not for runs driven over `--control`):
@@ -1397,7 +1585,9 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.agent_chat.connect_at_start {
         return;
     }
-    if app.agent_chat.detection.is_none() {
+    // The built-in agent is the only one there is: nothing is looked for first.
+    let builtin = agents::is_builtin(app);
+    if app.agent_chat.detection.is_none() && !builtin {
         refresh(app, ctx);
         return;
     }
@@ -1405,7 +1595,9 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
     if app.agent_chat.state.is_some() || !app.preferences.agent_connect_at_start {
         return;
     }
-    let last = app.preferences.agent_last.clone();
+    // The agent an older version started last is not offered beside the built-in one, and is
+    // not missed either.
+    let last = if builtin { String::new() } else { app.preferences.agent_last.clone() };
     if !last.is_empty() {
         if !agents::entries(app).iter().any(|e| e.id == last) {
             app.agent_chat.notice(trf("ui.agent_chat_last_missing", &[("agent", &last)]), true);
@@ -1678,6 +1870,7 @@ pub(crate) fn leave_document(app: &mut SolveApp) {
     let chat = &mut app.agent_chat;
     chat.steering = false;
     chat.last = None;
+    chat.conn.kept = None;
     // A prompt waiting for startup or sign-in has not reached the backend yet. Keep it
     // with the explicit queue so a late Ready event cannot send it on returning to the tab.
     if let Some((text, image, at, files)) = chat.queued.take() {
@@ -1914,6 +2107,8 @@ fn submit(app: &mut SolveApp, ctx: &egui::Context, text: String, image: bool, co
         context: context.clone(),
         files: files.iter().filter(|f| !f.is_picture()).map(|f| f.name.clone()).collect(),
     });
+    // A new message takes the place of one kept from a failed turn: that one is not sent again.
+    app.agent_chat.conn.kept = None;
     // The message's place in the conversation: its picture is kept there when it is taken.
     let at = app.agent_chat.items.len().checked_sub(1);
     // The agent gets the selection as text after the message; the conversation shows chips.
@@ -1993,6 +2188,9 @@ pub fn new_chat(app: &mut SolveApp) {
     review::forget(chat);
     chat.confirm_new = false;
     chat.items.clear();
+    chat.tool_pictures.clear();
+    chat.tool_files.clear();
+    chat.file_preview = None;
     chat.turn_warning = None;
     chat.gallery = None;
     chat.picked.clear();
@@ -2009,6 +2207,7 @@ pub fn new_chat(app: &mut SolveApp) {
     chat.seen = None;
     chat.discard_end = running;
     chat.model_revert = None;
+    chat.conn.kept = None;
     if matches!(chat.state(), State::Ready | State::Busy) {
         chat.restore_mode = Some(chat.mode.clone()).filter(|m| !m.is_empty());
         chat.state = Some(State::Starting);
@@ -2016,6 +2215,9 @@ pub fn new_chat(app: &mut SolveApp) {
             // Instructions edited since the last session apply from this one on.
             b.set_instructions(&app.preferences.agent_instructions);
             b.new_session();
+        }
+        if chat.conn.active {
+            chat.conn.session = connections::Session::Opening;
         }
     }
     chat.clear_config();
@@ -2118,6 +2320,7 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
         edit_requested: requests_edit(&text),
     });
     app.agent_chat.last = Some((text, image, at, files));
+    app.agent_chat.conn.kept = None;
     app.agent_chat.state = Some(State::Busy);
     app.agent_chat.stopped = false;
     app.agent_chat.steering = false;
@@ -2685,6 +2888,8 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(backend) = app.agent_chat.backend.as_mut() {
         backend.set_document(&stamp.document_id, stamp.revision);
     }
+    follow_project(app);
+    connections::poll(app, ctx);
     let events = app.agent_chat.backend.as_mut().map(|b| b.poll()).unwrap_or_default();
     for e in events {
         let ready = matches!(e, Event::Ready { .. });
@@ -2721,6 +2926,9 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
             Some(Outcome::Permission { key, title, kind, options }) => on_permission(app, key, title, kind.as_deref(), options),
             None => {}
         }
+        // What the built-in agent just said may open its session, or end the conversation's
+        // readiness: settled before anything below acts on a session being ready.
+        connections::settle(app);
         if let Some(model) = confirmed_model {
             app.preferences.agent_models.insert(app.agent_chat.running_id.clone(), model.clone());
             if let Some(a) = app.preferences.agents.iter_mut().find(|a| a.id == app.agent_chat.running_id && a.kind.is_api()) {
@@ -2739,7 +2947,9 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         if ready {
             apply_saved_model(app);
         }
-        if (ready || configured) && !app.agent_chat.config_pending {
+        // A session of the built-in agent that opened while nothing is connected takes no message.
+        let usable = !app.agent_chat.conn.active || app.agent_chat.state() == State::Ready;
+        if (ready || configured) && !app.agent_chat.config_pending && usable {
             if app.agent_chat.config_options.is_some()
                 && let Some(mode) = app.agent_chat.restore_mode.take()
                 && mode != app.agent_chat.mode
@@ -2800,11 +3010,25 @@ pub(super) fn look_on_open(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
+/// The panel is shown this frame (open, and not folded to its strip): the built-in agent starts
+/// by itself, because the Connections page has its rows from what the agent first says, and a
+/// conversation that is off would show an empty page. Once per conversation: one whose agent
+/// was stopped, could not start or ended is left as it is, for Connect, Retry or the next
+/// message to start. No other agent starts this way.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn start_builtin_when_shown(app: &mut SolveApp, ctx: &egui::Context) {
+    // `None`: nothing was ever started in this conversation. Stopped, failed and ended are states.
+    if agents::is_builtin(app) && app.agent_chat.state.is_none() && !app.preferences.agent_chat_minimized {
+        connect(app, ctx);
+    }
+}
+
 /// Look for installed agents in the background (cached until the panel opens again; Refresh
 /// looks at once).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn refresh(app: &mut SolveApp, ctx: &egui::Context) {
-    if app.agent_chat.detecting.is_some() {
+    // With the built-in agent nothing is looked for on the computer: every look comes through here.
+    if app.agent_chat.detecting.is_some() || agents::is_builtin(app) {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -3091,7 +3315,9 @@ fn set_config_option_checked(app: &mut SolveApp, id: &str, value: &str, listed_o
 /// `side`, `minimized`, `width`, `refresh`, `connect`, `stop`, `attach` (a file's path, for the
 /// next message), `remove_file` (index), `send`, `attach_view`, `attach_selection`, `pick`,
 /// `permission` (an option id, or `"cancel"`), `approve` (`true`/`false`, the oldest held
-/// request), `cancel` (Stop), `send_now` (steer: stop, then send the queue), `remove_pending` (index), `undo` (the newest message's changes); returns the panel's state.
+/// request), `cancel` (Stop), `send_now` (steer: stop, then send the queue), `remove_pending` (index), `undo` (the newest message's changes),
+/// `connection` (one `conn_*` action of the built-in agent's Connections page, as the page posts
+/// it); returns the panel's state.
 pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Value, String> {
     if let Some(e) = p.get("features").and_then(Value::as_bool) {
         app.preferences.ai_features = e;
@@ -3249,6 +3475,12 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
             connect(app, ctx);
         }
     }
+    // One action of the built-in agent's Connections page (`conn_*`), as the page posts it: it
+    // goes through the page's own check and is refused with the page's own reason.
+    if let Some(action) = p.get("connection") {
+        let kind = action.get("type").and_then(Value::as_str).ok_or("no type")?;
+        connections::act(app, ctx, kind, action)?;
+    }
     if let Some(text) = p.get("send").and_then(Value::as_str) {
         send(app, ctx, text.to_string());
     }
@@ -3324,6 +3556,7 @@ pub fn status(app: &SolveApp) -> Value {
             Item::Approval { title, answer, .. } => json!({"approval": title, "answer": answer}),
             Item::Changes { steps, undone, .. } => json!({"changes": steps, "undone": undone}),
             Item::Notice { text, error } => json!({"notice": text, "error": error}),
+            Item::Problem { kind, name, .. } => json!({"notice": kind.words(name), "error": true}),
             Item::Review(card) => json!({"review": card.id, "steps": card.words, "more": card.more,
                 "made": card.made.iter().map(|b| json!({"name": b.name, "volume": b.after})).collect::<Vec<_>>(),
                 "changed": card.changed.iter().map(|b| json!({"name": b.name, "before": b.before, "after": b.after})).collect::<Vec<_>>(),
@@ -3408,6 +3641,8 @@ pub fn status(app: &SolveApp) -> Value {
                 None => serde_json::Value::Null,
             },
         );
+        // The built-in agent's connections, as the page is told them; never a key.
+        state.insert("connect".into(), connections::told_of(app));
         state.insert("previewChanges".into(), json!(app.preferences.agent_chat_preview));
         state.insert("askHere".into(), json!({"open": c.ask_box.open, "text": c.ask_box.text}));
         state.insert(
