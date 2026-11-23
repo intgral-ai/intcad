@@ -181,7 +181,13 @@ pub const BRIDGE_NAME: &str = "intcad-app";
 /// through the user's mode and remembered answers: agents that word their MCP tools differently,
 /// and a user's own MCP server, which the gate doesn't see.
 pub fn is_bridge_tool(title: &str, kind: Option<&str>) -> bool {
-    let tool = title.strip_prefix("mcp__").and_then(|t| t.strip_prefix(BRIDGE_NAME)).and_then(|t| t.strip_prefix("__"));
+    // Hosts name a server's tool in more than one way: `mcp__intcad-app__batch` (the ACP
+    // convention) and `intcad-app_batch` (Mastra Code's, as a real session sends it).
+    let tool = title
+        .strip_prefix("mcp__")
+        .and_then(|t| t.strip_prefix(BRIDGE_NAME))
+        .and_then(|t| t.strip_prefix("__"))
+        .or_else(|| title.strip_prefix(BRIDGE_NAME).and_then(|t| t.strip_prefix('_')).filter(|t| !t.starts_with('_')));
     let named = tool.is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'));
     named && matches!(kind, None | Some("other"))
 }
@@ -969,6 +975,8 @@ mod tests {
     fn only_the_bridges_exact_tool_names_are_its_tools() {
         for tool in ["batch", "inspect_design", "set_parameter"] {
             assert!(is_bridge_tool(&format!("mcp__intcad-app__{tool}"), None), "{tool}");
+            assert!(is_bridge_tool(&format!("intcad-app_{tool}"), None), "Mastra Code's name for {tool}");
+            assert!(is_bridge_tool(&format!("intcad-app_{tool}"), Some("other")), "Mastra Code's name for {tool}");
             assert!(is_bridge_tool(&format!("mcp__intcad-app__{tool}"), Some("other")), "{tool}");
         }
         for title in [
@@ -982,6 +990,10 @@ mod tests {
             "mcp__intcad__batch",
             "mcp__intcad-live__batch",
             "mcp__other__intcad-app",
+            "intcad-app_",
+            "intcad-app_execute; ls",
+            "intcad-app_execute && ls",
+            "other_intcad-app_execute",
             "mcp__intcad-app__",
             "mcp__intcad-app",
             "intcad-app__batch",
