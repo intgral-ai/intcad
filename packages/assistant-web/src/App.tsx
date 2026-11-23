@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import type { AssistantState, Connect, ContextChip, ContextGroups, Item, MissingAgent, PermissionOption, PictureRef, QueuedMessage, Strings, TurnProblem } from './host';
 import { pictureUrl, post } from './host';
 import { ModelPicker as MastraModelPicker } from '@/domains/llm/model-picker';
@@ -2651,17 +2652,23 @@ function Centre({
   centreNow = true;
   // Asks the host for this much height at once and keeps it asked for until called with 0 (set by the effect below).
   const grow = useRef<(to: number) => void>(() => {});
-  // The body's room is measured before the page is drawn, so the body opens at its height and not a
-  // frame later. When the page has too little room the conversation gives way first, down to the bar
-  // with Collapse; the rows that need the user and the message box keep their height.
-  useLayoutEffect(() => {
+  // The body's room is measured before the page is drawn: after each render, so the body opens at
+  // its height and not a frame later, and whenever the view or the page changes size (`now`: from
+  // outside React, drawn at once), so a smaller window keeps the bar with Collapse in sight. When the
+  // page has too little room the conversation gives way first, down to the bar; the rows that need
+  // the user and the message box keep their height.
+  const fitRoom = useRef<(now: boolean) => void>(() => {});
+  fitRoom.current = now => {
     const element = measured.current;
     const inBody = element?.querySelector<HTMLElement>('[data-centre-body]');
     if (!element || !inBody) return;
     const bar = inBody.firstElementChild?.firstElementChild;
     const next = Math.max(bar instanceof HTMLElement ? bar.offsetHeight : 0, Math.floor(most.current - (heightOf(element) - inBody.offsetHeight) - 2));
-    if (Math.abs(next - room) > 1) setRoom(next);
-  });
+    if (Math.abs(next - room) <= 1) return;
+    if (now) flushSync(() => setRoom(next));
+    else setRoom(next);
+  };
+  useLayoutEffect(() => fitRoom.current(false));
   // The page tells the host how tall it is; the host keeps it within `centre`. While a popup is open
   // (model picker, mode menu, a dialog) the page asks for all the room there is, from the press that
   // opens it, so the popup has room when it appears.
@@ -2713,6 +2720,7 @@ function Centre({
       fit();
     };
     const tell = () => {
+      fitRoom.current(true);
       const next = wanted();
       // A pixel or two less is rounding, not a change: shrinking for it, then growing back, made the
       // view flicker. Any growth is kept, or the top of the page would be cut off.
@@ -2780,8 +2788,11 @@ function Centre({
     window.addEventListener('blur', blur);
     window.addEventListener('resize', tell);
     tell();
+    // The page, and the view itself (the root is as tall as the view): its observer is told of a
+    // new size in the frame it is drawn at, where the resize event can come a frame later.
     const observer = new ResizeObserver(tell);
     observer.observe(element);
+    observer.observe(root);
     return () => {
       root.classList.remove('centre');
       centreNow = false;
