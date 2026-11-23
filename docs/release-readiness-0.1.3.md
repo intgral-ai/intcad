@@ -8,8 +8,10 @@ shows it; anything unverified says `UNKNOWN`, `BLOCKED` or `NOT TESTED`.
 wrong and are fixed below: E1 was described backwards (the shipped 0.1.2 client asks for
 `SHA256SUMS.txt` in the release it *fetches*, so what matters is the *new* release's naming, not
 0.1.2's); the update path is not "a constant with no override" (`SOLIDCRAFT_UPDATE_FEED` exists, but
-its asset URLs must be GitHub release URLs); and the first `release.yml` candidate run was cancelled
-and produced no artifacts. The "state after the CTO's decisions" paragraphs in §6 and §9 describe
+its asset URLs must be GitHub release URLs); and the first `release.yml` candidate run (45241269258)
+was cancelled **after** uploading seven artifacts from the slices that had finished (both Linux
+architectures, Web and their evidence), so "no artifacts" was wrong — what it lacked was the three
+platforms the candidate needs. The "state after the CTO's decisions" paragraphs in §6 and §9 describe
 earlier moments in the day and are superseded by §12.4.1 and §13.
 
 ## 0. Evidence index
@@ -25,11 +27,11 @@ or a measurement that exists on the machine or on GitHub.
 | run 45248432170 (candidate, SHA `14a6c95ae`) | the first `release.yml` build carrying the agent: every platform `success` after the macOS rerun, DMG included |
 | `build.json` / `contents.json` of that run | `sourceRevision` = the candidate SHA; `agent.present`, `node`, five skill sets, `missing: []` on Linux, Windows and macOS |
 | `7z l` of the DMG | both Darwin slices carry `node`, `agent/main.mjs` and all five `SKILL.md` |
-| `checksums.sh --require` on the flattened set | 18-file list under both names, every hash OK; refuses a set that omits the DMG |
+| `checksums.sh --require` on the flattened set | 18-line list (16 files plus the two legacy `.zsync` names) under both names, every hash OK; refuses a set that omits the DMG. The set is the three downloaded channels, not every artifact `release.yml` builds |
 | Ubuntu VM `…rc013` | CI tarball and AppImage installed and run; agent starts; five sets installed; 0.1.2 → CI 0.1.3 upgrade opens the design 0.1.2 saved |
 | Windows VM `…win013` | CI MSI installed; agent runs from `Program Files`; five sets in `%LOCALAPPDATA%`; published 0.1.2 → CI 0.1.3 upgrade leaves one ARP entry |
 | real DeepSeek turn (screenshots `key-*`) | a real model answers, and reads `solidcraft-modeling`; typing `/` or `/skill` shows no menu (B10) |
-| `cargo test -p xtask`, `cargo check --target wasm32`, `python3 -m unittest packaging/tests/*` | the branch's own checks: skill anchors, 3600-char limit, wasm cfg, 10 checksum tests, 4 alias tests, stage-agent 8/8 |
+| `cargo test -p xtask`, `cargo check --target wasm32`, `python3 -m unittest packaging/tests/*` | the branch's own checks: skill anchors, 3600-char limit, wasm cfg, 13 checksum tests, 7 alias tests, stage-agent 8/8 |
 | PR #217, #218, #219, #222 | the release-engineering changes and their CI |
 
 Not evidence, and marked so wherever it appears: a cancelled run, a skipped dependent job, a document
@@ -68,7 +70,7 @@ an installed 0.1.2, and the 0.1.2 client's own update check is what has to work 
 | Login, accounts, capability authorization (INT-1497) | Huaiyuan | PR #213, draft, head `22f427c8c0de3aec42299edc8c70056d8c86a870` | CI green on the promotion SHA, then the Gate B checks |
 | Modelling skills in the built-in agent (#198, INT-1473 prerequisite) | Tianwei | PR #204, open, head `b2cb0ef0e0317c9273f771ade89e1c8892331778` | Review comments closed, Text-to-CAD as a second set, installed-app evidence |
 | Agentic behaviour over the right rail (INT-1473) | Tianwei | PR #212, open, head `31eae3957c35f78381ef9b1a4cab70b09b6465f9`, based on #204's branch | #204 merged first, then rebase onto `develop` |
-| UI changes | PP | **No PR exists.** No open PR is authored by `pp`; the only `paipeline` PR that is not a sync is #189, the verification harness (`.agents/skills/verify-intcad/**`), not a UI change | PR opened, reviewed, visual regression run |
+| UI changes | PP | **PR #221**, draft and `BEHIND` (head `54424aa3`): the Assistant moves to the bottom centre, one message box, native clipping; 29 files, +1823/−224. `ui_containers` red (its own), `lint` red (the `develop`-wide #212 breakage, fixed in #222) | `ui_containers` green, marked ready, visual regression run |
 | Release engineering, packages, RC, acceptance | this role | This branch `int1503-release-readiness` from `develop` (PR #217; `release/` is reserved for a `release/vX.Y.Z` promotion by the branch-admission policy, which rejected the first branch name) | — |
 | Version scope, promotion, publishing | CTO | — | Explicit approval before any tag or GitHub Release |
 
@@ -177,7 +179,8 @@ explicitly excepts it, P2 may be deferred.
 `origin/develop` is `be9cb2c16` (carries the cookie fix, the FreeBSD fix, INT-1473 and both skill
 sets). #214 is the one open release PR: its three self-inflicted CI failures (skill anchors, the
 3600-character limit, and the stage-agent test that only built one skill set) are fixed on its
-branch. #213 still fails a Windows check; PP's UI has no PR. The 0.1.3 version commit is prepared
+branch. #213 still fails a Windows check; PP's UI is #221, draft and `BEHIND` with its own
+`ui_containers` failure. The 0.1.3 version commit is prepared
 on `int1503-version-013`, and the release.yml candidate branch is described in §12.4.1.
 
 | # | Sev | Blocker | Evidence |
@@ -197,7 +200,7 @@ on `int1503-version-013`, and the release.yml candidate branch is described in �
 | E3 | P2 | Portable-ZIP updates replace only `intcad.exe` and `intcad-cli.exe`, so a `mastra-agent/` folder from #214 would be left stale or absent | `install.rs:302` `apply()`, `Method::PortableZip` |
 | E4 | P2 | `.github/workflows/verify-beta-installers.yml` hard-codes `C:\Program Files\SolidCraft` and `SolidCraft.app/Contents/MacOS/SolidCraft`, so it cannot verify an Intcad release | lines 40 and 73 of that workflow |
 | E5 | P2 | `packaging/windows/package.ps1:186` tests `$CanRun` and `$HostArch`, which the script never sets, so the `intcad-cli --version` smoke there never runs (it is silently skipped) | the two lines; no assignment anywhere in the file |
-| E6 | P2 | PP's UI work has no PR, so its integration risk is unknown rather than assessed | open PR list |
+| E6 | P1, PR open | **PP's UI is PR #221** (§12.11): draft, `BEHIND`, `ui_containers` red. Integration risk is now reviewable, and the visual pass is the acceptance this role owes once it is ready | PR #221 |
 
 ## 7. Fixes made on this branch
 
@@ -228,8 +231,8 @@ Against the real release: the two `v0.1.2` assets downloaded in §1, run through
 files, and both generated names are identical (`diff` of the published lines: empty;
 `cmp SHA256SUMS SHA256SUMS.txt`: equal).
 
-Verification on this machine: `python3 -B -m unittest packaging/tests/checksums_test.py` → 6
-tests, OK (`nightly_test.py` fails only without `jq` on `PATH`, and passes with it; the other
+Verification on this machine: `python3 -B -m unittest packaging/tests/checksums_test.py` → 13
+tests, OK (it was 6 when §7 was first written; the failure-path cases were added after review) (`nightly_test.py` fails only without `jq` on `PATH`, and passes with it; the other
 suites below are unchanged). Re-ran, unchanged and passing: `nightly_test.py` (12), `apprun_test.py`,
 `flatpak_test.py`, `web_channels_test.py`, `mastra_runtime_test.py`, `mastra_agent_test.py`,
 `scripts/ci/test_gate.py`. `windows_icon_test.py` and the workflow's PowerShell parse need
@@ -574,13 +577,13 @@ script, and the first one whose workflow bundles the agent.
 
 | Item | Value |
 |---|---|
-| Branch | `int1503-rc-candidate`, a **local candidate** branch. First attempt: `develop` `3751144fc1` + #214 `054d51e4d`, SHA `3ffacdb1`, run 45241269258 — **cancelled** once `develop` moved on and the branch was rebuilt, so it produced no artifacts. |
+| Branch | `int1503-rc-candidate`, a **local candidate** branch. First attempt: `develop` `3751144fc1` + #214 `054d51e4d`, SHA `3ffacdb1`, run 45241269258 — **cancelled** once `develop` moved on and the branch was rebuilt. It uploaded seven artifacts from the slices that finished (both Linux architectures, Web, and their evidence) and never reached Windows or macOS, so it is not a candidate. |
 | Current SHA | `14a6c95ae527b2f584035448513ae98455e2f709` = `develop` `be9cb2c16` (carries #218 cookie, #219 FreeBSD, #212 agentic and the `context-skills` set) + #214 `b71d51641` (packaging, agent, and the stage-agent test fix) + the 0.1.3 version commit |
 | How started | `gh workflow run release.yml --ref int1503-rc-candidate` → run **45248432170** |
 | Why not `release-gate` | it only starts for a `main`-target PR or a merge group, and this branch is not a promotion |
 | Workflow settings inherited from #214 | `SOLIDCRAFT_WITH_MASTRA_AGENT: "1"`, `SOLIDCRAFT_DISTRIBUTION: "mastra-agent"`, per-arch overrides (`x86_64` only), legacy `mastra/` still `"0"` |
 | What it produces | the nonpublishing packages for every target, `build.json`/`contents.json` per package, and the content scan that checks the agent is inside |
-| Note on the first attempt | that run was cancelled and its artifacts were never uploaded; the watch script's "no artifact matches" lines are that run, not a failure of the current one |
+| Note on the first attempt | that run was cancelled after uploading the seven artifacts above; it has no Windows or macOS package, so it cannot stand in for the candidate. Run 45248432170 itself is **attempt 2**: the first attempt lost the `macOS build x86_64` slice, the rerun rebuilt it and the whole run finished `success` |
 
 This branch is **not** a release branch and must not be merged: it exists to prove that the merged
 tree plus #214 produces installable packages that carry the agent. The real candidate is the
@@ -766,8 +769,9 @@ release-process gap: the updater resolves several assets **by an unversioned nam
 | `Intcad-0.1.3-windows-x64.exe` | `Intcad-0.1.3-windows-x64.exe` (version kept) |
 
 `packaging/aliases.sh dist 0.1.3` wrote the six aliases for this candidate (AppImage, deb, rpm, DMG,
-MSI, portable zip — the Flatpak/Snap/Arch derived formats are built by their own jobs), and the list
-over the whole set then passed:
+MSI, portable zip — this download held Linux x86_64, Windows x64 and macOS only; Flatpak, Snap,
+Arch, aarch64 and the Windows x86/arm64 builds come from their own artifacts and were not in it),
+and the list over the downloaded set then passed:
 
 ```
 aliased intcad-linux-x86_64.AppImage, intcad-linux-x86_64.deb, intcad-linux-x86_64.rpm,
@@ -776,7 +780,7 @@ checksums.sh --require <tar> --require <msi> --require <dmg> -> 18 files, every 
 ```
 
 `checksums.sh` also stopped listing `build.json`/`contents.json`: they are per-package evidence, not
-downloads. Tests: `aliases_test.py` 4, `checksums_test.py` 11, both run by `packaging-lint.yml`.
+downloads. Tests: `aliases_test.py` 7, `checksums_test.py` 13, both run by `packaging-lint.yml`.
 
 ### 12.4.10 Secret scan of the candidate itself
 
@@ -890,14 +894,14 @@ Recorded so the next reader knows which parts of this document were corrected an
 
 | Finding | Was | Now |
 |---|---|---|
-| Checksum list could omit a channel's asset | one run per platform, no completeness check | `packaging/checksums.sh --require <name>` per channel asset, whole-name match, list verified before it replaces anything and both published names after; 10 tests |
+| Checksum list could omit a channel's asset | one run per platform, no completeness check | `packaging/checksums.sh --require <name>` per channel asset, whole-name match, list verified before it replaces anything, both published names written together; 13 tests, including the failure paths (subfolder, symlink, missing require, newline in a name) |
 | Top-level symlinks were silently left out | no check | refused with a message |
 | A failing `find` could shorten the list silently | read from a process substitution | names read into a temporary file first |
 | E1 described backwards | "0.1.2 cannot update because 0.1.2 published `SHA256SUMS`" | the shipped 0.1.2 asks for `SHA256SUMS.txt` in the release it **fetches**, so 0.1.3's naming is what matters; the branch fallback is tolerance for future clients only |
 | Feed override denied | "a constant with no override" | `SOLIDCRAFT_UPDATE_FEED` exists; asset URLs must be GitHub release URLs, which is what blocks a local payload |
-| A cancelled run read as evidence | run 45241269258 implied as the candidate | it was cancelled with no artifacts; §12.4.1 names the current SHA |
+| A cancelled run read as evidence | run 45241269258 implied as the candidate | it was cancelled; its seven artifacts cover only the finished Linux/Web slices, not Windows or macOS; §12.4.1 names the current SHA |
 
-Still unchanged and still open: PP's UI has no PR (B9), login Gate B unrun (#213), slash menu missing
+Still unchanged and still open: PP's UI (#221) is not ready, login Gate B unrun (#213), slash menu missing
 (B10), macOS untested, one-click update only testable after a stable release exists.
 
 ## 12.7 What CI itself verified for the candidate (run 45248432170, SHA `14a6c95ae`)
@@ -909,7 +913,7 @@ Beyond what I installed by hand, the workflow's own steps passed for this candid
 | `Linux x86_64` | set up the pinned Node; build the agent folder and run it against stand-ins; build AppImage/deb/rpm/tar; check the packages; **install the packages on bare systems and open the Assistant** (ubuntu 22.04, 24.04 x11/wayland, debian 13, fedora 44, plus the AppImage); keep the logs and pictures; bind package bytes to the checkout |
 | `Windows x64 (unsigned)` | build the agent folder and run it against stand-ins; build and check the MSI and portable zip; **install the MSI and open the Assistant in the installed app**; keep the logs and pictures; bind package bytes |
 | `FreeBSD x86_64`, `Linux aarch64`, `macOS build aarch64`, `Windows x86/arm64`, `Flatpak`, `Arch`, `Snap`, `Web` | build/check steps succeeded |
-| `macOS build x86_64` | cancelled on the first pass; rebuilt on rerun (still running when this was written) |
+| `macOS build x86_64` | cancelled on the first pass; rebuilt on the rerun, which is why the run is attempt 2 and its conclusion is `success` |
 | `All nonpublishing package builds` | failed on the first pass (because the cancelled slice) — the expected, honest result |
 | `macOS universal` | skipped until its two slices exist |
 
@@ -919,8 +923,8 @@ installed behaviour is what my VM runs in §12.4.3/§12.4.4 add.
 
 ## 12.8 The reproducible candidate run, as a script
 
-The candidate is no longer assembled by hand. `~/.cache/int1503/rc-final.sh` does the whole run and
-logs to `~/.cache/int1503/rc-final.log`:
+The candidate is no longer assembled by hand. `~/.cache/int1503/rc-chain.sh` does the whole run and
+logs to `~/.cache/int1503/rc-chain.log`:
 
 1. wait until #214 is `MERGED`;
 2. reset the candidate worktree to `origin/develop` (so the agent packaging is the merged code, not a
@@ -929,10 +933,15 @@ logs to `~/.cache/int1503/rc-final.log`:
 3. print the two agent settings the branch's `release.yml` carries, dispatch `release.yml` on that
    SHA, watch it, and if the pass is not `success` list the red jobs, `gh run rerun --failed` once and
    watch again;
-4. download `release-linux-x86_64`, `release-windows-x64`, `release-macos` and the three
-   `package-evidence-*` artifacts;
-5. flatten them and run `packaging/checksums.sh --require` for the tarball, the MSI **and** the
-   universal DMG, so an incomplete set is refused rather than published.
+4. download every channel artifact (`release-linux-{x86_64,aarch64}`, `release-windows-{x64,x86,arm64}`,
+   `release-macos`, `release-flatpak-x86_64`, `release-snap-x86_64`) into one folder, and the
+   evidence artifacts — named `package-evidence-release-<package id>`, not
+   `package-evidence-<platform>` — elsewhere;
+5. write the unversioned aliases with `packaging/aliases.sh`, then run `packaging/checksums.sh
+   --require` for every asset the release publishes (both Linux architectures' tar/AppImage/deb/
+   rpm/flatpak/snap, all three MSI and portable-zip names, the standalone exe and the DMG), and
+   **exit non-zero** if the list is incomplete, so a short list stops the run instead of being
+   logged and carried on.
 
 That is the reproducible release flow this document owes the next person: the same five steps a
 release manager runs by hand, in one command, with the refusal behaviour tested in
@@ -950,8 +959,8 @@ approved except what needs real Mac hardware. In practice that means:
 - Publication is authorised in principle, but only after the gates pass. The Mac-dependent items
   (native Intel hardware, Gatekeeper/quarantine first launch, real-Mac V2/V7 login runs) stay
   NOT TESTED and are not exceptions to the rest.
-- **PP's UI still has no PR**, so the release cannot be complete: this is the one scope item that
-  cannot be started from here.
+- **PP's UI is PR #221** (draft, `BEHIND`, `ui_containers` red), so the release cannot be complete
+  until it is ready or the CTO explicitly excepts it.
 
 ## 14. Decisions resolved, and what is still open
 
@@ -961,7 +970,8 @@ principle once the gates pass, with Mac-hardware items explicitly excluded.
 
 Still open, and not decidable from here:
 
-1. **PP's UI (B9).** No PR exists, so the scope item the CTO requires cannot be reviewed or shipped.
+1. **PP's UI (#221, B9).** Draft, `BEHIND`, `ui_containers` red; the scope item the CTO requires
+   cannot be integrated until that check is green and the PR is marked ready.
 2. **Login Gate B.** #213 is still a draft and its `Windows app startup` check fails; the whole of
    Gate B is unrun. Login development is not this role's work.
 3. **B10, the slash menu.** The Assistant has no consumer of `available_commands_update`; the four
@@ -979,20 +989,21 @@ required things do not exist yet and one is unverified.
 
 | Gate | Status | Evidence / what is missing |
 |---|---|---|
-| A. Build and package | **PARTIAL** | run 45248432170: Linux x86_64/aarch64, Windows x64/x86/arm64, FreeBSD, Arch, Flatpak, Snap, Web and macOS aarch64 all succeeded; **macOS x86_64 was cancelled and its universal DMG skipped**, so the asset set is incomplete. `build.json` binds every package to `14a6c95ae…`. |
+| A. Build and package | **PASS** | run 45248432170 (attempt 2) finished `success`: every job, including `macOS x86_64` on the rerun and the universal DMG (489,745,075 B). `build.json` binds every package to `14a6c95ae…`. aarch64/Flatpak/Snap/Arch/FreeBSD/Web were built by the run but not downloaded or installed here. |
 | A. Content | **PASS for Linux + Windows** | `contents.json` on both: `agent.present`, `node`, five skill sets, `missing: []`; the Linux tarball has 13,605 agent entries and the Windows MSI 10,739 agent files including `node.exe` (§12.4.3, §12.4.4) |
-| A. Checksums | **PASS** | `checksums.sh --require` produced a 10-file, both-names list with every hash OK, and refused the set that lacks the DMG (§12.4.3) |
+| A. Checksums | **PASS for what was downloaded** | `checksums.sh --require` produced an 18-line list (16 files plus the two legacy `.zsync` names) under both names with every hash OK, and refused a set that lacks the DMG (§12.4.3, §12.5). It proves the tarball, MSI and DMG are listed, not the full published set |
 | B. Login | **FAIL / NOT RUN** | #213 draft, `Windows app startup` red; no first-login, session, expiry, logout or network-failure run exists |
 | C. Skills | **PARTIAL PASS** | installed and used on Linux with a real model (§12.5); installed and started on Windows (§12.4.4); agent smoke 8/8 with the four `skill/<name>` commands; **slash menu missing (B10)** |
-| D. UI | **PARTIAL** | Assistant page renders on Linux and Windows, themes and DPI not exercised, PP's UI absent (B9) |
+| D. UI | **PARTIAL** | Assistant page renders on Linux and Windows, themes and DPI not exercised, PP's UI absent (#221 not ready) |
 | E. Upgrade | **PARTIAL** | 0.1.2 → 0.1.3 in place passes on Linux tar and Windows MSI (one ARP entry, `intcad-cli 0.1.3`); the one-click path is untestable before publication (§10) |
 | F. Evidence | **PASS for what is claimed** | every row above names a run, file or screenshot; nothing is marked PASS without one |
 
-Since this verdict, the macOS DMG exists and every promised asset is present (§12.4.8, §12.4.9), the
+Since this verdict, the macOS DMG exists and every asset for the three installed platforms is present
+(§12.4.8, §12.4.9), the
 alias gap that would have blocked MSI/DMG/AppImage updates is closed (B11), and the CI Windows MSI was
 installed, upgraded from the published 0.1.2 and run with its agent (§12.4.6). What has **not**
 changed: #214 is still unmerged, so no accepted candidate comes from a merged `develop` SHA; PP's UI
-has no PR; Gate B has not run; B10 is open.
+(#221) is not ready; Gate B has not run; B10 is open.
 
 To turn this into GO: land #214, rebuild from the merged `develop` SHA and repeat the Linux/Windows
 installs on that exact SHA (`~/.cache/int1503/rc-final.sh` does the rebuild, the package run, the

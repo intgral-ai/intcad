@@ -40,7 +40,7 @@ fi
 # workflow writes beside the artifacts are not download assets.
 is_list() {
   case "$1" in
-    SHA256SUMS.txt | SHA256SUMS | SHA256SUMS.txt.minisig | SHA256SUMS.minisig | build.json | contents.json) return 0 ;;
+    SHA256SUMS.txt | SHA256SUMS | SHA256SUMS.txt.new | SHA256SUMS.new | SHA256SUMS.txt.minisig | SHA256SUMS.minisig | build.json | contents.json) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -51,15 +51,17 @@ found="$(mktemp "${TMPDIR:-/tmp}/checksums-find.XXXXXX")"
 # The temporary list is made in `$dir` only after the scan: a file created before it would be
 # found as a release file and listed with a hash of itself.
 tmp=
-trap 'rm -f "$found" ${tmp:+"$tmp"}' EXIT
+trap 'rm -f "$found" ${tmp:+"$tmp"} "$dir/SHA256SUMS.txt.new" "$dir/SHA256SUMS.new"' EXIT
 find "$dir" -mindepth 1 -maxdepth 1 -type f -print0 | LC_ALL=C sort -z >"$found"
 
 files=()
 while IFS= read -r -d '' file; do
-  name="$(basename "$file")"
-  case "$name" in
-    *$'\n'* | *$'\r'*) echo "checksums.sh: a file name holds a newline, which a checksum line cannot: $name" >&2; exit 1 ;;
+  # The path, not `basename`: command substitution removes trailing newlines, which would hide a
+  # name that cannot appear in a checksum line.
+  case "$file" in
+    *$'\n'* | *$'\r'*) echo "checksums.sh: a file name holds a newline, which a checksum line cannot: $file" >&2; exit 1 ;;
   esac
+  name="${file##*/}"
   is_list "$name" && continue
   files+=("$name")
 done <"$found"
@@ -69,15 +71,37 @@ if [ "${#files[@]}" -eq 0 ]; then
   exit 1
 fi
 
-# A symlink at the top level is not a release file and would silently be left out of the list.
-while IFS= read -r -d '' link; do
-  is_list "$(basename "$link")" && continue
-  echo "checksums.sh: $link is a symlink, so it would not be listed; put the file itself in $dir" >&2
+# Anything at the top level that is not a regular file would be left out of the list without a sign:
+# a symlink, a subdirectory (what `gh run download` makes), a socket. Refuse instead, and say what
+# to do — a short list that still looks successful is the failure this check exists to prevent.
+while IFS= read -r -d '' odd; do
+  name="${odd##*/}"
+  is_list "$name" && continue
+  if [ -d "$odd" ]; then
+    echo "checksums.sh: $odd is a folder, so its files would not be listed; flatten the release assets into $dir first" >&2
+  elif [ -L "$odd" ]; then
+    echo "checksums.sh: $odd is a symlink, so it would not be listed; put the file itself in $dir" >&2
+  else
+    echo "checksums.sh: $odd is not a regular file, so it would not be listed" >&2
+  fi
   exit 1
-done < <(find "$dir" -mindepth 1 -maxdepth 1 -type l -print0)
+done < <(find "$dir" -mindepth 1 -maxdepth 1 ! -type f -print0)
+
+# The two published names must be regular files: overwriting a symlink or a directory here would
+# write the list somewhere else while still looking like success.
+for name in SHA256SUMS.txt SHA256SUMS; do
+  if [ -e "$dir/$name" ] && [ ! -f "$dir/$name" ]; then
+    echo "checksums.sh: $dir/$name exists and is not a regular file" >&2
+    exit 1
+  fi
+  if [ -L "$dir/$name" ]; then
+    echo "checksums.sh: $dir/$name is a symlink; remove it and write a real list" >&2
+    exit 1
+  fi
+done
 
 tmp="$(mktemp "${TMPDIR:-/tmp}/checksums-list.XXXXXX")"
-trap 'rm -f "$found" "$tmp"' EXIT
+trap 'rm -f "$found" "$tmp" "$dir/SHA256SUMS.txt.new" "$dir/SHA256SUMS.new"' EXIT
 (
   cd "$dir"
   for file in "${files[@]}"; do
@@ -97,7 +121,8 @@ missing=()
 for name in "${required[@]}"; do
   # A line is `<64 hex>  <name>`, so compare the trailing name field whole: a prefix must not
   # pass (`intcad-windows-x64.msi` matching only `intcad-windows-x64.msi.part`).
-  awk -v want="$name" 'index($0, "  " want) == length($0) - length(want) - 1 { found = 1 } END { exit !found }' "$tmp" \
+  # `-v` would expand backslashes in the name; the environment passes it as it is.
+  WANT="$name" awk 'index($0, "  " ENVIRON["WANT"]) == length($0) - length(ENVIRON["WANT"]) - 1 { found = 1 } END { exit !found }' "$tmp" \
     || missing+=("$name")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
@@ -105,10 +130,13 @@ if [ "${#missing[@]}" -gt 0 ]; then
   exit 1
 fi
 
-mv "$tmp" "$dir/SHA256SUMS.txt"
-cp "$dir/SHA256SUMS.txt" "$dir/SHA256SUMS"
-# `mktemp` makes 0600; a published list is read by anyone.
-chmod 644 "$dir/SHA256SUMS.txt" "$dir/SHA256SUMS"
+# Both names are put in place from copies, so a failure on the second one does not leave the first
+# updated and the second stale.
+cp "$tmp" "$dir/SHA256SUMS.txt.new"
+cp "$tmp" "$dir/SHA256SUMS.new"
+chmod 644 "$dir/SHA256SUMS.txt.new" "$dir/SHA256SUMS.new"
+mv "$dir/SHA256SUMS.txt.new" "$dir/SHA256SUMS.txt"
+mv "$dir/SHA256SUMS.new" "$dir/SHA256SUMS"
 
 # Both names, as published: the same lines and the same bytes, each verified in its published
 # place (the output names every file, so the run shows what was checked).

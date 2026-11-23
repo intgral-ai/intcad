@@ -31,7 +31,14 @@ aliased() {
 }
 
 made=0
+already=0
 for file in "$dir"/*; do
+  # An alias is published as a file; a symlink source would make one that `checksums.sh` refuses and
+  # that a later cleanup could empty.
+  if [ -L "$file" ]; then
+    echo "aliases.sh: $file is a symlink, so its alias would be one too; put the file itself in $dir" >&2
+    exit 1
+  fi
   [ -f "$file" ] || continue
   name="$(basename "$file")"
   case "$name" in
@@ -41,16 +48,28 @@ for file in "$dir"/*; do
   aliased "$name" || continue
   alias_name="intcad-${name#intcad-"$version"-}"
   target="$dir/$alias_name"
-  if [ -e "$target" ]; then
-    cmp -s "$file" "$target" && continue
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    if [ -L "$target" ] || [ ! -f "$target" ]; then
+      echo "aliases.sh: $alias_name exists and is not a regular file; remove it and rerun" >&2
+      exit 1
+    fi
+    if cmp -s "$file" "$target"; then
+      already=$((already + 1))
+      continue
+    fi
     echo "aliases.sh: $alias_name already exists with different bytes; remove it or pick another version" >&2
     exit 1
   fi
-  ln "$file" "$target" 2>/dev/null || cp "$file" "$target"
+  # `-n` so a file that appears between the check above and the copy is never overwritten.
+  ln "$file" "$target" 2>/dev/null || cp -n "$file" "$target"
+  cmp -s "$file" "$target" || {
+    echo "aliases.sh: $alias_name was not written to match $name; remove it and rerun" >&2
+    exit 1
+  }
   echo "aliased $alias_name"
   made=$((made + 1))
 done
 
-if [ "$made" -eq 0 ]; then
+if [ "$made" -eq 0 ] && [ "$already" -eq 0 ]; then
   echo "aliases.sh: no versioned asset needing an alias in $dir (for $version)" >&2
 fi

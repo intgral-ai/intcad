@@ -84,5 +84,41 @@ class ReleaseAliases(unittest.TestCase):
         self.assertIn("no versioned asset needing an alias", result.stderr)
 
 
+    def test_a_second_run_that_changes_nothing_is_quiet(self):
+        self.write(f"intcad-{V}-windows-x64.msi")
+        self.assertEqual(self.run_script(str(self.tmp), V).returncode, 0)
+
+        again = self.run_script(str(self.tmp), V)
+
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertNotIn("no versioned asset needing an alias", again.stderr)
+
+    def test_a_symlinked_asset_is_refused(self):
+        self.write(f"intcad-{V}-windows-x64.msi")
+        elsewhere = self.tmp.parent / f"{self.tmp.name}-real.msi"
+        elsewhere.write_bytes(b"msi")
+        self.addCleanup(elsewhere.unlink)
+        (self.tmp / f"intcad-{V}-linux-x86_64.deb").symlink_to(elsewhere)
+
+        result = self.run_script(str(self.tmp), V)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("symlink", result.stderr)
+        self.assertFalse((self.tmp / "intcad-linux-x86_64.deb").exists())
+
+    def test_an_alias_that_is_a_symlink_is_refused(self):
+        self.write(f"intcad-{V}-windows-x64.msi")
+        elsewhere = self.tmp.parent / f"{self.tmp.name}-alias.msi"
+        elsewhere.write_bytes(b"msi")
+        self.addCleanup(elsewhere.unlink)
+        (self.tmp / "intcad-windows-x64.msi").symlink_to(elsewhere)
+
+        result = self.run_script(str(self.tmp), V)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a regular file", result.stderr)
+        self.assertEqual(elsewhere.read_bytes(), b"msi")
+
+
 if __name__ == "__main__":
     unittest.main()

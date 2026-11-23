@@ -20,7 +20,9 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-class ReleaseChecksums(unittest.TestCase):
+class ChecksumTestCase(unittest.TestCase):
+    """The temporary folder and the two calls every case needs. No tests of its own."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
@@ -33,6 +35,8 @@ class ReleaseChecksums(unittest.TestCase):
             [str(SCRIPT), *args], capture_output=True, text=True, env={"PATH": os.environ["PATH"]}
         )
 
+
+class ReleaseChecksums(ChecksumTestCase):
     def test_writes_both_names_with_sorted_hashes(self):
         self.write("intcad-0.1.3-windows-x64.msi", b"msi")
         self.write("intcad-0.1.3-linux-x86_64.tar.gz", b"tar")
@@ -137,20 +141,43 @@ class ReleaseChecksums(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing", result.stderr)
 
+class EvidenceFilesAreNotAssets(ChecksumTestCase):
+    def test_build_and_contents_json_are_left_out(self):
+        self.write("intcad-0.1.3-linux-x86_64.tar.gz", b"tar")
+        self.write("build.json", b"{}")
+        self.write("contents.json", b"{}")
+
+        result = self.run_script(str(self.tmp))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (self.tmp / "SHA256SUMS.txt").read_text(),
+            f"{sha256(b'tar')}  intcad-0.1.3-linux-x86_64.tar.gz\n",
+        )
+
+    def test_a_folder_is_refused_rather_than_silently_skipped(self):
+        self.write("intcad-0.1.3-linux-x86_64.tar.gz", b"tar")
+        (self.tmp / "release-macos").mkdir()
+        (self.tmp / "release-macos" / "intcad-macos-universal.dmg").write_bytes(b"dmg")
+
+        result = self.run_script(str(self.tmp))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("flatten", result.stderr)
+
+    def test_a_checksum_list_that_is_a_symlink_is_refused(self):
+        self.write("intcad-0.1.3-linux-x86_64.tar.gz", b"tar")
+        elsewhere = self.tmp.parent / f"{self.tmp.name}-elsewhere"
+        elsewhere.write_text("not a list")
+        self.addCleanup(elsewhere.unlink)
+        (self.tmp / "SHA256SUMS").symlink_to(elsewhere)
+
+        result = self.run_script(str(self.tmp))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("symlink", result.stderr)
+        self.assertEqual(elsewhere.read_text(), "not a list", "the old file is untouched")
+
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class EvidenceFilesAreNotAssets(unittest.TestCase):
-    def test_build_and_contents_json_are_left_out(self):
-        import shutil, tempfile, subprocess
-        from pathlib import Path
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tmp, True)
-        (tmp / "intcad-0.1.3-linux-x86_64.tar.gz").write_bytes(b"tar")
-        (tmp / "build.json").write_text("{}")
-        (tmp / "contents.json").write_text("{}")
-        result = subprocess.run([str(SCRIPT), str(tmp)], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((tmp / "SHA256SUMS.txt").read_text(), f"{sha256(b'tar')}  intcad-0.1.3-linux-x86_64.tar.gz\n")
