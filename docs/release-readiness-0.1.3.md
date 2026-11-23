@@ -178,6 +178,11 @@ missing). The local pass run was interrupted when another process reclaimed this
 the trusted builder here anyway. The update owner can veto this single change without touching the
 checksum script.
 
+Against the real release: the two `v0.1.2` assets downloaded in §1, run through
+`packaging/checksums.sh`, produce lines byte-identical to the published `SHA256SUMS` for the same
+files, and both generated names are identical (`diff` of the published lines: empty;
+`cmp SHA256SUMS SHA256SUMS.txt`: equal).
+
 Verification on this machine: `python3 -B -m unittest packaging/tests/checksums_test.py` → 6
 tests, OK (`nightly_test.py` fails only without `jq` on `PATH`, and passes with it; the other
 suites below are unchanged). Re-ran, unchanged and passing: `nightly_test.py` (12), `apprun_test.py`,
