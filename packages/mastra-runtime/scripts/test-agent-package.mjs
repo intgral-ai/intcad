@@ -6,6 +6,9 @@
  *   package the build leaves out, a package the lock file does not name or names at another
  *   version, a package under a refused licence or with none stated, or another session builder
  *   of the SDK than the one the agent's own follows; with `--read-only`, when a file can be written;
+ * - it fails when a skill of a set is missing, its stamp is missing or names other skills or another set, a copy
+ *   was changed after the build, a file a copy does not carry or a folder of no set is there, and
+ *   when the repository's folder has changed since the build (`--skills-root` stands for it);
  * - the scan finds a key-shaped text (also one lying across two reads), a private key with its
  *   key material, a stored sign-in, a database and an agent's own folder, and names the file and
  *   the kind without printing what it found;
@@ -17,12 +20,15 @@
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SKILL_SETS, packSkillSets } from "../agent/skills.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, "../../..");
 const failures = [];
 const expect = (condition, message) => {
   if (!condition) failures.push(message);
@@ -76,6 +82,8 @@ function folder() {
   write(root, "node_modules/@mastra/core/dist/run.js", `import { y as requireFGA } from "./ee-AbC123-xY_z9.js";\nexport { requireFGA };\n`);
   const removed = run("remove-enterprise.mjs", [join(root, "node_modules")]);
   if (removed.code !== 0) throw new Error(`could not prepare the folder: ${removed.stderr}${removed.stdout}`);
+  // The skill sets as the build copies them, from the repository's own folders.
+  packSkillSets(repoRoot, join(root, "skills"));
   return { root, pkg };
 }
 
@@ -119,12 +127,61 @@ const breaks = [
   ["a package the lock file does not name", ({ pkg }) => pkg("slipped-in", "MIT"), "not in the lock file: node_modules/slipped-in"],
   ["a package at another version than the lock file's", ({ pkg }) => pkg("left-pad", "MIT", { version: "1.0.1" }), "the lock file has 1.0.0"],
   ["another session builder in the SDK", ({ root }) => write(root, "node_modules/@mastra/code-sdk/dist/acp/runtime.js", `${BUILDER}// changed upstream\n`), "was adapted from"],
+  ["no skill sets at all", ({ root }) => rmSync(join(root, "skills"), { recursive: true }), "missing: skills/modelling-skills/skill-set.json"],
+  ["a skill missing", ({ root }) => rmSync(join(root, "skills/modelling-skills/solidcraft-editing"), { recursive: true }), "skill missing from the package: skills/modelling-skills/solidcraft-editing"],
+  ["a skill's SKILL.md changed after the build", ({ root }) => appendFileSync(join(root, "skills/modelling-skills/solidcraft-modeling/SKILL.md"), "\nchanged\n"), "solidcraft-modeling is not what its stamp says: SKILL.md differs"],
+  ["a file of a skill missing", ({ root }) => rmSync(join(root, "skills/modelling-skills/solidcraft-mechanisms/reference.md")), "reference.md missing"],
+  ["a file added to a skill", ({ root }) => write(root, "skills/modelling-skills/solidcraft-checking/notes.md", "added\n"), "notes.md not expected"],
+  ["a hidden file in a skill", ({ root }) => write(root, "skills/modelling-skills/solidcraft-checking/scripts/.cache", "x\n"), "scripts/.cache is not a file a copy carries"],
+  ["a skill folder of no set", ({ root }) => write(root, "skills/modelling-skills/solidcraft-ui/SKILL.md", "---\nname: solidcraft-ui\n---\n"), "solidcraft-ui is not one of the set's skills"],
+  ["a set the agent does not carry", ({ root }) => write(root, "skills/other-skills/skill-set.json", "{}\n"), "skills/other-skills is not a skill set the agent carries"],
+  [
+    "a stamp that names another skill",
+    ({ root }) => {
+      const path = join(root, "skills/modelling-skills/skill-set.json");
+      const stamp = JSON.parse(readFileSync(path, "utf8"));
+      delete stamp.skills["solidcraft-editing"];
+      writeFileSync(path, JSON.stringify(stamp));
+    },
+    "skill-set.json names solidcraft-checking, solidcraft-mechanisms, solidcraft-modeling;",
+  ],
+  [
+    "a stamp that names another set",
+    ({ root }) => {
+      const path = join(root, "skills/modelling-skills/skill-set.json");
+      writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, "utf8")), set: "other-skills" }));
+    },
+    'names the set "other-skills", so the agent would start without modelling-skills',
+  ],
 ];
 for (const [name, change, said] of breaks) {
   const made = folder();
   change(made);
   const checked = checkFolder(made.root);
   expect(checked.code === 1 && checked.report?.problems?.some((problem) => problem.includes(said)), `the check must fail on ${name} and say "${said}": ${JSON.stringify(checked.report?.problems)}`);
+}
+
+// 2b. The repository's skills changed after the package was built: the copy is stale. A copy of
+// the repository's skill folders stands for the repository, so the repository is not touched.
+const stale = [
+  ["a SKILL.md changed in the repository", (skills) => appendFileSync(join(skills, "solidcraft-modeling/SKILL.md"), "\nlater\n"), "skills/modelling-skills/solidcraft-modeling is stale against skills/solidcraft-modeling: SKILL.md differs"],
+  ["a file added in the repository", (skills) => write(skills, "solidcraft-checking/reference/more.md", "more\n"), "is stale against skills/solidcraft-checking: reference/more.md missing"],
+  ["a skill gone from the repository", (skills) => rmSync(join(skills, "solidcraft-editing"), { recursive: true }), "the repository has no skills/solidcraft-editing"],
+];
+{
+  const { root } = folder();
+  const fresh = join(work, "repository");
+  for (const set of SKILL_SETS) for (const skill of set.skills) cpSync(join(repoRoot, set.from, skill), join(fresh, set.from, skill), { recursive: true });
+  const same = checkFolder(root, TARGET, "--skills-root", fresh);
+  expect(same.code === 0, `a package built from the repository as it is must pass: ${JSON.stringify(same.report?.problems)}`);
+  expect(/^sha256:[0-9a-f]{64}$/u.test(same.report?.skills?.["modelling-skills"] ?? ""), "the report must give the set's version");
+  for (const [name, change, said] of stale) {
+    const later = join(work, `repository-${++count}`);
+    cpSync(fresh, later, { recursive: true });
+    change(join(later, "skills"));
+    const checked = checkFolder(root, TARGET, "--skills-root", later);
+    expect(checked.code === 1 && checked.report?.problems?.some((problem) => problem.includes(said)), `the check must fail on ${name} and say "${said}": ${JSON.stringify(checked.report?.problems)}`);
+  }
 }
 
 // 3. The scan. Each text is assembled here so that no key-shaped text is in this file.
@@ -162,4 +219,4 @@ if (failures.length > 0) {
   for (const failure of failures) console.error(`FAIL ${failure}`);
   process.exit(1);
 }
-console.log(`ok agent-package: ${5 + breaks.length + found.length + 1} cases`);
+console.log(`ok agent-package: ${5 + breaks.length + 1 + stale.length + found.length + 1} cases`);

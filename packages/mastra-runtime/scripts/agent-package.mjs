@@ -6,8 +6,9 @@
  *   node agent-package.mjs check --target <triple> [--read-only] <dir>
  *   node agent-package.mjs scan <dir>...
  *
- * (`--pin <dir>` names another folder in place of `packages/mastra-runtime/agent-package`; the
- * tests use it with made-up folders, and no package script passes it.)
+ * (`--pin <dir>` names another folder in place of `packages/mastra-runtime/agent-package`, and
+ * `--skills-root <dir>` another folder in place of the repository for the skills' originals; the
+ * tests use them with made-up folders, and no package script passes them.)
  *
  * `build` makes the folder from nothing but the repository and the npm registry:
  *   1. `npm ci --ignore-scripts` of `packages/mastra-runtime/agent-package/package-lock.json` for
@@ -18,15 +19,17 @@
  *   4. Whole packages are left out that only a feature Intcad's agent does not offer reaches, each
  *      through an `import()` on demand (LEFT_OUT below says which, and where it is imported).
  *   5. The agent's entry files and a Node program are put beside `node_modules`, with the licence
- *      texts of every package that is left.
+ *      texts of every package that is left, and the skill sets the agent installs at start
+ *      (`skills/<set>/`, copied from the repository with their stamp; agent/skills.mjs says which).
  *   6. The folder is checked as `check` checks it.
  *
  * `check` fails (exit 1) when the folder is not whole, is for another target, still holds
  * enterprise content, holds a package the lock file does not name at that version, a package
  * under a licence the repository refuses or with none stated, or something that looks like a
  * secret or a stored sign-in; when Mastra Code's session builder is not the file the agent's own
- * was adapted from; and, with `--read-only`, when anything in the folder can be written. A
- * package script takes the folder only after this passes. `scan` runs the secret check alone on any folders, such as a
+ * was adapted from; when a skill of a set is missing, holds a file its stamp does not, or is not
+ * the repository's folder as it is now; and, with `--read-only`, when anything in the folder can
+ * be written. A package script takes the folder only after this passes. `scan` runs the secret check alone on any folders, such as a
  * staged package; it prints paths and kinds, never what it found.
  *
  * What a passing folder shows is what these checks look at. Nobody has reviewed the licences the
@@ -42,6 +45,7 @@ import { chmodSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, openSyn
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { SKILL_SETS, STAMP, packSkillSets, setStamp, skillFiles, stampDifference, stampedSkills } from "../agent/skills.mjs";
 import { checkEnterprise, removeEnterprise } from "./remove-enterprise.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -376,9 +380,55 @@ export function scanSecrets(root) {
   return { files, findings };
 }
 
+// ---- Skill sets --------------------------------------------------------------------------------
+
+/**
+ * Each set in `skills/<set>/` is whole, is what its stamp says, and is the repository's folders as
+ * they are now (`skillsRoot` stands for the repository). Nothing else is in `skills/`.
+ */
+function skillProblems(dir, skillsRoot) {
+  const problems = [];
+  const packaged = join(dir, "skills");
+  const sets = new Map(SKILL_SETS.map((set) => [set.name, set]));
+  if (existsSync(packaged)) for (const name of readdirSync(packaged)) if (!sets.has(name)) problems.push(`skills/${name} is not a skill set the agent carries`);
+  for (const set of SKILL_SETS) {
+    const into = join(packaged, set.name);
+    let stamp;
+    try {
+      stamp = JSON.parse(readFileSync(join(into, STAMP), "utf8"));
+    } catch {
+      problems.push(`missing: skills/${set.name}/${STAMP}`);
+      continue;
+    }
+    if (!stampedSkills(stamp, set.name)) problems.push(`skills/${set.name}/${STAMP} names the set ${JSON.stringify(stamp?.set ?? null)}, so the agent would start without ${set.name}`);
+    const copy = setStamp(set.name, set.from, into, set.skills);
+    const repository = setStamp(set.name, set.from, join(skillsRoot, ...set.from.split("/")), set.skills);
+    const stamped = Object.keys(stamp?.skills ?? {}).sort();
+    if (stamped.join(",") !== [...set.skills].sort().join(",")) problems.push(`skills/${set.name}/${STAMP} names ${stamped.join(", ") || "no skill"}; the set is ${[...set.skills].sort().join(", ")}`);
+    for (const name of readdirSync(into)) if (name !== STAMP && !set.skills.includes(name)) problems.push(`skills/${set.name}/${name} is not one of the set's skills`);
+    for (const skill of set.skills) {
+      if (!repository.skills[skill]) problems.push(`the repository has no ${set.from}/${skill}`);
+      const have = copy.skills[skill];
+      if (!have) {
+        problems.push(`skill missing from the package: skills/${set.name}/${skill}`);
+        continue;
+      }
+      // What a copy leaves out (hidden files, caches) is not in the package either.
+      const carried = new Set(skillFiles(join(into, skill)));
+      for (const [path, entry] of entries(join(into, skill))) if (!entry.isDirectory() && !carried.has(path)) problems.push(`skills/${set.name}/${skill}/${path} is not a file a copy carries`);
+      const unlike = stampDifference(stamp.skills?.[skill], have);
+      if (unlike.length > 0) problems.push(`skills/${set.name}/${skill} is not what its stamp says: ${unlike.slice(0, 3).join("; ")}`);
+      const stale = repository.skills[skill] ? stampDifference(repository.skills[skill], have) : [];
+      if (stale.length > 0) problems.push(`skills/${set.name}/${skill} is stale against ${set.from}/${skill}: ${stale.slice(0, 3).join("; ")}`);
+    }
+    if (copy.version && stamp.version !== copy.version) problems.push(`skills/${set.name}: the stamp's version is ${stamp.version}, its files' is ${copy.version}`);
+  }
+  return problems;
+}
+
 // ---- Checking ----------------------------------------------------------------------------------
 
-function check(dir, targetName, { readOnly = false, pin = readPin(PIN_DIR) } = {}) {
+function check(dir, targetName, { readOnly = false, pin = readPin(PIN_DIR), skillsRoot = repoRoot } = {}) {
   const target = TARGETS[targetName] ?? fail(`unknown target ${targetName}; known: ${Object.keys(TARGETS).join(", ")}`);
   const problems = [];
   const modules = join(dir, "node_modules");
@@ -405,9 +455,11 @@ function check(dir, targetName, { readOnly = false, pin = readPin(PIN_DIR) } = {
     if (writable.length > 0) problems.push(`${writable.length} entries can be written, such as ${writable[0]}`);
   }
   for (const cut of LEFT_OUT) for (const name of cut.packages) if (existsSync(join(modules, ...name.split("/")))) problems.push(`left-out package present: ${name}`);
+  problems.push(...skillProblems(dir, skillsRoot));
   const secrets = scanSecrets(dir);
   problems.push(...secrets.findings.map(([path, kind]) => `looks like ${kind}: ${path}`));
-  return { problems, report: { target: targetName, enterprise: enterprise.report, licences: licenceSummary(list), scanned: secrets.files, ...size(dir) } };
+  const skills = Object.fromEntries(SKILL_SETS.map((set) => [set.name, setStamp(set.name, set.from, join(dir, "skills", set.name), set.skills).version]));
+  return { problems, report: { target: targetName, enterprise: enterprise.report, licences: licenceSummary(list), skills, scanned: secrets.files, ...size(dir) } };
 }
 
 // ---- Building ----------------------------------------------------------------------------------
@@ -436,6 +488,7 @@ function build(targetName, out, nodeProgram, pin = readPin(PIN_DIR)) {
 
   mkdirSync(join(out, "agent"), { recursive: true });
   for (const name of readdirSync(join(packageRoot, "agent")).filter((name) => name.endsWith(".mjs"))) cpSync(join(packageRoot, "agent", name), join(out, "agent", name));
+  const skills = packSkillSets(repoRoot, join(out, "skills"));
   cpSync(node, join(out, target.node));
   if (target.os !== "win32") chmodSync(join(out, target.node), 0o755);
 
@@ -452,6 +505,7 @@ function build(targetName, out, nodeProgram, pin = readPin(PIN_DIR)) {
         sdk: Object.fromEntries(["@mastra/code-sdk", "@mastra/core", "@agentclientprotocol/sdk"].map((name) => [name, version(name)])),
         enterpriseContent: "removed by packages/mastra-runtime/scripts/remove-enterprise.mjs; one stand-in file is in its place",
         leftOut: LEFT_OUT,
+        skills,
         removed: {
           asInstalled: megabytes(asInstalled),
           enterprise: { files: enterprise.files, directories: enterprise.directories },
@@ -500,9 +554,10 @@ function main(args) {
     const readOnly = rest.includes("--read-only") && rest.splice(rest.indexOf("--read-only"), 1).length === 1;
     const pinFlag = flag("--pin");
     const pin = readPin(pinFlag ? resolve(pinFlag) : PIN_DIR);
+    const skillsRootFlag = flag("--skills-root");
     if (!target || (command !== "build" && command !== "check")) return usage();
-    if (command === "build" ? !out || rest.length > 0 : rest.length !== 1) return usage();
-    const result = command === "build" ? build(target, resolve(out), node ? resolve(node) : undefined, pin) : check(resolve(rest[0]), target, { readOnly, pin });
+    if (command === "build" ? !out || rest.length > 0 || skillsRootFlag : rest.length !== 1) return usage();
+    const result = command === "build" ? build(target, resolve(out), node ? resolve(node) : undefined, pin) : check(resolve(rest[0]), target, { readOnly, pin, ...(skillsRootFlag ? { skillsRoot: resolve(skillsRootFlag) } : {}) });
     console.log(JSON.stringify({ status: result.problems.length === 0 ? "ok" : "failed", problemCount: result.problems.length, problems: result.problems.slice(0, 50), ...result.report }));
     return result.problems.length === 0 ? 0 : 1;
   } catch (error) {

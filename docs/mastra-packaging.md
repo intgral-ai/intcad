@@ -237,7 +237,34 @@ workspace's lock and the inventory that records it are not touched), and then:
    command line of `@mastra/mcp` (what brings `tsx` and `esbuild`), and embedding on this
    computer;
 4. adds the entry files, the Node program that ran the script, and the licence texts of every
-   package that is left (`licenses/THIRD-PARTY-LICENSES.txt`, `licenses/NODE-LICENSE.txt`).
+   package that is left (`licenses/THIRD-PARTY-LICENSES.txt`, `licenses/NODE-LICENSE.txt`);
+5. copies the skill sets the agent carries from the repository into `skills/<set>/`, with a stamp
+   (`skill-set.json`: every file with its SHA-256, and the set's `version`, the hash of the whole).
+   The sets are named in `packages/mastra-runtime/agent/skills.mjs`; today there is one,
+   `modelling-skills`: `skills/solidcraft-modeling`, `-editing`, `-checking` and `-mechanisms`,
+   copied as they are, front matter and all. Hidden files and Python caches are not copied.
+
+### The skills, at start
+
+Mastra Code looks for skills in `.mastracode/skills`, `.claude/skills` and `.agents/skills`, under
+the session's folder and under its home (`buildSkillPaths` in the SDK's
+`dist/agents/workspace.js`). The agent's home is its own (`MASTRA_APP_DATA_DIR/home`), so before
+anything of Mastra's is loaded the entry makes `home/.agents/skills` hold each set as the package
+has it: a skill folder whose files are the same is left alone (about 1 ms), one that differs (an
+older package, or the model wrote into it) is replaced whole, and one an earlier set put there and
+this one does not carry is removed. A note per set (`.agents/skills/.<set>.json`) says which
+folders are the set's; nothing else in the home is touched, so a skill beside the set (another
+set's, such as the one INT-1477 plans) stays as it is. Not into the session's folder: Mastra Code
+skips a link there that leads out of it, and the session's folder may one day be the user's
+project. Run by hand without `MASTRA_APP_DATA_DIR`, the agent installs nothing. Run out of the
+repository, it installs the repository's own folders.
+
+Mastra loads a skill only when the `name` in its SKILL.md is its folder's name, and refuses to pick
+between two skills of one name found in two of the folders it reads: by its code (`@mastra/core`
+1.84.0; not tried), the `skill` tool then fails for that name and `skill_search` for every query. A skill name is therefore in one set only (the build fails otherwise), and a
+skill of the same name must not be put in the session's folder or in the home's other two folders.
+Mastra Code lists every skill whose front matter does not say `user-invocable: false` as a
+`skill/<name>` command of the session, so the four modelling skills are offered as commands.
 
 ### What stops a package build
 
@@ -257,12 +284,19 @@ Each of these fails the build, and no package is made:
   never what it found;
 - Mastra Code's session builder is not the file `agent/session.mjs` was adapted from;
 - the folder is for another target, is not whole, or (macOS, Linux) can be written;
+- a skill of a set is missing, its stamp is missing or names other skills, a copy is not what its
+  stamp says (a file changed, missing, added, or one a copy does not carry, such as a hidden
+  file), `skills/` holds a folder of no set, or a copy is not the repository's folder as it is
+  now: the check compares each copy with `skills/<name>` of the checkout it runs from, so a
+  package built before a skill changed fails;
 - the agent, started with the folder's own Node and entry as the package carries them, does not
-  pass its seven cases against stand-ins (`agent-smoke.mjs`): three turns; a command after a
-  permission request; a tool of an MCP server; a refused command, which does not run; a refused
-  file write, which writes nothing; a turn cancelled while a permission request is open; and a
-  turn cancelled while the answer streams. After each refusal or cancel nothing is left behind and
-  the session answers the next message. No vector store may have been made.
+  pass its eight cases against stand-ins (`agent-smoke.mjs`): three turns; a command after a
+  permission request; a tool of an MCP server; the skills of every set listed as `skill/<name>`
+  commands and in what the model is told, each installed in the agent's home as packaged, and
+  each SKILL.md read by the model through Mastra's `skill` tool; a refused command, which does not
+  run; a refused file write, which writes nothing; a turn cancelled while a permission request is
+  open; and a turn cancelled while the answer streams. After each refusal or cancel nothing is
+  left behind and the session answers the next message. No vector store may have been made.
 
 A package script takes the folder only through `packaging/mastra/stage-agent.sh` (`.ps1`), which
 runs the folder's check first and copies nothing when it fails.
@@ -308,6 +342,13 @@ On macOS (Apple silicon, Node 22.23.4, npm 11.19.0):
   and no file in its folder changed. The watcher sees the sockets and fetches of the agent's own Node, not
   other programs.
 
+The skill sets (2026-11-21, Linux x86_64, Node 22.23.4, with `@mastra/code-sdk` 1.19.1 installed
+from the pinned lock, not by `build`): the agent's entry and `skills/` as `build` lays them out,
+beside that install, passed all eight smoke cases; in the skills case each of the four skills was
+a `skill/<name>` command, was named in the model's first request, and was read with no permission
+request. With `skills/` taken away the same case failed. The install took 20 ms at the first start
+and about 1 ms after. `build` itself was not run with the skills.
+
 For Linux x86_64 and Windows x64 the folder was built on that Mac with a placeholder in place of
 the Node program, to see the build and the check work for those targets: 151 MB and 150 MB
 without Node (Node itself is about 125 MB and 87 MB). Nothing of those folders was run. `packaging/linux/package.sh --with-mastra-agent`, `packaging/windows/package.ps1
@@ -330,3 +371,11 @@ changes were not even parsed. The first run of the workflow is the evidence for 
 - **No inventory.** There is no per-file provenance record of this folder as the workflow
   runtime has in `packaging/mastra/inventory.json`. Whether the release may carry the agent on the
   checks above, or only through that gate, is undecided.
+- **Skills as commands.** Whether the modelling skills should be offered as `skill/<name>`
+  commands is open (PRD section 9; the recommendation is no). Their front matter is left as it
+  is, so Mastra Code offers them; not offering them takes either a filter in the app or
+  `user-invocable: false` in each SKILL.md.
+- **A skill of the same name elsewhere.** Mastra refuses to pick between two skills of one name in
+  two of the folders it reads. Nothing puts a second copy there today; if the session's folder
+  becomes a project with its own skills, a project skill named like a built-in one makes that
+  skill unusable, and skill search with it, rather than taking its place.
