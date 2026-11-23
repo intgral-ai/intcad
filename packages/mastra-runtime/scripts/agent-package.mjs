@@ -45,7 +45,7 @@ import { chmodSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, openSyn
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { SKILL_SETS, STAMP, packSkillSets, setStamp, skillFiles, stampDifference } from "../agent/skills.mjs";
+import { SKILL_SETS, STAMP, packSkillSets, setStamp, skillFiles, stampDifference, stampedSkills } from "../agent/skills.mjs";
 import { checkEnterprise, removeEnterprise } from "./remove-enterprise.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -402,6 +402,7 @@ function skillProblems(dir, skillsRoot) {
       problems.push(`missing: skills/${set.name}/${STAMP}`);
       continue;
     }
+    if (!stampedSkills(stamp, set.name)) problems.push(`skills/${set.name}/${STAMP} names the set ${JSON.stringify(stamp?.set ?? null)}, so the agent would start without ${set.name}`);
     const copy = setStamp(set.name, set.from, into, set.skills);
     const repository = setStamp(set.name, set.from, join(skillsRoot, ...set.from.split("/")), set.skills);
     const stamped = Object.keys(stamp?.skills ?? {}).sort();

@@ -1,8 +1,9 @@
 //! The right rail (Preferences › Interface › Right rail; on by default): a narrow strip along the
-//! window's right edge with four items. Files stands first, for what is in the design's project;
-//! under a rule come Review, Simulation and Autocomplete. An item opens its panel beside the
-//! rail, one panel at a time; the same item closes it again. The panel can be dragged wider, and
-//! its width and the open item are remembered.
+//! window's right edge. The Assistant's entry stands first, over a rule: it opens and closes the
+//! Assistant, which stays a panel of its own. Then come the four items. Files is for what is in
+//! the design's project; under a rule come Review, Simulation and Autocomplete. An item opens its
+//! panel beside the rail, one panel at a time; the same item closes it again. The panel can be
+//! dragged wider, and its width and the open item are remembered.
 //!
 //! The rail is window chrome like the application bar and the status bar: it is allocated before
 //! the workspace in either layout, so the view, the ribbon and every panel and overlay anchored to
@@ -119,6 +120,13 @@ pub(crate) fn shown(app: &SolveApp) -> bool {
     app.preferences.right_rail && !app.embedded && !app.embed_editor && !app.home.open && !crate::render_workspace::active(app)
 }
 
+/// The Assistant's button is the rail's first row and not the application bar's, wherever the
+/// rail preference is on. The Render workspace has no rail and can show the Assistant, so the bar
+/// keeps its button there; Home draws neither the rail nor the Assistant.
+pub(crate) fn holds_assistant(app: &SolveApp) -> bool {
+    app.preferences.right_rail && !crate::render_workspace::active(app)
+}
+
 /// The item whose panel is open.
 pub(crate) fn open(app: &SolveApp) -> Option<Item> {
     Item::parse(&app.preferences.right_rail_open)
@@ -135,13 +143,12 @@ pub(crate) fn panel_width(app: &SolveApp) -> f32 {
     if width.is_finite() { width.clamp(MIN_PANEL, MAX_PANEL) } else { DEFAULT_PANEL }
 }
 
-/// The rail's width in the application's language: room for the longest of its items' names.
+/// The rail's width in the application's language: room for the longest of its rows' names.
 pub(crate) fn width(ctx: &egui::Context) -> f32 {
     let t = Tokens::get();
     let font = name_font(&t);
-    let longest = ctx.fonts_mut(|fonts| {
-        Item::ALL.map(|item| fonts.layout_no_wrap(item.name().to_string(), font.clone(), t.text).size().x).into_iter().fold(0.0, f32::max)
-    });
+    let names = Item::ALL.map(Item::name).into_iter().chain([tr("ui.assistant")]);
+    let longest = ctx.fonts_mut(|fonts| names.map(|name| fonts.layout_no_wrap(name.to_string(), font.clone(), t.text).size().x).fold(0.0, f32::max));
     (longest + t.space_12 * 2.0).ceil().clamp(MIN_WIDTH, MAX_WIDTH)
 }
 
@@ -156,6 +163,11 @@ fn panel_id() -> egui::Id {
 /// The id an item takes keyboard focus under.
 fn item_id(item: Item) -> egui::Id {
     egui::Id::new(("sc_right_rail_item", item.id()))
+}
+
+/// The id the Assistant's entry takes keyboard focus under.
+fn assistant_id() -> egui::Id {
+    egui::Id::new("sc_right_rail_assistant")
 }
 
 /// Draw the rail and the open panel along the window's right edge. Call it after the application
@@ -200,49 +212,99 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
 }
 
-/// The items, from the top: Files, a rule, then the three ways of working on the design.
+/// The rows, from the top: the Assistant's entry and a rule, Files, a rule, then the three ways
+/// of working on the design.
 fn items(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     let r = ui.max_rect();
     let painter = ui.painter().clone();
     painter.vline(r.left() + 0.5, r.y_range(), t.primary_border(t.border));
     let current = open(app);
-    let font = name_font(&t);
+    let place = |top: f32| Rect::from_min_size(pos2(r.left() + t.space_6, top), vec2((r.width() - t.space_12).max(0.0), ITEM_HEIGHT));
+    let rule = |top: f32| {
+        painter.hline((r.left() + t.space_12)..=(r.right() - t.space_12), top + t.space_6, t.primary_border(t.border));
+        top + t.space_12 + 1.0
+    };
     let mut top = r.top() + t.space_8;
+    // The Assistant is not one of the items: its panel is its own, so any item's panel can be
+    // open beside it. With the AI features off the rail starts at Files.
+    if crate::agent_chat::shown(app) {
+        let rect = place(top);
+        if rect.bottom() > r.bottom() {
+            return;
+        }
+        let mark = crate::agent_chat::assistant_mark(app);
+        let tip = crate::agent_chat::assistant_tip(app, mark);
+        let on = app.agent_chat.open;
+        crate::scenario::publish_target("rail:assistant", rect);
+        if row(ui, rect, assistant_id(), on, tr("ui.assistant"), &tip, |centre, ink| assistant_drawing(&painter, centre, ICON, ink)) {
+            crate::agent_chat::toggle(app);
+        }
+        // What the application bar's button showed at its corner: ready, busy, a sign-in or an
+        // approval waiting.
+        let corner = pos2(rect.center().x + ICON / 2.0 + 1.0, rect.top() + t.space_8 + 1.0);
+        let ground = if on { t.panel.blend(t.hover) } else { t.panel };
+        ui_kit::assistant_entry_mark(ui, corner, mark.into(), ground, ui.ctx().global_style().animation_time > 0.0);
+        top = rule(rect.bottom() + t.space_4);
+    }
     for item in Item::ALL {
         if item == Item::Review {
-            painter.hline((r.left() + t.space_12)..=(r.right() - t.space_12), top + t.space_6, t.primary_border(t.border));
-            top += t.space_12 + 1.0;
+            top = rule(top);
         }
-        let rect = Rect::from_min_size(pos2(r.left() + t.space_6, top), vec2((r.width() - t.space_12).max(0.0), ITEM_HEIGHT));
+        let rect = place(top);
         top = rect.bottom() + t.space_4;
         if rect.bottom() > r.bottom() {
             break;
         }
-        let response = ui.interact(rect, item_id(item), Sense::click());
-        let on = current == Some(item);
-        let lit = on || response.hovered() || response.has_focus();
-        // A row is quiet or current, never tinted: the open item stands on the neutral fill.
-        if on {
-            painter.rect_filled(rect, t.radius_lg, t.hover);
-        } else if lit {
-            painter.rect_filled(rect, t.radius_lg, t.hover.gamma_multiply(0.5));
-        }
-        if response.has_focus() {
-            painter.rect_stroke(rect, t.radius_lg, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
-        }
-        if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        let ink = if lit { t.text } else { t.text_dim };
-        drawing(&painter, item, pos2(rect.center().x, rect.top() + t.space_8 + ICON / 2.0), ICON, ink);
-        let galley = painter.layout_no_wrap(item.name().to_string(), font.clone(), ink);
-        painter.galley(pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - t.space_6 - galley.size().y), galley, ink);
-        response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, item.title()));
         crate::scenario::publish_target(&format!("rail:item:{}", item.id()), rect);
-        if response.backing_on_hover_text(item.title()).clicked() {
+        if row(ui, rect, item_id(item), current == Some(item), item.name(), item.title(), |centre, ink| drawing(&painter, item, centre, ICON, ink)) {
             toggle(app, item);
         }
+    }
+}
+
+/// One row in `rect`: its drawing over its name, quiet until it is pointed at and on the neutral
+/// fill while `on`. `title` is its tooltip and accessible name. True when it was pressed.
+fn row(ui: &egui::Ui, rect: Rect, id: egui::Id, on: bool, name: &str, title: &str, draw: impl FnOnce(Pos2, Color32)) -> bool {
+    let t = Tokens::get();
+    let painter = ui.painter();
+    let response = ui.interact(rect, id, Sense::click());
+    let lit = on || response.hovered() || response.has_focus();
+    // A row is quiet or current, never tinted: the open one stands on the neutral fill.
+    if on {
+        painter.rect_filled(rect, t.radius_lg, t.hover);
+    } else if lit {
+        painter.rect_filled(rect, t.radius_lg, t.hover.gamma_multiply(0.5));
+    }
+    if response.has_focus() {
+        painter.rect_stroke(rect, t.radius_lg, Stroke::new(1.0, t.accent), egui::StrokeKind::Inside);
+    }
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let ink = if lit { t.text } else { t.text_dim };
+    draw(pos2(rect.center().x, rect.top() + t.space_8 + ICON / 2.0), ink);
+    let galley = painter.layout_no_wrap(name.to_string(), name_font(&t), ink);
+    painter.galley(pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - t.space_6 - galley.size().y), galley, ink);
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, title));
+    response.backing_on_hover_text(title).clicked()
+}
+
+/// The Assistant's drawing, on the same 16-unit square as the items': an open ring with a small
+/// body going round it, and a spark in the middle.
+fn assistant_drawing(painter: &egui::Painter, centre: Pos2, side: f32, ink: Color32) {
+    let unit = side / 16.0;
+    let at = |x: f32, y: f32| centre + vec2(x - 8.0, y - 8.0) * unit;
+    let stroke = Stroke::new(1.5 * unit.max(1.0), ink);
+    let turn = |i: u8| (-8.0 + 286.0 * f32::from(i) / 24.0).to_radians();
+    let ring: Vec<Pos2> = (0..=24).map(|i| at(8.0 + 6.0 * turn(i).cos(), 8.0 + 6.0 * turn(i).sin())).collect();
+    for end in [ring.first(), ring.last()].into_iter().flatten() {
+        painter.circle_filled(*end, stroke.width / 2.0, ink);
+    }
+    painter.add(egui::Shape::line(ring, stroke));
+    painter.circle_filled(at(12.24, 3.76), 1.25 * unit, ink);
+    for diamond in [[(8.0, 4.8), (9.0, 8.0), (8.0, 11.2), (7.0, 8.0)], [(4.8, 8.0), (8.0, 7.0), (11.2, 8.0), (8.0, 9.0)]] {
+        painter.add(egui::Shape::convex_polygon(diamond.map(|(x, y)| at(x, y)).to_vec(), ink, Stroke::NONE));
     }
 }
 

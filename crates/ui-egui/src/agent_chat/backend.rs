@@ -174,6 +174,10 @@ pub trait ChatBackend {
     /// The user's custom instructions (#8220), added to the system note of every session that
     /// starts after this call. The panel sets them before the first session and before New chat.
     fn set_instructions(&mut self, _text: &str) {}
+    /// The project folder every session that starts after this call may work in (INT-1473): the
+    /// Files panel's folder, when it is the project of the shown design. Only the built-in agent
+    /// takes one; every other backend ignores it. `None`: the session works as it always has.
+    fn set_project(&mut self, _root: Option<&std::path::Path>) {}
     /// The open document a turn is about to bind to: its identity and actual revision, read when
     /// the turn starts. Backends that pin a document use it; the others ignore it.
     fn set_document(&mut self, _document_id: &str, _revision: u64) {}

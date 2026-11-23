@@ -28,6 +28,13 @@ export const SKILL_SETS = [
     from: "skills",
     skills: ["solidcraft-checking", "solidcraft-editing", "solidcraft-mechanisms", "solidcraft-modeling"],
   },
+  // INT-1473: how the built-in agent works from the project brief (agent/brief.mjs). Written for
+  // this agent alone, so it lives beside it, not with the repository's contributor skills.
+  {
+    name: "context-skills",
+    from: "packages/mastra-runtime/agent-skills",
+    skills: ["intcad-context"],
+  },
 ];
 
 /** The stamp beside a set's copies in the package. */
@@ -125,19 +132,36 @@ function copySkill(from, to) {
 }
 
 /**
+ * The skills a packaged set's stamp names, or null when the agent would leave the set out: the
+ * stamp names another set, or no skill, or a name Mastra does not accept. The package check
+ * (agent-package.mjs) asks the same, so a stamp the agent would skip fails the check.
+ */
+export function stampedSkills(stamp, set) {
+  const skills = Object.keys(stamp?.skills ?? {});
+  return stamp?.set === set && isName(set) && skills.length > 0 && skills.every(isName) ? skills : null;
+}
+
+/**
  * The sets to install: the package's (`<agent folder>/skills/<set>/skill-set.json`), or, when the
  * agent runs out of the repository, the repository's own folders. Each is `{ name, root, skills }`.
+ * Never throws: a package's `skills` that cannot be read is logged, and the agent starts without it.
  */
 export function setsToInstall(agentFolder, repoRoot, log = () => {}) {
   const packaged = join(agentFolder, "skills");
   if (existsSync(packaged)) {
+    let entries;
+    try {
+      entries = readdirSync(packaged, { withFileTypes: true });
+    } catch (error) {
+      log(`skills: the package's skills folder cannot be read, so no set is installed: ${error.message}`);
+      return [];
+    }
     const sets = [];
-    for (const entry of readdirSync(packaged, { withFileTypes: true })) {
+    for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       try {
-        const stamp = JSON.parse(readFileSync(join(packaged, entry.name, STAMP), "utf8"));
-        const skills = Object.keys(stamp?.skills ?? {});
-        if (stamp?.set !== entry.name || !isName(entry.name) || skills.length === 0 || !skills.every(isName)) throw new Error("its stamp does not name it and its skills");
+        const skills = stampedSkills(JSON.parse(readFileSync(join(packaged, entry.name, STAMP), "utf8")), entry.name);
+        if (!skills) throw new Error("its stamp does not name it and its skills");
         sets.push({ name: entry.name, root: join(packaged, entry.name), skills });
       } catch (error) {
         log(`skills: the package's set ${entry.name} is left out: ${error.message}`);

@@ -8,16 +8,18 @@
 
 import http from 'node:http';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { intcadAgent } from './agent.mjs';
 import { holdCallbackPorts } from './callback.mjs';
 import { Connections, KEYS } from './connections.mjs';
+import { deniedFolders, keepFilesFrom } from './fence.mjs';
 import { releaseDates } from './models.mjs';
 import { keepKeysFromCommands, keyVariables, withoutParams } from './secrets.mjs';
-import { sessionBuilder } from './session.mjs';
+import { sessionBuilder, sweepSessionFolders } from './session.mjs';
 import { installSkillSets, setsToInstall } from './skills.mjs';
 
 // ACP's SDK prints a request it refuses, parameters and all. See secrets.mjs.
@@ -38,6 +40,21 @@ if (process.env.MASTRA_APP_DATA_DIR) {
   // Mastra Code keeps small lease files for its sessions under /tmp/mc, shared by every Mastra
   // Code of this user. Intcad's agent keeps its own, with the rest of its data.
   process.env.MASTRACODE_SIGNALS_SOCKET_ROOT = join(process.env.MASTRA_APP_DATA_DIR, 'signals');
+  // Mastra Code's file tools reach the system's temporary folder by themselves, as a scratch space
+  // (`DEFAULT_ALLOWED_PATHS` in its `agents/workspace.js`). The agent gets a temporary folder of its
+  // own, so the user's is not that scratch space (INT-1473: files only in the project folder).
+  // `/tmp` itself stays on Mastra Code's list on Linux and macOS.
+  const scratch = join(process.env.MASTRA_APP_DATA_DIR, 'tmp');
+  mkdirSync(scratch, { recursive: true });
+  for (const name of ['TMPDIR', 'TMP', 'TEMP']) process.env[name] = scratch;
+  // Each session works in a new folder under `sessions/` (session.mjs). Mastra Code looks for a git
+  // repository from there upwards, and would read the agent files, MCP servers and hooks of one it
+  // found (a data folder inside a checkout of the user's). Git stops at `sessions/`.
+  const sessions = join(process.env.MASTRA_APP_DATA_DIR, 'sessions');
+  mkdirSync(sessions, { recursive: true });
+  // What an agent stopped before it cleaned up left there goes now.
+  sweepSessionFolders(process.env.MASTRA_APP_DATA_DIR);
+  process.env.GIT_CEILING_DIRECTORIES = [sessions, process.env.GIT_CEILING_DIRECTORIES].filter(Boolean).join(delimiter);
   // The skills the package carries (skills.mjs) go where Mastra Code looks in its home,
   // `.agents/skills`, before a session reads that folder. Not into the session's folder: Mastra
   // Code skips a link there that leads out of it. Run by hand, without a home of its own, the
@@ -69,7 +86,7 @@ if (!existsSync(join(sdkRoot, '@mastra', 'code-sdk', 'package.json'))) {
   process.exit(1);
 }
 
-const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox }] =
+const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }] =
   await Promise.all([
     load('@agentclientprotocol/sdk/dist/acp.js'),
     load('@mastra/code-sdk/dist/acp/agent.js'),
@@ -103,6 +120,9 @@ for (const [id] of KEYS) for (const name of keyEnv(id)) keyNames.add(name);
 for (const name of keyNames) delete process.env[name];
 // And the keys the app does put there stay out of the commands a model runs.
 keepKeysFromCommands(LocalSandbox, keyNames);
+// And the file tools stay out of `/tmp`, which every program of the computer shares, and out of the
+// session's own folder, whose agent files Mastra Code reads on every turn (fence.mjs).
+keepFilesFrom(LocalFilesystem, deniedFolders(tmpdir()));
 
 // The browser is the user's own: it is started with their home folder, not the agent's, so it is
 // the browser they use and the profile they are signed in with. (The opener starts it before it

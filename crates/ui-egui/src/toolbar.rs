@@ -601,7 +601,7 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         icons::paint_app_bar(ui.painter(), gear.shrink(7.0), "settings", 1.0);
         crate::scenario::publish_rect("titlebar:preferences", gear);
-        if crate::agent_chat::app_bar_button_shown(app) {
+        if crate::agent_chat::app_bar_button_shown(app) && !crate::right_rail::holds_assistant(app) {
             assistant_button(app, ui, Rect::from_center_size(pos2(report.left() - 86.0 - search_shift, r.center().y), vec2(32.0, 32.0)));
         }
         crate::scenario::publish_handle("titlebar:preferences", gear.center());
@@ -2406,21 +2406,12 @@ fn app_bar_separator(ui: &egui::Ui, bar: Rect, x: f32, group: &str) {
 
 /// The chat panel's compact entry point. State stays in agent_chat; the bar only paints it.
 fn assistant_button(app: &mut SolveApp, ui: &mut egui::Ui, at: Rect) {
-    use crate::agent_chat::AssistantMark;
     let resp = ui.interact(at, ui.id().with("assistant_button"), Sense::click());
     crate::scenario::publish_target("titlebar:assistant", at);
     let mark = crate::agent_chat::assistant_mark(app);
     let tip = crate::agent_chat::assistant_tip(app, mark);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &tip));
-    let state = match mark {
-        AssistantMark::Quiet => crate::ui_kit::AssistantEntryState::Quiet,
-        AssistantMark::Ready => crate::ui_kit::AssistantEntryState::Ready,
-        AssistantMark::Busy => crate::ui_kit::AssistantEntryState::Busy,
-        AssistantMark::NeedsAuth => crate::ui_kit::AssistantEntryState::NeedsAuth,
-        AssistantMark::Stopped => crate::ui_kit::AssistantEntryState::Stopped,
-        AssistantMark::Waiting(count) => crate::ui_kit::AssistantEntryState::Waiting(count),
-    };
-    crate::ui_kit::assistant_entry(ui, &resp, state, app.agent_chat.open, ui.ctx().global_style().animation_time > 0.0);
+    crate::ui_kit::assistant_entry(ui, &resp, mark.into(), app.agent_chat.open, ui.ctx().global_style().animation_time > 0.0);
     if resp.backing_on_hover_text(tip).clicked() {
         crate::agent_chat::toggle(app);
     }

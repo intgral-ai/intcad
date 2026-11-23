@@ -177,11 +177,16 @@ view.
   being edited (Editing Sketch1, or Editing Extrude1 while that feature's dialog is open). While
   it is on, the sketch's state no longer shows in the view's top-left corner.
 - **Right rail** (Preferences › Interface › **Right rail** turns it off). A narrow rail along
-  the window's right edge with four items, each a small drawing with its name: **Files** for
-  the folder this window browses, and under a rule **Review**, **Simulation** and
-  **Autocomplete**. Click an item to open its panel beside the rail, click it again to close
-  the panel; one panel is open at a time. Drag the panel's left edge to make it wider. The
-  open item and the width are remembered.
+  the window's right edge whose rows are each a small drawing with its name. **Assistant**
+  stands first, over a rule: click it to open the Assistant, click it again to close it. The
+  Assistant stays a panel of its own beside the rail, so it can be open together with any of
+  the four items below. Its row shows at its corner when the Assistant is ready, busy or
+  waiting for a sign-in or an approval. Without the rail (the preference turned off, or in the
+  Render workspace) the same button is at the right of the application bar instead.
+  The four items are **Files** for the folder this window browses, and under a rule
+  **Review**, **Simulation** and **Autocomplete**. Click an item to open its panel beside the
+  rail, click it again to close the panel; one of these panels is open at a time. Drag the
+  panel's left edge to make it wider. The open item and the width are remembered.
   **Files** browses one local folder: **Open Folder** chooses it (a saved design's folder is
   used when there is one). Folders open by the arrow, a double click or a drag; designs
   (`.sc`) open in a tab and any other file opens in its usual program. The `+` makes a file, a

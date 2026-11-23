@@ -360,7 +360,7 @@ impl AcpTaskExecutor {
 
     fn open_session(&self, live: &mut LiveProcess, deadline: Instant, control: &TaskControl) -> Result<(String, String, Value), AiError> {
         let session_deadline = (Instant::now() + SESSION_START).min(deadline);
-        let params = acp::session_new_params(&live.cwd, None, &live.init, acp::PROPOSAL_NOTE);
+        let params = acp::session_new_params(&live.cwd, None, &live.init, acp::PROPOSAL_NOTE, None);
         let id = live.request("session/new", params);
         let value = reply(live, id, session_deadline, control)?;
         let Some(session) = value.get("sessionId").and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string) else {
