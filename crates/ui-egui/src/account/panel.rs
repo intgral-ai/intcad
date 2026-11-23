@@ -315,7 +315,7 @@ pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
             );
         }
         let enabled = pending.is_none();
-        let options = if enabled { Button::Small } else { Button::Enabled(false) };
+        let options = if enabled { Button::Small } else { crate::ui_kit::Button::Enabled(false) };
         ui.horizontal(|ui| {
             let sign_out_label = app.tr("account.sign_out");
             let sign_out = button(ui, sign_out_label, options);
