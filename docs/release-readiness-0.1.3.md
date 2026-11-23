@@ -748,16 +748,41 @@ approved except what needs real Mac hardware. In practice that means:
 - **PP's UI still has no PR**, so the release cannot be complete: this is the one scope item that
   cannot be started from here.
 
-## 14. Decisions still open / carried
+## 14. Decisions resolved, and what is still open
 
-1. **Version and package plan:** one 0.1.3 with login, or 0.1.3 now without it and 0.1.4 later
-   (INT-1503 raises both)? This decides whether #213 blocks the first package.
-2. **B2 (FreeBSD):** fix the one-line guard, or drop FreeBSD from `package-builds` for this
-   release? Dropping it is a gate change and needs an explicit decision.
-3. **B3 (Windows regression in #213):** who owns the Windows hit-test regression, and whether a
-   re-run is allowed to rule out flakiness before the owner investigates.
-4. **E1:** approve a small change to `crates/ui-egui/src/update/install.rs` to accept `SHA256SUMS`
-   as well as `SHA256SUMS.txt`, so an installed 0.1.2 can update; or accept that updates are manual
-   for this release.
-5. **PP's UI PR:** when it opens, whether it must be in this release.
-6. **Publication:** nothing is tagged or published without explicit approval.
+Resolved by the CTO on 2026-11-23 (see §13): version 0.1.3; PP's UI in scope; FreeBSD fixed rather
+than dropped (#219 merged); the updater name change approved (#217); publication authorised in
+principle once the gates pass, with Mac-hardware items explicitly excluded.
+
+Still open, and not decidable from here:
+
+1. **PP's UI (B9).** No PR exists, so the scope item the CTO requires cannot be reviewed or shipped.
+2. **Login Gate B.** #213 is still a draft and its `Windows app startup` check fails; the whole of
+   Gate B is unrun. Login development is not this role's work.
+3. **B10, the slash menu.** The Assistant has no consumer of `available_commands_update`; the four
+   `skill/<name>` commands work as typed text only. This needs an app-side feature and a decision on
+   whether 0.1.3 ships without it.
+4. **macOS.** Requires CI's DMG build to finish (§12.4.2) and, for Gatekeeper, notarization and
+   native Intel, a real Mac.
+5. **One-click update.** Only testable against a published stable release (§10, Gate E).
+
+## 15. Go/No-Go, 2026-11-23 (evidence to that moment)
+
+Verdict: **NO-GO.** Not because the packages are broken — the 0.1.3 candidate builds, installs,
+starts, carries the agent and installs five skill sets on both Linux and Windows — but because three
+required things do not exist yet and one is unverified.
+
+| Gate | Status | Evidence / what is missing |
+|---|---|---|
+| A. Build and package | **PARTIAL** | run 45248432170: Linux x86_64/aarch64, Windows x64/x86/arm64, FreeBSD, Arch, Flatpak, Snap, Web and macOS aarch64 all succeeded; **macOS x86_64 was cancelled and its universal DMG skipped**, so the asset set is incomplete. `build.json` binds every package to `14a6c95ae…`. |
+| A. Content | **PASS for Linux + Windows** | `contents.json` on both: `agent.present`, `node`, five skill sets, `missing: []`; the Linux tarball has 13,605 agent entries and the Windows MSI 10,739 agent files including `node.exe` (§12.4.3, §12.4.4) |
+| A. Checksums | **PASS** | `checksums.sh --require` produced a 10-file, both-names list with every hash OK, and refused the set that lacks the DMG (§12.4.3) |
+| B. Login | **FAIL / NOT RUN** | #213 draft, `Windows app startup` red; no first-login, session, expiry, logout or network-failure run exists |
+| C. Skills | **PARTIAL PASS** | installed and used on Linux with a real model (§12.5); installed and started on Windows (§12.4.4); agent smoke 8/8 with the four `skill/<name>` commands; **slash menu missing (B10)** |
+| D. UI | **PARTIAL** | Assistant page renders on Linux and Windows, themes and DPI not exercised, PP's UI absent (B9) |
+| E. Upgrade | **PARTIAL** | 0.1.2 → 0.1.3 in place passes on Linux tar and Windows MSI (one ARP entry, `intcad-cli 0.1.3`); the one-click path is untestable before publication (§10) |
+| F. Evidence | **PASS for what is claimed** | every row above names a run, file or screenshot; nothing is marked PASS without one |
+
+To turn this into GO: finish the macOS DMG (§12.4.2), land #214, rebuild from the merged `develop`
+SHA and repeat the Linux/Windows installs on that exact SHA, then add PP's UI and the login run (or
+record them as explicitly approved exceptions), and publish only after that.
