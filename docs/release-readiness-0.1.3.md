@@ -427,11 +427,14 @@ that is what put the window on screen. The first, SSH-started instance was kille
 left one "Closed unexpectedly" record in the app's crash folder — the report names the killed
 instance's start time, and no new record appeared for the session launched properly.
 
-**Local tooling drift worth fixing before the next release:** the Windows guest scripts in
-`.dev/e2e/guest/windows` (`run-app.ps1`, `run-app.cmd`, `run-app.vbs`) still name
-`C:\Program Files\SolidCraft\solidcraft.exe` and port 7878, so the harness path cannot launch an
-installed **Intcad** MSI as it stands; this run had to drive the install, the interactive launch and
-the control calls by hand. `.dev/e2e` is not tracked, so this is a local repair, not a PR.
+**Local tooling drift, now repaired:** the Windows guest scripts in `.dev/e2e/guest/windows`
+named `C:\Program Files\SolidCraft\solidcraft.exe`, so the harness could not launch an installed
+**Intcad** MSI. `run-app.cmd` and `run-app.ps1` now try `C:\Program Files\Intcad\intcad.exe`
+first and fall back to the old path. Verified in the guest: after stopping the app, running the
+patched `run-app.cmd` produced one `intcad` process and the app's own log lines (`Dx12, MSAA 4x`,
+`control server listening on 127.0.0.1:7878`). The `.ps1` uses the same resolution but was not
+executed (it blocks until the app exits). `.dev/e2e` is excluded through `.git/info/exclude`, so
+this is a local repair, not part of any PR.
 
 **Still open for Windows:** a machine without WebView2 (the app is expected to keep the built-in
 conversation there), SmartScreen/unsigned first launch, the upgrade from 0.1.2 to a versioned
