@@ -16286,6 +16286,8 @@ fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the
     h.app.home.open = false;
     h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
     h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    // Centred on the window first; the navigation bar, which it keeps clear of, comes back below.
+    h.app.ui.show_navigation_bar = false;
     web::set_host(&mut h.app, true);
     h.frames(3);
     let told =
@@ -16315,11 +16317,44 @@ fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the
     assert!(place.height() <= h.ctx.content_rect().height() / 2.0 + 0.5, "never more than half the window: {place:?}");
     assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"size"}"#).is_err(), "a size without a height is refused");
 
+    // It is no side panel: in the floating layout the axis view keeps the view's top right, and the
+    // navigation bar leaves the bottom centre to it for the view's bottom left.
+    h.call("ui.set", json!({"layout": "floating"}));
+    h.app.ui.show_navigation_bar = true;
+    for (width, height) in [(1600.0, 1000.0), (1100.0, 700.0)] {
+        h.call("ui.resize", json!({"width": width, "height": height}));
+        h.frames(3);
+        let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+        let layout = h.app.viewport.layout.clone().expect("the view's layout");
+        let axis = layout.axis_view;
+        assert!(
+            axis.right() > layout.content.right() - 40.0 && !axis.intersects(place),
+            "the axis view stays at the view's top right at {width}: {axis:?} {place:?} {:?}",
+            layout.content
+        );
+        let bar = layout.navigation;
+        assert!(bar.left() < layout.content.left() + 40.0, "the navigation bar at the bottom left at {width}: {bar:?}");
+        assert!(bar.right() < place.left(), "clear of the Assistant at {width}: {bar:?} {place:?}");
+    }
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let window = h.ctx.content_rect();
+    h.call("ui.resize", json!({"width": 2200.0, "height": 1200.0}));
+    h.frames(3);
+    let wide = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!((wide.center().x - h.ctx.content_rect().center().x).abs() < 1.0, "a wide window has it centred again: {wide:?}");
+    assert!(place.center().x >= window.center().x - 0.5, "a narrow one moves it right of the bar, never left: {place:?} in {window:?}");
+
     h.call("ui.prefs", json!({"agent_chat_centre": false}));
     h.frames(3);
     let place = crate::scenario::rect_of("agent_chat:web").expect("the side panel's place");
     assert!(place.height() > h.ctx.content_rect().height() / 2.0, "off: the side panel, as before: {place:?}");
     assert_eq!(told(&mut h), None, "and the page is not at the centre");
+    let layout = h.app.viewport.layout.clone().expect("the view's layout");
+    assert!(
+        (layout.navigation.center().x - layout.content.center().x).abs() < 1.0,
+        "and the navigation bar back at the bottom centre: {:?}",
+        layout.navigation
+    );
 }
 
 /// Files dropped on the host's web view are attached to the next message as files dropped on the

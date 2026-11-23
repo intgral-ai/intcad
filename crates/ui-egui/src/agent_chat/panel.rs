@@ -245,6 +245,11 @@ pub(crate) fn centred(_app: &SolveApp) -> bool {
     false
 }
 
+/// Whether the Assistant is on screen at the bottom centre of the window now.
+pub(crate) fn centred_shown(app: &SolveApp) -> bool {
+    centred(app) && shown(app) && app.agent_chat.open
+}
+
 /// At the bottom of the window, centred on it: the page's message box, and above it what the
 /// page opens (the conversation, a menu), as tall as the page says, at most half the window.
 /// It keeps inside the room the panels leave, above the history.
@@ -262,6 +267,13 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
         bounds.max.x = (rail.left() - gap).min(bounds.right()).max(bounds.left());
     }
     let window = ctx.content_rect();
+    // The view's navigation bar leaves the bottom centre for the bottom left while the box is here
+    // (`navigation_bar_view::measured`); in a narrow window the box keeps clear of it.
+    if let Some(bar) =
+        app.viewport.layout.as_ref().map(|layout| layout.navigation).filter(|bar| bar.is_positive() && bar.center().y > window.center().y)
+    {
+        bounds.min.x = (bar.right() + gap).min(bounds.right()).max(bounds.left());
+    }
     let most = (window.height() / 2.0).min(bounds.height()).max(0.0);
     app.agent_chat.web_centre = Some(most);
     let width = CENTRE_WIDTH.min(bounds.width().max(0.0));

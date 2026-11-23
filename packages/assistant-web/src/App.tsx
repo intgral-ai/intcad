@@ -1379,7 +1379,17 @@ function notReadyOf(state: AssistantState) {
 const ROW_HINT = 'ml-auto inline-block pl-4 whitespace-nowrap text-muted-foreground first-letter:uppercase';
 
 /** The panel's own bar: the agent and what it runs with, its state, and the panel's controls. */
-function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState; onSetup: (id: string) => void; onConnections: () => void }) {
+function AssistantBar({
+  state,
+  onSetup,
+  onConnections,
+  onCollapse,
+}: {
+  state: AssistantState;
+  onSetup: (id: string) => void;
+  onConnections: () => void;
+  onCollapse?: () => void;
+}) {
   const { strings } = state;
   const agent = state.agents.find(entry => entry.id === state.agent);
   const name = agent?.name ?? (state.detecting ? strings.detecting : strings.noneFound);
@@ -1526,9 +1536,17 @@ function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState
               )}
             </DropdownMenu.Content>
           </DropdownMenu>
-          <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.close} tooltip={strings.close} onClick={() => post({ type: 'close' })}>
-            <X />
-          </Button>
+          {/* At the bottom centre the right rail's Assistant button shows and hides it: in the close
+              button's place is Collapse, back to the message box. */}
+          {centred(state) ? (
+            <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.collapse} tooltip={strings.collapse} onClick={onCollapse}>
+              <Minimize2 />
+            </Button>
+          ) : (
+            <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.close} tooltip={strings.close} onClick={() => post({ type: 'close' })}>
+              <X />
+            </Button>
+          )}
         </div>
       </ChatShell.Column>
     </ChatShell.Bar>
@@ -2284,6 +2302,8 @@ export function App({ state }: { state: AssistantState | null }) {
   // the agent running and nothing connected it is the panel; once a connection is there it is not
   // taken away behind the user's back: they go to the conversation with its button.
   const [connOpen, setConnOpen] = useState(false);
+  // At the bottom centre: whether the conversation is open above the message box.
+  const [centreOpen, setCentreOpen] = useState(false);
   const none = nothingConnected(state);
   useEffect(() => {
     // At the bottom centre a row over the message box offers the connections instead.
@@ -2333,7 +2353,15 @@ export function App({ state }: { state: AssistantState | null }) {
         style={centre ? ({ ...ROOM, '--chat-surface': 'var(--color-card)' } as CSSProperties) : ROOM}
         scroller={{ autoScroll: true, defaultScrollPosition: 'end' }}
       >
-        <AssistantBar state={state} onSetup={setSetup} onConnections={openConn} />
+        <AssistantBar
+          state={state}
+          onSetup={setSetup}
+          onConnections={openConn}
+          onCollapse={() => {
+            setCentreOpen(false);
+            setConnOpen(false);
+          }}
+        />
         {connect && showConn && (
           <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
             {/* The bar's New chat asks here too: the conversation it is asked in is out of sight. */}
@@ -2420,7 +2448,18 @@ export function App({ state }: { state: AssistantState | null }) {
         </ChatShell.Stage>
       </ChatShell>
   );
-  if (centre) return <Centre state={state} openConn={openConn} body={shell} conn={connect ? listed(connect) && connOpen : false} none={none} />;
+  if (centre)
+    return (
+      <Centre
+        state={state}
+        openConn={openConn}
+        body={shell}
+        conn={connect ? listed(connect) && connOpen : false}
+        none={none}
+        shown={centreOpen}
+        setShown={setCentreOpen}
+      />
+    );
   return (
     <div className="h-dvh overflow-hidden bg-background" style={{ borderRadius: state.radius }}>
       <FilePreviewDialog file={state.filePreview ?? null} />
@@ -2472,7 +2511,9 @@ function PreviewLine({ text, step }: { text: string; step: boolean }) {
     if (element) element.scrollTop = element.scrollHeight;
   }, [text]);
   return (
-    <div ref={line} className="centre-preview">
+    // In the body's own size and colour, as Mastra's Shimmer story shows it: the header's small grey
+    // text was hard to read.
+    <div ref={line} className="centre-preview text-body text-foreground">
       {step ? <Shimmer>{text}</Shimmer> : <span>{text}</span>}
     </div>
   );
@@ -2544,15 +2585,32 @@ function closePopups(dialogs: boolean) {
   (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 }
 
-function Centre({ state, openConn, body, conn, none }: { state: AssistantState; openConn: () => void; body: ReactNode; conn: boolean; none: boolean }) {
+function Centre({
+  state,
+  openConn,
+  body,
+  conn,
+  none,
+  shown,
+  setShown,
+}: {
+  state: AssistantState;
+  openConn: () => void;
+  body: ReactNode;
+  conn: boolean;
+  none: boolean;
+  shown: boolean;
+  setShown: (shown: boolean) => void;
+}) {
   const { strings } = state;
-  const [shown, setShown] = useState(false);
   // The body's height: the host's most, less everything else the page shows.
   const [room, setRoom] = useState(300);
   const measured = useRef<HTMLDivElement>(null);
   const most = useRef(500);
   most.current = state.centre ?? 500;
   centreNow = true;
+  // Asks the host for more height at once (set by the effect below).
+  const grow = useRef<(to: number) => void>(() => {});
   // The page tells the host how tall it is; the host keeps it within `centre`. While a popup is open
   // (model picker, mode menu, a dialog) the page asks for all the room there is, from the press that
   // opens it, so the popup has room when it appears.
@@ -2569,7 +2627,22 @@ function Centre({ state, openConn, body, conn, none }: { state: AssistantState; 
       const top = over ? Math.min(box.top, over.getBoundingClientRect().top) : box.top;
       return Math.ceil(box.bottom - top);
     };
+    // The host resizes the native view a frame or two after it is asked, so a view resized while
+    // something animates jumps. Taller is asked at once, so what opens has its room as it is drawn;
+    // shorter only once the page has been still for a moment, never under a closing animation.
     let told = -1;
+    let shrinkTo = -1;
+    let shrink = 0;
+    const send = (next: number) => {
+      window.clearTimeout(shrink);
+      shrinkTo = -1;
+      if (next === told) return;
+      told = next;
+      post({ type: 'size', height: next });
+    };
+    grow.current = to => {
+      if (to > told) send(to);
+    };
     const tell = () => {
       const whole = height();
       const inBody = element.querySelector<HTMLElement>('[data-centre-body]');
@@ -2578,9 +2651,15 @@ function Centre({ state, openConn, body, conn, none }: { state: AssistantState; 
         setRoom(before => (Math.abs(next - before) > 1 ? next : before));
       }
       const next = menu ? most.current : whole;
-      if (next === told) return;
-      told = next;
-      post({ type: 'size', height: next });
+      // A pixel or two less is rounding, not a change: shrinking for it, then growing back, made the
+      // view flicker. Any growth is kept, or the top of the page would be cut off.
+      if (next < told && told - next <= 2) return;
+      if (next >= told) send(next);
+      else if (next !== shrinkTo) {
+        shrinkTo = next;
+        window.clearTimeout(shrink);
+        shrink = window.setTimeout(() => send(menu ? most.current : height()), 250);
+      }
     };
     // Headers open and close with a transition that changes no DOM: keep measuring until it settles.
     // A timer, not animation frames: those pause where the page is not drawn.
@@ -2648,8 +2727,29 @@ function Centre({ state, openConn, body, conn, none }: { state: AssistantState; 
       window.removeEventListener('blur', blur);
       window.clearTimeout(check);
       window.clearTimeout(frame);
+      window.clearTimeout(shrink);
     };
   }, []);
+  // The conversation opens only once the view has its height: opened into a view still growing, it
+  // would be cut off and jump into place.
+  const roomFirst = (then: () => void) => {
+    if (window.innerHeight >= most.current - 1) {
+      then();
+      return;
+    }
+    grow.current(most.current);
+    let done = false;
+    const go = () => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('resize', go);
+      window.clearTimeout(late);
+      then();
+    };
+    window.addEventListener('resize', go);
+    const late = window.setTimeout(go, 160);
+  };
+  const connections = () => roomFirst(openConn);
   // The connections page opens the body too.
   const open = conn || shown;
   const preview = previewOf(state);
@@ -2680,16 +2780,17 @@ function Centre({ state, openConn, body, conn, none }: { state: AssistantState; 
           </Button>
         )}
         {none && !stopped && (
-          <Button type="button" size="sm" variant="primary" icon={<KeyRound aria-hidden />} onClick={openConn}>
+          <Button type="button" size="sm" variant="primary" icon={<KeyRound aria-hidden />} onClick={connections}>
             {strings.connTitle}
           </Button>
         )}
       </ComposerHeaderActions>
     </ComposerHeaderRow>
   ) : null;
+  // Expand, while the conversation is closed; open, Collapse is in the bar's top right.
   const toggle = conn ? null : (
-    <Button type="button" variant="ghost" size="sm" icon={shown ? <Minimize2 /> : <Maximize2 />} onClick={() => setShown(value => !value)}>
-      {shown ? strings.collapse : strings.expand}
+    <Button type="button" variant="ghost" size="sm" icon={<Maximize2 />} onClick={() => roomFirst(() => setShown(true))}>
+      {strings.expand}
     </Button>
   );
   const toggleRow = toggle && (
@@ -2702,7 +2803,6 @@ function Centre({ state, openConn, body, conn, none }: { state: AssistantState; 
       <div data-centre-body style={{ height: room }}>
         {body}
       </div>
-      {toggleRow}
       {attention}
     </ComposerHeader>
   ) : attention ? (
@@ -2725,7 +2825,7 @@ function Centre({ state, openConn, body, conn, none }: { state: AssistantState; 
     <div className="flex h-dvh flex-col justify-end overflow-hidden">
       <FilePreviewDialog file={state.filePreview ?? null} />
       <div ref={measured} className="mx-auto w-full">
-        <AssistantComposer state={state} onConnections={openConn} header={header} />
+        <AssistantComposer state={state} onConnections={connections} header={header} />
       </div>
     </div>
   );
