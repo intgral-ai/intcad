@@ -120,7 +120,7 @@ explicitly excepts it, P2 may be deferred.
 | B3 | P1 | **Login PR #213 has a failing required check on Windows.** `Windows app startup` → `tools/windows-resize-smoke.ps1`: `WM_NCHITTEST failed (Win32 error 1460) at (20,330) within the 2 s limit` after the window was moved to 20,20–1004,640. The same job passes on `develop` `1c3102f` (run 45087015186) and on `56e805f` (run 45035941855), so it is a regression in #213's range, not a flake observed twice | run 45109730998 job 137479303661 |
 | B4 | P1 | **Skills unusable until #204/#212 land and are proven in an installed build.** Nothing in a package installs them today; no installed-app run exists | §5, §3 |
 | B5 | P1 | **The four skills' slash commands are not verified in the app.** Mastra Code offers every `skill/<name>` command; whether the Assistant shows them was explicitly not checked | PR #204 body, "Commands" |
-| E1 | P1 | **The update check cannot upgrade `v0.1.2`.** `crates/ui-egui/src/update/install.rs:36` requires an asset named `SHA256SUMS.txt`; `v0.1.2` publishes `SHA256SUMS` only, so `run()` stops with "this release has no SHA256SUMS.txt" before downloading | release asset list; `install.rs:220` |
+| E1 | P1, fixed on this branch | **The update check could not upgrade `v0.1.2`.** `install.rs` required an asset named `SHA256SUMS.txt`; `v0.1.2` publishes `SHA256SUMS` only, so `run()` stopped before downloading. The client now accepts either name and still verifies the hash; the release process writes both | release asset list; `install.rs` `SUMS_LEGACY`; the new test in §7 |
 | E2 | P1 | **No installed-artifact acceptance path for a candidate.** The VM harness builds from source; `accept` cannot take a package. Linux/Windows installed checks exist in CI and in `packaging/*/installed-check.*`, but they have not been run for a 0.1.3 candidate | §4; `intcad-e2e --help` |
 | E3 | P2 | Portable-ZIP updates replace only `intcad.exe` and `intcad-cli.exe`, so a `mastra-agent/` folder from #214 would be left stale or absent | `install.rs:302` `apply()`, `Method::PortableZip` |
 | E4 | P2 | `.github/workflows/verify-beta-installers.yml` hard-codes `C:\Program Files\SolidCraft` and `SolidCraft.app/Contents/MacOS/SolidCraft`, so it cannot verify an Intcad release | lines 40 and 73 of that workflow |
@@ -136,9 +136,18 @@ file another workstream is editing, and can be verified without a release:
   deterministically (sorted, every hash checked) under **both** `SHA256SUMS.txt` (what the updater,
   `packaging/web-channels.sh` and `packaging/flatpak-site.sh` fetch) and `SHA256SUMS` (what earlier
   hand-made releases published). `docs/beta-release.md` step 5 now uses it, and
-  `packaging-lint.yml` runs the test. This makes a correct list reproducible and removes the cause
-  of E1 for future releases; the client change needed to read the old name is left to the update
-  owner because `install.rs` is product code.
+  `packaging-lint.yml` runs the test. This makes a correct list reproducible and removes
+  the release-side cause of E1 for future releases.
+
+The other half of E1 is a client change in `crates/ui-egui/src/update/install.rs`: the update check
+now reads `SHA256SUMS.txt` and falls back to `SHA256SUMS`, the name `v0.1.2` published, and still
+refuses anything whose hash does not match. Regression test:
+`a_release_that_lists_the_sums_under_the_old_name_still_updates` in
+`crates/ui-egui/src/update/install_tests.rs`, written first (it failed to compile with `SUMS_LEGACY`
+missing). The local pass run was interrupted when another process reclaimed this worktree's
+`target/` mid-build, so the passing evidence is the `ci` job on PR #216, not a local run; that is
+the trusted builder here anyway. The update owner can veto this single change without touching the
+checksum script.
 
 Verification on this machine: `python3 -B -m unittest packaging/tests/checksums_test.py` → 6
 tests, OK (`nightly_test.py` fails only without `jq` on `PATH`, and passes with it; the other
