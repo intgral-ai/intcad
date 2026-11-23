@@ -669,6 +669,25 @@ So a user on the published 0.1.2 can install this 0.1.3 MSI and ends with one pr
 carries the agent; the old install is replaced, not duplicated, and the user data folder survives.
 That is the MSI half of Gate E. The one-click path is still untestable before publication (§10).
 
+### 12.4.7 The candidate's AppImage, the channel the updater replaces (2026-11-23)
+
+The AppImage is the one Linux channel the in-app updater replaces in place (`Method::AppImage`), so
+its startup matters for Gate E even before the update itself can be tested.
+
+```
+APPIMAGE_EXTRACT_AND_RUN=1 ~/ai/intcad.AppImage --version -> intcad 0.1.3
+launch with APPIMAGE=~/ai/intcad.AppImage -> window, Vulkan, control 127.0.0.1:7879
+Assistant -> agent runs from inside the mounted image:
+  /tmp/appimage_extracted_…/usr/lib/intcad/mastra-agent/node …/agent/main.mjs
+data folder -> intcad-context, solidcraft-checking, solidcraft-editing,
+               solidcraft-mechanisms, solidcraft-modeling
+```
+
+Evidence: `~/.local/state/intcad-e2e/runs/intcad-e2e-int1503-rc-rehearsal-3a92c4b6125c-rc013/20261123T205537Z-596622/screenshots/ci013-appimage.png`.
+
+With §12.4.3 (tarball), §12.4.4/§12.4.6 (MSI install + upgrade) and this, the candidate has been
+installed and started on both target platforms from three different package formats.
+
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
 The CTO supplied a DeepSeek API key for acceptance. It was used only in the throwaway VM, kept in
