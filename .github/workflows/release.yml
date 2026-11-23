@@ -253,6 +253,31 @@ jobs:
           # built from, not what a person installs.
           command += [str(p) for p in files]
           subprocess.run(command, check=True)
+          # The evidence's own verdict in the job log, so it can be read without downloading
+          # the artifact (the artifact holds the same file).
+          data = json.loads((directory / 'contents.json').read_text())
+          agent = data.get('agent') or {}
+          print('contents-evidence:', json.dumps({
+              'packageId': data.get('packageId'),
+              'distribution': data.get('distribution'),
+              'artifacts': [item.get('name') for item in data.get('checked') or []],
+              'agent': {
+                  'present': agent.get('present'),
+                  'node': agent.get('node'),
+                  'nodeTargets': agent.get('nodeTargets'),
+                  'skills': agent.get('skills'),
+                  'missing': agent.get('missing'),
+              },
+              'perArtifact': {name: {
+                  'present': (carried or {}).get('present'),
+                  'node': (carried or {}).get('node'),
+                  'missing': (carried or {}).get('missing'),
+                  'skills': len((carried or {}).get('skills') or []),
+              } for name, carried in (data.get('agents') or {}).items()},
+              'markers': [item.get('path') for item in data.get('markers') or []],
+              'agentMarkers': [item.get('path') for item in data.get('agentMarkers') or []],
+              'unchecked': [item.get('name') for item in data.get('unchecked') or []],
+          }, sort_keys=True))
       - &upload-package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
