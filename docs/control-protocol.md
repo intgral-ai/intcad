@@ -858,8 +858,10 @@ With the built-in agent (`SOLIDCRAFT_MASTRA_AGENT`), `ui.agent_chat` also accept
 "models"}`, `{"type": "conn_custom_remove", "id"}`, `conn_retry`). It is checked exactly as the
 page's action is, and one that is refused fails the call with the same reason. The reply's
 `connect` is what the page is told of the connections (`plans`, `keys`, `custom`, `login`,
-`problem`, `error`, `dates`, `connected`), or `null` when the agent is not the built-in one. A key
-goes to the system keychain and to the agent, and is never in a reply.
+`problem`, `error`, `keySaves`, `dates`, `connected`), or `null` when the agent is not the built-in
+one. `keySaves` counts the `conn_key` actions answered, kept or refused: a save has its answer once
+it moves on, and `error` then says whether it was refused. A key goes to the system keychain and to
+the agent, and is never in a reply.
 
 `model` may also name a model the agent did not list, as the picker's custom row does: it goes to an
 API endpoint, to an agent with a model option, and to a legacy agent that listed models; the reply's
