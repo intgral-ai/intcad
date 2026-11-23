@@ -322,9 +322,12 @@ function CheckBuiltInAgent {
     Check ([bool]$agents -and $agents[0].id -eq 'mastra') "the built-in agent is offered first ($($names -join ', '))"
     Check ($state.currentAgent -eq 'mastra') "the built-in agent is the conversation's agent ($($state.currentAgent))"
     Check ([bool]($state.connect -and $state.connect.plans)) 'the built-in agent started out of the package and reported its connections'
-    [void](Call 'ui.agent_chat' @{ disconnect = $true })
+    # The control channel's own word for Stop is `stop` (the page uses `disconnect`).
+    [void](Call 'ui.agent_chat' @{ stop = $true })
     $state = Call 'ui.agent_chat'
-    Check (-not $state.connect) 'a stopped agent reports no connections'
+    $stopped = $state.connect
+    Check ($state.state -eq 'off' -and -not ($stopped -and $stopped.plans) -and -not ($stopped -and $stopped.connected)) `
+        "a stopped agent reports no connections (state $($state.state))"
     [void](Call 'ui.agent_chat' @{ connect = $true })
     $until = (Get-Date).AddSeconds(60)
     while (-not ($state.connect -and $state.connect.plans) -and (Get-Date) -lt $until) {
