@@ -12,6 +12,8 @@ The desktop TS companion (`packages/mastra-runtime/`) follows `docs/mastra-distr
 
 A release carries the built-in agent (`SOLIDCRAFT_WITH_MASTRA_AGENT=1`, `SOLIDCRAFT_DISTRIBUTION=mastra-agent`), built per runner from the pinned lock and Node, proved from installed bytes. See `docs/mastra-packaging.md`. Legacy `mastra/` stays `=0`.
 
+Cargo is not npm/Node or file-rights clearance. #7 real source/build audits and #14 installed/signature checks remain required. Runtime-required jobs need `artifact`/`verified` and JSON status + exit 0, never policy or host-only.
+
 ## Preparing
 1. Choose one version for the whole batch from the actual changes (patch, minor, major, `-rc.N`). Do not infer it from commit prefixes. Moving to `1.0` is the owner's decision.
 2. Update `[workspace.package] version` in `Cargo.toml`, then `cargo update --workspace --offline`; only our own crates' `version =` lines in `Cargo.lock` change.
