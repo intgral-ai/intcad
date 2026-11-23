@@ -16440,10 +16440,10 @@ fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the
     );
 }
 
-/// At the bottom centre a primary press that reaches the app (the page's native view takes its
-/// own) is outside the Assistant: the model, the rail. The page is told the count and collapses its
-/// opened conversation when it goes up; switching to another app is no press. In the side panel
-/// nothing is counted (INT-1500).
+/// At the bottom centre, while the conversation is open, a primary press that reaches the app (the
+/// page's native view takes its own) is outside the Assistant: the model, the rail. The page is
+/// told the count and collapses its opened conversation when it goes up; switching to another app
+/// is no press. With the box closed, or in the side panel, nothing is counted (INT-1500).
 #[test]
 fn at_the_bottom_centre_a_press_in_the_app_outside_the_view_is_told_to_the_page() {
     let mut h = crate::scenario::Harness::new();
@@ -16457,6 +16457,15 @@ fn at_the_bottom_centre_a_press_in_the_app_outside_the_view_is_told_to_the_page(
         serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["outsidePresses"].as_u64()
     };
     assert_eq!(presses(&mut h), Some(0), "nothing pressed yet");
+    // Closed, a press changes nothing on the page and is not told.
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the closed box");
+    h.frames(2);
+    let closed = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    click_at(&mut h, egui::pos2(closed.center().x, closed.top() - 200.0), egui::PointerButton::Primary);
+    assert_eq!(presses(&mut h), Some(0), "with the box closed a press is not told");
+    // Opened: the page asks for all the room it may take.
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":5000}"#).expect("the conversation opens");
+    h.frames(2);
     let view = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
     let model = egui::pos2(view.center().x, view.top() - 120.0);
     let content = h.app.viewport.layout.clone().expect("the view's layout").content;
