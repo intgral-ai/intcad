@@ -3119,6 +3119,9 @@ pub fn refresh(app: &mut SolveApp, ctx: &egui::Context) {
         ctx.request_repaint();
     });
     app.agent_chat.detecting = Some(rx);
+    // Look again while the look is pending: a worker that dies without sending must not leave
+    // the launch waiting until the next unrelated event repaints the window.
+    ctx.request_repaint_after(std::time::Duration::from_millis(500));
 }
 
 /// Choose the model for this chat (the header's model picker): the agent switches to it, and it is

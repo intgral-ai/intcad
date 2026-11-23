@@ -224,13 +224,40 @@ class AgentContents(unittest.TestCase):
 
     def test_a_universal_app_reports_a_node_for_each_slice(self):
         with tempfile.TemporaryDirectory() as directory:
-            names = []
+            # A mounted DMG lists its directories too; the agent folder and each slice folder are
+            # entries, not payload files.
+            names = ["Applications", "Intcad.app/", "Intcad.app/Contents/",
+                     "Intcad.app/Contents/Resources/", "Intcad.app/Contents/Resources/mastra-agent/"]
             for slice_ in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
                 base = "Intcad.app/Contents/Resources/mastra-agent/" + slice_
+                names.append(base + "/")
                 names.extend(base + "/" + name.split("mastra-agent/", 1)[1] for name in self.AGENT)
             data = self.report(directory, names, package_id="release-macos")
             self.assertEqual(data["agent"]["nodeTargets"], ["aarch64-apple-darwin", "x86_64-apple-darwin"])
             self.assertEqual(data["agent"]["missing"], [])
+
+    def test_an_msi_records_the_install_root_it_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            names = ["PFiles64/Intcad/mastra-agent/" + name.split("mastra-agent/", 1)[1]
+                     for name in self.AGENT]
+            data = self.report(directory, names, package_id="release-windows-x64")
+            self.assertTrue(data["agent"]["present"])
+            self.assertTrue(data["agent"]["node"])
+            self.assertEqual(data["agent"]["missing"], [])
+
+    def test_a_slice_without_the_modelling_skills_is_incomplete_beside_one_with_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            names = []
+            for slice_ in ("aarch64-apple-darwin", "x86_64-apple-darwin"):
+                base = "Intcad.app/Contents/Resources/mastra-agent/" + slice_ + "/"
+                names.extend(base + name.split("mastra-agent/", 1)[1]
+                             for name in self.AGENT if "/skills/" not in name)
+                skills = ("context-skills/intcad-context" if slice_ == "aarch64-apple-darwin"
+                          else "modelling-skills/solidcraft-modeling")
+                names.append(base + "skills/" + skills + "/SKILL.md")
+            data = self.report(directory, names, package_id="release-macos")
+            self.assertEqual(data["agent"]["missing"],
+                             ["aarch64-apple-darwin/mastra-agent/skills/modelling-skills/<skill>/SKILL.md"])
 
     def test_an_agent_folder_outside_the_apps_resources_does_not_count(self):
         # The app looks beside its own resources: a copy an installer drops in `extras/` is not

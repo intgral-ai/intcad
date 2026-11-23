@@ -213,32 +213,59 @@ def _parts(name):
 AGENT_ROOTS = {
     "linux": (("lib", "intcad", "mastra-agent"),),
     "macos": (("Contents", "Resources", "mastra-agent"),),
+    # The MSI's file table names the install root (`PFiles64/Intcad/mastra-agent`); the portable
+    # archive has one wrapper folder.
     "windows": (("mastra-agent",),),
 }
 
+# How many path components may precede the root: a tarball's wrapper folder, or (on Windows) the
+# install root the MSI records. A copy in an `extras/` directory is a stray Node, not the agent.
+MAX_LEADING_PARTS = {"linux": 1, "macos": 1, "windows": 2}
 
-def roots_for(package_id):
-    """The agent folder's install places for a package id, or ``None`` to accept any."""
+
+def platform_for(package_id):
     if package_id.startswith("release-macos"):
-        return AGENT_ROOTS["macos"]
+        return "macos"
     if package_id.startswith("release-windows"):
-        return AGENT_ROOTS["windows"]
+        return "windows"
     if package_id.startswith(("release-linux", "release-flatpak", "release-arch", "release-snap",
                               "release-appimage", "release-deb", "release-rpm")):
-        return AGENT_ROOTS["linux"]
+        return "linux"
     return None
+
+
+def roots_for(package_id):
+    """The agent folder's install places and how many components may precede them."""
+    platform = platform_for(package_id)
+    if platform is None:
+        return None
+    return AGENT_ROOTS[platform], MAX_LEADING_PARTS[platform]
 
 
 def _agent_index(parts, roots):
-    """The index of `mastra-agent` in `parts` when it sits at one of `roots`, else ``None``."""
+    """The index of `mastra-agent` in `parts` when it sits at one of `roots` (at most
+    ``MAX_LEADING_PARTS`` components before it), else ``None``."""
     if roots is None:
         return parts.index(AGENT_DIR) if AGENT_DIR in parts else None
-    for root in roots:
+    places, leading = roots
+    # A wrapper folder in front of the root is the package's own (`intcad-<version>-...`, the
+    # app bundle, or the MSI's install root, which names Intcad); an `extras/` folder is not.
+    wrapped_by_app = index_is_app_wrapped
+    for root in places:
         size = len(root)
         for index in range(len(parts) - size + 1):
-            if list(parts[index:index + size]) == list(root):
+            if index > leading:
+                break
+            if list(parts[index:index + size]) == list(root) and wrapped_by_app(parts, index):
                 return index + size - 1
     return None
+
+
+def index_is_app_wrapped(parts, index):
+    """Whether the components before `index` are the product's own: an FHS `usr`, a wrapper folder
+    named for it (`intcad-<version>-...`), the app bundle, or the MSI's install root."""
+    return index == 0 or any(part.lower() == "usr" or "intcad" in part.lower()
+                             for part in parts[:index])
 
 
 def agent_node(name, target=None, roots=None):
@@ -265,18 +292,21 @@ def agent_report(names, target=None, roots=None):
     ``missing``: the files the agent needs that the package does not hold.
     """
     parts = [_parts(name) for name in names]
-    anchored = [entry for entry in parts if _agent_index(entry, roots) is not None]
+    directories = [str(name).endswith(("/", "\\")) for name in names]
+    anchored = [(entry, is_dir) for entry, is_dir in zip(parts, directories)
+                if _agent_index(entry, roots) is not None]
     present = bool(anchored)
-    node = any(agent_node("/".join(entry), target, roots) for entry in anchored if entry)
+    files = [entry for entry, is_dir in anchored if not is_dir]
+    node = any(agent_node("/".join(entry), target, roots) for entry in files)
     node_targets = sorted({
         entry[_agent_index(entry, roots) + 1]
-        for entry in anchored
+        for entry in files
         if agent_node("/".join(entry), target, roots)
         and len(entry) > _agent_index(entry, roots) + 2
     })
     found = {}
-    skills = set()
-    for entry in anchored:
+    skills = {}
+    for entry in files:
         for index, part in enumerate(entry):
             if part != AGENT_DIR or _agent_index(entry, roots) != index:
                 continue
@@ -285,12 +315,15 @@ def agent_report(names, target=None, roots=None):
             if rest and TARGET_SLICE.match(rest[0]):
                 slice_ = rest[0]
                 rest = rest[1:]
+            if not rest:
+                # The agent folder itself; not a payload file.
+                continue
             found.setdefault(slice_, set()).add("/".join([AGENT_DIR] + rest))
             # The agent's own `mastra-agent/skills/<set>/<skill>/SKILL.md`: exactly that shape, so
             # a package's own skill file (a dependency's `node_modules/.../skills/x/y/SKILL.md`)
             # is not counted as one of the agent's.
             if len(rest) == 4 and rest[0] == "skills" and entry[-1] == "SKILL.md":
-                skills.add("/".join(rest[1:3]))
+                skills.setdefault(slice_, set()).add("/".join(rest[1:3]))
     # A universal app carries one whole agent per CPU: each folder is checked on its own, so the
     # Intel folder cannot consist of a Node and borrow the ARM folder's entry, deps and skills.
     missing = []
@@ -298,10 +331,12 @@ def agent_report(names, target=None, roots=None):
         have = found[slice_]
         prefix = "" if not slice_ else slice_ + "/"
         missing.extend(prefix + required for required in AGENT_REQUIRED if required not in have)
-        if not any(name.startswith(AGENT_DIR + "/skills/") for name in have):
-            missing.append(prefix + AGENT_DIR + "/skills/<set>/<skill>/SKILL.md")
+        # INT-1473's work starts from the modelling skills; a slice that holds only some other
+        # set cannot do it, even when the other slice holds the modelling ones.
+        if not any(name.startswith("modelling-skills/") for name in skills.get(slice_, ())):
+            missing.append(prefix + AGENT_DIR + "/skills/modelling-skills/<skill>/SKILL.md")
     return {"present": present, "node": node, "nodeTargets": node_targets,
-            "missing": missing, "skills": sorted(skills)}
+            "missing": missing, "skills": sorted({name for names in skills.values() for name in names})}
 
 
 def _walk(root):
@@ -309,7 +344,7 @@ def _walk(root):
     names = []
     for directory, dirnames, filenames in os.walk(root):
         for name in dirnames:
-            names.append(str((Path(directory) / name).relative_to(root)))
+            names.append(str((Path(directory) / name).relative_to(root)) + "/")
         for name in filenames:
             names.append(str((Path(directory) / name).relative_to(root)))
     return names
@@ -423,8 +458,15 @@ def names_flatpak(path):
     # file, so the tree cannot be a stale or different bundle. The runtime the bundle names is
     # already installed by the job that built and smoked it; `--noninteractive` refuses rather
     # than waits if it is not.
-    _run([tool, "install", "--user", "-y", "--noninteractive", "--reinstall",
-          str(Path(path).resolve())], timeout=900)
+    installed = _run([tool, "install", "--user", "-y", "--noninteractive", "--reinstall",
+                      str(Path(path).resolve())], timeout=900)
+    # What was installed is what gets listed: the ref names the app, so a bundle of some other
+    # app cannot be attested by their deployment.
+    found = re.search(r"\bapp/([A-Za-z0-9._-]+)/", installed)
+    if found is None:
+        raise OSError("flatpak install did not name the app it installed")
+    if found.group(1) != FLATPAK_APP_ID:
+        raise OSError("the bundle is not " + FLATPAK_APP_ID + ": " + found.group(1))
     try:
         location = _run([tool, "info", "--user", "--show-location", FLATPAK_APP_ID]).strip()
     except OSError as error:

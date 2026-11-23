@@ -278,6 +278,21 @@ class AgentContentDecision(unittest.TestCase):
         problems = content.problems(SHA, descriptors, contents, "mastra-agent")
         self.assertTrue(any("no artifact of the package carries the agent" in problem for problem in problems), problems)
 
+    def test_a_repack_artifact_without_a_verdict_fails_and_a_runtime_marker_does_too(self):
+        descriptors, contents = self.evidence()
+        identity = "release-snap-x86_64"
+        descriptors[identity] = build(identity, [("one", DG), ("two", DG2)])
+        contents[identity] = report(identity, [("one", DG), ("two", DG2)], distribution="mastra-agent",
+                                    derived="release-linux-x86_64", source_name="src", source_sha=DG)
+        contents[identity]["agents"] = {"one": WHOLE_AGENT, "src": WHOLE_AGENT}
+        problems = content.problems(SHA, descriptors, contents, "mastra-agent")
+        self.assertTrue(any(identity in problem and "two: inspected without an agent verdict" in problem
+                            for problem in problems), problems)
+        contents[identity]["agents"]["two"] = WHOLE_AGENT
+        contents[identity]["markers"] = [{"name": "two", "path": "usr/lib/intcad/mastra/runtime.json"}]
+        problems = content.problems(SHA, descriptors, contents, "mastra-agent")
+        self.assertTrue(any(identity in problem and "runtime marker" in problem for problem in problems), problems)
+
     def test_a_native_repack_is_not_asked_for_the_agent(self):
         # The agent is built for x86_64 Linux only; the aarch64 Flatpak is native on both sides.
         descriptors = {

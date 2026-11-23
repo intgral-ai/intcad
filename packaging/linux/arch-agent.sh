@@ -41,15 +41,21 @@ SOURCE="$WORK/src/lib/intcad/mastra-agent"
 install -d "$WORK/pkg/usr/lib/intcad"
 cp -a "$SOURCE" "$WORK/pkg/usr/lib/intcad/mastra-agent"
 
-# The package's own file list, regenerated the way makepkg writes it, so the entries it adds are
-# part of the package's record rather than a stale file beside them.
+# The package's own file list and installed size, regenerated the way makepkg writes them, so the
+# entries it adds are part of the package's record rather than a stale file beside them.
 (
   cd "$WORK/pkg"
   rm -f .MTREE
+  size="$(find . -type f ! -name .PKGINFO ! -name .BUILDINFO ! -name .MTREE -printf '%s\n' |
+    awk '{ total += $1 } END { print total + 0 }')"
+  sed -i "s/^size = .*/size = $size/" .PKGINFO
   find . -mindepth 1 -maxdepth 1 ! -name .MTREE -print0 | sort -z |
     bsdtar -czf .MTREE --format=mtree \
       --options='!all,use-set,type,uid,gid,mode,time,size,md5,sha256,link' --null -T -
-  bsdtar -cf - .PKGINFO .BUILDINFO .MTREE ./* | zstd -c -T0 --ultra -20 - > "$WORK/package.pkg.tar.zst"
+  # The package's top-level names as makepkg writes them (`usr/...`, not `./usr/...`), and every
+  # top-level entry the package carried (`.PKGINFO`, `.BUILDINFO`, `.MTREE`, `.INSTALL`).
+  find . -mindepth 1 -maxdepth 1 -printf '%P\0' | sort -z |
+    bsdtar -cf - --null -T - | zstd -c -T0 --ultra -20 - > "$WORK/package.pkg.tar.zst"
 )
 
 mv "$WORK/package.pkg.tar.zst" "$PKG"

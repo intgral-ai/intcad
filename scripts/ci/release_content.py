@@ -55,7 +55,7 @@ def carries_no_agent(name):
     return "-cli-" in lowered and lowered.endswith((".zip", ".tar.gz", ".tar.xz"))
 
 
-def _agent_problem(carried):
+def agent_problem(carried):
     """Why one artifact's agent does not work, or ``""`` when it does."""
     if not isinstance(carried, dict) or not carried.get("present"):
         return "carries no mastra-agent/ folder"
@@ -138,7 +138,7 @@ def problems(source_revision, descriptors, contents, declaration="native"):
                     if carries_no_agent(name) or (per_artifact[name] or {}).get("coveredBy"):
                         continue
                     carried = per_artifact[name]
-                    problem = _agent_problem(carried)
+                    problem = agent_problem(carried)
                     if problem:
                         failures.append(identity + ": " + name + ": " + problem)
                 # At least one of the package's own artifacts must carry it: a set that holds
@@ -267,12 +267,29 @@ def problems(source_revision, descriptors, contents, declaration="native"):
             if not own:
                 failures.append(identity + ": no evidence from the repack's own bytes; only its "
                                 "source was looked at")
+            inspected = {
+                item.get("name")
+                for item in report.get("checked") or []
+                if isinstance(item, dict)
+            }
+            for name in sorted(inspected - set(per_artifact or {})):
+                failures.append(identity + ": " + str(name) + ": inspected without an agent verdict")
             for name in sorted(own):
                 if carries_no_agent(name) or (own[name] or {}).get("coveredBy"):
                     continue
-                problem = _agent_problem(own[name])
+                problem = agent_problem(own[name])
                 if problem:
                     failures.append(identity + ": " + name + ": " + problem)
+        # A repack is not a place to add a runtime the source did not carry.
+        markers = [item.get("path") if isinstance(item, dict) else item
+                   for item in report.get("markers") or []]
+        foreign = [item.get("path") if isinstance(item, dict) else item
+                   for item in report.get("agentMarkers") or []]
+        if markers:
+            failures.append(identity + ": carries a runtime marker: " + _sample(markers))
+        if foreign:
+            failures.append(identity + ": carries a Node or enterprise content outside the agent: "
+                            + _sample(foreign))
         # The repack's bytes are checked like any other package's: every artifact inspected,
         # none left unread, and every digest the one this job built.
         unchecked = report.get("unchecked")

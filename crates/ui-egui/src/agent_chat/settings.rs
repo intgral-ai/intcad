@@ -486,10 +486,8 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
         });
         ui.add_enabled_ui(app.preferences.ai_features && !cfg!(target_arch = "wasm32"), |ui| {
             permissions_section(app, ui);
-            // The built-in agent is the only one, and its connections are on the Assistant's own
-            // page: there is no list of agents to manage here.
-            // The built-in agent is listed first and cannot be edited, removed or replaced; the
-            // agents found on the computer and the ones the user added stay beside it.
+            // The built-in agent is listed first and cannot be edited or removed; the agents
+            // found on the computer and the ones the user added stay beside it.
             #[cfg(not(target_arch = "wasm32"))]
             {
                 // The list stays: the built-in agent first, then the agents found on the computer
