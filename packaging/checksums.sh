@@ -36,10 +36,11 @@ if [ ! -d "$dir" ]; then
   exit 1
 fi
 
-# The lists themselves, and a signature over one of them, are not release files.
+# The lists themselves, a signature over one of them, and the per-package evidence the release
+# workflow writes beside the artifacts are not download assets.
 is_list() {
   case "$1" in
-    SHA256SUMS.txt | SHA256SUMS | SHA256SUMS.txt.minisig | SHA256SUMS.minisig) return 0 ;;
+    SHA256SUMS.txt | SHA256SUMS | SHA256SUMS.txt.minisig | SHA256SUMS.minisig | build.json | contents.json) return 0 ;;
     *) return 1 ;;
   esac
 }

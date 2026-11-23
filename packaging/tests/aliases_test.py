@@ -1,0 +1,88 @@
+"""A release must carry the unversioned asset names the in-app update check resolves by name."""
+import hashlib
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "packaging/aliases.sh"
+V = "0.1.3"
+
+
+class ReleaseAliases(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def write(self, name, data=b"x"):
+        (self.tmp / name).write_bytes(data)
+
+    def run_script(self, *args):
+        return subprocess.run(
+            [str(SCRIPT), *args], capture_output=True, text=True, env={"PATH": os.environ["PATH"]}
+        )
+
+    def test_every_name_the_updater_asks_for_exists(self):
+        # Exactly the unversioned forms in `asset_name` (update.rs), plus the ones that must not
+        # get one: the tarball and the standalone exe are looked up with the version.
+        self.write(f"intcad-{V}-linux-x86_64.AppImage")
+        self.write(f"intcad-{V}-linux-x86_64.deb")
+        self.write(f"intcad-{V}-linux-x86_64.rpm")
+        self.write(f"intcad-{V}-linux-x86_64.flatpak")
+        self.write(f"intcad-{V}-linux-x86_64.snap")
+        self.write(f"intcad-{V}-windows-x64.msi")
+        self.write(f"intcad-{V}-windows-x64-portable.zip")
+        self.write(f"intcad-{V}-macos-universal.dmg")
+        self.write(f"intcad-{V}-linux-x86_64.tar.gz")
+        self.write(f"Intcad-{V}-windows-x64.exe")
+        self.write(f"intcad-{V}-linux-x86_64.AppImage.zsync")
+
+        result = self.run_script(str(self.tmp), V)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for alias in (
+            "intcad-linux-x86_64.AppImage",
+            "intcad-linux-x86_64.deb",
+            "intcad-linux-x86_64.rpm",
+            "intcad-linux-x86_64.flatpak",
+            "intcad-linux-x86_64.snap",
+            "intcad-windows-x64.msi",
+            "intcad-windows-x64-portable.zip",
+            "intcad-macos-universal.dmg",
+        ):
+            self.assertTrue((self.tmp / alias).is_file(), alias)
+            self.assertEqual(
+                (self.tmp / alias).read_bytes(),
+                (self.tmp / f"intcad-{V}-{alias[len('intcad-'):]}").read_bytes(),
+                f"{alias} is a byte copy",
+            )
+        self.assertFalse((self.tmp / "intcad-linux-x86_64.tar.gz").exists(), "the tarball keeps its version")
+        self.assertFalse((self.tmp / "intcad-windows-x64.exe").exists(), "the standalone exe keeps its version")
+        self.assertFalse((self.tmp / "intcad-linux-x86_64.AppImage.zsync").exists(), "zsync files keep their name")
+
+    def test_v_prefix_is_accepted(self):
+        self.write(f"intcad-{V}-windows-x64.msi")
+        self.assertEqual(self.run_script(str(self.tmp), f"v{V}").returncode, 0)
+        self.assertTrue((self.tmp / "intcad-windows-x64.msi").is_file())
+
+    def test_an_alias_with_other_bytes_is_refused(self):
+        self.write(f"intcad-{V}-windows-x64.msi", b"new")
+        self.write("intcad-windows-x64.msi", b"old")
+
+        result = self.run_script(str(self.tmp), V)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("different bytes", result.stderr)
+        self.assertEqual((self.tmp / "intcad-windows-x64.msi").read_bytes(), b"old")
+
+    def test_nothing_to_alias_is_reported(self):
+        self.write(f"intcad-{V}-linux-x86_64.tar.gz")
+        result = self.run_script(str(self.tmp), V)
+        self.assertIn("no versioned asset needing an alias", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

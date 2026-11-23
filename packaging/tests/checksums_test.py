@@ -140,3 +140,17 @@ class ReleaseChecksums(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EvidenceFilesAreNotAssets(unittest.TestCase):
+    def test_build_and_contents_json_are_left_out(self):
+        import shutil, tempfile, subprocess
+        from pathlib import Path
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        (tmp / "intcad-0.1.3-linux-x86_64.tar.gz").write_bytes(b"tar")
+        (tmp / "build.json").write_text("{}")
+        (tmp / "contents.json").write_text("{}")
+        result = subprocess.run([str(SCRIPT), str(tmp)], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((tmp / "SHA256SUMS.txt").read_text(), f"{sha256(b'tar')}  intcad-0.1.3-linux-x86_64.tar.gz\n")

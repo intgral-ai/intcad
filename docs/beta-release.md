@@ -37,7 +37,11 @@ new SHA.
    ```
    The `package-evidence-*` artifacts contain `build.json` and `contents.json`; the latter is the
    runtime-marker scan used by the release gate.
-5. If an asset is attached to a prerelease, make the checksum list with
+5. If an asset is attached to a prerelease, first write the unversioned aliases the in-app update
+   check resolves by name (`packaging/aliases.sh dist <version>`: AppImage, deb, rpm, Flatpak, Snap,
+   MSI, portable zip, DMG). Without them those installations find no package and never update; the
+   tarball and the standalone exe keep their version because the updater asks for them by it. Then
+   make the checksum list with
    `packaging/checksums.sh dist --require <name>` once per asset the channel promises — the
    versioned files **and** the unversioned aliases clients resolve by name, across every platform.
    The list must cover the whole release, not one platform: an asset attached without its line
