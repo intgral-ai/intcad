@@ -157,7 +157,7 @@ test("a brief of 300 files is at most 4000 characters and says how many it left 
   assert.ok(brief.includes("## Review") && brief.includes("`inspect.dfm`") && brief.includes("## How to work") && brief.trimEnd().endsWith("The `intcad-context` skill has the details."));
   // B2 (F9): the plan is due after the context is read and before the first change, as the task
   // list the user is shown, whatever Mastra Code's own prompt says about just doing it.
-  const plan = brief.split("\n").find((line) => line.startsWith("- Plan before the first change")) ?? "";
+  const plan = brief.split("\n").find((line: string) => line.startsWith("- Plan before the first change")) ?? "";
   for (const part of ["after reading what the task depends on", "task_write", "in the user's language", "Intcad shows the list to the user", "only once its check has run and passed", "even where other instructions say to just do it", "your thinking is not shown"]) {
     assert.ok(plan.includes(part), part);
   }
@@ -314,11 +314,12 @@ test("the fence takes /tmp off the folders a file tool may reach, and refuses a 
   assert.throws(() => keepFilesFrom(class {}, ["/tmp"]), /not the ones this agent was written for/u);
   assert.throws(() => keepFilesFrom(undefined, ["/tmp"]), /not the ones this agent was written for/u);
   const root = folder("fence");
-  const [base, kept, denied] = ["base", "kept", "denied"].map((name) => {
-    const dir = join(root, name);
-    mkdirSync(dir);
-    return dir;
-  });
+  // Named one by one: a mapped array gives `string | undefined` under the package's strict
+  // index checking, and these three are always there.
+  const base = join(root, "base");
+  const kept = join(root, "kept");
+  const denied = join(root, "denied");
+  for (const dir of [base, kept, denied]) mkdirSync(dir);
   class Stand {
     _basePath = base;
     _allowedPaths = [kept, denied];

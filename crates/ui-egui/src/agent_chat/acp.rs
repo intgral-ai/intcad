@@ -1042,7 +1042,10 @@ mod tests {
         assert!(SYSTEM_NOTE.contains(NO_FILE_TOOLS), "the sentence the project note replaces is in the note");
         let note = project_note(&system_note("Use M3 screws."));
         assert!(!note.contains(NO_FILE_TOOLS) && note.contains(PROJECT_FILE_TOOLS), "{note}");
-        assert!(note.contains("only through the Intcad tools") && !note.to_lowercase().contains("shell"), "the shell is neither offered nor forbidden: {note}");
+        assert!(
+            note.contains("only through the Intcad tools") && !note.to_lowercase().contains("shell"),
+            "the shell is neither offered nor forbidden: {note}"
+        );
         assert!(note.ends_with("preferences:\nUse M3 screws."), "the custom instructions stay last: {note}");
         assert_eq!(project_note(PROPOSAL_NOTE), PROPOSAL_NOTE, "a note without the sentence is left alone");
     }
