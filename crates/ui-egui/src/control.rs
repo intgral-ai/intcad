@@ -934,18 +934,40 @@ fn remaining_covers(bound: Option<AuthorizationBound<'_>>, now: MonotonicInstant
     }
 }
 
-/// A Direct Control operation the host minted for this request, before any admission or forwarded
-/// host context. Its durable row cannot exist yet, and the native account client only hands over
-/// the per-operation settlement credential when `begin` admits it, so a lookup here cannot
-/// succeed. Such a request goes straight to admission: `begin` creates the server-side operation,
-/// hands over the credential and answers a duplicate with `Admission::AlreadyExists`, which the
-/// billing adapter refuses rather than granting a second time.
-fn fresh_direct_control(req: &ControlRequest) -> bool {
-    req.entry == EntryCategory::DirectControl
-        && req.operation.is_some()
-        && req.trusted.is_none()
-        && req.admission.is_none()
-        && req.admission_scope.is_none()
+/// Only a positive journal read can establish that an unmarked Direct Control request is
+/// fresh. A retry after a lost reply can carry neither context nor admission. Without a
+/// journal, require the original server lookup to succeed rather than assuming freshness.
+fn check_operation_before_admission(
+    app: &SolveApp,
+    req: &ControlRequest,
+    scope: &AuthenticatedHostScope,
+    account: &dyn AccountService,
+    operation: &OperationId,
+) -> Result<(), Refusal> {
+    let journal_terminal = if req.entry == EntryCategory::DirectControl
+        && let Some(store) = app.review_store.as_ref()
+    {
+        match store.load(operation) {
+            Ok(None)
+                if req.trusted.is_none() && req.admission.is_none() && req.admission_scope.is_none() && !req.work_started.load(Ordering::Relaxed) =>
+            {
+                // `begin` supplies the credential required by `operation()`; it still refuses
+                // a duplicate even if there is no local row.
+                return Ok(());
+            }
+            Ok(record) => record.is_some_and(|record| record.status.is_terminal()),
+            Err(_) => return Err(Refusal::new(RefusalCode::AuthUnavailable, "the durable operation journal is unavailable")),
+        }
+    } else {
+        false
+    };
+    match account.operation(scope, operation) {
+        Ok(status) if journal_terminal || status.is_terminal() => {
+            Err(Refusal::new(RefusalCode::OperationFinalized, "this operation is already settled"))
+        }
+        Ok(_) => Ok(()),
+        Err(_) => Err(Refusal::new(RefusalCode::AuthUnavailable, "the durable operation state is unavailable")),
+    }
 }
 
 /// Scheduling check before a grant is taken or work starts.
@@ -953,7 +975,7 @@ fn fresh_direct_control(req: &ControlRequest) -> bool {
 /// The current account snapshot is re-read (so a revocation observed before scheduling stops the
 /// request), the forwarded scope must match the host's current account/installation/session, and
 /// a measured request window must still be open. A fresh host-minted Direct Control operation
-/// skips the durable row lookup (see [`fresh_direct_control`]); recovery keeps it. The grant's own
+/// skips the server operation lookup; recovery keeps it. The grant's own
 /// expiry is checked by [`authority_refusal`] once the server has admitted the operation.
 fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Refusal> {
     if free_entry(req.entry) || req.helper.is_some() {
@@ -1001,20 +1023,10 @@ fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Re
         Ok(required) => required,
         Err(refusal) => return Some(refusal),
     };
-    // A fresh Direct Control operation has no durable row yet. The native client's `operation()`
-    // needs the settlement credential that only `begin` hands off, so looking it up before
-    // admission would refuse the operation itself. A recovery request (one carrying a stored
-    // admission or a forwarded host context) keeps the lookup, including the terminal check.
-    if !fresh_direct_control(req)
-        && let Some(operation) = req.operation.as_ref()
+    if let Some(operation) = req.operation.as_ref()
+        && let Err(refusal) = check_operation_before_admission(app, req, scope, account, operation)
     {
-        match account.operation(scope, operation) {
-            Ok(OperationStatus::Charged | OperationStatus::Released | OperationStatus::Expired) => {
-                return Some(Refusal::new(RefusalCode::OperationFinalized, "this operation is already settled"));
-            }
-            Ok(_) => {}
-            Err(_) => return Some(Refusal::new(RefusalCode::AuthUnavailable, "the durable operation state is unavailable")),
-        }
+        return Some(refusal);
     }
     // A forwarded request already carries a measured window; it must cover the whole operation
     // before any grant is taken. The grant path is checked again in `authority_refusal`.
@@ -3283,6 +3295,70 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solidcraft_engine::entitlement::{
+        FreshIntent, OperationRecord, OperationStore, OperationStoreError, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome,
+        SettlementIntent, TransportCorrelation, UnsettledOperation,
+    };
+
+    /// Script the existing journal's read for one operation. Classification must not write it.
+    struct ControlJournal(OperationId, Result<Option<OperationRecord>, OperationStoreError>);
+
+    impl OperationStore for ControlJournal {
+        fn load(&self, operation: &OperationId) -> Result<Option<OperationRecord>, OperationStoreError> {
+            assert_eq!(operation, &self.0);
+            self.1.clone()
+        }
+
+        fn save_new(&mut self, _: &OperationRecord) -> Result<SaveOutcome, OperationStoreError> {
+            unreachable!()
+        }
+
+        fn mark_started(&mut self, _: &OperationId, _: u64) -> Result<(), OperationStoreError> {
+            unreachable!()
+        }
+
+        fn mark_terminal(&mut self, _: &OperationId, _: OperationStatus) -> Result<(), OperationStoreError> {
+            unreachable!()
+        }
+
+        fn persist_intent(
+            &mut self,
+            _: &AuthenticatedHostScope,
+            _: &TransportCorrelation,
+            _: Capability,
+            _: EntryCategory,
+        ) -> Result<OperationRecord, SaveOutcome> {
+            unreachable!()
+        }
+
+        fn persist_fresh_intent(&mut self, _: &FreshIntent, _: Capability, _: EntryCategory) -> Result<OperationRecord, SaveOutcome> {
+            unreachable!()
+        }
+
+        fn lookup_original_retry(&self, _: &RetryScopeKey) -> RetryDecision {
+            unreachable!()
+        }
+
+        fn record_review(&mut self, _: &ReviewOperation) -> Result<(), OperationStoreError> {
+            unreachable!()
+        }
+
+        fn review_operation(&self, _: &RunId) -> Result<Option<OperationId>, OperationStoreError> {
+            unreachable!()
+        }
+
+        fn record_settlement_intent(&mut self, _: &OperationId, _: SettlementIntent) -> Result<SaveOutcome, OperationStoreError> {
+            unreachable!()
+        }
+
+        fn settlement_intent(&self, _: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
+            unreachable!()
+        }
+
+        fn unsettled_operations(&self, _: Option<&AuthenticatedHostScope>) -> Result<Vec<UnsettledOperation>, OperationStoreError> {
+            unreachable!()
+        }
+    }
 
     /// A local test double at the billing boundary: it never ships and only grants inside this
     /// test module. It records exactly how often admission and commit happen.
@@ -3426,6 +3502,7 @@ mod tests {
         let (mut app, _authority, admits, releases) = app_with_lookup_before_admission();
         let (mut req, _rx) =
             ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        app.install_review_store(Box::new(ControlJournal(req.operation().unwrap().clone(), Ok(None))));
         let admission = admit_once(&mut app, &mut req).expect("a fresh Direct Control operation is admitted before it has a durable row");
         assert!(matches!(admission, Admission::NewlyAdmitted { .. }), "{admission:?}");
         assert_eq!(admits.load(Ordering::Relaxed), 1, "the fresh operation is admitted exactly once");
@@ -3446,6 +3523,38 @@ mod tests {
         assert_eq!(releases.load(Ordering::Relaxed), 0, "a terminal row is never settled again");
         assert!(req.admission.is_none(), "a refused recovery stores no admission");
         assert!(authority.operation_lookups() >= 1, "recovery still reads the durable row");
+    }
+
+    #[test]
+    fn a_lost_reply_retry_with_a_row_but_no_request_markers_still_checks_the_server() {
+        let (mut app, authority, admits, releases) = app_with_lookup_before_admission();
+        let (mut req, _) = ControlRequest::trusted_control("document.inspect", json!({}));
+        let operation = req.operation().unwrap().clone();
+        let record =
+            OperationRecord::held(operation.clone(), authority.scope().account().clone(), Capability::Control, EntryCategory::DirectControl, 0);
+        app.install_review_store(Box::new(ControlJournal(operation, Ok(Some(record)))));
+
+        // The server-side lookup refuses without the original settlement credential. It must
+        // not be bypassed merely because the reconstructed request has no admission or context.
+        let refusal = admit_once(&mut app, &mut req).expect_err("a lost-reply retry is not a fresh admission");
+        assert_eq!(refusal.code, RefusalCode::AuthUnavailable);
+        assert_eq!(authority.operation_lookups(), 1);
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+        assert!(req.admission.is_none());
+    }
+
+    #[test]
+    fn an_unreadable_control_journal_refuses_before_admission_or_server_lookup() {
+        let (mut app, authority, admits, _releases) = app_with_billing_and_authority();
+        let (mut req, _) = ControlRequest::trusted_control("document.inspect", json!({}));
+        app.install_review_store(Box::new(ControlJournal(req.operation().unwrap().clone(), Err(OperationStoreError::Unavailable))));
+
+        let refusal = admit_once(&mut app, &mut req).expect_err("an unreadable journal does not prove freshness");
+        assert_eq!(refusal.code, RefusalCode::AuthUnavailable);
+        assert_eq!(authority.operation_lookups(), 0);
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
+        assert!(req.admission.is_none());
     }
 
     #[test]
@@ -3471,6 +3580,7 @@ mod tests {
             .lookup_needs_admission(std::sync::Arc::new(AtomicUsize::new(0)));
         authority.install(&mut app);
         let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        app.install_review_store(Box::new(ControlJournal(req.operation().unwrap().clone(), Ok(None))));
         let out = handle(&mut app, &egui::Context::default(), &mut req);
         let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
         assert_eq!(reply["ok"], false, "{reply}");
