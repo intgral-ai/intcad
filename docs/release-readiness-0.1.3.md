@@ -649,6 +649,26 @@ PR, not in the packages:
 Pushed as `f628596aa4`. #214 then showed 5 pass / 2 pending / 1 skipping and no failures, with a
 merge watcher waiting for the last two.
 
+### 12.4.6 Windows upgrade with the published 0.1.2, then the CI 0.1.3 (2026-11-23)
+
+Gate E's Windows half, done with real release bytes in both directions:
+
+```
+uninstall the 0.1.3 already on the VM        -> exit 0
+install published intcad-0.1.2-windows-x64.msi (sha256 b8d8037b…) -> exit 0
+    C:\Program Files\Intcad\intcad-cli.exe --version -> intcad-cli 0.1.2
+    C:\Program Files\Intcad\mastra-agent exists -> False   (0.1.2 carried no agent, as published)
+install the CI intcad-0.1.3-windows-x64.msi (sha256 f467db17…) over it -> exit 0
+    intcad-cli 0.1.3
+    uninstall entries: exactly one, "Intcad 0.1.3"
+    mastra-agent present, 10,739 files, five skill sets
+    %LOCALAPPDATA%\Intcad still present
+```
+
+So a user on the published 0.1.2 can install this 0.1.3 MSI and ends with one product at 0.1.3 that
+carries the agent; the old install is replaced, not duplicated, and the user data folder survives.
+That is the MSI half of Gate E. The one-click path is still untestable before publication (§10).
+
 ## 12.5 A real model credential: slash list, real turn, skill used (Linux, 2026-11-23)
 
 The CTO supplied a DeepSeek API key for acceptance. It was used only in the throwaway VM, kept in
