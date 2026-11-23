@@ -716,6 +716,23 @@ Recorded so the next reader knows which parts of this document were corrected an
 Still unchanged and still open: PP's UI has no PR (B9), login Gate B unrun (#213), slash menu missing
 (B10), macOS untested, one-click update only testable after a stable release exists.
 
+## 12.7 What CI itself verified for the candidate (run 45248432170, SHA `14a6c95ae`)
+
+Beyond what I installed by hand, the workflow's own steps passed for this candidate:
+
+| Job | Steps that passed |
+|---|---|
+| `Linux x86_64` | set up the pinned Node; build the agent folder and run it against stand-ins; build AppImage/deb/rpm/tar; check the packages; **install the packages on bare systems and open the Assistant** (ubuntu 22.04, 24.04 x11/wayland, debian 13, fedora 44, plus the AppImage); keep the logs and pictures; bind package bytes to the checkout |
+| `Windows x64 (unsigned)` | build the agent folder and run it against stand-ins; build and check the MSI and portable zip; **install the MSI and open the Assistant in the installed app**; keep the logs and pictures; bind package bytes |
+| `FreeBSD x86_64`, `Linux aarch64`, `macOS build aarch64`, `Windows x86/arm64`, `Flatpak`, `Arch`, `Snap`, `Web` | build/check steps succeeded |
+| `macOS build x86_64` | cancelled on the first pass; rebuilt on rerun (still running when this was written) |
+| `All nonpublishing package builds` | failed on the first pass (because the cancelled slice) — the expected, honest result |
+| `macOS universal` | skipped until its two slices exist |
+
+So the CI installed checks (which do **not** look at the agent, §12.4.2) prove the app and the
+Assistant page on six Linux package/desktop combinations and on the Windows MSI; the agent's
+installed behaviour is what my VM runs in §12.4.3/§12.4.4 add.
+
 ## 13. Decisions from the CTO (2026-11-23)
 
 Recorded as given: **version 0.1.3**; **PP's UI must be in this release**; everything else is
