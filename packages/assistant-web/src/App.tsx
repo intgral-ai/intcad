@@ -1441,9 +1441,22 @@ function AssistantBar({
       ))}
     </>
   );
+  // At the bottom centre the bar's empty part collapses the conversation, as Collapse does.
+  const centre = centred(state);
   return (
-    <ChatShell.Bar>
-      <ChatShell.Column className="flex-row items-center justify-between gap-2 py-2">
+    <ChatShell.Bar className={centre ? 'relative' : undefined}>
+      {/* Under the row: what is not a control (the gaps, the state badge) lets the press through to
+          it. Not a second tab stop: the bar's Collapse is the keyboard's way. */}
+      {centre && (
+        <div
+          aria-hidden
+          data-centre-bar-collapse
+          title={strings.collapse}
+          onClick={onCollapse}
+          className="absolute inset-0 cursor-pointer rounded-lg transition-colors duration-fast ease-out-custom hover:bg-fill-subtle motion-reduce:transition-none"
+        />
+      )}
+      <ChatShell.Column className={cn('flex-row items-center justify-between gap-2 py-2', centre && 'pointer-events-none relative [&_button]:pointer-events-auto')}>
         <div className="-m-0.5 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-1.5 gap-y-2 overflow-hidden p-0.5">
           {onBack ? (
             // On the connections page the page itself says what is connected and how it stands.
@@ -1534,7 +1547,7 @@ function AssistantBar({
             </DropdownMenu.Trigger>
             <DropdownMenu.Content align="end">
               {/* At the bottom centre the Assistant neither docks to a side nor folds to a strip. */}
-              {!centred(state) && (
+              {!centre && (
                 <>
                   <DropdownMenu.Item onClick={() => post({ type: 'side', left: !state.left })}>
                     {state.left ? strings.dockRight : strings.dockLeft}
@@ -1561,7 +1574,7 @@ function AssistantBar({
           </DropdownMenu>
           {/* At the bottom centre the right rail's Assistant button shows and hides it: in the close
               button's place is Collapse, back to the message box. */}
-          {centred(state) ? (
+          {centre ? (
             <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.collapse} tooltip={strings.collapse} onClick={onCollapse}>
               <Minimize2 />
             </Button>
@@ -2429,7 +2442,7 @@ export function App({ state }: { state: AssistantState | null }) {
   }));
   // At the bottom centre the same body (bar, conversation, dock) opens above the centre's own message box.
   const centre = centred(state);
-  // Back to the message box there: the bar's Collapse and the strip at the top of the opened body.
+  // Back to the message box there: the bar's Collapse and a press on the bar's empty part.
   const collapse = () => {
     setCentreOpen(false);
     setConnOpen(false);
@@ -3122,7 +3135,7 @@ function Centre({
     </ComposerHeaderRow>
   ) : null;
   // Expand over a row that needs the user, which covers the line; open, Collapse is in the bar's top
-  // right, and the whole top edge of the body (the strip, over the header's top padding) collapses it too.
+  // right, and a press on the bar's empty part collapses it too (AssistantBar).
   const toggle = conn ? null : (
     <Button type="button" variant="ghost" size="sm" icon={<Maximize2 />} onClick={() => roomFirst(() => setShown(true))}>
       {strings.expand}
@@ -3146,23 +3159,6 @@ function Centre({
   const header = (
     <>
       <ComposerHeader open placement={open ? 'stacked' : 'overlay'} inert={!open && Boolean(attention)} style={open ? { transition: 'none' } : undefined}>
-        {/* Opening is the whole line; closing is as easy: the full width of the body's top edge, with
-            Mastra's drawer handle. It lies over the header's top padding and takes no height. */}
-        <button
-          type="button"
-          data-centre-strip
-          data-open={open || undefined}
-          inert={!open}
-          aria-hidden={open ? undefined : true}
-          aria-label={strings.collapse}
-          onClick={collapse}
-          className="centre-strip group absolute inset-x-0 top-0 z-10 flex h-5 cursor-pointer items-center justify-center rounded-t-[23px] outline-none hover:bg-fill-subtle"
-        >
-          <span
-            aria-hidden
-            className="h-1 w-12 rounded-full bg-border-strong transition-colors duration-fast ease-out-custom group-hover:bg-muted-foreground/60 group-focus-visible:bg-muted-foreground/60 group-focus-visible:ring-1 group-focus-visible:ring-border-focus motion-reduce:transition-none"
-          />
-        </button>
         <div data-centre-fold className="centre-fold relative" style={{ height: open ? room : lineHeight }}>
           <div
             data-centre-body
