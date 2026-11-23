@@ -587,6 +587,22 @@ gap** — the commands are registered but the Assistant has no slash menu for th
 it is an app-side feature (a command menu fed by `available_commands_update`), not a packaging
 defect. Gate C's other two halves (installed, discoverable, callable) now have real-model evidence.
 
+## 12.6 What the final review changed (GPT-6.2-Sol, high)
+
+Recorded so the next reader knows which parts of this document were corrected and why.
+
+| Finding | Was | Now |
+|---|---|---|
+| Checksum list could omit a channel's asset | one run per platform, no completeness check | `packaging/checksums.sh --require <name>` per channel asset, whole-name match, list verified before it replaces anything and both published names after; 10 tests |
+| Top-level symlinks were silently left out | no check | refused with a message |
+| A failing `find` could shorten the list silently | read from a process substitution | names read into a temporary file first |
+| E1 described backwards | "0.1.2 cannot update because 0.1.2 published `SHA256SUMS`" | the shipped 0.1.2 asks for `SHA256SUMS.txt` in the release it **fetches**, so 0.1.3's naming is what matters; the branch fallback is tolerance for future clients only |
+| Feed override denied | "a constant with no override" | `SOLIDCRAFT_UPDATE_FEED` exists; asset URLs must be GitHub release URLs, which is what blocks a local payload |
+| A cancelled run read as evidence | run 45241269258 implied as the candidate | it was cancelled with no artifacts; §12.4.1 names the current SHA |
+
+Still unchanged and still open: PP's UI has no PR (B9), login Gate B unrun (#213), slash menu missing
+(B10), macOS untested, one-click update only testable after a stable release exists.
+
 ## 13. Decisions from the CTO (2026-11-23)
 
 Recorded as given: **version 0.1.3**; **PP's UI must be in this release**; everything else is
