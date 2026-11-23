@@ -173,7 +173,7 @@ before the licence took effect.
 | X2 | 29 empty commits (7 `port:`, the rest `blend:`/`wire:`/`fix:`/`difftest:`/`solidcore:`/`Revert`) | Process markers with no tree change | — | — | — | **Not Applicable** — no content to migrate |
 
 Reproduce any row with `git log --no-merges --full-history --format='%H' 06749ac4..v0.44.1 -- <paths>`.
-[B3 hosted verification](https://github.com/intgral-ai/intcad/actions/runs/45112087300) was approved and passed within its isolated export scope. Owner decisions remain open for [MCP CD-2 M01–M18](https://linear.app/intgral/issue/INT-1454#comment-20b5ada5-ca77-4245-9a49-abca40424b2e), [B6 RSA](https://linear.app/intgral/issue/INT-1454#comment-eaea0940-30c5-4cae-a86b-cdffb6e92dec), and [B6 crypto-bigint](https://linear.app/intgral/issue/INT-1454#comment-45c11aa6-5167-4139-adb7-8130a1226efb). Those Linear links record requests, not dispositions.
+[B3 hosted verification](https://github.com/intgral-ai/intcad/actions/runs/45112087300) passed within its isolated export scope; root CI activation remains open. The owner accepted the [MCP CD-2 dispositions](mcp-cd2-decisions.md#owner-disposition) and separately accepted both [temporary B6 exceptions](b6-openpgp-resolved-graph.md#owner-risk-decisions-and-verification). The MCP acceptance tests and B6 final-SHA checks remain open.
 
 B6's full pathspec is `Cargo.toml Cargo.lock rust-toolchain.toml deny.toml clippy.toml rustfmt.toml
 .cargo .config flake.nix flake.lock package.json package-lock.json tools .gitignore .gitattributes

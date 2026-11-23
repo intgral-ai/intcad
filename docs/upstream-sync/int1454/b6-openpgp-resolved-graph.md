@@ -47,17 +47,19 @@ application consumer sets in the selected graphs are:
 | wasm browser product | `solidcraft-engine`, `solidcraft-ui-egui`, `solidcraft-web` |
 | Workspace comparison | Union of the native and browser sets; no additional intermediary consumer of either affected crate. |
 
-## Remaining approval gates
+## Owner risk decisions and verification
+
+The owner accepted two separate temporary exceptions for this migration candidate. Neither acceptance is remediation or a blanket dependency-policy exception. No calendar expiry was specified. Recheck each on the final integration SHA, and reopen the decision if the audited boundary changes or a compatible patched route becomes available.
 
 - **RSA:** the resolved graph supports a single entry through rPGP; it does
   not show which functions run. The existing source audit supports public
-  verification rather than Rust private-key operations. Security owner
-  must decide whether to retain this exception independently; recheck the
+  verification rather than Rust private-key operations. The
+  [RSA exception was accepted](https://linear.app/intgral/issue/INT-1454#comment-5a41c162-ffc1-4e6e-8977-fa163970dcd9); recheck the
   final SHA and the native GnuPG save/read boundary.
 - **Crypto-bigint:** the broader graph includes `cx448` with `signing` and
   `elliptic-curve` with `ecdh` among enabled features. This is capability
   evidence, not evidence that production performs private signing or key
-  agreement there. Security owner must decide this exception separately;
+  agreement there. The [crypto-bigint exception was accepted separately](https://linear.app/intgral/issue/INT-1454#comment-5a1493fa-86f3-4eef-857f-f60a27c1f9c2);
   reassess any consumer or feature changes and compare a patched graph.
 
 Raw reverse graphs, feature provenance and summary are retained at

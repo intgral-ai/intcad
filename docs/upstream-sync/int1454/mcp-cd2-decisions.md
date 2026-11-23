@@ -30,7 +30,17 @@ Scope: IntCAD baseline `0fd92bea266e7dcea5ce09676ed9ff9ae6c66d7f` (A), upstream 
 | `pending` | Legacy result path comparable in scope; preserve guarded result handling. | M11: additional fields on recognized uncertified guarded completion. |
 | `skill_reference` | A/C retain the reader and bundle contract. | B-only bundled material not adopted by this record; keep the current bundle and verify it at runtime. |
 
-## Owner-pending decisions
+## Owner disposition
+
+The [owner accepted the proposed dispositions](https://linear.app/intgral/issue/INT-1454#comment-b67c8020-b61e-4ad7-8261-d48a8a6eab10):
+
+- Preserve the IntCAD baseline: M01, M02, M03, M06 (within CD-1 and CD-5), M08, M11.
+- Adopt only after each item's acceptance tests pass: M12, M13, M15, M16.
+- Defer this cycle: M04, M05, M07, M09, M10, M14, M17, M18. M17 and M18 remain separate shared-engine decisions.
+
+This records the decision, not implementation or acceptance evidence. No legacy aliases, broader permissions, or persistence-policy changes are approved.
+
+## Decision inputs and acceptance gates
 
 Each ID is independently decidable. The evidence below is required for the selected disposition; it is not a test run or a waiver.
 
