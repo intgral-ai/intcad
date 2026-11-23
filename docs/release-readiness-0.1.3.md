@@ -277,6 +277,17 @@ is not evidence that the skill can be called.
 available): every built-in theme, font and control size, no unexpected background or clipping, the
 Assistant web view positioned correctly, panel resize and move, and a basic CAD operation on each.
 
+**Gate E has a sequencing constraint that cannot be engineered away.** The one-click path can only be
+exercised against a release GitHub serves as `releases/latest`, and the client refuses a
+`prerelease` (it uses `releases/latest`, and `Release::parse` rejects `prerelease: true`). A local
+feed is possible (`SOLIDCRAFT_UPDATE_FEED`), but every asset URL in it must sit under
+`https://github.com/intgral-ai/intcad/releases/`, so a local payload needs DNS and TLS interception
+in the guest. Practical consequence: the first real test of the one-click update is **after** the
+stable release exists — install the published 0.1.2, let it find 0.1.3, and let it download, verify
+and apply. Because a published release cannot be replaced, that test comes last, and its failure
+would mean a follow-up patch release rather than a re-tag. Everything before it (feed fetch, asset
+selection, checksum naming, verification) is covered by unit/scenario tests and by #218/#217.
+
 **Gate E, upgrade.** Install the published `v0.1.2`, then update to the candidate with the
 one-click path and record: the update check finds the release, the download matches the checksum
 list, the package applies, the app restarts, a design from 0.1.2 opens, preferences survive, and
