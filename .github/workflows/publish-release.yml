@@ -49,7 +49,6 @@ jobs:
       - name: Refuse missing reviewer and main-only environment protections
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_SINGLE_OWNER: ${{ vars.RELEASE_SINGLE_OWNER }}
         run: python3 -I scripts/ci/release_handoff.py environment
 
   draft:
@@ -64,7 +63,6 @@ jobs:
       RUN_ATTEMPT: ${{ inputs.run_attempt }}
       NOTES_PATH: ${{ inputs.notes_file }}
       PROTECTED_REF: ${{ github.ref_protected }}
-      RELEASE_SINGLE_OWNER: ${{ vars.RELEASE_SINGLE_OWNER }}
       SOURCE_MODE: ${{ vars.RELEASE_SOURCE_MODE }}
       SOURCE_ID: ${{ vars.RELEASE_SOURCE_REPO_ID }}
     steps:
