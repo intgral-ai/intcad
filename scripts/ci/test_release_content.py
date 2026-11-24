@@ -222,6 +222,19 @@ class AgentContentDecision(unittest.TestCase):
         problems = content.problems(SHA, descriptors, contents, "mastra-agent")
         self.assertTrue(any("broken.msi" in problem and "no Node program" in problem for problem in problems), problems)
 
+    def test_windows_portable_zip_with_cli_in_version_still_needs_node(self):
+        identity = "release-windows-x64"
+        msi = "intcad-0.1.3-preview-cli-build-windows-x64.msi"
+        portable = "intcad-0.1.3-preview-cli-build-windows-x64-portable.zip"
+        artifacts = [(msi, DG), (portable, DG2)]
+        descriptors = {identity: build(identity, artifacts)}
+        contents = {identity: report(
+            identity, artifacts, distribution="mastra-agent", agent=WHOLE_AGENT,
+            agents={msi: WHOLE_AGENT, portable: dict(WHOLE_AGENT, node=False, missing=["mastra-agent/node"])},
+        )}
+        problems = content.problems(SHA, descriptors, contents, "mastra-agent")
+        self.assertTrue(any(portable in problem and "no Node program" in problem for problem in problems), problems)
+
     def test_a_universal_app_needs_a_node_for_each_slice(self):
         descriptors, contents = self.evidence()
         contents["release-macos"]["agent"] = dict(MAC_AGENT, nodeTargets=["aarch64-apple-darwin"])
@@ -268,12 +281,44 @@ class AgentContentDecision(unittest.TestCase):
         contents[identity]["sourceArtifact"] = "pkg-src"
         self.assertEqual(content.problems(SHA, descriptors, contents, "mastra-agent"), [])
 
+    def test_a_headless_cli_archive_does_not_need_an_agent_beside_the_app(self):
+        identity = "release-macos"
+        app = "intcad-0.1.3-preview-cli-build.1-macos-universal.dmg"
+        cli = "intcad-cli-0.1.3-preview-cli-build.1-macos-universal.zip"
+        artifacts = [(app, DG), (cli, DG2)]
+        descriptors = {identity: build(identity, artifacts)}
+        contents = {identity: report(
+            identity, artifacts, distribution="mastra-agent", agent=MAC_AGENT,
+            agents={app: MAC_AGENT, cli: {"present": False, "node": False, "nodeTargets": [], "missing": [], "skills": []}},
+        )}
+        self.assertEqual(content.problems(SHA, descriptors, contents, "mastra-agent"), [])
+
+    def test_archives_that_only_resemble_a_headless_cli_archive_still_need_node(self):
+        identity = "release-macos"
+        app = "intcad-0.1.3-macos-universal.dmg"
+        for archive in (
+            "other-cli-0.1.3-macos-universal.zip",
+            "intcad-cli-0.1.3-windows-x64-portable.zip",
+            "intcad-cli-0.1.3-macos-universal.tar.gz",
+            "intcad-cli-0.1.3-macos-universal-extra.zip",
+            "intcad-cli-0.1.3-preview.01-macos-universal.zip",
+        ):
+            with self.subTest(archive=archive):
+                artifacts = [(app, DG), (archive, DG2)]
+                descriptors = {identity: build(identity, artifacts)}
+                contents = {identity: report(
+                    identity, artifacts, distribution="mastra-agent", agent=MAC_AGENT,
+                    agents={app: MAC_AGENT, archive: dict(MAC_AGENT, node=False, missing=["mastra-agent/node"])},
+                )}
+                problems = content.problems(SHA, descriptors, contents, "mastra-agent")
+                self.assertTrue(any(archive in problem and "no Node program" in problem for problem in problems), problems)
+
     def test_a_package_of_only_a_cli_archive_carries_no_agent(self):
         # The headless CLI has no Assistant: a package set that is only that archive proves
         # nothing about the app's agent.
-        descriptors = {"release-macos": build("release-macos", [("intcad-cli-0.1.2-macos-arm64.zip", DG)])}
+        descriptors = {"release-macos": build("release-macos", [("intcad-cli-0.1.2-macos-aarch64.zip", DG)])}
         contents = {"release-macos": report(
-            "release-macos", [("intcad-cli-0.1.2-macos-arm64.zip", DG)], distribution="mastra-agent",
+            "release-macos", [("intcad-cli-0.1.2-macos-aarch64.zip", DG)], distribution="mastra-agent",
             agent={"present": False, "node": False, "nodeTargets": [], "missing": [], "skills": []})}
         problems = content.problems(SHA, descriptors, contents, "mastra-agent")
         self.assertTrue(any("no artifact of the package carries the agent" in problem for problem in problems), problems)

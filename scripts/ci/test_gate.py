@@ -761,13 +761,14 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
         self.assertIsNotNone(match, "package producers need actual checkout/byte metadata")
         return "\n".join(line[10:] for line in match[1].splitlines()) + "\n"
 
+    AGENT_ENTRIES = (
+        "agent/main.mjs", "agent.json", "licenses/THIRD-PARTY-LICENSES.txt",
+        "licenses/NODE-LICENSE.txt", "node_modules/@mastra/code-sdk/package.json",
+        "node_modules/@agentclientprotocol/sdk/package.json",
+        "skills/modelling-skills/example/SKILL.md",
+    )
+
     def test_standalone_package_workflow_refuses_built_in_agent_without_node(self):
-        entries = (
-            "agent/main.mjs", "agent.json", "licenses/THIRD-PARTY-LICENSES.txt",
-            "licenses/NODE-LICENSE.txt", "node_modules/@mastra/code-sdk/package.json",
-            "node_modules/@agentclientprotocol/sdk/package.json",
-            "skills/modelling-skills/example/SKILL.md",
-        )
         with tempfile.TemporaryDirectory(prefix="package-verdict-test-") as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "-q", str(root)], check=True)
@@ -792,11 +793,11 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                     with self.subTest(name=name, has_node=has_node):
                         if extension == ".zip":
                             with zipfile.ZipFile(path, "w") as archive:
-                                for entry in (*entries, *(("node.exe",) if has_node else ())):
+                                for entry in (*self.AGENT_ENTRIES, *(("node.exe",) if has_node else ())):
                                     archive.writestr(f"{wrapper}/mastra-agent/{entry}", b"x")
                         else:
                             with tarfile.open(path, "w:gz") as archive:
-                                for entry in (*entries, *(("node",) if has_node else ())):
+                                for entry in (*self.AGENT_ENTRIES, *(("node",) if has_node else ())):
                                     info = tarfile.TarInfo(f"{wrapper}/lib/intcad/mastra-agent/{entry}")
                                     info.size = 1
                                     archive.addfile(info, io.BytesIO(b"x"))
@@ -810,6 +811,50 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                             self.assertNotEqual(result.returncode, 0, "missing Node must fail the package job")
                             self.assertIn("no Node program", result.stderr)
                 path.unlink()
+
+    def test_standalone_windows_portable_zip_with_cli_in_version_still_needs_node(self):
+        with tempfile.TemporaryDirectory(prefix="windows-package-verdict-test-") as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "-q", "--allow-empty", "-m", "build source"], check=True)
+            sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            target = root / "dist/release"
+            target.mkdir(parents=True)
+            ci = root / "scripts/ci"
+            ci.mkdir(parents=True)
+            (ci / "release_content.py").symlink_to(HERE / "release_content.py")
+
+            msi = "intcad-0.1.3-preview-cli-build-windows-x64.msi"
+            wrapper = "intcad-0.1.3-preview-cli-build-windows-x64-portable"
+            portable = wrapper + ".zip"
+            (target / msi).write_bytes(b"placeholder MSI")
+            with zipfile.ZipFile(target / portable, "w") as archive:
+                archive.writestr(f"{wrapper}/intcad.exe", b"x")
+                for entry in self.AGENT_ENTRIES:
+                    archive.writestr(f"{wrapper}/mastra-agent/{entry}", b"x")
+
+            # Native MSI extraction needs installer tooling; supply only its installed file listing.
+            # The real recorder still inspects the ZIP and writes both receipts for the real verdict.
+            installed = ["PFiles64/Intcad/intcad.exe", *(
+                f"PFiles64/Intcad/mastra-agent/{entry}" for entry in (*self.AGENT_ENTRIES, "node.exe"))]
+            (ci / "package_contents.py").write_text(
+                "import sys\n"
+                f"sys.path.insert(0, {str(HERE)!r})\n"
+                "import package_contents\n"
+                f"package_contents.names_msi = lambda path: {{{msi!r}: {installed!r}}}[path.name]\n"
+                "package_contents.main()\n"
+            )
+            env = dict(os.environ, GITHUB_SHA=sha, PACKAGE_ID="release-windows-x64",
+                       PACKAGE_TARGET="x86_64-pc-windows-msvc", SOLIDCRAFT_DISTRIBUTION="mastra-agent")
+            result = subprocess.run([sys.executable, "-c", self.package_evidence_script()],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            report = json.loads((target / "contents.json").read_text())
+            self.assertTrue(report["agents"][msi]["node"])
+            self.assertEqual(report["agents"][msi]["missing"], [])
+            self.assertEqual(report["agents"][portable]["missing"], ["mastra-agent/node"])
+            self.assertNotEqual(result.returncode, 0, "the complete MSI must not hide the ZIP's missing Node")
+            self.assertIn(portable + ": the mastra-agent/ folder has no Node program", result.stderr)
 
     def test_package_descriptor_records_actual_bytes_checkout_target_and_contract(self):
         script = self.package_evidence_script()

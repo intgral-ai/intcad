@@ -12,6 +12,8 @@ really carry:
   file name or a hand-written boolean is never enough.
 """
 
+import re
+
 DERIVED_PREFIXES = ("release-flatpak-", "release-arch-", "release-snap-")
 DISTRIBUTIONS = ("native", "mastra", "mastra-agent")
 # The canonical package identities that must carry the built-in agent when the release declares
@@ -47,12 +49,19 @@ AGENT_PATHS = {
 SLICES = ("aarch64-apple-darwin", "x86_64-apple-darwin")
 
 
-# The headless CLI archives are not the app and never carry the agent: the app package beside them
-# does, and a command-line build has no Assistant in it. A standalone executable covered by an
-# inspected package is judged by that package (its bytes are a subset of it).
+# Only the headless ZIP from packaging/macos/package.sh is exempt. Match the whole
+# name: a release version can itself contain "-cli-".
+_VERSION_NUMBER = r"(?:0|[1-9][0-9]*)"
+_PRERELEASE_ID = rf"(?:{_VERSION_NUMBER}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+_HEADLESS_CLI_ARCHIVE = re.compile(
+    rf"intcad-cli-{_VERSION_NUMBER}\.{_VERSION_NUMBER}\.{_VERSION_NUMBER}"
+    rf"(?:-{_PRERELEASE_ID}(?:\.{_PRERELEASE_ID})*)?"
+    r"-macos-(?:universal|aarch64|x86_64)\.zip"
+)
+
+
 def carries_no_agent(name):
-    lowered = str(name).lower()
-    return "-cli-" in lowered and lowered.endswith((".zip", ".tar.gz", ".tar.xz"))
+    return _HEADLESS_CLI_ARCHIVE.fullmatch(str(name)) is not None
 
 
 def agent_problem(carried):
