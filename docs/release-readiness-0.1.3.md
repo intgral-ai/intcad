@@ -1901,3 +1901,31 @@ succeeds with no conflict, and the result has `version = "0.1.3"` and
 authority, based on #224) is not draft. The release notes and the desktop delivery do not
 mention it. Asked the Login Agent for an explicit "required for 0.1.3 / not required"; until
 then the candidate scope is #214 + #224 only, matching the notes.
+
+**The embedded-account proof must cover all three platforms, not just the build output.** The
+chain measured on #224 `9f664c828f`:
+
+```
+release.yml:186-193  inject-auto → staging_account_config.py inject-production
+                     → writes INTCAD_WORKOS_PUBLIC_CLIENT_ID / INTCAD_AUTHKIT_VERIFICATION_ORIGIN /
+                       INTCAD_PRODUCT_HTTPS_ORIGIN + source/tuple markers to $GITHUB_ENV
+apps/solidcraft/src/account.rs:353-355  option_env! reads exactly those three names
+release.yml:218      verify_embedded_account.py target/release/intcad   (Linux job only)
+verify_embedded_account.py  requires each value as literal bytes and an optional --expect-tuple-sha256
+```
+
+So CI proves the **Linux build output**; Windows and macOS jobs never run that check, and even on
+Linux the packaged binary is a separate file from `target/release/intcad`. Release acceptance
+therefore verifies each packaged binary itself, with the recorded tuple digest
+`89abe5c94fb1fbaa608e0763224f4c9e241fee7087c3bd6ee4da96c3a75f41bb`:
+
+- Linux: extract the `.deb` (`7z x`/`ar x` + `tar`), the `.tar.gz`, or the AppImage; run the
+  script on the extracted `intcad`.
+- Windows: extract `intcad.exe` from the `.msi` (`7z x`) or the portable zip; run the script.
+- macOS: unzip the packaged app and run the script on `Contents/MacOS/<binary>`; both slices of
+  the universal binary must satisfy it, so check the file bytes (the script reads bytes, not one
+  architecture).
+
+`7z` and `unzip` are available on this host; `dpkg-deb` is not, so a `.deb` is unpacked with
+`7z x` or `ar x` + `tar`. A platform whose packaged binary cannot be checked is recorded as NOT
+VERIFIED, never assumed.
