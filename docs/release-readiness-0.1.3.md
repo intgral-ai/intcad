@@ -993,6 +993,23 @@ decided explicitly:
   `intcad` from that SHA and opens it on the host for the user to verify by hand, while the
   packaging run proceeds in CI.
 
+### 13.1.1 The personal acceptance instance (2026-11-24 02:15Z)
+
+Built from the #221 head `f4a7cf179b` (develop `7abe4f5e3c` + PP's UI + the `ui_containers` fix):
+
+```
+worktree  /home/hyjing/Code/intgral/intcad/worktrees/int1503-preview
+build     cargo build -p solidcraft --bin intcad   -> intcad 0.1.2 (dev profile)
+launch    ~/.cache/int1503/launch-preview.sh --sample
+profile   ~/.cache/int1503/preview-profile   (own data/config/cache; the installed 0.1.2 is untouched)
+window    XWayland on purpose: the Assistant is a WebKitGTK child window, and a native Wayland
+          window shows a diagnostic instead of the page. The app prefers native Wayland on niri
+          because xwayland-satellite breaks window management, so this instance trades that for
+          a visible Assistant.
+control   ui.documents -> [{"name": "Sample Plate"}];  ui.agent_chat -> panel state (minimized:false)
+log       no "native Wayland one ... diagnostic" line, so the page is in an X11 child window
+```
+
 ## 14. Decisions resolved, and what is still open
 
 Resolved by the CTO on 2026-11-23 (see §13): version 0.1.3; PP's UI in scope; FreeBSD fixed rather
