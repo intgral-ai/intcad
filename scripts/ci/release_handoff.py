@@ -500,16 +500,22 @@ def authorize(env):
 def verify_environment(environment, policies):
     rules = [rule for rule in environment.get("protection_rules") or []
              if rule.get("type") == "required_reviewers"]
+    reviewers = (rules[0].get("reviewers") if rules else None) or []
+    independent = rules[0].get("prevent_self_review") is True if rules else False
+    # A one-person project cannot dispatch and also be forbidden to approve its own
+    # deployment. Accept that shape, but only with exactly one reviewer, and warn.
+    single_owner = len(reviewers) == 1 and not independent
     require(environment.get("name") == "release-signing" and len(rules) == 1
-            and rules[0].get("prevent_self_review") is True and bool(rules[0].get("reviewers"))
+            and bool(reviewers) and (independent or single_owner)
             # GitHub may omit the field on some plans. Only an explicit `true` is a bypass;
             # an absent field is reported as a warning and checked in the UI.
             and environment.get("can_admins_bypass") is not True,
-            "release-signing must require independent reviewers and must not allow admin bypass")
+            "release-signing must require a reviewer and must not allow admin bypass")
     policy = environment.get("deployment_branch_policy") or {}
     require(policy.get("protected_branches") is False and policy.get("custom_branch_policies") is True
             and [(row.get("name"), row.get("type")) for row in policies] == [("main", "branch")],
             "release-signing must allow only the exact main branch, not tags or other branches")
+    return "independent" if independent else "single-owner"
 
 
 def check_environment(env):
@@ -519,8 +525,11 @@ def check_environment(env):
     if "can_admins_bypass" not in environment:
         print("::warning::release-signing omitted can_admins_bypass; confirm in the UI that "
               "administrators cannot bypass its protection rules", flush=True)
-    verify_environment(environment, [row for page in pages(f"{endpoint}/deployment-branch-policies")
-                                     for row in page["branch_policies"]])
+    mode = verify_environment(environment, [row for page in pages(f"{endpoint}/deployment-branch-policies")
+                                            for row in page["branch_policies"]])
+    if mode == "single-owner":
+        print("::warning::release-signing has one reviewer who can approve their own run: "
+              "approval is a deliberate checkpoint, not independent review", flush=True)
 
 
 def live_execution(repo, repo_id, run, attempt):

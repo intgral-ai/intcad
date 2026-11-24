@@ -332,9 +332,16 @@ future task.
    and verifies both checksum lists and the signature. Leave any failed read-back draft unpublished.
    Making a verified draft public is a separate owner decision and action.
 
-The owner configures `release-signing` with independent required reviewers,
-`can_admins_bypass` explicitly off (an absent field is refused), and a deployment
-branch policy that permits only `main` (no tags). The workflow checks that `main` is protected and reads back the
+The owner configures `release-signing` with required reviewers, `can_admins_bypass`
+off (an explicit `true` is refused; an absent field is accepted with a warning
+because some plans omit it), and a deployment branch policy that permits only
+`main` (no tags).
+
+A project with a single person cannot both dispatch and be forbidden to approve
+its own deployment. With exactly one reviewer and self-review allowed, the
+workflow accepts that shape and prints a warning: approval is then a deliberate
+checkpoint, not independent review. With two or more reviewers, self-review must
+be prevented. The workflow checks that `main` is protected and reads back the
 reviewer and branch policy before the sensitive job. For the public source, use
 `RELEASE_SOURCE_MODE=public` (the default) and either leave
 `RELEASE_SOURCE_REPO_ID` unset or set it to `1446384930`. Configure `private`
