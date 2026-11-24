@@ -21,7 +21,8 @@
  *     session's brief (V3), a project file changes only when allowed (V4), nothing beside the
  *     project is read, by path or through a link, and `request_access` is not offered (V5), the
  *     project's own agent files, MCP servers, hooks and same-named skill are not loaded (V6), and a
- *     session without a project gets no brief and no project file (V8). Their folders are made
+ *     session without a project gets no brief and no project file, and is told it has no project
+ *     folder (V8, INT-1508). Their folders are made
  *     outside every temporary folder, which Mastra Code's file tools reach by themselves;
  *   - what the red-team review found (R…): the session's own folder takes no file of the model's and
  *     passes nothing to a later session (R3), `recall` does not reach an earlier session's project
@@ -65,6 +66,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { NO_PROJECT } from "../agent/session.mjs";
 import { SKILL_SETS, setsToInstall } from "../agent/skills.mjs";
 
 const self = fileURLToPath(import.meta.url);
@@ -771,7 +773,8 @@ async function main(args) {
     // What the model is told about where its file tools go (agent/fence.mjs): the project, not `/tmp` or the session's folder.
     const fence = /File tools reach only these folders, by absolute paths: ([^\n]+)/u.exec(told)?.[1] ?? "";
     out.fenceTold = fence.includes(realpathSync(project)) && !/(^|[ ,])\/tmp([ ,.]|$)/u.test(fence) && !told.includes("following allowed paths");
-    return out.turn.stop === "end_turn" && out.brief && out.appNote && out.namesFolder && out.listed.length === 3 && !out.hiddenListed && out.howToWork && out.fenceTold;
+    out.noProjectLine = told.includes(NO_PROJECT);
+    return out.turn.stop === "end_turn" && out.brief && out.appNote && out.namesFolder && out.listed.length === 3 && !out.hiddenListed && out.howToWork && out.fenceTold && !out.noProjectLine;
   });
 
   await run("V3 a file put in the project is in the next session's brief", { app: {} }, async ({ out, prompt, newSession, service, project }) => {
@@ -971,9 +974,11 @@ async function main(args) {
     const told = systemText(service.seen.bodies, from);
     out.appNote = told.includes(APP_NOTE);
     out.brief = told.includes(BRIEF);
+    // INT-1508: told that the chat has no project folder, and to send the user to a New chat.
+    out.noProjectLine = told.includes(NO_PROJECT);
     out.read = await prompt(`read the file: ${join(project, "requirements.md")}`);
     // Without a project, a read still asks (allowed here), and the fence refuses it.
-    return out.turn.stop === "end_turn" && out.appNote && !out.brief && refusedTurn(out.read) && out.read.asked === 1;
+    return out.turn.stop === "end_turn" && out.appNote && !out.brief && out.noProjectLine && refusedTurn(out.read) && out.read.asked === 1;
   });
 
   const control = (name) => earlyRejection ? `${name} (${only})` : name;
