@@ -158,18 +158,29 @@ class PackageContents(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "intcad-linux-x86_64.tar.gz"
             make_tar(source, ["bin/intcad"])
+            derivative = Path(directory) / "intcad-linux-x86_64.flatpak"
+            derivative.write_bytes(b"not a bundle this runner can read")
             report = Path(directory) / "contents.json"
             result = subprocess.run([sys.executable, str(HERE / "package_contents.py"),
                                      "--package-id", "release-flatpak-x86_64",
                                      "--source-revision", "a" * 40, "--distribution", "native",
                                      "--derived-from", "release-linux-x86_64",
-                                     "--source-artifact", str(source), "--out", str(report)],
+                                     "--source-artifact", str(source), "--out", str(report),
+                                     str(derivative)],
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads(report.read_text())
             self.assertEqual(data["derivedFrom"], "release-linux-x86_64")
             self.assertEqual(data["sourceArtifact"], source.name)
             self.assertEqual(len(data["sourceSha256"]), 64)
+            # The derivative itself is recorded and its payload is covered by the
+            # inspected source package; a digest with no coverage would not be evidence.
+            checked = {item["name"]: item for item in data["checked"]}
+            self.assertEqual(sorted(checked), [derivative.name])
+            self.assertEqual(checked[derivative.name]["format"], "covered")
+            self.assertEqual(checked[derivative.name]["coveredBy"], "release-linux-x86_64")
+            self.assertEqual(len(checked[derivative.name]["sha256"]), 64)
+            self.assertEqual(data["unchecked"], [])
 
 
 class AgentContents(unittest.TestCase):

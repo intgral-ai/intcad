@@ -24,6 +24,10 @@ def build(identity, artifacts):
     }
 
 
+def covered(name, sha, source):
+    return {"name": name, "sha256": sha, "format": "covered", "entries": 0, "coveredBy": source}
+
+
 def report(identity, checked, *, distribution="native", markers=(), unchecked=(), ignored=(), derived=None,
            source_name=None, source_sha=None, agent=None, agent_markers=(), agents=None):
     value = {
@@ -110,7 +114,15 @@ class NativeContentDecision(unittest.TestCase):
                                              derived="release-linux-x86_64",
                                              source_name="solidcraft.tar.gz", source_sha=DG),
         }
+        contents["release-flatpak-x86_64"]["checked"] = [covered("solidcraft.flatpak", DG2, "release-linux-x86_64")]
         self.assertEqual(content.problems(SHA, descriptors, contents, "native"), [])
+        # A wrapper with no coverage is not evidence.
+        contents["release-flatpak-x86_64"]["checked"] = []
+        self.assertIn("does not cover", content.problems(SHA, descriptors, contents, "native")[0])
+        # Coverage claimed by anything but the inspected source is refused.
+        contents["release-flatpak-x86_64"]["checked"] = [covered("solidcraft.flatpak", DG2, "release-macos")]
+        self.assertIn("claims coverage by", content.problems(SHA, descriptors, contents, "native")[0])
+        contents["release-flatpak-x86_64"]["checked"] = [covered("solidcraft.flatpak", DG2, "release-linux-x86_64")]
         contents["release-flatpak-x86_64"]["derivedFrom"] = "release-macos"
         self.assertTrue(content.problems(SHA, descriptors, contents, "native"))
 
@@ -125,11 +137,13 @@ class NativeContentDecision(unittest.TestCase):
                                              derived="release-linux-x86_64",
                                              source_name="solidcraft.tar.gz", source_sha=DG),
         }
+        contents["release-flatpak-x86_64"]["checked"] = [covered("solidcraft.flatpak", DG2, "release-linux-x86_64")]
         self.assertEqual(content.problems(SHA, descriptors, contents), [])
         for field, value in (("markers", ["usr/lib/intcad/mastra"]), ("unchecked", ["solidcraft.tar.gz"])):
             contents["release-flatpak-x86_64"] = report(
                 "release-flatpak-x86_64", [("solidcraft.flatpak", DG2)], derived="release-linux-x86_64",
                 source_name="solidcraft.tar.gz", source_sha=DG, **{field: value})
+            contents["release-flatpak-x86_64"]["checked"] = [covered("solidcraft.flatpak", DG2, "release-linux-x86_64")]
             problems = content.problems(SHA, descriptors, contents)
             self.assertTrue(problems, field)
             self.assertIn("derived package", problems[0])
@@ -159,6 +173,8 @@ class NativeContentDecision(unittest.TestCase):
                                           derived="release-linux-x86_64",
                                           source_name="intcad-0.1.0beta.1-linux-x86_64.tar.gz", source_sha=DG),
         }
+        contents["release-arch-x86_64"]["checked"] = [
+            covered("intcad-0.1.0-beta.1-linux-x86_64.pkg.tar.zst", DG2, "release-linux-x86_64")]
         self.assertEqual(content.problems(SHA, descriptors, contents, "native"), [])
         contents["release-arch-x86_64"]["sourceSha256"] = DG2
         self.assertTrue(content.problems(SHA, descriptors, contents, "native"))

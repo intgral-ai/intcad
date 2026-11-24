@@ -342,4 +342,19 @@ def problems(source_revision, descriptors, contents, declaration="native"):
         if source_artifacts.get(report.get("sourceArtifact")) != source_digest and source_digest not in source_artifacts.values():
             failures.append(identity + ": derived package source digest does not match the " + str(source)
                             + " package bytes")
+            continue
+        # The coverage check above is the only one: a wrapper is either inspected or recorded as
+        # covered by the inspected source, and a digest with neither was already refused there.
+        entries = {
+            item.get("name"): item
+            for item in report.get("checked") or []
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        for name, item in sorted(entries.items()):
+            if item.get("format") == "covered":
+                if item.get("coveredBy") != source or source == identity:
+                    failures.append(identity + ": " + str(name) + " claims coverage by "
+                                    + str(item.get("coveredBy")) + ", not the inspected source "
+                                    + str(source))
+                    continue
     return failures

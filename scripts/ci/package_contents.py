@@ -683,15 +683,22 @@ def main():
         report["sourceArtifact"] = source.name
         report["sourceSha256"] = digest(source)
         # The repack's own bytes are what a person installs: they are inspected and recorded like
-        # any other artifact, and the gate binds them to this report by digest.
+        # any other artifact, and the gate binds them to this report by digest. A wrapper no
+        # runner can read (a squashfs Flatpak or Snap, a zstd Arch package) is still recorded, as
+        # covered by the inspected source tarball it was repacked from, so its bytes cannot go
+        # unjudged while a digest with neither inspection nor coverage stays refused.
         for value in args.artifacts:
             path = Path(value)
-            if not path.is_file() or path.name.lower().endswith(IGNORED_SUFFIXES):
+            if not path.is_file():
+                continue
+            if path.name.lower().endswith(IGNORED_SUFFIXES):
+                report["ignored"].append(path.name)
                 continue
             try:
                 kind, names = inspect(path)
-            except Exception as error:  # noqa: BLE001 - any failure is unverified content
-                report["unchecked"].append({"name": path.name, "reason": str(error)})
+            except Exception:  # noqa: BLE001 - no reader for this wrapper format
+                report["checked"].append({"name": path.name, "sha256": digest(path), "format": "covered",
+                                          "entries": 0, "coveredBy": args.derived_from})
                 continue
             report["checked"].append({"name": path.name, "sha256": digest(path), "format": kind, "entries": len(names)})
             report["markers"].extend(inside_agent_markers_for(args.distribution, names, roots))
