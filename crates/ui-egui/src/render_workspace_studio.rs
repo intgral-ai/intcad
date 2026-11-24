@@ -1,6 +1,6 @@
 //! GPU studio editors. Numeric intent is portable; HDR resources cross the engine capture boundary.
 use serde_json::{Value, json};
-use solidcraft_engine::render::job::{AreaLight, AreaLights, StudioLighting, Sun, ThinLens, ToneMap};
+use solidcraft_engine::render::job::{AreaLight, AreaLights, DirectionalLights, PunctualLights, StudioLighting, Sun, ThinLens, ToneMap};
 use solidcraft_engine::render::lighting::environment::SkyGradient;
 
 use super::hdr;
@@ -41,6 +41,11 @@ pub(super) struct View {
     pub sun_enabled: bool,
     pub sun: Sun,
     pub area_lights: Vec<AreaLight>,
+    /// Hard directional lights added outside this panel (a design's own or an agent's): kept
+    /// as they are, so editing the studio never drops them.
+    pub directional_lights: DirectionalLights,
+    /// Punctual lights (points and spots) kept the same way.
+    pub punctual_lights: PunctualLights,
 }
 
 impl Default for View {
@@ -71,6 +76,8 @@ impl Default for View {
             sun_enabled: false,
             sun: Sun { direction: [-0.4, -0.6, 0.7], angular_radius_rad: 0.02, radiance: [1000.0, 950.0, 850.0] },
             area_lights: Vec::new(),
+            directional_lights: DirectionalLights::default(),
+            punctual_lights: PunctualLights::default(),
         }
     }
 }
@@ -99,6 +106,10 @@ pub(super) fn params(app: &SolveApp, params: &mut Value) -> Result<(), String> {
             environment: view.ambient,
             sun: view.sun_enabled.then_some(view.sun),
             area_lights: AreaLights::new(&view.area_lights).map_err(|error| error.to_string())?,
+            // A runtime request (temporary bindings or an unsaved HDR) sends these here too:
+            // keep the design's own directional and punctual families, as the snapshot does.
+            directional_lights: view.directional_lights,
+            punctual_lights: view.punctual_lights,
         };
         lighting.validate().map_err(|error| error.to_string())?;
         params["lighting"] = json!(lighting);

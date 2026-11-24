@@ -343,6 +343,9 @@ struct Turn {
     /// This conversation's identity for the message; an accepted preview refers to it after the
     /// reply has ended.
     id: u64,
+    /// The Mastra session/turn/workflow run that owns this turn's validation cards. `None`
+    /// until the backend reports it; a validation card is never appended to another turn.
+    owner: Option<(String, String, String)>,
     /// Deferred requests stop being valid when this turn ends or its tab is left.
     active: Arc<std::sync::atomic::AtomicBool>,
     /// The design and the undo depth before it.
@@ -668,6 +671,13 @@ fn append_agent_text(items: &mut [Item], thought: bool, text: &str) -> bool {
     } else {
         false
     }
+}
+
+/// The original Mastra session/turn/workflow run named by a validation card.
+fn validation_event_owner(output: Option<&str>) -> Option<(String, String, String)> {
+    let value: serde_json::Value = serde_json::from_str(output?).ok()?;
+    let owner = value.get("owner")?;
+    Some((owner.get("sessionId")?.as_str()?.to_owned(), owner.get("turnId")?.as_str()?.to_owned(), owner.get("workflowRunId")?.as_str()?.to_owned()))
 }
 
 impl AgentChat {
@@ -1011,8 +1021,30 @@ impl AgentChat {
                     self.push(Item::Agent { thought, text });
                 }
             }
-            Event::Tool { id, title, kind, status, input, output } => {
+            Event::TurnOwner { session_id, turn_id, workflow_run_id } => {
                 if let Some(turn) = self.turn.as_mut() {
+                    turn.owner = Some((session_id, turn_id, workflow_run_id));
+                }
+            }
+            Event::Tool { id, title, kind, status, input, output } => {
+                // A validation card names the turn that owns it. A late result for a retired
+                // turn updates that turn's existing card, never the current turn's history and
+                // never the current turn's tool bookkeeping.
+                let validation = kind.as_deref() == Some("validation");
+                let validation_owner = validation.then(|| validation_event_owner(output.as_deref())).flatten();
+                if validation && !self.items.iter().any(|item| matches!(item, Item::Tool { id: known, .. } if *known == id)) {
+                    let owner = validation_owner.as_ref()?;
+                    let current = self.turn.as_ref().and_then(|turn| turn.owner.as_ref())?;
+                    if current != owner {
+                        return None;
+                    }
+                }
+                let belongs_to_current = !validation
+                    || validation_owner
+                        .as_ref()
+                        .zip(self.turn.as_ref().and_then(|turn| turn.owner.as_ref()))
+                        .is_some_and(|(owner, current)| owner == current);
+                if belongs_to_current && let Some(turn) = self.turn.as_mut() {
                     turn.tool_called = true;
                 }
                 // Arguments too large to show or read are left with the agent.
@@ -2364,6 +2396,7 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     let turn_id = app.agent_chat.next_turn;
     app.agent_chat.turn = Some(Turn {
         id: turn_id,
+        owner: None,
         active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         start_doc: app.session.doc.clone(),
         start_undo: app.session.undo.len(),

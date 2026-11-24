@@ -926,7 +926,7 @@ pub fn srgb(c: [f32; 3]) -> Color32 {
 
 /// Surface analysis colours, straight sRGB 0..1 as the shader takes them (exact, so they read
 /// the same as when they were literals in the WGSL). The light theme's are the headless default.
-pub use solidcraft_engine::render::AnalysisColors;
+pub use solidcraft_color::AnalysisColors;
 
 /// Colours for native viewport markers and the agent pointer. Command artwork uses the SVG palette.
 #[derive(Clone, Copy, Debug, PartialEq)]

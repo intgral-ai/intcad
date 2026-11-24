@@ -93,7 +93,7 @@ const USAGE_KERNEL_CASES: &str = "  intcad-cli kernel-cases <case-dir>... [--jso
 /// `fuzz`'s lines in the usage.
 const USAGE_FUZZ: &str = "  intcad-cli fuzz [--from N] [--count N] [--jobs J] [--timeout S] [--steps N] [--minimise] [--out DIR] [--report FILE]\n";
 /// `mcp`'s lines in the usage.
-const USAGE_MCP: &str = "  intcad-cli mcp [--headless] [--in design.sc|script.json] [--connect 127.0.0.1:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]\n                     [--param-check off|warn|strict] [--render-gpu]\n  intcad-cli mcp setup [--dry-run] [--client opencode|claude-desktop|claude-code|cursor] [--live]\n      (adds a `solidcraft` server, with this program's path, to each installed AI client; --live adds `intcad-live` for the running app; alias: mcp install)\n";
+const USAGE_MCP: &str = "  intcad-cli mcp [--headless] [--in design.sc|script.json] [--connect 127.0.0.1:PORT [--token T]] [--allow-path DIR]... [--allow-any-path]\n                     [--param-check off|warn|strict] [--render-gpu] [--compact]\n      (--compact or SOLIDCRAFT_MCP_COMPACT=1: compact tool output for agents (inspect_design summarises\n       sketches and takes a `bodies` filter; tool JSON is not pretty-printed); off by default)\n  intcad-cli mcp setup [--dry-run] [--client opencode|claude-desktop|claude-code|cursor] [--live]\n      (adds a `solidcraft` server, with this program's path, to each installed AI client; --live adds `intcad-live` for the running app; alias: mcp install)\n";
 /// `crashes`'s lines in the usage.
 const USAGE_CRASHES: &str = "  intcad-cli crashes [list [--json] | show <id> | replay <id> | dir | clear [<id>]]\n";
 /// `licences`'s lines in the usage.
@@ -615,9 +615,9 @@ fn cmd_script(args: &[String]) -> Result<(), String> {
 
 /// `gpu`: the headless adapter survey and the policy's pick.
 fn cmd_gpu(args: &[String]) -> Result<(), String> {
-    use solidcraft_gpu::select::{Policy, survey};
+    use solidcraft_viewport_gpu::select::{Policy, survey};
     let policy = match args {
-        [] => Policy::from_env()?,
+        [] => solidcraft_gpu::env::policy()?,
         [flag, v] if flag == "--policy" => Policy::parse(v).ok_or_else(|| format!("--policy must be auto, hardware, software or cpu, not `{v}`"))?,
         _ => return Err("usage: intcad-cli gpu [--policy auto|hardware|software|cpu]".into()),
     };
@@ -637,7 +637,7 @@ fn cmd_gpu(args: &[String]) -> Result<(), String> {
         }))
     );
     match s.lands_on {
-        Some(solidcraft_gpu::select::Landing::Cpu) => {
+        Some(solidcraft_viewport_gpu::select::Landing::Cpu) => {
             solidcraft_engine::note!("warning: {}", solidcraft_engine::capture::CPU_WARNING);
             Ok(())
         }
@@ -653,7 +653,7 @@ fn cmd_gpu(args: &[String]) -> Result<(), String> {
 /// error that names the policy.
 fn install_renderer() {
     solidcraft_engine::capture::install(std::sync::Arc::new(|scene, cam, w, h| {
-        let (rgba, renderer) = solidcraft_gpu::capture::headless_rgba(scene, cam, w, h)?;
+        let (rgba, renderer) = solidcraft_gpu::env::headless_rgba(scene, cam, w, h)?;
         Ok(solidcraft_engine::capture::Picture { rgba, renderer })
     }));
 }
@@ -710,7 +710,7 @@ fn cmd_snapshot(args: &[String]) -> Result<(), String> {
         None => solidcraft_engine::view::home_camera(&s).map_err(|e| e.to_string())?,
     };
     let guides = Guides { grid: !args.iter().any(|a| a == "--no-grid"), axes: !args.iter().any(|a| a == "--no-axes") };
-    let scene = solidcraft_engine::view::scene_with_guides(&s, &cam, s.section, guides).map_err(|e| e.to_string())?;
+    let scene = solidcraft_engine::view::scene_with_guides(&s, &cam, &s.section, guides).map_err(|e| e.to_string())?;
     let png = solidcraft_engine::capture::png(&scene, &cam, w, h)?;
     std::fs::write(out, &png.bytes).map_err(|e| format!("{out}: {e}"))?;
     let mut reply = json!({"path": out, "width": w, "height": h, "bytes": png.bytes.len(), "renderer": png.renderer});
@@ -744,7 +744,7 @@ fn cmd_icon(args: &[String]) -> Result<(), String> {
 }
 
 fn icon_png(size: usize) -> Result<Vec<u8>, String> {
-    solidcraft_engine::render::png(size, size, app_icon::rgba(size)?).ok_or_else(|| "icon: PNG encoding failed".to_string())
+    solidcraft_viewport::png(size, size, app_icon::rgba(size)?).ok_or_else(|| "icon: PNG encoding failed".to_string())
 }
 
 /// A macOS icon file: the images of a whole icon set, 16 to 512 points at 1x and 2x, each with
@@ -770,7 +770,7 @@ fn icns() -> Result<Vec<u8>, String> {
         let data = if planes {
             icns_planes(&rgba)
         } else {
-            solidcraft_engine::render::png(size, size, rgba).ok_or_else(|| "icon: PNG encoding failed".to_string())?
+            solidcraft_viewport::png(size, size, rgba).ok_or_else(|| "icon: PNG encoding failed".to_string())?
         };
         body.extend_from_slice(kind);
         body.extend_from_slice(&u32::try_from(data.len() + 8).map_err(|_| "icon too large")?.to_be_bytes());
@@ -854,6 +854,12 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
         return Err("mcp: --render-gpu installs a headless image host; a connected application owns its own device".into());
     }
     install_renderer();
+    // How tool results are shaped: `--compact`, or SOLIDCRAFT_MCP_COMPACT=1. An unrecognised
+    // value is an error, so a typo is not silently off.
+    let options = solidcraft_mcp::Options::from_args_and_env(args).map_err(|e| format!("mcp: {e}"))?;
+    if options.compact {
+        solidcraft_engine::note!("solidcraft mcp: compact output (inspect_design summarises sketches; tool JSON is not pretty-printed)");
+    }
     let scope = (!args.iter().any(|a| a == "--allow-any-path"))
         .then(|| solidcraft_mcp::agent_scope(flags(args, "--allow-path").into_iter().map(std::path::PathBuf::from)));
     if let Some(s) = &scope {
@@ -899,7 +905,7 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             if auto && let Some(port) = discover_app() {
                 solidcraft_engine::note!("solidcraft mcp: bridged to the running app at 127.0.0.1:{port} (--headless starts a session of its own)");
                 let remote = solidcraft_mcp::Remote::new(&format!("127.0.0.1:{port}"), flag(args, "--token")).with_param_check(param_check);
-                return serve_mcp(Box::new(remote), scope);
+                return serve_mcp(Box::new(remote), scope, options);
             }
             let mut headless = solidcraft_mcp::Headless::default();
             headless.session.param_check = param_check;
@@ -914,13 +920,18 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             }
         }
     };
-    serve_mcp(backend, scope)
+    serve_mcp(backend, scope, options)
 }
 
-fn serve_mcp(backend: Box<dyn solidcraft_mcp::Backend>, scope: Option<solidcraft_engine::io::vfs::PathScope>) -> Result<(), String> {
-    let stdin = std::io::stdin();
+fn serve_mcp(
+    backend: Box<dyn solidcraft_mcp::Backend>,
+    scope: Option<solidcraft_engine::io::vfs::PathScope>,
+    options: solidcraft_mcp::Options,
+) -> Result<(), String> {
+    // Not the locked handles: the server reads stdin on a thread of its own (#14007).
+    let stdin = std::io::BufReader::new(std::io::stdin());
     let stdout = std::io::stdout();
-    solidcraft_mcp::Server::new(backend).with_path_scope(scope).serve(stdin.lock(), stdout.lock()).map_err(|e| e.to_string())
+    solidcraft_mcp::Server::new(backend).with_path_scope(scope).with_options(options).serve(stdin, stdout).map_err(|e| e.to_string())
 }
 
 /// The port of the running desktop app: the one its discovery file names, if something listens

@@ -248,6 +248,7 @@ mod rule_editor_tests;
 pub mod save_job;
 pub mod scenario;
 pub(crate) mod scene_palette;
+mod section_view;
 pub mod select_other;
 pub mod selection;
 pub mod semantic_content;
@@ -339,7 +340,7 @@ use std::sync::mpsc::Receiver;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use solidcraft_engine::Session;
-use solidcraft_engine::render::{Camera, CameraAnim, StandardView};
+use solidcraft_viewport::{Camera, CameraAnim, StandardView};
 
 pub use control::{ControlRequest, ControlResponse};
 
@@ -393,7 +394,7 @@ pub struct UiState {
     /// A soft shadow on the ground under the model (seen from above).
     pub ground_shadow: bool,
     /// The world's up axis (Z or Y; #3): the camera, axis view, home view and ground follow it.
-    pub up_axis: solidcraft_engine::render::UpAxis,
+    pub up_axis: solidcraft_viewport::UpAxis,
     /// The agent cursor: shown, speed, follow camera (#35).
     pub agent_cursor: agent_cursor::Settings,
     /// The running tool's icon rides beside the pointer in the viewport (View settings; off by
@@ -1058,8 +1059,8 @@ impl SolveApp {
             let mut renderer = rs.renderer.write();
             if let Some(res) = renderer.callback_resources.get_mut::<gpu::Renderer>() {
                 match res.check_msaa(&rs.device, &rs.queue) {
-                    Ok(solidcraft_gpu::view::MsaaCheck::Passed) => {}
-                    Ok(solidcraft_gpu::view::MsaaCheck::Fallback) => {
+                    Ok(solidcraft_viewport_gpu::view::MsaaCheck::Passed) => {}
+                    Ok(solidcraft_viewport_gpu::view::MsaaCheck::Fallback) => {
                         installed.samples = 1;
                         self.msaa_compatibility = true;
                         eprintln!(
@@ -1067,7 +1068,7 @@ impl SolveApp {
                             scene.samples
                         );
                     }
-                    Ok(solidcraft_gpu::view::MsaaCheck::FailedAtOne) => {
+                    Ok(solidcraft_viewport_gpu::view::MsaaCheck::FailedAtOne) => {
                         eprintln!("SolidCraft graphics: anti-aliasing check also failed at 1x; keeping {}x", scene.samples);
                     }
                     Err(error) => eprintln!("SolidCraft graphics: anti-aliasing check error; keeping {}x: {error}", scene.samples),
@@ -1220,7 +1221,7 @@ impl SolveApp {
                 p.msaa = prefs::Prefs::default().msaa;
             }
             self.ui.layout = p.layout;
-            self.preferences = p;
+            prefs::store_preferences(self, p);
             #[cfg(not(target_arch = "wasm32"))]
             if let Err(error) = agent_chat::sync_ai_connections(self) {
                 agent_chat::ai_sync_failed(self, error);
@@ -2657,7 +2658,7 @@ impl SolveApp {
     /// Frame the model at once (programmatic use; the toolbar animates).
     /// Make `up` the world's up axis: the camera turns to the same standard view in that world
     /// (home) and frames the model.
-    pub fn set_up_axis(&mut self, up: solidcraft_engine::render::UpAxis) {
+    pub fn set_up_axis(&mut self, up: solidcraft_viewport::UpAxis) {
         self.ui.up_axis = up;
         self.cam_anim = None;
         self.cam.up = up;
@@ -2766,7 +2767,7 @@ impl SolveApp {
         // Framed at the angle the view draws with, keeping the camera's own.
         let previous = cam;
         cam.fov = self.view_fov();
-        cam.fit(bounds);
+        cam.fit(&solidcraft_engine::render::view_bounds(bounds));
         cam.fov = previous.fov;
         if cam.is_valid() { cam } else { previous }
     }

@@ -2,6 +2,7 @@
 //! inputs (geometry picked in the viewport, never typed), then runs its command; it never
 //! changes the design itself. Things selected before the command starts become its input.
 
+use crate::section_view::SectionCut;
 use crate::ui_kit::BackingTooltipExt as _;
 use crate::ui_kit::choice_row;
 use solidcraft_engine::geom::prelude::*;
@@ -106,6 +107,12 @@ const INTERSECT_GEOMETRY: Accept = EDGES | FACES | selection::SKETCH_LINES;
 /// What Align's From and To pick: model geometry, planes and the origin, and sketch points and
 /// circles (a frame the bodies follow, #6257).
 const ALIGN_PICKS: Accept = FACES | EDGES | selection::VERTICES | PLANES | selection::ORIGIN | selection::POINTS | CURVES;
+/// What Plane, Axis and Point pick: every reference form their family's methods take, so one
+/// window serves a plane's three points, an axis's two planes and a point's face.
+const CONSTRUCT_AUTO_PICKS: Accept =
+    PLANES | PLANAR_FACES | FACES | EDGES | AXES | CURVES | selection::VERTICES | selection::POINTS | selection::CONSTRUCTION_POINTS;
+/// The most references the auto tools take (the engine's own limit).
+const CONSTRUCT_AUTO_MAX: usize = 3;
 const HOLE_TYPES: [&str; 3] = ["simple", "counterbore", "countersink"];
 const HOLE_LABELS: [&str; 3] = ["Simple", "Counterbore", "Countersink"];
 
@@ -307,6 +314,12 @@ crate::dialog_descriptor::dialog_descriptors! {
             Material {
                 index: usize,
                 editor: crate::material_editor::Editor,
+            },
+            /// Plane, Axis or Point (`construct.plane`, `construct.axis`, `construct.point`): the
+            /// window picks references and the tool builds with the first method of its family
+            /// that takes them, as the engine's tool does.
+            ConstructAuto {
+                tool: &'static str,
             },
             /// Section Analysis: cut the view by a plane, moved along its normal.
             Section {
@@ -956,6 +969,18 @@ impl Dialog {
             "mesh.convert" => Dialog::new(
                 Kind::MeshConvert { tolerance: crate::length_input::model(&s.doc, 0.05) },
                 vec![SelInput::new("Mesh body", BODIES, false)],
+            ),
+            "construct.plane" | "construct.axis" | "construct.point" => Dialog::new(
+                Kind::ConstructAuto {
+                    tool: if id == "construct.axis" {
+                        "construct.axis"
+                    } else if id == "construct.point" {
+                        "construct.point"
+                    } else {
+                        "construct.plane"
+                    },
+                },
+                vec![SelInput::new("References", CONSTRUCT_AUTO_PICKS, true)],
             ),
             "construct.plane.midplane" => Dialog::new(
                 Kind::Midplane,
@@ -2563,6 +2588,9 @@ fn title(k: &Kind) -> &'static str {
         Kind::PathPattern { .. } => "PATTERN ON PATH",
         Kind::Split => "SPLIT BODY",
         Kind::Thread { .. } => "THREAD",
+        Kind::ConstructAuto { tool: "construct.plane" } => "PLANE",
+        Kind::ConstructAuto { tool: "construct.axis" } => "AXIS",
+        Kind::ConstructAuto { .. } => "POINT",
         Kind::Section { .. } => "SECTION ANALYSIS",
         Kind::PatternRect { .. } => "RECTANGULAR PATTERN",
         Kind::PatternCirc { .. } => "CIRCULAR PATTERN",
@@ -4531,7 +4559,7 @@ fn look_at_sketch_from(app: &mut SolveApp, again: bool) {
 /// be (#9029). Facing the plane alone left a sketch on a turned component tilted on screen.
 /// Along world up/down, yaw turns the image (roll stays 0, as Top/Bottom views do); elsewhere
 /// roll squares the axes.
-pub(crate) fn square_sketch_axes(mut cam: solidcraft_engine::render::Camera, sketch_x: Vec3, sketch_y: Vec3) -> solidcraft_engine::render::Camera {
+pub(crate) fn square_sketch_axes(mut cam: solidcraft_viewport::Camera, sketch_x: Vec3, sketch_y: Vec3) -> solidcraft_viewport::Camera {
     let b = cam.back();
     let in_view = |v: Vec3| v - b * v.dot(b);
     let Some(mut x) = in_view(sketch_x).normalized() else {
@@ -4563,7 +4591,7 @@ pub(crate) fn square_sketch_axes(mut cam: solidcraft_engine::render::Camera, ske
 /// zoomed out when that would not fit in the view; it never zooms in, so a zoom the user chose
 /// stays. A sketch without geometry keeps its plane's origin. Centring on the origin alone left a
 /// sketch drawn away from it (a part placed far from the origin, as imports often are) out of view.
-pub(crate) fn onto_sketch(mut to: solidcraft_engine::render::Camera, ss: &solidcraft_engine::doc::SolvedSketch) -> solidcraft_engine::render::Camera {
+pub(crate) fn onto_sketch(mut to: solidcraft_viewport::Camera, ss: &solidcraft_engine::doc::SolvedSketch) -> solidcraft_viewport::Camera {
     let Some((lo, hi)) = ss.sketch.bounds() else {
         to.target = ss.plane.origin;
         return to;
@@ -4573,7 +4601,7 @@ pub(crate) fn onto_sketch(mut to: solidcraft_engine::render::Camera, ss: &solidc
         b.add(ss.plane.to_world(p));
     }
     let keep = to.distance;
-    to.fit(&b);
+    to.fit(&solidcraft_engine::render::view_bounds(&b));
     if keep.is_finite() && keep > to.distance {
         to.distance = keep;
     }
@@ -4592,7 +4620,7 @@ fn sels(d: &Dialog, i: usize) -> &[Sel] {
 
 /// Section Analysis with a section on and no plane picked: OK turns the section off.
 fn section_turns_off(s: &Session, inputs: &[selection::SelInput]) -> bool {
-    s.section.is_some() && selection::items(inputs, 0).is_empty()
+    !s.cut().is_none() && selection::items(inputs, 0).is_empty()
 }
 
 /// Run the dialog's commands on the window thread, taking the Join its operation check already
@@ -4647,7 +4675,7 @@ pub(crate) fn run_dialog(app: &mut SolveApp, d: &Dialog) -> Result<(), String> {
         }
     }
     if let Kind::Section { offset, flip, hatch } = &d.kind
-        && let Some(cut) = app.session.section
+        && let Some(cut) = app.session.cut()
     {
         app.tree.section_dialog = if d.extra.contains_key("plane") && sels(d, 0).is_empty() {
             None // Programmatic geometry is reconstructed from the actual session, never cached.
@@ -4662,7 +4690,7 @@ pub(crate) fn run_dialog(app: &mut SolveApp, d: &Dialog) -> Result<(), String> {
 /// now left it. Programmatic cuts use their actual geometry in the same existing form.
 pub fn edit_section(app: &mut SolveApp) {
     app.start_section_edit();
-    let cut = app.session.section.or(app.tree.hidden_section);
+    let cut = app.session.cut().or(app.tree.hidden_section);
     let last = app.tree.section_dialog.clone().filter(|last| cut.is_some_and(|c| same_cut(c, last.cut)));
     if app.preferences.viewport_section_status {
         if let Some((origin, normal)) = cut {
@@ -5240,6 +5268,14 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             let b = plane_arg(app, sels(d, 1).first())?;
             ("construct.plane.midplane", json!({"a": a, "b": b}))
         }
+        Kind::ConstructAuto { tool } => {
+            need(0, "refs")?;
+            let refs: Vec<Value> = sels(d, 0).iter().take(CONSTRUCT_AUTO_MAX).map(|sel| construct_ref(app, sel)).collect::<Result<_, _>>()?;
+            if refs.is_empty() {
+                return Err("pick the references the unit is built from".into());
+            }
+            (*tool, json!({"refs": refs}))
+        }
         Kind::Construct { command, keys, t, .. } => {
             let mut p = serde_json::Map::new();
             for (i, key) in keys.iter().enumerate() {
@@ -5493,6 +5529,9 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                 }
                 _ => return Err("pick a plane or a planar face".into()),
             };
+            // The engine measures `offset` against the plane's normal (a positive distance cuts
+            // more away); this dialog's distance is along the normal, so it is given negated.
+            let offset = if offset.trim().is_empty() { offset.clone() } else { format!("-({offset})") };
             ("inspect.section", json!({"plane": plane, "offset": offset, "flip": flip, "hatch": hatch}))
         }
         Kind::Move { .. } => return Ok(vec![("solid.move".into(), crate::dialogs_move::params(app, d)?)]),
@@ -6290,7 +6329,7 @@ fn geo_sel(s: &Session, g: &solidcraft_engine::doc::construct::GeoRef) -> Option
 pub(crate) fn plane_sel(s: &Session, pl: &PlaneRef) -> Option<Sel> {
     match pl {
         PlaneRef::Origin { name } => Some(Sel::Plane { name: name.clone() }),
-        PlaneRef::Construction { feature } => s.doc.feature(feature.0).map(|f| Sel::Plane { name: f.name.clone() }),
+        PlaneRef::Construction { feature, .. } => s.doc.feature(feature.0).map(|f| Sel::Plane { name: f.name.clone() }),
         PlaneRef::Custom { plane } => face_sel(s, plane.origin),
         // The point picked on the face: the plane's origin can lie off the face (#3567).
         PlaneRef::Face { at, .. } => face_sel(s, *at),
@@ -6417,7 +6456,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             let ax = match axis {
                 AxisRef::World { axis } => Some(Sel::Axis { name: axis.to_ascii_uppercase() }),
                 AxisRef::SketchAxis { axis } => Some(Sel::Axis { name: axis.to_ascii_lowercase() }),
-                AxisRef::SketchLine { curve } => Some(crate::selection::curve_pick(curve, sketch.0, s.active_sketch)),
+                AxisRef::SketchLine { curve, sketch: owner } => Some(crate::selection::curve_pick(curve, owner.unwrap_or(sketch.0), s.active_sketch)),
                 AxisRef::Model { geo } => model_axis_sel(s, geo),
                 AxisRef::Construction { name } => Some(Sel::Axis { name: name.to_string() }),
                 AxisRef::Line { .. } => None,
@@ -6591,6 +6630,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             ease_out,
             to,
             references,
+            ..
         } => {
             let mut d = start("solid.hole")?;
             let mut k = hole_defaults(s);
@@ -6706,7 +6746,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Box { corner, length, width, height, operation } => {
+        FeatureKind::Box { corner, length, width, height, operation, .. } => {
             let mut d = start("solid.box")?;
             d.kind = Kind::Primitive {
                 cmd: "solid.box",
@@ -6913,7 +6953,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Pattern { features, pattern, bodies: copied } => {
+        FeatureKind::Pattern { features, pattern, bodies: copied, .. } => {
             let ids: Vec<u64> = features.iter().map(|f| f.0).collect();
             let bodies: Vec<Sel> = if copied.is_empty() {
                 st.bodies.iter().filter(|b| ids.contains(&b.feature)).map(|b| Sel::Body { name: b.name.clone() }).collect()
@@ -7162,7 +7202,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Split { body, plane, tool, sketch, line } => {
+        FeatureKind::Split { body, plane, tool, sketch, line, .. } => {
             let mut d = start("solid.split_body")?;
             if let Some(inp) = d.inputs.first_mut() {
                 inp.items = vec![Sel::Body { name: body.to_string() }];
@@ -7290,7 +7330,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d
         }
-        FeatureKind::Move { bodies, translate, rotate_axis, angle, copy } => {
+        FeatureKind::Move { bodies, translate, rotate_axis, angle, copy, .. } => {
             let mut d = start("solid.move")?;
             // Move stores distances in the first body's frame, which can differ from the
             // feature's component. Refill the world distances that the command accepts.

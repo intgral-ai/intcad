@@ -711,7 +711,10 @@ impl PanelRuntime {
             let instance = self.layout.layout().instance(&geometry.instance)?;
             let key = self.key(instance)?;
             let retained = self.controllers.get_mut(&key).ok_or_else(|| error(Rule::MissingTarget, "call update before mount"))?;
-            let (flow, size_class) = responsive(geometry.zone, geometry.body.size, retained.flow)?;
+            // The reference card host draws one full surface: a panel with no usable body
+            // cannot be mounted by it.
+            let body = geometry.body.ok_or_else(|| error(Rule::Placement, "panel has no usable body"))?;
+            let (flow, size_class) = responsive(geometry.zone, body.size, retained.flow)?;
             let context = PanelContext {
                 instance: geometry.instance.clone(),
                 owner: key.owner.clone(),
@@ -720,7 +723,7 @@ impl PanelRuntime {
                 viewport: retained.scope.viewport.clone(),
                 native_host: retained.native_host.clone(),
                 outer: geometry.outer,
-                usable_body: geometry.body,
+                usable_body: body,
                 flow,
                 size_class,
                 focused: interaction.focused.as_ref() == Some(&geometry.instance),

@@ -572,7 +572,20 @@ fn native_preflight_failure_and_close_redock_preserve_controller_identity() {
             location: SectionLocation::Window {
                 host: HostId::new("native-host").unwrap(),
                 origin: Point { x: 0.0, y: 0.0 },
-                return_to: DockReturn { zone: Zone::Left, index: 0, size: Size { width: 280.0, height: 240.0 }, collapsed: false, join: None },
+                return_to: DockReturn {
+                    zone: Zone::Left,
+                    index: 0,
+                    size: Size { width: 280.0, height: 240.0 },
+                    collapsed: false,
+                    section: None,
+                    column: None,
+                    column_index: 0,
+                    column_width: None,
+                    weight: 1.0,
+                    preferred_extent: None,
+                    extent_priority: 0,
+                    join: None,
+                },
             },
             size: Size { width: 400.0, height: 300.0 },
         },
@@ -730,7 +743,7 @@ fn mount_rejects_duplicate_inactive_or_invalid_regions() {
     );
     assert_eq!(h.host.slot_calls, 0);
     resolved.panels.pop();
-    resolved.panels.first_mut().unwrap().body.size.height = f32::INFINITY;
+    resolved.panels.first_mut().unwrap().body.as_mut().unwrap().size.height = f32::INFINITY;
     assert_eq!(
         h.runtime
             .mount(&resolved, &mut h.host, &mut ContentServices { models: &h.models, commands: &mut h.commands, local: &mut h.local })
@@ -781,7 +794,20 @@ fn runtime_action_sink_and_native_service_scopes_use_the_shared_interfaces() {
             location: SectionLocation::Window {
                 host: HostId::new("native-viewport").unwrap(),
                 origin: Point { x: 0.0, y: 0.0 },
-                return_to: DockReturn { zone: Zone::Left, index: 0, size: Size { width: 280.0, height: 240.0 }, collapsed: false, join: None },
+                return_to: DockReturn {
+                    zone: Zone::Left,
+                    index: 0,
+                    size: Size { width: 280.0, height: 240.0 },
+                    collapsed: false,
+                    section: None,
+                    column: None,
+                    column_index: 0,
+                    column_width: None,
+                    weight: 1.0,
+                    preferred_extent: None,
+                    extent_priority: 0,
+                    join: None,
+                },
             },
             size: Size { width: 280.0, height: 240.0 },
         },
@@ -1084,10 +1110,25 @@ fn snapshot_native_transitions_stage_effects_without_canceling_editors() {
     let key = editor_key(&h);
     h.probe.edit(&key, |s| s.reject_cancel = true).unwrap();
     let mut native_layout = h.runtime.layout().layout().clone();
+    // A native window is no side column's section, so the column it remembered goes.
+    native_layout.sections.first_mut().unwrap().column = None;
     native_layout.sections.first_mut().unwrap().location = SectionLocation::Window {
         host: HostId::new("snapshot-host").unwrap(),
         origin: Point { x: 0.0, y: 0.0 },
-        return_to: DockReturn { zone: Zone::Left, index: 0, size: Size { width: 280.0, height: 240.0 }, collapsed: false, join: None },
+        return_to: DockReturn {
+            zone: Zone::Left,
+            index: 0,
+            size: Size { width: 280.0, height: 240.0 },
+            collapsed: false,
+            section: None,
+            column: None,
+            column_index: 0,
+            column_width: None,
+            weight: 1.0,
+            preferred_extent: None,
+            extent_priority: 0,
+            join: None,
+        },
     };
     let reply = h.apply_layout(native_layout.clone(), None).unwrap();
     assert!(reply.effects.iter().any(|e| matches!(e, HostEffect::CreateNative { .. })));

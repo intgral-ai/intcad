@@ -18,7 +18,8 @@ fn child() {
     let (Some(dir), Some(mode)) = (solidcraft_geom::env::var_os("CRASH_CHILD_DIR"), solidcraft_geom::env::var("CRASH_CHILD")) else {
         return;
     };
-    let fresh = install(PathBuf::from(dir), build());
+    let dir = PathBuf::from(dir);
+    let fresh = install(dir.clone(), build());
     println!("FRESH {}", serde_json::to_string(&fresh).unwrap());
     // Dying while starting up, before any command: in a graphics driver, with or without what
     // a native crash handler caught.
@@ -173,6 +174,22 @@ fn child() {
             let r = s.execute("diagnostics.crash_test", &json!({"mode": "kernel"}));
             assert!(matches!(&r, Err(crate::EngineError::Internal(id, _)) if id == "diagnostics.crash_test"), "{r:?}");
         }
+        // The kernel's own parallel path: an item panics inside `guard` on a pool worker while a
+        // command is open (`map_with_local_pools` runs it on its one-thread pool). Nothing is
+        // written until the command ends; then one recovered report with the command's design.
+        "guarded_worker" => {
+            let before = s.doc.clone();
+            let params = json!({"case": "guarded_worker"});
+            command_begin(&s, "test.guarded_worker", &params);
+            let scope = Scope::enter();
+            let r = solidcraft_kernel::map_with_local_pools(&[0], 1, |_| -> solidcraft_kernel::Result<()> {
+                std::panic::panic_any(String::from("a guarded panic on a pool worker"))
+            });
+            drop(scope);
+            assert!(matches!(r.as_slice(), [Err(solidcraft_kernel::KernelError::Internal(_))]), "{r:?}");
+            assert!(list(&STATE.get().unwrap().dir).is_empty(), "the worker's panic waits for the command to end");
+            command_done(true, false, &before, &s.doc, "test.guarded_worker", &params, Err("the item failed".into()));
+        }
         // `thread_dies`: the panic ends the app, as one on the window's thread does.
         "thread" | "thread_dies" => {
             let r = std::thread::Builder::new()
@@ -202,6 +219,25 @@ fn child() {
             s.execute("file.new", &json!({})).unwrap();
             s.execute("solid.sphere", &json!({"diameter": 8})).unwrap();
             let _ = s.execute("diagnostics.crash_test", &json!({"mode": "abort"}));
+        }
+        // A clean exit whose journal cannot be removed: the directory is read-only.
+        "clean_read_only" => {
+            // Only Unix makes the folder read-only here; elsewhere the session just ends.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let sessions = dir.join("sessions");
+                fs::set_permissions(&sessions, fs::Permissions::from_mode(0o500)).unwrap();
+                end_session();
+                fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            #[cfg(not(unix))]
+            end_session();
+            println!("CLEAN_READ_ONLY_OK");
+        }
+        // A second install in the same process: the journal it opens is an orphan.
+        "install_twice" => {
+            install(dir.clone(), build());
         }
         _ => {}
     }
@@ -295,6 +331,27 @@ fn a_kernel_panic_is_reported_as_recovered() {
     let _ = fs::remove_dir_all(&d);
 }
 
+/// A panic inside `guard` on a kernel pool worker (`map_with_local_pools`, child case
+/// `guarded_worker`): nothing is written until the command ends, then one recovered report.
+#[test]
+fn a_guarded_panic_on_a_pool_worker_is_reported_when_the_command_ends() {
+    let d = fresh_dir("guarded-worker");
+    let (_, ok) = run_child(&d, "guarded_worker");
+    assert!(ok, "the worker panic was caught");
+    let (s, v) = only_report(&d);
+    assert_eq!(s.kind, "kernel_panic_recovered");
+    assert_eq!(s.command.as_deref(), Some("test.guarded_worker"));
+    assert!(s.replayable);
+    assert_ne!(v["thread"], "crash::tests::child", "it ran on the pool's worker");
+    assert_eq!(v["message"], "a guarded panic on a pool worker");
+    assert_eq!(v["base"], "the design as it was when the command started");
+    let design = solidcraft_io::read_design(&fs::read(v["design_path"].as_str().unwrap()).unwrap()).unwrap();
+    assert_eq!(design.features.len(), 1);
+    let replay: Value = serde_json::from_slice(&fs::read(v["replay_path"].as_str().unwrap()).unwrap()).unwrap();
+    assert_eq!(replay["commands"], json!([{"command": "test.guarded_worker", "params": {"case": "guarded_worker"}}]));
+    let _ = fs::remove_dir_all(&d);
+}
+
 #[test]
 fn a_panic_outside_commands_is_reported() {
     let d = fresh_dir("thread");
@@ -323,6 +380,86 @@ fn a_known_panic_that_ends_the_app_is_counted_not_reported_again_as_an_unclean_e
     assert!(run_child(&d, "thread").1);
     assert_eq!(only_report(&d).0.count, 3);
     let _ = fs::remove_dir_all(&d);
+}
+
+/// A clean exit whose journal cannot be removed (its directory is read-only) is not an unclean
+/// exit at the next start: the journal says the session ended cleanly.
+#[test]
+fn a_clean_exit_whose_journal_cannot_be_removed_is_not_reported_as_an_unclean_exit() {
+    let d = fresh_dir("clean-exit");
+    let (out, ok) = run_child(&d, "clean_read_only");
+    assert!(ok && out.contains("CLEAN_READ_ONLY_OK"), "{out}");
+    // The next start finds the journal the clean exit could not remove: it says nothing about it.
+    let (out, ok) = run_child(&d, "none");
+    assert!(ok);
+    assert!(out.contains("FRESH []"), "{out}");
+    let reports = list(&d);
+    assert!(reports.is_empty(), "{reports:?}");
+    let _ = fs::remove_dir_all(&d);
+}
+
+/// A second install in the same process leaves no journal behind: the next start has nothing to
+/// report about it.
+#[test]
+fn a_journal_left_behind_by_a_second_install_is_not_reported_as_an_unclean_exit() {
+    let d = fresh_dir("install-twice");
+    let (out, ok) = run_child(&d, "install_twice");
+    assert!(ok, "{out}");
+    let (out, ok) = run_child(&d, "none");
+    assert!(ok);
+    assert!(out.contains("FRESH []"), "{out}");
+    let reports = list(&d);
+    assert!(reports.is_empty(), "{reports:?}");
+    let _ = fs::remove_dir_all(&d);
+}
+
+/// An idle session of another version that ended without a clean exit was most likely closed by
+/// an update or an installer: it is not reported (#17890). The same version idle, or another
+/// version in a command, while starting up, before its first startup step or with a journal
+/// that stopped recording, still is.
+#[test]
+fn an_idle_unclean_exit_of_another_version_is_not_reported() {
+    let d = fresh_dir("update-exit");
+    fs::create_dir_all(&d).unwrap();
+    let journal = |name: &str, version: &str, more: &[&str]| {
+        let p = d.join(format!("{name}.jsonl"));
+        let mut lines = vec![format!(r#"{{"start":"2026-11-15T16:01:58Z","version":"{version}"}}"#), r#"{"base":"new"}"#.to_string()];
+        lines.extend(more.iter().map(|l| l.to_string()));
+        fs::write(&p, lines.join("\n")).unwrap();
+        p
+    };
+    let running = format!(r#"{{"phase":"{RUNNING}","ms":900}}"#);
+    let idle = [running.as_str(), r#"{"run":"solid.box","params":{"length":1}}"#, r#"{"ok":true}"#];
+    unclean_exit(&d, &build(), &journal("older-idle", "9.9.8", &idle));
+    assert!(list(&d).is_empty(), "{:?}", list(&d));
+    let in_command = [running.as_str(), r#"{"run":"solid.fillet","params":{"radius":1}}"#];
+    unclean_exit(&d, &build(), &journal("older-busy", "9.9.8", &in_command));
+    let starting = [r#"{"phase":"device creation","ms":400}"#];
+    unclean_exit(&d, &build(), &journal("older-starting", "9.9.8", &starting));
+    unclean_exit(&d, &build(), &journal("same-idle", "9.9.9", &idle));
+    let mut messages: Vec<String> = list(&d).into_iter().map(|s| s.message).collect();
+    messages.sort();
+    assert_eq!(messages.len(), 3, "{messages:?}");
+    assert!(messages.iter().any(|m| m.starts_with("Intcad 9.9.8") && m.contains("while running `solid.fillet`")), "{messages:?}");
+    assert!(messages.iter().any(|m| m.starts_with("Intcad 9.9.8") && m.contains("during startup (device creation")), "{messages:?}");
+    assert!(messages.iter().any(|m| m.starts_with("Intcad 9.9.9") && m.contains("between commands")), "{messages:?}");
+    let _ = fs::remove_dir_all(&d);
+    // Each on its own, as they would share the report above (the signature leaves out numbers):
+    // a run with no startup step recorded never got up, so it did not end idle; and a journal
+    // that stopped recording may have missed the command the app was in.
+    let full = [running.as_str(), r#"{"full":true}"#];
+    for (name, more) in [("older-no-phase", &[][..]), ("older-full", &full[..])] {
+        let d = fresh_dir(name);
+        fs::create_dir_all(&d).unwrap();
+        let p = d.join(format!("{name}.jsonl"));
+        let mut lines = vec![r#"{"start":"2026-11-15T16:01:58Z","version":"9.9.8"}"#.to_string(), r#"{"base":"new"}"#.to_string()];
+        lines.extend(more.iter().map(|l| l.to_string()));
+        fs::write(&p, lines.join("\n")).unwrap();
+        unclean_exit(&d, &build(), &p);
+        let messages: Vec<String> = list(&d).into_iter().map(|s| s.message).collect();
+        assert!(messages.len() == 1 && messages[0].starts_with("Intcad 9.9.8"), "{name}: {messages:?}");
+        let _ = fs::remove_dir_all(&d);
+    }
 }
 
 #[test]

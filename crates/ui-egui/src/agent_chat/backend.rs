@@ -73,6 +73,13 @@ pub enum Event {
         thought: bool,
         text: String,
     },
+    /// The Mastra turn this backend is now running. Validation cards carry their original owner
+    /// so a late result from a retired turn cannot be shown in another turn's history.
+    TurnOwner {
+        session_id: String,
+        turn_id: String,
+        workflow_run_id: String,
+    },
     /// A new tool call, or news about one (`input`: its arguments, when the agent says).
     Tool {
         id: String,

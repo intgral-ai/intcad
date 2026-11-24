@@ -318,7 +318,7 @@ def ui_tour_window(d):
     vp = d.ui("ui.inspect")["viewport"]
     # Each callout sits in empty space beside what it names.
     want = [
-        ("titlebar:preferences", (-80, 0)),
+        ("titlebar:assistant", (-46, 0)),
         ("ribbon:add_tab", (36, 0)),
         ("browser:header", (0, 0)),
         (None, (vp[0] + vp[2] * 0.33, vp[1] + vp[3] * 0.8)),

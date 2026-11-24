@@ -890,10 +890,10 @@ fn graphics_path() -> Option<std::path::PathBuf> {
 }
 
 /// Compatibility shim (docs/compatibility.md): on the first launch after the rename, copy the
-/// settings of earlier releases into the new folder. They kept `graphics.json` (and, on Linux
-/// and macOS, the recovery folder) under the old product name, and eframe's `app.ron` under the
-/// window's old app id. In the Flatpak sandbox, earlier releases kept everything under an
-/// old app id's `~/.var/app` folder; those copies come first, newest first. The old folders
+/// settings of earlier Intcad releases into the new folder. They kept `graphics.json` (and, on
+/// Linux and macOS, the recovery folder) under the old product name, and eframe's `app.ron` under
+/// the window's old app id. Intcad never had an earlier Flatpak app id of its own; upstream
+/// SolidCraft's `~/.var/app` folders are another product's and are never read. The old folders
 /// are never changed.
 fn adopt_legacy_settings() {
     let (Some(current), Some(legacy)) = (settings_dir().ok().flatten(), eframe::storage_dir(LEGACY_SETTINGS_FOLDER)) else { return };
@@ -1360,7 +1360,7 @@ fn main() -> eframe::Result {
                 app.session.undo.clear();
                 // Built straight into the session, so nothing asked for a fit: frame it at the
                 // home view as any opened design is (#9195). The fit waits for the first layout.
-                app.cam.set_view(solidcraft_engine::render::StandardView::Iso);
+                app.cam.set_view(solidcraft_engine::view::StandardView::Iso);
                 app.fit_view();
             }
             // Lock files next to open designs: a design open on another computer says so (#5467),
@@ -1496,7 +1496,7 @@ fn wgpu_options(cpu: bool, preference: Option<&str>) -> eframe::egui_wgpu::WgpuC
         let indirect = std::env::var(startup::INDIRECT_VALIDATION_ENV).ok();
         setup.instance_descriptor.flags = startup::window_instance_flags(setup.instance_descriptor.flags, intel_mac, indirect.as_deref());
         // Never a `dxcompiler.dll` another program put on PATH (#6756).
-        setup.instance_descriptor.backend_options.dx12.shader_compiler = solidcraft_gpu::dx12_compiler();
+        setup.instance_descriptor.backend_options.dx12.shader_compiler = solidcraft_viewport_gpu::dx12_compiler();
         let environment = std::env::var("WGPU_ADAPTER_NAME").ok();
         let adapter = graphics().and_then(|v| v.get("adapter").and_then(serde_json::Value::as_str).map(str::to_string));
         startup::configure_adapter(setup, cpu, environment, adapter);

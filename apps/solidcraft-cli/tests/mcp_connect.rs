@@ -59,24 +59,34 @@ fn mcp_connect_serves_before_the_app_runs_and_reaches_it_once_it_does() {
     std::fs::write(control_dir.join(format!("{port}.token")), &token).unwrap();
     let listener = TcpListener::bind(&addr).unwrap();
     let app = std::thread::spawn(move || {
+        // A bridged server asks `mcp.options` before the first tool call and keeps the
+        // connection for that call, as the app's control server serves many requests on one
+        // connection; answer every request line until the server closes it.
         let (stream, _) = listener.accept().unwrap();
-        let mut line = String::new();
-        BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
-        let req: Value = serde_json::from_str(&line).unwrap();
-        let reply = if req["token"] == json!(token) {
-            json!({"id": req["id"], "ok": true, "result": {"bodies": [], "method": req["method"]}})
-        } else {
-            json!({"id": req["id"], "ok": false, "error": format!("unauthorized: token {}", req["token"])})
-        };
-        writeln!(&stream, "{reply}").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap() == 0 {
+                break;
+            }
+            let req: Value = serde_json::from_str(&line).unwrap();
+            let reply = if req["token"] == json!(token) {
+                json!({"id": req["id"], "ok": true, "result": {"bodies": [], "method": req["method"]}})
+            } else {
+                json!({"id": req["id"], "ok": false, "error": format!("unauthorized: token {}", req["token"])})
+            };
+            writeln!(&mut writer, "{reply}").unwrap();
+        }
     });
     let r = ask(4, "tools/call", measure);
     assert_ne!(r["result"]["isError"], true, "{r}");
     assert!(text(&r).contains("engine.execute"), "{r}");
-    app.join().unwrap();
 
+    // The stub answers until the server closes the connection at exit, so stop it before joining.
     drop(stdin);
     assert!(child.wait().unwrap().success());
+    app.join().unwrap();
     std::fs::remove_dir_all(&control_dir).ok();
 }
 
@@ -103,7 +113,9 @@ fn mcp_without_arguments_finds_the_running_app() {
     std::fs::write(control_dir.join("current.port"), format!("{port}\n")).unwrap();
     let app = std::thread::spawn(move || {
         // The discovery probe connects and leaves without a request; the tool call follows.
-        let (stream, line) = loop {
+        // A bridged server asks `mcp.options` on the tool call's connection and keeps it for
+        // the call, so serve every request line on that connection, not just the first.
+        let (stream, first) = loop {
             let (stream, _) = listener.accept().unwrap();
             let mut line = String::new();
             BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
@@ -111,10 +123,19 @@ fn mcp_without_arguments_finds_the_running_app() {
                 break (stream, line);
             }
         };
-        let req: Value = serde_json::from_str(&line).unwrap();
-        let ok = req["token"] == json!(token);
-        let reply = json!({"id": req["id"], "ok": ok, "result": {"bodies": [], "method": req["method"]}, "error": "unauthorized"});
-        writeln!(&stream, "{reply}").unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = first;
+        loop {
+            let req: Value = serde_json::from_str(&line).unwrap();
+            let ok = req["token"] == json!(token);
+            let reply = json!({"id": req["id"], "ok": ok, "result": {"bodies": [], "method": req["method"]}, "error": "unauthorized"});
+            writeln!(&stream, "{reply}").unwrap();
+            let mut next = String::new();
+            if reader.read_line(&mut next).unwrap() == 0 {
+                break;
+            }
+            line = next;
+        }
     });
     let mut child = Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
         .args(["mcp", "--allow-any-path"])
@@ -133,9 +154,10 @@ fn mcp_without_arguments_finds_the_running_app() {
     let r: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line:?}"));
     assert_ne!(r["result"]["isError"], true, "{r}");
     assert!(r["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("engine.execute"), "{r}");
-    app.join().unwrap();
+    // The stub answers until the server closes the connection at exit; stop it before joining.
     drop(stdin);
     assert!(child.wait().unwrap().success());
+    app.join().unwrap();
 
     // The file names a port nothing listens on (the app crashed): a headless session instead.
     let closed = TcpListener::bind("127.0.0.1:0").unwrap();

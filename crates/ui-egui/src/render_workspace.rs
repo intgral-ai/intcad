@@ -12,9 +12,10 @@ use solidcraft_engine::doc::render_settings::RenderSetup;
 use solidcraft_engine::render::job::LightingPreset;
 use solidcraft_engine::render::job::{ImageHost, Integrator, PreviewInfo, RaytraceOptions};
 use solidcraft_engine::render::{
-    Availability, Camera, ExecutorDescriptor, ExecutorId, ProductScene, RenderLimits, RenderMode, RenderOperation, RenderProfile, RenderRequest,
+    Availability, ExecutorDescriptor, ExecutorId, ProductScene, RenderLimits, RenderMode, RenderOperation, RenderProfile, RenderRequest,
     ScratchLayout,
 };
+use solidcraft_viewport::Camera;
 
 use crate::gpu::{Frame, GpuScene, SceneSlot, ViewportCallback};
 use crate::{SolveApp, theme::Tokens};
@@ -2146,7 +2147,7 @@ fn gpu_scene_with_budget(scene: &ProductScene, budget: u64) -> Result<(u64, GpuS
             let vertices = triangle.map(|i| {
                 let p = body.mesh.positions.get(i as usize)?.to_f32();
                 let n = *body.mesh.normals.get(i as usize)?;
-                let n = if surface.is_some() { solidcraft_engine::render::surface::unit_direction(n).ok()? } else { n }.to_f32();
+                let n = if surface.is_some() { solidcraft_viewport::surface::unit_direction(n).ok()? } else { n }.to_f32();
                 p.into_iter().chain(n).all(f32::is_finite).then_some((p, n))
             });
             let [Some(a), Some(b), Some(c)] = vertices else { return Err(crate::i18n::tr("render.error_product_triangle").into()) };
@@ -2172,7 +2173,7 @@ fn gpu_scene_with_budget(scene: &ProductScene, budget: u64) -> Result<(u64, GpuS
     Ok((hash.finish(), gpu))
 }
 
-fn hash_surface(surface: Option<solidcraft_engine::render::surface::OpaqueSurface>, hash: &mut impl Hasher) {
+fn hash_surface(surface: Option<solidcraft_viewport::surface::OpaqueSurface>, hash: &mut impl Hasher) {
     surface.is_some().hash(hash);
     if let Some(s) = surface {
         let c = s.base_color();
@@ -2291,14 +2292,14 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::navigation_bar_view::show(app, ui, viewport);
 }
 
-fn product_projection(camera: Camera, radius: f64, canvas: egui::Rect, image: Option<egui::Rect>) -> solidcraft_engine::render::Mat4 {
+fn product_projection(camera: Camera, radius: f64, canvas: egui::Rect, image: Option<egui::Rect>) -> solidcraft_viewport::Mat4 {
     let image = image.unwrap_or(canvas);
     let projection = camera.view_proj(f64::from(image.width() / image.height().max(1.0)), radius);
     let sx = f64::from(image.width() / canvas.width().max(1.0));
     let sy = f64::from(image.height() / canvas.height().max(1.0));
     let tx = f64::from(2.0 * (image.center().x - canvas.center().x) / canvas.width().max(1.0));
     let ty = f64::from(2.0 * (canvas.center().y - image.center().y) / canvas.height().max(1.0));
-    solidcraft_engine::render::Mat4([[sx, 0.0, 0.0, 0.0], [0.0, sy, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [tx, ty, 0.0, 1.0]]).mul(&projection)
+    solidcraft_viewport::Mat4([[sx, 0.0, 0.0, 0.0], [0.0, sy, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [tx, ty, 0.0, 1.0]]).mul(&projection)
 }
 
 fn paint_product(app: &mut SolveApp, ui: &mut egui::Ui, rect: egui::Rect, camera: Camera, image: Option<egui::Rect>) {
@@ -2368,6 +2369,7 @@ fn paint_product(app: &mut SolveApp, ui: &mut egui::Ui, rect: egui::Rect, camera
             app.viewport.hl_key = highlight_key;
         }
         let slot = app.render_workspace.slot.clone();
+        let vp = product_projection(camera, radius, rect, image);
         let callback = ViewportCallback(Frame {
             product_lights: Some(light::preview(app)?),
             product: true,
@@ -2382,10 +2384,13 @@ fn paint_product(app: &mut SolveApp, ui: &mut egui::Ui, rect: egui::Rect, camera
             pv_slot: slot,
             pv_hide: false,
             preview_bounds: None,
-            view_proj: product_projection(camera, radius, rect, image).to_f32(),
+            view_proj: vp.to_f32(),
             back: camera.back().to_f32(),
             size_px: [rect.width() * ppp, rect.height() * ppp],
-            clip: [0.0; 4],
+            clip: [[0.0; 4]; solidcraft_viewport_gpu::view::MAX_SECTION_PLANES],
+            clip_hatch: [0; solidcraft_viewport_gpu::view::MAX_SECTION_PLANES],
+            turned_depth: Some(vp.turned_depth_f32()),
+            moving: None,
             cap: [0.0; 4],
             images: Vec::new(),
             clouds: Vec::new(),
@@ -2395,7 +2400,7 @@ fn paint_product(app: &mut SolveApp, ui: &mut egui::Ui, rect: egui::Rect, camera
             outline: false,
             // Product rendering has its own lighting; AO is a Design viewport setting.
             ao_radius: 0.0,
-            ao_samples: solidcraft_gpu::view::AO_SAMPLES,
+            ao_samples: solidcraft_viewport_gpu::view::AO_SAMPLES,
             sky: [0.0; 4],
             eye: [eye.x as f32, eye.y as f32, eye.z as f32, if camera.fov > 0.0 { 1.0 } else { 0.0 }],
             ssaa: if width < full.0 { width as f32 / full.0 as f32 } else { 1.0 },

@@ -2,6 +2,8 @@
 
 use crate::fonts::RichTextExt as _;
 use crate::icons::glyphs::pin_icon;
+#[cfg(test)]
+use crate::section_view::SectionCut;
 use crate::ui_kit::BackingTooltipExt as _;
 use crate::ui_kit::{self, Container, Edge, Surface};
 use egui::{Align2, Color32, FontId, Rect, Sense, Stroke, pos2, vec2};
@@ -6349,7 +6351,7 @@ mod persistent_ribbon_tests {
     fn persistent_grid_tracks_all_six_analysis_replacements_queries_and_failed_activation() {
         let mut h = harness();
         h.app.session.execute("inspect.section", &json!({"plane":"YZ","at":3})).unwrap();
-        let cut = h.app.session.section;
+        let cut = h.app.session.cut();
         for id in PERSISTENT_COMMANDS.iter().copied().filter(|id| *id != "inspect.section") {
             h.app.session.execute(id, &json!({})).unwrap();
             let before = h.app.session.status_items();
@@ -6359,7 +6361,7 @@ mod persistent_ribbon_tests {
             let panel = if matches!(id, "inspect.draft" | "inspect.accessibility") { "CHECK" } else { "SURFACE QUALITY" };
             open_status_grid(&mut h, panel);
             assert_status_grid(&h, id, true, Some(egui::accesskit::Toggled::True));
-            assert_eq!(h.app.session.section, cut, "analysis replacement leaves Section independent");
+            assert_eq!(h.app.session.cut(), cut, "analysis replacement leaves Section independent");
             close_status_grid(&mut h, panel);
         }
     }
@@ -6385,7 +6387,7 @@ mod persistent_ribbon_tests {
             drawn.iter().any(|shape| matches!(shape, egui::Shape::Text(text) if text.galley.text() == hint)),
             "the actual grid uses the same native turn-off tooltip"
         );
-        assert!(h.app.session.section.is_some());
+        assert!(h.app.session.cut().is_some());
     }
 
     #[test]
@@ -6433,7 +6435,7 @@ mod persistent_ribbon_tests {
                 .map(|(_, node)| node)
                 .expect("the actual cleared grid button, distinguished from its pinned ribbon button by bounds");
             assert_eq!(node.toggled(), Some(egui::accesskit::Toggled::False), "{id} grid accessibility is off on the release frame");
-            assert_eq!(h.app.session.section.is_some(), id != "inspect.section");
+            assert_eq!(h.app.session.cut().is_some(), id != "inspect.section");
             assert_eq!(h.app.session.analysis.is_some(), id != "inspect.zebra");
         }
     }
@@ -6453,7 +6455,7 @@ mod persistent_ribbon_tests {
         h.frame();
         assert_paint(&h, "inspect.section", false);
         assert!(persistent_hint(&h.app, solidcraft_engine::find_command("inspect.section").unwrap(), true).is_none());
-        assert!(h.app.session.section.is_some());
+        assert!(h.app.session.cut().is_some());
         h.app.preferences.viewport_section_status = true;
         h.app.preferences.persistent_ribbon_pressed = false;
         h.frame();
@@ -6461,7 +6463,7 @@ mod persistent_ribbon_tests {
         h.app.preferences.persistent_ribbon_pressed = true;
         h.frames(2);
         tap(&mut h, "inspect.section");
-        assert!(h.app.session.section.is_none() && h.app.session.analysis.is_some());
+        assert!(h.app.session.cut().is_none() && h.app.session.analysis.is_some());
         assert_paint(&h, "inspect.section", false);
         assert_paint(&h, "inspect.zebra", true);
     }

@@ -1,6 +1,6 @@
 [package]
 name = "solidcraft-mcp"
-description = "SolidCraft MCP server: JSON-RPC 2.0 over stdio, driving a headless session or the running app"
+description = "Intcad MCP server: JSON-RPC 2.0 over stdio, driving a headless session or the running app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,11 +9,16 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+solidcraft-viewport = { workspace = true }
 solidcraft-engine = { workspace = true }
+solidcraft-control = { workspace = true }
+solidcraft-mcp-server = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-# The renderer `intcad-cli mcp` installs, so the tests' screenshots are drawn as the server's.
-solidcraft-gpu = { workspace = true }
+# No `solidcraft-gpu` or `solidcraft-viewport-gpu`: an MCP session reaches pictures through the
+# engine's capture hook, which the app or CLI installs, and the screenshot tests install the
+# viewport's CPU rasterizer. They cover the CPU fallback a machine without a GPU adapter uses,
+# not the GPU path, without pulling wgpu's native backends into the server.
 # Synthetic reference pictures for the compare_picture test.
 image = { workspace = true }

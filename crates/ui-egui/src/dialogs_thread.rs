@@ -653,8 +653,8 @@ pub(crate) fn reopen(d: &mut Dialog, s: &Session, kind: &FeatureKind) {
         chamfer_angle,
         chamfer_depth,
         steep_flank,
-        // Kept by the edit itself (`timeline.redefine`), not a dialog option.
-        old_auto_size: _,
+        // The rest are kept by the edit itself (`timeline.redefine`), not dialog options.
+        ..
     } = kind
     else {
         return;
@@ -726,6 +726,7 @@ mod contribution_tests {
     };
     use serde_json::json;
     use solidcore_record::Vec3;
+    use solidcraft_engine::geom::MeshGeom;
     use solidcraft_engine::{Sel, Session};
     fn hole() -> (SolveApp, Dialog) {
         let mut app = SolveApp::new(Session::default(), Services::default());

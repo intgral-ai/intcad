@@ -695,7 +695,7 @@ fn watch(reply: Receiver<Value>, ticket: Ticket) -> Receiver<Value> {
 fn timeout_message(what: &str, effect: control_pending::Effect) -> String {
     match effect {
         control_pending::Effect::ReadsOnly => {
-            format!("timeout: {what} is still running in the app ({}); ask `control.pending` for its answer", effect.when_done())
+            format!("timeout: {what} is still running in the app ({}); ask `control.pending` for its answer", effect.when_done("design"))
         }
         control_pending::Effect::WritesFile => format!(
             "timeout: {what} is still running in the app and will still write the file when it finishes (it was not cancelled: \

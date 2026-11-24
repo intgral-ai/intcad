@@ -74,11 +74,12 @@ pub fn gpu_images(app: &SolveApp) -> Vec<GpuImage> {
         return Vec::new();
     }
     let (vals, _) = doc.param_values();
+    let state = crate::open_meshing::session_world(&app.session);
     doc.canvases
         .iter()
         .filter(|c| c.visible && c.opacity > 0.0)
         .filter_map(|c| {
-            let plane = doc.canvas_plane(&vals, c).ok()?;
+            let plane = doc.canvas_plane(&vals, c, &state).ok()?;
             let (_, version, size, rgba) = pixels(c)?;
             let corners = c.world_corners(&plane).map(|p| [p.x as f32, p.y as f32, p.z as f32]);
             Some(GpuImage { id: c.id, version, size, rgba, corners, opacity: c.opacity.clamp(0.0, 1.0) as f32 })
@@ -114,8 +115,9 @@ pub fn show(app: &SolveApp, ui: &egui::Ui, painter: &egui::Painter, proj: &Proj)
         return;
     }
     let (vals, _) = doc.param_values();
+    let state = crate::open_meshing::session_world(&app.session);
     for c in doc.canvases.iter().filter(|c| c.visible) {
-        let Ok(plane) = doc.canvas_plane(&vals, c) else { continue };
+        let Ok(plane) = doc.canvas_plane(&vals, c, &state) else { continue };
         let Some(tex) = texture(ui.ctx(), c) else { continue };
         let [bl, br, _, tl] = c.corners();
         let (u, v) = (br - bl, tl - bl);

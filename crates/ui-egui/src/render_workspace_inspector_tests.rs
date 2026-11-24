@@ -208,14 +208,14 @@ fn render_workspace_shot_camera_controls_save_undo_and_refuse_hostile_values() {
     setups::save(&mut h.app).unwrap();
     let name = h.app.render_workspace.view.name.clone();
     let before = h.app.session.doc.to_json();
-    let camera = solidcraft_engine::render::Camera { yaw: 0.7, roll: 0.2, distance: 123.0, ..h.app.cam };
+    let camera = solidcraft_viewport::Camera { yaw: 0.7, roll: 0.2, distance: 123.0, ..h.app.cam };
     super::super::shot::set_camera(&mut h.app, &name, camera).unwrap();
     assert_eq!(h.app.cam, camera);
     assert_eq!(h.app.session.doc.render.setups[&name].camera, camera);
     h.app.run("edit.undo", json!({})).unwrap();
     assert_eq!(h.app.session.doc.to_json(), before);
     for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, 0.0, f64::MAX] {
-        let camera = solidcraft_engine::render::Camera { distance: value, ..camera };
+        let camera = solidcraft_viewport::Camera { distance: value, ..camera };
         assert!(super::super::shot::set_camera(&mut h.app, &name, camera).is_err());
         assert_eq!(h.app.session.doc.to_json(), before);
     }
@@ -227,7 +227,7 @@ fn render_workspace_shot_lens_saves_only_lens_and_orthographic_keeps_faded_contr
     let mut h = fixture();
     h.call("ui.resize", json!({"width":1600,"height":1800}));
     let name = "Lens shot";
-    let camera = solidcraft_engine::render::Camera { fov: 0.6, ..h.app.cam };
+    let camera = solidcraft_viewport::Camera { fov: 0.6, ..h.app.cam };
     h.app
         .run("render.settings.set", json!({"name":name,"set":{"camera":camera,"job":{"method":"gpu_path","options":{"samples":128,"seed":42}}}}))
         .unwrap();
@@ -1105,7 +1105,7 @@ fn ribbon_frame_preserves_explicit_roll_world_up_and_saved_view_authority() {
     h.app.cam.roll = 0.37;
     h.app.cam.yaw = 0.21;
     h.app.cam.pitch = 0.43;
-    h.app.cam.up = solidcraft_engine::render::UpAxis::Y;
+    h.app.cam.up = solidcraft_viewport::UpAxis::Y;
     let orientation = (h.app.cam.roll, h.app.cam.yaw, h.app.cam.pitch, h.app.cam.up);
     let document = h.app.session.doc.to_json();
     let undo = h.app.session.undo.len();
@@ -1550,7 +1550,7 @@ fn camera_draft_uses_render_command_and_keeps_saved_design_unchanged() {
     let mut h = fixture();
     let document = h.app.session.doc.to_json();
     let undo = h.app.session.undo.len();
-    for up in [solidcraft_engine::render::UpAxis::Z, solidcraft_engine::render::UpAxis::Y] {
+    for up in [solidcraft_viewport::UpAxis::Z, solidcraft_viewport::UpAxis::Y] {
         let mut camera = h.app.cam;
         camera.up = up;
         camera.roll = 0.41;

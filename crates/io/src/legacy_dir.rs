@@ -7,12 +7,14 @@ use std::path::{Path, PathBuf};
 
 /// The Linux app id (Flatpak, desktop entry, AppStream, Wayland `app_id`).
 pub const APP_ID: &str = "ai.intgral.intcad";
-/// The app id of releases before 0.8 (compatibility shim, docs/compatibility.md). eframe kept
-/// the window state under it, so it is also the old settings key.
+/// The window/settings key eframe used before Intcad had folders of its own
+/// (`ai.storyteller.solvecraft`; docs/compatibility.md §4). It is not a Flatpak app id to adopt
+/// from: the app ids upstream SolidCraft used are another product's.
 pub const LEGACY_APP_ID: &str = "ai.storyteller.solvecraft";
-/// Every earlier app id, newest first (compatibility shim, docs/compatibility.md): 0.8 until the
-/// move to Tangency Labs used `ai.storyteller.solidcraft`, releases before 0.8 `LEGACY_APP_ID`.
-pub const PREVIOUS_APP_IDS: [&str; 2] = ["ai.storyteller.solidcraft", LEGACY_APP_ID];
+/// Intcad has no earlier Flatpak app id of its own. The app ids upstream SolidCraft used
+/// (`ai.storyteller.solidcraft`, `ai.storyteller.solvecraft`) are upstream's history; their
+/// `~/.var/app` folders are another product's and are never read (docs/compatibility.md).
+pub const PREVIOUS_APP_IDS: [&str; 0] = [];
 
 /// Most files and nesting copied from a legacy folder (it holds preferences, autosaves and
 /// small caches; anything bigger is not ours).
@@ -31,12 +33,10 @@ pub fn adopt_legacy_dir(current: &Path, legacy: &Path) -> std::io::Result<bool> 
     Ok(true)
 }
 
-/// In the Flatpak sandbox, the same `path` under each earlier app id's data folder, newest first:
-/// Flatpak keeps each app's XDG folders under `~/.var/app/<app id>`, so after the app id changed,
-/// settings and autosaves of earlier Flatpak releases sit under the old id. Empty outside the
-/// sandbox or for paths outside our own `~/.var/app` folder. Flatpak moves that folder itself
-/// when an install follows the end-of-life rebase; this covers installs made next to the old
-/// app, which reach it read-only through the manifest's `--filesystem` grants.
+/// The Flatpak folders a first launch may adopt from. Intcad has no earlier Flatpak app id of
+/// its own (`PREVIOUS_APP_IDS` is empty), and the ids upstream SolidCraft used are another
+/// product's, so this is empty: an upstream `~/.var/app/ai.storyteller.*` folder is never read
+/// (docs/compatibility.md).
 pub fn legacy_flatpak_paths(path: &Path) -> Vec<PathBuf> {
     let (Some(id), Some(home)) = (std::env::var_os("FLATPAK_ID"), std::env::var_os("HOME")) else { return Vec::new() };
     flatpak_twins(path, &id, Path::new(&home))
@@ -86,16 +86,16 @@ mod tests {
     #[test]
     fn copies_legacy_folder_once_and_keeps_it() {
         let d = scratch("copy");
-        let old = d.join("solvecraft");
+        let old = d.join("old");
         std::fs::create_dir_all(old.join("recovery")).unwrap();
         std::fs::write(old.join("graphics.json"), "{\"msaa\":8}").unwrap();
-        std::fs::write(old.join("recovery").join("a.solvecraft"), "x").unwrap();
+        std::fs::write(old.join("recovery").join("a.sc"), "x").unwrap();
         let new = d.join("solidcraft");
         assert!(adopt_legacy_dir(&new, &old).unwrap());
         assert_eq!(std::fs::read_to_string(new.join("graphics.json")).unwrap(), "{\"msaa\":8}");
-        assert!(new.join("recovery").join("a.solvecraft").is_file());
+        assert!(new.join("recovery").join("a.sc").is_file());
         // The legacy folder is untouched.
-        assert!(old.join("graphics.json").is_file() && old.join("recovery").join("a.solvecraft").is_file());
+        assert!(old.join("graphics.json").is_file() && old.join("recovery").join("a.sc").is_file());
         // Once the current folder exists, nothing is copied again.
         std::fs::write(old.join("later.json"), "{}").unwrap();
         assert!(!adopt_legacy_dir(&new, &old).unwrap());
@@ -104,14 +104,17 @@ mod tests {
     }
 
     #[test]
-    fn flatpak_twins_map_our_sandbox_data_to_the_old_app_ids() {
+    fn flatpak_twins_do_not_read_upstream_solidcraft_data() {
         let home = Path::new("/home/u");
         let ours = home.join(".var/app/ai.intgral.intcad/data/solidcraft");
         let id = std::ffi::OsStr::new(APP_ID);
-        assert_eq!(
-            flatpak_twins(&ours, id, home),
-            [home.join(".var/app/ai.storyteller.solidcraft/data/solidcraft"), home.join(".var/app/ai.storyteller.solvecraft/data/solidcraft")]
-        );
+        // Intcad never had an earlier Flatpak app id: upstream SolidCraft's/SolveCraft's
+        // folders are another product's and are never adopted (docs/compatibility.md).
+        assert!(PREVIOUS_APP_IDS.is_empty());
+        assert!(flatpak_twins(&ours, id, home).is_empty());
+        // The upstream app ids are not ours, in either direction.
+        assert!(flatpak_twins(&home.join(".var/app/ai.storyteller.solidcraft/data/solidcraft"), id, home).is_empty());
+        assert!(flatpak_twins(&ours, std::ffi::OsStr::new("ai.storyteller.solidcraft"), home).is_empty());
         // Outside our sandbox folder, or in another app's sandbox, there is nothing to map.
         assert!(flatpak_twins(&home.join(".local/share/intcad"), id, home).is_empty());
         assert!(flatpak_twins(&ours, std::ffi::OsStr::new("org.example.Other"), home).is_empty());
@@ -127,9 +130,7 @@ mod tests {
         assert!(desktop.lines().any(|l| l == format!("Icon={APP_ID}")));
         let metainfo = std::fs::read_to_string(linux.join(format!("{APP_ID}.metainfo.xml.in"))).unwrap();
         assert!(metainfo.contains(&format!("<id>{APP_ID}</id>")));
-        for old in PREVIOUS_APP_IDS {
-            assert!(metainfo.contains(&format!("<id>{old}</id>")) && desktop.contains(&format!("{old}.desktop;")));
-        }
+        // Upstream's earlier app ids are left as upstream wrote them and are not Intcad's to claim.
     }
 
     #[test]
@@ -139,7 +140,7 @@ mod tests {
         assert!(!adopt_legacy_dir(&new, &d.join("missing")).unwrap());
         assert!(!new.exists());
         // An existing current folder is never overwritten.
-        let old = d.join("solvecraft");
+        let old = d.join("old");
         std::fs::create_dir_all(&old).unwrap();
         std::fs::write(old.join("p.json"), "old").unwrap();
         std::fs::create_dir_all(&new).unwrap();

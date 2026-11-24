@@ -61,7 +61,8 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
             }
             let options = &view.raytrace;
             RenderJob::CpuRaytrace {
-                options: CpuJob {
+                transparent_background: false,
+                options: Box::new(CpuJob {
                     budget: options.budget,
                     primary_samples: options.primary_samples,
                     progressive: options.progressive,
@@ -87,7 +88,8 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                     } else {
                         None
                     },
-                },
+                    ..Default::default()
+                }),
             }
         }
         ImageMethod::GpuRaytrace => {
@@ -114,6 +116,8 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                             environment: studio.ambient,
                             sun: studio.sun_enabled.then_some(studio.sun),
                             area_lights: AreaLights::new(&studio.area_lights).map_err(|error| error.to_string())?,
+                            directional_lights: studio.directional_lights,
+                            punctual_lights: studio.punctual_lights,
                         })
                     } else {
                         None
@@ -133,6 +137,7 @@ pub(super) fn draft(app: &SolveApp) -> Result<RenderSetup, String> {
                     } else {
                         None
                     },
+                    ..Default::default()
                 }),
             }
         }
@@ -211,7 +216,7 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
     view.materials = materials::View::default();
     match &setup.job {
         Some(RenderJob::Raster { transparent_background }) => view.transparent = *transparent_background,
-        Some(RenderJob::CpuRaytrace { options }) => {
+        Some(RenderJob::CpuRaytrace { options, .. }) => {
             view.method = ImageMethod::CpuRaytrace;
             view.raytrace = RaytraceOptions {
                 budget: options.budget,
@@ -268,6 +273,8 @@ fn load_values(view: &mut super::ViewState, setup: RenderSetup) {
                     view.studio.sun = sun;
                 }
                 view.studio.area_lights = lighting.area_lights.iter().copied().collect();
+                view.studio.directional_lights = lighting.directional_lights;
+                view.studio.punctual_lights = lighting.punctual_lights;
             }
             if let Some(SkyEnvironment::Sky { gradient, rotation_rad, intensity }) = &options.environment {
                 view.studio.environment = studio::Environment::Sky;
@@ -299,7 +306,7 @@ pub(super) fn same_model_source(app: &SolveApp, document: &std::sync::Weak<solid
     // Match ergonomics bind references, including vectors and point-cloud data.
     macro_rules! compare_authoring_fields {
         ($($field:ident),* $(,)?) => {{
-            let solidcraft_engine::doc::Document { render: _, $($field),* } = source.as_ref();
+            let solidcraft_engine::doc::Document { render: _, $($field,)* .. } = source.as_ref();
             true $(&& $field == &app.session.doc.$field)*
         }};
     }
@@ -486,7 +493,7 @@ pub(super) fn save(app: &mut SolveApp) -> Result<(), String> {
     if let Some((_, path, digest)) = &capture {
         let mut params = serde_json::json!({"name":name,"path":path,"expected_sha256":digest});
         match &mut setup.job {
-            Some(RenderJob::CpuRaytrace { options }) => {
+            Some(RenderJob::CpuRaytrace { options, .. }) => {
                 let environment = options.hdr.take().ok_or_else(|| app.tr("render.hdr_inspect_required").to_string())?;
                 params["rotation_rad"] = serde_json::json!(environment.rotation_rad);
                 params["intensity"] = serde_json::json!(environment.intensity);

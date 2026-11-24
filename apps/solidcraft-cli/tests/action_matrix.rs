@@ -1289,6 +1289,11 @@ fn rectangle(plane: Value, p0: [f64; 2], p1: [f64; 2]) -> [Value; 3] {
     ]
 }
 
+/// Each body's face count and exact volume: a command that leaves a body alone leaves these.
+fn body_snapshot(s: &Session) -> BTreeMap<String, (usize, f64)> {
+    s.model.state().bodies.iter().map(|b| (b.name.clone(), (b.body.face_count(), b.measure().unwrap().volume))).collect()
+}
+
 #[test]
 fn edge_round_actions_keep_the_picked_body() {
     for (corner, length) in [([10, 0, 20], 4), ([0, 0, 0], 20)] {
@@ -1310,14 +1315,26 @@ fn edge_round_actions_keep_the_picked_body() {
             if q[1] != 0.0 || q[2] != 20.0 || !(0.0..20.0).contains(&x) {
                 continue;
             }
-            // Block either meets this midpoint or coincides with the whole edge.
+            // Block either meets this midpoint at a corner or coincides with the whole edge.
             assert_eq!(p["body"], "Plate", "{}: {p}", a.action);
             assert_eq!(q, &json!([10.0, 0.0, 20.0]));
+            let mut t = s.scratch();
+            let before = body_snapshot(&t);
+            let features = t.doc.features.len();
+            // Without `body` the point is on Plate's edge and on Block: refuse it instead of
+            // rounding one body's edge silently, and leave both bodies as they were.
             let mut unscoped = p.clone();
             unscoped.as_object_mut().unwrap().remove("body");
-            let err = s.scratch().execute(id, &unscoped).unwrap_err().to_string();
-            assert!(err.contains("edges meet"), "{err}");
-            perform(&mut s.scratch(), &a.act, &errors(&s)).unwrap();
+            let err = t.execute(id, &unscoped).unwrap_err().to_string();
+            assert!(err.contains("[10, 0, 20] lies on edges of 2 bodies, Plate and Block"), "{err}");
+            assert_eq!(body_snapshot(&t), before, "{id}: a refused pick changed a body");
+            assert_eq!(t.doc.features.len(), features, "{id}: a refused pick added a feature");
+            // Named, Plate is rounded and Block is not touched.
+            let before_errors = errors(&t);
+            perform(&mut t, &a.act, &before_errors).unwrap();
+            let after = body_snapshot(&t);
+            assert_eq!(after["Block"], before["Block"], "{id}: rounding Plate changed Block");
+            assert_ne!(after["Plate"], before["Plate"], "{id}: rounding Plate left it unchanged");
             tried += 1;
         }
         assert_eq!(tried, 2);
