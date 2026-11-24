@@ -2582,3 +2582,9 @@ So the release the publisher stages into `intcad-releases` is exactly what the i
 for, the checksum pair has both the new and legacy names, and every asset the updater resolves by
 an unversioned name gets an alias. The only pieces that can still fail are runtime (signature,
 network), not name or repository mismatches.
+
+**Formatting of the composed tree is clean.** `cargo fmt --all -- --check` on the simulated final
+tree exits 0, so the promotion will not fail the gate's `Format and repository checks` on an
+unformatted merge. A `cargo clippy -D warnings` pass over the crates the paid PRs touch
+(`solidcraft-account-native`, `solidcraft-cli`, `solidcraft-mcp`, `solidcraft-ui-egui`,
+`solidcraft-suspend-clock`) is running on the same tree; its result is recorded when it finishes.
