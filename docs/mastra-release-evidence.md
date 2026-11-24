@@ -139,6 +139,22 @@ recorded, from each package's own bytes:
 That failure is why the run is a record of the platform formats, not the final verdict. The run at
 this branch's head is the one that must be green as a whole; its link is in the pull request.
 
+Run [45308137121](https://github.com/intgral-ai/intcad/actions/runs/45308137121) at `e806e9124f`
+read every package's own `contents.json`:
+
+| Job | Result |
+|---|---|
+| Linux x86_64 | pass — AppImage, deb, rpm and tar.gz each `present`, `node`, five skills; no marker, nothing unchecked |
+| Linux aarch64, Web, FreeBSD, Windows x86/arm64, Arch/Snap aarch64 | pass — `native`, no agent, no marker, nothing unchecked |
+| Windows x64 | pass — MSI (`msiexec /a`), portable zip and standalone exe each five skills |
+| macOS universal | pass — DMG both slices, five skills; the CLI archive exempt |
+| Snap x86_64 | pass — the `.snap` itself carries the agent; five skills |
+| Arch x86_64 | pass — the repacked `.pkg.tar.zst` itself carries the agent; five skills |
+| Flatpak x86_64/aarch64 | fail — `flatpak install --reinstall` refused the bundle as "already installed" after the job's own smoke had installed it; the recorder now uninstalls that ref and installs the bundle again |
+
+The three repacks were proved from their own bytes for the first time in this run; the Flatpak
+failure was in reading the bundle, not in what the bundle carries.
+
 | Run | SHA | What it proves |
 |---|---|---|
 | [45112837415](https://github.com/intgral-ai/intcad/actions/runs/45112837415) | `77914e22` | Linux x86_64 (deb, rpm, AppImage, tar.gz) and macOS universal carry the agent whole; Linux aarch64, Windows x86/arm64, web are `native`. It also claimed Flatpak/Arch/Snap x86_64 carried it; that was the recorder reading the source tarball — the Arch package did not, which this branch now fixes |

@@ -545,7 +545,11 @@ def names_flatpak(path):
     # file, so the tree cannot be a stale or different bundle. The runtime the bundle names is
     # already installed by the job that built and smoked it; `--noninteractive` refuses rather
     # than waits if it is not.
-    installed = _run([tool, "install", "--user", "-y", "--noninteractive", "--reinstall",
+    # Remove any deployment first: `--reinstall` of the same commit can still be refused as
+    # "already installed" by some Flatpak versions, and the point is to read these bytes.
+    subprocess.run([tool, "uninstall", "--user", "-y", "--noninteractive", FLATPAK_APP_ID],
+                   capture_output=True, text=True)
+    installed = _run([tool, "install", "--user", "-y", "--noninteractive",
                       str(Path(path).resolve())], timeout=900)
     # The exact ref the install reported names the app, its architecture and its branch: a bundle
     # of another app (or another branch of this one) cannot be attested by this deployment.
