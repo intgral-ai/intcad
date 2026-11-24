@@ -2358,3 +2358,24 @@ Three facts from that single run: GitHub reports the **tag name** as `head_branc
 (so `head_branch == tag` in `verify_execution` is correct); a non-stable `v*` tag does **not**
 start the heavy jobs; and the YAML `push: tags: ["v*"]` trigger fires as intended. The tag was
 deleted from origin and locally afterwards, and no `v0.1.3*` tag exists.
+
+**The promotion's `Cargo.lock` must be regenerated after the feature merges — measured.**
+
+`c929f797e1` bumps the workspace to `0.1.3` and updates `Cargo.lock` (50 lines, 27 members) for the
+crate set that existed at `develop f18a9aec27`. The paid-authority merges add new workspace
+members (`crates/account-native`, `crates/suspend-clock`, plus the CLI/app dependency changes),
+whose lock entries carry the older version. On a simulated final tree
+(`develop + #214 + #224 + gate PR + integration branch + both promotion commits`):
+
+```
+cargo check -p solidcraft --profile ci --locked
+error: cannot update the lock file … because --locked was passed to prevent this
+cargo metadata --locked  → fails on the same tree
+origin/task/int1497-paid-integration alone: cargo metadata --locked → OK
+```
+
+So the conflict is not in the branches; it is the promotion commit's lock being older than the
+final crate set. The rebase step must therefore **regenerate `Cargo.lock` after the merges and
+include it in the version commit**, then prove `cargo check --profile ci --locked` (or at least
+`cargo metadata --locked`) before pushing the promotion branch. Otherwise the formal gate's own
+`--locked` builds fail after the two-hour wait.
