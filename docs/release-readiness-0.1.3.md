@@ -71,7 +71,7 @@ an installed 0.1.2, and the 0.1.2 client's own update check is what has to work 
 
 | Workstream | Owner | State | Integration condition |
 |---|---|---|---|
-| Login, accounts, capability authorization (INT-1497) | Huaiyuan | PR #213, draft, head `22f427c8c0de3aec42299edc8c70056d8c86a870` | CI green on the promotion SHA, then the Gate B checks |
+| Login, accounts, capability authorization (INT-1497) | Huaiyuan | PR #224, open, head `0519d3aba6e047aa2fd6c530f556b5d3ee111240`; #213 closed at `22f427c8` | CI green on the promotion SHA, then the Gate B checks |
 | Modelling skills in the built-in agent (#198, INT-1473 prerequisite) | Tianwei | PR #204, open, head `b2cb0ef0e0317c9273f771ade89e1c8892331778` | Review comments closed, Text-to-CAD as a second set, installed-app evidence |
 | Agentic behaviour over the right rail (INT-1473) | Tianwei | PR #212, open, head `31eae3957c35f78381ef9b1a4cab70b09b6465f9`, based on #204's branch | #204 merged first, then rebase onto `develop` |
 | UI changes | PP | **PR #221**, draft and `BEHIND` (head `54424aa3`): the Assistant moves to the bottom centre, one message box, native clipping; 29 files, +1823/−224. `ui_containers` red (its own), `lint` red (the `develop`-wide #212 breakage, fixed in #222) | `ui_containers` green, marked ready, visual regression run |
@@ -1159,7 +1159,7 @@ Still open, and not decidable from here:
 
 1. **PP's UI (#221, B9).** Draft, `BEHIND`, `ui_containers` red; the scope item the CTO requires
    cannot be integrated until that check is green and the PR is marked ready.
-2. **Login Gate B.** #213 is still a draft and its `Windows app startup` check fails; the whole of
+2. **Login Gate B.** #213 is closed; #224 carries INT-1497 and its `Windows app startup` check fails; the whole of
    Gate B is unrun. Login development is not this role's work.
 3. **B10, the slash menu.** The Assistant has no consumer of `available_commands_update`; the four
    `skill/<name>` commands work as typed text only. This needs an app-side feature and a decision on
@@ -1306,8 +1306,8 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   `actionlint` on `release.yml` exited zero. The standalone regression uses a real ZIP and
   a fixture for the MSI file listing. It does not prove a real MSI install or hosted CI.
   The stack is not on #214; integration and real-package evidence are still blocked.
-- **Gate B — BLOCKED / NOT RUN.** #213 is draft and behind at `22f427c8`. The [tested Windows
-  job](https://github.com/intgral-ai/intcad/actions/runs/45109730998/job/137479303661) passed
+- **Gate B — BLOCKED / NOT RUN.** #213 is now closed; #224 carries INT-1497. The previously
+  [tested Windows job](https://github.com/intgral-ai/intcad/actions/runs/45109730998/job/137479303661) passed
   startup, then timed out in `tools/windows-resize-smoke.ps1`: after moving the window to
   `(20,20)–(1004,640)`, `WM_NCHITTEST` at `(20,330)` did not return `HTLEFT` within 2 s
   (Win32 error 1460). Assistant smoke was skipped, not failed. The latest completed green
