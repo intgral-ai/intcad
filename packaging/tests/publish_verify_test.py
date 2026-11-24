@@ -323,6 +323,42 @@ class Publish(unittest.TestCase):
             with self.subTest(name=name, version=version), self.assertRaises(ValueError):
                 release.frozen_notes(sha, name, version, str(root))
 
+    def test_remote_tag_drift_deletion_and_stale_local_copy_are_refused(self):
+        import subprocess
+
+        def run(*args, cwd=None):
+            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+
+        remote = self.root / "remote.git"
+        run("init", "-q", "--bare", "--initial-branch=main", str(remote))
+        work = self.root / "work"
+        run("clone", "-q", str(remote), str(work))
+        run("-C", str(work), "config", "user.email", "f@example.com")
+        run("-C", str(work), "config", "user.name", "f")
+        (work / "a").write_text("a")
+        run("-C", str(work), "add", "-A")
+        run("-C", str(work), "commit", "-qm", "frozen")
+        frozen = run("-C", str(work), "rev-parse", "HEAD").strip()
+        run("-C", str(work), "push", "-q", "origin", "main")
+        run("-C", str(work), "tag", "-a", "v0.1.3", "-m", "release")
+        run("-C", str(work), "push", "-q", "origin", "v0.1.3")
+        # The publisher's local copy is now stale relative to what follows.
+        release.require_remote_tag(str(remote), "v0.1.3", frozen, str(work))
+        (work / "b").write_text("b")
+        run("-C", str(work), "add", "-A")
+        run("-C", str(work), "commit", "-qm", "later")
+        later = run("-C", str(work), "rev-parse", "HEAD").strip()
+        run("-C", str(work), "push", "-q", "origin", "main")
+        # Remote tag moved; the local tag still says `frozen`.
+        run("-C", str(work), "tag", "-f", "-a", "v0.1.3", later, "-m", "moved")
+        run("-C", str(work), "push", "-q", "--force", "origin", "v0.1.3")
+        with self.assertRaisesRegex(ValueError, "remote tag .* points at"):
+            release.require_remote_tag(str(remote), "v0.1.3", frozen, str(work))
+        # Remote tag deleted entirely.
+        run("-C", str(work), "push", "-q", "origin", ":refs/tags/v0.1.3")
+        with self.assertRaisesRegex(ValueError, "does not exist on the remote"):
+            release.require_remote_tag(str(remote), "v0.1.3", frozen, str(work))
+
     def test_tag_must_still_name_the_frozen_sha_before_every_upload(self):
         import subprocess
         root = self.root / "tagrepo"
@@ -390,9 +426,12 @@ class Publish(unittest.TestCase):
         # Some plans omit the field; only an explicit true is a bypass.
         self.assertEqual(release.verify_environment({k: v for k, v in env.items() if k != "can_admins_bypass"}, policies),
                          "independent")
-        # One person: dispatch and approval cannot be split, so self-review must be allowed.
+        # One person: dispatch and approval cannot be split. Only an explicit owner
+        # setting allows it; the default stays strict.
         solo = env | {"protection_rules": [reviewers | {"prevent_self_review": False}]}
-        self.assertEqual(release.verify_environment(solo, policies), "single-owner")
+        with self.assertRaises(ValueError):
+            release.verify_environment(solo, policies)
+        self.assertEqual(release.verify_environment(solo, policies, allow_single_owner=True), "single-owner")
         # Two reviewers must still prevent self-review.
         two = env | {"protection_rules": [reviewers | {"prevent_self_review": False,
                                                        "reviewers": [{"type": "Team"}, {"type": "User"}]}]}
