@@ -2044,3 +2044,19 @@ well inside the 240-minute full-scope timeout) with step 10 `Measure selected ex
 job-logs API), and an empty check-run summary. A test failure would have a failing step and a
 log. GitHub refuses `gh run rerun --failed` while the run is still in progress, so the rerun is
 issued once the remaining matrix shards finish; the gate itself is unchanged.
+
+**Re-measured on the heads that exist now (18:30Z).** The stack moved after the first
+measurement, so the earlier "chain compiles" result was refreshed against
+`#224 dc1f8f8d59`, `#227 e62751e287`, `#233 4d14460262`, `#235 e4edd2ffdf`, `#234 a48a61dc62`:
+
+| Step (in order) | Result |
+|---|---|
+| #227 | clean |
+| #233 | clean |
+| #235 | clean (`apps/solidcraft/src/account.rs` auto-merged) |
+| #234 | clean (`apps/solidcraft/src/account.rs`, `crates/ui-egui/src/control.rs` auto-merged) |
+
+On that tree: `test_gate.py`, `test_release_content.py` (skipped=11),
+`test_package_contents.py`, `test_release_candidate.py` all pass; `packaging/tests` ran
+**152 tests, 0 failures, 0 errors**; and `MAX_ABSOLUTE_GRANT_LEASE` is the rev4 **300 s**,
+which is the value the 280 s entries need.
