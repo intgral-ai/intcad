@@ -1141,8 +1141,14 @@ impl ValidationPort {
                         && winner.state == ValidationState::Cancelled
                     {
                         let admission = self.load_admission(run_id)?;
+                        // `adopt_report` returns true even when it observes a different terminal
+                        // state and writes nothing, so re-read and accept only our own state; a
+                        // competing terminal completion must still be a mismatch.
                         if self.adopt_report(run_id, &admission)? {
-                            return Ok(());
+                            let current = self.load_state(run_id)?;
+                            if current.state.is_terminal() && current.state == state {
+                                return Ok(());
+                            }
                         }
                     }
                     return Err(ValidationError::report_mismatch("a different terminal report already exists for this run"));
