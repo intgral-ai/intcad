@@ -2689,3 +2689,10 @@ Windows installer replacement (packaging evidence from #214).
 (Git Actions = operational, Git Operations = operational) at 19:14Z, so the remaining time is the
 measured full-CI duration itself, not an outage. #214's heavy jobs started 18:49Z and their
 240-minute ceiling is 22:49Z, so there is a wide margin.
+
+**#214's archive finished; the 16 matrix shards are now running.** At 19:14Z run 45463466599 shows
+`completed=19 (0 failures), in_progress=16 shards + matrix determinism + full-baseline properties +
+the regression gate, queued=0`. The `Build full-baseline archive` job succeeded, which is the
+prerequisite for the shards, so the run has passed its longest build step and is in the execution
+fan-out. Expected completion is inside the normal window; no job has failed in either attempt of
+the branch.
