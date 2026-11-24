@@ -2313,3 +2313,32 @@ Verified on that tree: `test_release_content.py`, `test_package_contents.py`, `t
 `packaging/tests/publish_verify_test.py` all OK; `packaging/tests` **118 tests, 0 failures**;
 `scripts/test-format-pending.sh` OK. The superseded run 45447415365 was cancelled by the branch's
 concurrency group; the new run is **45463466599** on `318b87cc94`.
+
+## 13. Review of the tag-push formal gate (Migration Agent branch `gate/tag-push-post-promotion`)
+
+Reviewed at `50cef2b444` (based on `develop 085675557d`), 8 files, +158/−17. What it does, and
+why it closes the contradiction in §10:
+
+- `.github/workflows/release-gate.yml` adds `push: tags: ["v*"]` and passes `github.ref` to the
+  candidate step; branch pushes stay out, so ordinary merges pay nothing.
+- `release_candidate.state` treats only `refs/tags/vX.Y.Z` as a formal candidate
+  (`refs/heads/main`, `-rc.1`, `v1.2`, `nightly` are refused), and `context()` still names
+  `workflow_dispatch` runs `release-gate-diagnostic`.
+- `release_handoff.verify_execution(mode="tag")` requires `event=push`, `head_sha==sha`,
+  `head_branch==tag`; candidate mode still accepts only `pull_request`/`merge_group`, so a
+  diagnostic dispatch is consumable in neither mode.
+- `gate_record` writes `mode=tag` and `ref=refs/tags/v<version>` only when `GITHUB_REF` is exactly
+  that tag; `verify_manifest` checks mode/ref; `prepare` reads the manifest **before** verifying
+  the live run, so a candidate run and a tag run cannot be substituted for each other.
+- `require_tag_on_main`/`require_remote_tag` remain in `selection` and `confirm`; tests cover
+  dispatch refusal, wrong tag/SHA/attempt, manifest ref/mode, remote-tag deletion and a tag that
+  no longer names the frozen SHA.
+
+**One assumption still needs evidence before the release spends two hours:** GitHub's run object
+for a tag push is assumed to carry `head_branch` = the tag name. This repository has **no** tag-push
+runs in its history (every `event=push` run is a `develop` push), so the field cannot be confirmed
+from history. Planned closure: after this change merges, push a throwaway `v0.1.3-preflight` tag
+(not matching the stable pattern, so the candidate step refuses and no heavy job runs), read the
+run's `head_branch`/`head_sha`, delete the tag, and either keep the strict check or accept an empty
+`head_branch` while still requiring `event=push`, `head_sha==sha`, the manifest's tag ref, and the
+tag-on-main check.
