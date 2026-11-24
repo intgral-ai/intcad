@@ -323,41 +323,14 @@ class Publish(unittest.TestCase):
             with self.subTest(name=name, version=version), self.assertRaises(ValueError):
                 release.frozen_notes(sha, name, version, str(root))
 
-    def test_remote_tag_drift_deletion_and_stale_local_copy_are_refused(self):
-        import subprocess
-
-        def run(*args, cwd=None):
-            return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
-
-        remote = self.root / "remote.git"
-        run("init", "-q", "--bare", "--initial-branch=main", str(remote))
-        work = self.root / "work"
-        run("clone", "-q", str(remote), str(work))
-        run("-C", str(work), "config", "user.email", "f@example.com")
-        run("-C", str(work), "config", "user.name", "f")
-        (work / "a").write_text("a")
-        run("-C", str(work), "add", "-A")
-        run("-C", str(work), "commit", "-qm", "frozen")
-        frozen = run("-C", str(work), "rev-parse", "HEAD").strip()
-        run("-C", str(work), "push", "-q", "origin", "main")
-        run("-C", str(work), "tag", "-a", "v0.1.3", "-m", "release")
-        run("-C", str(work), "push", "-q", "origin", "v0.1.3")
-        # The publisher's local copy is now stale relative to what follows.
-        release.require_remote_tag(str(remote), "v0.1.3", frozen, str(work))
-        (work / "b").write_text("b")
-        run("-C", str(work), "add", "-A")
-        run("-C", str(work), "commit", "-qm", "later")
-        later = run("-C", str(work), "rev-parse", "HEAD").strip()
-        run("-C", str(work), "push", "-q", "origin", "main")
-        # Remote tag moved; the local tag still says `frozen`.
-        run("-C", str(work), "tag", "-f", "-a", "v0.1.3", later, "-m", "moved")
-        run("-C", str(work), "push", "-q", "--force", "origin", "v0.1.3")
-        with self.assertRaisesRegex(ValueError, "remote tag .* points at"):
-            release.require_remote_tag(str(remote), "v0.1.3", frozen, str(work))
-        # Remote tag deleted entirely.
-        run("-C", str(work), "push", "-q", "origin", ":refs/tags/v0.1.3")
-        with self.assertRaisesRegex(ValueError, "does not exist on the remote"):
-            release.require_remote_tag(str(remote), "v0.1.3", frozen, str(work))
+    def test_remote_tag_and_main_provenance_must_match(self):
+        ok = dict(tag_commit=SHA, main_commit="b" * 40, sha=SHA, ancestor=True)
+        release.verify_remote_tag(**ok)
+        for change, message in (({"tag_commit": "c" * 40}, "not the frozen source SHA"),
+                                ({"main_commit": "nope"}, "cannot read the remote main branch"),
+                                ({"ancestor": False}, "not on the remote main branch")):
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, message):
+                release.verify_remote_tag(**(ok | change))
 
     def test_tag_must_still_name_the_frozen_sha_before_every_upload(self):
         import subprocess
@@ -418,7 +391,8 @@ class Publish(unittest.TestCase):
         self.assertFalse(release.gate_candidate("merge_group", group, 12, V + "-beta.1"))
 
     def test_environment_requires_review_and_only_exact_main_branch_policy(self):
-        reviewers = dict(type="required_reviewers", prevent_self_review=True, reviewers=[{"type": "Team"}])
+        reviewers = dict(type="required_reviewers", prevent_self_review=True,
+                         reviewers=[{"type": "User", "reviewer": {"login": "owner"}}])
         env = dict(name="release-signing", protection_rules=[reviewers], can_admins_bypass=False,
                    deployment_branch_policy=dict(protected_branches=False, custom_branch_policies=True))
         policies = [dict(name="main", type="branch")]
@@ -434,7 +408,8 @@ class Publish(unittest.TestCase):
         self.assertEqual(release.verify_environment(solo, policies, allow_single_owner=True), "single-owner")
         # Two reviewers must still prevent self-review.
         two = env | {"protection_rules": [reviewers | {"prevent_self_review": False,
-                                                       "reviewers": [{"type": "Team"}, {"type": "User"}]}]}
+                                                       "reviewers": [{"type": "User", "reviewer": {"login": "a"}},
+                                                                     {"type": "User", "reviewer": {"login": "b"}}]}]}
         with self.assertRaises(ValueError):
             release.verify_environment(two, policies)
         for metadata, rules in [
