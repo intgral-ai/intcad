@@ -502,8 +502,10 @@ def verify_environment(environment, policies):
              if rule.get("type") == "required_reviewers"]
     require(environment.get("name") == "release-signing" and len(rules) == 1
             and rules[0].get("prevent_self_review") is True and bool(rules[0].get("reviewers"))
-            and environment.get("can_admins_bypass") is False,
-            "release-signing must require independent reviewers and forbid admin bypass")
+            # GitHub may omit the field on some plans. Only an explicit `true` is a bypass;
+            # an absent field is reported as a warning and checked in the UI.
+            and environment.get("can_admins_bypass") is not True,
+            "release-signing must require independent reviewers and must not allow admin bypass")
     policy = environment.get("deployment_branch_policy") or {}
     require(policy.get("protected_branches") is False and policy.get("custom_branch_policies") is True
             and [(row.get("name"), row.get("type")) for row in policies] == [("main", "branch")],
@@ -513,8 +515,12 @@ def verify_environment(environment, policies):
 def check_environment(env):
     repo = env["GITHUB_REPOSITORY"]
     endpoint = f"repos/{repo}/environments/release-signing"
-    verify_environment(api(endpoint), [row for page in pages(f"{endpoint}/deployment-branch-policies")
-                                       for row in page["branch_policies"]])
+    environment = api(endpoint)
+    if "can_admins_bypass" not in environment:
+        print("::warning::release-signing omitted can_admins_bypass; confirm in the UI that "
+              "administrators cannot bypass its protection rules", flush=True)
+    verify_environment(environment, [row for page in pages(f"{endpoint}/deployment-branch-policies")
+                                     for row in page["branch_policies"]])
 
 
 def live_execution(repo, repo_id, run, attempt):
@@ -546,6 +552,19 @@ def require_producers(sha, repo="."):
         require(frozen == protected, f"{tree}: the release candidate changed the evidence producer")
 
 
+def require_tag_on_main(tag, sha, repo="."):
+    """The tag still names the frozen SHA, and that SHA is already on this protected branch.
+
+    Called again before every upload: a tag moved after the gate, or a commit that was never
+    promoted, must stop staging even when the earlier check passed.
+    """
+    resolved = git("-C", repo, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}").decode().strip()
+    require(resolved == sha, f"tag {tag} moved: it no longer points at the frozen source SHA")
+    require(subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", sha, "HEAD"],
+                           capture_output=True).returncode == 0,
+            "source SHA is not on the protected main branch")
+
+
 def selection(env, *, resolve_tag=False):
     repo, repo_id = authorize(env)
     version, run, attempt = dispatch(env["TAG"], env["RUN_ID"], env["RUN_ATTEMPT"])
@@ -553,13 +572,7 @@ def selection(env, *, resolve_tag=False):
     source_version, contract = checkout_info(sha)
     require(source_version == version, "tag does not match the frozen workspace version")
     if resolve_tag:
-        tag = git("rev-parse", "--verify", f"refs/tags/{env['TAG']}^{{commit}}").decode().strip()
-        require(tag == sha, "source tag does not point to the frozen source SHA")
-        # The released commit must already be on the protected branch this dispatch runs from:
-        # a tag on a private or unmerged commit is not a promoted release.
-        require(subprocess.run(["git", "merge-base", "--is-ancestor", sha, "HEAD"],
-                               capture_output=True).returncode == 0,
-                "source SHA is not on the protected main branch")
+        require_tag_on_main(env["TAG"], sha)
     live_execution(repo, repo_id, run, attempt)
     return repo, repo_id, run, attempt, sha, version, contract
 
@@ -601,6 +614,8 @@ def confirm(env):
     require(candidate["source"] == repo and candidate["repositoryId"] == ident, "frozen source changed")
     run, attempt = candidate["runId"], candidate["runAttempt"]
     live_execution(repo, ident, run, attempt)
+    # Re-read the tag before the next upload: it must still name the frozen SHA on main.
+    require_tag_on_main(env["TAG"], candidate["sourceRevision"])
     live = artifact_index(run_artifacts(repo, run), (*pair_names(attempt), manifest_name(attempt)))
     require(live == candidate["archives"], "accepted archive identities changed before signing/staging")
 

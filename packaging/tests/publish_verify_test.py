@@ -323,6 +323,43 @@ class Publish(unittest.TestCase):
             with self.subTest(name=name, version=version), self.assertRaises(ValueError):
                 release.frozen_notes(sha, name, version, str(root))
 
+    def test_tag_must_still_name_the_frozen_sha_before_every_upload(self):
+        import subprocess
+        root = self.root / "tagrepo"
+        root.mkdir()
+
+        def git(*args):
+            subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "fixture@example.com")
+        git("config", "user.name", "fixture")
+        (root / "a.txt").write_text("a")
+        git("add", "-A")
+        git("commit", "-qm", "frozen")
+        frozen = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        git("tag", "-a", "v0.1.3", "-m", "release")
+        release.require_tag_on_main("v0.1.3", frozen, str(root))
+        # A later commit on main is fine for ancestry, but the tag must not have moved.
+        (root / "b.txt").write_text("b")
+        git("add", "-A")
+        git("commit", "-qm", "later")
+        release.require_tag_on_main("v0.1.3", frozen, str(root))
+        later = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        git("tag", "-f", "v0.1.3", later)
+        with self.assertRaisesRegex(ValueError, "moved"):
+            release.require_tag_on_main("v0.1.3", frozen, str(root))
+        # A commit that is not on main cannot be released even when its tag matches it.
+        git("checkout", "-q", "-b", "side", frozen)
+        (root / "c.txt").write_text("c")
+        git("add", "-A")
+        git("commit", "-qm", "side")
+        side = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        git("tag", "-f", "v0.1.4", side)
+        git("checkout", "-q", "main")
+        with self.assertRaisesRegex(ValueError, "not on the protected main"):
+            release.require_tag_on_main("v0.1.4", side, str(root))
+
     def test_agent_candidate_requires_explicit_legal_and_installed_review_for_exact_execution(self):
         release.verify_agent_review("native", SHA, 42, 2, "", "")
         receipt = f"{SHA}:42:2"
@@ -350,11 +387,12 @@ class Publish(unittest.TestCase):
                    deployment_branch_policy=dict(protected_branches=False, custom_branch_policies=True))
         policies = [dict(name="main", type="branch")]
         release.verify_environment(env, policies)
+        # Some plans omit the field; only an explicit true is a bypass.
+        release.verify_environment({k: v for k, v in env.items() if k != "can_admins_bypass"}, policies)
         for metadata, rules in [
             (env | {"protection_rules": []}, policies),
             (env | {"protection_rules": [reviewers | {"prevent_self_review": False}]}, policies),
             (env | {"can_admins_bypass": True}, policies),
-            ({k: v for k, v in env.items() if k != "can_admins_bypass"}, policies),
             (env, [dict(name="main", type="tag")]),
             (env, policies + [dict(name="release/*", type="branch")]),
         ]:
