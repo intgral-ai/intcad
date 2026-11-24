@@ -318,7 +318,7 @@ pub struct AssistantWeb {
     #[cfg(target_os = "linux")]
     applied_shape: Option<(i32, i32, i32, u64)>,
     #[cfg(target_os = "linux")]
-    gtk_remapped: Rc<Cell<bool>>,
+    gtk_shape_dirty: Rc<Cell<bool>>,
     /// GTK had something to do in a turn since the last frame. Set by the page's draw, its IPC
     /// and its presses, not by every idle timer GTK happens to have: an Assistant at rest must
     /// not keep the app at 60 fps.
@@ -764,14 +764,21 @@ impl AssistantWeb {
             Ok(view) => {
                 #[cfg(target_os = "linux")]
                 {
-                    use gtk::prelude::WidgetExtManual;
+                    use gtk::prelude::{WidgetExt, WidgetExtManual};
                     if let Some(window) = gtk_window.as_ref() {
-                        let remapped = self.gtk_remapped.clone();
+                        let dirty = self.gtk_shape_dirty.clone();
                         let repaint = ctx.clone();
                         window.connect_map_event(move |_, _| {
-                            remapped.set(true);
+                            dirty.set(true);
                             repaint.request_repaint();
                             gtk::glib::Propagation::Proceed
+                        });
+                        let dirty = self.gtk_shape_dirty.clone();
+                        let repaint = ctx.clone();
+                        window.connect_configure_event(move |_, _| {
+                            dirty.set(true);
+                            repaint.request_repaint();
+                            false
                         });
                     }
                     self.gtk_window = gtk_window;
@@ -903,23 +910,34 @@ impl AssistantWeb {
         use gtk::prelude::WidgetExt;
         let (Some(view), Some(window)) = (&self.view, &self.gtk_window) else { return };
         let Some(native) = window.window() else { return };
-        let allocation = window.allocation();
-        let (width, height, scale) = (allocation.width(), allocation.height(), window.scale_factor());
+        // X11 placement and GTK widget allocation are asynchronous. The region belongs to
+        // this GDK window: use its configured bounds, not a potentially older widget allocation.
+        let (width, height, scale) = (native.width(), native.height(), window.scale_factor());
         let zoom = page_zoom(view, at);
         let key = (width, height, scale, if centred { zoom.to_bits() } else { 0 });
-        if !self.gtk_remapped.replace(false) && self.applied_shape == Some(key) {
+        if !self.gtk_shape_dirty.replace(false) && self.applied_shape == Some(key) {
             return;
         }
         let report = self.gtk_shape.as_ref().filter(|_| centred);
         let popup = report.and_then(|report| report.popup);
-        let region = report
-            .filter(|p| p.popup.is_none() && shape::matches_allocation(p.width, p.height, zoom, width, height))
-            .and_then(|p| shape::mask(&p.surfaces, zoom, width, height))
-            .map(|spans| {
-                let rectangles: Vec<_> = spans.into_iter().map(|[x, y, w, h]| gtk::cairo::RectangleInt::new(x, y, w, h)).collect();
-                gtk::cairo::Region::create_rectangles(&rectangles)
-            });
+        let fits = report.is_some_and(|p| shape::matches_allocation(p.width, p.height, zoom, width, height));
+        let region = report.filter(|_| popup.is_none() && fits).and_then(|p| shape::mask(&p.surfaces, zoom, width, height)).map(|spans| {
+            let rectangles: Vec<_> = spans.into_iter().map(|[x, y, w, h]| gtk::cairo::RectangleInt::new(x, y, w, h)).collect();
+            gtk::cairo::Region::create_rectangles(&rectangles)
+        });
         native.shape_combine_region(region.as_ref(), 0, 0);
+        if centred && std::env::var_os("SOLIDCRAFT_ASSISTANT_SHAPE_TRACE").is_some() {
+            let allocation = window.allocation();
+            let page = report.map(|p| (p.width, p.height, p.surfaces.len()));
+            let rectangles = region.as_ref().map(gtk::cairo::Region::num_rectangles);
+            note(&format!(
+                "shape: native={width}x{height} allocation={}x{} scale={scale} zoom={zoom} page={page:?} fits={fits} popup={popup:?} \
+                 rectangles={rectangles:?} shaped={}",
+                allocation.width(),
+                allocation.height(),
+                native.is_shaped(),
+            ));
+        }
         // Flush before making a portal visible. No new window, focus request or input grab.
         if let Some(token) = popup {
             native.display().flush();
@@ -1168,6 +1186,21 @@ mod tests {
         assert!(!covers(5, 24));
         assert!(covers(6, 24));
         assert!(covers(19, 24));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_starting_fixture_covers_full_width_at_125_percent() {
+        // The bundled page's collapsed status/header and ring at 520×137 CSS pixels.
+        let surfaces = [[0., 0., 520., 73., 23., 23., 23., 23., 0., 0., 0., 0.], [0., 49., 520., 137., 23., 23., 23., 23., 23., 23., 23., 23.]];
+        assert!(shape::matches_allocation(520., 137., 1.25, 650, 171));
+        let spans = shape::mask(&surfaces, 1.25, 650, 171).expect("the starting fixture has a native region, not a rectangular fallback");
+        let covers = |x, y| spans.iter().any(|&[l, t, w, h]| l <= x && x < l + w && t <= y && y < t + h);
+        for y in [30, 72, 120] {
+            assert!((0..650).all(|x| covers(x, y)), "the straight row {y} keeps its full width");
+        }
+        assert!((0..171).all(|y| covers(325, y)), "overlapping surfaces keep the centre column");
+        assert!(!covers(647, 168) && !covers(645, 2), "the named CAD corner probes stay outside the native region");
     }
 
     #[cfg(target_os = "linux")]
