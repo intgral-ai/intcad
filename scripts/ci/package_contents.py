@@ -247,6 +247,24 @@ def main():
             report["unchecked"].append({"name": source.name, "reason": str(error)})
         else:
             report["markers"].extend(marker_entries(names))
+        # The derived package itself must be covered: either inspected directly when
+        # this runner has a reader for its format, or recorded as covered by the
+        # inspected source package. A digest with neither is not evidence.
+        for value in args.artifacts:
+            path = Path(value)
+            if not path.is_file():
+                continue
+            if path.name.lower().endswith(IGNORED_SUFFIXES):
+                report["ignored"].append(path.name)
+                continue
+            try:
+                kind, names = inspect(path)
+            except Exception:  # noqa: BLE001 - no reader for this wrapper format
+                report["checked"].append({"name": path.name, "sha256": digest(path), "format": "covered",
+                                          "entries": 0, "coveredBy": args.derived_from})
+                continue
+            report["checked"].append({"name": path.name, "sha256": digest(path), "format": kind, "entries": len(names)})
+            report["markers"].extend(marker_entries(names))
     else:
         for value in args.artifacts:
             path = Path(value)
