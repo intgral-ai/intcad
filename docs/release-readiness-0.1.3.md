@@ -2060,3 +2060,7 @@ On that tree: `test_gate.py`, `test_release_content.py` (skipped=11),
 `test_package_contents.py`, `test_release_candidate.py` all pass; `packaging/tests` ran
 **152 tests, 0 failures, 0 errors**; and `MAX_ABSOLUTE_GRANT_LEASE` is the rev4 **300 s**,
 which is the value the 280 s entries need.
+
+The refreshed chain also compiles: `cargo check -p solidcraft --profile ci --locked` on the
+current-head tree returned **exit 0** (`Finished ci profile … in 1m 45s`), with
+`CARGO_TARGET_DIR` outside the worktree.
