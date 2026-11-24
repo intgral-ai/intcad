@@ -15,7 +15,7 @@ const agentFolder = compiled ? "../../agent/" : "../agent/";
 const load = (name: string): Promise<Json> => import(new URL(agentFolder + name, import.meta.url).href);
 const brief = await load("brief.mjs");
 const { BRIEF_LIMIT, projectBrief, projectFiles, projectRoot, sizeOf } = brief;
-const { LANGUAGE, hostOf, noteOf } = await load("session.mjs");
+const { LANGUAGE, NO_PROJECT, hostOf, noteOf } = await load("session.mjs");
 
 // The real path: on macOS the temporary folder is itself reached through a link.
 const work = realpathSync(mkdtempSync(join(tmpdir(), "intcad-brief-test-")));
@@ -266,15 +266,24 @@ test("noteOf: _meta wins when both are there; an absent note is empty", () => {
   assert.equal(noteOf(metaNote("x".repeat(20000))).length, 16000, "a note is cut at 16000 characters");
 });
 
-test("hostOf: a bad project gives no project and no brief, and the note alone", () => {
+test("hostOf: a bad project gives no project and no brief: the note, and the line that there is no project", () => {
   const file = join(folder(), "a-file.md");
   writeFileSync(file, "not a folder\n");
   for (const project of [undefined, 42, "relative/folder", join(work, "not-there"), file, parse(work).root]) {
     const request = { _meta: { systemPrompt: { append: "The note." }, intcad: { project } } };
-    assert.deepEqual(hostOf(request), { project: null, instructions: `The note.\n\n${LANGUAGE}` }, `project ${JSON.stringify(project)}`);
+    assert.deepEqual(hostOf(request), { project: null, instructions: `The note.\n\n${LANGUAGE}\n\n${NO_PROJECT}` }, `project ${JSON.stringify(project)}`);
   }
-  assert.deepEqual(hostOf({ _meta: { intcad: { project: "relative" } } }), { project: null, instructions: LANGUAGE });
-  assert.deepEqual(hostOf({}), { project: null, instructions: LANGUAGE });
+  assert.deepEqual(hostOf({ _meta: { intcad: { project: "relative" } } }), { project: null, instructions: `${LANGUAGE}\n\n${NO_PROJECT}` });
+  assert.deepEqual(hostOf({}), { project: null, instructions: `${LANGUAGE}\n\n${NO_PROJECT}` });
+});
+
+// INT-1508: a chat without a project was told nothing of it, and the model sent the user to an MCP
+// option (`--allow-path`) the built-in agent has no use for.
+test("NO_PROJECT says there is no project folder and the way to one: create or open it, then New chat", () => {
+  assert.match(NO_PROJECT, /no project folder/u);
+  assert.match(NO_PROJECT, /create or open the project, then start a New chat/u);
+  assert.ok(!NO_PROJECT.includes("--allow-path"));
+  assert.ok(!NO_PROJECT.includes("\n"), "one line, as LANGUAGE is");
 });
 
 test("hostOf: a good project gives its real path, and instructions that hold the note and then the brief", () => {
@@ -287,6 +296,7 @@ test("hostOf: a good project gives its real path, and instructions that hold the
   const brief = projectBrief(root);
   assert.ok(brief.includes("- requirements.md: text, 19 B"));
   assert.equal(host.instructions, `The app's note.\n\n${LANGUAGE}\n\n${brief}`);
+  assert.ok(!host.instructions.includes(NO_PROJECT), "a chat on a project is not told it has none");
   // With no note, the language line and the brief.
   assert.equal(hostOf({ _meta: { intcad: { project: root } } }).instructions, `${LANGUAGE}\n\n${brief}`);
 });

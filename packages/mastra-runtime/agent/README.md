@@ -133,6 +133,9 @@ folder at all (`fence.mjs`), so the model cannot write its own instructions ther
 are off (`disableHooks`): Intcad configures none. Git does not look for a repository above
 `sessions/` (`GIT_CEILING_DIRECTORIES`), so a data folder inside a checkout reads none of its files.
 Every session is also told to answer in the language the user writes in (`LANGUAGE`).
+A session without a project is told so in place of the brief (`NO_PROJECT`, INT-1508): it cannot
+write the project's files, and a user who asks it to is told to create or open the project, then
+start a New chat, since the app hands a project over only when a chat starts.
 
 With a project:
 
