@@ -180,24 +180,13 @@ fn coded_refusal(code: RefusalCode, message: impl std::fmt::Display) -> String {
     format!("{}: {message}", code.as_str())
 }
 
-fn settle_check(billing: &mut dyn BillingPort, operation: &OperationId, produced: bool) -> Result<(), String> {
-    if produced {
-        match billing.commit(operation, BillingResult::Succeeded) {
-            Ok(_) => Ok(()),
-            Err(error) => Err(coded_refusal(
-                error.code,
-                format!("the report was produced but settlement was not confirmed; keep operation {} and settle it again", operation.as_str()),
-            )),
-        }
-    } else {
-        match billing.release(operation, RefusalCode::UnsafeToStart) {
-            Ok(()) => Ok(()),
-            Err(error) => Err(coded_refusal(
-                error.code,
-                format!("the check produced no report and its release was not confirmed; keep operation {} for recovery", operation.as_str()),
-            )),
-        }
-    }
+fn release_check(billing: &mut dyn BillingPort, operation: &OperationId) -> Result<(), String> {
+    billing.release(operation, RefusalCode::UnsafeToStart).map_err(|error| {
+        coded_refusal(
+            error.code,
+            format!("the check produced no report and its release was not confirmed; keep operation {} for recovery", operation.as_str()),
+        )
+    })
 }
 
 /// Run one mixed profile as exactly one controlled check.
@@ -243,12 +232,14 @@ fn run_controlled_check_using<P: Borrow<ValidationPort>>(
             return Err(coded_refusal(RefusalCode::UnsafeToStart, "this controlled CLI DFM path has no verified safe-stop bound"));
         }
     };
-    let grant = billing.admit(operation, Capability::Dfm, EntryCategory::CliDfm).map_err(|error| coded_refusal(error.code, error.message))?;
+    let grant = billing
+        .admit(operation, Capability::Dfm, EntryCategory::CliDfm)
+        .map_err(|error| coded_refusal(error.code, format!("{} ({})", error.message, operation.as_str())))?;
     drop(grant); // The billing adapter retains the live execution window.
     let worker = match open() {
         Ok(worker) => worker,
         Err(error) => {
-            settle_check(billing, operation, false)?;
+            release_check(billing, operation)?;
             return Err(error);
         }
     };
@@ -258,12 +249,12 @@ fn run_controlled_check_using<P: Borrow<ValidationPort>>(
     let reserved_run = generate_run_id(now);
 
     enum Claimed {
-        Ran(String),
+        Ran(String, ValidationState),
         Refused(String, Refusal),
         Replayed(String, ValidationState),
     }
 
-    let mut executed = false;
+    let mut settlement_attempted = false;
     let mut uncertain = false;
     let run = (|| -> Result<Claimed, String> {
         let reference = port.register_profile(profile).map_err(|error| format!("PROFILE_UNSUPPORTED: {error}"))?;
@@ -295,46 +286,46 @@ fn run_controlled_check_using<P: Borrow<ValidationPort>>(
             };
         };
         if let Err(refusal) = billing.dispatch(operation, bound) {
+            settlement_attempted = true;
+            let released = billing.release(operation, refusal.code);
             port.refuse_claimed(&job, &refusal).map_err(|error| error.to_string())?;
+            released.map_err(|error| coded_refusal(error.code, error.message))?;
             return Ok(Claimed::Refused(submitted.run_id, refusal));
         }
-        executed = true;
-        match port.run_claimed_checked(&job, Some(stop_at_ms), || billing.check_commit(operation)).map_err(|error| error.to_string())? {
-            Some(refusal) => Ok(Claimed::Refused(submitted.run_id, refusal)),
-            None => Ok(Claimed::Ran(submitted.run_id)),
+        let result = port
+            .run_claimed_settled(&job, Some(stop_at_ms), |chargeable| {
+                settlement_attempted = true;
+                if let Err(refusal) = billing.check_commit(operation) {
+                    let _ = billing.release(operation, refusal.code);
+                    return Err(refusal);
+                }
+                if chargeable {
+                    billing.commit(operation, BillingResult::Succeeded)?;
+                    billing.check_publish(operation)
+                } else {
+                    billing.release(operation, RefusalCode::UnsafeToStart)
+                }
+            })
+            .map_err(|error| error.to_string())?;
+        match result {
+            Err(refusal) => Ok(Claimed::Refused(submitted.run_id, refusal)),
+            Ok(state) => Ok(Claimed::Ran(submitted.run_id, state)),
         }
     })();
 
     match run {
-        Ok(Claimed::Ran(run_id)) => {
-            let status = match port.status(&run_id) {
-                Ok(status) => status,
-                Err(error) => {
-                    let _ = billing.commit(operation, BillingResult::Unknown);
-                    return Err(format!(
-                        "the check ran but its status could not be read; operation {} stays for recovery: {error}",
-                        operation.as_str()
-                    ));
-                }
-            };
-            let produced = matches!(status.state, ValidationState::Passed | ValidationState::QualityFailed);
-            settle_check(billing, operation, produced)?;
-            Ok((ControlledCheck { run_id, state: status.state, report_produced: produced }, worker))
+        Ok(Claimed::Ran(run_id, state)) => {
+            let produced = matches!(state, ValidationState::Passed | ValidationState::QualityFailed);
+            Ok((ControlledCheck { run_id, state, report_produced: produced }, worker))
         }
         Ok(Claimed::Replayed(run_id, state)) => {
-            settle_check(billing, operation, false)?;
+            release_check(billing, operation)?;
             Ok((ControlledCheck { run_id, state, report_produced: false }, worker))
         }
-        Ok(Claimed::Refused(run_id, refusal)) => {
-            billing.release(operation, refusal.code).map_err(|error| coded_refusal(error.code, error.message))?;
-            Err(coded_refusal(refusal.code, format!("{} ({run_id})", refusal.message)))
-        }
-        Err(error) if executed || uncertain => {
-            // UNKNOWN is not a second run or a charge. Never settle on behalf of a different
-            // worker, which still owns the original operation's final disposition.
-            if executed && !uncertain {
-                let _ = billing.commit(operation, BillingResult::Unknown);
-            }
+        Ok(Claimed::Refused(run_id, refusal)) => Err(coded_refusal(refusal.code, format!("{} [{}] ({run_id})", refusal.message, operation.as_str()))),
+        Err(error) if settlement_attempted || uncertain => {
+            // Never pick a second disposition after attempting settlement or when another
+            // worker still owns the running check.
             Err(coded_refusal(
                 RefusalCode::AuthUnavailable,
                 format!(
@@ -344,7 +335,7 @@ fn run_controlled_check_using<P: Borrow<ValidationPort>>(
             ))
         }
         Err(error) => {
-            settle_check(billing, operation, false)?;
+            release_check(billing, operation)?;
             Err(error)
         }
     }

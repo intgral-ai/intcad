@@ -76,6 +76,10 @@ impl fmt::Display for Secret {
 /// credentials in a JSON ledger, or store them in plaintext. A handoff failure must fail the
 /// exchange closed; execution or settlement must not continue without the credential.
 pub trait CredentialHandoff {
+    /// A bound response can provide cleanup credentials even when its execution grant is bad.
+    /// The default sink does not use this early handoff, and it never authorizes execution.
+    fn admission_settlement_candidate(&mut self, _operation: &OperationId, _credential: Secret) {}
+
     /// A wire-level renewal refusal retires only the original operation, not the account.
     fn renewal_unauthorized(&mut self, _scope: &AuthenticatedHostScope, _operation: &OperationId) {}
 
@@ -946,7 +950,13 @@ impl<T: Transport> HttpAccountService<T> {
                 if value.get("operation_id").and_then(Value::as_str) != Some(operation.as_str())
                     || value.get("installation_id").and_then(Value::as_str) != Some(scope.installation().as_str())
                     || value.get("state").and_then(Value::as_str) != Some("HELD")
-                    || value.get("settlement_deadline") != Some(&Value::Null)
+                {
+                    return Err(unavailable());
+                }
+                let settlement =
+                    value.get("settlement_credential").and_then(Value::as_str).filter(|credential| !credential.is_empty()).ok_or_else(unavailable)?;
+                self.handoff.admission_settlement_candidate(operation, Secret::new(settlement));
+                if value.get("settlement_deadline") != Some(&Value::Null)
                     || value.pointer("/execution_grant/capability").and_then(Value::as_str) != Some(capability.wire())
                 {
                     return Err(unavailable());
@@ -959,8 +969,6 @@ impl<T: Transport> HttpAccountService<T> {
                     .and_then(Value::as_str)
                     .filter(|proof| !proof.is_empty())
                     .ok_or_else(unavailable)?;
-                let settlement =
-                    value.get("settlement_credential").and_then(Value::as_str).filter(|credential| !credential.is_empty()).ok_or_else(unavailable)?;
                 let mut grant = self.grant_from_absolute(sent_at, wall_sent, grant_id, capability, authorization_expires_at, grant_expires_at)?;
                 if let Some(interval) = renewal_interval(value.pointer("/execution_grant/renew_after_seconds")) {
                     grant = grant.with_admission_renewal(scope.clone(), operation.clone(), sent_at, interval);

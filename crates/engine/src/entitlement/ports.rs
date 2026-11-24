@@ -107,6 +107,11 @@ pub trait BillingPort {
         Ok(())
     }
 
+    /// Check the original execution window after settlement and before publishing a paid result.
+    fn check_publish(&mut self, _operation: &OperationId) -> Result<(), Refusal> {
+        Ok(())
+    }
+
     fn commit(&mut self, operation: &OperationId, result: BillingResult) -> Result<BillingResult, Refusal>;
     fn release(&mut self, operation: &OperationId, reason: RefusalCode) -> Result<(), Refusal>;
 }

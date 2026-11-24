@@ -255,6 +255,9 @@ pub fn call_tool_with(
 ) -> MeteredReply {
     let operation = context.operation.clone();
     if tool_is_free(name) {
+        if billing.checks_live_window() && name == "screenshot" && args.get("path").is_some() {
+            return MeteredReply::refused(context, screenshot_path_refusal());
+        }
         let value = crate::tools::call_tool(backend, name, args);
         return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone() };
     }
@@ -278,12 +281,6 @@ pub fn call_tool_with(
         Ok(bound) => bound,
         Err(refusal) => return MeteredReply::refused(context, refusal),
     };
-    // These tools stage their entire result in the reply. Generic commands, edits, file
-    // writes and batches do not yet offer an atomic publish boundary to this host. Never
-    // dispatch one and try to undo it after discovering that the grant was withdrawn.
-    if billing.checks_live_window() && !matches!(name, "measure" | "inspect_design" | "body_topology") {
-        return MeteredReply::refused(context, Refusal::new(RefusalCode::UnsafeToStart, "this controlled MCP path has no verified safe-stop bound"));
-    }
     let admission = match &context.admission {
         Some(admission) => admission.clone(),
         None => match billing.admit(&operation, context.capability, context.entry) {
@@ -300,6 +297,8 @@ pub fn call_tool_with(
             Err(_) => MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown"),
         };
     }
+    // As in Direct Control, the reply is staged and withheld on refusal. Local model
+    // changes and file writes made by the dispatched command are not rolled back here.
     let result_value = crate::tools::call_tool(backend, name, args);
     let outcome = classify_reply(&result_value);
     if let Err(refusal) = billing.check_commit(&operation) {
@@ -310,6 +309,17 @@ pub fn call_tool_with(
         };
     }
     let settle = settle(billing, &operation, &outcome);
+    if settle.is_ok() && billing.checks_live_window() {
+        match outcome {
+            CallOutcome::Succeeded | CallOutcome::PartialRetained | CallOutcome::FailedNoEffect => {
+                if let Err(refusal) = billing.check_publish(&operation) {
+                    return MeteredReply::refused(context, refusal);
+                }
+            }
+            CallOutcome::Unknown => return MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown"),
+            _ => {}
+        }
+    }
     let mut reply_context = context.clone();
     reply_context.admission = Some(admission);
     let mut reply = MeteredReply { value: result_value, operation: operation.clone(), outcome, context: reply_context };
@@ -339,6 +349,10 @@ pub fn call_tool_with(
         decorate_unknown(&mut reply.value, &reply.operation);
     }
     reply
+}
+
+pub(crate) fn screenshot_path_refusal() -> Refusal {
+    Refusal::new(RefusalCode::CapabilityDenied, "CAPABILITY_DENIED")
 }
 
 /// Forward one charged tool call to the host's own control authority without a local charge.

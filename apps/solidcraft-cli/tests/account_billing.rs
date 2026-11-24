@@ -497,10 +497,15 @@ enum Step {
     Denied,
     Withdraw(CredentialSession),
     Admit,
+    BadGrant,
+    LoseAdmit,
+    RecoverAdmit,
     Renew,
     Finalize(BillingResult),
+    InspectFinalize(Box<dyn FnOnce()>),
     LoseFinalize,
     Lookup,
+    LookupHeld,
 }
 
 #[derive(Clone)]
@@ -550,7 +555,7 @@ impl Transport for Script {
                     }),
                 )
             }
-            Step::Admit => {
+            Step::Admit | Step::BadGrant | Step::LoseAdmit | Step::RecoverAdmit => {
                 assert_eq!((request.method(), url), ("POST", "/v1/operations"));
                 assert_eq!(request.header("Authorization"), Some("Bearer product-fixture"));
                 assert_eq!(request.header("X-Installation-Credential"), Some("installation-fixture"));
@@ -563,14 +568,30 @@ impl Transport for Script {
                         "entry_category":self.entry.wire_entry_category().unwrap().wire()
                     })
                 );
+                if matches!(step, Step::RecoverAdmit) {
+                    assert_eq!(self.operation(), id);
+                    return Ok(WireResponse::new(
+                        200,
+                        json!({
+                            "outcome":"ALREADY_EXISTS","operation_id":id.as_str(),"installation_id":"ins_cli_fixture","state":"HELD",
+                            "terminal":false,"settlement_credential":"settlement-fixture"
+                        })
+                        .to_string()
+                        .into_bytes(),
+                    ));
+                }
                 *self.operation.borrow_mut() = Some(id.clone());
+                if matches!(step, Step::LoseAdmit) {
+                    return Err(TransportFailure::Timeout);
+                }
+                let expiry = if matches!(step, Step::BadGrant) { "unparseable" } else { "2027-01-15T08:01:00Z" };
                 (
                     200,
                     json!({
                         "outcome":"NEWLY_ADMITTED","operation_id":id.as_str(),"installation_id":"ins_cli_fixture","state":"HELD",
                         "settlement_deadline":null,"authorization_expires_at":"2027-01-15T08:01:00Z","settlement_credential":"settlement-fixture",
                         "execution_grant":{"grant_id":"grant_cli_fixture","capability":self.capability.wire(),
-                            "expires_at":"2027-01-15T08:01:00Z","session_proof":"proof-fixture","renew_after_seconds":20}
+                            "expires_at":expiry,"session_proof":"proof-fixture","renew_after_seconds":20}
                     }),
                 )
             }
@@ -594,10 +615,14 @@ impl Transport for Script {
                     }),
                 )
             }
-            Step::Finalize(_) | Step::LoseFinalize => {
-                let result = match step {
-                    Step::Finalize(result) => result,
-                    _ => BillingResult::Succeeded,
+            Step::Finalize(_) | Step::LoseFinalize | Step::InspectFinalize(_) => {
+                let (result, lose) = match step {
+                    Step::Finalize(result) => (result, false),
+                    Step::InspectFinalize(inspect) => {
+                        inspect();
+                        (BillingResult::Succeeded, false)
+                    }
+                    _ => (BillingResult::Succeeded, true),
                 };
                 let id = self.operation();
                 assert_eq!(request.method(), "POST");
@@ -611,7 +636,7 @@ impl Transport for Script {
                     _ => panic!("unplanned settlement"),
                 };
                 assert_eq!(body(), json!({"result":wire}));
-                if matches!(step, Step::LoseFinalize) {
+                if lose {
                     return Err(TransportFailure::Timeout);
                 }
                 let state = if result == BillingResult::FailedNoEffect { "RELEASED" } else { "CHARGED" };
@@ -623,17 +648,20 @@ impl Transport for Script {
                     }),
                 )
             }
-            Step::Lookup => {
+            Step::Lookup | Step::LookupHeld => {
                 let id = self.operation();
                 assert_eq!(request.method(), "GET");
                 assert_eq!(url, format!("/v1/operations/{}", id.as_str()));
                 assert_eq!(request.header("X-Settlement-Credential"), Some("settlement-fixture"));
                 assert_eq!(request.header("Authorization"), None);
+                let held = matches!(step, Step::LookupHeld);
                 (
                     200,
                     json!({
-                        "operation_id":id.as_str(),"state":"CHARGED","terminal":true,"result":"SUCCEEDED",
-                        "authorization_expires_at":"2027-01-15T08:01:00Z","settlement_deadline":"2027-01-15T08:11:00Z"
+                        "operation_id":id.as_str(),"state":if held { "HELD" } else { "CHARGED" },
+                        "terminal":!held,"result":if held { Value::Null } else { json!("SUCCEEDED") },
+                        "authorization_expires_at":"2027-01-15T08:01:00Z",
+                        "settlement_deadline":if held { Value::Null } else { json!("2027-01-15T08:11:00Z") }
                     }),
                 )
             }
@@ -859,7 +887,7 @@ fn only_headless_mcp_dispatches_and_settles_via_the_credential_session() {
     let script = Script::new(
         Capability::Mcp,
         EntryCategory::HeadlessMcp,
-        [Step::Status, Step::Admit, Step::Status, Step::Status, Step::Finalize(BillingResult::Succeeded)],
+        (0..3).flat_map(|_| [Step::Status, Step::Admit, Step::Status, Step::Status, Step::Finalize(BillingResult::Succeeded)]),
     );
     let account = McpAccount::from_session(live_billing(fixture_session(), script.clone(), journal, WireClock::default()));
     let mut headless = compose_mcp_server(Box::new(solidcraft_mcp::Headless::default()), None, account, McpRoute::Headless, budget);
@@ -867,10 +895,110 @@ fn only_headless_mcp_dispatches_and_settles_via_the_credential_session() {
     assert_ne!(reply["result"]["isError"], true, "{reply}");
     assert!(reply["result"].is_object(), "{reply}");
 
-    let destination = scratch.dir().join("unauthorized.sc");
-    let save = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"save","arguments":{"path":destination}}}).to_string();
+    let batch = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"batch","arguments":{"commands":[
+        {"command":"solid.box","params":{"length":20,"width":20,"height":10}}
+    ]}}})
+    .to_string();
+    let reply: Value = serde_json::from_str(&headless.handle_line(&batch).unwrap()).unwrap();
+    assert_ne!(reply["result"]["isError"], true, "{reply}");
+    let destination = scratch.dir().join("saved.sc");
+    let save = json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"save","arguments":{"path":destination}}}).to_string();
     let reply: Value = serde_json::from_str(&headless.handle_line(&save).unwrap()).unwrap();
-    assert_eq!(reply["result"]["structuredContent"]["errorDetails"]["reason"], "UNSAFE_TO_START");
+    assert_ne!(reply["result"]["isError"], true, "{reply}");
+    assert!(destination.is_file());
+    let destination = scratch.dir().join("unauthorized.png");
+    let screenshot =
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"screenshot","arguments":{"path":destination}}}).to_string();
+    let reply: Value = serde_json::from_str(&headless.handle_line(&screenshot).unwrap()).unwrap();
+    assert_eq!(reply["result"]["structuredContent"]["errorDetails"]["reason"], "CAPABILITY_DENIED");
     assert!(!destination.exists());
     script.done();
+}
+
+#[test]
+fn dfm_has_no_readable_output_during_settlement_and_withholds_a_late_receipt() {
+    let fixture = fixture("late-finalize", Probe::Passed);
+    let dir = fixture._scratch.dir().join("validation");
+    let clock = WireClock::default();
+    let expiry = clock.clone();
+    let inspect = Box::new(move || {
+        assert!(!std::fs::read_dir(dir.join("runs")).unwrap().any(|entry| entry.unwrap().file_name().to_string_lossy().ends_with(".report.json")));
+        assert_eq!(std::fs::read_dir(dir.join("evidence")).unwrap().count(), 0);
+        expiry.0.set(60_000);
+    });
+    let script =
+        Script::new(Capability::Dfm, EntryCategory::CliDfm, [Step::Status, Step::Admit, Step::Status, Step::Status, Step::InspectFinalize(inspect)]);
+    let mut billing = live_billing(fixture_session(), script.clone(), fixture._scratch.dir().join("journal"), clock);
+    let error = run_check(&fixture, &mut billing).unwrap_err();
+    assert!(error.starts_with("UNSAFE_TO_START:"), "{error}");
+    let id = error.rsplit_once('(').unwrap().1.trim_end_matches(')');
+    let report = fixture.port.report(id).unwrap().report;
+    assert!(report.checks.iter().all(|check| check.state == CheckState::NotRun && check.evidence.is_empty()));
+    script.done();
+}
+
+#[test]
+fn mcp_withholds_a_late_receipt_but_does_not_roll_back_a_file_write() {
+    let scratch = Scratch::new("mcp-late-finalize");
+    let destination = scratch.dir().join("late.sc");
+    let mut model = solidcraft_mcp::Headless::default();
+    model.session.execute("solid.box", &json!({"length":20,"width":20,"height":10})).unwrap();
+    let clock = WireClock::default();
+    let expiry = clock.clone();
+    let inspect = Box::new(move || expiry.0.set(60_000));
+    let script = Script::new(
+        Capability::Mcp,
+        EntryCategory::HeadlessMcp,
+        [Step::Status, Step::Admit, Step::Status, Step::Status, Step::InspectFinalize(inspect)],
+    );
+    let billing = live_billing(fixture_session(), script.clone(), scratch.dir().join("journal"), clock);
+    let mut budget = BudgetTable::unverified_default();
+    budget.set_bound(Capability::Mcp, EntryCategory::HeadlessMcp, UpperBound::Verified(Duration::from_secs(1)));
+    let mut server = compose_mcp_server(Box::new(model), None, McpAccount::from_session(billing), McpRoute::Headless, budget);
+    let save = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"save","arguments":{"path":destination}}}).to_string();
+    let reply: Value = serde_json::from_str(&server.handle_line(&save).unwrap()).unwrap();
+    assert_eq!(reply["result"]["structuredContent"]["errorDetails"]["reason"], "UNSAFE_TO_START");
+    assert!(!reply.to_string().contains("late.sc"), "{reply}");
+    assert!(destination.is_file());
+    script.done();
+}
+
+#[test]
+fn failure_writing_final_intent_still_releases_original_hold() {
+    let scratch = Scratch::new("intent-write");
+    let journal = scratch.dir().join("journal");
+    let script = Script::new(
+        Capability::Dfm,
+        EntryCategory::CliDfm,
+        [Step::Status, Step::Admit, Step::Status, Step::Status, Step::Finalize(BillingResult::FailedNoEffect)],
+    );
+    let op = OperationId::parse("op_cli_write_failure").unwrap();
+    let mut billing = live_billing(fixture_session(), script.clone(), journal.clone(), WireClock::default());
+    billing.admit(&op, Capability::Dfm, EntryCategory::CliDfm).unwrap();
+    billing.dispatch(&op, Duration::from_secs(1)).unwrap();
+    let intent = journal.join("records").join(format!("{}.settlement-intent.json", op.as_str()));
+    // A dangling name reads as absent, but the create-only publication fails.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(scratch.dir().join("missing"), &intent).unwrap();
+    #[cfg(not(unix))]
+    std::fs::create_dir(&intent).unwrap();
+    assert_eq!(billing.commit(&op, BillingResult::Succeeded).unwrap_err().code, RefusalCode::AuthUnavailable);
+    script.done();
+}
+
+#[test]
+fn lost_or_malformed_admission_releases_without_authorizing_execution() {
+    for (name, steps) in [
+        ("bad-grant", vec![Step::Status, Step::BadGrant, Step::Finalize(BillingResult::FailedNoEffect)]),
+        ("lost-grant", vec![Step::Status, Step::LoseAdmit, Step::RecoverAdmit, Step::LookupHeld, Step::Finalize(BillingResult::FailedNoEffect)]),
+    ] {
+        let scratch = Scratch::new(name);
+        let script = Script::new(Capability::Dfm, EntryCategory::CliDfm, steps);
+        let journal = scratch.dir().join("journal");
+        let op = OperationId::parse("op_cli_lost_admission").unwrap();
+        let mut billing = live_billing(fixture_session(), script.clone(), journal.clone(), WireClock::default());
+        assert_eq!(billing.admit(&op, Capability::Dfm, EntryCategory::CliDfm).unwrap_err().code, RefusalCode::AuthUnavailable);
+        assert_eq!(FileOperationStore::open(journal).unwrap().load(&op).unwrap().unwrap().status, OperationStatus::Released);
+        script.done();
+    }
 }

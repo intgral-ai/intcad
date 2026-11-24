@@ -54,16 +54,15 @@ pub fn configured_billing() -> Option<(SessionBilling, File)> {
     let connection = WireConnection::product_origin(option_env!("INTCAD_PRODUCT_HTTPS_ORIGIN")?, env!("CARGO_PKG_VERSION")).ok()?;
     let clock = BootClock::default();
     clock.sample()?;
-    let root = desktop_data_dir()?;
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+    // The origin-bound keyring does not record a data directory. A trusted deployment must
+    // pin the desktop's canonical directory for this build's origin and launch the desktop
+    // with that directory for this keyring. Never pick or create a second lock from CLI env.
+    let root = pinned_desktop_data_dir(option_env!("INTCAD_ACCOUNT_DESKTOP_DIR"), &desktop_data_dir()?)?;
+    let lock_path = root.join("account-keyring.lock");
+    if !std::fs::symlink_metadata(&lock_path).ok()?.is_file() {
+        return None;
     }
-    // A desktop login already created this directory. Do not create it for anonymous use.
-    let lock = options.open(root.join("account-keyring.lock")).ok()?;
+    let lock = OpenOptions::new().read(true).write(true).open(lock_path).ok()?;
     lock.try_lock().ok()?;
     let store = KeyringStore::new(format!("{ACCOUNT_KEYRING_SERVICE} [{}]", connection.base_url()));
     let billing = SessionBilling::new(
@@ -74,6 +73,15 @@ pub fn configured_billing() -> Option<(SessionBilling, File)> {
         clock,
     );
     Some((billing, lock))
+}
+
+fn pinned_desktop_data_dir(pin: Option<&str>, resolved: &std::path::Path) -> Option<PathBuf> {
+    let pin = PathBuf::from(pin?);
+    if !pin.is_absolute() || pin.canonicalize().ok()? != pin || resolved.canonicalize().ok()? != pin {
+        return None;
+    }
+    let journal = pin.join("account");
+    (journal.canonicalize().ok()? == journal && journal.is_dir()).then_some(pin)
 }
 
 fn desktop_data_dir() -> Option<PathBuf> {
@@ -346,6 +354,25 @@ mod tests {
         for invalid in ["https://product.example:0", "https://product.example:/", "https://product.example/.", "https://pr%6fduct.example"] {
             assert!(WireConnection::product_origin(invalid, "1").is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn runtime_data_directory_cannot_select_another_keyring_lock() {
+        let mut entropy = [0_u8; 16];
+        getrandom::fill(&mut entropy).unwrap();
+        let root = std::env::temp_dir().join(OperationId::mint_from_entropy(&entropy).unwrap().as_str());
+        let other = root.join("other");
+        std::fs::create_dir_all(root.join("account")).unwrap();
+        std::fs::create_dir_all(other.join("account")).unwrap();
+        let pinned = root.canonicalize().unwrap();
+        let pin = pinned.to_str().unwrap();
+        assert_eq!(pinned_desktop_data_dir(Some(pin), &root), Some(pinned.clone()));
+        assert_eq!(pinned_desktop_data_dir(Some(pin), &other), None);
+        assert_eq!(pinned_desktop_data_dir(None, &root), None);
+        std::fs::remove_dir(other.join("account")).unwrap();
+        std::fs::remove_dir(other).unwrap();
+        std::fs::remove_dir(root.join("account")).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 
     #[test]
