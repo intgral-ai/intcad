@@ -1046,8 +1046,14 @@ function ClosePage($view) {
         catch { $receipt = 'error' }
         try { Write-Host "page Close UIA roots: $receipt" } catch { } # Preserve the primary refusal even if logging fails.
     }
-    $point = PageClosePoint $view.Rect $query.candidates $query
-    Click $point.X $point.Y $view.Window
+    if ($query.candidates -is [array] -and $query.candidates.Count -eq 0) {
+        # At the bottom centre (#221) the page shows Collapse instead of Close and the rail's
+        # Assistant entry is what closes it: follow the affordance the layout really offers.
+        ClickAssistantEntry ([datetime]::UtcNow.AddSeconds(20))
+    } else {
+        $point = PageClosePoint $view.Rect $query.candidates $query
+        Click $point.X $point.Y $view.Window
+    }
     $until = [datetime]::UtcNow.AddSeconds(15)
     do {
         if ($script:p.HasExited) { throw 'app exited during page Close' }
@@ -1222,7 +1228,7 @@ try {
     Shot $h '03-after-click-on-3d-view'
 
     ClosePage $view
-    Write-Host 'ok: page Close hid the native child and the app is still running'
+    Write-Host 'ok: the page Close (or the Assistant entry at the bottom centre) hid the native child and the app is still running'
     Shot $h '03a-page-closed'
     $until = [datetime]::UtcNow.AddSeconds(30)
     ClickAssistantEntry $until

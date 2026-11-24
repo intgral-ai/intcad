@@ -357,6 +357,8 @@ class StagingWorkflow(unittest.TestCase):
                       "installed-check-macos"],
             "windows": ["icons-${{ github.sha }}", "installed-check-windows-${{ matrix.arch }}"],
         }
+        # A gate-bound run appends its attempt so parallel attempts cannot overwrite each other.
+        attempt = "${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}"
         for job, ordinary in labels.items():
             with self.subTest(job=job):
                 if job in ("linux", "macos", "windows"):
@@ -365,7 +367,7 @@ class StagingWorkflow(unittest.TestCase):
                     self.assertEqual(jobs[job]["env"]["PACKAGE_ID"], f"release-{job}{suffix}")
                 actual = [step["with"]["name"] for step in jobs[job]["steps"]
                           if step.get("uses", "").startswith(("actions/upload-artifact@", "actions/download-artifact@"))]
-                self.assertEqual(actual, ["${{ env.ARTIFACT_PREFIX }}" + label for label in ordinary])
+                self.assertEqual(actual, ["${{ env.ARTIFACT_PREFIX }}" + label + attempt for label in ordinary])
 
     def test_staging_evidence_hashes_the_package_and_revalidates_the_same_snapshot(self):
         job = workflow("release.yml")["jobs"]["macos"]
