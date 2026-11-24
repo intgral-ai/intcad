@@ -380,6 +380,35 @@ the integrations, not installed behavior. Verify them again against the final ch
   repo archival. Do not detach the fork, change visibility, rewrite history or delete historical
   releases. Archival does not revoke prior source or license grants.
 
+### 8.2 Signed draft release (plan A), after the gates
+
+The CTO reports that production signing and the independent distribution infrastructure
+are configured. The release path after the gates is:
+
+1. **Version and notes.** `release/v0.1.3` carries the workspace version 0.1.3 (our own
+   `Cargo.lock` entries; `cbc` and `dpi` stay third-party 0.1.2) and
+   `docs/release-notes-0.1.3.md`, the only notes path the publisher accepts at the source
+   SHA. Prepared locally at `809fe61b65` on develop `6032271178`; it must be updated with
+   the landed features and re-gated before it is a candidate.
+2. **Formal Release Gate.** A ready, same-repository `release/v0.1.3` PR to `main` (or a
+   stable main merge group) must produce the `stable-release-handoff-a<attempt>` with the
+   actual SHA, run/attempt and all 14 package/evidence pairs. Standalone or diagnostic
+   dispatches do not qualify.
+3. **Agent rights and installed approval.** The owner must record
+   `RELEASE_AGENT_LEGAL_APPROVED` and `RELEASE_AGENT_INSTALLED_APPROVED` as
+   `<source SHA>:<run ID>:<attempt>` for the exact candidate; a page smoke or a content
+   scan is neither rights clearance nor installed-agent acceptance.
+4. **Stage the signed draft** from protected `main` with `tag`, `source_sha`, `run_id`,
+   `run_attempt` and `notes_file`. A reviewer must approve the `release-signing` job
+   before it receives credentials; that approval is separate from publication. The
+   workflow creates only a draft, rejects an absent asset digest, reads every asset and
+   both checksum lists back, and verifies the signature.
+5. **Publication** of that verified draft is a separate owner decision and action.
+
+Nothing here authorizes merging the promotion PR, approving the signing job or
+publishing. The source repository stays public and CI stays on GitHub-hosted runners
+for this release.
+
 ## 9. Acceptance matrix for the candidate (not yet run)
 
 Rows marked *rehearsal* are the §12 tree (`develop` + #204 + this branch), not a versioned
