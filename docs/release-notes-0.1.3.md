@@ -56,6 +56,8 @@ installers, and adds accounts with a verified paid Review path.
 - An installed 0.1.2 cannot update itself: its update check looks for a checksum file
   that no published release provides. Install 0.1.3 over it the same way you installed
   0.1.2; designs, preferences and the signed-in session are kept.
+- The FreeBSD package carries no account configuration, so signing in and paid
+  operations are unavailable there; the Linux, Windows and macOS packages carry it.
 
 ## Installing over 0.1.2
 
