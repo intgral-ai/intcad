@@ -17,6 +17,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![deny(unsafe_code)]
 
+mod account;
 #[cfg(not(target_os = "macos"))]
 #[path = "../../../assets/icons/app/shared/source/app_icon.rs"]
 mod app_icon;
@@ -33,6 +34,7 @@ mod desktop_theme;
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 mod desktop_transparency;
 mod device_lost;
+mod keyring_store;
 #[cfg(target_os = "windows")]
 mod native_crash;
 #[cfg(target_os = "macos")]
@@ -194,6 +196,18 @@ fn changes_settings(event: &egui::Event) -> bool {
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Explicit account actions run before any paint, network or controlled dispatch this
+        // frame. The port is local and nonblocking in this build; a sign-out or switch closes the
+        // old session's commit authority before the control queue is read below.
+        if account::poll(&mut self.solve) {
+            ctx.request_repaint();
+        }
+        // Keep polling the cached restart result and pending login or cleanup at a bounded rate.
+        if self.solve.account.startup_waiting() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        } else if let Some(wait) = account::poll_repaint_after(self.solve.account.view()) {
+            ctx.request_repaint_after(wait);
+        }
         if self.frames < 2 {
             self.frames += 1;
             // Before the window is shown: its title bar must be within reach (window_fit.rs).
@@ -317,6 +331,13 @@ impl eframe::App for App {
         self.prefs_writer.written = Some(prefs);
     }
     fn on_exit(&mut self) {
+        // Exit ends the session's authority before Agent work or saves wind down. The secure
+        // credential store keeps the session for the next start; only in-memory scheduling and
+        // the commit gate are closed here.
+        self.solve.end_controlled_session();
+        // A sign-out cleanup still running on its worker finishes before the process leaves, so
+        // its durable tombstone/delete result is not lost on a normal exit.
+        self.solve.account.shutdown();
         // The Assistant's web view is a child of the window: it goes while the window is there.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
         self.assistant_web.close();
@@ -904,6 +925,14 @@ fn adopt_legacy_settings() {
     }
 }
 
+/// Open the account runtime only after legacy settings adoption has run. The account ledger's
+/// `open` creates its directory, which would otherwise make a fresh settings folder non-fresh
+/// and drop the previous release's `app.ron`.
+fn prepare_account_runtime(migrate: impl FnOnce(), open: impl FnOnce() -> account::AccountRuntime) -> account::AccountRuntime {
+    migrate();
+    open()
+}
+
 fn adopt_settings(
     current: &std::path::Path,
     old_flatpak: &[std::path::PathBuf],
@@ -1075,9 +1104,6 @@ fn main() -> eframe::Result {
     solidcraft_engine::timing::profile_from_env();
     // Validate before legacy adoption, crash markers or any user preference read.
     let settings = settings_dir().map_err(|error| eframe::Error::AppCreation(error.into()))?;
-    if std::env::var_os("SOLIDCRAFT_SETTINGS_DIR").is_none() {
-        adopt_legacy_settings();
-    }
     let mut safe_mode = startup::env_on(std::env::var(startup::SAFE_MODE_ENV).ok().as_deref());
     let mut control_port: Option<u16> = solidcraft_engine::geom::env::var("CONTROL_PORT").and_then(|p| p.parse().ok());
     let mut files = Vec::new();
@@ -1120,6 +1146,21 @@ fn main() -> eframe::Result {
             _ => files.push(a),
         }
     }
+    // An information-only argument above has already returned, so this launch goes on to the
+    // window and only now opens the account runtime.
+    // Legacy settings must be adopted before this runtime creates anything under the settings
+    // folder: creating the account ledger first makes the folder look non-fresh and silently
+    // drops the previous release's app.ron. The probe and ledger open still happen before the
+    // window exists, off the UI thread.
+    let account_runtime = prepare_account_runtime(
+        || {
+            if std::env::var_os("SOLIDCRAFT_SETTINGS_DIR").is_none() {
+                adopt_legacy_settings();
+            }
+        },
+        account::AccountRuntime::desktop,
+    );
+    let account_startup = account_runtime.startup();
     // `--max-file-size 2GB`: the largest files this run reads, over Preferences, never saved (#4086).
     if let Some(value) = max_file_size {
         let applied = startup::max_file_size(value.as_deref()).and_then(|bytes| solidcraft_engine::io::limits::set_override(Some(bytes)));
@@ -1289,6 +1330,10 @@ fn main() -> eframe::Result {
             app.graphics_fallback = fallback_note.clone();
             let stored_ui = cc.storage.and_then(|s| solidcraft_ui_egui::prefs::stored(|k| s.get_string(k)));
             restore_preferences(&mut app, stored_ui.as_deref(), graphics().as_ref(), safe_mode);
+            // The single account composition root: UI port, durable ledger and, only when a
+            // reviewed adapter exists, commit/billing authority. Ordinary CAD stays free and
+            // anonymous when no session or secure store is available.
+            account::install(&mut app, account_runtime, account_startup);
             if let Some(path) = &theme_file
                 && let Err(e) = solidcraft_ui_egui::prefs::follow_theme_file_for_run(&mut app, path)
             {
@@ -2389,6 +2434,33 @@ mod msaa_tests {
         super::adopt_settings(&current, &[], &legacy, Some(&legacy_eframe)).unwrap();
         assert_eq!(std::fs::read_to_string(current.join("app.ron")).unwrap(), "(mine)");
         assert!(!current.join("graphics.json").exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn account_ledger_opens_only_after_legacy_settings_migration() {
+        let d = std::env::temp_dir().join(format!("solidcraft-account-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (current, legacy, legacy_eframe) = (d.join("solidcraft"), d.join("solvecraft"), d.join("ai.storyteller.solvecraft"));
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::create_dir_all(&legacy_eframe).unwrap();
+        std::fs::write(legacy.join("graphics.json"), r#"{"msaa":8}"#).unwrap();
+        std::fs::write(legacy_eframe.join("app.ron"), "(previous release settings)").unwrap();
+        assert!(!current.exists());
+
+        let runtime = super::prepare_account_runtime(
+            || super::adopt_settings(&current, &[], &legacy, Some(&legacy_eframe)).unwrap(),
+            || {
+                solidcraft_account_native::FileOperationStore::open(current.join("account")).unwrap();
+                super::account::AccountRuntime::with_session(solidcraft_account_native::CredentialSession::without_persistence())
+            },
+        );
+        // The migration saw a fresh folder and copied app.ron; only afterwards did the runtime
+        // create the ledger directory.
+        assert_eq!(std::fs::read_to_string(current.join("app.ron")).unwrap(), "(previous release settings)");
+        assert!(current.join("graphics.json").is_file());
+        assert!(current.join("account").is_dir(), "the runtime opened its ledger after migration");
+        drop(runtime);
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
 """Tests for the native-package content decision (#14/#15 applicability)."""
 
+import itertools
 import json
+import os
+import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+
+try:
+    import yaml
+except ModuleNotFoundError:
+    yaml = None  # The stdlib-only repository lane also runs this file.
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -14,6 +25,427 @@ import release_content as content  # noqa: E402
 SHA = "a" * 40
 DG = "b" * 64
 DG2 = "c" * 64
+
+CONFIG = {
+    "INTCAD_WORKOS_PUBLIC_CLIENT_ID": "client_Fixture42",
+    "INTCAD_AUTHKIT_VERIFICATION_ORIGIN": "https://auth.example.invalid:8443",
+    "INTCAD_PRODUCT_HTTPS_ORIGIN": "https://product.example.invalid",
+}
+CLIENT, AUTHKIT, PRODUCT = CONFIG
+SNAPSHOT = "STAGING_ACCOUNT_CONFIG"
+HELPER = HERE / "staging_account_config.py"
+WORKFLOWS = ROOT / ".github/workflows"
+CONFIG_PATH = ".github/config/intcad-staging-account.json"
+
+
+def config_checkout(root, payload=None):
+    subprocess.run(["git", "init", "-q", root], check=True)
+    if payload is not None:
+        path = root / CONFIG_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        subprocess.run(["git", "add", CONFIG_PATH], cwd=root, check=True)
+    subprocess.run(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                    "commit", "-q", "--allow-empty", "-m", "package fixture"], cwd=root, check=True)
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+
+
+def workflow(name):
+    # BaseLoader preserves the Actions `on` key instead of interpreting it as YAML 1.1 `true`.
+    return yaml.load((WORKFLOWS / name).read_text(), Loader=yaml.BaseLoader)
+
+
+@unittest.skipIf(yaml is None, "workflow wiring needs PyYAML (required by packaging lint)")
+class WindowsAssistantSmokeWorkflow(unittest.TestCase):
+    def test_packaging_lint_runs_the_windows_assistant_smoke_unittest(self):
+        steps = workflow("packaging-lint.yml")["jobs"]["lint"]["steps"]
+        command = "python3 -m unittest scripts/e2e/test_windows_assistant_uia.py"
+        self.assertTrue(
+            any(step.get("run", "").strip() == command and "if" not in step
+                and step.get("continue-on-error", "false") == "false" for step in steps),
+            f"Packaging lint must run {command} without skipping or ignoring failures",
+        )
+
+    def test_windows_assistant_smoke_changes_trigger_packaging_lint(self):
+        events = workflow("packaging-lint.yml")["on"]
+        for event in ("pull_request", "push"):
+            for path in ("tools/windows-assistant-smoke.ps1",
+                         "scripts/e2e/test_windows_assistant_uia.py",
+                         "scripts/e2e/windows_assistant_uia.py"):
+                with self.subTest(event=event, path=path):
+                    self.assertIn(path, events[event]["paths"])
+
+
+class StagingConfig(unittest.TestCase):
+    def setUp(self):
+        self.assertTrue(HELPER.is_file(), "missing staging config helper")
+        from staging_account_config import validate_config
+        self.validate = validate_config
+
+    def test_only_the_complete_tuple_is_allowed(self):
+        for flags in itertools.product((False, True), repeat=3):
+            values = {key: CONFIG[key] for key, present in zip(CONFIG, flags) if present}
+            with self.subTest(flags=flags):
+                if all(flags):
+                    self.assertEqual(self.validate(values), CONFIG)
+                else:
+                    with self.assertRaises(ValueError) as rejected:
+                        self.validate(values)
+                    for key in CONFIG:
+                        self.assertEqual(key in str(rejected.exception), key not in values)
+        with self.assertRaises(ValueError):
+            self.validate({**CONFIG, "EXTRA": "unapproved"})
+
+    def test_malformed_client_ids_are_rejected_without_disclosure(self):
+        for value in ("", "client_", "other_123", "client_abc ", "client_\u00e9",
+                      "client_abc\tdef", "client_abc\x00", "client_abc\nOTHER=bad",
+                      "client_abc;echo", "client_$(echo)", "client_abc_def"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as rejected:
+                    self.validate({**CONFIG, CLIENT: value})
+                self.assertIn(CLIENT, str(rejected.exception))
+                if value:
+                    self.assertNotIn(value, str(rejected.exception))
+
+    def test_only_bare_https_origins_are_allowed(self):
+        for key in (AUTHKIT, PRODUCT):
+            for value in ("http://bad.invalid", "https://user:pw@bad.invalid",
+                          "https://bad.invalid?", "https://bad.invalid#fragment",
+                          "https://bad.invalid/", "https://bad.invalid/v1",
+                          "https://bad.invalid:", "https://bad.invalid:65536",
+                          "https://bad.invalid:0", "https://bad.invalid:abc",
+                          "https://", "https://bad.invalid\\foo", "https://bad.\tinvalid",
+                          "https://bad.invalid\nOTHER=bad"):
+                with self.subTest(key=key, value=value):
+                    with self.assertRaises(ValueError) as rejected:
+                        self.validate({**CONFIG, key: value})
+                    self.assertIn(key, str(rejected.exception))
+                    self.assertNotIn(value, str(rejected.exception))
+
+    def test_snapshot_then_inject_preserves_all_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sha = config_checkout(root, json.dumps(CONFIG).encode())
+            output, env_file = root / "output", root / "env"
+            env = {**os.environ, **dict.fromkeys(CONFIG, "ignored-ambient-value"),
+                   "GITHUB_SHA": sha, "GITHUB_OUTPUT": str(output)}
+            result = subprocess.run([sys.executable, "-I", HELPER, "snapshot"], cwd=root,
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            snapshot = output.read_text()
+            self.assertEqual(snapshot, "config=" + json.dumps(CONFIG, separators=(",", ":")) + "\n")
+            subprocess.run([sys.executable, "-I", HELPER, "inject"],
+                           env={**os.environ, SNAPSHOT: snapshot.removeprefix("config=").rstrip("\n"),
+                                "GITHUB_ENV": str(env_file)}, check=True)
+            injected = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+            tuple_sha = __import__("staging_account_config").tuple_sha256(CONFIG)
+            self.assertEqual(injected, {**CONFIG, "ACCOUNT_CONFIG_SOURCE": "checked-in:staging",
+                                        "ACCOUNT_CONFIG_SHA256": tuple_sha})
+
+    def test_snapshot_rejects_bad_committed_config_without_output(self):
+        sentinel = "concealed-fixture-value"
+        for payload in (None, b"\xff", ("{" + sentinel).encode(),
+                        json.dumps({**CONFIG, "EXTRA": sentinel}).encode()):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                sha = config_checkout(root, payload)
+                output = root / "output"
+                result = subprocess.run([sys.executable, "-I", HELPER, "snapshot"], cwd=root,
+                                        env={**os.environ, **CONFIG, "GITHUB_SHA": sha,
+                                             "GITHUB_OUTPUT": str(output)}, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse(output.exists())
+                self.assertNotIn(sentinel, result.stdout + result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+    def test_snapshot_refuses_wrong_sha_or_dirty_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sha = config_checkout(root, json.dumps(CONFIG).encode())
+            output = root / "output"
+            for revision, dirty in (("0" * 40, False), (sha, True)):
+                with self.subTest(dirty=dirty):
+                    if dirty:
+                        (root / CONFIG_PATH).write_text(json.dumps({**CONFIG, CLIENT: "client_Changed"}))
+                    result = subprocess.run([sys.executable, "-I", HELPER, "snapshot"], cwd=root,
+                                            env={**os.environ, **CONFIG, "GITHUB_SHA": revision,
+                                                 "GITHUB_OUTPUT": str(output)}, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
+
+    def test_invalid_input_never_creates_an_env_file_or_discloses_values(self):
+        sentinel = "concealed-fixture-value"
+        bad_inputs = ("{" + sentinel, json.dumps({**CONFIG, PRODUCT: sentinel}),
+                      json.dumps({sentinel: sentinel}), json.dumps([sentinel]),
+                      json.dumps(CONFIG)[:-1] + f', "{CLIENT}": "{sentinel}"' + "}")
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / "env"
+            for payload in bad_inputs:
+                with self.subTest(payload=payload):
+                    result = subprocess.run([sys.executable, "-I", HELPER, "inject"],
+                                            env={**os.environ, SNAPSHOT: payload, "GITHUB_ENV": str(env_file)},
+                                            capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(env_file.exists())
+                    self.assertNotIn(sentinel, result.stdout + result.stderr)
+                    for value in CONFIG.values():
+                        self.assertNotIn(value, result.stdout + result.stderr)
+
+
+@unittest.skipIf(yaml is None, "workflow wiring needs PyYAML (required by packaging lint)")
+class StagingWorkflow(unittest.TestCase):
+    def test_only_the_environment_bound_dispatch_wrapper_passes_the_snapshot(self):
+        filename = "staging-packages.yml"
+        self.assertTrue((WORKFLOWS / filename).is_file(), "missing staging entry")
+        wrapper = workflow(filename)
+        self.assertEqual(set(wrapper["on"]), {"workflow_dispatch"})
+        self.assertEqual(wrapper["permissions"], {"contents": "read"})
+        snapshot = wrapper["jobs"]["snapshot"]
+        packages = wrapper["jobs"]["packages"]
+        self.assertEqual(snapshot["environment"], "staging")
+        self.assertTrue(any(step.get("id") == "config" for step in snapshot["steps"]))
+        self.assertEqual(snapshot["outputs"]["config"], "${{ steps.config.outputs.config }}")
+        self.assertEqual(packages, {
+            "needs": "snapshot",
+            "uses": "./.github/workflows/release.yml",
+            "with": {"beta_three_platforms": "true",
+                     "staging_account_config": "${{ needs.snapshot.outputs.config }}"},
+        })
+        config_input = workflow("release.yml")["on"]["workflow_call"]["inputs"]["staging_account_config"]
+        self.assertEqual((config_input["type"], config_input["default"]), ("string", ""))
+        self.assertNotIn("staging_account_config", (WORKFLOWS / "release-gate.yml").read_text())
+        for name in (filename, "release.yml"):
+            text = (WORKFLOWS / name).read_text()
+            for forbidden in ("refs/heads/", "${{ secrets.", "secrets: inherit", "contents: write",
+                              "gh release ", "git push", "softprops/action-gh-release", "--notarize"):
+                self.assertNotIn(forbidden, text)
+
+    def test_wrapper_reads_only_from_the_fixed_checkout(self):
+        wrapper = workflow("staging-packages.yml")
+        self.assertEqual(set(wrapper["jobs"]), {"snapshot", "packages"})
+        self.assertNotIn("vars", json.dumps(wrapper))
+        checkout, snapshot = wrapper["jobs"]["snapshot"]["steps"]
+        self.assertTrue(checkout["uses"].startswith("actions/checkout@"))
+        self.assertEqual(checkout["with"], {"ref": "${{ github.sha }}", "persist-credentials": "false"})
+        self.assertNotIn("env", snapshot)
+        self.assertEqual(snapshot["run"], "python -I scripts/ci/staging_account_config.py snapshot")
+
+    def test_release_verifies_staging_input_against_checkout_before_builds(self):
+        steps = workflow("release.yml")["jobs"]["version"]["steps"]
+        verify = next((step for step in steps if step.get("id") == "verify-staging-config"), None)
+        self.assertIsNotNone(verify, "missing early staging snapshot verification")
+        checkout = next(i for i, step in enumerate(steps) if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertGreater(steps.index(verify), checkout)
+        self.assertEqual(verify["if"], "inputs.staging_account_config != ''")
+        self.assertEqual(verify["env"], {SNAPSHOT: "${{ inputs.staging_account_config }}"})
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sha = config_checkout(root, json.dumps(CONFIG).encode())
+            scripts = root / "scripts/ci"
+            scripts.mkdir(parents=True)
+            shutil.copyfile(HELPER, scripts / HELPER.name)
+            self.assertEqual(verify["run"], "python -I scripts/ci/staging_account_config.py verify")
+            for values, expected in ((CONFIG, 0), ({**CONFIG, CLIENT: "client_Drift"}, 1)):
+                result = subprocess.run([sys.executable, *verify["run"].split()[1:]],
+                                        cwd=root, env={**os.environ, "GITHUB_SHA": sha, SNAPSHOT: json.dumps(values)},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_account_config_guard_rejects_other_callers_and_anonymous_candidates(self):
+        version = workflow("release.yml")["jobs"]["version"]
+        step = next((step for step in version["steps"]
+                     if step.get("id") == "account-config-guard"), None)
+        self.assertIsNotNone(step, "missing account configuration caller guard")
+        # The guard must run for every build: a skipped step let the staging wrapper build
+        # anonymously when its snapshot was empty.
+        self.assertNotIn("if", step)
+        self.assertEqual(step["env"], {
+            "CALLER_WORKFLOW_REF": "${{ github.workflow_ref }}",
+            "STAGING_WORKFLOW_REF": "${{ format('{0}/.github/workflows/staging-packages.yml@{1}', github.repository, github.ref) }}",
+            "RELEASE_GATE_WORKFLOW_REF": "${{ format('{0}/.github/workflows/release-gate.yml@{1}', github.repository, github.ref) }}",
+            "HAS_STAGING_CONFIG": "${{ inputs.staging_account_config != '' && '1' || '0' }}",
+            "HAS_PRODUCTION_CONFIG": "${{ inputs.production_account_config != '' && '1' || '0' }}",
+        })
+        staging = "fixture/repo/.github/workflows/staging-packages.yml@refs/heads/fixture"
+        gate = "fixture/repo/.github/workflows/release-gate.yml@refs/heads/fixture"
+        for caller, event, staging_config, production_config, ok in (
+            (staging, "workflow_dispatch", "1", "0", True),
+            (staging, "workflow_dispatch", "0", "0", False),
+            (staging, "pull_request", "1", "0", False),
+            (staging, "workflow_dispatch", "1", "1", False),
+            (gate, "pull_request", "0", "1", True),
+            (gate, "pull_request", "0", "0", False),
+            (gate, "pull_request", "1", "0", False),
+            (gate.replace("release-gate", "release"), "pull_request", "0", "1", False),
+            (staging.replace("fixture/repo", "other/repo"), "workflow_dispatch", "1", "0", False),
+            (staging + "-other", "workflow_dispatch", "1", "0", False),
+            ("fixture/repo/.github/workflows/ci.yml@refs/heads/fixture", "push", "0", "0", True),
+        ):
+            with self.subTest(caller=caller, event=event, staging=staging_config, production=production_config):
+                result = subprocess.run(
+                    ["bash", "-ec", step["run"]],
+                    env={**os.environ, "CALLER_WORKFLOW_REF": caller, "STAGING_WORKFLOW_REF": staging,
+                         "RELEASE_GATE_WORKFLOW_REF": gate, "GITHUB_EVENT_NAME": event,
+                         "HAS_STAGING_CONFIG": staging_config, "HAS_PRODUCTION_CONFIG": production_config},
+                    capture_output=True,
+                )
+                self.assertEqual(result.returncode == 0, ok)
+
+    def test_only_staging_reduces_the_linux_and_windows_matrices(self):
+        jobs = workflow("release.yml")["jobs"]
+        matrices = {
+            "linux": [{"arch": "x86_64", "runner": "ubuntu-22.04", "deb": "amd64"},
+                      {"arch": "aarch64", "runner": "ubuntu-22.04-arm", "deb": "arm64"}],
+            "windows": [{"arch": "x64", "target": "x86_64-pc-windows-msvc"},
+                        {"arch": "x86", "target": "i686-pc-windows-msvc"},
+                        {"arch": "arm64", "target": "aarch64-pc-windows-msvc"}],
+        }
+        for name, ordinary in matrices.items():
+            with self.subTest(job=name):
+                include = jobs[name]["strategy"]["matrix"]["include"]
+                self.assertIsInstance(include, str, "missing staging matrix selection")
+                choices = re.fullmatch(
+                    r"\$\{\{ fromJSON\(inputs\.staging_account_config != '' && '([^']+)' \|\| '([^']+)'\) \}\}",
+                    " ".join(include.split()),
+                )
+                self.assertIsNotNone(choices)
+                self.assertEqual(json.loads(choices[1]), ordinary[:1])
+                self.assertEqual(json.loads(choices[2]), ordinary)
+        self.assertEqual(jobs["macos-build"]["strategy"]["matrix"]["include"], [
+            {"arch": "aarch64", "target": "aarch64-apple-darwin"},
+            {"arch": "x86_64", "target": "x86_64-apple-darwin"},
+        ])
+        for name in ("flatpak", "arch", "snap", "freebsd", "web"):
+            self.assertEqual(jobs[name]["if"], "inputs.beta_three_platforms != true")
+
+    def test_staging_summary_requires_all_staging_jobs_but_not_skipped_other_platforms(self):
+        summary = workflow("release.yml")["jobs"]["package-builds"]
+        self.assertEqual(summary["if"],
+                         "always() && (inputs.staging_account_config == '' || needs.version.result == 'success')")
+        step = summary["steps"][0]
+        self.assertEqual(step["env"]["STAGING_PACKAGES"],
+                         "${{ inputs.staging_account_config != '' && '1' || '0' }}")
+        jobs = {name: {"result": "success"} for name in ("version", "icons", "linux", "macos-build", "macos", "windows")}
+        jobs.update({name: {"result": "skipped"} for name in ("flatpak", "arch", "snap", "freebsd", "web")})
+        for failed, expected in ((None, 0), ("linux", 1), ("macos-build", 1), ("windows", 1)):
+            with self.subTest(failed=failed):
+                needs = jobs if not failed else {**jobs, failed: {"result": "failure"}}
+                result = subprocess.run(["bash", "-ec", step["run"]],
+                                        env={**os.environ, "STAGING_PACKAGES": "1", "NEEDS_JSON": json.dumps(needs)},
+                                        capture_output=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_snapshot_is_injected_before_compile_but_not_in_the_macos_join(self):
+        jobs = workflow("release.yml")["jobs"]
+        snapshot_env = {SNAPSHOT: "${{ inputs.staging_account_config }}"}
+        for job, command in {"linux": "packaging/linux/package.sh",
+                             "windows": "./packaging/windows/package.ps1",
+                             "macos-build": "packaging/macos/package.sh --build-only"}.items():
+            with self.subTest(job=job):
+                steps = jobs[job]["steps"]
+                compile_step = next(i for i, step in enumerate(steps) if step.get("run", "").startswith(command))
+                inject = steps[compile_step - 1]
+                self.assertEqual(inject["env"], {**snapshot_env,
+                                                 "PRODUCTION_ACCOUNT_CONFIG": "${{ inputs.production_account_config }}"})
+                self.assertEqual(inject["run"],
+                                 "python -I scripts/ci/staging_account_config.py inject-auto")
+                self.assertEqual(inject["if"],
+                                 "inputs.staging_account_config != '' || inputs.production_account_config != ''")
+        join = jobs["macos"]
+        self.assertFalse(set(join["env"]) & (set(CONFIG) | {SNAPSHOT}))
+        uses_snapshot = [step for step in join["steps"] if SNAPSHOT in step.get("env", {})]
+        self.assertEqual(len(uses_snapshot), 1)
+        self.assertEqual(uses_snapshot[0]["env"], snapshot_env)
+        self.assertIn("build.json", uses_snapshot[0]["run"])
+        self.assertTrue(any("--arch universal --skip-build" in step.get("run", "") for step in join["steps"]))
+
+    def test_staging_artifacts_are_prefixed_and_keep_ordinary_labels(self):
+        release = workflow("release.yml")
+        self.assertEqual(release["env"].get("ARTIFACT_PREFIX"),
+                         "${{ inputs.staging_account_config != '' && 'staging-' || '' }}")
+        jobs = release["jobs"]
+        labels = {
+            "icons": ["icons-${{ github.sha }}"],
+            "linux": ["installed-check-linux-${{ matrix.arch }}"],
+            "macos-build": ["macos-bin-${{ matrix.arch }}-${{ github.sha }}"],
+            "macos": ["macos-bin-aarch64-${{ github.sha }}", "macos-bin-x86_64-${{ github.sha }}",
+                      "installed-check-macos"],
+            "windows": ["icons-${{ github.sha }}", "installed-check-windows-${{ matrix.arch }}"],
+        }
+        # A gate-bound run appends its attempt so parallel attempts cannot overwrite each other.
+        attempt = "${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}"
+        for job, ordinary in labels.items():
+            with self.subTest(job=job):
+                if job in ("linux", "macos", "windows"):
+                    ordinary += ["${{ env.PACKAGE_ID }}", "package-evidence-${{ env.PACKAGE_ID }}"]
+                    suffix = "" if job == "macos" else "-${{ matrix.arch }}"
+                    self.assertEqual(jobs[job]["env"]["PACKAGE_ID"], f"release-{job}{suffix}")
+                actual = [step["with"]["name"] for step in jobs[job]["steps"]
+                          if step.get("uses", "").startswith(("actions/upload-artifact@", "actions/download-artifact@"))]
+                self.assertEqual(actual, ["${{ env.ARTIFACT_PREFIX }}" + label + attempt for label in ordinary])
+
+    def test_staging_evidence_hashes_the_package_and_revalidates_the_same_snapshot(self):
+        job = workflow("release.yml")["jobs"]["macos"]
+        step = next((step for step in job["steps"] if SNAPSHOT in step.get("env", {})), None)
+        self.assertIsNotNone(step, "missing staging evidence input")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sha = config_checkout(root, json.dumps(CONFIG).encode())
+            directory = root / "dist/release"
+            directory.mkdir(parents=True)
+            (directory / "fixture.tar.gz").write_bytes(b"abc")
+            scripts = root / "scripts/ci"
+            scripts.mkdir(parents=True)
+            for source in (HELPER, HERE / "package_contents.py"):
+                shutil.copyfile(source, scripts / source.name)
+            env = {**os.environ, "GITHUB_SHA": sha, "PACKAGE_ID": "release-macos",
+                   "PACKAGE_TARGET": "universal-apple-darwin"}
+            expected = {
+                "version": 1, "packageId": "release-macos", "sourceRevision": sha,
+                "target": "universal-apple-darwin", "contractDigest": None,
+                "artifacts": [{"name": "fixture.tar.gz",
+                               "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}],
+            }
+            descriptor = directory / "build.json"
+            command = [sys.executable, "-c", step["run"]]
+            tuple_sha = __import__("staging_account_config").tuple_sha256(CONFIG)
+            for source, snapshot, fields in (
+                ("", "", expected),
+                ("checked-in:staging", json.dumps(CONFIG), {
+                    **expected, "accountConfig": {"source": "checked-in:staging", "sourceRevision": sha,
+                                                  "path": CONFIG_PATH, "values": CONFIG},
+                }),
+                ("environment:production", "", {
+                    **expected, "accountConfig": {"source": "environment:production",
+                                                  "sourceRevision": sha, "tupleSha256": tuple_sha},
+                }),
+            ):
+                result = subprocess.run(command, cwd=root, env={
+                    **env, SNAPSHOT: snapshot, "PRODUCTION_ACCOUNT_CONFIG": "",
+                    "ACCOUNT_CONFIG_SOURCE": source, "ACCOUNT_CONFIG_SHA256": tuple_sha if source else "",
+                }, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(descriptor.read_text()), fields)
+                descriptor.unlink()
+            result = subprocess.run(command, cwd=root, env={**env, SNAPSHOT: "{}",
+                                    "ACCOUNT_CONFIG_SOURCE": "checked-in:staging"},
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(descriptor.exists())
+            result = subprocess.run([sys.executable, "-c", step["run"]], cwd=root,
+                                    env={**env, SNAPSHOT: json.dumps({**CONFIG, CLIENT: "client_Drift"}),
+                                         "ACCOUNT_CONFIG_SOURCE": "checked-in:staging"},
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(descriptor.exists())
+            # Ordinary runs must not read the committed staging config at all.
+            new_sha = config_checkout(root, b"not json")
+            result = subprocess.run([sys.executable, "-c", step["run"]], cwd=root,
+                                    env={**env, "GITHUB_SHA": new_sha, SNAPSHOT: "",
+                                         "ACCOUNT_CONFIG_SOURCE": ""},
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(descriptor.read_text()), {**expected, "sourceRevision": new_sha})
 
 
 def build(identity, artifacts):

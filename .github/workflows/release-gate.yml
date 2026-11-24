@@ -81,6 +81,10 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       gate_bound: true
+      # The candidate must embed the production account tuple, so the installed app can sign
+      # in. The values live in a protected repository variable, never in this repository's
+      # files; an unset variable fails the build closed instead of shipping an anonymous app.
+      production_account_config: ${{ vars.INTCAD_PRODUCTION_ACCOUNT_CONFIG }}
       beta_three_platforms: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.') }}
 
   beta-gate:

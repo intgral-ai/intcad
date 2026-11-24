@@ -953,7 +953,7 @@ fn serve_with(
                     // Counted before the window answers, so it publishes every change from its
                     // answer on.
                     joining = (method == "control.subscribe").then(|| design.join());
-                    let (req, rrx) = ControlRequest::new(method.clone(), params);
+                    let (req, rrx) = ControlRequest::trusted_control(method.clone(), params);
                     let ticket = running.add(connection, &id, &req);
                     if tx.send(req).is_err() {
                         break;
@@ -1004,6 +1004,144 @@ fn serve_with(
 mod tests {
     use super::*;
 
+    /// A local test double at the billing boundary for the external control path. It grants only
+    /// inside this test module; no production path installs it.
+    #[derive(Default)]
+    struct ControlTestBilling;
+
+    /// Host-side account/clock authority for this external-control harness. It never ships.
+    struct ControlTestAccount;
+
+    impl solidcraft_engine::entitlement::AccountService for ControlTestAccount {
+        fn status(&self) -> Result<solidcraft_engine::entitlement::Availability, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::Availability {
+                online: true,
+                version_supported: true,
+                model_available: true,
+                balance: 100,
+                held: 0,
+                reasons: Vec::new(),
+            })
+        }
+
+        fn authorize(
+            &mut self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _capability: solidcraft_engine::entitlement::Capability,
+        ) -> Result<solidcraft_engine::entitlement::Grant, solidcraft_engine::entitlement::Refusal> {
+            Err(solidcraft_engine::entitlement::Refusal::new(solidcraft_engine::entitlement::RefusalCode::AuthUnavailable, "test authority"))
+        }
+
+        fn begin(
+            &mut self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _capability: solidcraft_engine::entitlement::Capability,
+            _entry: solidcraft_engine::entitlement::EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Admission, solidcraft_engine::entitlement::Refusal> {
+            Err(solidcraft_engine::entitlement::Refusal::new(solidcraft_engine::entitlement::RefusalCode::AuthUnavailable, "test authority"))
+        }
+
+        fn finalize(
+            &mut self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::OperationStatus, solidcraft_engine::entitlement::Refusal> {
+            Err(solidcraft_engine::entitlement::Refusal::new(solidcraft_engine::entitlement::RefusalCode::AuthUnavailable, "test authority"))
+        }
+
+        fn operation(
+            &self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+        ) -> Result<solidcraft_engine::entitlement::OperationStatus, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::OperationStatus::Held)
+        }
+    }
+
+    struct ControlTestClock;
+
+    impl solidcraft_engine::entitlement::MonotonicClock for ControlTestClock {
+        fn now(&self) -> solidcraft_engine::entitlement::MonotonicInstant {
+            solidcraft_engine::entitlement::MonotonicInstant::from_millis(0)
+        }
+
+        fn wall_now(&self) -> std::time::SystemTime {
+            std::time::SystemTime::UNIX_EPOCH
+        }
+    }
+
+    impl solidcraft_engine::entitlement::BillingPort for ControlTestBilling {
+        fn admit(
+            &mut self,
+            operation: &solidcraft_engine::entitlement::OperationId,
+            capability: solidcraft_engine::entitlement::Capability,
+            _entry: solidcraft_engine::entitlement::EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Grant, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::Grant::from_server(
+                solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
+                capability,
+                solidcraft_engine::entitlement::MonotonicInstant::from_millis(60_000),
+            ))
+        }
+
+        fn commit(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::BillingResult, solidcraft_engine::entitlement::Refusal> {
+            Ok(result)
+        }
+
+        fn release(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _reason: solidcraft_engine::entitlement::RefusalCode,
+        ) -> Result<(), solidcraft_engine::entitlement::Refusal> {
+            Ok(())
+        }
+    }
+
+    fn control_test_budget() -> solidcraft_engine::entitlement::BudgetTable {
+        let mut budget = solidcraft_engine::entitlement::BudgetTable::unverified_default();
+        budget.set_verified(
+            solidcraft_engine::entitlement::Capability::Control,
+            solidcraft_engine::entitlement::EntryCategory::DirectControl,
+            Duration::from_secs(30),
+        );
+        budget
+    }
+
+    #[test]
+    fn control_server_sets_external_category() {
+        use solidcraft_ui_egui::control;
+        let (control, _) = ControlRequest::trusted_control("engine.execute", json!({"command": "document.inspect"}));
+        assert_eq!(control.entry_category(), solidcraft_engine::entitlement::EntryCategory::DirectControl);
+        assert!(!control::free_entry(control.entry_category()));
+        let mut billing = ControlTestBilling;
+        assert!(matches!(
+            control::admit_control_request(&control, &solidcraft_engine::entitlement::BudgetTable::unverified_default(), &mut billing),
+            solidcraft_engine::entitlement::Admission::Refused(solidcraft_engine::entitlement::Refusal {
+                code: solidcraft_engine::entitlement::RefusalCode::UnsafeToStart,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn gui_paths_remain_free() {
+        use solidcraft_ui_egui::control;
+        let (gui, _) = ControlRequest::trusted_gui("engine.execute", json!({"command": "document.inspect"}));
+        assert_eq!(gui.entry_category(), solidcraft_engine::entitlement::EntryCategory::HumanGuiFree);
+        assert!(control::free_entry(gui.entry_category()));
+        let mut billing = ControlTestBilling;
+        assert!(matches!(
+            control::admit_control_request(&gui, &solidcraft_engine::entitlement::BudgetTable::unverified_default(), &mut billing),
+            solidcraft_engine::entitlement::Admission::Allowed
+        ));
+    }
+
     // Uses the real server and UI control handler; the owner gate makes the stale result late.
     #[test]
     fn guarded_control_capability_is_additive_and_pending_preserves_metadata() {
@@ -1016,17 +1154,27 @@ mod tests {
         let (gate_tx, gate_rx) = channel();
         let owner = std::thread::spawn(move || {
             let mut app = SolveApp::new(solidcraft_engine::Session::default(), Services::default());
+            app.install_billing(Box::<ControlTestBilling>::default(), control_test_budget());
+            app.install_commit_authority(
+                solidcraft_engine::entitlement::AuthenticatedHostScope::new(
+                    solidcraft_engine::entitlement::AccountId::new("control-test-account"),
+                    solidcraft_engine::entitlement::InstallationId::new("control-test-installation"),
+                    solidcraft_engine::entitlement::HostSessionBinding::new("control-test-session"),
+                ),
+                Box::new(ControlTestAccount),
+                Box::new(ControlTestClock),
+            );
             let ctx = egui::Context::default();
             let stamp = app.session.document_stamp();
             base_tx.send(json!({"documentId":stamp.document_id,"revision":stamp.revision.to_string()})).unwrap();
-            for req in rx {
+            for mut req in rx {
                 if req.params["command"] == "parameters.list" {
                     gate_rx.recv().unwrap();
                 }
-                let control::Outcome::Done(reply) = control::handle(&mut app, &ctx, &req) else { panic!("synchronous test command") };
+                let control::Outcome::Done(reply) = control::handle(&mut app, &ctx, &mut req) else { panic!("synchronous test command") };
                 req.reply.send(reply).unwrap();
             }
-            assert_eq!(app.session.doc.param("width").unwrap().expr, "30 mm");
+            assert_eq!(app.session.doc.param("width").unwrap().expr, "30 mm", "the controlled batch applied its retained step");
         });
         let waits = Waits { short: Duration::from_millis(100), long: Duration::from_secs(10), token: TOKEN_WAIT };
         let server = std::thread::spawn(move || {
@@ -1055,7 +1203,7 @@ mod tests {
             "engine.batch",
             json!({"expectedDocument":write["documentStamp"],"commands":[{"command":"parameters.change","params":{"name":"width","expression":"30 mm"}}]}),
         );
-        assert_eq!(batch["result"]["completed"], 1);
+        assert_eq!(batch["result"]["completed"], 1, "{batch}");
         assert_ne!(batch["documentStamp"], write["documentStamp"]);
         let late = ask("engine.execute", json!({"command":"parameters.list","expectedDocument":base}));
         assert_eq!(late["running"], true);

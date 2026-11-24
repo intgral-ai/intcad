@@ -623,6 +623,8 @@ pub struct AgentChat {
     pub tools_port: Option<u16>,
     tools_rx: Option<Receiver<ControlRequest>>,
     tools_tx: Option<Sender<ControlRequest>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) bridge_admission: Option<Receiver<ControlRequest>>,
     /// Settings → AI: the Add agent dialog and connection tests.
     pub settings: settings::State,
     /// Latest authentication evidence from a connection test or a chat, per agent; never saved.
@@ -689,6 +691,7 @@ impl AgentChat {
             std::mem::swap(&mut self.detecting, &mut other.detecting);
             // The web view is the window's, whichever design its conversation is about.
             std::mem::swap(&mut self.web_host, &mut other.web_host);
+            std::mem::swap(&mut self.web_problem, &mut other.web_problem);
             std::mem::swap(&mut self.web_canvas, &mut other.web_canvas);
             std::mem::swap(&mut self.web_drag, &mut other.web_drag);
             std::mem::swap(&mut self.web_height, &mut other.web_height);
@@ -1234,6 +1237,30 @@ impl AgentChat {
     }
 }
 
+/// Bounded, read-only evidence for the desktop control channel.
+pub(crate) fn inspect(app: &SolveApp) -> Value {
+    #[cfg(not(target_arch = "wasm32"))]
+    let (host, surface_ready) = (
+        match app.agent_chat.web_problem {
+            Some(web::Problem::NativeWayland) => "native_wayland",
+            Some(web::Problem::Failed) => "failed",
+            None if app.agent_chat.web_host => "available",
+            None => "unavailable",
+        },
+        // A view can only say its surface colour once its page runs. The colour stays
+        // after the page is hidden, so a closed page still reports a proven surface;
+        // a missing runtime or a failed build never said one.
+        app.agent_chat.web_host && app.agent_chat.web_problem.is_none() && app.agent_chat.web_canvas.is_some(),
+    );
+    #[cfg(target_arch = "wasm32")]
+    let (host, surface_ready) = ("unavailable", false);
+    #[cfg(not(target_arch = "wasm32"))]
+    let centred = app.agent_chat.web_centre.is_some();
+    #[cfg(target_arch = "wasm32")]
+    let centred = false;
+    json!({"open": app.agent_chat.open, "surface_ready": surface_ready, "host": host, "centred": centred})
+}
+
 /// What an event asks of the app.
 enum Outcome {
     /// A message was answered (or the agent stopped): the turn's bookkeeping ends.
@@ -1466,6 +1493,12 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     } else {
         None
     };
+    let bridge_scope_check = app.commit_scope.as_ref().filter(|scope| app.has_commit_authority() && scope.is_provable()).and_then(|scope| {
+        let account = app.commit_account.as_ref()?;
+        // Without worker-backed durability, even a live identity cannot open the paid lane.
+        account.bridge_journal()?;
+        account.bridge_scope_check(scope)
+    });
     let chat = &mut app.agent_chat;
     if chat.tools_port.is_none()
         && let Some(start) = chat.control_starter.as_mut()
@@ -1526,6 +1559,9 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
                 workflow_id,
                 bridge,
                 tools,
+                // Only the installed, provable desktop authority can bind charged bridge tools.
+                // Without it the bridge retains its closed MCP authority.
+                bridge_scope_check,
                 instructions,
                 connection_auth: Arc::new(std::sync::Mutex::new(None)),
                 frozen_binding: Arc::new(std::sync::Mutex::new(None)),
@@ -1695,26 +1731,32 @@ pub(crate) fn refresh_dfm_auto(app: &mut SolveApp) {
     app.agent_chat.dfm.set_auto_enabled(enabled);
 }
 
-/// Submit a decided trigger through the engine's background DFM service. This is the one host
-/// entry: the Run DFM command and the automatic checks both come through here. The service is a
-/// desktop host: the browser build has no background thread and submits nothing.
-#[cfg(not(target_arch = "wasm32"))]
-fn submit_dfm(app: &mut SolveApp, trigger: dfm_runtime::Trigger) -> bool {
-    match solidcraft_engine::dfm::service::start(&mut app.session) {
-        Ok(_) => true,
-        Err(error) => {
-            log::warn!("the DFM check did not start after {trigger:?}: {error}");
-            false
-        }
+/// Refuse before minting or admitting anything. The account snapshot can rule out eligibility,
+/// not authorize execution. No verified Assistant DFM execution scope exists: neither the
+/// turn's authority nor the Review panel's stop bound covers a separate Assistant check.
+fn assistant_dfm_refusal(app: &SolveApp) -> solidcraft_engine::entitlement::RefusalCode {
+    use solidcraft_engine::entitlement::RefusalCode;
+
+    let account = app.account.view();
+    if let Some(code) = account.tool_blocked {
+        return code;
     }
+    if !account.signed_in {
+        return RefusalCode::AuthRequired;
+    }
+    if account.no_credits() {
+        return RefusalCode::CreditsExhausted;
+    }
+    RefusalCode::UnsafeToStart
 }
 
-#[cfg(target_arch = "wasm32")]
-fn submit_dfm(_app: &mut SolveApp, _trigger: dfm_runtime::Trigger) -> bool {
+/// A decided automatic trigger is not permission to run the ordinary CAD command.
+fn submit_dfm(app: &SolveApp, trigger: dfm_runtime::Trigger) -> bool {
+    log::debug!("Assistant DFM not started after {trigger:?}: {:?}", assistant_dfm_refusal(app));
     false
 }
 
-/// The host's Run DFM entry: no AI connection is needed. Returns whether a run was submitted.
+/// A manual Assistant trigger, separate from the ordinary CAD command.
 #[allow(dead_code)]
 pub(crate) fn run_dfm(app: &mut SolveApp) -> bool {
     let stamp = app.session.document_stamp();
@@ -1757,31 +1799,16 @@ pub(crate) fn running_dfm(_app: &SolveApp) -> Option<String> {
 /// idle with nothing finished.
 pub(crate) struct DfmState {
     pub running: bool,
-    pub last_run: Option<String>,
-    pub error: Option<String>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn dfm_state() -> DfmState {
-    let status = solidcraft_engine::dfm::service::status();
-    DfmState { running: status.running, last_run: status.last_run, error: status.error }
+    DfmState { running: solidcraft_engine::dfm::service::status().running }
 }
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn dfm_state() -> DfmState {
-    DfmState { running: false, last_run: None, error: None }
-}
-
-/// The last finished check of this session, if one finished: what the Review panel shows its own
-/// run against, to tell a new report from the one that stood there before.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn last_dfm_run() -> Option<String> {
-    solidcraft_engine::dfm::service::status().last_run
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn last_dfm_run() -> Option<String> {
-    None
+    DfmState { running: false }
 }
 
 /// Put a ready attachment on the next message and open the Assistant, so the person sees the chip
@@ -2674,6 +2701,17 @@ fn hand_over(app: &mut SolveApp, mut req: ControlRequest) {
     if review::running(&app.agent_chat) {
         match review::route(&req.method, &req.params) {
             Some(true) => {
+                // The preview runs a real agent request on a copy, but its commit happens later
+                // on Accept, outside any typed admission/commit path. Controlled entries are
+                // refused here pending Task 8/9; ordinary GUI preview cad still runs.
+                if !crate::control::free_entry(req.entry) {
+                    let _ = req.reply.send(crate::control::async_controlled_refusal(&req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
+                    return;
+                }
+                if let Err(refusal) = crate::control::admit_once(app, &mut req) {
+                    let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+                    return;
+                }
                 review::hand_over(app, req);
                 return;
             }
@@ -2685,7 +2723,23 @@ fn hand_over(app: &mut SolveApp, mut req: ControlRequest) {
         }
     }
     match crate::execution_guard::admit(app, &mut req) {
-        Ok(()) => app.control_held.push_back(req),
+        Ok(()) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if req.entry() == solidcraft_engine::entitlement::EntryCategory::GuiBridgeMcp
+                && req.helper.is_none()
+                && app.commit_account.as_ref().is_some_and(|account| account.bridge_journal().is_some())
+            {
+                crate::control::queue_bridge_admission(app, req);
+                return;
+            }
+            // The queue and every later seam carry this one typed admission; none may take it
+            // again on resumption.
+            if let Err(refusal) = crate::control::admit_once(app, &mut req) {
+                let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+                return;
+            }
+            app.control_held.push_back(req);
+        }
         Err(error) => {
             let _ = req.reply.send(crate::execution_guard::refusal_json(&error));
         }
@@ -2782,6 +2836,21 @@ pub fn undo_changes(app: &mut SolveApp, index: usize) {
 
 /// The requests the agent's tools sent through the chat's endpoint: each one passes the gate.
 fn pump_tools(app: &mut SolveApp) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(rx) = app.agent_chat.bridge_admission.take() {
+        match rx.try_recv() {
+            Ok(mut req) => {
+                if req.refuse_cancelled_chat() {
+                    crate::control::release_unstarted(app, &mut req);
+                } else {
+                    app.control_held.push_back(req);
+                }
+                app.agent_chat.bridge_admission = Some(rx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => app.agent_chat.bridge_admission = Some(rx),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
+    }
     let Some(rx) = app.agent_chat.tools_rx.take() else { return };
     let configured = app.preferences.agent_chat_turn_limit;
     let limit = if configured == 0 { u32::MAX } else { configured.clamp(1, 1000) };
@@ -3076,6 +3145,10 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     }
     if !app.agent_chat.held.is_empty() || app.agent_chat.state() == State::Busy {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.agent_chat.bridge_admission.is_some() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }
 }
 
@@ -3765,5 +3838,7 @@ pub fn status(app: &SolveApp) -> Value {
     state
 }
 
+#[cfg(test)]
+mod account_tests;
 #[cfg(test)]
 mod tests;
