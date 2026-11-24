@@ -256,9 +256,9 @@ class StagingWorkflow(unittest.TestCase):
         step = next((step for step in version["steps"]
                      if step.get("id") == "account-config-guard"), None)
         self.assertIsNotNone(step, "missing account configuration caller guard")
-        self.assertIn("inputs.staging_account_config != ''", step["if"])
-        self.assertIn("inputs.production_account_config != ''", step["if"])
-        self.assertIn("release-gate.yml", step["if"])
+        # The guard must run for every build: a skipped step let the staging wrapper build
+        # anonymously when its snapshot was empty.
+        self.assertNotIn("if", step)
         self.assertEqual(step["env"], {
             "CALLER_WORKFLOW_REF": "${{ github.workflow_ref }}",
             "STAGING_WORKFLOW_REF": "${{ format('{0}/.github/workflows/staging-packages.yml@{1}', github.repository, github.ref) }}",
@@ -279,6 +279,7 @@ class StagingWorkflow(unittest.TestCase):
             (gate.replace("release-gate", "release"), "pull_request", "0", "1", False),
             (staging.replace("fixture/repo", "other/repo"), "workflow_dispatch", "1", "0", False),
             (staging + "-other", "workflow_dispatch", "1", "0", False),
+            ("fixture/repo/.github/workflows/ci.yml@refs/heads/fixture", "push", "0", "0", True),
         ):
             with self.subTest(caller=caller, event=event, staging=staging_config, production=production_config):
                 result = subprocess.run(

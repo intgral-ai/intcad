@@ -59,11 +59,10 @@ jobs:
     steps:
       - id: account-config-guard
         name: Require the right caller for a staged account configuration
-        # A missing or misdirected snapshot must never become an anonymous package silently,
-        # and the formal release gate must never build without production values.
-        if: >-
-          inputs.staging_account_config != '' || inputs.production_account_config != '' ||
-          github.workflow_ref == format('{0}/.github/workflows/release-gate.yml@{1}', github.repository, github.ref)
+        # The guard runs on every build, not only when a value is present: a missing or
+        # misdirected snapshot must never become an anonymous package silently, and the formal
+        # release gate must never build without production values. A skipped step would let the
+        # staging wrapper build anonymously when its snapshot output is empty.
         env:
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
           STAGING_WORKFLOW_REF: ${{ format('{0}/.github/workflows/staging-packages.yml@{1}', github.repository, github.ref) }}
@@ -80,6 +79,10 @@ jobs:
               echo '::error::Staging account configuration requires the manual staging wrapper and a snapshot'
               exit 1
             fi
+          fi
+          if [ "$CALLER_WORKFLOW_REF" = "$STAGING_WORKFLOW_REF" ] && [ "$HAS_STAGING_CONFIG" != 1 ]; then
+            echo '::error::the staging wrapper needs staging_account_config from its snapshot; a staging package is never built anonymously'
+            exit 1
           fi
           if [ "$HAS_PRODUCTION_CONFIG" = 1 ] && [ "$CALLER_WORKFLOW_REF" != "$RELEASE_GATE_WORKFLOW_REF" ]; then
             echo '::error::Production account configuration is only accepted from the release gate'
