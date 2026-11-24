@@ -2900,3 +2900,38 @@ v52. The real rebase is therefore a mechanical repetition of a verified sequence
 > One full `ci` run on the final head remains the merge gate.
 >
 > **Original PRs** stay open until this merges, then are closed with a pointer here.
+
+## 24. Owner-approved change: one Integration PR for #224 + #239 + the paid chain
+
+Approved 2026-11-24: #224, #239 and the paid-authority chain land through a **single** Integration
+Pull Request, so the release pays for one full CI instead of four. #214 stays its own merge (its run
+is near green). No gate is relaxed.
+
+**Integration candidate built and measured** (scratch, `87acc2a071`):
+
+```
+develop 97236b5dd7
++ #214 e65d647201                                   → clean
++ task/int1497-paid-integration (#224 + #227/#233/#235/#234)
+      conflicts in the two known packaging files    → resolved with the paid-chain side
++ #239 7db657fa61                                   → clean
+```
+
+**The `--theirs` resolution was audited line by line, as the owner required:**
+
+- `packaging/linux/installed-check-inside.sh`: all 14 lines #214 adds (agent directory probe,
+  `test -x node`, `check+=(--built-in-agent)`) are present verbatim in the resolved file.
+- `tools/windows-assistant-smoke.ps1`: all of #214's assertions survive in the paid-chain rewrite —
+  mastra offered first, `currentAgent == mastra`, plans reported, stopped → no plans/connected,
+  restarts; the helper is defined once and called once, guarded by the installed
+  `mastra-agent\agent.json`. The only differences are the newer `[datetime]::UtcNow` form and
+  re-indentation, which is the paid-chain flow #214 was adapted for.
+
+**Scope check of the remaining open PRs, for duplicate CI only (no scope change proposed):** the
+open drafts are #232 (upgrade prompt, explicitly out of 0.1.3), the FEA stack (#169–#208), the
+upstream syncs (#145, #185, #220) and #153/#154. None is in v0.1.3, so batching them would expand
+the release; they are left alone.
+
+**Release freeze:** from now on no PR is merged to `develop` except the #214 and Integration merges.
+Both other agents were told to stop pushing and merging and to pin #239 (`7db657fa61`) and the
+integration branch head.
