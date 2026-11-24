@@ -29,7 +29,7 @@ use super::{FetchError, InstallKind, Release};
 
 /// The publisher reads this same single-line minisign key. Until it is provisioned, parsing the
 /// placeholder fails and one-click installation is unavailable.
-const PUBLIC_KEY: &str = include_str!("trusted-release-key.pub");
+pub(crate) const PUBLIC_KEY: &str = include_str!("trusted-release-key.pub");
 
 /// The checksum list every release carries, and its signature.
 pub const SUMS: &str = "SHA256SUMS.txt";
