@@ -109,6 +109,21 @@ pub struct FileOperationStore {
 }
 
 impl FileOperationStore {
+    /// Durable default disposition of a CLI admission that never selected a final result.
+    pub(crate) fn record_admission_cleanup(&self, operation: &OperationId) -> Result<(), OperationStoreError> {
+        if publish_create_only(&self.records_dir().join(format!("{}.cleanup", operation.as_str())), b"release\n")
+            .map_err(|_| OperationStoreError::Unavailable)?
+        {
+            Ok(())
+        } else {
+            Err(OperationStoreError::InvalidState)
+        }
+    }
+
+    pub(crate) fn has_admission_cleanup(&self, operation: &OperationId) -> bool {
+        self.records_dir().join(format!("{}.cleanup", operation.as_str())).is_file()
+    }
+
     fn settlement_cursor_path(&self, scope: &AuthenticatedHostScope) -> PathBuf {
         let key = digest(&[scope.account().as_str(), scope.installation().as_str(), scope.session_binding().as_str()]);
         self.root.join(format!("settlement-cursor-{key}"))

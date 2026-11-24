@@ -1,51 +1,21 @@
-//! Headless account composition.
-//!
-//! A normal program call never starts a device sign-in: it returns the stable `AUTH_REQUIRED`
-//! refusal and no request is sent. Only an explicit command may call
-//! [`begin_explicit_device_login`], and even then the caller displays the URL and code; this
-//! program never opens a browser. The fallback session is process-local and is never persisted.
-//!
-//! MCP composition is defensive. The CLI builds one [`McpAccount`] from the same credential
-//! session the account commands use, and `serve_mcp` consults it for every backend route.
-//! **Transport is not authority:** a reachable app control port, a valid launch token, a TCP
-//! connection, a header or a request field never authorizes a charged MCP tool.
-//!
-//! - Every charged call is denied before dispatch in production. A documented server-verified
-//!   product-session exchange exists, but the shipped CLI configures no product service origin
-//!   and no explicit provider sign-in command, and there is no reviewed production
-//!   [`BillingPort`], durable operation/intent lifecycle or verified MCP safe-stop budget. No
-//!   reviewed authenticated protocol proves that a bridged app may settle a charged call. The
-//!   shipped CLI passes a non-persistent session, so it has no host scope; `Server::new` keeps
-//!   its default refusal.
-//! - A GUI-bridged call may use the app for uncharged tool transport, but charged calls remain
-//!   closed; the CLI never bills a remote call locally.
-//! - `McpAccount::authorized` is a local test-only static-window composition seam. It proves
-//!   the backend wiring with an in-memory billing double; it is not a live lifecycle and must
-//!   not be used to enable production. Static/synthetic host scopes and test grants never
-//!   authorize production.
-//!
-//! The remaining live interface is explicit. Headless metering still needs a configured product
-//! service origin plus an explicit provider sign-in that reaches the reviewed
-//! `ServerVerifiedProductSession`, a reviewed [`BillingPort`] over the native account adapter, a
-//! durable operation/intent store, a verified MCP safe-stop budget and a live authority
-//! revalidation at dispatch/commit (not a fixed window captured at startup). GUI bridging
-//! additionally needs a reviewed authenticated protocol that proves the app's authority and
-//! carries the app-verified entry, operation and deadline without letting the CLI mint either,
-//! plus same-id durable settlement. Until then the shipped CLI stays fail-closed.
-//!
-//! No token, account label or session binding is read from MCP wire arguments. A host scope
-//! candidate, when present, comes only from [`CredentialSession::authenticated_scope`] after the
-//! same secure-store, logout-marker and product-session gates the desktop runtime uses; it is
-//! never authority by itself.
+//! Headless account composition. Programmatic calls never start a sign-in or open a browser.
+//! The CLI may use the existing product session from the origin-bound OS credential store.
+//! A reachable app control port or a request field is never authority for a charged tool.
 
-use std::time::Duration;
+use std::cell::Cell;
+use std::fs::File;
+use std::io::Read as _;
+use std::time::{Duration, SystemTime};
 
 use solidcraft_account_native::{
-    CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePrompt, MemorySession, NoPersistentStore, UreqDeviceCodeTransport,
-    WorkOsPublicClient,
+    ACCOUNT_KEYRING_SERVICE, AccountPaths, CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePrompt, KeyringStore, MemorySession,
+    NoPersistentStore, SessionBilling, UreqDeviceCodeTransport, UreqTransport, WireConnection, WorkOsPublicClient,
 };
+#[cfg(test)]
+use solidcraft_engine::entitlement::BillingPort;
 use solidcraft_engine::entitlement::{
-    AuthenticatedHostScope, BillingPort, BudgetTable, Capability, EntryCategory, OperationId, Refusal, RefusalCode, TrustedContext,
+    AuthenticatedHostScope, BudgetTable, Capability, EntryCategory, MonotonicClock, MonotonicInstant, OperationId, Refusal, RefusalCode,
+    TrustedContext,
 };
 use solidcraft_engine::io::vfs::PathScope;
 use solidcraft_mcp::{Backend, Server, ToolCallContext};
@@ -77,6 +47,68 @@ pub fn begin_explicit_device_login(client_id: &str) -> Result<(DeviceCodeFlow<Ur
     Ok((flow, prompt))
 }
 
+/// Open the same origin-bound secure store under the same process lock as desktop.
+/// No runtime setting or MCP argument controls the destination of a bearer.
+pub fn configured_billing() -> Option<(SessionBilling, File)> {
+    let connection = WireConnection::product_origin(option_env!("INTCAD_PRODUCT_HTTPS_ORIGIN")?, env!("CARGO_PKG_VERSION")).ok()?;
+    let clock = BootClock::default();
+    clock.sample()?;
+    let (journal, lock) = AccountPaths::lock_existing(AccountPaths::for_current_user()?.root())?;
+    let store = KeyringStore::new(format!("{ACCOUNT_KEYRING_SERVICE} [{}]", connection.base_url()));
+    let billing = SessionBilling::new(
+        CredentialSession::new(Box::new(store)),
+        connection,
+        Box::new(UreqTransport::with_limits(Duration::from_secs(5), Duration::from_secs(3))),
+        journal,
+        clock,
+    );
+    Some((billing, lock))
+}
+
+/// Linux uptime includes suspend. Other hosts stay closed until there is a trustworthy clock.
+#[derive(Default)]
+struct BootClock {
+    last: Cell<Option<MonotonicInstant>>,
+    failed: Cell<bool>,
+}
+
+impl BootClock {
+    fn sample(&self) -> Option<MonotonicInstant> {
+        if !cfg!(target_os = "linux") || self.failed.get() {
+            return None;
+        }
+        let mut sample = String::new();
+        File::open("/proc/uptime").ok()?.take(128).read_to_string(&mut sample).ok()?;
+        let (seconds, hundredths) = sample.split_ascii_whitespace().next()?.split_once('.')?;
+        if hundredths.len() != 2 {
+            return None;
+        }
+        let millis = seconds.parse::<u64>().ok()?.checked_mul(1_000)?.checked_add(hundredths.parse::<u64>().ok()?.checked_mul(10)?)?;
+        let now = MonotonicInstant::from_millis(millis);
+        if self.last.get().is_some_and(|previous| now < previous) {
+            return None;
+        }
+        self.last.set(Some(now));
+        Some(now)
+    }
+}
+
+impl MonotonicClock for BootClock {
+    fn now(&self) -> MonotonicInstant {
+        self.sample().unwrap_or_else(|| {
+            self.failed.set(true);
+            MonotonicInstant::from_millis(0).saturating_add(Duration::MAX)
+        })
+    }
+
+    fn wall_now(&self) -> SystemTime {
+        // Uptime is rounded down to a centisecond; subtract that uncertainty from a lease
+        // derived from an absolute timestamp by moving the send wall reading forward.
+        let now = SystemTime::now();
+        now.checked_add(Duration::from_millis(10)).unwrap_or(now)
+    }
+}
+
 /// Which production MCP backend a call reaches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum McpRoute {
@@ -94,7 +126,8 @@ pub enum McpRoute {
 /// deterministic verified bound and `remaining` a fixed static window. It proves admission and
 /// settlement plumbing, not a live account lifecycle; a production authority must revalidate
 /// authorization at dispatch and commit instead.
-pub struct McpAuthority {
+#[cfg(test)]
+struct McpAuthority {
     scope: AuthenticatedHostScope,
     billing: Box<dyn BillingPort>,
     budget: BudgetTable,
@@ -105,8 +138,9 @@ pub struct McpAuthority {
 ///
 /// It is built once before `serve_mcp`; a request cannot add, replace or widen it.
 pub struct McpAccount {
-    scope: Option<AuthenticatedHostScope>,
-    authority: Option<McpAuthority>,
+    live: Option<(SessionBilling, Option<File>)>,
+    #[cfg(test)]
+    synthetic: Option<McpAuthority>,
 }
 
 impl McpAccount {
@@ -116,15 +150,24 @@ impl McpAccount {
     /// active product session (never a provider-only login), and a provable account/installation/
     /// session binding. A missing one leaves the scope `None`; the MCP server then keeps its
     /// default refusal. This mirrors the desktop startup gate without creating a second policy.
-    pub fn from_session(credentials: CredentialSession) -> Self {
-        let secure_store = credentials.is_persistent();
-        let logout_pending = credentials.logout_pending().unwrap_or(true);
-        let product_session_active = credentials.product_session_active();
-        let scope = (secure_store && !logout_pending && product_session_active)
-            .then(|| credentials.authenticated_scope())
-            .flatten()
-            .filter(AuthenticatedHostScope::is_provable);
-        Self { scope, authority: None }
+    pub fn from_session(billing: SessionBilling) -> Self {
+        Self::with_live(Some((billing, None)))
+    }
+
+    pub fn configured() -> Self {
+        Self::with_live(configured_billing().map(|(billing, lock)| (billing, Some(lock))))
+    }
+
+    pub fn closed() -> Self {
+        Self::with_live(None)
+    }
+
+    fn with_live(live: Option<(SessionBilling, Option<File>)>) -> Self {
+        Self {
+            live: live.filter(|(billing, _)| billing.scope().is_some()),
+            #[cfg(test)]
+            synthetic: None,
+        }
     }
 
     /// Install a local test-only authority over an in-memory scope.
@@ -146,7 +189,7 @@ impl McpAccount {
         if remaining.is_zero() {
             return Err(Refusal::new(RefusalCode::UnsafeToStart, "the host authorization window is empty"));
         }
-        Ok(Self { scope: Some(scope.clone()), authority: Some(McpAuthority { scope, billing, budget, remaining }) })
+        Ok(Self { live: None, synthetic: Some(McpAuthority { scope, billing, budget, remaining }) })
     }
 }
 
@@ -154,25 +197,32 @@ impl McpAccount {
 ///
 /// Free helpers and protocol reads keep working through every route because the server's free
 /// catalog answers them without an operation. A GUI-bridged charged call is refused before
-/// dispatch: a reachable app is transport, not proven authority. The headless authority branch
-/// is reachable only from the `cfg(test)` local seam; production always closes charged calls.
-pub fn compose_mcp_server(backend: Box<dyn Backend>, path_scope: Option<PathScope>, account: McpAccount, route: McpRoute) -> Server {
-    let McpAccount { scope, authority } = account;
-    match (route, scope, authority) {
-        (McpRoute::Headless, Some(scope), Some(authority)) if scope.is_provable() => {
-            // The account and authority are built together by `McpAccount::authorized`; the
-            // authority's own scope is the one the backend mints from.
-            let backend: Box<dyn Backend> =
-                Box::new(HostScopedBackend { inner: backend, scope: authority.scope.clone(), remaining: authority.remaining });
-            Server::new(backend).with_path_scope(path_scope).with_billing(authority.billing, authority.budget)
-        }
-        // Transport is not authority. The app's control port may be local and token-bearing,
-        // but the CLI has no reviewed authenticated protocol that proves the app may settle a
-        // charged call. Keep the pre-dispatch refusal.
-        (McpRoute::GuiBridge, _, _) => Server::new(backend).with_path_scope(path_scope),
-        // A CLI account scope without a live authority keeps the headless default refusal.
-        _ => Server::new(backend).with_path_scope(path_scope),
+/// dispatch: a reachable app is transport, not proven authority.
+pub fn compose_mcp_server(
+    backend: Box<dyn Backend>,
+    path_scope: Option<PathScope>,
+    account: McpAccount,
+    route: McpRoute,
+    budget: BudgetTable,
+) -> Server {
+    // Transport is not authority. The app's control port may be local and token-bearing,
+    // but the CLI has no reviewed authenticated protocol that proves the app may settle a
+    // charged call. Keep the pre-dispatch refusal.
+    if route == McpRoute::GuiBridge {
+        return Server::new(backend).with_path_scope(path_scope);
     }
+    if let Some((billing, lock)) = account.live
+        && let Some(scope) = billing.scope()
+    {
+        let backend = HostScopedBackend { inner: backend, scope, _keyring_lock: lock, remaining: None };
+        return Server::new(Box::new(backend)).with_path_scope(path_scope).with_billing(Box::new(billing), budget);
+    }
+    #[cfg(test)]
+    if let Some(authority) = account.synthetic {
+        let backend = HostScopedBackend { inner: backend, scope: authority.scope, _keyring_lock: None, remaining: Some(authority.remaining) };
+        return Server::new(Box::new(backend)).with_path_scope(path_scope).with_billing(authority.billing, authority.budget);
+    }
+    Server::new(backend).with_path_scope(path_scope)
 }
 
 /// One in-process MCP backend that mints a host operation per charged tool call.
@@ -183,7 +233,8 @@ pub fn compose_mcp_server(backend: Box<dyn Backend>, path_scope: Option<PathScop
 struct HostScopedBackend {
     inner: Box<dyn Backend>,
     scope: AuthenticatedHostScope,
-    remaining: Duration,
+    remaining: Option<Duration>,
+    _keyring_lock: Option<File>,
 }
 
 impl Backend for HostScopedBackend {
@@ -227,7 +278,11 @@ impl Backend for HostScopedBackend {
         getrandom::fill(&mut entropy).ok()?;
         let operation = OperationId::mint_from_entropy(&entropy).ok()?;
         let trusted = TrustedContext::mint(&self.scope, operation.as_str(), Capability::Mcp, EntryCategory::HeadlessMcp).ok()?;
-        Some(ToolCallContext::from_trusted(trusted).with_safe_stop(self.remaining))
+        let context = ToolCallContext::from_trusted(trusted);
+        Some(match self.remaining {
+            Some(remaining) => context.with_safe_stop(remaining),
+            None => context,
+        })
     }
 
     fn begin_tool_call(&mut self, context: Option<&ToolCallContext>, helper: Option<&str>) {
@@ -249,13 +304,70 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use serde_json::{Value, json};
-    use solidcraft_account_native::{ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession, Secret};
+    use solidcraft_account_native::{
+        ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession, Secret, Transport, TransportFailure, WireRequest, WireResponse,
+    };
     use solidcraft_engine::entitlement::{
         AccountId, BillingResult, CredentialError, CredentialStore, Grant, GrantId, HostSessionBinding, InstallationId, MonotonicInstant,
     };
     use solidcraft_mcp::Headless;
 
     use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn configured_origin_uses_the_desktop_keyring_namespace() {
+        let wire = WireConnection::product_origin("https://Product.Example:00443/", "1").unwrap();
+        assert_eq!(wire.base_url(), "https://product.example");
+        for invalid in ["https://product.example:0", "https://product.example:/", "https://product.example/.", "https://pr%6fduct.example"] {
+            assert!(WireConnection::product_origin(invalid, "1").is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn runtime_data_directory_cannot_select_another_keyring_lock() {
+        // Use a child to inject environment values without mutating this test process's env.
+        const CHILD: &str = "INTCAD_TEST_ACCOUNT_PATH_CHILD";
+        let root = AccountPaths::for_current_user();
+        if let Some(expected) = std::env::var_os(CHILD) {
+            assert_eq!(root.as_ref().map(|paths| paths.root().as_os_str()).unwrap_or_default(), expected);
+            return;
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        assert!(root.is_some(), "the test user has an OS account directory");
+        let other = std::env::temp_dir().join("intcad-test-untrusted-account-location");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "account::tests::runtime_data_directory_cannot_select_another_keyring_lock"])
+            .env(CHILD, root.as_ref().map(|paths| paths.root().as_os_str()).unwrap_or_default())
+            .env("HOME", &other)
+            .env("XDG_DATA_HOME", &other)
+            .env("APPDATA", &other)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
+    #[test]
+    fn cli_requires_both_desktop_lock_and_ledger() {
+        let root = std::env::temp_dir().join(format!("intcad-existing-store-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        assert!(AccountPaths::lock_existing(&root).is_none());
+        let ledger = root.join("account");
+        let lock_path = root.join("account-keyring.lock");
+        assert!(!ledger.exists() && !lock_path.exists());
+        std::fs::create_dir(&ledger).unwrap();
+        assert!(AccountPaths::lock_existing(&root).is_none());
+        assert!(!lock_path.exists());
+        File::create(&lock_path).unwrap();
+        let (opened, lock) = AccountPaths::lock_existing(&root).unwrap();
+        assert_eq!(opened, ledger.canonicalize().unwrap());
+        assert!(AccountPaths::lock_existing(&root).is_none(), "the CLI must acquire the shared lock");
+        drop(lock);
+        std::fs::remove_file(lock_path).unwrap();
+        std::fs::remove_dir(ledger).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn programmatic_login_never_starts_a_flow() {
@@ -349,21 +461,38 @@ mod tests {
                 HostSessionBinding::new("test-binding"),
             ))
             .expect("test installation binding");
+        store.set_raw("install/credential", "installation_test_only");
         session
+    }
+
+    struct Offline;
+
+    impl Transport for Offline {
+        fn send(&self, _: &WireRequest) -> Result<WireResponse, TransportFailure> {
+            panic!("local account probes must not send a request");
+        }
+    }
+
+    fn local_account(session: CredentialSession) -> McpAccount {
+        McpAccount::from_session(SessionBilling::new(
+            session,
+            WireConnection::new("https://product.invalid", "test").unwrap(),
+            Box::new(Offline),
+            PathBuf::new(),
+            BootClock::default(),
+        ))
     }
 
     #[test]
     fn headless_mcp_without_a_secure_store_has_no_host_scope() {
-        let account = McpAccount::from_session(no_persistent_session());
-        assert!(account.scope.is_none(), "a process-local session without secure storage cannot mint a host scope");
+        assert!(local_account(no_persistent_session()).live.is_none(), "a process-local session without secure storage cannot mint a host scope");
     }
 
     #[test]
     fn headless_mcp_provider_only_login_has_no_host_scope() {
         let session = CredentialSession::new(Box::new(PersistentMemoryStore::default()));
         session.complete_provider_login("acct_cli", "provider_token_test_only").expect("test provider login");
-        let account = McpAccount::from_session(session);
-        assert!(account.scope.is_none(), "a WorkOS provider token is not an Intcad product session");
+        assert!(local_account(session).live.is_none(), "a WorkOS provider token is not an Intcad product session");
     }
 
     #[test]
@@ -380,14 +509,13 @@ mod tests {
             ))
             .expect("test installation binding");
         store.set_raw("auth/logout_pending", "sign_out");
-        let account = McpAccount::from_session(session);
-        assert!(account.scope.is_none(), "an unconfirmed sign-out keeps every controlled path closed");
+        assert!(local_account(session).live.is_none(), "an unconfirmed sign-out keeps every controlled path closed");
     }
 
     #[test]
     fn headless_mcp_with_an_active_product_session_exposes_a_provable_host_scope() {
-        let account = McpAccount::from_session(active_product_session());
-        let scope = account.scope.as_ref().expect("the secure product session yields a scope");
+        let account = local_account(active_product_session());
+        let scope = account.live.expect("live authority").0.scope().expect("the secure product session yields a scope");
         assert!(scope.is_provable());
         assert_eq!(scope.account().as_str(), "acct_cli");
         assert_eq!(scope.installation().as_str(), "install_cli");
@@ -412,8 +540,8 @@ mod tests {
     #[test]
     fn default_headless_mcp_refuses_a_charged_tool_before_dispatch() {
         let (backend, calls) = counting_backend();
-        let account = McpAccount::from_session(no_persistent_session());
-        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::Headless);
+        let account = local_account(no_persistent_session());
+        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::Headless, BudgetTable::unverified_default());
         let result = call(&mut server, "measure", json!({}));
         assert_eq!(result["isError"], true, "{result}");
         assert_eq!(result["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE");
@@ -426,7 +554,7 @@ mod tests {
         let (billing, counts) = counting_billing();
         let account = McpAccount::authorized(test_scope(), Box::new(billing), verified_mcp_budget(), Duration::from_secs(60))
             .expect("the local host scope is provable");
-        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::Headless);
+        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::Headless, BudgetTable::unverified_default());
         let result = call(&mut server, "measure", json!({}));
         assert_ne!(result["isError"], true, "{result}");
         assert_eq!(calls.get(), 1, "the charged call reaches the backend once");
@@ -440,7 +568,7 @@ mod tests {
         let (billing, counts) = counting_billing();
         let account = McpAccount::authorized(test_scope(), Box::new(billing), verified_mcp_budget(), Duration::from_secs(60))
             .expect("the local host scope is provable");
-        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::Headless);
+        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::Headless, BudgetTable::unverified_default());
         for _ in 0..2 {
             let result = call(&mut server, "measure", json!({}));
             assert_ne!(result["isError"], true, "{result}");
@@ -456,7 +584,7 @@ mod tests {
         let (billing, counts) = counting_billing();
         let account = McpAccount::authorized(test_scope(), Box::new(billing), BudgetTable::unverified_default(), Duration::from_secs(60))
             .expect("the scope itself is provable");
-        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::Headless);
+        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::Headless, BudgetTable::unverified_default());
         let result = call(&mut server, "measure", json!({}));
         assert_eq!(result["isError"], true, "{result}");
         assert_eq!(result["structuredContent"]["errorDetails"]["reason"], "UNSAFE_TO_START");
@@ -465,15 +593,15 @@ mod tests {
     }
 
     #[test]
-    fn a_provable_scope_alone_never_enables_a_charged_headless_call() {
-        let account = McpAccount::from_session(active_product_session());
-        assert!(account.scope.is_some(), "the secure product session yields the host scope candidate");
+    fn live_authority_with_no_measured_budget_refuses_before_network_or_dispatch() {
+        let account = local_account(active_product_session());
+        assert!(account.live.is_some());
         let (backend, calls) = counting_backend();
-        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::Headless);
+        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::Headless, BudgetTable::unverified_default());
         let result = call(&mut server, "measure", json!({}));
         assert_eq!(result["isError"], true, "{result}");
-        assert_eq!(result["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE");
-        assert_eq!(calls.get(), 0, "a host scope is not authority without a reviewed live settlement path");
+        assert_eq!(result["structuredContent"]["errorDetails"]["reason"], "UNSAFE_TO_START");
+        assert_eq!(calls.get(), 0);
     }
 
     #[test]
@@ -482,7 +610,7 @@ mod tests {
         let (billing, counts) = counting_billing();
         let account = McpAccount::authorized(test_scope(), Box::new(billing), verified_mcp_budget(), Duration::from_secs(60))
             .expect("the local test scope is provable");
-        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::GuiBridge);
+        let mut server = compose_mcp_server(Box::new(backend), None, account, McpRoute::GuiBridge, BudgetTable::unverified_default());
         let result = call(&mut server, "measure", json!({}));
         assert_eq!(result["isError"], true, "{result}");
         assert_eq!(result["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE");

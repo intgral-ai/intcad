@@ -1,6 +1,6 @@
 //! Native HTTPS account adapter for the frozen `intcad-auth/1.0` contract.
 //!
-//! Wire shapes come only from the pinned rev3 OpenAPI document (`contracts/pin.json`). This module
+//! Wire shapes come only from the pinned rev4 OpenAPI document (`contracts/pin.json`). This module
 //! maps them onto the engine's [`AccountService`]; it does not define a second contract.
 //!
 //! Safety rules:
@@ -31,13 +31,13 @@ fn renewal_interval(value: Option<&Value>) -> Option<Duration> {
     value.and_then(Value::as_u64).filter(|seconds| (1..=3600).contains(seconds)).map(Duration::from_secs)
 }
 
-/// Frozen protocol version from the rev3 manifest.
+/// Frozen protocol version from the pinned manifest.
 pub const PROTOCOL_VERSION: &str = "intcad-auth/1.0";
-/// Hard response-size cap. The largest frozen artifact is 176,410 bytes; responses are far smaller.
+/// Hard response-size cap. The largest frozen artifact is 176,487 bytes; responses are far smaller.
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
-/// The rev3 contract fixes the default lease at 60 seconds. A wall-clock conversion is clamped to
-/// this value so a slow or skewed wall clock cannot extend execution authority.
-const MAX_ABSOLUTE_GRANT_LEASE: Duration = Duration::from_secs(60);
+/// Track the lease fixed by the pinned contract: rev4 OpenAPI `POST /v1/authorizations` sets
+/// 300 seconds. Clamp the wall-clock conversion so it can never exceed that lease.
+const MAX_ABSOLUTE_GRANT_LEASE: Duration = Duration::from_secs(300);
 
 /// A credential value whose `Debug` and `Display` never reveal the secret.
 #[derive(Clone, PartialEq, Eq)]
@@ -76,6 +76,10 @@ impl fmt::Display for Secret {
 /// credentials in a JSON ledger, or store them in plaintext. A handoff failure must fail the
 /// exchange closed; execution or settlement must not continue without the credential.
 pub trait CredentialHandoff {
+    /// A bound response can provide cleanup credentials even when its execution grant is bad.
+    /// The default sink does not use this early handoff, and it never authorizes execution.
+    fn admission_settlement_candidate(&mut self, _operation: &OperationId, _credential: Secret) {}
+
     /// A wire-level renewal refusal retires only the original operation, not the account.
     fn renewal_unauthorized(&mut self, _scope: &AuthenticatedHostScope, _operation: &OperationId) {}
 
@@ -376,6 +380,31 @@ pub struct WireConnection {
 }
 
 impl WireConnection {
+    /// Normalize a configured product origin to the keyring namespace shared with desktop.
+    pub fn product_origin(origin: &str, client_version: &str) -> Result<Self, HttpConfigError> {
+        let validated = Self::new(origin, client_version)?;
+        if origin.contains(['\\', '%']) {
+            return Err(HttpConfigError::MalformedBaseUrl);
+        }
+        let uri: ureq::http::Uri = validated.base_url().parse().map_err(|_| HttpConfigError::MalformedBaseUrl)?;
+        let authority = uri.authority().ok_or(HttpConfigError::MalformedBaseUrl)?;
+        let host = authority.host().to_ascii_lowercase();
+        if host.is_empty() {
+            return Err(HttpConfigError::MalformedBaseUrl);
+        }
+        let port = authority.as_str().strip_prefix(authority.host()).ok_or(HttpConfigError::MalformedBaseUrl)?;
+        let suffix = if port.is_empty() {
+            String::new()
+        } else {
+            match port.strip_prefix(':').and_then(|value| value.parse::<u16>().ok()) {
+                Some(443) => String::new(),
+                Some(port) if port != 0 => format!(":{port}"),
+                _ => return Err(HttpConfigError::MalformedBaseUrl),
+            }
+        };
+        Self::new(format!("https://{host}{suffix}"), client_version)
+    }
+
     /// Production connections are HTTPS-only. The base URL may contain only a host and an optional
     /// `/` path: no credentials, query, fragment, path prefix, or plain HTTP.
     pub fn new(base_url: impl Into<String>, client_version: impl Into<String>) -> Result<Self, HttpConfigError> {
@@ -718,7 +747,7 @@ impl<T: Transport> HttpAccountService<T> {
 
     /// Map an absolute server timestamp to a local monotonic bound anchored at send. The wall clock
     /// is used only to measure the remaining server-issued interval, and the result is clamped to
-    /// the frozen 60-second default lease. A wall rollback can shorten but never extend authority.
+    /// the lease fixed by the pinned contract. A shorter server interval is not extended.
     fn grant_from_absolute(
         &self,
         sent_at: MonotonicInstant,
@@ -826,7 +855,7 @@ impl<T: Transport> HttpAccountService<T> {
         self.exchange_renewal(scope, operation, authorization_id, capability, None).map(|(grant, _, _)| grant)
     }
 
-    fn exchange_renewal(
+    pub(crate) fn exchange_renewal(
         &mut self,
         scope: &AuthenticatedHostScope,
         operation: &OperationId,
@@ -921,7 +950,13 @@ impl<T: Transport> HttpAccountService<T> {
                 if value.get("operation_id").and_then(Value::as_str) != Some(operation.as_str())
                     || value.get("installation_id").and_then(Value::as_str) != Some(scope.installation().as_str())
                     || value.get("state").and_then(Value::as_str) != Some("HELD")
-                    || value.get("settlement_deadline") != Some(&Value::Null)
+                {
+                    return Err(unavailable());
+                }
+                let settlement =
+                    value.get("settlement_credential").and_then(Value::as_str).filter(|credential| !credential.is_empty()).ok_or_else(unavailable)?;
+                self.handoff.admission_settlement_candidate(operation, Secret::new(settlement));
+                if value.get("settlement_deadline") != Some(&Value::Null)
                     || value.pointer("/execution_grant/capability").and_then(Value::as_str) != Some(capability.wire())
                 {
                     return Err(unavailable());
@@ -934,8 +969,6 @@ impl<T: Transport> HttpAccountService<T> {
                     .and_then(Value::as_str)
                     .filter(|proof| !proof.is_empty())
                     .ok_or_else(unavailable)?;
-                let settlement =
-                    value.get("settlement_credential").and_then(Value::as_str).filter(|credential| !credential.is_empty()).ok_or_else(unavailable)?;
                 let mut grant = self.grant_from_absolute(sent_at, wall_sent, grant_id, capability, authorization_expires_at, grant_expires_at)?;
                 if let Some(interval) = renewal_interval(value.pointer("/execution_grant/renew_after_seconds")) {
                     grant = grant.with_admission_renewal(scope.clone(), operation.clone(), sent_at, interval);
@@ -1066,6 +1099,48 @@ impl<T: Transport> HttpAccountService<T> {
         }
         Ok(availability)
     }
+
+    pub(crate) fn controlled_status(&self, scope: &AuthenticatedHostScope, capability: Capability) -> Result<(), Refusal> {
+        let value = self.status_value()?;
+        let (account, snapshot) = self.parse_status_snapshot(&value)?;
+        if account != scope.account().as_str() {
+            return Err(refusal(RefusalCode::AuthRequired));
+        }
+        if let Some(code) = snapshot.reasons.first() {
+            return Err(refusal(*code));
+        }
+        if verified_account(&value).map_err(activation_refusal)? != scope.account().as_str() {
+            return Err(refusal(RefusalCode::AuthRequired));
+        }
+        match value.get("capabilities").and_then(|caps| caps.get(capability.wire())).and_then(Value::as_bool) {
+            Some(true) => Ok(()),
+            Some(false) => Err(refusal(RefusalCode::CapabilityDenied)),
+            None => Err(unavailable()),
+        }
+    }
+
+    pub(crate) fn operation_receipt(&self, operation: &OperationId) -> Result<(OperationStatus, Option<BillingResult>), Refusal> {
+        let mut request = self.request("GET", &format!("/v1/operations/{}", operation.as_str()), None);
+        self.push_auth(&mut request, "X-Settlement-Credential", self.credentials.settlement_credential(operation))?;
+        let (status, value) = self.exchange(request)?;
+        if status != 200 {
+            return Err(error_refusal(status, &value));
+        }
+        if value.get("operation_id").and_then(Value::as_str) != Some(operation.as_str()) {
+            return Err(unavailable());
+        }
+        let state = parse_operation_status(value.get("state").and_then(Value::as_str).ok_or_else(unavailable)?)?;
+        let terminal = value.get("terminal").and_then(Value::as_bool).ok_or_else(unavailable)?;
+        let result = match value.get("result").ok_or_else(unavailable)? {
+            Value::Null => None,
+            Value::String(raw) => Some(parse_billing_result(raw)?),
+            _ => return Err(unavailable()),
+        };
+        validate_operation_status(state, result, terminal)?;
+        validate_optional_timestamp(&value, "authorization_expires_at")?;
+        validate_optional_timestamp(&value, "settlement_deadline")?;
+        Ok((state, result))
+    }
 }
 
 impl<T: Transport> AccountService for HttpAccountService<T> {
@@ -1133,26 +1208,7 @@ impl<T: Transport> AccountService for HttpAccountService<T> {
     }
 
     fn operation(&self, _scope: &AuthenticatedHostScope, operation: &OperationId) -> Result<OperationStatus, Refusal> {
-        let mut request = self.request("GET", &format!("/v1/operations/{}", operation.as_str()), None);
-        self.push_auth(&mut request, "X-Settlement-Credential", self.credentials.settlement_credential(operation))?;
-        let (status, value) = self.exchange(request)?;
-        if status != 200 {
-            return Err(error_refusal(status, &value));
-        }
-        if value.get("operation_id").and_then(Value::as_str) != Some(operation.as_str()) {
-            return Err(unavailable());
-        }
-        let state = parse_operation_status(value.get("state").and_then(Value::as_str).ok_or_else(unavailable)?)?;
-        let terminal = value.get("terminal").and_then(Value::as_bool).ok_or_else(unavailable)?;
-        let result = match value.get("result").ok_or_else(unavailable)? {
-            Value::Null => None,
-            Value::String(raw) => Some(parse_billing_result(raw)?),
-            _ => return Err(unavailable()),
-        };
-        validate_operation_status(state, result, terminal)?;
-        validate_optional_timestamp(&value, "authorization_expires_at")?;
-        validate_optional_timestamp(&value, "settlement_deadline")?;
-        Ok(state)
+        self.operation_receipt(operation).map(|(status, _)| status)
     }
 }
 
@@ -1160,7 +1216,7 @@ fn require_provable(scope: &AuthenticatedHostScope) -> Result<(), Refusal> {
     if scope.is_provable() { Ok(()) } else { Err(refusal(RefusalCode::AuthRequired)) }
 }
 
-fn refusal(code: RefusalCode) -> Refusal {
+pub(crate) fn refusal(code: RefusalCode) -> Refusal {
     Refusal::new(code, message(code))
 }
 
@@ -1182,7 +1238,7 @@ fn message(code: RefusalCode) -> &'static str {
     }
 }
 
-fn unavailable() -> Refusal {
+pub(crate) fn unavailable() -> Refusal {
     refusal(RefusalCode::AuthUnavailable)
 }
 

@@ -7,6 +7,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod account_paths;
+mod billing;
 mod contract;
 mod credentials;
 mod device_code;
@@ -25,6 +27,8 @@ mod ledger_tests;
 #[cfg(test)]
 mod session_verification_tests;
 
+pub use account_paths::AccountPaths;
+pub use billing::SessionBilling;
 pub use contract::{ContractArtifacts, ContractPin, VerifiedContract};
 pub use credentials::{
     ACCOUNT_KEYRING_SERVICE, BlockedProductExchange, CredentialSession, KeyringStore, MemorySession, NoPersistentStore, ProductExchangeError,

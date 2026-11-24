@@ -192,7 +192,7 @@ impl MeteredReply {
         let operation = context.operation.clone();
         let body = json!({
             "error": error.message,
-            "errorDetails": {"code": "OP_REFUSED", "reason": refusal_wire(error.code)},
+            "errorDetails": {"code": "OP_REFUSED", "reason": error.code.as_str()},
             "operationId": operation.as_str(),
         });
         Self { value: error_result(body), operation, outcome: CallOutcome::Refused(error.code), context: context.clone() }
@@ -255,6 +255,9 @@ pub fn call_tool_with(
 ) -> MeteredReply {
     let operation = context.operation.clone();
     if tool_is_free(name) {
+        if billing.checks_live_window() && name == "screenshot" && args.get("path").is_some() {
+            return MeteredReply::refused(context, screenshot_path_refusal());
+        }
         let value = crate::tools::call_tool(backend, name, args);
         return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone() };
     }
@@ -274,9 +277,10 @@ pub fn call_tool_with(
         let outcome = classify_reply(&value);
         return MeteredReply { value, operation, outcome, context: context.clone() };
     }
-    if let Err(refusal) = check_preflight(context, budget) {
-        return MeteredReply::refused(context, refusal);
-    }
+    let bound = match billing.preflight().and_then(|()| check_preflight(context, budget, billing.checks_live_window())) {
+        Ok(bound) => bound,
+        Err(refusal) => return MeteredReply::refused(context, refusal),
+    };
     let admission = match &context.admission {
         Some(admission) => admission.clone(),
         None => match billing.admit(&operation, context.capability, context.entry) {
@@ -287,9 +291,35 @@ pub fn call_tool_with(
             Err(refusal) => return MeteredReply::refused(context, refusal),
         },
     };
+    if let Err(refusal) = billing.dispatch(&operation, bound) {
+        return match billing.release(&operation, refusal.code) {
+            Ok(()) => MeteredReply::refused(context, refusal),
+            Err(_) => MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown"),
+        };
+    }
+    // As in Direct Control, the reply is staged and withheld on refusal. Local model
+    // changes and file writes made by the dispatched command are not rolled back here.
     let result_value = crate::tools::call_tool(backend, name, args);
     let outcome = classify_reply(&result_value);
+    if let Err(refusal) = billing.check_commit(&operation) {
+        return if billing.release(&operation, refusal.code).is_ok() {
+            MeteredReply::refused(context, refusal)
+        } else {
+            MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown")
+        };
+    }
     let settle = settle(billing, &operation, &outcome);
+    if settle.is_ok() && billing.checks_live_window() {
+        match outcome {
+            CallOutcome::Succeeded | CallOutcome::PartialRetained | CallOutcome::FailedNoEffect => {
+                if let Err(refusal) = billing.check_publish(&operation) {
+                    return MeteredReply::refused(context, refusal);
+                }
+            }
+            CallOutcome::Unknown => return MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown"),
+            _ => {}
+        }
+    }
     let mut reply_context = context.clone();
     reply_context.admission = Some(admission);
     let mut reply = MeteredReply { value: result_value, operation: operation.clone(), outcome, context: reply_context };
@@ -319,6 +349,10 @@ pub fn call_tool_with(
         decorate_unknown(&mut reply.value, &reply.operation);
     }
     reply
+}
+
+pub(crate) fn screenshot_path_refusal() -> Refusal {
+    Refusal::new(RefusalCode::CapabilityDenied, "CAPABILITY_DENIED")
 }
 
 /// Forward one charged tool call to the host's own control authority without a local charge.
@@ -416,22 +450,22 @@ pub fn provenance_claim(args: &Value) -> Option<&'static str> {
     walk(args, 0)
 }
 
-fn check_preflight(context: &ToolCallContext, budget: &BudgetTable) -> Result<(), Refusal> {
+fn check_preflight(context: &ToolCallContext, budget: &BudgetTable, live: bool) -> Result<Duration, Refusal> {
     if context.entry.is_free() {
-        return Ok(());
+        return Ok(Duration::ZERO);
     }
     if context.entry == EntryCategory::Unknown {
         return Err(Refusal::new(RefusalCode::CapabilityDenied, "the MCP request entry is unclassified"));
     }
-    let Some(remaining) = context.remaining else {
-        return Err(Refusal::new(RefusalCode::UnsafeToStart, "this controlled MCP call has no measured remaining authorization"));
-    };
     match budget.bound(context.capability, context.entry) {
         UpperBound::Unverified => Err(Refusal::new(RefusalCode::UnsafeToStart, "this controlled MCP path has no verified safe-stop bound")),
-        UpperBound::Verified(bound) if remaining < bound => {
+        UpperBound::Verified(_) if !live && context.remaining.is_none() => {
+            Err(Refusal::new(RefusalCode::UnsafeToStart, "this controlled MCP call has no measured remaining authorization"))
+        }
+        UpperBound::Verified(bound) if !live && context.remaining.is_some_and(|remaining| remaining < bound) => {
             Err(Refusal::new(RefusalCode::UnsafeToStart, "the remaining authorization is shorter than the safe-stop bound"))
         }
-        UpperBound::Verified(_) => Ok(()),
+        UpperBound::Verified(bound) => Ok(bound),
     }
 }
 
@@ -572,24 +606,6 @@ fn error_result(body: Value) -> Value {
     json!({"content":[{"type":"text","text":text}],"structuredContent":body,"isError":true})
 }
 
-fn refusal_wire(code: RefusalCode) -> &'static str {
-    match code {
-        RefusalCode::AuthRequired => "AUTH_REQUIRED",
-        RefusalCode::EmailUnverified => "EMAIL_UNVERIFIED",
-        RefusalCode::AccountDisabled => "ACCOUNT_DISABLED",
-        RefusalCode::CapabilityDenied => "CAPABILITY_DENIED",
-        RefusalCode::VersionUnsupported => "VERSION_UNSUPPORTED",
-        RefusalCode::ProtocolUnsupported => "PROTOCOL_UNSUPPORTED",
-        RefusalCode::UnsafeToStart => "UNSAFE_TO_START",
-        RefusalCode::CreditsExhausted => "CREDITS_EXHAUSTED",
-        RefusalCode::CreditsHeld => "CREDITS_HELD",
-        RefusalCode::OperationConflict => "OPERATION_CONFLICT",
-        RefusalCode::OperationFinalized => "OPERATION_FINALIZED",
-        RefusalCode::OperationOwnedElsewhere => "OPERATION_OWNED_ELSEWHERE",
-        RefusalCode::AuthUnavailable => "AUTH_UNAVAILABLE",
-    }
-}
-
 /// A wire argument tried to name host provenance. Refuse it before dispatch: the operation,
 /// account and session can only come from the host's authenticated context.
 pub(crate) fn forged_context_result(field: &str) -> Value {
@@ -604,7 +620,7 @@ pub(crate) fn forged_context_result(field: &str) -> Value {
 pub(crate) fn refusal_result(error: Refusal) -> Value {
     error_result(json!({
         "error": error.message,
-        "errorDetails": {"code": "OP_REFUSED", "reason": refusal_wire(error.code)},
+        "errorDetails": {"code": "OP_REFUSED", "reason": error.code.as_str()},
     }))
 }
 

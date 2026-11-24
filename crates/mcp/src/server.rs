@@ -314,6 +314,9 @@ impl Server {
                                 crate::account::call_tool_with(backend, name, &args, &context, &accounting.budget, accounting.billing.as_mut());
                             reply.into_value()
                         }
+                        None if name == "screenshot" && accounting.billing.checks_live_window() && args.get("path").is_some() => {
+                            crate::account::refusal_result(crate::account::screenshot_path_refusal())
+                        }
                         None if crate::account::tool_is_free(name) => call_tool(backend, name, &args),
                         None => crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
                             solidcraft_engine::entitlement::RefusalCode::AuthUnavailable,

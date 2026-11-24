@@ -81,6 +81,8 @@ struct ControlledSubmission<'a> {
     stop_at_ms: u64,
 }
 
+type StagedReport<'a> = (ValidationReport, Vec<(String, &'a [u8])>);
+
 /// A monotonic-enough wall clock, injectable so expiry and deadlines are deterministic in tests.
 pub trait Clock: Send + Sync {
     fn now_ms(&self) -> u64;
@@ -769,15 +771,48 @@ impl ValidationPort {
     /// configured execution deadline, and an unsafe caller-supplied value is clamped rather than
     /// extending the run.
     pub fn run_claimed_with_stop(&self, job: &RunJob, stop_at_ms: Option<u64>) -> Result<()> {
+        let outcome = self.run_claimed(job, stop_at_ms);
+        self.complete(&job.run_id, outcome)?;
+        Ok(())
+    }
+
+    /// Computation and report preparation are memory-only. The host checks authority and
+    /// confirms settlement before this port writes any quality result or evidence.
+    pub fn run_claimed_settled(
+        &self,
+        job: &RunJob,
+        stop_at_ms: Option<u64>,
+        settle: impl FnOnce(bool) -> std::result::Result<(), crate::entitlement::Refusal>,
+    ) -> Result<std::result::Result<ValidationState, crate::entitlement::Refusal>> {
+        let outcome = self.run_claimed(job, stop_at_ms);
+        self.complete_with(&job.run_id, outcome, &self.runner.identity(), Some(settle))
+    }
+
+    fn run_claimed(&self, job: &RunJob, stop_at_ms: Option<u64>) -> RunnerOutcome {
         let control = RunControl {
             clock: Arc::clone(&self.clock),
             deadline_ms: job.started_at_ms.saturating_add(duration_ms(self.limits.execution)),
             stop_at_ms,
             cancel_path: self.store.cancel_path(&job.run_id),
         };
-        let outcome = self.runner.run(job, &control);
-        self.complete(&job.run_id, outcome)?;
-        Ok(())
+        self.runner.run(job, &control)
+    }
+
+    /// Finish without publishing any quality result when the host refuses the claimed job.
+    pub fn refuse_claimed(&self, job: &RunJob, refusal: &crate::entitlement::Refusal) -> Result<()> {
+        let _guard = self.commit.lock().map_err(|_| ValidationError::internal("validation commit lock was poisoned"))?;
+        let admission = self.load_admission(&job.run_id)?;
+        let profile = self.store.read_profile(&job.run_id)?;
+        self.publish_refusal(&admission, &profile, refusal)
+    }
+
+    fn publish_refusal(&self, admission: &AdmissionRecord, profile: &CheckProfile, refusal: &crate::entitlement::Refusal) -> Result<()> {
+        let error = ValidationError::internal(&refusal.message).with_details(json!({"reason": refusal.code.as_str()}));
+        let mut report = self.recovery_report(admission, profile, ValidationState::InfrastructureError, Some(error));
+        for check in &mut report.checks {
+            check.actual = json!({"reason": refusal.code.as_str()});
+        }
+        self.commit_report(&admission.run_id, report, ValidationState::InfrastructureError)
     }
 
     /// Claim the oldest unclassified queued job and persist its worker identity. `None` when no
@@ -963,118 +998,130 @@ impl ValidationPort {
     }
 
     pub(crate) fn complete_by(&self, run_id: &str, outcome: RunnerOutcome, runner: &RunnerIdentity) -> Result<ValidationState> {
+        self.complete_with(run_id, outcome, runner, None::<fn(bool) -> std::result::Result<(), crate::entitlement::Refusal>>)?
+            .map_err(|refusal| ValidationError::internal(refusal.message))
+    }
+
+    fn complete_with(
+        &self,
+        run_id: &str,
+        outcome: RunnerOutcome,
+        runner: &RunnerIdentity,
+        settle: Option<impl FnOnce(bool) -> std::result::Result<(), crate::entitlement::Refusal>>,
+    ) -> Result<std::result::Result<ValidationState, crate::entitlement::Refusal>> {
         let _guard = self.commit.lock().map_err(|_| ValidationError::internal("validation commit lock was poisoned"))?;
         let admission = self.load_admission(run_id)?;
         let state = self.load_state(run_id)?;
         if state.state.is_terminal() {
-            return Ok(state.state);
+            return Ok(match settle.map(|settle| settle(false)) {
+                Some(Err(refusal)) => Err(refusal),
+                _ => Ok(state.state),
+            });
         }
+        let controlled = settle.is_some();
         let profile = self.store.read_profile(run_id)?;
-        if runner != &admission.runner {
-            let report = self.recovery_report(
-                &admission,
-                &profile,
+        let cancelled = self.store.marker_exists(run_id);
+        let (desired, error, checks, finished) = if runner != &admission.runner {
+            (
                 ValidationState::InfrastructureError,
                 Some(ValidationError::report_mismatch("the worker identity does not match the admitted runner")),
-            );
-            self.commit_report(run_id, report, ValidationState::InfrastructureError)?;
-            return Ok(ValidationState::InfrastructureError);
-        }
-        if self.store.marker_exists(run_id) {
-            let checks = match &outcome {
-                RunnerOutcome::Finished { checks, .. } | RunnerOutcome::Cancelled { checks, .. } => checks.clone(),
+                Vec::new(),
+                self.clock.now_ms(),
+            )
+        } else if cancelled {
+            let checks = match outcome {
+                RunnerOutcome::Finished { checks, .. } | RunnerOutcome::Cancelled { checks, .. } if !controlled => checks,
                 _ => Vec::new(),
             };
-            let report = self.report_with_checks(
-                &admission,
-                &profile,
+            (
                 ValidationState::Cancelled,
                 Some(ValidationError::cancelled("the job was cancelled before its result committed")),
                 checks,
-                worker_started(run_id, &self.store).map(ids::timestamp),
                 self.clock.now_ms(),
-            )?;
-            self.commit_report(run_id, report, ValidationState::Cancelled)?;
-            return Ok(ValidationState::Cancelled);
-        }
-        let started_at = worker_started(run_id, &self.store).map(ids::timestamp);
-        match outcome {
-            RunnerOutcome::Finished { finished_at_ms, checks, .. } => {
-                let report = match self.report_with_checks(&admission, &profile, ValidationState::Passed, None, checks, started_at, finished_at_ms) {
-                    Ok(report) => report,
-                    Err(error) => self.recovery_report(
-                        &admission,
-                        &profile,
-                        ValidationState::InfrastructureError,
-                        Some(ValidationError::report_mismatch(format!("the worker's output is malformed: {error}"))),
-                    ),
-                };
-                let desired = aggregate_state(&report);
-                let report = finalize_state(report, desired);
-                self.commit_report(run_id, report, desired)?;
-                Ok(desired)
-            }
-            RunnerOutcome::Cancelled { finished_at_ms, checks, .. } => {
-                let report = match self.report_with_checks(
-                    &admission,
-                    &profile,
-                    ValidationState::Cancelled,
-                    Some(ValidationError::cancelled("the worker observed cancellation")),
-                    checks,
-                    started_at,
-                    finished_at_ms,
-                ) {
-                    Ok(report) => report,
-                    Err(error) => self.recovery_report(
-                        &admission,
-                        &profile,
-                        ValidationState::Cancelled,
-                        Some(ValidationError::cancelled(format!("the cancelled worker's output is malformed: {error}"))),
-                    ),
-                };
-                self.commit_report(run_id, report, ValidationState::Cancelled)?;
-                Ok(ValidationState::Cancelled)
-            }
-            RunnerOutcome::Infrastructure { finished_at_ms, message, .. } => {
-                let report = self.report_with_checks(
-                    &admission,
-                    &profile,
+            )
+        } else {
+            match outcome {
+                RunnerOutcome::Finished { finished_at_ms, checks, .. } => (ValidationState::Passed, None, checks, finished_at_ms),
+                RunnerOutcome::Cancelled { finished_at_ms, checks, .. } => {
+                    (ValidationState::Cancelled, Some(ValidationError::cancelled("the worker observed cancellation")), checks, finished_at_ms)
+                }
+                RunnerOutcome::Infrastructure { finished_at_ms, message, .. } => (
                     ValidationState::InfrastructureError,
                     Some(ValidationError::internal(format!("the worker failed: {message}"))),
                     Vec::new(),
-                    started_at,
                     finished_at_ms,
-                )?;
-                self.commit_report(run_id, report, ValidationState::InfrastructureError)?;
-                Ok(ValidationState::InfrastructureError)
-            }
-            RunnerOutcome::TimedOut { finished_at_ms, message, .. } => {
-                let report = self.report_with_checks(
-                    &admission,
-                    &profile,
+                ),
+                RunnerOutcome::TimedOut { finished_at_ms, message, .. } => (
                     ValidationState::InfrastructureError,
                     Some(ValidationError::timeout(format!("the worker timed out: {message}"))),
                     Vec::new(),
-                    started_at,
                     finished_at_ms,
-                )?;
-                self.commit_report(run_id, report, ValidationState::InfrastructureError)?;
-                Ok(ValidationState::InfrastructureError)
-            }
-            RunnerOutcome::Unknown { finished_at_ms, message, .. } => {
-                let report = self.report_with_checks(
-                    &admission,
-                    &profile,
+                ),
+                RunnerOutcome::Unknown { finished_at_ms, message, .. } => (
                     ValidationState::Unknown,
                     Some(ValidationError::outcome_unknown(format!("the worker outcome is unknown: {message}"))),
                     Vec::new(),
-                    started_at,
                     finished_at_ms,
-                )?;
-                self.commit_report(run_id, report, ValidationState::Unknown)?;
-                Ok(ValidationState::Unknown)
+                ),
+            }
+        };
+        let started = worker_started(run_id, &self.store).map(ids::timestamp);
+        let (mut report, mut evidence) = match self.report_with_checks(&admission, &profile, desired, error, &checks, started, finished) {
+            Ok(staged) => staged,
+            Err(error) => (
+                self.recovery_report(
+                    &admission,
+                    &profile,
+                    if desired == ValidationState::Cancelled { desired } else { ValidationState::InfrastructureError },
+                    Some(ValidationError::report_mismatch(format!("the worker's output is malformed: {error}"))),
+                ),
+                Vec::new(),
+            ),
+        };
+        if report.state == ValidationState::Passed {
+            let state = aggregate_state(&report);
+            report = finalize_state(report, state);
+        }
+        if let Some(settle) = settle {
+            // Validate the final report shape before charging; a serialization failure is
+            // still a release since no evidence or report has been published.
+            if let Err(error) = self.serialize_report(&report) {
+                report = self.recovery_report(&admission, &profile, ValidationState::InfrastructureError, Some(error));
+                evidence.clear();
+            }
+            if !cancelled && self.store.marker_exists(run_id) {
+                report.state = ValidationState::Cancelled;
+                report.error = Some(ValidationError::cancelled("the job was cancelled before its result committed").wire());
+            }
+            let chargeable = matches!(report.state, ValidationState::Passed | ValidationState::QualityFailed);
+            if let Err(refusal) = settle(chargeable) {
+                self.publish_refusal(&admission, &profile, &refusal)?;
+                return Ok(Err(refusal));
+            }
+            if !chargeable {
+                // A release never discloses checks computed before cancellation or failure.
+                evidence.clear();
+                for check in &mut report.checks {
+                    check.state = CheckState::NotRun;
+                    check.actual = json!({});
+                    check.evidence.clear();
+                }
             }
         }
+        for (artifact, bytes) in evidence {
+            let path = self.store.evidence_path(run_id, &artifact);
+            if path.is_file() {
+                let existing = self.store.read_bounded(&path, self.limits.evidence_bytes)?;
+                if existing != bytes {
+                    return Err(ValidationError::report_mismatch("an evidence artifact was written twice with different bytes"));
+                }
+            } else {
+                self.store.write_bytes_new(&path, bytes)?;
+            }
+        }
+        let state = report.state;
+        self.commit_report(run_id, report, state)?;
+        Ok(Ok(self.load_state(run_id)?.state))
     }
 
     /// `report(runId)` with the persisted bytes verified and re-digested.
@@ -1358,19 +1405,19 @@ impl ValidationPort {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn report_with_checks(
+    fn report_with_checks<'a>(
         &self,
         admission: &AdmissionRecord,
         profile: &CheckProfile,
         state: ValidationState,
         error: Option<ValidationError>,
-        checks: Vec<CheckOutcome>,
+        checks: &'a [CheckOutcome],
         started_at: Option<String>,
         finished_at_ms: u64,
-    ) -> Result<ValidationReport> {
+    ) -> Result<StagedReport<'a>> {
         // Reject unknown or duplicate ids before any evidence is written.
         let mut by_id: BTreeMap<&str, &CheckOutcome> = BTreeMap::new();
-        for check in &checks {
+        for check in checks {
             if !profile.checks.iter().any(|requirement| requirement.check_id == check.check_id) {
                 return Err(ValidationError::report_mismatch(format!("the worker reported unknown check {}", check.check_id)));
             }
@@ -1380,6 +1427,7 @@ impl ValidationPort {
         }
         let mut evidence_count = 0_usize;
         let mut evidence_total = 0_usize;
+        let mut staged = Vec::new();
         let mut results = Vec::with_capacity(profile.checks.len());
         for requirement in &profile.checks {
             let Some(outcome) = by_id.get(requirement.check_id.as_str()) else {
@@ -1412,15 +1460,7 @@ impl ValidationPort {
                     break;
                 }
                 let artifact_id = format!("evidence-{}-{evidence_count:03}", admission.run_id);
-                let path = self.store.evidence_path(&admission.run_id, &artifact_id);
-                if path.is_file() {
-                    let existing = self.store.read_bounded(&path, self.limits.evidence_bytes)?;
-                    if existing != evidence.bytes {
-                        return Err(ValidationError::report_mismatch("an evidence artifact was written twice with different bytes"));
-                    }
-                } else {
-                    self.store.write_bytes_new(&path, &evidence.bytes)?;
-                }
+                staged.push((artifact_id.clone(), evidence.bytes.as_slice()));
                 evidence_total = evidence_total.saturating_add(evidence.bytes.len());
                 result.evidence.push(ArtifactRef {
                     artifact_id,
@@ -1456,9 +1496,9 @@ impl ValidationPort {
                 )
             };
             let minimal = self.recovery_report(admission, profile, fallback_state, Some(fallback_error));
-            return Ok(minimal);
+            return Ok((minimal, Vec::new()));
         }
-        Ok(report)
+        Ok((report, staged))
     }
 
     fn recovery_report(

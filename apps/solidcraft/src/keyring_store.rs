@@ -28,11 +28,18 @@ pub fn account_keyring_service(product: &WireConnection) -> String {
     format!("{ACCOUNT_KEYRING_SERVICE} [{}]", product.base_url())
 }
 
-/// Serialize access by desktop processes under the existing per-user lock. Keep this independent
-/// of the product origin, the desktop alias and any overridden ledger path.
+/// Provision the per-user lock also acquired by the CLI. Keep this independent of the product
+/// origin, the desktop alias and settings overrides.
 /// The caller retains the handle until its credential workers have stopped.
 pub fn try_lock_account_namespace(directory: &Path) -> std::io::Result<Option<File>> {
     std::fs::create_dir_all(directory)?;
+    let path = directory.join("account-keyring.lock");
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if !metadata.is_file() => return Err(std::io::ErrorKind::InvalidInput.into()),
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
     #[cfg(unix)]
@@ -40,7 +47,7 @@ pub fn try_lock_account_namespace(directory: &Path) -> std::io::Result<Option<Fi
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let file = options.open(directory.join("account-keyring.lock"))?;
+    let file = options.open(path)?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),

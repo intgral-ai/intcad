@@ -31,7 +31,6 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
-mod account;
 mod bench_agent;
 mod bench_assistant;
 mod crashes;
@@ -46,7 +45,7 @@ mod recipe;
 mod render;
 mod spatial;
 
-use solidcraft_cli::validation;
+use solidcraft_cli::{account, validation};
 
 use std::process::ExitCode;
 
@@ -215,7 +214,8 @@ fn main() -> ExitCode {
         }
         // Hidden, for the kill-mid-save test: save a large design over and over.
         Some("save-stress") => cmd_save_stress(&args[1..]),
-        Some("validate") => validation::run(&args[1..]),
+        // Measured entries land separately; this build must not guess a safe-stop bound.
+        Some("validate") => validation::run(&args[1..], &solidcraft_engine::entitlement::BudgetTable::unverified_default()),
         // Hidden: time recomputes after parameter edits (docs/perf.md).
         Some("bench-edit") => cmd_bench_edit(&args[1..]),
         Some("bench-open") => cmd_bench_open(&args[1..]),
@@ -873,10 +873,6 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
     }
     // How calls that break a command's parameter contract are treated, headless or bridged.
     let param_check = parse_param_check("mcp", args)?;
-    // Compose the account decision once, before any MCP request. A non-persistent session keeps
-    // the shipped CLI fail-closed; a reviewed host can pass a persistent session later. No
-    // request can add scope, credentials or a grant to this value.
-    let mcp_account = account::McpAccount::from_session(account::no_persistent_session());
     let (backend, route): (Box<dyn solidcraft_mcp::Backend>, account::McpRoute) = match (flag(args, "--connect"), flag(args, "--in")) {
         (Some(_), Some(_)) => return Err("mcp: use either --connect or --in, not both".into()),
         (Some(addr), None) => {
@@ -905,7 +901,7 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             if auto && let Some(port) = discover_app() {
                 solidcraft_engine::note!("solidcraft mcp: bridged to the running app at 127.0.0.1:{port} (--headless starts a session of its own)");
                 let remote = solidcraft_mcp::Remote::new(&format!("127.0.0.1:{port}"), flag(args, "--token")).with_param_check(param_check);
-                return serve_mcp(Box::new(remote), scope, mcp_account, account::McpRoute::GuiBridge);
+                return serve_mcp(Box::new(remote), scope, account::McpRoute::GuiBridge);
             }
             let mut headless = solidcraft_mcp::Headless::default();
             headless.session.param_check = param_check;
@@ -922,18 +918,23 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             }
         }
     };
-    serve_mcp(backend, scope, mcp_account, route)
+    serve_mcp(backend, scope, route)
 }
 
 fn serve_mcp(
     backend: Box<dyn solidcraft_mcp::Backend>,
     scope: Option<solidcraft_engine::io::vfs::PathScope>,
-    account: account::McpAccount,
     route: account::McpRoute,
 ) -> Result<(), String> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    account::compose_mcp_server(backend, scope, account, route).serve(stdin.lock(), stdout.lock()).map_err(|e| e.to_string())
+    let account = match route {
+        account::McpRoute::Headless => account::McpAccount::configured(),
+        account::McpRoute::GuiBridge => account::McpAccount::closed(),
+    };
+    // Measured entries land separately; a live session is not a safe-stop measurement.
+    let budget = solidcraft_engine::entitlement::BudgetTable::unverified_default();
+    account::compose_mcp_server(backend, scope, account, route, budget).serve(stdin.lock(), stdout.lock()).map_err(|e| e.to_string())
 }
 
 /// The port of the running desktop app: the one its discovery file names, if something listens

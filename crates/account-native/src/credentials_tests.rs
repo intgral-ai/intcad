@@ -16,6 +16,17 @@ use crate::credentials::{
 };
 use crate::http::{CredentialHandoff, WireCredentials};
 
+#[test]
+fn account_paths_refuse_unavailable_relative_and_non_directory_os_answers() {
+    use std::path::PathBuf;
+
+    use crate::AccountPaths;
+
+    assert!(AccountPaths::from_os_base(None).is_none());
+    assert!(AccountPaths::from_os_base(Some(PathBuf::from("."))).is_none());
+    assert!(AccountPaths::from_os_base(Some(std::env::current_exe().unwrap())).is_none());
+}
+
 fn scope(account: &str, installation: &str) -> AuthenticatedHostScope {
     AuthenticatedHostScope::new(AccountId::new(account), InstallationId::new(installation), HostSessionBinding::new("host_session_binding"))
 }

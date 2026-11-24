@@ -517,6 +517,33 @@ impl CredentialSession {
         Some(AuthenticatedHostScope::new(AccountId::new(account), InstallationId::new(installation), HostSessionBinding::new(binding)))
     }
 
+    /// Persist a response's settlement credential only into the session that sent admission.
+    pub(crate) fn persist_bound_settlement(
+        &self,
+        expected: &AuthenticatedHostScope,
+        generation: u64,
+        operation: &OperationId,
+        credential: &Secret,
+    ) -> Result<(), Refusal> {
+        let (mut state, epoch) = self.lock_for_handoff()?;
+        let (account, installation, digest) = bound_scope(&state).ok_or_else(handoff_refusal)?;
+        let product = read_secret(&state, PRODUCT_SESSION_KEY).ok_or_else(handoff_refusal)?;
+        if epoch != generation
+            || expected.account().as_str() != account
+            || expected.installation().as_str() != installation
+            || expected.session_binding().as_str() != session_binding_digest(&account, &installation, product.expose_secret())
+            || !valid_operation(operation)
+            || !self.epoch_unchanged(epoch)
+        {
+            return Err(handoff_refusal());
+        }
+        set_secret(&mut state, &operation_key(&digest, operation, "settlement"), credential.expose_secret()).map_err(|_| handoff_refusal())?;
+        if !self.epoch_unchanged(epoch) {
+            return Err(handoff_refusal());
+        }
+        Ok(())
+    }
+
     pub fn bind_scope(&self, scope: &AuthenticatedHostScope) -> Result<(), CredentialError> {
         if !scope.is_provable() {
             return Err(unavailable());

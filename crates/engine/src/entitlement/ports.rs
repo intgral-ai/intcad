@@ -84,7 +84,34 @@ pub trait CredentialStore {
 }
 
 pub trait BillingPort {
+    /// Local credential check before consulting the entry's budget. It cannot admit work.
+    fn preflight(&self) -> Result<(), Refusal> {
+        Ok(())
+    }
+
+    /// Whether this adapter measures the grant window at dispatch, instead of requiring a
+    /// precomputed window from the host context.
+    fn checks_live_window(&self) -> bool {
+        false
+    }
+
     fn admit(&mut self, operation: &OperationId, capability: Capability, entry: EntryCategory) -> Result<Grant, Refusal>;
+
+    /// Revalidate the original admission immediately before dispatch.
+    fn dispatch(&mut self, _operation: &OperationId, _bound: std::time::Duration) -> Result<(), Refusal> {
+        Ok(())
+    }
+
+    /// Revalidate before accepting the result. This is not settlement.
+    fn check_commit(&mut self, _operation: &OperationId) -> Result<(), Refusal> {
+        Ok(())
+    }
+
+    /// Check the original execution window after settlement and before publishing a paid result.
+    fn check_publish(&mut self, _operation: &OperationId) -> Result<(), Refusal> {
+        Ok(())
+    }
+
     fn commit(&mut self, operation: &OperationId, result: BillingResult) -> Result<BillingResult, Refusal>;
     fn release(&mut self, operation: &OperationId, reason: RefusalCode) -> Result<(), Refusal>;
 }
