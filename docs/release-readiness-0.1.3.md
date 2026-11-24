@@ -1271,7 +1271,10 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   conclusion `failure`. Its `Native Linux selected regression gate` failed the
   `known-failing` check with a regression not on the list:
   `solidcraft-cli::script_roundtrip::cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit`
-  (`apps/solidcraft-cli/tests/script_roundtrip.rs`). Two other failures in that job are
+  (`apps/solidcraft-cli/tests/script_roundtrip.rs:660`) with
+  `error: REPORT_MISMATCH: a different terminal report already exists for this run`, which
+  looks like leftover run state rather than a product regression; the owner must decide
+  whether the test's isolation is wrong or the runner state must be cleaned. Two other failures in that job are
   listed known failures (SMLib variable fillet `Unsupported`, the dialog variable round
   status 1001). The `ci` verifier then failed with `rust: real job result is not success`
   and `rust: missing receipt`. Until `ci` is green at a reviewed `develop`, no release-gate
