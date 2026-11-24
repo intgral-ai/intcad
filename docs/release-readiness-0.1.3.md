@@ -2505,3 +2505,38 @@ cargo check -p solidcraft-cli -p solidcraft-mcp -p solidcraft-account-native \
 Together with the earlier `-p solidcraft` run (475 crates, exit 0), every binary the release gate
 builds has been type-checked on the exact composed tree, so #227's CLI authority and #233/#235's
 bound/clock changes do not break the tools they touch.
+
+## 16. Dispatch packet for `publish-release.yml` (filled the moment the tag gate is green)
+
+Inputs the workflow requires (`on.workflow_dispatch.inputs`), and what each must be:
+
+| input | value |
+|---|---|
+| `tag` | `v0.1.3` (must resolve to the source SHA and be on `main`) |
+| `source_sha` | the full SHA of `main`'s tip that the tag-push gate built |
+| `run_id` | the tag-push `release-gate` run id |
+| `run_attempt` | that run's exact attempt that produced all 14 pairs |
+| `notes_file` | `docs/release-notes-0.1.3.md` (tracked at `source_sha`; any other path is refused) |
+
+`admit` also requires the dispatch to come from protected `refs/heads/main` in
+`intgral-ai/intcad` (repository id 1446384930) and calls
+`release_handoff.py environment`, which fails if `release-signing` loses its reviewers or its
+`main`-only branch policy.
+
+Owner-set repository **variables** required before dispatch (they must equal
+`<source_sha>:<run_id>:<run_attempt>` exactly, and must not be pre-set):
+
+- `RELEASE_AGENT_LEGAL_APPROVED` — npm/Node and file-rights review of the built-in agent;
+- `RELEASE_AGENT_INSTALLED_APPROVED` — installed-agent acceptance.
+
+Dispatch command (run only after Gate B and the per-platform embedded-account checks are recorded):
+
+```
+gh workflow run publish-release.yml --repo intgral-ai/intcad --ref main \
+  -f tag=v0.1.3 -f source_sha=<sha> -f run_id=<id> -f run_attempt=<n> \
+  -f notes_file=docs/release-notes-0.1.3.md
+```
+
+The `draft` job then lands in `release-signing` and waits for `Huaiyuan-Jing` or `paipeline`; no
+agent approves it. That waiting state is the hand-off point the objective calls the
+signing-approval link.
