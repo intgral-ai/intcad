@@ -2670,3 +2670,17 @@ Which of these must pass the embedded-account check (§17): `release-linux-*` (b
 `release-macos`, `release-windows-*` (all three). `flatpak`/`arch`/`snap` inherit the injected Linux
 binaries; `freebsd` legitimately has none; `web` is the wasm bundle. Anything that cannot be
 extracted is recorded NOT VERIFIED, never assumed.
+
+**Release-notes facts checked against the code they describe.**
+
+```
+packages/mastra-runtime/agent/skills.mjs:25-38
+  modelling-skills = solidcraft-{checking,editing,mechanisms,modeling}   (four)
+  context-skills   = intcad-context                                      (the project-brief skill)
+```
+
+That matches the note "the four modelling skills (modelling, editing, checking and mechanisms) and
+the project brief skill". The other note claims already have their evidence in this document: the
+updater repository and signature names (§17), the distribution repo policy (§17), the CLI paid path
+and the declared bounds (§9, §12), the packages' licence texts (gate content checks), and the
+Windows installer replacement (packaging evidence from #214).
