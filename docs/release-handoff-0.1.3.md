@@ -63,6 +63,16 @@ the candidate and its acceptance evidence exist; PP or the CTO performs the revi
 The Minisign key, password, GitHub App and environment secrets are already configured;
 their live state is confirmed with the Migration Agent rather than requested again.
 
+**Production account tuple (a gate prerequisite only the owner can set).** On #224's branch the
+formal gate passes `production_account_config: ${{ vars.INTCAD_PRODUCTION_ACCOUNT_CONFIG }}` into
+`release.yml`, which refuses to build a candidate when that input is empty ("a candidate is never
+built with an anonymous account"). The repository variable must hold the JSON tuple
+`{"INTCAD_WORKOS_PUBLIC_CLIENT_ID": ..., "INTCAD_AUTHKIT_VERIFICATION_ORIGIN":
+"https://<host>", "INTCAD_PRODUCT_HTTPS_ORIGIN": "https://<host>"}`. It is public configuration,
+not a secret, and must not be committed. `scripts/ci/verify_embedded_account.py` verifies the
+built binary embeds exactly that tuple without printing secrets. Measured today: the repository
+variables list is empty, so the gate will fail closed until the owner sets it.
+
 ## Publication approval
 
 Final policy (owner decision): multiple authorized approvers, **one approval is sufficient**.
