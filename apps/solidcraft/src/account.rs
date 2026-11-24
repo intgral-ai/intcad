@@ -1317,11 +1317,11 @@ fn restart_binding_unchanged(credentials: &CredentialSession, binding: &RestartB
     Some(scope)
 }
 
-/// Linux account deadlines share the suspend-inclusive boot epoch. Other platforms retain a
-/// process-relative clock for the existing account paths; it is not approved for lease renewal.
+/// Account deadlines use the platform's suspend-inclusive monotonic epoch. A missing or
+/// unreliable source expires deadlines instead of falling back to a different clock.
 struct SystemMonotonicClock {
     #[cfg(not(target_os = "linux"))]
-    start: Instant,
+    clock: solidcraft_suspend_clock::SuspendClock,
     #[cfg(target_os = "linux")]
     failed: AtomicBool,
 }
@@ -1330,7 +1330,7 @@ impl SystemMonotonicClock {
     fn new() -> Self {
         Self {
             #[cfg(not(target_os = "linux"))]
-            start: Instant::now(),
+            clock: solidcraft_suspend_clock::SuspendClock::default(),
             #[cfg(target_os = "linux")]
             failed: AtomicBool::new(false),
         }
@@ -1363,7 +1363,7 @@ impl MonotonicClock for SystemMonotonicClock {
 
     #[cfg(not(target_os = "linux"))]
     fn now(&self) -> MonotonicInstant {
-        MonotonicInstant::from_millis(self.start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64)
+        MonotonicInstant::from_millis(0).saturating_add(self.clock.read().unwrap_or(Duration::MAX))
     }
 
     fn wall_now(&self) -> SystemTime {
@@ -2182,6 +2182,21 @@ mod tests {
         let second = SystemMonotonicClock::new().now();
         assert!(first.as_duration().as_secs_f64() >= boot_seconds, "{first:?} must use the OS boot epoch ({boot_seconds}s)");
         assert!(second >= first, "independent runtime clocks must share a monotonic epoch");
+    }
+
+    #[test]
+    fn unavailable_system_clock_leaves_no_live_deadline() {
+        use solidcraft_engine::entitlement::ConservativeDeadline;
+
+        #[cfg(target_os = "linux")]
+        let clock = SystemMonotonicClock { failed: AtomicBool::new(true) };
+        #[cfg(not(target_os = "linux"))]
+        let clock = SystemMonotonicClock { clock: solidcraft_suspend_clock::SuspendClock::new(|| None) };
+
+        let now = clock.now();
+        assert_eq!(now.as_duration(), Duration::MAX);
+        assert!(ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::MAX).remaining(now).is_none());
+        assert!(ConservativeDeadline::new(now, Duration::from_secs(30)).remaining(now).is_none());
     }
 
     use std::collections::{BTreeMap, VecDeque};

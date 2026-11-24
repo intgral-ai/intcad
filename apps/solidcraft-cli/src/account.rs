@@ -2,9 +2,8 @@
 //! The CLI may use the existing product session from the origin-bound OS credential store.
 //! A reachable app control port or a request field is never authority for a charged tool.
 
-use std::cell::Cell;
 use std::fs::File;
-use std::io::Read as _;
+use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use solidcraft_account_native::{
@@ -19,6 +18,7 @@ use solidcraft_engine::entitlement::{
 };
 use solidcraft_engine::io::vfs::PathScope;
 use solidcraft_mcp::{Backend, Server, ToolCallContext};
+use solidcraft_suspend_clock::SuspendClock;
 
 /// A session that refuses every durable write: for a headless process with no secure store.
 pub fn no_persistent_session() -> CredentialSession {
@@ -51,9 +51,25 @@ pub fn begin_explicit_device_login(client_id: &str) -> Result<(DeviceCodeFlow<Ur
 /// No runtime setting or MCP argument controls the destination of a bearer.
 pub fn configured_billing() -> Option<(SessionBilling, File)> {
     let connection = WireConnection::product_origin(option_env!("INTCAD_PRODUCT_HTTPS_ORIGIN")?, env!("CARGO_PKG_VERSION")).ok()?;
-    let clock = BootClock::default();
+    configured_billing_with_clock(connection, BootClock::default(), || None)
+}
+
+fn configured_billing_with_clock(
+    connection: WireConnection,
+    clock: BootClock,
+    data_root: impl FnOnce() -> Option<PathBuf>,
+) -> Option<(SessionBilling, File)> {
     clock.sample()?;
-    let (journal, lock) = AccountPaths::lock_existing(AccountPaths::for_current_user()?.root())?;
+    let injected = data_root();
+    let owned;
+    let root = match injected.as_deref() {
+        Some(root) => root,
+        None => {
+            owned = AccountPaths::for_current_user()?;
+            owned.root()
+        }
+    };
+    let (journal, lock) = AccountPaths::lock_existing(root)?;
     let store = KeyringStore::new(format!("{ACCOUNT_KEYRING_SERVICE} [{}]", connection.base_url()));
     let billing = SessionBilling::new(
         CredentialSession::new(Box::new(store)),
@@ -65,45 +81,23 @@ pub fn configured_billing() -> Option<(SessionBilling, File)> {
     Some((billing, lock))
 }
 
-/// Linux uptime includes suspend. Other hosts stay closed until there is a trustworthy clock.
+/// The native monotonic epoch includes suspend. A missing or contradictory reading expires leases.
 #[derive(Default)]
-struct BootClock {
-    last: Cell<Option<MonotonicInstant>>,
-    failed: Cell<bool>,
-}
+struct BootClock(SuspendClock);
 
 impl BootClock {
     fn sample(&self) -> Option<MonotonicInstant> {
-        if !cfg!(target_os = "linux") || self.failed.get() {
-            return None;
-        }
-        let mut sample = String::new();
-        File::open("/proc/uptime").ok()?.take(128).read_to_string(&mut sample).ok()?;
-        let (seconds, hundredths) = sample.split_ascii_whitespace().next()?.split_once('.')?;
-        if hundredths.len() != 2 {
-            return None;
-        }
-        let millis = seconds.parse::<u64>().ok()?.checked_mul(1_000)?.checked_add(hundredths.parse::<u64>().ok()?.checked_mul(10)?)?;
-        let now = MonotonicInstant::from_millis(millis);
-        if self.last.get().is_some_and(|previous| now < previous) {
-            return None;
-        }
-        self.last.set(Some(now));
-        Some(now)
+        self.0.read().map(|elapsed| MonotonicInstant::from_millis(0).saturating_add(elapsed))
     }
 }
 
 impl MonotonicClock for BootClock {
     fn now(&self) -> MonotonicInstant {
-        self.sample().unwrap_or_else(|| {
-            self.failed.set(true);
-            MonotonicInstant::from_millis(0).saturating_add(Duration::MAX)
-        })
+        self.sample().unwrap_or_else(|| MonotonicInstant::from_millis(0).saturating_add(Duration::MAX))
     }
 
     fn wall_now(&self) -> SystemTime {
-        // Uptime is rounded down to a centisecond; subtract that uncertainty from a lease
-        // derived from an absolute timestamp by moving the send wall reading forward.
+        // Retain the existing conservative margin for leases derived from absolute timestamps.
         let now = SystemTime::now();
         now.checked_add(Duration::from_millis(10)).unwrap_or(now)
     }
@@ -314,6 +308,34 @@ mod tests {
 
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn unavailable_boot_clock_leaves_no_live_deadline_or_configured_billing() {
+        use solidcraft_engine::entitlement::ConservativeDeadline;
+
+        let clock = BootClock(SuspendClock::new(|| None));
+        let now = clock.now();
+        assert_eq!(now.as_duration(), Duration::MAX);
+        assert!(ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::MAX).remaining(now).is_none());
+        assert!(ConservativeDeadline::new(now, Duration::from_secs(30)).remaining(now).is_none());
+
+        let connection = WireConnection::product_origin("https://product.invalid", "test").unwrap();
+        let clock = BootClock(SuspendClock::new(|| None));
+        assert!(configured_billing_with_clock(connection, clock, || panic!("must refuse before looking up the data root")).is_none());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn configured_billing_accepts_the_native_clock_before_checking_credentials() {
+        let connection = WireConnection::product_origin("https://product.invalid", "test").unwrap();
+        let attempted_data_lookup = Cell::new(false);
+        let result = configured_billing_with_clock(connection, BootClock::default(), || {
+            attempted_data_lookup.set(true);
+            None // Stop before touching the filesystem or credentials.
+        });
+        assert!(attempted_data_lookup.get(), "a working native clock must pass the billing clock gate");
+        assert!(result.is_none(), "a clock alone cannot authorize a charge");
+    }
 
     #[test]
     fn configured_origin_uses_the_desktop_keyring_namespace() {
