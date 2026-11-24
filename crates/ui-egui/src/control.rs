@@ -3515,6 +3515,22 @@ mod tests {
     }
 
     #[test]
+    fn a_forwarded_bridge_mint_is_not_proof_of_pre_admission_state() {
+        let (mut app, authority, admits, releases) = app_with_lookup_before_admission();
+        let operation = OperationId::mint_from_entropy(&[7; 16]).unwrap();
+        let trusted = TrustedContext::mint(authority.scope(), operation.as_str(), Capability::Mcp, EntryCategory::GuiBridgeMcp).unwrap();
+        let (mut req, _) = ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"parameters.list"}), trusted, None, None);
+        // The local journal is readable but has no row for this fresh operation. Unlike
+        // Direct Control, the bridge cannot yet use it to prove the pre-admission state.
+        app.install_review_store(Box::new(ControlJournal(operation, Ok(None))));
+        let refusal = admit_once(&mut app, &mut req).expect_err("host provenance alone must not admit a charged tool");
+        assert_eq!(refusal.code, RefusalCode::AuthUnavailable);
+        assert_eq!(authority.operation_lookups(), 1);
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
     fn fresh_control_grant_allows_admission_and_commit_before_its_expiry() {
         // A fresh lease with and without a transit deduction.
         for expiry in [300_000, 299_500] {

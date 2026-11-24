@@ -2,15 +2,25 @@
 
 Classification comes from the host dispatch path, never from a caller-supplied method parameter or request origin label.
 
-| Entry | Baseline seam | Authorization and billing |
-| --- | --- | --- |
-| Human desktop CAD, ordinary completion, browser CAD | `crates/ui-egui/src/control.rs`, `apps/solidcraft-web/src/api.rs` | Free, offline. An ordinary human action stays free when it shares a dispatch helper. |
-| Ordinary CLI file handling and non-DFM validation | `apps/solidcraft-cli/src/main.rs`, `apps/solidcraft-cli/src/validation.rs` | Free, offline. |
-| Built-in chat and harness, including custom model and ACP setup | `crates/ui-egui/src/agent_chat` | Online eligibility. Pure text does not consume credits; each external Intcad logic operation does. |
-| Trusted runtime bridge | `crates/ui-egui/src/agent_chat/host_bridge.rs`, `task_runtime.rs` | Preserve the host-created operation context when forwarding internally. Do not debit twice. |
-| Headless MCP, GUI bridge MCP, external ACP MCP | `apps/solidcraft-cli/src/main.rs`, `crates/mcp/src/server.rs`, `crates/mcp/src/tools.rs` | Online eligibility plus one unit per successful logical operation, including read-only queries; outer batch is one operation. |
-| External control and external UI automation | `apps/solidcraft/src/control_server.rs`, `crates/ui-egui/src/control.rs`, `execution_guard.rs` | Keep the connection token and local permission checks. Online eligibility; bill actual logical operations, not handshake, navigation or status. |
-| DFM from Review or CLI | `crates/ui-egui/src/dfm_review.rs`, `apps/solidcraft-cli/src/validation.rs` | Online eligibility and one unit per completed logical check; refuse a mixed CLI request before running if its DFM check is not admitted. Viewing or attaching an existing report is not a rerun. |
-| Unknown source or command class | Native trust boundary | Deny by default; no interactive login window on a programmatic request. |
+The **rule** column is the authorization and billing classification. The **production status** column distinguishes a wired gate from an intended one. A verified desktop budget alone does not install authority on another entry.
 
-The matrix describes intended gates, not evidence that these entry points are already guarded.
+| Entry | Baseline seam | Authorization and billing rule | Production status |
+| --- | --- | --- | --- |
+| Human desktop CAD, ordinary completion, browser CAD | `crates/ui-egui/src/control.rs`, `apps/solidcraft-web/src/api.rs` | Free, offline. An ordinary human action stays free when it shares a dispatch helper. | **Implemented.** |
+| Ordinary CLI file handling and non-DFM validation | `apps/solidcraft-cli/src/main.rs`, `apps/solidcraft-cli/src/validation.rs` | Free, offline. | **Implemented.** |
+| Built-in chat and harness, including custom model and ACP setup | `crates/ui-egui/src/agent_chat` | Online eligibility. Pure text does not consume credits; each external Intcad logic operation does. | **Partial.** Text is not billed. Charged Intcad operations depend on the tool routes below: direct chat uses the CLI bridge and Mastra uses the inherited lane. Agent Chat does not offer Mastra workflows for ACP agents. |
+| Trusted runtime bridge | `crates/ui-egui/src/agent_chat/host_bridge.rs`, `task_runtime.rs` | Preserve the host-created operation context when forwarding internally. Do not debit twice. | **Partial.** Forwarding preserves a host-minted context when one is provided, and does not settle at the MCP layer. Production Mastra starts without a bound host scope. Even with a scope injected, Control currently requires server state before first admission, when the new operation has no settlement credential. |
+| Headless MCP | `apps/solidcraft-cli/src/account.rs`, `crates/mcp/src/server.rs`, `crates/mcp/src/tools.rs` | Online eligibility plus one unit per successful logical operation, including read-only queries; outer batch is one operation. | **Intended for charged calls.** The production CLI has no installed billing authority for this route; it refuses charged calls before dispatch. |
+| GUI bridge MCP | `crates/ui-egui/src/agent_chat/host_bridge.rs`, `apps/solidcraft-cli/src/account.rs`, `crates/mcp/src/server.rs` | Same MCP rule as headless. | **Intended for charged calls.** Mastra's inherited lane has the scope and first-admission blockers above. `intcad-cli mcp --connect` is a separate route: the CLI refuses charged calls before forwarding because the control connection does not prove the desktop can settle them. Both return `AUTH_UNAVAILABLE` on the wire with no authority. |
+| External ACP MCP | `crates/ui-egui/src/agent_chat/acp.rs`, `apps/solidcraft-cli/src/account.rs`, `crates/mcp/src/server.rs` | Same MCP rule as headless. | **Intended for charged calls.** Agent Chat supplies ACP with the same CLI `--connect` route, which does not establish billing authority. The separate external ACP entry also has no verified safe-stop bound. |
+| External control | `apps/solidcraft/src/control_server.rs`, `crates/ui-egui/src/control.rs`, `execution_guard.rs` | Keep the connection token and local permission checks. Online eligibility; bill actual logical operations, not handshake, navigation or status. | **Implemented for supported paths.** Charged operations require a verified scope and bound, a live grant, and valid operation state. Unsupported asynchronous paths remain closed where they cannot carry the typed admission through commit. |
+| External UI automation | `crates/ui-egui/src/control.rs`, `execution_guard.rs` | Same rule as external control. | **Intended for charged calls.** The separate entry has no verified desktop safe-stop bound, so charged operations cannot pass admission. |
+| DFM from Review | `crates/ui-egui/src/dfm_review.rs` | Online eligibility and one unit per completed logical check. Viewing or attaching an existing report is not a rerun. | **Implemented.** A fresh run needs a verified scope and bound, a durable journal row, and a live grant. |
+| CLI DFM | `apps/solidcraft-cli/src/validation.rs` | Same DFM rule as Review; refuse a mixed CLI request before running if its DFM check is not admitted. | **Intended for charged calls.** The production CLI supplies an unverified budget and no billing authority, so it refuses the whole DFM-containing request. |
+| Unknown source or command class | Native trust boundary | Deny by default; no interactive login window on a programmatic request. | **Implemented.** An unclassified entry is refused before dispatch. |
+
+Free MCP helpers and protocol reads are not charged. The forwarded route refuses `expect`, `check_parameters`, `body_topology`, and `inspect_design` with sketch or joint detail. Those calls need multiple controlled backend requests and cannot carry one parent admission across them.
+
+See [the desktop safe-stop bounds](control-safe-stop-bound.md) for the limits of the desktop admission and result cutoff; it does not interrupt work already in flight.
+
+Opening the inherited Mastra lane to charged calls also requires moving its account I/O off the window thread. Today the chat queue calls Control's synchronous account checks, admission and settlement; supplying a scope and a fresh journal row alone would make those network calls reachable from the window.

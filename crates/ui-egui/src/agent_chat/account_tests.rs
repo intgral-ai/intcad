@@ -119,6 +119,18 @@ fn reply_to(req: ControlRequest, ok: bool, result: Value) {
 }
 
 #[test]
+fn bridge_without_authenticated_provenance_refuses_charged_tools_before_the_queue() {
+    let (tools, requests) = std::sync::mpsc::channel();
+    let mut bridge = HostBridge::open(tools, None).expect("the bridge opens without account authority");
+    bridge.begin_turn(Arc::new(AtomicBool::new(true)));
+    let mut child = child(&mut bridge);
+    let reply = wire(&mut child, tools_call(1, "execute", json!({"command":"parameters.list"}), Value::Null));
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    assert_eq!(reply["result"]["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE", "{reply}");
+    assert!(requests.try_recv().is_err(), "a charged call without authority never reaches Control");
+}
+
+#[test]
 fn external_acp_cannot_forge_trusted_context() {
     let (mut bridge, rx, _active) = authorized_bridge();
     let mut child = child(&mut bridge);
