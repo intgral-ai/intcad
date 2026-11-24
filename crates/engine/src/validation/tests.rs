@@ -1765,6 +1765,41 @@ fn a_report_committed_before_its_state_is_adopted_not_reported_as_a_mismatch() {
 }
 
 #[test]
+fn a_provisional_result_report_is_not_adopted_before_its_marker_check() {
+    // A worker publishes its result report and only then checks the cancellation marker. A
+    // second writer that adopted that report could leave a terminal `passed` state bound to a
+    // report the worker later replaces with `cancelled` (#226 review). Only a final cancelled
+    // report may be adopted, so a provisional `passed` report still collides.
+    let root = scratch("report-provisional");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-report-provisional", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.pump().unwrap();
+    assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::Passed);
+
+    let bytes = port.store.read_bounded(&port.store.report_path(&run.run_id), 1 << 24).unwrap();
+    let mut own: ValidationReport = serde_json::from_slice(&bytes).unwrap();
+    own.finished_at = "2999-01-01T00:00:00Z".into();
+    let running = StateRecord {
+        schema_version: RECORD_SCHEMA.into(),
+        run_id: run.run_id.clone(),
+        state: ValidationState::Running,
+        updated_at_ms: clock.now_ms(),
+        report_available: true,
+    };
+    port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
+    let result = port.commit_report(&run.run_id, own, ValidationState::Passed);
+    assert_eq!(result.unwrap_err().code, ErrorCode::ReportMismatch);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn a_report_for_another_terminal_state_is_still_a_mismatch() {
     // The adoption above must not turn every collision into success: a writer that committed a
     // *different* terminal state still loses to REPORT_MISMATCH (#225).
@@ -1795,6 +1830,7 @@ fn a_report_for_another_terminal_state_is_still_a_mismatch() {
     port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
     let result = port.commit_report(&run.run_id, other, ValidationState::QualityFailed);
     assert_eq!(result.unwrap_err().code, ErrorCode::ReportMismatch);
-    assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::Cancelled);
+    // A rejected commit must not write its requested terminal state either.
+    assert_ne!(port.status(&run.run_id).unwrap().state, ValidationState::QualityFailed);
     let _ = std::fs::remove_dir_all(root);
 }
