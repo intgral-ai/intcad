@@ -550,7 +550,7 @@ def names_flatpak(path):
     tool = shutil.which("flatpak")
     if not tool:
         raise OSError("flatpak is unavailable")
-    # Install these bytes before listing them: `--reinstall` replaces the deployment from this
+    # Install these bytes before listing them: the ref is removed first and installed from this
     # file, so the tree cannot be a stale or different bundle. The runtime the bundle names is
     # already installed by the job that built and smoked it; `--noninteractive` refuses rather
     # than waits if it is not.

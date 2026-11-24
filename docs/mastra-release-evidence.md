@@ -140,7 +140,7 @@ That failure is why the run is a record of the platform formats, not the final v
 this branch's head is the one that must be green as a whole; its link is in the pull request.
 
 Run [45308137121](https://github.com/intgral-ai/intcad/actions/runs/45308137121) at `e806e9124f`
-read every package's own `contents.json`:
+recorded each package's `contents.json`:
 
 | Job | Result |
 |---|---|
@@ -150,20 +150,22 @@ read every package's own `contents.json`:
 | macOS universal | pass — DMG both slices, five skills; the CLI archive exempt |
 | Snap x86_64 | pass — the `.snap` itself carries the agent; five skills |
 | Arch x86_64 | pass — the repacked `.pkg.tar.zst` itself carries the agent; five skills |
-| Flatpak x86_64/aarch64 | fail — `flatpak install --reinstall` refused the bundle as "already installed" after the job's own smoke had installed it; the recorder now uninstalls that ref and installs the bundle again |
+| Flatpak aarch64 | fail — `flatpak install --reinstall` refused the bundle as "already installed" after the job's own smoke had installed it; the recorder now uninstalls that ref and installs the bundle again |
+| Flatpak x86_64 | recorded an uninspected bundle (its own `contents.json` said so) and the job did **not** fail: the per-job rejection was, at that commit, only inside the `native` branch. Both defects were fixed before the run below |
 
 The three repacks were proved from their own bytes for the first time in this run; the Flatpak
 failure was in reading the bundle, not in what the bundle carries.
 
 Run [45318917333](https://github.com/intgral-ai/intcad/actions/runs/45318917333) at `6717ef201c`
-is green as a whole, including the Flatpak jobs, and the release gate's own decision
+(the tested SHA; later commits change documentation only) is green as a whole, including the
+Flatpak jobs, and the release gate's own decision
 (`release_content.problems`) over its downloaded `build.json`/`contents.json` artifacts returns no
 problems for all fourteen package identities:
 
 | Identity | Recorded |
 |---|---|
 | `release-linux-x86_64` | `mastra-agent`, four artifacts, agent present with Node and five skills, nothing unchecked |
-| `release-windows-x64` | `mastra-agent`, MSI + portable zip + exe, all three present with five skills |
+| `release-windows-x64` | `mastra-agent`, MSI (admin-extracted) and portable zip present with five skills; the standalone exe is covered by the package it is part of |
 | `release-macos` | `mastra-agent`, DMG with a Node for both slices and five skills; the CLI archive exempt |
 | `release-flatpak-x86_64`, `release-arch-x86_64`, `release-snap-x86_64` | `mastra-agent` from each repack's own bytes; the Flatpak was installed from the bundle after removing the smoke's deployment |
 | every other identity | `native`, no agent, no marker, nothing unchecked |

@@ -36,11 +36,13 @@ fi
 
 # The tarball wraps its tree in one folder and holds the FHS tree with or without `usr/`; the
 # agent is under `lib/intcad` either way. --strip-components=1 gives the tarball's own paths.
-if tar -tzf "$TARBALL" | grep -q '/usr/lib/intcad/mastra-agent/'; then
-  AGENT_PATH=usr/lib/intcad/mastra-agent
-else
-  AGENT_PATH=lib/intcad/mastra-agent
-fi
+# The listing is kept whole: `tar | grep -q` can die of SIGPIPE under `pipefail` on a large
+# archive and pick the wrong path.
+listing="$(tar -tzf "$TARBALL")"
+case "$listing" in
+  *"/usr/lib/intcad/mastra-agent/"*) AGENT_PATH=usr/lib/intcad/mastra-agent ;;
+  *) AGENT_PATH=lib/intcad/mastra-agent ;;
+esac
 tar -xzf "$TARBALL" -C "$WORK/src" --strip-components=1 --wildcards "*/$AGENT_PATH/*"
 SOURCE="$WORK/src/$AGENT_PATH"
 [ -f "$SOURCE/agent.json" ] || { echo "error: $TARBALL carries no $AGENT_PATH" >&2; exit 1; }
