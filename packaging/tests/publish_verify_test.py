@@ -169,6 +169,22 @@ class Publish(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "accepted descriptor"):
             self.stage()
 
+    def test_readback_compares_every_assets_bytes(self):
+        out = self.root / "out-check"
+        got = self.root / "got-check"
+        out.mkdir()
+        got.mkdir()
+        for name in ("intcad.msi", "SHA256SUMS.txt"):
+            (out / name).write_text(name)
+            (got / name).write_text(name)
+        release.verify_downloaded(out, got)
+        (got / "intcad.msi").write_text("tampered")
+        with self.assertRaisesRegex(ValueError, "downloaded bytes differ"):
+            release.verify_downloaded(out, got)
+        (got / "intcad.msi").unlink()
+        with self.assertRaisesRegex(ValueError, "download set differs"):
+            release.verify_downloaded(out, got)
+
     def test_dispatch_is_data_and_stable_only(self):
         self.assertEqual(release.dispatch("v0.1.3", "42", "2"), (V, 42, 2))
         for values in [("v0.1.3-rc.1", "42", "2"), ("v0.1.3\n", "42", "2"), ("v0.1.3", "../42", "2"),
@@ -248,7 +264,8 @@ class Publish(unittest.TestCase):
         git("init", "-q", "-b", "main")
         git("config", "user.email", "fixture@example.com")
         git("config", "user.name", "fixture")
-        for path in release.PRODUCERS:
+        for path in ("scripts/ci/release_handoff.py", ".github/workflows/release-gate.yml",
+                     "packaging/linux/package.sh"):
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("frozen\n")
@@ -263,6 +280,12 @@ class Publish(unittest.TestCase):
         release.require_producers(head, str(root))
         with self.assertRaisesRegex(ValueError, "changed the evidence producer"):
             release.require_producers(tagged, str(root))
+        # A packaging script is executable gate input too, not only the workflows.
+        (root / "packaging/linux/package.sh").write_text("candidate\n")
+        git("add", "-A")
+        git("commit", "-qm", "v3")
+        with self.assertRaisesRegex(ValueError, "packaging: the release candidate changed"):
+            release.require_producers(head, str(root))
 
     def test_notes_must_be_the_reviewed_release_notes_at_the_frozen_sha(self):
         import subprocess
@@ -284,7 +307,9 @@ class Publish(unittest.TestCase):
         self.assertEqual(release.frozen_notes(sha, "docs/release-notes-0.1.3.md", V, str(root)),
                          "Intcad 0.1.3 notes\n")
         for name, version in (("docs/internal.md", V), ("docs/release-notes-0.1.3.md", "0.1.4"),
-                              ("docs/release-notes-0.1.3.txt", V), ("../docs/release-notes-0.1.3.md", V)):
+                              ("docs/release-notes-0.1.3.txt", V), ("../docs/release-notes-0.1.3.md", V),
+                              ("docs/release-notes-0.1.30.md", V),
+                              ("docs/release-notes/internal-0.1.3.md", V)):
             with self.subTest(name=name, version=version), self.assertRaises(ValueError):
                 release.frozen_notes(sha, name, version, str(root))
 
