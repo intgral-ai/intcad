@@ -1129,6 +1129,28 @@ impl ValidationPort {
                     if current.state.is_terminal() && current.state == state {
                         return Ok(());
                     }
+                    // A writer publishes the report before its state record. Only a cancellation
+                    // report is final once written: the cancel path writes its marker first, and
+                    // nothing replaces a cancelled report later. A result report may still be
+                    // replaced by the marker check below, so adopting it could bind a terminal
+                    // state to a report that changes afterwards (#226 review). Adopt only the
+                    // final cancellation, and only for our own cancelled state.
+                    if state == ValidationState::Cancelled
+                        && self.store.marker_exists(run_id)
+                        && let Ok(winner) = serde_json::from_slice::<ValidationReport>(&existing)
+                        && winner.state == ValidationState::Cancelled
+                    {
+                        let admission = self.load_admission(run_id)?;
+                        // `adopt_report` returns true even when it observes a different terminal
+                        // state and writes nothing, so re-read and accept only our own state; a
+                        // competing terminal completion must still be a mismatch.
+                        if self.adopt_report(run_id, &admission)? {
+                            let current = self.load_state(run_id)?;
+                            if current.state.is_terminal() && current.state == state {
+                                return Ok(());
+                            }
+                        }
+                    }
                     return Err(ValidationError::report_mismatch("a different terminal report already exists for this run"));
                 }
             }
