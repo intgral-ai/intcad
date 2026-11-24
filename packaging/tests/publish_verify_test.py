@@ -141,6 +141,33 @@ class Publish(unittest.TestCase):
                 release.verify_execution(run, bad, 42, 2)
         with self.assertRaises(ValueError):
             release.verify_execution(run | {"event": "workflow_dispatch"}, jobs, 42, 2)
+        # Same job names from a different workflow are not the gate.
+        with self.assertRaises(ValueError):
+            release.verify_execution(run | {"path": ".github/workflows/other.yml"}, jobs, 42, 2)
+
+    def test_a_coordinated_rehash_still_fails_against_the_gate_handoff(self):
+        # The attacker rewrites a package and both descriptors consistently, but the
+        # gate handoff still holds the digests it accepted before signing.
+        name = f"intcad-{V}-macos-universal.dmg"
+        (self.artifacts / "release-macos" / name).write_bytes(b"tampered")
+        for folder in ("release-macos", "package-evidence-release-macos"):
+            build_path = self.artifacts / folder / "build.json"
+            build = json.loads(build_path.read_text())
+            build["artifacts"] = [
+                {"name": item["name"], "sha256": release.digest(self.artifacts / "release-macos" / item["name"])}
+                for item in build["artifacts"]
+            ]
+            build_path.write_text(json.dumps(build))
+        for folder in ("release-macos", "package-evidence-release-macos"):
+            report_path = self.artifacts / folder / "contents.json"
+            report = json.loads(report_path.read_text())
+            report["checked"] = [
+                {"name": item["name"], "sha256": release.digest(self.artifacts / "release-macos" / item["name"])}
+                for item in report["checked"]
+            ]
+            report_path.write_text(json.dumps(report))
+        with self.assertRaisesRegex(ValueError, "accepted descriptor"):
+            self.stage()
 
     def test_dispatch_is_data_and_stable_only(self):
         self.assertEqual(release.dispatch("v0.1.3", "42", "2"), (V, 42, 2))
@@ -196,17 +223,70 @@ class Publish(unittest.TestCase):
     def test_authorization_requires_configured_private_nonfork_repository(self):
         repo = dict(id=12, full_name="intgral-ai/intcad-client", visibility="private", private=True, fork=False)
         release.verify_repository(repo, "12", "private")
-        public = dict(id=1446384930, full_name="intgral-ai/intcad", visibility="public", private=False, fork=False)
+        # The public release source is still a fork of SolidCraft until the private
+        # client repository replaces it.
+        public = dict(id=1446384930, full_name="intgral-ai/intcad", visibility="public", private=False, fork=True)
         release.verify_repository(public, "", "public")
         for metadata, configured, mode in [
             (repo, "", "private"), (repo, "99", "private"), (repo, "12", "public"),
             (repo | {"private": False}, "12", "private"), (repo | {"fork": True}, "12", "private"),
             (repo | {"full_name": "intgral-ai/intcad"}, "12", "private"),
-            (public | {"id": 12}, "12", "public"), (public | {"fork": True}, "", "public"),
+            (public | {"id": 12}, "12", "public"),
             (public | {"visibility": "internal"}, "", "public"), (public, "99", "public"),
         ]:
             with self.assertRaises(ValueError):
                 release.verify_repository(metadata, configured, mode)
+
+    def test_tagged_producers_must_equal_protected_main(self):
+        import subprocess
+        root = self.root / "gitrepo"
+        root.mkdir()
+
+        def git(*args):
+            subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "fixture@example.com")
+        git("config", "user.name", "fixture")
+        for path in release.PRODUCERS:
+            target = root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("frozen\n")
+        git("add", "-A")
+        git("commit", "-qm", "v1")
+        tagged = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        release.require_producers(tagged, str(root))
+        (root / "scripts/ci/release_handoff.py").write_text("candidate\n")
+        git("add", "-A")
+        git("commit", "-qm", "v2")
+        head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        release.require_producers(head, str(root))
+        with self.assertRaisesRegex(ValueError, "changed the evidence producer"):
+            release.require_producers(tagged, str(root))
+
+    def test_notes_must_be_the_reviewed_release_notes_at_the_frozen_sha(self):
+        import subprocess
+        root = self.root / "notesrepo"
+        root.mkdir()
+
+        def git(*args):
+            subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "fixture@example.com")
+        git("config", "user.name", "fixture")
+        (root / "docs").mkdir()
+        (root / "docs/release-notes-0.1.3.md").write_text("Intcad 0.1.3 notes\n")
+        (root / "docs/internal.md").write_text("internal plan\n")
+        git("add", "-A")
+        git("commit", "-qm", "notes")
+        sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        self.assertEqual(release.frozen_notes(sha, "docs/release-notes-0.1.3.md", V, str(root)),
+                         "Intcad 0.1.3 notes\n")
+        for name, version in (("docs/internal.md", V), ("docs/release-notes-0.1.3.md", "0.1.4"),
+                              ("docs/release-notes-0.1.3.txt", V), ("../docs/release-notes-0.1.3.md", V)):
+            with self.subTest(name=name, version=version), self.assertRaises(ValueError):
+                release.frozen_notes(sha, name, version, str(root))
 
     def test_agent_candidate_requires_explicit_legal_and_installed_review_for_exact_execution(self):
         release.verify_agent_review("native", SHA, 42, 2, "", "")
@@ -231,7 +311,7 @@ class Publish(unittest.TestCase):
 
     def test_environment_requires_review_and_only_exact_main_branch_policy(self):
         reviewers = dict(type="required_reviewers", prevent_self_review=True, reviewers=[{"type": "Team"}])
-        env = dict(name="release-signing", protection_rules=[reviewers],
+        env = dict(name="release-signing", protection_rules=[reviewers], can_admins_bypass=False,
                    deployment_branch_policy=dict(protected_branches=False, custom_branch_policies=True))
         policies = [dict(name="main", type="branch")]
         release.verify_environment(env, policies)
@@ -239,6 +319,7 @@ class Publish(unittest.TestCase):
             (env | {"protection_rules": []}, policies),
             (env | {"protection_rules": [reviewers | {"prevent_self_review": False}]}, policies),
             (env | {"can_admins_bypass": True}, policies),
+            ({k: v for k, v in env.items() if k != "can_admins_bypass"}, policies),
             (env, [dict(name="main", type="tag")]),
             (env, policies + [dict(name="release/*", type="branch")]),
         ]:

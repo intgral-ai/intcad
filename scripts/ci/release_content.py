@@ -113,6 +113,17 @@ def problems(source_revision, descriptors, contents):
             failures.append(identity + ": derived content evidence packageId mismatch")
         if report.get("sourceRevision") != source_revision:
             failures.append(identity + ": derived content evidence sourceRevision mismatch")
+        # The derivative itself is not inspected; its report only carries what the
+        # source scan found. A failed scan or a runtime marker there must fail too,
+        # otherwise a Flatpak/Snap/Arch package could pass on an unproven source.
+        markers = report.get("markers")
+        if not isinstance(markers, list) or markers:
+            failures.append(identity + ": derived package source has unproven runtime markers")
+            continue
+        unchecked = report.get("unchecked")
+        if not isinstance(unchecked, list) or unchecked:
+            failures.append(identity + ": derived package source was not inspected")
+            continue
         source = report.get("derivedFrom")
         if not native.get(source):
             failures.append(identity + ": derived package source is not a verified native package: " + str(source))

@@ -287,7 +287,9 @@ on standard GitHub-hosted runners. Do not migrate until the public release has b
 verified and the CTO separately approves the migration. After migration, the same
 workflow can run from the independent private `intgral-ai/intcad-client` repository
 only after the owner configures its immutable repository ID and private mode. It
-rejects forks, a mismatched ID or slug, and a change in visibility.
+rejects a private repository that is a fork, a mismatched ID or slug, and a change
+in visibility. The public release source is itself a fork of SolidCraft, and it
+stays one for v0.1.3.
 
 The public **`intgral-ai/intcad-releases`** repository holds installers, release notes,
 checksums and signatures; it does not hold the source or build configuration. The
@@ -314,7 +316,9 @@ future task.
    acceptance or rights clearance.
 3. After the owner authorizes staging, dispatch **Stage signed release draft**
    from protected `main`. Supply `tag`, `source_sha`, `run_id`, `run_attempt` and
-   `notes_file`. The notes must be a tracked Markdown file at that source SHA.
+   `notes_file`. The notes must be `docs/release-notes-<version>.md` (or a file
+   under `docs/release-notes/`) at that source SHA; any other tracked Markdown is
+   refused, so internal documentation cannot become the update text.
    A reviewer must approve the `release-signing` job before it receives signing
    credentials. The source tag must resolve to the exact tested commit; the PR
    head and a different commit with the same tree are not substitutes.
@@ -323,14 +327,14 @@ future task.
    flattening them. It writes the old and new checksum names with identical
    bytes, requires all updater aliases and signs `SHA256SUMS.txt`. It refuses an
    existing draft, release or tag.
-5. The workflow creates **only a draft**. It compares the API digest of every
-   uploaded asset, rejecting absent digests, then downloads and verifies both
-   checksum lists and the signature. Leave any failed read-back draft unpublished.
+5. The workflow creates **only a draft**. It rejects an absent API digest, then
+   downloads every uploaded asset back and compares its bytes with the local file,
+   and verifies both checksum lists and the signature. Leave any failed read-back draft unpublished.
    Making a verified draft public is a separate owner decision and action.
 
-The owner configures `release-signing` with independent required reviewers, no
-self-review or bypass, and a deployment branch policy that permits only `main`
-(no tags). The workflow checks that `main` is protected and reads back the
+The owner configures `release-signing` with independent required reviewers,
+`can_admins_bypass` explicitly off (an absent field is refused), and a deployment
+branch policy that permits only `main` (no tags). The workflow checks that `main` is protected and reads back the
 reviewer and branch policy before the sensitive job. For the public source, use
 `RELEASE_SOURCE_MODE=public` (the default) and either leave
 `RELEASE_SOURCE_REPO_ID` unset or set it to `1446384930`. Configure `private`
@@ -353,9 +357,9 @@ no unsigned fallback.
 The client and draft workflow use the same public key file,
 `crates/ui-egui/src/update/trusted-release-key.pub`. Without a production key, the
 client refuses to install **any** update and the draft workflow refuses to sign.
-Do not cut v0.1.3 without the production key unless the owner explicitly accepts
-a **manual-only update path**. Such an exception does not turn off verification
-or make the draft workflow publish unsigned assets.
+This pipeline cannot produce a v0.1.3 draft without the key. A no-key release can
+only be published outside this workflow after equivalent review, with the in-app
+update feature disabled; that is a product decision, not an unsigned fallback.
 
 Secret-key custody is owner-only. Never give the secret key to an agent or put
 it in a repository file, CI log or chat:

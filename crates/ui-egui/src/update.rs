@@ -108,12 +108,13 @@ pub fn comparable(v: &semver::Version) -> semver::Version {
     v
 }
 
-/// Where the release notes of `version` are: its own release page for a release build (stable,
-/// candidate and nightly releases are all tagged `v<version>`), else, for a development build or
-/// a string that is not a version, the release history.
+/// Where the release notes of `version` are: its own release page for a stable release, else the
+/// release history. Nightlies and candidates stay on the history: the public feed publishes stable
+/// releases only, so a tag page for a prerelease would not exist there.
 pub fn release_notes_url(version: &str, release_build: bool) -> String {
     const HISTORY: &str = "https://github.com/intgral-ai/intcad-releases/releases";
-    if release_build && parse_version(version).is_some() && version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')) {
+    let stable = parse_version(version).is_some_and(|v| v.pre.is_empty());
+    if release_build && stable && version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')) {
         format!("{HISTORY}/tag/v{version}")
     } else {
         HISTORY.to_string()
@@ -865,7 +866,11 @@ pub fn start_install(app: &mut SolveApp, ctx: &egui::Context) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let ctx = ctx.clone();
-        let staging = std::env::temp_dir().join("solidcraft-update");
+        // One directory per attempt: a cancelled install can still be running when the
+        // next one starts, and two attempts must not share partial downloads.
+        static ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let attempt = ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let staging = std::env::temp_dir().join(format!("solidcraft-update-{}-{attempt}", std::process::id()));
         let net = install::Net {
             get,
             download,
