@@ -2646,3 +2646,27 @@ So at acceptance time every packaged binary (Linux `.deb`/`.tar.gz`/AppImage, Wi
 `7z x`, macOS app via unzip) can be checked by extracting the program and running the verifier with
 `--expect-tuple-sha256 89abe5c94fb1fbaa608e0763224f4c9e241fee7087c3bd6ee4da96c3a75f41bb`; a
 platform whose binary cannot be extracted is recorded NOT VERIFIED.
+
+## 18. The 14 pairs and their exact asset names (generated from `asset_names` at 0.1.3)
+
+| packageId | target | assets |
+|---|---|---|
+| release-linux-x86_64 | x86_64-unknown-linux-gnu | `intcad-0.1.3-linux-x86_64.{AppImage,AppImage.zsync,deb,rpm,tar.gz}` + `solidcraft-…AppImage.zsync`, `solvecraft-…AppImage.zsync` |
+| release-linux-aarch64 | aarch64-unknown-linux-gnu | same five for aarch64 + the two zsync names |
+| release-flatpak-x86_64 | x86_64-unknown-linux-gnu | `intcad-0.1.3-linux-x86_64.flatpak` |
+| release-flatpak-aarch64 | aarch64-unknown-linux-gnu | `intcad-0.1.3-linux-aarch64.flatpak` |
+| release-arch-x86_64 | x86_64-unknown-linux-gnu | `intcad-0.1.3-linux-x86_64.pkg.tar.zst` |
+| release-arch-aarch64 | aarch64-unknown-linux-gnu | `intcad-0.1.3-linux-aarch64.pkg.tar.zst` |
+| release-snap-x86_64 | x86_64-unknown-linux-gnu | `intcad-0.1.3-linux-x86_64.snap` |
+| release-snap-aarch64 | aarch64-unknown-linux-gnu | `intcad-0.1.3-linux-aarch64.snap` |
+| release-freebsd-x86_64 | x86_64-unknown-freebsd | `intcad-0.1.3-freebsd-x86_64.tar.gz` |
+| release-macos | universal-apple-darwin | `intcad-0.1.3-macos-universal.dmg`, `intcad-cli-0.1.3-macos-universal.zip` |
+| release-windows-x64 | x86_64-pc-windows-msvc | `intcad-0.1.3-windows-x64.msi`, `intcad-0.1.3-windows-x64-portable.zip`, `Intcad-0.1.3-windows-x64.exe` |
+| release-windows-x86 | i686-pc-windows-msvc | `intcad-0.1.3-windows-x86.msi`, `intcad-0.1.3-windows-x86-portable.zip` |
+| release-windows-arm64 | aarch64-pc-windows-msvc | `intcad-0.1.3-windows-arm64.msi`, `intcad-0.1.3-windows-arm64-portable.zip` |
+| release-web | wasm32-unknown-unknown | `intcad-web-0.1.3.zip` |
+
+Which of these must pass the embedded-account check (§17): `release-linux-*` (both arches),
+`release-macos`, `release-windows-*` (all three). `flatpak`/`arch`/`snap` inherit the injected Linux
+binaries; `freebsd` legitimately has none; `web` is the wasm bundle. Anything that cannot be
+extracted is recorded NOT VERIFIED, never assumed.
