@@ -670,9 +670,14 @@ fn releases_under_this_project_only_are_accepted() {
 
 #[test]
 fn the_version_links_to_its_release_notes() {
-    // A release build opens the page of its own release; stable, candidate and nightly tags all exist.
-    for v in ["0.17.0", "0.21.0-rc.2", "0.20.0-nightly.20261023.69.1"] {
+    // A stable release build opens the page of its own release.
+    for v in ["0.17.0", "0.1.3"] {
         assert_eq!(release_notes_url(v, true), format!("https://github.com/intgral-ai/intcad-releases/releases/tag/v{v}"));
+    }
+    // The public feed publishes stable releases only: a nightly or candidate tag page would 404,
+    // so those builds get the history page that lists what exists.
+    for v in ["0.21.0-rc.2", "0.20.0-nightly.20261023.69.1"] {
+        assert_eq!(release_notes_url(v, true), "https://github.com/intgral-ai/intcad-releases/releases");
     }
     // A development build has no release of its own: the release history, which is what the issue asks for.
     assert_eq!(release_notes_url("0.17.0", false), "https://github.com/intgral-ai/intcad-releases/releases");
