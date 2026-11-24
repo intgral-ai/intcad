@@ -320,12 +320,8 @@ jobs:
                   carries.append('a native package carries a runtime marker or a Node')
               if data.get('unchecked'):
                   carries.append('an artifact not inspected')
-              if data.get('markers') or data.get('agentMarkers'):
-                  carries.append('a runtime marker or a Node outside the agent')
-              if data.get('unchecked'):
-                  carries.append('an artifact not inspected')
-              if carries:
-                  raise SystemExit('this package does not carry the agent: ' + '; '.join(carries))
+          if carries:
+              raise SystemExit('package contents do not match the distribution: ' + '; '.join(carries))
       - &upload-package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
