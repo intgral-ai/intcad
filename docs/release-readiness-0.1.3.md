@@ -1929,3 +1929,33 @@ therefore verifies each packaged binary itself, with the recorded tuple digest
 `7z` and `unzip` are available on this host; `dpkg-deb` is not, so a `.deb` is unpacked with
 `7z x` or `ar x` + `tar`. A platform whose packaged binary cannot be checked is recorded as NOT
 VERIFIED, never assumed.
+
+## 9. Revised v0.1.3 scope (owner, 2026-11-24T18:00Z): paid authority is in
+
+Owner direction received through the Build/Integration agent: v0.1.3 must keep every paid
+capability usable, so the CLI and desktop authority stack ships with this release.
+
+| PR | Base today | Content | Required |
+|---|---|---|---|
+| #214 | develop | packages carry the built-in agent | yes |
+| #224 | develop | sign-in, verified sessions, paid Review | yes |
+| #227 | `task/int1497-v013-integration` | CLI authority, 300 s lease bound | yes |
+| #233 | `task/int1497-cli-authority` | five desktop paid entries declare a 280 s bound | yes |
+| #235 | `task/int1497-cli-authority` | Windows/macOS sleep counts toward the deadline | yes |
+| #234 | `task/int1497-control-bound` | charged Agent Chat bridge calls | yes |
+| #232 | `task/int1497-v013-integration` | upgrade prompt for unsupported builds | **no** (after promotion) |
+
+Measured stack: `#224 ← #227 ← #233 ← #234`, and `#227 ← #235`.
+
+**Cost of `develop`'s strict up-to-date rule (measured on the ruleset, not assumed).** The
+`develop` ruleset requires `ci` with `strict_required_status_checks_policy: true`. Every merge
+therefore makes the next PR stale, so each of the five merges needs its own rebase onto the new
+`develop` and a fresh full CI run (`Native Linux selected regression gate` plus the 16-way
+action matrix and the full-baseline archive). That is five cycles after #214, not one, and it is
+a GitHub rule we do not bypass. The promotion into `main` then needs one more `release-gate`
+run for its 14 package/evidence pairs, because `main` requires `release-gate` strictly.
+
+**Ordering that minimises rework:** #214 → #224 (two-file `--theirs` resolution) → #227 →
+#233 → #235 → #234, each rebased onto the tip of `develop` right after the previous squash
+merge lands. #233 and #235 are disjoint in files but still need separate cycles, because
+whichever merges second is stale again.
