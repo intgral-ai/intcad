@@ -1057,3 +1057,37 @@ in this PR or separate.
 
 This entry corrects §11.19's `test-format-pending.sh` citation (the container run exited 128; the
 host run is the evidence) and records no merge, no re-bless and no source change.
+
+
+### 11.21 Owner-approved review fixes: measured, in the branch, not yet pushed
+
+Decisions taken with the owner after §11.20: rebuild the action-matrix baseline from measurement;
+give the 48-turn #14453 case a lane instead of skipping it; restore the strict boolean property;
+remove the crash-test worker panic injection from this PR; convert the other new `#[ignore]`s into
+allowlist entries (or delete the placeholders); land with a merge commit, not a squash.
+
+**Measured on `3012b6400e` plus these edits** (`measure-review-fixes/`):
+
+| Suite | Result | Meaning |
+|---|---|---|
+| `cargo test -p solidcraft-engine --lib boolean_regression_tests::` | `63 passed; 2 failed`, exit `101` | `fuzz_seed_73`, `fuzz_seed_185` fail; `fuzz_seed_178` passes |
+| `cargo test -p solidcraft-kernel --test boolean_props` (`PROPTEST_CASES=32`) | `18 passed; 2 failed; 1 ignored`, exit `101` | `translation_invariant` ("Union was refused as an operand with offset 100000"), `scale_invariant` ("the union would delete face 3 …", seed `cc 0c4a5c6c…`) fail; `identity_on_grid` and `disjoint_sphere_box_union_moved_far` pass |
+| `cargo test -p solidcraft-engine --lib crash` | `41 passed; 0 failed`, exit `0` | the worker-mode removal leaves the crash-report tests green |
+| `cargo test -p solidcraft-engine --lib schema::diagnostics` | `7 passed; 0 failed`, exit `0` | the mode enum is three modes now |
+| `cargo check -p solidcraft-engine -p solidcraft-kernel --all-targets --profile ci` | exit `0` | `E0004` fixed: both refusal arms are covered |
+
+`tests/KNOWN_FAILING_TESTS` went 13 → 17 with the four measured failures, each carrying its measured
+message; the three measured-passing tests are not listed. `cargo xtask lists` exits `0`.
+
+**Action-matrix baseline.** The worker ran once per design for all 150 designs and the file was
+rewritten in `--bless`'s format. For the first 19 designs (7,781 outcomes) the rebuilt file matches
+measurement with **0 mismatches**; the serializer reproduces the file byte for byte when nothing
+changes. The old file carried 2,054 identities this engine does not produce (the migration's face
+naming) and 5 marks for actions that pass. The marks that moved to `!` are refusals — SMLib draft
+(19), ambiguous face across bodies (12), fillet (4), shell (3), face classification (3), boolean
+check (2), chamfer (1) — documented in the PR addendum; no crash and no wrong body.
+
+**Not yet done.** The rest of the 150-design measurement is still running, so the pushed baseline is
+not yet whole; the branch is not committed or pushed; CI has still not produced a rust-gate verdict
+(`evidence-rust` absent on three runs); no merge; `develop` remains `6032271178` with no `solidcore/`
+entry and the `8ddce901` pin, so B3 and the whole landed-SHA battery stay open.
