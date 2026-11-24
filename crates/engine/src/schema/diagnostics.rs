@@ -130,12 +130,6 @@ pub enum CrashTestMode {
     Panic,
     /// An internal error inside the geometry kernel, caught.
     Kernel,
-    /// An internal error on a Rayon worker inside the geometry kernel, caught and reported with
-    /// this command.
-    Worker,
-    /// An internal error on a Rayon worker outside the kernel's guard, caught as a command panic.
-    #[serde(rename = "worker_raw")]
-    WorkerRaw,
     /// The app ends at once; the report is made at the next start.
     Abort,
 }
@@ -146,16 +140,14 @@ impl<'de> Deserialize<'de> for CrashTestMode {
         match Value::deserialize(d)? {
             Value::String(s) if s == "panic" => Ok(CrashTestMode::Panic),
             Value::String(s) if s == "kernel" => Ok(CrashTestMode::Kernel),
-            Value::String(s) if s == "worker" => Ok(CrashTestMode::Worker),
-            Value::String(s) if s == "worker_raw" => Ok(CrashTestMode::WorkerRaw),
             Value::String(s) if s == "abort" => Ok(CrashTestMode::Abort),
-            _ => Err(D::Error::custom("must be panic, kernel, worker, worker_raw or abort")),
+            _ => Err(D::Error::custom("must be panic, kernel or abort")),
         }
     }
 }
 
 /// What `diagnostics.crash_test` would return. It never succeeds: it ends in an internal error
-/// that is caught and reported (`panic`, `kernel`, `worker`, `worker_raw`), or it ends the app (`abort`).
+/// that is caught and reported (`panic`, `kernel`), or it ends the app (`abort`).
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct CrashTestResult {}
 

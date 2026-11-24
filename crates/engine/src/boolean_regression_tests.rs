@@ -1828,7 +1828,6 @@ fn cut_that_leaves_a_closed_cavity_says_so() {
 /// tolerance=7.5978919e-06). Every failing seed of the boolean fuzzer is a reproducible bug,
 /// fixed with a regression test that fails without the fix.
 /// Root cause not yet found — grows tolerances but gap may exceed platform-specific limits.
-#[ignore = "fails until the tolerance root cause for seed 73 is found (#10)"]
 #[test]
 fn fuzz_seed_73_boolean_join_builds() {
     let s = replay(include_str!("../../../examples/regressions/fuzz_seed_73_boolean_join.json"));
@@ -1848,7 +1847,6 @@ fn fuzz_seed_73_boolean_join_builds() {
 /// regression test that fails without the fix.
 /// Root cause not yet found — pattern boolean result tolerance, topologically different from
 /// seed 73's "Bad Gap" boolean tolerance issue.
-#[ignore = "fails until the pattern boolean root cause for seed 185 is found (#10)"]
 #[test]
 fn fuzz_seed_185_pattern_builds() {
     let s = replay(include_str!("../../../examples/regressions/fuzz_seed_185_pattern.json"));
@@ -1868,7 +1866,6 @@ fn fuzz_seed_185_pattern_builds() {
 /// that fails without the fix.
 /// Root cause not yet found — fillet result tolerance, topologically different from seed 73's
 /// "Bad Gap" boolean tolerance issue.
-#[ignore = "fails until the fillet tolerance root cause for seed 178 is found (#10)"]
 #[test]
 fn fuzz_seed_178_fillet_builds() {
     let s = replay(include_str!("../../../examples/regressions/fuzz_seed_178_fillet.json"));

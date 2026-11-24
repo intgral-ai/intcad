@@ -11,3 +11,4 @@ cc 00931f1657c5f31ab3593ef30eb6f452eddcf3fd0662d280ca2f6a86a409666b # shrinks to
 cc 5b2daab79ffc39bc696b22704b0372147902f58c68cef280279ca38bf5d5d32f # shrinks to a = Sph { at: [0.0, 0.0, 10.0], r: 2.5 }, b = Box { at: [0.0, 0.0, 0.0], size: [5.0, 5.0, 5.0] }, off = 100000.0
 cc eb40130b7c091982555e65d16647bcb3e0c79967b5322413c0e8113df6760062 # shrinks to a = Cyl { at: [12.5, 0.0, 22.5], axis: 0, r: 12.5, h: 10.0 }, b = Sph { at: [2.5, 12.5, 17.5], r: 11.25 }, k = 0.05
 cc 7257454a5fca1788ace9509dd981ccf5c0c0d235ca6dc60f7e8a84d0cab8f02f # shrinks to a = Cyl { at: [0.0, 15.0, 0.0], axis: 2, r: 2.5, h: 5.0 }, b = Box { at: [0.0, 0.0, 0.0], size: [5.0, 5.0, 5.0] }, off = 100000.0
+cc 0c4a5c6c7e768eb05f14639f495e0b18d127299ec93650f1ddf515bb08f349d2 # shrinks to a = Cyl { at: [10.0, 15.0, 17.5], axis: 0, r: 12.5, h: 5.0 }, b = Cyl { at: [22.5, 12.5, 30.0], axis: 1, r: 12.5, h: 5.0 }, k = 0.05

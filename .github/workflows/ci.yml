@@ -537,6 +537,30 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  long-tests:
+    name: Long regressions the pull-request gate skips
+    needs: build-tests
+    # Tests marked `#[ignore]` cost too much for every pull request (one 48-turn boolean runs
+    # about 15 minutes, #14453) but must still be executed rather than only listed: they run on
+    # every integration push and on the nightly/full validation, from the archive build-tests made.
+    # A pull request skips this job, so the `ci` aggregate does not wait for it.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nextest-archive
+      - name: Ignored regressions (execute, not skip)
+        run: |
+          set -o pipefail
+          cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite \
+            --profile ci --ignore-default-filter --run-ignored=only --test-threads 1 \
+            -E 'test(/a_bolt_length_thread_cuts_to_its_groove_volume/)'
+
   property-tests:
     name: Full baseline randomized properties (raw, many cases)
     needs: build-tests

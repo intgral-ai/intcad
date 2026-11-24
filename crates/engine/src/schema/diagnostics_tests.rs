@@ -40,19 +40,17 @@ fn strict_keeps_todays_errors() {
 }
 
 /// The crash test runs only with SOLIDCRAFT_CRASH_TEST set, so its mode is checked here: the
-/// schema lists the five modes (one `const` each, with what it breaks), the type reads them,
+/// schema lists the three modes (one `const` each, with what it breaks), the type reads them,
 /// and anything else gets the handler's message.
 #[test]
-fn the_crash_test_mode_is_one_of_five() {
+fn the_crash_test_mode_is_one_of_three() {
     let schema = input_schema_for::<CrashTestParams>();
     let schema = schema.as_value();
     let listed: Vec<&str> = schema["$defs"]["CrashTestMode"]["oneOf"].as_array().into_iter().flatten().filter_map(|m| m["const"].as_str()).collect();
-    assert_eq!(listed, ["panic", "kernel", "worker", "worker_raw", "abort"], "{schema}");
+    assert_eq!(listed, ["panic", "kernel", "abort"], "{schema}");
     for (mode, want) in [
         ("panic", CrashTestMode::Panic),
         ("kernel", CrashTestMode::Kernel),
-        ("worker", CrashTestMode::Worker),
-        ("worker_raw", CrashTestMode::WorkerRaw),
         ("abort", CrashTestMode::Abort),
     ] {
         let p = json!({ "mode": mode });
@@ -62,7 +60,7 @@ fn the_crash_test_mode_is_one_of_five() {
     for mode in [json!("Panic"), json!("explode"), json!(""), json!(1), json!(null)] {
         let p = json!({ "mode": mode });
         let error = serde_json::from_value::<CrashTestParams>(p.clone()).err().map(|e| e.to_string()).unwrap_or_default();
-        assert!(error.contains("must be panic, kernel, worker, worker_raw or abort"), "{p}: {error}");
+        assert!(error.contains("must be panic, kernel or abort"), "{p}: {error}");
         assert!(!mode.as_str().is_some_and(|m| listed.contains(&m)), "{p}");
     }
 }

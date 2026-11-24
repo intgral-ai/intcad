@@ -221,12 +221,12 @@ proptest! {
                 (Moved::Volume(here), Moved::Volume(there)) => {
                     prop_assert!(close(here, there, s), "{op:?} at origin {here:.4}, moved by {off} gives {there:.4}");
                 }
-                // #56/#117: SMLib's own check refuses the moved operand at 1e5 (see
-                // `moved_operand_refused`); the moved volumes asserted above hold the parts to
-                // their originals, and the origin side still has to give a volume.
-                (Moved::Volume(_), Moved::OperandRefused) if off > 0.0 => {}
+                // #56/#117: SMLib's non-monotonic B-spline check refuses a moved operand at 1e5
+                // today (see `moved_operand_refused`). The invariant is not weakened for it: a
+                // refusal fails this property at every offset, and the entry stays on
+                // tests/KNOWN_FAILING_TESTS until the kernel holds the translation.
                 (Moved::OperandRefused, _) => prop_assert!(false, "{op:?} was refused as an operand at the origin"),
-                (_, Moved::OperandRefused) => prop_assert!(false, "{op:?} was refused as an operand with no offset"),
+                (_, Moved::OperandRefused) => prop_assert!(false, "{op:?} was refused as an operand with offset {off}"),
             }
         }
     }
@@ -416,7 +416,6 @@ fn grid_small_sphere_thin_box_union_is_sound() {
 /// A sphere and a box apart from each other: moved 1e5 mm away, their union is refused ("a NURBS
 /// form that is not its analytic surface"), where at the origin it is the two solids.
 #[test]
-#[ignore = "kernel bug, solidcore#3131"]
 fn disjoint_sphere_box_union_moved_far() {
     let a = Prim::Sph { at: [0.0, 0.0, 10.0], r: 2.5 }.body();
     let b = Prim::Box { at: [0.0, 0.0, 0.0], size: [5.0, 5.0, 5.0] }.body();
