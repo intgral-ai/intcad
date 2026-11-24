@@ -3303,6 +3303,10 @@ mod tests {
     /// Script the existing journal's read for one operation. Classification must not write it.
     struct ControlJournal(OperationId, Result<Option<OperationRecord>, OperationStoreError>);
 
+    // Classification must only read the journal; every other method is a stub
+    // that a passing test never reaches, so panicking there is the signal that
+    // the path under test wrote or mutated durable state.
+    #[allow(clippy::unreachable)]
     impl OperationStore for ControlJournal {
         fn load(&self, operation: &OperationId) -> Result<Option<OperationRecord>, OperationStoreError> {
             assert_eq!(operation, &self.0);
