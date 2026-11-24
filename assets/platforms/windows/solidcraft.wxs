@@ -35,6 +35,7 @@
     <!-- Advertised shortcuts to an .exe need an .exe icon identifier (ICE50). -->
     <Icon Id="SolidcraftIcon.exe" SourceFile="$(var.IconPath)" />
     <Property Id="ARPPRODUCTICON" Value="SolidcraftIcon.exe" />
+    <!-- Keep these URLs in sync with crates/ui-egui/src/distribution.rs. -->
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/intgral-ai/intcad" />
     <Property Id="ARPURLUPDATEINFO" Value="https://github.com/intgral-ai/intcad-releases/releases" />
     <Property Id="ARPHELPLINK" Value="https://github.com/intgral-ai/intcad-releases/issues" />

@@ -2,12 +2,43 @@ use super::*;
 use serde_json::json;
 use std::collections::BTreeMap;
 
+const DISTRIBUTION_SOURCE: &str = "crates/ui-egui/src/distribution.rs";
+
+// Both source guards cover the same shipped Rust trees and omit dedicated test sources.
+fn visit_shipped_sources(root: &Path, mut visit: impl FnMut(&Path, &str)) {
+    fn scan(root: &Path, dir: &Path, visit: &mut impl FnMut(&Path, &str)) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_str().unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                if !matches!(name, "tests" | "docs") && !name.ends_with("_tests") {
+                    scan(root, &path, visit);
+                }
+            } else if name.ends_with(".rs") && name != "tests.rs" && !name.ends_with("_tests.rs") {
+                let relative = path.strip_prefix(root).unwrap();
+                if relative != Path::new(DISTRIBUTION_SOURCE) {
+                    visit(relative, &std::fs::read_to_string(&path).unwrap());
+                }
+            }
+        }
+    }
+
+    for group in ["crates", "apps"] {
+        for entry in std::fs::read_dir(root.join(group)).unwrap() {
+            let src = entry.unwrap().path().join("src");
+            if src.is_dir() {
+                scan(root, &src, &mut visit);
+            }
+        }
+    }
+}
+
 // The updater tests prove that the current feed works, not that every shipped caller can be
 // moved to a different channel by changing distribution.rs alone.
 #[test]
 fn source_repository_slug_is_only_in_distribution_config() {
-    use std::fs;
-    use std::path::Path;
     use syn::visit::{self, Visit};
 
     const SLUG: &str = "intgral-ai/intcad";
@@ -47,42 +78,250 @@ fn source_repository_slug_is_only_in_distribution_config() {
         }
     }
 
-    fn scan(dir: &Path, config: &Path, failures: &mut Vec<std::path::PathBuf>) {
-        for entry in fs::read_dir(dir).unwrap() {
-            let entry = entry.unwrap();
-            let path = entry.path();
-            let name = entry.file_name();
-            let name = name.to_str().unwrap();
-            if entry.file_type().unwrap().is_dir() {
-                if !matches!(name, "tests" | "docs") && !name.ends_with("_tests") {
-                    scan(&path, config, failures);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut failures = Vec::new();
+    visit_shipped_sources(&root, |path, text| {
+        if text.contains(SLUG) {
+            let mut found = SlugMatch::default();
+            found.visit_file(&syn::parse_file(text).unwrap());
+            if found.0 {
+                failures.push(path.to_owned());
+            }
+        }
+    });
+    failures.sort();
+    assert!(failures.is_empty(), "Use distribution.rs instead of hard-coding {SLUG} in {failures:#?}");
+}
+
+// Match exact literal values at their source path, not an entire host, directory or line.
+// The line number is discovered on each run so nearby edits do not invalidate exceptions.
+// Each row exempts one occurrence. Duplicating it or deleting it requires review.
+const NON_DISTRIBUTION_URLS: &[(&str, &[&str])] = &[
+    (
+        "apps/solidcraft/src/account.rs",
+        &[
+            "https://",            // Validate the configured sign-in origin's scheme.
+            "https://{authority}", // Reconstruct the configured sign-in origin.
+        ],
+    ),
+    ("apps/solidcraft/src/assistant_web.rs", &["http://{SCHEME}."]), // Windows WebView custom protocol, not a remote destination.
+    (
+        "crates/account-native/src/device_code.rs",
+        &[
+            "https://api.workos.com/user_management/authorize/device", // WorkOS device-code endpoint.
+            "https://api.workos.com/user_management/authenticate",     // WorkOS device token endpoint.
+            "https://",                                                // Validate the primary device verification URL's scheme.
+            "https://",                                                // Validate the complete device verification URL's scheme.
+        ],
+    ),
+    (
+        "crates/account-native/src/http.rs",
+        &[
+            "https://",            // Validate the configured account service origin's scheme.
+            "https://{authority}", // Reconstruct the configured account service origin.
+        ],
+    ),
+    (
+        "crates/engine/src/easyprint.rs",
+        &[
+            "https://",                             // Validate the remote slicer response URL's scheme.
+            "https://slicer.printables.com/import", // Third-party slicer import endpoint.
+        ],
+    ),
+    (
+        "crates/io/src/paper/svg.rs",
+        &[
+            // SVG XML namespace embedded in the export header.
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}mm" height="{height}mm" viewBox="0 0 {width} {height}" fill="none" stroke="#000" stroke-linecap="butt" stroke-linejoin="miter" stroke-miterlimit="4">"##,
+        ],
+    ),
+    (
+        "crates/io/src/threemf.rs",
+        &[
+            // Open Packaging Conventions content-types namespace.
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\n <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\n <Default Extension=\"model\" ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/>\n</Types>\n",
+            // Open Packaging Conventions relationships namespace.
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\n <Relationship Target=\"/3D/3dmodel.model\" Id=\"rel0\" Type=\"{MODEL_REL}\"/>\n</Relationships>\n",
+            "http://schemas.microsoft.com/3dmanufacturing/core/2015/02", // 3MF model namespace.
+            "http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel", // 3MF relationship type.
+            "https://github.com/bherbruck/solidcraft/formats/3mf-face-tags/2026/10", // Stable identifier for persisted 3MF face tags.
+        ],
+    ),
+    (
+        "crates/smlib/src/core/blend.rs",
+        &[
+            // Diagnostic cites the third-party corner-blend issue.
+            "a fillet corner where a convex and a concave round leave the vertex along one tangent, so that their contact lines cross before the corner (https://github.com/tangency-labs/solidcore/issues/2256)",
+            // Diagnostic cites the third-party unequal-angle blend issue.
+            "a curvature-continuous fillet on solidcore over edges whose faces meet at different angles: every edge takes the equal-area thumbweight of the first one's angle, so the others take off the wrong area (https://github.com/tangency-labs/solidcore/issues/2250#issuecomment-6563419897)",
+        ],
+    ),
+    ("crates/ui-egui/src/account/panel.rs", &["https://"]), // Filter manual sign-in URLs by scheme.
+    (
+        "crates/ui-egui/src/agent_chat/agents.rs",
+        &[
+            "http://localhost:11434/v1",                              // Local Ollama endpoint.
+            "http://localhost:1234/v1",                               // Local LM Studio endpoint.
+            "http://localhost:18789/v1",                              // Local OpenClaw endpoint.
+            "https://api.openai.com/v1",                              // OpenAI model API.
+            "https://api.mistral.ai/v1",                              // Mistral model API.
+            "https://api.mammouth.ai/v1",                             // Mammouth model API.
+            "https://opencode.ai/zen/go/v1",                          // OpenCode Go model API.
+            "https://api.deepseek.com",                               // DeepSeek model API.
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", // DashScope OpenAI-compatible API.
+            "https://openrouter.ai/api/v1",                           // OpenRouter model API.
+            "https://api.anthropic.com/v1",                           // Anthropic model API.
+            "https://api.deepseek.com/anthropic",                     // DeepSeek Anthropic-compatible API.
+            "https://dashscope-intl.aliyuncs.com/apps/anthropic",     // DashScope Anthropic-compatible API.
+            "https://",                                               // Accept an HTTPS model endpoint.
+            "http://",                                                // Allow HTTP model endpoints only when local.
+            "http://",                                                // Recognize HTTP when sanitizing user-entered model endpoints.
+            "https://",                                               // Recognize HTTPS when sanitizing user-entered model endpoints.
+        ],
+    ),
+    (
+        "crates/ui-egui/src/agent_chat/connections.rs",
+        &[
+            "http://",  // Recognize HTTP device-code links for model sign-in.
+            "https://", // Recognize HTTPS device-code links for model sign-in.
+        ],
+    ),
+    (
+        "crates/ui-egui/src/agent_chat/discover.rs",
+        &["see https://docs.x.ai/build/overview (Grok Build installer); then run grok login"], // Third-party Grok Build setup instructions.
+    ),
+    (
+        "crates/ui-egui/src/agent_chat/host_ai/go.rs",
+        &[
+            "https://opencode.ai/inference/go", // OpenCode Go inference endpoint.
+            "https://opencode.ai/",             // OpenCode Go Referer header.
+        ],
+    ),
+    (
+        "crates/ui-egui/src/agent_chat/markdown.rs",
+        &[
+            "http://",  // Recognize HTTP Markdown links.
+            "https://", // Recognize HTTPS Markdown links.
+        ],
+    ),
+    (
+        "crates/ui-egui/src/agent_chat/web.rs",
+        &[
+            "http://",  // Recognize HTTP links supplied by the Assistant page.
+            "https://", // Recognize HTTPS links supplied by the Assistant page.
+        ],
+    ),
+    ("crates/ui-egui/src/prefs.rs", &["https://github.com/rust-windowing/winit/issues/1881"]), // Third-party Winit platform limitation.
+    (
+        "crates/ui-egui/src/update.rs",
+        &[
+            "http://",             // Recognize HTTP links in Markdown.
+            "https://",            // Recognize HTTPS links in Markdown.
+            "https://github.com/", // Recognize existing bare issue and PR links in release-note Markdown; not a constructed destination.
+        ],
+    ),
+];
+
+fn web_url_literal(value: &str) -> bool {
+    value.contains("https://") || value.contains("http://")
+}
+
+fn shipped_url_literals(text: &str) -> Vec<(usize, String)> {
+    use proc_macro2::{TokenStream, TokenTree};
+    use syn::visit::{self, Visit};
+    use syn::{Attribute, Item, Lit, Meta, Token, punctuated::Punctuated};
+
+    fn test_only(attrs: &[Attribute]) -> bool {
+        fn requires_test(meta: &Meta) -> bool {
+            match meta {
+                Meta::Path(path) => path.is_ident("test"),
+                Meta::List(list) => {
+                    let Ok(items) = list.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated) else { return false };
+                    (list.path.is_ident("all") && items.iter().any(requires_test))
+                        || (list.path.is_ident("any") && !items.is_empty() && items.iter().all(requires_test))
                 }
-            } else if path != config && name.ends_with(".rs") && name != "tests.rs" && !name.ends_with("_tests.rs") {
-                let text = fs::read_to_string(&path).unwrap();
-                if text.contains(SLUG) {
-                    let mut found = SlugMatch::default();
-                    found.visit_file(&syn::parse_file(&text).unwrap());
-                    if found.0 {
-                        failures.push(path);
+                _ => false,
+            }
+        }
+        attrs.iter().any(|attr| {
+            attr.path().is_ident("test") || (attr.path().is_ident("cfg") && attr.parse_args::<Meta>().is_ok_and(|meta| requires_test(&meta)))
+        })
+    }
+
+    #[derive(Default)]
+    struct Urls(Vec<(usize, String)>);
+
+    impl Urls {
+        fn tokens(&mut self, tokens: TokenStream) {
+            for token in tokens {
+                match token {
+                    TokenTree::Group(group) => self.tokens(group.stream()),
+                    TokenTree::Literal(lit) => {
+                        if let Ok(lit) = syn::parse2::<Lit>(TokenStream::from(TokenTree::Literal(lit))) {
+                            self.visit_lit(&lit);
+                        }
                     }
+                    _ => {}
                 }
             }
         }
     }
 
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let config = root.join("crates/ui-egui/src/distribution.rs");
-    let mut failures = Vec::new();
-    for group in ["crates", "apps"] {
-        for entry in fs::read_dir(root.join(group)).unwrap() {
-            let src = entry.unwrap().path().join("src");
-            if src.is_dir() {
-                scan(&src, &config, &mut failures);
+    impl<'ast> Visit<'ast> for Urls {
+        fn visit_item(&mut self, item: &'ast Item) {
+            let attrs = match item {
+                Item::Const(i) => &i.attrs,
+                Item::Enum(i) => &i.attrs,
+                Item::ExternCrate(i) => &i.attrs,
+                Item::Fn(i) => &i.attrs,
+                Item::ForeignMod(i) => &i.attrs,
+                Item::Impl(i) => &i.attrs,
+                Item::Macro(i) => &i.attrs,
+                Item::Mod(i) => &i.attrs,
+                Item::Static(i) => &i.attrs,
+                Item::Struct(i) => &i.attrs,
+                Item::Trait(i) => &i.attrs,
+                Item::TraitAlias(i) => &i.attrs,
+                Item::Type(i) => &i.attrs,
+                Item::Union(i) => &i.attrs,
+                Item::Use(i) => &i.attrs,
+                _ => return visit::visit_item(self, item),
+            };
+            if !test_only(attrs) {
+                visit::visit_item(self, item);
+            }
+        }
+
+        fn visit_attribute(&mut self, attr: &'ast Attribute) {
+            if !attr.path().is_ident("doc") {
+                if let Meta::List(list) = &attr.meta {
+                    self.tokens(list.tokens.clone());
+                } else {
+                    visit::visit_attribute(self, attr);
+                }
+            }
+        }
+
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            self.tokens(mac.tokens.clone());
+        }
+
+        fn visit_lit(&mut self, lit: &'ast Lit) {
+            let value = match lit {
+                Lit::Str(lit) => lit.value(),
+                Lit::ByteStr(lit) => String::from_utf8_lossy(&lit.value()).into_owned(),
+                Lit::CStr(lit) => lit.value().to_string_lossy().into_owned(),
+                _ => return,
+            };
+            if web_url_literal(&value) {
+                self.0.push((lit.span().start().line, value));
             }
         }
     }
-    failures.sort();
-    assert!(failures.is_empty(), "Use distribution.rs instead of hard-coding {SLUG} in {failures:#?}");
+
+    let mut urls = Urls::default();
+    urls.visit_file(&syn::parse_file(text).unwrap());
+    urls.0
 }
 
 #[test]
@@ -90,6 +329,78 @@ fn distribution_download_url_uses_the_published_tag_and_asset_name() {
     assert_eq!(
         crate::distribution::asset_download_url("v0.10.0", "intcad-windows-x64.msi"),
         "https://github.com/intgral-ai/intcad-releases/releases/download/v0.10.0/intcad-windows-x64.msi",
+    );
+}
+
+#[test]
+fn source_url_literals_are_distribution_config_or_explicitly_allowed() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut remaining: Vec<_> = NON_DISTRIBUTION_URLS.iter().flat_map(|(file, values)| values.iter().map(move |value| (*file, *value))).collect();
+    let mut denied = Vec::new();
+    visit_shipped_sources(&root, |path, text| {
+        let mut literals = shipped_url_literals(text);
+        literals.sort();
+        for (line, literal) in literals {
+            if let Some(index) = remaining.iter().position(|(file, value)| path == Path::new(file) && literal == *value) {
+                remaining.swap_remove(index);
+            } else {
+                denied.push(format!("{}:{line}: {literal:?}", path.display()));
+            }
+        }
+    });
+    denied.sort();
+    assert!(denied.is_empty(), "Use distribution.rs for new distribution destinations. Unapproved URL literals:\n{}", denied.join("\n"));
+    assert!(remaining.is_empty(), "Remove stale URL exceptions: {remaining:#?}");
+}
+
+#[test]
+fn installer_metadata_uses_the_distribution_urls() {
+    use crate::distribution::{APPSTREAM_SCREENSHOT, ISSUE_TRACKER, PROJECT_HOME, PROJECT_README, RELEASE_HISTORY};
+
+    const LINUX: &str = "assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in";
+    const WINDOWS: &str = "assets/platforms/windows/solidcraft.wxs";
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    // These templates put one field per line. Ignore commented-out fields and require exactly
+    // one value per field so duplicating a correct entry cannot hide a stale destination.
+    fn pin(root: &Path, file: &str, fields: &[(&str, &str, &str)]) {
+        let source = std::fs::read_to_string(root.join(file)).unwrap();
+        let mut uncommented = String::new();
+        let mut rest = source.as_str();
+        while let Some((before, comment)) = rest.split_once("<!--") {
+            uncommented.push_str(before);
+            rest = comment.split_once("-->").expect("unterminated metadata comment").1;
+        }
+        uncommented.push_str(rest);
+        let mut url_lines: Vec<_> = uncommented.lines().map(str::trim).filter(|line| web_url_literal(line)).collect();
+        for (prefix, suffix, expected) in fields {
+            let actual: Vec<_> = url_lines.iter().filter_map(|line| line.strip_prefix(prefix).and_then(|line| line.strip_suffix(suffix))).collect();
+            assert_eq!(actual, [*expected], "{file}: {prefix} must match distribution.rs");
+            url_lines.retain(|line| !line.starts_with(prefix));
+        }
+        assert!(url_lines.is_empty(), "{file}: unpinned metadata URL lines: {url_lines:?}");
+    }
+
+    pin(
+        &root,
+        LINUX,
+        &[
+            (r#"<url type="homepage">"#, "</url>", PROJECT_HOME),
+            (r#"<url type="bugtracker">"#, "</url>", ISSUE_TRACKER),
+            (r#"<url type="help">"#, "</url>", PROJECT_README),
+            ("<image>", "</image>", APPSTREAM_SCREENSHOT),
+        ],
+    );
+    pin(
+        &root,
+        WINDOWS,
+        &[
+            (r#"<Wix xmlns=""#, "\"", "http://wixtoolset.org/schemas/v4/wxs"), // WiX XML namespace.
+            (r#"xmlns:ui=""#, "\">", "http://wixtoolset.org/schemas/v4/wxs/ui"), // WiX UI XML namespace.
+            (r#"<Property Id="ARPURLINFOABOUT" Value=""#, r#"" />"#, PROJECT_HOME),
+            (r#"<Property Id="ARPURLUPDATEINFO" Value=""#, r#"" />"#, RELEASE_HISTORY),
+            (r#"<Property Id="ARPHELPLINK" Value=""#, r#"" />"#, ISSUE_TRACKER),
+        ],
     );
 }
 

@@ -51,9 +51,8 @@ winreg = "0.56"
 solidcraft-engine = { workspace = true, features = ["bundled-render-library", "profile"] }
 # Parse the source guard structurally, including code after inline test modules.
 syn = { workspace = true, features = ["visit"] }
-# The catalog guard reads every UI source file as Rust tokens; already in the tree through
-# crates/derive and the workspace lockfile.
-proc-macro2 = { workspace = true }
+# The catalog guard reads Rust tokens, and the distribution guard reports source line numbers.
+proc-macro2 = { workspace = true, features = ["span-locations"] }
 
 # Pictures pasted into the agent chat; already in the tree, with the same features, through
 # egui-winit's clipboard.
