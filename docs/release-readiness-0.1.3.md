@@ -2547,3 +2547,20 @@ signing-approval link.
 superseded. It was cancelled (`completed cancelled`), which frees 18 concurrent jobs for #214's two
 remaining heavy jobs and for #239. The Login Agent was told not to restart it and to do one
 `merge origin/develop` with the two-file `--theirs` resolution after the new SHA is published.
+
+**Account injection covers Linux, macOS and Windows; FreeBSD is a measured gap, documented as a
+known limit.** The `inject-auto` step in `release.yml` is defined in the `linux` job and reused by
+`macos-build` and `windows`:
+
+```
+release.yml:206  &inject-staging-account (linux)
+release.yml:736  *inject-staging-account (macos-build)
+release.yml:883  *inject-staging-account (windows)
+```
+
+`flatpak`, `arch` and `snap` repack the injected Linux tarball, so the tuple travels with them.
+The `freebsd` job builds the desktop app and CLI in a FreeBSD VM and has no injection step, so its
+package ships without an account configuration and sign-in/paid operations fail closed there. This
+is not a gate failure (the gate requires content coverage, not a tuple on every target), so it is
+recorded honestly in the release notes' known limits instead of being added to the release as an
+untested code change.
