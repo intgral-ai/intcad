@@ -404,6 +404,11 @@ are configured. The release path after the gates is:
    workflow creates only a draft, rejects an absent asset digest, reads every asset and
    both checksum lists back, and verifies the signature.
 5. **Publication** of that verified draft is a separate owner decision and action.
+   Final policy (owner decision): multiple authorized approvers, **one approval is enough**.
+   `Huaiyuan-Jing` and `paipeline` may each approve independently, including approving a
+   workflow they triggered themselves; admin bypass stays disabled and no agent may approve
+   on a human's behalf. The verified-draft summary must still record the exception warning
+   when a one-reviewer environment was used.
 
 Nothing here authorizes merging the promotion PR, approving the signing job or
 publishing. The source repository stays public and CI stays on GitHub-hosted runners
