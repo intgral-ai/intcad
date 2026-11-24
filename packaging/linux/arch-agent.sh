@@ -34,12 +34,16 @@ if [ -d "$WORK/pkg/usr/lib/intcad/mastra-agent" ]; then
   exit 0
 fi
 
-# The tarball wraps its tree in one folder and holds `bin/`, `lib/`, `share/`; the Arch package
-# puts the first two under `usr/`. --strip-components=1 gives the tarball's own paths.
-tar -xzf "$TARBALL" -C "$WORK/src" --strip-components=1 \
-  --wildcards '*/lib/intcad/mastra-agent/*'
-SOURCE="$WORK/src/lib/intcad/mastra-agent"
-[ -f "$SOURCE/agent.json" ] || { echo "error: $TARBALL carries no lib/intcad/mastra-agent" >&2; exit 1; }
+# The tarball wraps its tree in one folder and holds the FHS tree with or without `usr/`; the
+# agent is under `lib/intcad` either way. --strip-components=1 gives the tarball's own paths.
+if tar -tzf "$TARBALL" | grep -q '/usr/lib/intcad/mastra-agent/'; then
+  AGENT_PATH=usr/lib/intcad/mastra-agent
+else
+  AGENT_PATH=lib/intcad/mastra-agent
+fi
+tar -xzf "$TARBALL" -C "$WORK/src" --strip-components=1 --wildcards "*/$AGENT_PATH/*"
+SOURCE="$WORK/src/$AGENT_PATH"
+[ -f "$SOURCE/agent.json" ] || { echo "error: $TARBALL carries no $AGENT_PATH" >&2; exit 1; }
 [ -f "$SOURCE/agent/main.mjs" ] || { echo "error: the agent folder has no agent/main.mjs" >&2; exit 1; }
 
 install -d "$WORK/pkg/usr/lib/intcad"

@@ -124,8 +124,20 @@ read-only step needs no repeated approval, as required.
 ## Release workflow evidence: what passed, in which run
 
 The runs below are the earlier ones, taken before this branch was rebased onto a `develop` that
-already had #219's FreeBSD fix; they are kept for the record. The run at this branch's head is the
-one that must be green as a whole; its verdict is recorded after the table.
+already had #219's FreeBSD fix; they are kept for the record.
+
+Run [45286396154](https://github.com/intgral-ai/intcad/actions/runs/45286396154) at `1dad3e3daf`
+recorded, from each package's own bytes:
+
+| Job | Result |
+|---|---|
+| Windows x64 | pass — MSI (read with `msiexec /a`), portable zip and standalone exe each `present`, `node`, five skills (context + four modelling); no marker, nothing unchecked |
+| macOS universal | pass — DMG `nodeTargets` both slices, five skills; the headless CLI archive carries no agent and is exempt |
+| Linux aarch64, Windows x86/arm64, Web, FreeBSD | pass — `native`, no agent |
+| Linux x86_64 | fail — the tarball wraps `usr/lib/...`, and the root check accepted only a wrapper around `lib`, so 13,555 agent files were reported as Nodes outside the agent. Fixed before the next run |
+
+That failure is why the run is a record of the platform formats, not the final verdict. The run at
+this branch's head is the one that must be green as a whole; its link is in the pull request.
 
 | Run | SHA | What it proves |
 |---|---|---|

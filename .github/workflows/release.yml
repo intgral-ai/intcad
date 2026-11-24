@@ -285,10 +285,10 @@ jobs:
           # And each job fails here if its own package does not carry what its distribution
           # promises: every inspected artifact must have a verdict, one of the app's own
           # artifacts must carry the agent, and its bytes must be complete.
+          sys.path.insert(0, 'scripts/ci')
+          import release_content as release
+          carries = []
           if os.environ.get('SOLIDCRAFT_DISTRIBUTION') == 'mastra-agent':
-              sys.path.insert(0, 'scripts/ci')
-              import release_content as release
-              carries = []
               inspected = {item.get('name') for item in data.get('checked') or []}
               for name in sorted(inspected - set(verdicts)):
                   carries.append(str(name) + ': inspected without an agent verdict')
@@ -314,6 +314,12 @@ jobs:
                                 if slice_ not in got]
                       if absent:
                           carries.append(name + ': no Node for ' + ', '.join(absent))
+          else:
+              # A native package proves it carries none: no runtime marker and nothing unread.
+              if data.get('markers') or data.get('agentMarkers'):
+                  carries.append('a native package carries a runtime marker or a Node')
+              if data.get('unchecked'):
+                  carries.append('an artifact not inspected')
               if data.get('markers') or data.get('agentMarkers'):
                   carries.append('a runtime marker or a Node outside the agent')
               if data.get('unchecked'):

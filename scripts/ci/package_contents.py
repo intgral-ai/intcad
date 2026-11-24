@@ -161,7 +161,7 @@ def empty_legacy_folder(name, names):
 def inside_agent(entry, stand_ins=(), roots=None):
     """Whether a marker is the built-in agent's own Node or a package inside its folder, at the
     place the app looks for it (`roots`)."""
-    parts = [part for part in str(entry.get("path", "")).replace("\\", "/").split("/") if part]
+    parts = _parts(entry.get("path", ""))
     return _agent_index(parts, roots) is not None and not forbidden_parts(entry, stand_ins)
 
 
@@ -219,7 +219,7 @@ AGENT_ROOTS = {
     "windows": ("mastra-agent",),
 }
 
-APP_WRAPPER = re.compile(r"^intcad-\d")
+APP_WRAPPER = re.compile(r"^intcad-\d+\.\d+\.\d+(-(linux|macos|windows|freebsd|netbsd|openbsd)-|$)")
 
 
 def platform_for(package_id):
@@ -326,11 +326,19 @@ def agent_report(names, target=None, roots=None):
 
     # Every place the agent folder exists, even empty, is its own agent: a folder with nothing in
     # it is incomplete, and two places may not split the required files between them.
-    with_files = {where[0][0] for where in map(place_of, files) if where is not None}
+    with_keys = {where[0] for where in map(place_of, files) if where is not None}
+    places = {key[0] for key in with_keys}
     for entry in parts:
         where = place_of(entry)
-        if where is not None and where[0][0] not in with_files:
-            found.setdefault((where[0][0], ""), set())
+        if where is None:
+            continue
+        key = where[0]
+        if key in with_keys:
+            continue
+        if key[1] == "" and key[0] in places:
+            # The agent folder's own entry; its files live in the slice folders.
+            continue
+        found.setdefault(key, set())
     for entry in files:
         where = place_of(entry)
         if where is None:
@@ -370,6 +378,8 @@ def _walk(root):
         for name in dirnames:
             names.append(str((Path(directory) / name).relative_to(root)) + "/")
         for name in filenames:
+            if (Path(directory) / name).is_symlink():
+                continue
             names.append(str((Path(directory) / name).relative_to(root)))
     return names
 
@@ -452,17 +462,20 @@ def names_rpm(path):
     if not tool:
         raise OSError("rpm is unavailable")
     # Tab-separated, so a name with spaces stays one field; the mode says what each entry is.
-    listing = _run([tool, "-qp", "--qf", "[%{FILENAMES}\t%{FILEMODES}\n]", str(path)])
+    listing = _run([tool, "-qp", "--qf", "[%{FILENAMES}\t%{FILEMODES}\t%{FILEFLAGS}\n]", str(path)])
     names = []
     for line in listing.splitlines():
-        name, _, mode = line.rpartition("\t")
+        name, _, rest = line.rpartition("\t")
+        mode, _, flags = rest.partition("\t")
         if not name or not mode.strip():
             continue
         try:
             kind = int(mode.strip())
+            attributes = int(flags.strip() or "0")
         except ValueError:
             continue
-        if stat.S_ISLNK(kind) or not (stat.S_ISDIR(kind) or stat.S_ISREG(kind)):
+        # RPMFILE_GHOST: the file is declared but carries no payload.
+        if attributes & 64 or stat.S_ISLNK(kind) or not (stat.S_ISDIR(kind) or stat.S_ISREG(kind)):
             continue
         name = name.lstrip("./")
         names.append(name + ("/" if stat.S_ISDIR(kind) and not name.endswith("/") else ""))
@@ -588,8 +601,10 @@ def names_msi(path):
             folder = line[len("Folder = "):].strip() == "+"
             names.append(current + ("/" if folder and not current.endswith("/") else ""))
             current = None
+    # 7-Zip can list the compound document's own streams; only paths are installed files.
+    names = [name for name in names if "/" in name or "\\" in name]
     if not names:
-        raise OSError("7z listed no files in the MSI")
+        raise OSError("7z listed no installed files in the MSI")
     return names
 
 

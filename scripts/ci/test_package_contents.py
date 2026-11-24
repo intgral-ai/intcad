@@ -277,6 +277,15 @@ class AgentContents(unittest.TestCase):
             self.assertEqual(data["agent"]["missing"],
                              ["aarch64-apple-darwin/mastra-agent/skills/modelling-skills/<skill>/SKILL.md"])
 
+    def test_a_deb_style_dot_prefix_is_the_packages_own(self):
+        # `dpkg-deb --fsys-tarfile` names members `./usr/...`; the `.` is not part of the path.
+        with tempfile.TemporaryDirectory() as directory:
+            names = ["./" + name for name in self.AGENT]
+            data = self.report(directory, ["usr/bin/intcad", *names])
+            self.assertTrue(data["agent"]["present"])
+            self.assertEqual(data["agent"]["missing"], [])
+            self.assertEqual(data["markers"], [])
+
     def test_a_linux_tarball_wrapper_around_usr_is_the_packages_own(self):
         # `intcad-<version>/usr/lib/...` is what the tarball carries, and the app finds it there.
         with tempfile.TemporaryDirectory() as directory:
