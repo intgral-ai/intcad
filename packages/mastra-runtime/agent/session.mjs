@@ -101,13 +101,20 @@ export function noteOf(request) {
 export const LANGUAGE = "Answer in the language the user writes in.";
 
 /**
+ * What a session without a project is told in place of the brief (INT-1508): the app hands a
+ * project over only when a chat starts, so the way to one is a New chat.
+ */
+export const NO_PROJECT =
+  "This chat has no project folder, so you cannot write the project's files. When the user asks to change project files (the Spec: requirements, design intent), tell them to create or open the project, then start a New chat.";
+
+/**
  * What the app hands a session over its own: the note, and the project folder with its brief, or
- * null. The instructions are the note, then `LANGUAGE`, then the brief.
+ * null. The instructions are the note, then `LANGUAGE`, then the brief, or `NO_PROJECT`.
  */
 export function hostOf(request) {
   const note = noteOf(request);
   const project = projectRoot(request?._meta?.intcad?.project);
-  const brief = project ? projectBrief(project) : "";
+  const brief = project ? projectBrief(project) : NO_PROJECT;
   return { project, instructions: [note, LANGUAGE, brief].filter(Boolean).join("\n\n") };
 }
 
