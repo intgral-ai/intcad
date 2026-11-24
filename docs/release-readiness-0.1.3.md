@@ -2702,3 +2702,29 @@ affected mode, so its own implementation is validated; it is deliberately **not*
 because merging it now would move `develop` and invalidate #214's nearly finished full run
 (19/38, archive done, shards running). Merge order stays **#214 → #224 → #239 → integration**, and
 #239 will do one `merge develop` + short re-run at its turn.
+
+## 19. Scope addition (#238) and a release-blocking defect found in the integration branch
+
+**Owner decision (with PP): include #238.** `fix/int-1508-spec-visible`, head `40ba7e230a`, three
+commits (new projects put their Spec at the root; a chat without a project says to start a New
+chat), base `develop`, `ci` success, `CLEAN`/`MERGEABLE`. Rehearsed in the full order:
+
+```
+develop + #214 + #224 (two-file --theirs) + #238 + #239 + integration   → all clean
+```
+
+So the merge order becomes **#214 → #224 → #238 → #239 → integration**, one extra short
+(affected-mode) CI cycle.
+
+**The integration branch fails `xtask skills` (release-blocking for its own CI).** Running the
+gate's repository check set on the composed tree:
+
+```
+licences --check OK   i18n --check OK   lists OK   skills FAIL
+  error: skills/solidcraft-crash-safety/SKILL.md: 3730 characters; a skill stays under 3600: split it
+```
+
+Byte counts per ref: `develop`, `#214`, `#224` = 3589 (inside the limit); the integration branch
+= 3730. The repository checks run `xtask skills`, so merging the integration branch as it stands
+would turn the required `ci` red. The Login/Build side was asked to trim or split the skill below
+3600 and to re-run `cargo run -p xtask -- skills` before pushing the final head.
