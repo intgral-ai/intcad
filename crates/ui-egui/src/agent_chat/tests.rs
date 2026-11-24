@@ -8246,6 +8246,7 @@ fn agent_login_refresh_returns_to_unverified_discovery() {
 fn a_discovery_whose_worker_gone_finishes_with_nothing_found() {
     let (mut app, _keys, ctx) = app_with_builtin();
     app.preferences.agent_last = "claude".into();
+    app.preferences.agent_connect_at_start = true;
     app.agent_chat.connect_at_start = true;
     let (tx, rx) = channel();
     app.agent_chat.detecting = Some(rx);
