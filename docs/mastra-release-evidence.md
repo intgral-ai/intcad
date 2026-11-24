@@ -155,6 +155,19 @@ read every package's own `contents.json`:
 The three repacks were proved from their own bytes for the first time in this run; the Flatpak
 failure was in reading the bundle, not in what the bundle carries.
 
+Run [45318917333](https://github.com/intgral-ai/intcad/actions/runs/45318917333) at `6717ef201c`
+is green as a whole, including the Flatpak jobs, and the release gate's own decision
+(`release_content.problems`) over its downloaded `build.json`/`contents.json` artifacts returns no
+problems for all fourteen package identities:
+
+| Identity | Recorded |
+|---|---|
+| `release-linux-x86_64` | `mastra-agent`, four artifacts, agent present with Node and five skills, nothing unchecked |
+| `release-windows-x64` | `mastra-agent`, MSI + portable zip + exe, all three present with five skills |
+| `release-macos` | `mastra-agent`, DMG with a Node for both slices and five skills; the CLI archive exempt |
+| `release-flatpak-x86_64`, `release-arch-x86_64`, `release-snap-x86_64` | `mastra-agent` from each repack's own bytes; the Flatpak was installed from the bundle after removing the smoke's deployment |
+| every other identity | `native`, no agent, no marker, nothing unchecked |
+
 | Run | SHA | What it proves |
 |---|---|---|
 | [45112837415](https://github.com/intgral-ai/intcad/actions/runs/45112837415) | `77914e22` | Linux x86_64 (deb, rpm, AppImage, tar.gz) and macOS universal carry the agent whole; Linux aarch64, Windows x86/arm64, web are `native`. It also claimed Flatpak/Arch/Snap x86_64 carried it; that was the recorder reading the source tarball — the Arch package did not, which this branch now fixes |
