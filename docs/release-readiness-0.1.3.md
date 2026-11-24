@@ -2846,3 +2846,23 @@ forward, so the tag still names an ancestor commit, and the publisher's `require
 compares only `scripts`, `.github/workflows`, `packaging` and `tools`, not the generated licence
 file. Nothing in the tag-gate path depends on that file being byte-identical to the generator's
 next output.
+
+## 22. The promotion rebase is rehearsed end-to-end on the full merged base
+
+Rehearsed on `develop 085675557d + #214 + #224 (--theirs) + #238 + #239 + integration`, i.e. the
+content the final `develop` will have, with the exact commands to be used:
+
+```
+git switch -c release/v0.1.3 <final-develop>
+git cherry-pick -x c929f797e1                 → clean (version 0.1.3, notes, folded format 51)
+cargo metadata --format-version 1             → Cargo.lock: exactly 2 lines
+                                                 (solidcraft-account-native, solidcraft-suspend-clock 0.1.2 → 0.1.3)
+git commit --amend --no-edit                  → lock is inside the version commit
+git cherry-pick -x fa6582f8c9 cc4f68fdad      → both clean (widened notes, FreeBSD limit)
+cargo metadata --locked                       → OK
+```
+
+On that tree: `version = "0.1.3"`, `crates/doc/src/format/pending/` holds only README, three commits
+above the merged base, `test_gate.py` / `test_release_content.py` (skipped=11) /
+`test_release_candidate.py` all pass, and `scripts/test-format-pending.sh` reports the next fold is
+v52. The real rebase is therefore a mechanical repetition of a verified sequence, not a novel merge.
