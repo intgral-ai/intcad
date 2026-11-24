@@ -1347,7 +1347,19 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   with the #221 head in the Assistant host, bridge and Windows smoke, and with the #214 local
   patch stack in the bare-system Linux smoke and Windows smoke. These are integration
   conflicts, not license to discard either branch's behaviour. Recheck on the reviewed heads
-  and run the affected smokes on the resolved integration SHA. A new simulation at local
+  and run the affected smokes on the resolved integration SHA.
+- **#224 Windows smoke, measured on 2026-11-24 (head `6b0da01b59`).** The resize smoke now
+  records the delay instead of dying on it: `WM_NCHITTEST` at `(1,360)` missed the 2 s window
+  and **answered after 3918 ms on the second attempt**; every later resize assertion passed
+  (drag height +80, maximize with the screen edge as client, restore). The same job then
+  failed in the Assistant smoke: after the page grew to `536,172–915,633`, its native edges
+  differed from `agent_chat:web` by `0, 0, 0, 7 px` and the loop ended with
+  `control read timed out during ui.inspect`.
+  **Regression evidence:** the green `develop` Windows job (`138141577913`, run 45299000127)
+  shows `PASS: assistant web view`, with **zero** "native page edges differ" lines and no
+  hit-test timeout. So the ~4 s UI-thread delay and the 7 px bottom mismatch are introduced
+  in #224's range, not load noise. Both are reported to the login owner; the harness change
+  records them rather than hiding them. A new simulation at local
   `b002647acb` and `ee17261b82` still finds those conflicts with `0519d3aba6`, but no conflict
   when either is tested against `6032271178` or when the two are tested against each other.
 - **macOS — NOT TESTED.** Follow the [Mac acceptance runbook](release-acceptance-macos-0.1.3.md)
