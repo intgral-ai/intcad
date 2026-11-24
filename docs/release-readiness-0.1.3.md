@@ -2786,3 +2786,33 @@ push** on the promoted `main` commit is the formal handoff-producing gate, and r
 acceptance scope (per-package account check, Gate B staging, macOS NOT TESTED). The required
 `Changes a default: no` line is preserved. A body edit does not restart CI (`ci.yml` triggers on
 opened/synchronize/reopened only).
+
+## 21. #214's gate found a real regression — a dropped policy anchor — and it is fixed
+
+Run 45488557706 finished **failure** after 2h24m, and this time it was a real test failure, not
+infrastructure: 13,718 tests ran, 13,687 passed, 30 were the accepted known-failing set, and one
+was a **REGRESSION not on the list**:
+
+```
+xtask::bin/xtask::licences::tests::distribution_policy_guidance_is_narrow_and_router_bounded
+```
+
+Reproduced locally on the merged tree; the assertion is precise:
+
+```
+skills/solidcraft-packaging/SKILL.md: missing coverage/deferred-acceptance anchor npm/Node
+```
+
+The skill was shortened (to satisfy the 3600-character skill limit) and lost the literal
+`npm/Node` that the licences test requires as a coverage anchor. Fix kept inside the existing
+sentence — `Cargo is not npm/Node or rights clearance` — and the file is now **3579 bytes**.
+
+```
+cargo test -p xtask --bin xtask distribution_policy_guidance_is_narrow_and_router_bounded  → 1 passed
+cargo run -p xtask -- skills        → skills: AGENTS.md and 17 skills are consistent
+cargo run -p xtask -- licences --check → OK
+```
+
+Pushed as `e65d647201`; new run **45511735739**. The lesson for the remaining skill edits (the
+integration branch's crash-safety trim): shortening must not drop policy anchors that
+`xtask licences` and `xtask skills` assert.
