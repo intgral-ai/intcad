@@ -2827,3 +2827,13 @@ solidcore#2310, mesh-based edge lookups "not taken", and two fixed-seed seam cas
 the same list, and the one failure that was **not** on the list (the dropped `npm/Node` anchor) is
 fixed in `e65d647201`. The release report should state this set explicitly rather than call the
 suite "green".
+
+**The whole xtask test binary passes on the fixed tree.** The failing area was `xtask`'s licence
+tests; after restoring the `npm/Node` anchor:
+
+```
+cargo test -p xtask --bin xtask  →  132 passed; 0 failed; 0 ignored  (18.16 s)
+```
+
+So the regression that cost the previous gate run is gone at the binary level, not only in the one
+assertion that failed.
