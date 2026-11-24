@@ -538,8 +538,12 @@ def protection_digest(environment, policies):
     rules = [rule for rule in environment.get("protection_rules") or []
              if rule.get("type") == "required_reviewers"]
     stable = {
-        "reviewers": sorted(((row.get("reviewer") or {}).get("login")
-                             or (row.get("reviewer") or {}).get("slug") or "")
+        # Type and immutable id, not only the display name: a team with the same slug as a
+        # user must not produce the same digest.
+        "reviewers": sorted((str(row.get("type")),
+                             str((row.get("reviewer") or {}).get("id")),
+                             str((row.get("reviewer") or {}).get("login")
+                                 or (row.get("reviewer") or {}).get("slug") or ""))
                             for row in ((rules[0].get("reviewers") if rules else None) or [])),
         "preventSelfReview": rules[0].get("prevent_self_review") if rules else None,
         "canAdminsBypass": environment.get("can_admins_bypass"),
@@ -810,7 +814,10 @@ def draft_release(env, work, candidate):
             review_note = "independent reviewer required; self-review prevented"
         review_note += f" ({count} authorized reviewer{'s' if count != 1 else ''})"
         if count == 1:
-            review_note += "; only one authorized reviewer, so approval is not independent review"
+            if approval["mode"] == "single-approval":
+                review_note += "; only one authorized reviewer, so approval is not independent review"
+            else:
+                review_note += "; self-review is prevented, so a different reviewer must approve"
         print(f"### Verified draft {tag}\n"
               f"\n- Approval: `{approval['mode']}` ({review_note})"
               f"\n- Dispatch actor: `{approval['actor']}`"

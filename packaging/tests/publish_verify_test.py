@@ -392,7 +392,7 @@ class Publish(unittest.TestCase):
 
     def test_environment_requires_authorized_reviewers_and_only_exact_main_branch(self):
         reviewers = dict(type="required_reviewers", prevent_self_review=True,
-                         reviewers=[{"type": "User", "reviewer": {"login": "owner"}}])
+                         reviewers=[{"type": "User", "reviewer": {"login": "owner", "id": 61653609}}])
         env = dict(name="release-signing", protection_rules=[reviewers], can_admins_bypass=False,
                    deployment_branch_policy=dict(protected_branches=False, custom_branch_policies=True))
         policies = [dict(name="main", type="branch")]
@@ -401,7 +401,7 @@ class Publish(unittest.TestCase):
         two = env | {"protection_rules": [reviewers | {
             "prevent_self_review": False,
             "reviewers": [{"type": "User", "reviewer": {"login": "owner"}},
-                          {"type": "User", "reviewer": {"login": "second"}}]}]}
+                          {"type": "User", "reviewer": {"login": "second", "id": 4242}}]}]}
         self.assertEqual(release.verify_environment(two, policies), "single-approval")
         # A single authorized reviewer is the same policy, not an exception.
         one = env | {"protection_rules": [reviewers | {"prevent_self_review": False}]}
@@ -414,11 +414,12 @@ class Publish(unittest.TestCase):
         # An absent bypass flag cannot be verified through the API: fail closed.
         with self.assertRaisesRegex(ValueError, "absent field cannot be verified"):
             release.verify_environment({k: v for k, v in env.items() if k != "can_admins_bypass"}, policies)
-        # A bypass actor in a protection rule is a bypass even when the flag is absent.
-        with self.assertRaisesRegex(ValueError, "bypass actors"):
-            release.verify_environment(
-                {k: v for k, v in env.items() if k != "can_admins_bypass"}
-                | {"protection_rules": [reviewers | {"bypass_actors": [{"id": 7, "type": "User"}]}]}, policies)
+        # A bypass actor in a protection rule is a bypass even when the flag is absent,
+        # and even when the flag explicitly says false.
+        for base in (env, {k: v for k, v in env.items() if k != "can_admins_bypass"}):
+            with self.assertRaisesRegex(ValueError, "bypass actors"):
+                release.verify_environment(
+                    base | {"protection_rules": [reviewers | {"bypass_actors": [{"id": 7, "type": "User"}]}]}, policies)
         for metadata, rules in [
             (env | {"protection_rules": []}, policies),
             (env | {"protection_rules": [reviewers | {"reviewers": []}]}, policies),
@@ -429,6 +430,17 @@ class Publish(unittest.TestCase):
         ]:
             with self.assertRaises(ValueError):
                 release.verify_environment(metadata, rules)
+
+    def test_protection_digest_includes_reviewer_type_and_id(self):
+        policies = [dict(name="main", type="branch")]
+        user_rule = dict(type="required_reviewers", prevent_self_review=False,
+                         reviewers=[dict(type="User", reviewer=dict(login="same", id=11))])
+        team_rule = dict(type="required_reviewers", prevent_self_review=False,
+                         reviewers=[dict(type="Team", reviewer=dict(slug="same", id=11))])
+        base = dict(name="release-signing", can_admins_bypass=False, protection_rules=[user_rule],
+                    deployment_branch_policy=dict(protected_branches=False, custom_branch_policies=True))
+        team = base | {"protection_rules": [team_rule]}
+        self.assertNotEqual(release.protection_digest(base, policies), release.protection_digest(team, policies))
 
     def test_approval_record_must_match_the_live_protections(self):
         record = dict(mode="single-approval", protection="sha256:" + "a" * 64)
