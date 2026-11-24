@@ -477,8 +477,10 @@ the promotion PR can then be opened against `main` to run the formal gate.
 merges were clean (no conflicts beyond the ones already resolved on the #229 stack). On that
 tree: `scripts/test-format-pending.sh` OK, `aliases/checksums/nightly` packaging tests OK,
 `test_gate`/`test_release_content`/`test_package_contents` OK, workspace version `0.1.3`,
-`docs/release-notes-0.1.3.md` present and zero pending format files. #224 is not in this dry
-run; it is the remaining integration.
+`docs/release-notes-0.1.3.md` present and zero pending format files.
+`cargo check -p solidcraft --profile ci` on that composed tree: **exit 0**
+(`Finished ci profile … in 1m 51s`). #224 is not in this dry run; it is the remaining
+integration.
 
 ## 9. Acceptance matrix for the candidate (not yet run)
 
