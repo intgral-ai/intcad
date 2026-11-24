@@ -652,7 +652,7 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                 self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", text)
 
     def script(self):
-        match = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", self.text())
+        match = re.search(r"(?ms)^          python3 -I - <<'PY'\n(.*?)^          PY$", self.text())
         self.assertIsNotNone(match, "release-gate needs a source-bound execution/evidence aggregate")
         return "\n".join(line[10:] for line in match[1].splitlines()) + "\n"
 

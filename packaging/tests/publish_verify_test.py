@@ -265,7 +265,7 @@ class Publish(unittest.TestCase):
         git("config", "user.email", "fixture@example.com")
         git("config", "user.name", "fixture")
         for path in ("scripts/ci/release_handoff.py", ".github/workflows/release-gate.yml",
-                     "packaging/linux/package.sh"):
+                     "packaging/linux/package.sh", "tools/console.py"):
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("frozen\n")
@@ -286,6 +286,12 @@ class Publish(unittest.TestCase):
         git("commit", "-qm", "v3")
         with self.assertRaisesRegex(ValueError, "packaging: the release candidate changed"):
             release.require_producers(head, str(root))
+        before_tools = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+        (root / "tools/fixture.py").write_text("candidate\n")
+        git("add", "-A")
+        git("commit", "-qm", "v4")
+        with self.assertRaisesRegex(ValueError, "tools: the release candidate changed"):
+            release.require_producers(before_tools, str(root))
 
     def test_notes_must_be_the_reviewed_release_notes_at_the_frozen_sha(self):
         import subprocess
@@ -301,6 +307,10 @@ class Publish(unittest.TestCase):
         (root / "docs").mkdir()
         (root / "docs/release-notes-0.1.3.md").write_text("Intcad 0.1.3 notes\n")
         (root / "docs/internal.md").write_text("internal plan\n")
+        # Committed on purpose: a substring rule would accept these for 0.1.3.
+        (root / "docs/release-notes-0.1.30.md").write_text("other version\n")
+        (root / "docs/release-notes").mkdir()
+        (root / "docs/release-notes/internal-0.1.3.md").write_text("internal plan\n")
         git("add", "-A")
         git("commit", "-qm", "notes")
         sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
