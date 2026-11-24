@@ -2175,3 +2175,27 @@ promotion run 45439992207 (release/v0.1.3 c929f797): 38 jobs, 37 completed, 0 ba
 The critical path is therefore #214: the shards must finish before GitHub accepts
 `gh run rerun --failed`, and that job then re-executes the ~2 hour measurement. #224's affected
 CI can finish in the meantime but cannot merge until #214 lands and it rebases.
+
+**The endgame tree is already proven: all five PRs plus both promotion commits are consistent.**
+On the current-head chain (`#224 dc1f8f8d59` + `#227 e62751e287` + `#233 4d14460262` +
+`#235 e4edd2ffdf` + `#234 a48a61dc62`) the two promotion commits cherry-pick with no conflict:
+
+```
+c929f797e1  Release: 0.1.3 version, release notes and folded format 51   CLEAN
+fa6582f8c9  Release: the notes describe the CLI paid path …             CLEAN
+version = "0.1.3"      crates/doc/src/format/pending/ -> README.md only
+```
+
+On that composed tree:
+
+```
+scripts/ci/test_gate.py             OK
+scripts/ci/test_release_content.py  OK (skipped=11)
+scripts/ci/test_package_contents.py OK
+scripts/test-format-pending.sh      ok: … fold into v52, a drawing's into v2
+packaging/tests                     152 tests, 0 failures, 0 errors
+```
+
+So the last step of the release — rebasing `release/v0.1.3` onto the final `develop` — is a
+no-conflict operation, and the promoted tree is internally consistent before the formal gate
+starts. What remains unfrozen is nothing but the CI time and the batching decision.
