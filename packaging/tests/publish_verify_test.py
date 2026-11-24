@@ -411,9 +411,14 @@ class Publish(unittest.TestCase):
             "prevent_self_review": False,
             "reviewers": [{"type": "Team", "reviewer": {"slug": "release-leads"}}]}]}
         self.assertEqual(release.verify_environment(team, policies), "single-approval")
-        # Some plans omit the bypass flag; only an explicit true is a bypass.
-        self.assertEqual(release.verify_environment({k: v for k, v in env.items() if k != "can_admins_bypass"}, policies),
-                         "independent")
+        # An absent bypass flag cannot be verified through the API: fail closed.
+        with self.assertRaisesRegex(ValueError, "absent field cannot be verified"):
+            release.verify_environment({k: v for k, v in env.items() if k != "can_admins_bypass"}, policies)
+        # A bypass actor in a protection rule is a bypass even when the flag is absent.
+        with self.assertRaisesRegex(ValueError, "bypass actors"):
+            release.verify_environment(
+                {k: v for k, v in env.items() if k != "can_admins_bypass"}
+                | {"protection_rules": [reviewers | {"bypass_actors": [{"id": 7, "type": "User"}]}]}, policies)
         for metadata, rules in [
             (env | {"protection_rules": []}, policies),
             (env | {"protection_rules": [reviewers | {"reviewers": []}]}, policies),
@@ -424,6 +429,16 @@ class Publish(unittest.TestCase):
         ]:
             with self.assertRaises(ValueError):
                 release.verify_environment(metadata, rules)
+
+    def test_approval_record_must_match_the_live_protections(self):
+        record = dict(mode="single-approval", protection="sha256:" + "a" * 64)
+        release.verify_approval_unchanged(record, dict(mode="single-approval", protection=record["protection"]))
+        with self.assertRaisesRegex(ValueError, "mode changed"):
+            release.verify_approval_unchanged(record, dict(mode="independent", protection=record["protection"]))
+        with self.assertRaisesRegex(ValueError, "reviewers or protections changed"):
+            release.verify_approval_unchanged(record, dict(mode="single-approval", protection="sha256:" + "b" * 64))
+        with self.assertRaisesRegex(ValueError, "invalid approval record"):
+            release.verify_approval_unchanged(dict(record | {"mode": "single-owner"}), record)
 
     def test_present_but_unlisted_package_and_missing_alias_are_refused(self):
         extra = self.artifacts / "release-macos" / "notes.txt"

@@ -515,13 +515,17 @@ def verify_environment(environment, policies):
     self_review = rules[0].get("prevent_self_review") if rules else None
     require(isinstance(self_review, bool), "release-signing must state prevent_self_review")
     mode = "independent" if self_review is True else "single-approval"
-    require(environment.get("name") == "release-signing" and len(rules) == 1
-            and bool(reviewers)
-            # GitHub may omit the field on some plans. Only an explicit `true` is a bypass;
-            # an absent field is reported as a warning and checked in the UI.
-            and environment.get("can_admins_bypass") is not True,
-            "release-signing must require at least one authorized reviewer and must not "
-            "allow admin bypass")
+    # Bypass has two independent expressions: the flag and per-rule bypass actors.
+    # REST reports the flag but not always the actors, so an absent flag is not treated
+    # as "no bypass": it fails closed with a message the owner can act on.
+    bypass_actors = [actor for rule in environment.get("protection_rules") or []
+                     for actor in rule.get("bypass_actors") or []]
+    require(not bypass_actors, "release-signing protection rules carry bypass actors")
+    require(environment.get("can_admins_bypass") is False,
+            "release-signing must report can_admins_bypass=false; an absent field cannot be "
+            "verified through the API, so this fails closed")
+    require(environment.get("name") == "release-signing" and len(rules) == 1 and bool(reviewers),
+            "release-signing must require at least one authorized reviewer")
     policy = environment.get("deployment_branch_policy") or {}
     require(policy.get("protected_branches") is False and policy.get("custom_branch_policies") is True
             and [(row.get("name"), row.get("type")) for row in policies] == [("main", "branch")],
@@ -529,15 +533,37 @@ def verify_environment(environment, policies):
     return mode
 
 
+def protection_digest(environment, policies):
+    """A stable digest of what the environment enforces, for the pre-draft recheck."""
+    rules = [rule for rule in environment.get("protection_rules") or []
+             if rule.get("type") == "required_reviewers"]
+    stable = {
+        "reviewers": sorted(((row.get("reviewer") or {}).get("login")
+                             or (row.get("reviewer") or {}).get("slug") or "")
+                            for row in ((rules[0].get("reviewers") if rules else None) or [])),
+        "preventSelfReview": rules[0].get("prevent_self_review") if rules else None,
+        "canAdminsBypass": environment.get("can_admins_bypass"),
+        "bypassActors": sorted(str(actor.get("id")) for rule in environment.get("protection_rules") or []
+                               for actor in rule.get("bypass_actors") or []),
+        "policies": sorted((row.get("name"), row.get("type")) for row in policies),
+    }
+    return sha256(json.dumps(stable, sort_keys=True).encode())
+
+
+def verify_approval_unchanged(record, live):
+    """The approval that is recorded must still describe the live environment."""
+    require(record.get("mode") in ("independent", "single-approval"), "invalid approval record")
+    require(record.get("mode") == live.get("mode"), "approval mode changed after admission")
+    require(record.get("protection") == live.get("protection"),
+            "release-signing reviewers or protections changed after admission")
+
+
 def check_environment(env):
     repo = env["GITHUB_REPOSITORY"]
     endpoint = f"repos/{repo}/environments/release-signing"
     environment = api(endpoint)
-    if "can_admins_bypass" not in environment:
-        print("::warning::release-signing omitted can_admins_bypass; confirm in the UI that "
-              "administrators cannot bypass its protection rules", flush=True)
-    mode = verify_environment(environment, [row for page in pages(f"{endpoint}/deployment-branch-policies")
-                                            for row in page["branch_policies"]])
+    policies = [row for page in pages(f"{endpoint}/deployment-branch-policies") for row in page["branch_policies"]]
+    mode = verify_environment(environment, policies)
     reviewers = [((row.get("reviewer") or {}).get("login") or (row.get("reviewer") or {}).get("slug"))
                  for rule in environment.get("protection_rules") or []
                  if rule.get("type") == "required_reviewers"
@@ -550,7 +576,8 @@ def check_environment(env):
         if len(reviewers) == 1:
             print("::warning::release-signing has one authorized reviewer; approval is a "
                   "checkpoint, not independent review", flush=True)
-    return {"mode": mode, "reviewers": reviewers, "actor": env.get("GITHUB_ACTOR") or ""}
+    return {"mode": mode, "reviewers": reviewers, "actor": env.get("GITHUB_ACTOR") or "",
+            "protection": protection_digest(environment, policies)}
 
 
 def live_execution(repo, repo_id, run, attempt):
@@ -727,9 +754,7 @@ def draft_release(env, work, candidate):
     approval_file = work / "approval.json"
     require(approval_file.is_file(), "no approval record from the environment check")
     approval = parse_json(approval_file.read_bytes())
-    require(approval.get("mode") in ("independent", "single-approval"), "invalid approval record")
-    require(check_environment(env)["mode"] == approval["mode"],
-            "release-signing approval mode changed after admission")
+    verify_approval_unchanged(approval, check_environment(env))
     out = work / "out"
     notes = (work / "notes.md").read_bytes()
     require(sha256(notes) == candidate["notesSha256"], "frozen notes changed")
@@ -775,14 +800,17 @@ def draft_release(env, work, candidate):
     verify_downloaded(out, downloaded)
     verify_signature(downloaded, tag, key)
     with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+        count = len(approval["reviewers"])
         if approval["mode"] == "single-approval":
-            review_note = ("single-approval policy: any one authorized reviewer ("
+            review_note = ("single-approval policy: any one of "
                            + ", ".join(str(r) for r in approval["reviewers"])
-                           + ") may approve, including the dispatcher's shared identity; "
-                             "approval is a checkpoint, not independent review"
-                           + (" (only one authorized reviewer)" if len(approval["reviewers"]) == 1 else ""))
+                           + " may approve, including the dispatcher's shared identity; "
+                             "approval is a checkpoint, not independent review")
         else:
             review_note = "independent reviewer required; self-review prevented"
+        review_note += f" ({count} authorized reviewer{'s' if count != 1 else ''})"
+        if count == 1:
+            review_note += "; only one authorized reviewer, so approval is not independent review"
         print(f"### Verified draft {tag}\n"
               f"\n- Approval: `{approval['mode']}` ({review_note})"
               f"\n- Dispatch actor: `{approval['actor']}`"
