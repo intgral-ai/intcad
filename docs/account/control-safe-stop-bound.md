@@ -23,7 +23,7 @@ that every request on a listed entry fits. Review keeps its separate
 
 The measurement record proposes 300 s, or 3.11× the 96.5 s load-stressed
 proxy. The installed 280 s budget is 2.90× the same proxy. It is the
-largest round value that fits one `AUTHORIZATION_TTL_SECONDS = 300` lease
+largest round value that fits one `MAX_ABSOLUTE_GRANT_LEASE = 300 s` lease
 with 20 s set aside for admission transit. The client's `remaining_seconds`
 already reflects round-trip time. The margin is built into the declared
 bound, not granted at runtime: `remaining >= bound` remains strict.
