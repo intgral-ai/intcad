@@ -2146,3 +2146,14 @@ chat/harness/review/dfm/mcp/control returned 200 with `remaining=299`, and a 0.1
 refused `403 VERSION_UNSUPPORTED`. Together with the `staging` environment policy above, the
 Gate B prerequisites are satisfied; what remains is the staging package run itself, which can
 only be dispatched from `main` after the promotion.
+
+**Option put to the owner: batch the four paid PRs into one integration PR.** With a full CI
+measured at ~2 hours, landing #227 → #233 → #235 → #234 as four separate merges costs about
+8 hours more than necessary. Their trees are already measured to merge cleanly and to compile
+together (above), and each PR has its own review. A single `integration/int1497-paid-authority`
+branch (develop + those four heads, one PR, one full CI, one merge) would cost one cycle and
+still be judged by the same gate; the four original PRs would be closed with a pointer to the
+integration PR. That is a process change, so it stays a proposal until the Build/owner side
+answers; the release manager will not collapse reviews on its own. #214 and #224 stay as separate
+merges either way, because they are the base of that tree and #224 carries the account wiring the
+gate depends on.
