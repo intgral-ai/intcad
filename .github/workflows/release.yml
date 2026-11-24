@@ -5,7 +5,15 @@ name: Package builds (nonpublishing)
 on:
   workflow_dispatch:
   workflow_call:
+    outputs:
+      distribution:
+        description: "Distribution declared by this checkout's package workflow"
+        value: ${{ jobs.version.outputs.distribution }}
     inputs:
+      gate_bound:
+        description: "Namespace packages by caller attempt for release-gate handoff"
+        type: boolean
+        default: false
       beta_three_platforms:
         description: "Build only the Beta Linux x86_64, macOS universal and Windows x64 packages"
         type: boolean
@@ -38,6 +46,7 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       date: ${{ steps.v.outputs.date }}
+      distribution: ${{ steps.v.outputs.distribution }}
     steps:
       - &checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +62,7 @@ jobs:
             exit 1
           fi
           { echo "version=$VERSION"; echo "date=$(date -u +%Y-%m-%d)"; } >>"$GITHUB_OUTPUT"
+          echo "distribution=$SOLIDCRAFT_DISTRIBUTION" >>"$GITHUB_OUTPUT"
 
   icons:
     needs: version
@@ -71,7 +81,7 @@ jobs:
           make_icons target/release/intcad-cli icons
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: icons-${{ github.sha }}
+          name: icons-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: icons
           if-no-files-found: error
 
@@ -159,7 +169,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: installed-check-linux-${{ matrix.arch }}
+          name: installed-check-linux-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: ${{ runner.temp }}/installed-check
           if-no-files-found: warn
       # Shared *build metadata* only: this is neither #15 inventory nor installed
@@ -219,13 +229,13 @@ jobs:
       - &upload-package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ env.PACKAGE_ID }}
+          name: ${{ env.PACKAGE_ID }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: dist/release/*
           if-no-files-found: error
       - &upload-evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: package-evidence-${{ env.PACKAGE_ID }}
+          name: package-evidence-${{ env.PACKAGE_ID }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: |
             dist/release/build.json
             dist/release/contents.json
@@ -253,7 +263,7 @@ jobs:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release-linux-${{ matrix.arch }}
+          name: release-linux-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: dist/linux
       - name: Install flatpak-builder and smoke tools
         run: |
@@ -285,7 +295,7 @@ jobs:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release-linux-${{ matrix.arch }}
+          name: release-linux-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: dist/linux
       - name: Install libarchive (bsdtar) for .PKGINFO/.MTREE
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libarchive-tools
@@ -364,7 +374,7 @@ jobs:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release-linux-${{ matrix.arch }}
+          name: release-linux-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: dist/linux
       - name: Install snapcraft
         run: |
@@ -420,7 +430,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: snap-offline-evidence-${{ matrix.arch }}
+          name: snap-offline-evidence-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: ${{ runner.temp }}/snap-offline
           if-no-files-found: warn
       - *package-evidence
@@ -495,7 +505,7 @@ jobs:
         run: packaging/macos/package.sh --build-only ${{ matrix.target }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: macos-bin-${{ matrix.arch }}-${{ github.sha }}
+          name: macos-bin-${{ matrix.arch }}-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: |
             target/${{ matrix.target }}/release/intcad
             target/${{ matrix.target }}/release/intcad-cli
@@ -514,11 +524,11 @@ jobs:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: macos-bin-aarch64-${{ github.sha }}
+          name: macos-bin-aarch64-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: target/aarch64-apple-darwin/release
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: macos-bin-x86_64-${{ github.sha }}
+          name: macos-bin-x86_64-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: target/x86_64-apple-darwin/release
       - name: Join, package and mount-check (no credential signing)
         run: |
@@ -542,7 +552,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: installed-check-macos
+          name: installed-check-macos${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: ${{ runner.temp }}/installed-check
           if-no-files-found: warn
       - *package-evidence
@@ -568,7 +578,7 @@ jobs:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: icons-${{ github.sha }}
+          name: icons-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: icons
       - uses: dtolnay/rust-toolchain@1.99.1
         with:
@@ -599,7 +609,7 @@ jobs:
         if: always() && matrix.arch != 'arm64'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: installed-check-windows-${{ matrix.arch }}
+          name: installed-check-windows-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: ${{ runner.temp }}/installed-check
           if-no-files-found: warn
       - *package-evidence

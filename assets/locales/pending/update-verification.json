@@ -1,0 +1,17 @@
+{
+  "en": {
+    "update.verification_failed": "Intcad could not verify this update. The update was not installed."
+  },
+  "de": {
+    "update.verification_failed": "Intcad konnte dieses Update nicht überprüfen. Das Update wurde nicht installiert."
+  },
+  "ja": {
+    "update.verification_failed": "Intcad はこの更新を検証できませんでした。更新はインストールされませんでした。"
+  },
+  "ko": {
+    "update.verification_failed": "Intcad에서 이 업데이트를 확인할 수 없습니다. 업데이트가 설치되지 않았습니다."
+  },
+  "zh": {
+    "update.verification_failed": "Intcad 无法验证此更新。更新未安装。"
+  }
+}

@@ -1,10 +1,9 @@
-# Releasing SolidCraft in this fork
+# Releasing Intcad
 
-**Publication is blocked.** This foundation provides nonpublishing package builds
-and a fail-closed release gate, not a release service. No tag, GitHub Release
-(including a draft), store submission, Pages deployment, container push, signing
-request or credential setup is authorized. Adding a secret does not enable one.
-See the [destination quarantine](fork-governance.md#destination-quarantine).
+Package builds and the release gate never publish. The separate draft workflow
+does not authorize a release, a tag, signing or credential setup. Those actions
+require explicit owner approval. Store submissions, Pages deployments and
+container pushes remain outside this release path.
 
 ## Candidate and final source
 
@@ -198,10 +197,10 @@ incomplete/empty/skipped test identities, stale SHA/digests, or missing descript
 fail. Raw unknown native failures remain blocking; the existing reviewed
 known-failing grader is not a full-suite pass or publication approval.
 
-**The release gate intentionally remains red in this foundation.** Actual #5/#7
-contract/runtime consumers, #15 artifact verification/inventories and #14 installed
-consumers must be integrated under their owners' approved handoffs. Even successful
-native/package/rig validation cannot remove these future-consumer stops.
+An unapproved legacy workflow runtime still blocks the gate. A native release
+must prove its contents are native. A release with the built-in agent must pass
+#214's real per-package content checks once integrated. Those checks do not
+replace legal review or installed-agent acceptance.
 
 The existing kernel rig is a real required consumer, not a future integration
 placeholder. Release calls explicitly force **every area and the ladder**, even
@@ -282,69 +281,95 @@ its own approval and real platform verification; an ad-hoc signature is not one.
 
 ## Distribution repository
 
-Installers, release notes, checksums and signatures are published from this repository to the
-public repository **`intgral-ai/intcad-releases`**. This source repository is private; no client,
-package or public page may name it as a download or update source. The distribution repository
-holds no source, no build configuration and no history of this repository.
+For v0.1.3, build, gate and stage from the existing public
+[`intgral-ai/intcad`](https://github.com/intgral-ai/intcad) repository (ID `1446384930`)
+on standard GitHub-hosted runners. Do not migrate until the public release has been
+verified and the CTO separately approves the migration. After migration, the same
+workflow can run from the independent private `intgral-ai/intcad-client` repository
+only after the owner configures its immutable repository ID and private mode. It
+rejects forks, a mismatched ID or slug, and a change in visibility.
 
-`crates/ui-egui/src/update.rs` names it (`REPO`, `LATEST_API`, `RELEASES_PAGE`,
-`RELEASE_PREFIX`), `packaging/linux/package.sh` embeds its AppImage zsync feed, and the installer,
-AppStream, Snap, nfpm and Nix metadata point their public URLs at the guide it serves
-(`https://intgral-ai.github.io/intcad-releases/`).
+The public **`intgral-ai/intcad-releases`** repository holds installers, release notes,
+checksums and signatures; it does not hold the source or build configuration. The
+in-app updater and AppImage zsync feed use it. User-facing documentation and
+screenshot links stay in the public source repository, which remains readable after
+archiving. The draft workflow does not deploy a guide. A separate guide site is a
+future task.
 
-### Publishing a release
+### Staging a signed draft
 
-`.github/workflows/publish-release.yml` is the only publisher. It is manual, it runs in the
-`release-signing` environment, and it never builds: it takes the package artifacts of one
-successful `release.yml` run.
+1. Start the formal **Release gate** for a fixed stable candidate. The gate only
+   records `stable-release-handoff-a<attempt>` after its checks pass for a ready,
+   same-repository `release/vX.Y.Z` PR to `main` or a stable main merge group.
+   The handoff records the actual `GITHUB_SHA`, run and attempt, plus the names,
+   IDs, archive digests and descriptor digests of all 14 package/evidence pairs.
+   Standalone builds, diagnostic dispatches, Beta candidates and old attempts do
+   not qualify. If a rerun only repeats some jobs, start a fresh formal gate;
+   a previous attempt cannot supply the missing pairs.
+2. For a release carrying #214's built-in agent, review the actual npm/Node and
+   file rights and the installed-agent results for the exact candidate. The
+   owner records each accepted review in `RELEASE_AGENT_LEGAL_APPROVED` and
+   `RELEASE_AGENT_INSTALLED_APPROVED`, as `<source SHA>:<run ID>:<attempt>`.
+   A page smoke, a content scan or a successful build is not installed-agent
+   acceptance or rights clearance.
+3. After the owner authorizes staging, dispatch **Stage signed release draft**
+   from protected `main`. Supply `tag`, `source_sha`, `run_id`, `run_attempt` and
+   `notes_file`. The notes must be a tracked Markdown file at that source SHA.
+   A reviewer must approve the `release-signing` job before it receives signing
+   credentials. The source tag must resolve to the exact tested commit; the PR
+   head and a different commit with the same tree are not substitutes.
+4. The workflow reads back the live gate run and exact package jobs. It verifies
+   all package/evidence pairs and package bytes against the gate handoff before
+   flattening them. It writes the old and new checksum names with identical
+   bytes, requires all updater aliases and signs `SHA256SUMS.txt`. It refuses an
+   existing draft, release or tag.
+5. The workflow creates **only a draft**. It compares the API digest of every
+   uploaded asset, rejecting absent digests, then downloads and verifies both
+   checksum lists and the signature. Leave any failed read-back draft unpublished.
+   Making a verified draft public is a separate owner decision and action.
 
-1. Build the candidate with `release.yml` at the reviewed tag.
-2. Run **Publish release** with the tag, that run's id, a notes file and (first) `draft: true`.
-3. The workflow refuses to continue unless:
-   - the tag equals `v<version>` in `Cargo.toml` and points at the checked-out commit;
-   - the package run succeeded at that same commit;
-   - every package name matches the version, every `build.json` names that commit, both checksum
-     lists are byte-identical and list exactly the files present;
-   - every unversioned name the update check resolves (`alias_for` in `release-verify.py`) exists
-     and is a byte copy of its versioned file;
-   - Linux, macOS and Windows packages are present;
-   - the checksum list is signed by the key in `packaging/publish/trusted-release-key.pub`.
-4. It writes `SHA256SUMS.txt`, `SHA256SUMS`, signs with minisign (`Intcad v<version>` as the
-   trusted comment) and verifies its own signature before uploading.
-5. It creates the release with `--target main`, uploads, then reads the release back and checks
-   every published asset's digest and the downloaded signature. A version or tag that already
-   exists is refused; a published asset is never replaced.
+The owner configures `release-signing` with independent required reviewers, no
+self-review or bypass, and a deployment branch policy that permits only `main`
+(no tags). The workflow checks that `main` is protected and reads back the
+reviewer and branch policy before the sensitive job. For the public source, use
+`RELEASE_SOURCE_MODE=public` (the default) and either leave
+`RELEASE_SOURCE_REPO_ID` unset or set it to `1446384930`. Configure `private`
+and the new repository's immutable ID only after migration approval and after
+confirming that the private repository's plan supports required reviewers.
+Do not relax approval requirements if the plan lacks them.
 
-The `release-signing` environment holds `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` (a GitHub App
-installed on `intcad-releases` only, Contents: read and write), `MINISIGN_SECRET_KEY` and, when the
-key has a passphrase, `MINISIGN_PASSWORD`. The environment must require a reviewer. Do not add a
-`secrets.` reference, a `gh release` call or a signing step to `release.yml`; `packaging/tests/nightly_test.py`
-exists to catch that.
+Store `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`, `MINISIGN_SECRET_KEY` and, if
+needed, `MINISIGN_PASSWORD` only in `release-signing`. Install the GitHub App on
+`intgral-ai/intcad-releases` only, with Contents read/write. Do not give normal
+package builds or the release gate signing or publication credentials.
 
 ### Update signing
 
-The client verifies a minisign signature over `SHA256SUMS.txt`; the trusted comment must name the
-release tag (`Intcad v0.1.3`). A build with `PUBLIC_KEY` set in
-`crates/ui-egui/src/update/install.rs` refuses a release that has no `SHA256SUMS.txt.minisig`,
-that only carries the pre-0.1.3 `SHA256SUMS` name without a signature, or whose signature is for
-another version or another key. There is no unsigned fallback.
+The client verifies a minisign signature over `SHA256SUMS.txt`. The trusted comment
+must be exactly `Intcad v<tag version>` (for example, `Intcad v0.1.3`). The client
+refuses a missing signature or a signature for another version or key. There is
+no unsigned fallback.
 
-`PUBLIC_KEY` and `packaging/publish/trusted-release-key.pub` are the same key; a unit test fails
-if they disagree. The key file is the single base64 line printed by `minisign -G`; while it says
-`NOT CONFIGURED`, signing is not enabled and the publisher refuses to run.
+The client and draft workflow use the same public key file,
+`crates/ui-egui/src/update/trusted-release-key.pub`. Without a production key, the
+client refuses to install **any** update and the draft workflow refuses to sign.
+Do not cut v0.1.3 without the production key unless the owner explicitly accepts
+a **manual-only update path**. Such an exception does not turn off verification
+or make the draft workflow publish unsigned assets.
 
-Key custody (owner only; never an agent, a repository file, CI logs or a chat):
+Secret-key custody is owner-only. Never give the secret key to an agent or put
+it in a repository file, CI log or chat:
 
 1. On an offline machine, generate the key: `minisign -G -p intcad.pub -s intcad.key` (add a
    passphrase unless you keep the key in a hardware-backed store).
-2. Put the base64 line of `intcad.pub` in `packaging/publish/trusted-release-key.pub` and the same
-   line as `PUBLIC_KEY = Some("<line>")` in `install.rs`, then run
-   `cargo test -p solidcraft-ui-egui the_trusted_key_and_the_published_key_are_the_same_file`;
-   that test fails if the two disagree or if the placeholder survives.
+2. Commit only the base64 public-key line from `intcad.pub` to
+   `crates/ui-egui/src/update/trusted-release-key.pub` before running the gate.
+   Verify that the installed candidate accepts the production signature and
+   refuses a missing or invalid signature.
 3. Store `intcad.key` in the `release-signing` environment secret `MINISIGN_SECRET_KEY`, and keep
    one offline backup outside GitHub. Record the public key and the date in the release notes.
-4. Rotation: generate a new pair, publish one release signed by both keys is **not** supported by
-   this client version: ship a client that trusts the new key first, then sign with it from the
-   next release. Revocation: remove the secret, publish a client with `PUBLIC_KEY = None` only if
-   the owner accepts unsigned updates; otherwise treat the key as compromised and rotate.
+4. Rotation: generate a new pair and distribute a client that trusts the new key
+   before switching signing keys. This client does not support signing one release
+   with two keys. For revocation, remove the secret and treat the old key as
+   compromised. Never add an unsigned fallback.
 5. Tests use their own key pair (`install_tests.rs`); the production key never enters a test.
