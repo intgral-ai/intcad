@@ -51,6 +51,11 @@ pub fn reveal(app: &SolveApp) -> Option<f32> {
     app.agent_chat.web_reveal
 }
 
+/// Whether the panel gave the host a bottom-centre placement this frame.
+pub fn centred_view(app: &SolveApp) -> bool {
+    app.agent_chat.web_centre.is_some()
+}
+
 /// The panel's Retry: ask the host to try to make the view again, keeping the conversation.
 pub fn request_retry(app: &mut SolveApp) {
     app.agent_chat.web_retry = true;

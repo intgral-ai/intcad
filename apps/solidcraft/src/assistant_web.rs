@@ -30,6 +30,19 @@ use solidcraft_ui_egui::agent_chat::web;
 use wry::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
 use wry::http::{Request, Response, header};
 
+#[cfg(target_os = "linux")]
+mod shape;
+
+#[cfg(target_os = "linux")]
+#[derive(serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct PageShape {
+    width: f64,
+    height: f64,
+    popup: Option<u32>,
+    surfaces: Vec<[f64; 12]>,
+}
+
 /// The page's own address: a scheme only this web view serves, from the files below.
 const SCHEME: &str = "openskyfall-assistant";
 const PAGE: &str = "openskyfall-assistant://localhost/index.html";
@@ -288,6 +301,14 @@ pub struct AssistantWeb {
     /// which costs the page its input method; a GDK window keeps focus.
     #[cfg(target_os = "linux")]
     gtk_window: Option<gtk::Window>,
+    #[cfg(target_os = "linux")]
+    gtk_scale: Option<i32>,
+    #[cfg(target_os = "linux")]
+    gtk_shape: Option<PageShape>,
+    #[cfg(target_os = "linux")]
+    applied_shape: Option<(i32, i32, i32, u64)>,
+    #[cfg(target_os = "linux")]
+    gtk_remapped: Rc<Cell<bool>>,
     /// GTK had something to do in a turn since the last frame. Set by the page's draw, its IPC
     /// and its presses, not by every idle timer GTK happens to have: an Assistant at rest must
     /// not keep the app at 60 fps.
@@ -435,6 +456,11 @@ impl AssistantWeb {
             self.view = None;
             self.placed = None;
             self.shown = false;
+            #[cfg(target_os = "linux")]
+            {
+                self.gtk_shape = None;
+                self.applied_shape = None;
+            }
             web::set_host(solve, true);
             ctx.request_repaint();
         }
@@ -504,7 +530,17 @@ impl AssistantWeb {
         }
         #[cfg(target_os = "macos")]
         web::set_clips(solve, self.clip.is_some());
-        if self.placed != Some(at)
+        #[cfg(target_os = "linux")]
+        let scale_changed = {
+            use gtk::prelude::WidgetExt;
+            let scale = self.gtk_window.as_ref().map(WidgetExt::scale_factor);
+            let changed = scale != self.gtk_scale;
+            self.gtk_scale = scale;
+            changed && web::centred_view(solve)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let scale_changed = false;
+        if (self.placed != Some(at) || scale_changed)
             && let Some(view) = &self.view
         {
             #[cfg(target_os = "linux")]
@@ -526,7 +562,7 @@ impl AssistantWeb {
                 note(&format!("could not be moved: {error}"));
             }
             // The page is drawn at the app's own size: a point of the page is a point of the app.
-            if self.placed.is_none_or(|before| (before.zoom, before.pixels_per_point) != (at.zoom, at.pixels_per_point))
+            if (scale_changed || self.placed.is_none_or(|before| (before.zoom, before.pixels_per_point) != (at.zoom, at.pixels_per_point)))
                 && let Err(error) = view.zoom(page_zoom(view, at))
             {
                 note(&format!("could not be zoomed: {error}"));
@@ -544,6 +580,8 @@ impl AssistantWeb {
             self.backed = Some(backing);
         }
         self.show(true);
+        #[cfg(target_os = "linux")]
+        self.shape_gtk(web::centred_view(solve), at);
         self.tell(solve);
     }
 
@@ -553,6 +591,22 @@ impl AssistantWeb {
             // The page (re)started: it knows nothing yet.
             Some("ready") => {
                 self.told.clear();
+                #[cfg(target_os = "linux")]
+                {
+                    self.gtk_shape = None;
+                    self.applied_shape = None;
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Some("painted-footprint") if message.len() <= 4096 => {
+                if let Ok(report) = serde_json::from_value::<PageShape>(value)
+                    && report.surfaces.len() <= 8
+                    && self.gtk_shape.as_ref() != Some(&report)
+                {
+                    self.gtk_shape = Some(report);
+                    self.applied_shape = None;
+                    ctx.request_repaint();
+                }
             }
             Some("focus") => self.focused = value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false),
             Some("log") => note(&value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(600).collect::<String>()),
@@ -645,6 +699,8 @@ impl AssistantWeb {
         // See-through outside what the page draws, where a view can be: the page rounds its own
         // corners, and the panel's frame (its border and shadow) shows around them.
         let builder = if SEE_THROUGH { builder.with_transparent(true) } else { builder.with_background_color(opaque(backing)) };
+        #[cfg(target_os = "linux")]
+        let builder = builder.with_initialization_script("window.__assistantX11Shape = true;");
         // A browser's own keys are not the Assistant's (Windows): F5 would load the page again
         // and Ctrl+P print it. The keys of text editing stay (WebView2's
         // `AreBrowserAcceleratorKeysEnabled`, as Microsoft describes it).
@@ -683,6 +739,16 @@ impl AssistantWeb {
             Ok(view) => {
                 #[cfg(target_os = "linux")]
                 {
+                    use gtk::prelude::WidgetExt;
+                    if let Some(window) = gtk_window.as_ref() {
+                        let remapped = self.gtk_remapped.clone();
+                        let repaint = ctx.clone();
+                        window.connect_map_event(move |_, _| {
+                            remapped.set(true);
+                            repaint.request_repaint();
+                            gtk::glib::Propagation::Proceed
+                        });
+                    }
                     self.gtk_window = gtk_window;
                 }
                 #[cfg(target_os = "macos")]
@@ -779,6 +845,7 @@ impl AssistantWeb {
         #[cfg(target_os = "linux")]
         if let Some(window) = &self.gtk_window {
             use gtk::prelude::WidgetExt;
+            self.applied_shape = None;
             if shown { window.show_all() } else { window.hide() }
         }
         // A hidden frame takes no press either.
@@ -804,6 +871,43 @@ impl AssistantWeb {
             }
         }
         self.shown = shown;
+    }
+
+    #[cfg(target_os = "linux")]
+    fn shape_gtk(&mut self, centred: bool, at: Placed) {
+        use gtk::prelude::WidgetExt;
+        let (Some(view), Some(window)) = (&self.view, &self.gtk_window) else { return };
+        let Some(native) = window.window() else { return };
+        let allocation = window.allocation();
+        let (width, height, scale) = (allocation.width(), allocation.height(), window.scale_factor());
+        let zoom = page_zoom(view, at);
+        let key = (width, height, scale, if centred { zoom.to_bits() } else { 0 });
+        if !self.gtk_remapped.replace(false) && self.applied_shape == Some(key) {
+            return;
+        }
+        let report = self.gtk_shape.as_ref().filter(|_| centred);
+        let popup = report.and_then(|report| report.popup);
+        let region = report
+            .filter(|p| {
+                p.popup.is_none()
+                    && (p.width * zoom - f64::from(width)).abs() <= zoom + 1.0
+                    && (p.height * zoom - f64::from(height)).abs() <= zoom + 1.0
+            })
+            .map(|p| shape::spans(&p.surfaces, zoom, width, height))
+            .filter(|spans| !spans.is_empty())
+            .map(|spans| {
+                let rectangles: Vec<_> = spans.into_iter().map(|[x, y, w, h]| gtk::cairo::RectangleInt::new(x, y, w, h)).collect();
+                gtk::cairo::Region::create_rectangles(&rectangles)
+            });
+        native.shape_combine_region(region.as_ref(), 0, 0);
+        // Flush before making a portal visible. No new window, focus request or input grab.
+        if let Some(token) = popup {
+            native.display().flush();
+            if let Err(error) = view.evaluate_script(&format!("window.__assistantX11Unmasked?.({token})")) {
+                note(&format!("could not acknowledge the popup's native bounds: {error}"));
+            }
+        }
+        self.applied_shape = Some(key);
     }
 }
 
@@ -981,6 +1085,39 @@ fn opaque(colour: egui::Color32) -> wry::RGBA {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_keeps_complete_surfaces_without_their_empty_corners_or_gap() {
+        // Two independently rounded surfaces at 125% in a larger allocation. The small
+        // header's bottom-right corner is square; neither it nor the composer touches y=12.
+        let surfaces = [[0., 0., 16., 8., 4., 4., 4., 4., 0., 0., 4., 4.], [0., 12., 16., 20., 4., 4., 4., 4., 4., 4., 4., 4.]];
+        let spans = shape::spans(&surfaces, 1.25, 20, 25);
+        let contains = |x, y| spans.iter().any(|[left, top, width, height]| x >= *left && x < left + width && y >= *top && y < top + height);
+        assert!(!contains(0, 0));
+        assert!(!contains(19, 0));
+        assert!(contains(10, 0));
+        assert!(contains(19, 9));
+        assert!(!contains(10, 12));
+        assert!(contains(3, 15));
+        assert!(contains(10, 24));
+        assert!(!contains(0, 24));
+        assert!(!contains(19, 24));
+        assert!(!contains(20, 20));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_clips_at_allocation_and_rejects_invalid_surfaces() {
+        let surfaces = [
+            [-2., -2., 4., 4., 0., 0., 0., 0., 0., 0., 0., 0.],
+            [0., 0., 100., 100., f64::INFINITY, 0., 0., 0., 0., 0., 0., 0.],
+            [20., 20., 25., 25., 0., 0., 0., 0., 0., 0., 0., 0.],
+        ];
+        assert_eq!(shape::spans(&surfaces, 2.0, 6, 6), [[0, 0, 6, 6]]);
+        assert!(shape::spans(&surfaces, f64::NAN, 6, 6).is_empty());
+        assert!(shape::spans(&surfaces[1..], 1.0, 6, 6).is_empty());
+    }
 
     fn get_with(path: &str, pictures: &Pictures) -> Response<Cow<'static, [u8]>> {
         serve(&Request::builder().uri(format!("openskyfall-assistant://localhost{path}")).body(Vec::new()).unwrap(), pictures)

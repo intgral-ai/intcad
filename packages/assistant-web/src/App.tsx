@@ -2805,6 +2805,38 @@ const OPEN = POPUPS.map(entry => entry.selector).join(', ');
 const ON_BLUR = POPUPS.filter(entry => entry.blur).map(entry => entry.selector).join(', ');
 /** The dialogs, which keep the page as it is through a press outside it. */
 const DIALOGS = POPUPS.filter(entry => !entry.blur).map(entry => entry.selector).join(', ');
+const NATIVE_PORTALS = `${OPEN}, [role="tooltip"], [data-slot="alert-dialog-content"]`;
+
+/** Border boxes that paint the centred composer, with CSS ellipses in TL/TR/BR/BL order. */
+function paintedFootprint(element: HTMLElement) {
+  const surfaces = Array.from(
+    element.querySelectorAll<HTMLElement>('[data-slot="composer-ring"], [data-slot="composer-header-surface"]'),
+  );
+  return surfaces.flatMap(surface => {
+    const rect = surface.getBoundingClientRect();
+    const style = getComputedStyle(surface);
+    const header = surface.closest('[data-slot="composer-header"]');
+    if (!rect.width || !rect.height || style.visibility !== 'visible' || style.display === 'none' ||
+        header?.hasAttribute('data-centre-wait')) return [];
+    const clip = surface.parentElement?.getBoundingClientRect();
+    const bottom = header && clip ? Math.min(clip.bottom, rect.bottom) : rect.bottom;
+    if (bottom <= rect.top) return [];
+    const radius = (value: string) => {
+      const [x, y = x] = value.split(' ');
+      const resolve = (length: string, extent: number) =>
+        length.endsWith('%') ? parseFloat(length) * extent / 100 : parseFloat(length);
+      return [resolve(x, rect.width), resolve(y, rect.height)];
+    };
+    return [[rect.left, rect.top, rect.right, bottom,
+      ...radius(style.borderTopLeftRadius), ...radius(style.borderTopRightRadius),
+      ...radius(style.borderBottomRightRadius), ...radius(style.borderBottomLeftRadius)]];
+  });
+}
+
+type X11ShapeHost = Window & {
+  __assistantX11Shape?: true;
+  __assistantX11Unmasked?: (token: number) => void;
+};
 
 /** Closes the page's open menus, selects and pickers, as a press outside them would; its dialogs stay. */
 function closePopups() {
@@ -2901,6 +2933,11 @@ function Centre({
     if (!element) return;
     let menu = false;
     let check = 0;
+    const native = window as X11ShapeHost;
+    let nativePopup: number | null = null;
+    let nextPopup = 0;
+    let unmasked: number | null = null;
+    let sentFootprint = '';
     // The host resizes the native view a frame or two after it is asked, so a view resized while
     // something animates jumps. Taller is asked at once, so what opens has its room as it is drawn;
     // shorter only once the page has been still for a moment, never under a closing animation.
@@ -2934,8 +2971,30 @@ function Centre({
         late = window.setTimeout(fit, 1000);
       } else if (performance.now() - since > 990) growing = false;
       for (const header of element.querySelectorAll(HEADERS)) header.toggleAttribute('data-centre-wait', growing && topOf(header) < -1);
-      for (const open of document.querySelectorAll(OPEN)) open.toggleAttribute('data-centre-wait', growing);
+      const portals = document.querySelectorAll(native.__assistantX11Shape ? NATIVE_PORTALS : OPEN);
+      if (native.__assistantX11Shape) {
+        nativePopup = menu || portals.length ? (nativePopup ?? ++nextPopup) : null;
+      }
+      for (const portal of portals) {
+        portal.toggleAttribute('data-centre-wait', growing || (nativePopup !== null && nativePopup !== unmasked));
+      }
+      if (native.__assistantX11Shape) {
+        const surfaces = nativePopup === null ? paintedFootprint(element) : [];
+        const footprint = JSON.stringify({
+          type: 'painted-footprint', width: window.innerWidth, height: window.innerHeight, popup: nativePopup, surfaces,
+        });
+        if (footprint !== sentFootprint) {
+          window.ipc?.postMessage(footprint);
+          sentFootprint = footprint;
+        }
+      }
     };
+    if (native.__assistantX11Shape) {
+      native.__assistantX11Unmasked = token => {
+        unmasked = token;
+        fit();
+      };
+    }
     grow.current = to => {
       floor = Math.min(to, most.current);
       if (floor > told) send(floor);
@@ -3034,6 +3093,7 @@ function Centre({
       window.clearTimeout(frame);
       window.clearTimeout(shrink);
       window.clearTimeout(late);
+      delete native.__assistantX11Unmasked;
     };
   }, []);
   // A primary press in the app's window outside the page (the model, the rail, the toolbar, the
