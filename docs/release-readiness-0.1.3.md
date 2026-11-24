@@ -4,6 +4,10 @@ Owner: release manager. Written 2026-11-23. This file is a decision record, not 
 for a candidate: no candidate exists yet. Every claim below names the command, file or run that
 shows it; anything unverified says `UNKNOWN`, `BLOCKED` or `NOT TESTED`.
 
+**Current verdict: NO-GO.** [§15.3](#153-current-release-readiness-closed-source-cutover) records
+the current gate status. [§8.1](#81-closed-source-release-addendum) governs integration and
+publication. Earlier results in this report are historical, not final-candidate acceptance.
+
 **Corrections after the GPT-6.2-Sol final review (2026-11-23).** Three things in this document were
 wrong and are fixed below: E1 was described backwards (the shipped 0.1.2 client asks for
 `SHA256SUMS.txt` in the release it *fetches*, so what matters is the *new* release's naming, not
@@ -244,6 +248,8 @@ here. `actionlint .github/workflows/packaging-lint.yml` → exit 0.
 
 ## 8. Integration order once the workstreams land
 
+Historical proposal. Use §8.1 for current prerequisites, gate order and approvals.
+
 1. Merge #204 (skills) after the two merge gates in §5 are closed; then rebase #212 onto
    `develop` and merge it. Both keep their own checks.
 2. Merge #214 (packages carry the agent), which also fixes the FreeBSD compile failure's
@@ -254,6 +260,81 @@ here. `actionlint .github/workflows/packaging-lint.yml` → exit 0.
 5. Cut the version commit, take the candidate SHA, run the three-platform package build, then
    install and accept that exact SHA on all three platforms (§9 acceptance matrix).
 6. Only then ask the CTO for promotion and publication. This branch does none of that.
+
+### 8.1 Closed-source release addendum
+
+This adds Migration Agent deliveries and approval checkpoints to §8. It does not change the
+agreed feature scope in §13.1 or remove any required gate. In particular, the old Gate E
+sequencing in §10 describes the old feed, not permission to defer the migration test until
+publication. Only the final check against the real public release belongs after publication.
+
+#### Owner handoffs
+
+| Owner | Handoff required before freeze |
+|---|---|
+| Login Agent (INT-1497) | Name the approved integration PR and exact head, the approved PRD and staging test setup, and provide green Windows startup/resize evidence plus the authorization scenarios and expected results for Gate B. Own the client and service behavior, account setup, version admission, and revocation. |
+| Closed-source Migration Agent | Name the delivery PRs and heads, their dependencies and touched-file owners. Provide the URL and redirect inventory (feed, assets, Release Notes, prompts, website), supported updater/package mapping, exact signed bytes/signature and checksum names, approved public-key identity and custody/rotation plan, tested v0.1.2 migration path, package inventory and redistribution review, and private-CI/cross-repo publication evidence or authorized rehearsal plan. Own these implementations; the Release Manager does not build parallel versions. |
+| Feature owners and Release Manager | PP owns Assistant visual behavior, Tianwei owns Skills/agent changes, and the Release Manager tracks #223 to a reviewed owner and fix. Continue UI, packaging and isolated tests now. The Release Manager owns the integrated gate, artifact identity, package acceptance and the decision record. |
+
+Before each overlapping merge, compare reviewed heads against `develop` and each other, record
+the intended owner and resolution, and have affected owners review the resolution. Start with
+§15.2's Assistant host/bridge and Windows/Linux smoke overlaps. Also agree on ownership for
+update client/config, packaging workflows, website/download links and notice generation before
+accepting migration PRs. The login version-admission policy is separate from updater version
+selection; neither can substitute for the other. No conflict resolution may weaken authorization,
+signature enforcement, or packaging checks.
+
+#### Execution and approval checklist
+
+- [ ] **Integrate features and migration.** Record each approved delivery PR and landed SHA,
+  including the existing merged foundations. Apply dependencies in the owners' agreed order;
+  rerun affected gates after integration. Keep the old merge and RC watchers stopped.
+  Classify changes before pushing: confidential integration and CI require an already authorized,
+  isolated private location outside the public fork network. No such location is confirmed yet.
+  If required before cutover and unavailable, freeze is BLOCKED; continue nonconfidential work.
+- [ ] **Freeze one candidate.** Record a reviewed `develop` snapshot and the candidate's full SHA.
+  Prove the landed integration commits are ancestors of the tested checkout. Under the current
+  promotion workflow, that checkout is the `release/v0.1.3` main-target PR merge SHA or the main
+  merge-group SHA, not a branch tip. Take accepted bytes from the `packages` job of that same
+  `release-gate` run, which calls `release.yml`. Pin the repository, workflow, run ID and attempt.
+  A private replacement route must demonstrate the same required gates and artifact binding
+  before it is used. Require the complete 14 package/evidence pairs from the
+  [stable release-gate target map](../.github/workflows/release-gate.yml).
+  If a partial rerun cannot prove every package came from the pinned attempt, start a clean
+  eligible run; do not stitch together assets or receipts from attempts.
+  Verify `build.json`, `contents.json`, target and contract identity and every payload digest
+  before assembly. Keep evidence namespaced and reject duplicate or missing payload names.
+  Verify the signed checksum data and aliases against the assembled bytes. A run or artifact
+  mismatch stops assembly; a changed revision requires a new candidate and new acceptance.
+- [ ] **Run quality gates and install the exact candidate.** Bind each row in §15.3 to that identity
+  and actual installer digest. Keep isolated staging/test-release fixtures separate from
+  production. Do not create a public stable release to get pre-release test evidence. A
+  nonpublishing diagnostic build does not substitute for a required `release-gate` result.
+- [ ] **Confirm distribution readiness.** With anonymous checks, prove the website and planned
+  distribution channel are reachable. Exercise staging or an authorized rehearsal that matches
+  the reviewed production wiring, including cross-repo publishing and update rejection. Test the
+  exact candidate without relying on the old repository. Obtain the Migration Agent's cutover
+  and recovery instructions; check that the tested old-client route and any source-repo-hosted
+  web routes remain usable after cutover or have a verified replacement.
+- [ ] **Obtain separate CTO authorization for source isolation and visibility.** The CTO executes
+  or explicitly delegates this step only after the preceding checks. Do not push confidential
+  changes into the public fork network. Previously public source and license grants cannot be
+  withdrawn. No visibility change, fork detachment, historical Release deletion, history
+  rewrite or certificate purchase is authorized by this plan.
+- [ ] **Match the private revision to the accepted bytes.** After cutover, prove private CI can
+  check out the full candidate revision and that its reviewed workflow and provenance identify
+  the already accepted artifact set. Rerun the private CI/publisher checks as needed, but do not
+  substitute newly built bytes for the accepted set. A mismatch is NO-GO.
+- [ ] **Obtain final publication approval.** Record the CTO's separate approval for the pinned
+  SHA, artifact digests, destination and version. Publish only those accepted assets to the
+  approved public distribution channel, not the source repository.
+- [ ] **Verify and hand off.** Without credentials or cached downloads, verify the public links and
+  asset hashes and install/launch the public bytes on all three OSes. Separately start from the
+  unchanged 0.1.2 packages and exercise each supported anonymous production upgrade route end
+  to end: discovery, download, apply and restart, or the approved user-facing fallback where
+  in-app update is unsupported. Also check that 0.1.3 uses the new origin for subsequent update
+  detection. Record results in §15.3. If a check fails, stop handoff and escalate to the CTO and
+  owners; do not silently replace released bytes, re-tag, or delete the release.
 
 ## 9. Acceptance matrix for the candidate (not yet run)
 
@@ -272,12 +353,14 @@ row above.
 
 ## 10. How each gate will be run
 
-Each line names the command or the person; nothing here has been run for a candidate yet. A gate
-row is only PASS with the artifact, the SHA and the evidence path recorded beside it.
+Use §§8.1 and 15.3 for current release controls. The historical Gate E sequencing below
+does not authorize testing the migration only after publication. A gate row is only PASS
+with the artifact, the SHA and the evidence path recorded beside it.
 
 **Gate A, build and package.** `release.yml` on the candidate SHA (through `release-gate` for a
 `main`-target PR). PASS needs: every job in `package-builds` green including FreeBSD, `build.json`
-naming the candidate SHA for each target, Mastra and the agent folder present in each installer
+  naming the candidate SHA for each target, the built-in Mastra agent and bundled Node
+  (`mastra-agent/`) present in each applicable desktop installer
 (the `package_contents` scan, once #214 lands), and `packaging/checksums.sh dist/<platform>` run
 over the downloaded assets with every hash OK.
 
@@ -311,8 +394,8 @@ its set); each `SKILL.md` is byte-identical to the package's copy (the `skill-se
 `skill/<name>` commands the Assistant actually shows are recorded as a screenshot. A file on disk
 is not evidence that the skill can be called.
 
-**Gate D, UI.** Installed app at 100 % and 150 % on Linux and Windows (and a Mac if a machine is
-available): every built-in theme, font and control size, no unexpected background or clipping, the
+**Gate D, UI.** Installed app at 100 % and 150 % on Linux, Windows and macOS:
+every built-in theme, font and control size, no unexpected background or clipping, the
 Assistant web view positioned correctly, panel resize and move, and a basic CAD operation on each.
 
 **Gate E has a sequencing constraint that cannot be engineered away.** The one-click path can only be
@@ -926,6 +1009,9 @@ installed behaviour is what my VM runs in §12.4.3/§12.4.4 add.
 
 ## 12.8 The reproducible candidate run, as a script
 
+**Historical only: do not run this script for 0.1.3.** See §§8.1 and 15.2 for its replacement
+requirements and known failure modes.
+
 The candidate is no longer assembled by hand. `~/.cache/int1503/rc-chain.sh` does the whole run and
 logs to `~/.cache/int1503/rc-chain.log`:
 
@@ -954,6 +1040,9 @@ release manager runs by hand, in one command, with the refusal behaviour tested 
 `packaging/tests/checksums_test.py`.
 
 ## 13. Decisions from the CTO (2026-11-23)
+
+Historical decisions. The current cutover and publication approvals are separate (§8.1).
+The earlier Mac and UI exception language is not an authorization to waive either gate.
 
 Recorded as given: **version 0.1.3**; **PP's UI must be in this release**; everything else is
 approved except what needs real Mac hardware. In practice that means:
@@ -1012,6 +1101,9 @@ log       no "native Wayland one ... diagnostic" line, so the page is in an X11 
 
 ## 14. Decisions resolved, and what is still open
 
+Historical snapshot. Use §15.3 for current blockers. This section does not authorize
+publication, a UI/login/Mac exception, or moving pre-release upgrade evidence after publication.
+
 Resolved by the CTO on 2026-11-23 (see §13): version 0.1.3; PP's UI in scope; FreeBSD fixed rather
 than dropped (#219 merged); the updater name change approved (#217); publication authorised in
 principle once the gates pass, with Mac-hardware items explicitly excluded.
@@ -1030,6 +1122,9 @@ Still open, and not decidable from here:
 5. **One-click update.** Only testable against a published stable release (§10, Gate E).
 
 ## 15. Go/No-Go, 2026-11-23 (evidence to that moment)
+
+Historical rehearsal verdict only. The old GO instructions below are superseded by §8.1:
+do not restart `rc-chain.sh`, waive the UI or login requirement, or use rehearsal bytes.
 
 Verdict: **NO-GO.** Not because the packages are broken — the 0.1.3 candidate builds, installs,
 starts, carries the agent and installs five skill sets on both Linux and Windows — but because three
@@ -1109,6 +1204,11 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
 
 ### 15.2 Parallel release audits
 
+- **#221 composer sizing — local browser fix reviewed, not landed.** `b002647acb` held the
+  centred input at 14 px and the composer at 86 px for both agent modes in the same browser
+  viewport. Independent Spec and Quality review approved; controller rerun had 12 passes and
+  one pytest-plugin deprecation warning. This is not installed acceptance. Native backing work
+  continues separately; vertical clipping stays unverified.
 - **RC provenance — BLOCKED.** `45248432170` attempt 2 built rehearsal SHA `14a6c95ae`, not
   a descendant of the current merged `develop` snapshot `6032271178`. Rehashing the cached
   Linux x64, Windows x64 and macOS payloads against their descriptors validates those
@@ -1121,7 +1221,7 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   payload names. The four PRs are the packaging and UI prerequisites, not the whole release
   scope: verify the approved login and slash-command fixes are also present before treating an
   RC as satisfying those feature gates.
-- **#214 standalone package verdict — BLOCKED in final review, not landed.** At `6717ef201c`, the
+- **#214 package verdict — local fix reviewed, not landed.** At `6717ef201c`, the
   workflow's real package-evidence step inspected a fixture tarball with a complete agent
   file layout except Node. The report named `mastra-agent/node` as missing, but the step
   exited `0`: its final failure check was inside the native-distribution branch. Local
@@ -1143,6 +1243,12 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   A verified mixed fixture (complete MSI, ZIP missing Node) yielded no problems from
   the aggregate check. Restrict the CLI exemption to the actual CLI archive name and
   prove both the standalone and aggregate paths reject the broken ZIP.
+  **Local follow-up:** `ee17261b82` restricts the exemption to the canonical macOS headless
+  CLI ZIP. Independent scoped review confirmed both verdict paths reject the missing-Node
+  package. Controller rerun: gate 74/74, release-content 30/30, package-contents 28/28, and
+  `actionlint` on `release.yml` exited zero. The standalone regression uses a real ZIP and
+  a fixture for the MSI file listing. It does not prove a real MSI install or hosted CI.
+  The stack is not on #214; integration and real-package evidence are still blocked.
 - **Gate B — BLOCKED / NOT RUN.** #213 is draft and behind at `22f427c8`. The [tested Windows
   job](https://github.com/intgral-ai/intcad/actions/runs/45109730998/job/137479303661) passed
   startup, then timed out in `tools/windows-resize-smoke.ps1`: after moving the window to
@@ -1164,3 +1270,57 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
 - **macOS — NOT TESTED.** Follow the [Mac acceptance runbook](release-acceptance-macos-0.1.3.md)
   for the exact reviewed DMG. An ad-hoc CI launch is not a clean Gatekeeper assessment or
   native Intel acceptance.
+
+### 15.3 Current release readiness: closed-source cutover
+
+**NO-GO.** No frozen candidate SHA, run/attempt or acceptance manifest is recorded. The
+`develop` snapshot is `6032271178140b356e4a7ed2e9bb0f1352d81048`; a read-only open-PR listing
+confirmed the feature heads in §15.2, but did not identify the Migration Agent's delivery PRs.
+That does not establish their absence in another workspace or repository. Baseline checkout
+evidence still has old `intgral-ai/intcad` release URLs in the updater fixtures and `PUBLIC_KEY`
+set to `None` in `crates/ui-egui/src/update/install.rs`. The baseline `release.yml` is a
+nonpublishing build, not proof of the new production signing or publication path.
+
+Anonymous readiness probe (no credentials, redirects followed): `https://intgral.ai/` returned
+HTTP 200. Both `https://github.com/intgral-ai/intcad-releases` and its GitHub API
+`releases/latest` returned HTTP 404. This does not tell us whether the tentative repository is
+absent or private, or prove that the homepage links to working downloads.
+
+The Release Manager requested the two owner handoffs in their respective local sessions:
+Login Agent for Gate B and integration, Migration Agent for the isolated build location,
+distribution, signing, migration and rights evidence. Neither request is a cutover or
+publication authorization. Handoff evidence is pending.
+
+Runtime scope for the current packaging integration is the built-in Mastra agent, including
+bundled Node and required Skills (`mastra-agent/`, #214). The legacy workflow runtime
+(`mastra/`, B6) is a separate opt-in deliverable, disabled in the rehearsal. Before freeze,
+check this scope against the approved migration and product handoff. If the separate runtime
+is required, both its inclusion and operation are blocking until independently evidenced and
+cleared for redistribution; an agent smoke is not a substitute.
+
+For each result, record candidate SHA, workflow run/attempt, artifact name and SHA-256, host and
+OS version, scenario and expected/observed results, evidence link or path, and reviewer. Include
+the approved staging configuration or policy revision when it affects the result. Redact
+credentials, tokens, prompts and private projects. An earlier rehearsal, file listing, headless
+smoke or green CI does not replace real installed-client acceptance.
+
+| Gate | Current verdict | Evidence required for PASS |
+|---|---|---|
+| Integration, build and package | BLOCKED | Landed PR map, successful immutable build and full verified artifact set from §8.1. #214's standalone and aggregate package verdicts must reject incomplete payloads. |
+| Linux install and launch | NOT TESTED | Clean supported Linux host; install and launch the accepted desktop package, exercise core CAD and record the actual bytes. Test AppImage update and the documented reinstall/package-manager path where applicable. |
+| Windows install and launch | NOT TESTED | Real Windows MSI install and launch; test the applicable portable path, plus window resize, Assistant and core CAD. |
+| macOS install and launch | NOT TESTED | Exact universal DMG; real Finder install and launch and the [macOS runbook](release-acceptance-macos-0.1.3.md), including native slice evidence. Rosetta or CI-only launch does not cover a missing native cell. |
+| Login, authorization and offline CAD | BLOCKED / NOT RUN | Gate B on all three installed clients: approved sign-in/session paths, denied anonymous or unauthorized controlled requests, version admission, revocation and late-write refusal, and ordinary offline CAD including save/export. #224's Windows failure is not a staging result. |
+| Mastra runtime, Skills and slash commands | BLOCKED / NOT RUN | Identify the exact approved runtime variant in each installer, observe it starting from the installed app and completing a real turn. Verify the required bundled Skills can be discovered and invoked and #223's slash menu lists and runs the commands. Earlier `mastra-agent/` evidence does not establish that the separate legacy `mastra/` workflow runtime shipped. |
+| Assistant UI | BLOCKED | Installed bottom-centre composer size, clipping, backing, focus and resize evidence on each OS. Use the visual plan and keep the reproduced backing and reported half-line clipping separate. |
+| Public distribution and new-client independence | BLOCKED | Confirm the destination (tentatively `intgral-ai/intcad-releases`, which returned 404 anonymously). Test anonymous website, release notes, prompts, API and asset links, including redirects. With the old source endpoints unavailable, the candidate must still discover and download updates and related resources. |
+| Minisign acceptance and refusal | NOT TESTED | On installed supported auto-update paths, a valid signed payload verifies and applies with the approved embedded public key. Separately show that a wrong signature, absent signature and tampered installer each stop before the installer is launched or the existing install is modified. Record each refusal and the positive control. |
+| Published v0.1.2 migration | NOT TESTED | Start with the unchanged public 0.1.2 packages; exercise the actual supported old-to-new route under cutover conditions, with the old source repo no longer an available update origin. Include discovery or the explicitly approved user-facing fallback, install/restart, existing design and preference retention, and subsequent discovery from the new channel. Test distinct supported installation paths. An in-place local installer rehearsal or alias alone does not prove discovery. |
+| Redistribution and notices | BLOCKED / NOT RUN | Approved shipped-file inventory covering Rust, npm/Node, runtime and assets; resolve applicable `needs-human` items. Inspect the actual packages for the applicable third-party license texts and copyright notices. A Cargo-only audit is insufficient. |
+| Package security and hygiene | NOT TESTED | Inspect and scan actual payloads and installed trees, including nested archives. No unapproved credentials, source, debug data, sourcemaps or internal docs. Any approved exception must identify the exact file and approval; missing coverage is not PASS. |
+| Private CI and cross-repo publication | BLOCKED / NOT RUN | Reviewed private-run evidence for checkout/build and an authorized nonproduction publishing rehearsal with scoped credentials; confirm failures deny publication, secrets are not logged, and the public destination receives only approved assets. Recheck private revision and artifact correspondence after the CTO-approved cutover. |
+| Production publication and anonymous handoff | NOT RUN | Two separate recorded CTO approvals (source cutover and final publication); then record fresh anonymous download/install/launch and the independent production 0.1.2 upgrade run (or approved fallback), plus new-client detection on the new channel. |
+
+**Approved deferrals:** Windows Authenticode, Apple Developer ID and notarization. These do not
+block on a certificate request and do not waive Minisign, real installation, or OS-policy
+evidence. A real launch prevented by policy is blocked, not PASS.

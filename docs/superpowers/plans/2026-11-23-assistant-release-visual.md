@@ -62,6 +62,10 @@
 
 **Files:** `docs/release-readiness-0.1.3.md` §15.1, `docs/releasing.md` (procedure), existing release/packaging scripts.
 
+Use the [closed-source release addendum](../../release-readiness-0.1.3.md#81-closed-source-release-addendum)
+for the full freeze prerequisites, including Login and Migration Agent handoffs. That work does
+not delay Tasks 2 or 3; their preview results do not satisfy installed acceptance.
+
 - [ ] Review the fix and run #221's required checks on the reviewed SHA. Keep the paused watchers paused until the pre-merge visual fix is accepted and integration is approved. Verify required merge commits are in `develop` before cutting the candidate.
-- [ ] Dispatch nonpublishing `release.yml` using one candidate commit from merged `develop`; record SHA, run ID, package hashes, `build.json` and `contents.json`. Check aliases and both checksum filenames with `--require`.
+- [ ] Once approved, use the nonpublishing `release-gate` on its reviewed stable candidate checkout. Take packages from that run's reusable `release.yml` job, not a standalone diagnostic build. Record SHA, run ID and attempt, hashes, `build.json` and `contents.json`. Check aliases and both checksum filenames with `--require`.
 - [ ] Install that run's exact Linux, Windows and macOS assets for separate acceptance. Check visual matrix and status/resize, core CAD, built-in agent/Skills, login, slash commands and updates. Mark genuine blockers or NOT TESTED explicitly, including unavailable real Mac hardware. Do not reuse earlier rehearsal results or publish from this plan.

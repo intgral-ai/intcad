@@ -1,9 +1,9 @@
 # IntCAD 0.1.3: macOS acceptance
 
 **Status: NOT TESTED on the merged candidate.** Use the exact DMG from the reviewed
-`develop`-based candidate containing the Assistant fix. Record its source SHA, workflow
-run and attempt, DMG SHA-256, hardware and macOS version. Do not substitute a source
-build or the earlier rehearsal DMG.
+`develop`-based candidate from the [release plan](release-readiness-0.1.3.md#81-closed-source-release-addendum).
+Record its source SHA, workflow run and attempt, DMG SHA-256, hardware and macOS version.
+Do not substitute a source build or the earlier rehearsal DMG.
 
 The nonpublishing [workflow](../.github/workflows/release.yml) builds both slices and
 calls [`package.sh`](../packaging/macos/package.sh) without `--sign`: ad-hoc app and CLI
@@ -11,6 +11,9 @@ signatures, unsigned DMG, no notarization. [`installed-check.sh`](../packaging/m
 copies out the app, verifies its local signature and opens the Assistant offline. Its
 Gatekeeper rejection is nonfatal, and its x86_64 test can be skipped or run under Rosetta.
 None of that proves a first Finder launch, native Intel execution, or visual acceptance.
+Developer ID and notarization are deferred for 0.1.3. Record their status without waiting
+for certificates. The separate Minisign update gate and actual launch requirement still
+apply; a macOS policy refusal is not a launch pass.
 
 ## Inspect the delivered bytes
 
