@@ -1799,3 +1799,40 @@ evidence. A real launch prevented by policy is blocked, not PASS.
   agent dependency attribution and legacy workflow runtime licensing. It is a baseline
   audit, not legal clearance or a final installer inventory. A local worktree does not
   prove cross-repo publishing can run from `intgral-ai/intcad`. Private CI is not a v0.1.3 gate.
+
+### 8.4 Measured merge of #214 and #224 heads (2026-11-24T17:45Z)
+
+Re-measured with the merged develop base, because the earlier map used superseded heads.
+A throwaway worktree merged `origin/develop` (`f18a9aec27`) + #214 (`d4819c6a9d`) + #224
+(`da73900d6b`):
+
+| File | Result |
+|---|---|
+| `.github/workflows/release-gate.yml`, `release.yml` | clean; both the agent env and `production_account_config`/`inject-auto` survive |
+| `crates/engine/src/validation/tests.rs` | no longer conflicts (#226 is already merged) |
+| `packaging/linux/installed-check-inside.sh` | **content conflict** |
+| `tools/windows-assistant-smoke.ps1` | **content conflict** |
+| everything else | clean |
+
+Both conflicts are semantic, not textual:
+
+1. #224 moves the Linux checker to `packaging/linux/assistant-check.py` and keeps
+   `packaging/assistant-check.py` for macOS; it rewrites
+   `installed-check-inside.sh` to call the Linux path. #214 adds the built-in-agent
+   block that runs `check+=(--built-in-agent)`. The merged script must keep #224's path
+   **and** #214's block.
+2. #224's `packaging/linux/assistant-check.py` has **no `--built-in-agent` option**
+   (measured: zero mentions), while #214 adds that option and its assertions to
+   `packaging/assistant-check.py`. Merging both as-is makes the Linux installed check
+   fail on unknown arguments for every package that carries the agent, which is exactly
+   the candidate package. The option and its three assertions (agent offered first,
+   `currentAgent == mastra`, plans reported; stopped agent reports no connections;
+   it starts again) must be ported into the Linux copy.
+3. `tools/windows-assistant-smoke.ps1`: #224 rewrites the whole launch/click/focus flow
+   (owned job, `SendInput`, isolated profile); #214 appends `CheckBuiltInAgent` and calls
+   it when `mastra-agent\agent.json` sits beside the installed exe. The ported function
+   must be re-expressed in #224's flow (its `OpenAssistant` helper no longer exists).
+
+Neither PR's own CI can catch this, because each is green on a tree that lacks the other.
+The second merge must therefore include the port and re-run the installed checks; a
+GitHub merge button cannot resolve it.
