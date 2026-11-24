@@ -1,6 +1,6 @@
 //! Native HTTPS account adapter for the frozen `intcad-auth/1.0` contract.
 //!
-//! Wire shapes come only from the pinned rev3 OpenAPI document (`contracts/pin.json`). This module
+//! Wire shapes come only from the pinned rev4 OpenAPI document (`contracts/pin.json`). This module
 //! maps them onto the engine's [`AccountService`]; it does not define a second contract.
 //!
 //! Safety rules:
@@ -31,13 +31,13 @@ fn renewal_interval(value: Option<&Value>) -> Option<Duration> {
     value.and_then(Value::as_u64).filter(|seconds| (1..=3600).contains(seconds)).map(Duration::from_secs)
 }
 
-/// Frozen protocol version from the rev3 manifest.
+/// Frozen protocol version from the pinned manifest.
 pub const PROTOCOL_VERSION: &str = "intcad-auth/1.0";
-/// Hard response-size cap. The largest frozen artifact is 176,410 bytes; responses are far smaller.
+/// Hard response-size cap. The largest frozen artifact is 176,487 bytes; responses are far smaller.
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
-/// The rev3 contract fixes the default lease at 60 seconds. A wall-clock conversion is clamped to
-/// this value so a slow or skewed wall clock cannot extend execution authority.
-const MAX_ABSOLUTE_GRANT_LEASE: Duration = Duration::from_secs(60);
+/// Track the lease fixed by the pinned contract: rev4 OpenAPI `POST /v1/authorizations` sets
+/// 300 seconds. Clamp the wall-clock conversion so it can never exceed that lease.
+const MAX_ABSOLUTE_GRANT_LEASE: Duration = Duration::from_secs(300);
 
 /// A credential value whose `Debug` and `Display` never reveal the secret.
 #[derive(Clone, PartialEq, Eq)]
@@ -747,7 +747,7 @@ impl<T: Transport> HttpAccountService<T> {
 
     /// Map an absolute server timestamp to a local monotonic bound anchored at send. The wall clock
     /// is used only to measure the remaining server-issued interval, and the result is clamped to
-    /// the frozen 60-second default lease. A wall rollback can shorten but never extend authority.
+    /// the lease fixed by the pinned contract. A shorter server interval is not extended.
     fn grant_from_absolute(
         &self,
         sent_at: MonotonicInstant,

@@ -133,12 +133,12 @@ fn admitted_body() -> Value {
         "operation_id": "op_example_0001",
         "installation_id": "inst_example_0001",
         "state": "HELD",
-        "authorization_expires_at": "2026-01-01T00:01:00.000Z",
+        "authorization_expires_at": "2026-01-01T00:05:00.000Z",
         "settlement_deadline": null,
         "execution_grant": {
             "grant_id": "grant_example_0001",
             "capability": "chat",
-            "expires_at": "2026-01-01T00:01:00.000Z",
+            "expires_at": "2026-01-01T00:05:00.000Z",
             "renew_after_seconds": 20,
             "session_proof": "execution_session_proof_example_000000000000000"
         },
@@ -315,7 +315,7 @@ fn failed_renewal_cannot_extend_the_original_operation_at_the_dispatch_and_commi
         assert_eq!(gates(&online, clock.now()), (Ok(Duration::from_secs(1)), CommitDecision::Allow));
         let refusal = service.renew(&scope, &operation, grant.id(), capability).unwrap_err();
         assert_eq!(refusal.code, expected);
-        assert_eq!(grant.expires_at(), MonotonicInstant::from_millis(T0 + 60_000));
+        assert_eq!(grant.expires_at(), MonotonicInstant::from_millis(T0 + 300_000));
 
         let requests = service.transport().take_requests();
         assert_eq!(requests.len(), 3);
@@ -337,7 +337,7 @@ fn failed_renewal_cannot_extend_the_original_operation_at_the_dispatch_and_commi
         }
         // Even with an otherwise online snapshot, no new lease means the original,
         // half-open cutoff still stops dispatch and commit.
-        clock.millis.set(T0 + 60_000);
+        clock.millis.set(T0 + 300_000);
         let expired = RefusalCode::UnsafeToStart;
         assert_eq!(gates(&online, clock.now()), (Err(expired), CommitDecision::Drop { code: expired }));
     }
@@ -420,7 +420,7 @@ fn begin_maps_newly_admitted_already_exists_owned_elsewhere_and_conflict() {
             assert_eq!(returned.as_str(), "op_example_0001");
             assert_eq!(grant.capability(), Capability::Chat);
             assert_eq!(grant.id().as_str(), "grant_example_0001");
-            assert_eq!(grant.expires_at(), MonotonicInstant::from_millis(T0 + 60_000));
+            assert_eq!(grant.expires_at(), MonotonicInstant::from_millis(T0 + 300_000));
             let (initial, due) = grant.renewal_schedule(&scope(), &operation()).unwrap();
             assert_eq!(initial.expires_at(), grant.expires_at());
             assert_eq!(due, MonotonicInstant::from_millis(T0 + 20_000));
@@ -735,6 +735,25 @@ fn begin_matches_response_installation_to_trusted_scope() {
     wrong_existing["installation_id"] = Value::String("inst_other".into());
     let mut service = scripted(vec![ok(200, wrong_existing)]);
     assert_eq!(service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap_err().code, RefusalCode::AuthUnavailable);
+}
+
+#[test]
+fn absolute_admission_lease_is_capped_at_rev4_without_extending_a_short_grant() {
+    for (expiry, expected_ms) in [
+        ("2026-01-01T00:05:00.000Z", 300_000),
+        ("2026-01-01T00:00:30.000Z", 30_000),
+        ("2026-01-02T00:00:00.000Z", 300_000), // The host wall clock is far behind the server's.
+        ("2025-12-31T00:00:00.000Z", 0),       // An already expired server timestamp grants no room.
+    ] {
+        let mut body = admitted_body();
+        body["execution_grant"]["expires_at"] = json!(expiry);
+        body["authorization_expires_at"] = json!(expiry);
+        let mut service = scripted(vec![ok(200, body)]);
+        let Admission::NewlyAdmitted { grant, .. } = service.begin(&scope(), &operation(), Capability::Chat, EntryCategory::Mastra).unwrap() else {
+            panic!("expected a parsed admission for {expiry}");
+        };
+        assert_eq!(grant.expires_at(), MonotonicInstant::from_millis(T0 + expected_ms), "{expiry}");
+    }
 }
 
 #[test]
