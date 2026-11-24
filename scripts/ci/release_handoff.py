@@ -86,10 +86,14 @@ def dispatch(tag, run_id, attempt):
 def verify_repository(metadata, configured, mode):
     require(mode in ("public", "private"), "configure the approved source visibility")
     expected, ident = (PUBLIC_SOURCE, PUBLIC_SOURCE_ID) if mode == "public" else (PRIVATE_SOURCE, number(configured))
+    # `intgral-ai/intcad` is deliberately still a fork of SolidCraft while it is the
+    # public release source. The private client repository must stand alone.
     require(metadata.get("full_name") == expected and metadata.get("visibility") == mode
-            and metadata.get("private") is (mode == "private") and metadata.get("fork") is False
+            and metadata.get("private") is (mode == "private")
+            and (mode != "private" or metadata.get("fork") is False)
             and metadata.get("id") == ident and (not configured or number(configured) == ident),
-            "release source must be the approved non-fork repository, ID and visibility")
+            "release source must be the approved repository, ID and visibility"
+            + ("" if mode != "private" else " (the private client must not be a fork)"))
 
 
 def verify_execution(run, jobs, run_id, attempt, repo_id=None):
@@ -378,14 +382,19 @@ def checkout_info(sha):
     return cargo["workspace"]["package"]["version"], sha256(git("show", f"{sha}:{CONTRACT}"))
 
 
-def frozen_notes(sha, name):
+def frozen_notes(sha, name, version, repo="."):
     parts = PurePosixPath(name).parts
     require(bool(parts) and "/".join(parts) == name
             and all(matches(r"[A-Za-z0-9_.-]+", part) and part not in (".", "..") for part in parts)
             and name.endswith(".md"), "notes must be a repository-relative Markdown path")
-    mode = git("ls-tree", sha, "--", name).split(b" ", 1)[0]
+    # Only the reviewed release-notes location for this version. Any tracked Markdown
+    # would otherwise let internal documentation be published as the update text.
+    require(name.startswith(("docs/release-notes-", "docs/release-notes/"))
+            and version in PurePosixPath(name).name,
+            "notes must be docs/release-notes-<version>.md or under docs/release-notes/<version>")
+    mode = git("-C", repo, "ls-tree", sha, "--", name).split(b" ", 1)[0]
     require(mode in (b"100644", b"100755"), "notes must be a tracked regular file at the frozen SHA")
-    notes = git("show", f"{sha}:{name}").decode("utf-8")
+    notes = git("-C", repo, "show", f"{sha}:{name}").decode("utf-8")
     require(bool(notes.strip()), "release notes are empty")
     require(PRIVATE_SOURCE.casefold() not in notes.casefold(), "release notes refer to the private source repository")
     return notes
@@ -480,8 +489,8 @@ def verify_environment(environment, policies):
              if rule.get("type") == "required_reviewers"]
     require(environment.get("name") == "release-signing" and len(rules) == 1
             and rules[0].get("prevent_self_review") is True and bool(rules[0].get("reviewers"))
-            and environment.get("can_admins_bypass") is not True,
-            "release-signing must require independent reviewers")
+            and environment.get("can_admins_bypass") is False,
+            "release-signing must require independent reviewers and forbid admin bypass")
     policy = environment.get("deployment_branch_policy") or {}
     require(policy.get("protected_branches") is False and policy.get("custom_branch_policies") is True
             and [(row.get("name"), row.get("type")) for row in policies] == [("main", "branch")],
@@ -503,6 +512,26 @@ def live_execution(repo, repo_id, run, attempt):
     verify_execution(api(prefix), jobs, run, attempt, repo_id)
 
 
+PRODUCERS = (
+    WORKFLOW, ".github/workflows/release.yml", "scripts/ci/gate.py",
+    "scripts/ci/package_contents.py", "scripts/ci/release_content.py",
+    "scripts/ci/release_handoff.py",
+)
+
+
+def require_producers(sha, repo="."):
+    """The gate evidence must have been produced by the protected main workflow.
+
+    The gate runs the candidate checkout's workflow, so a candidate could otherwise
+    rewrite it to emit self-consistent evidence. The publisher re-checks the tagged
+    producer against its own protected-main checkout before it trusts the handoff.
+    """
+    for path in PRODUCERS:
+        frozen = sha256(git("-C", repo, "show", f"{sha}:{path}"))
+        protected = sha256(git("-C", repo, "show", f"HEAD:{path}"))
+        require(frozen == protected, f"{path}: the release candidate changed the evidence producer")
+
+
 def selection(env, *, resolve_tag=False):
     repo, repo_id = authorize(env)
     version, run, attempt = dispatch(env["TAG"], env["RUN_ID"], env["RUN_ATTEMPT"])
@@ -518,7 +547,8 @@ def selection(env, *, resolve_tag=False):
 
 def prepare(env):
     repo, ident, run, attempt, sha, version, contract = selection(env, resolve_tag=True)
-    notes = frozen_notes(sha, env["NOTES_PATH"])
+    require_producers(sha)
+    notes = frozen_notes(sha, env["NOTES_PATH"], version)
     key = trusted_key(git("show", f"{sha}:{PUBLIC_KEY}"))
     work = Path("release-work")
     work.mkdir()
@@ -607,12 +637,13 @@ def draft_release(env, work, candidate):
     downloaded = work / "downloaded"
     downloaded.mkdir()
     for asset in draft["assets"]:
+        # Every asset is read back, not only the signing files: metadata digests can
+        # agree while the stored bytes do not.
         name = asset["name"]
-        if name in SIGNING_ASSETS:
-            require(positive(asset.get("id")), "invalid downloaded release asset ID")
-            path = downloaded / name
-            download(f"{release_endpoint}/assets/{asset['id']}", path, asset=True)
-            require(path.read_bytes() == (out / name).read_bytes(), f"{name}: download differs from signed upload")
+        require(positive(asset.get("id")), "invalid downloaded release asset ID")
+        path = downloaded / name
+        download(f"{release_endpoint}/assets/{asset['id']}", path, asset=True)
+        require(digest(path) == digest(out / name), f"{name}: downloaded bytes differ from the signed upload")
     verify_signature(downloaded, tag, key)
     with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
         print(f"### Verified draft {tag}\n"
