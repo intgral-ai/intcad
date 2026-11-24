@@ -337,23 +337,21 @@ off (an explicit `true` is refused; an absent field is accepted with a warning
 because some plans omit it), and a deployment branch policy that permits only
 `main` (no tags).
 
-A project with a single person cannot both dispatch and be forbidden to approve
-its own deployment. The default stays strict: with fewer than two reviewers, or
-with self-review allowed, admission fails unless the repository variable
-`RELEASE_SINGLE_OWNER=true` is set by a repository administrator, and only a single
-named person (not a team) may be the reviewer. An explicit `false` or an unset
-variable keeps the strict rule, and the dispatcher must be an administrator for the
-exception to apply. When the exception applies, the workflow warns,
-and the verified draft's summary records `Approval: single-owner`, the enabling
-variable, the reviewer account and the dispatch actor, so the exception and who
-enabled it are auditable. With two or more reviewers, self-review must still be
-prevented. The workflow checks that `main` is protected and reads back the
-reviewer and branch policy before the sensitive job. For the public source, use
-`RELEASE_SOURCE_MODE=public` (the default) and either leave
-`RELEASE_SOURCE_REPO_ID` unset or set it to `1446384930`. Configure `private`
-and the new repository's immutable ID only after migration approval and after
-confirming that the private repository's plan supports required reviewers.
-Do not relax approval requirements if the plan lacks them.
+The approved policy is **several authorized reviewers, any one of them approves**
+(single approval). `prevent_self_review=false` is the official configuration: the release
+manager dispatches with the shared team identity, and requiring a second person online would
+stall releases across time zones. `can_admins_bypass` must still be explicitly off so nobody
+can skip the approval step, and only `main` may deploy. Every approval must still be the real
+GitHub environment approval; the workflow refuses to run without the reviewer rule and the
+`main`-only policy.
+
+The limitation is recorded, not hidden: with a shared identity the person who dispatches can
+also be the person who approves, so GitHub cannot prove independent review. The compensating
+controls are that the workflow stages a **draft only**, re-reads every asset and the signature,
+binds the frozen SHA and the gate run/attempt, and makes the public transition a separate
+owner action. The verified draft summary records the approval mode, every authorized reviewer
+and the dispatch actor, so this is auditable afterwards. A bot identity is not part of this
+release.
 
 Store `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY`, `MINISIGN_SECRET_KEY` and, if
 needed, `MINISIGN_PASSWORD` only in `release-signing`. Install the GitHub App on

@@ -501,29 +501,32 @@ def authorize(env):
     return repo, repo_id
 
 
-def verify_environment(environment, policies, allow_single_owner=False):
+def verify_environment(environment, policies):
+    """The approved policy: several authorized reviewers, any one of them approves.
+
+    `prevent_self_review=false` is the official configuration because the release owner
+    dispatches with the shared team identity; requiring another person to be online would
+    stall releases across time zones. `can_admins_bypass` must still be explicitly off, so
+    nobody can skip the approval step altogether, and only `main` may deploy.
+    """
     rules = [rule for rule in environment.get("protection_rules") or []
              if rule.get("type") == "required_reviewers"]
     reviewers = (rules[0].get("reviewers") if rules else None) or []
     self_review = rules[0].get("prevent_self_review") if rules else None
     require(isinstance(self_review, bool), "release-signing must state prevent_self_review")
-    independent = self_review is True
-    # A one-person project cannot dispatch and also be forbidden to approve its own
-    # deployment. That shape is accepted ONLY when the owner set RELEASE_SINGLE_OWNER,
-    # and only for exactly one named person (a team stands for several people).
-    single_owner = (allow_single_owner and len(reviewers) == 1 and self_review is False
-                    and (reviewers[0] or {}).get("type") == "User")
+    mode = "independent" if self_review is True else "single-approval"
     require(environment.get("name") == "release-signing" and len(rules) == 1
-            and bool(reviewers) and (independent or single_owner)
+            and bool(reviewers)
             # GitHub may omit the field on some plans. Only an explicit `true` is a bypass;
             # an absent field is reported as a warning and checked in the UI.
             and environment.get("can_admins_bypass") is not True,
-            "release-signing must require a reviewer and must not allow admin bypass")
+            "release-signing must require at least one authorized reviewer and must not "
+            "allow admin bypass")
     policy = environment.get("deployment_branch_policy") or {}
     require(policy.get("protected_branches") is False and policy.get("custom_branch_policies") is True
             and [(row.get("name"), row.get("type")) for row in policies] == [("main", "branch")],
             "release-signing must allow only the exact main branch, not tags or other branches")
-    return "independent" if independent else "single-owner"
+    return mode
 
 
 def check_environment(env):
@@ -533,24 +536,21 @@ def check_environment(env):
     if "can_admins_bypass" not in environment:
         print("::warning::release-signing omitted can_admins_bypass; confirm in the UI that "
               "administrators cannot bypass its protection rules", flush=True)
-    allow_single = (env.get("RELEASE_SINGLE_OWNER") or "").strip().lower() == "true"
-    if allow_single:
-        actor = env.get("GITHUB_ACTOR") or ""
-        permission = (api(f"repos/{repo}/collaborators/{actor}/permission") or {}).get("permission")
-        require(permission == "admin",
-                "RELEASE_SINGLE_OWNER may only be used by a repository administrator")
     mode = verify_environment(environment, [row for page in pages(f"{endpoint}/deployment-branch-policies")
-                                            for row in page["branch_policies"]],
-                              allow_single_owner=allow_single)
+                                            for row in page["branch_policies"]])
     reviewers = [((row.get("reviewer") or {}).get("login") or (row.get("reviewer") or {}).get("slug"))
                  for rule in environment.get("protection_rules") or []
                  if rule.get("type") == "required_reviewers"
                  for row in rule.get("reviewers") or []]
-    if mode == "single-owner":
-        print("::warning::RELEASE_SINGLE_OWNER is set: release-signing has one reviewer who can "
-              "approve their own run; approval is a checkpoint, not independent review", flush=True)
-    return {"mode": mode, "singleOwner": allow_single, "reviewers": reviewers,
-            "actor": env.get("GITHUB_ACTOR") or ""}
+    if mode == "single-approval":
+        print("::notice::single-approval policy: any one of "
+              + ", ".join(str(r) for r in reviewers)
+              + " may approve; self-review is allowed because the release owner dispatches "
+                "with the shared identity", flush=True)
+        if len(reviewers) == 1:
+            print("::warning::release-signing has one authorized reviewer; approval is a "
+                  "checkpoint, not independent review", flush=True)
+    return {"mode": mode, "reviewers": reviewers, "actor": env.get("GITHUB_ACTOR") or ""}
 
 
 def live_execution(repo, repo_id, run, attempt):
@@ -727,7 +727,7 @@ def draft_release(env, work, candidate):
     approval_file = work / "approval.json"
     require(approval_file.is_file(), "no approval record from the environment check")
     approval = parse_json(approval_file.read_bytes())
-    require(approval.get("mode") in ("independent", "single-owner"), "invalid approval record")
+    require(approval.get("mode") in ("independent", "single-approval"), "invalid approval record")
     require(check_environment(env)["mode"] == approval["mode"],
             "release-signing approval mode changed after admission")
     out = work / "out"
@@ -775,10 +775,12 @@ def draft_release(env, work, candidate):
     verify_downloaded(out, downloaded)
     verify_signature(downloaded, tag, key)
     with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-        if approval["mode"] == "single-owner":
-            review_note = ("single-owner exception enabled by RELEASE_SINGLE_OWNER; reviewer "
+        if approval["mode"] == "single-approval":
+            review_note = ("single-approval policy: any one authorized reviewer ("
                            + ", ".join(str(r) for r in approval["reviewers"])
-                           + " may approve their own run, so this is a checkpoint, not independent review")
+                           + ") may approve, including the dispatcher's shared identity; "
+                             "approval is a checkpoint, not independent review"
+                           + (" (only one authorized reviewer)" if len(approval["reviewers"]) == 1 else ""))
         else:
             review_note = "independent reviewer required; self-review prevented"
         print(f"### Verified draft {tag}\n"
