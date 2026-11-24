@@ -2446,3 +2446,18 @@ throw away #214's nearly finished full run and force a rebase plus another two h
 10. **After approval**: the draft release is published, post-release acceptance runs, then the
     closed-source migration is coordinated (INT-1501), with the source repo staying public until
     publication is complete.
+
+**The tag-push gate's plan was exercised, not assumed.** A tag push has no diff (`push.before` is
+the zero SHA), so `main_merge.select_workflow` records `diff_complete=False`. Running the planner
+with exactly that shape:
+
+```
+p.make_plan(meta, [], detect_inventory(...), event_name="push", full=True,
+            release_required=True, diff_complete=False)
+→ scope: full | rust: run | blocked: None | releaseRequired: True
+```
+
+`full_validation` forces `full` for any `push`, and `plan.py` treats an incomplete diff as full
+(`full = full or event_name == "schedule" or not diff_complete`), so the tag-push run selects the
+whole suite instead of producing a blocked plan. The gate's `Select checks` step therefore works
+on the post-promotion path; the remaining risk is only time, not the plan.
