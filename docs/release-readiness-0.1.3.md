@@ -1058,3 +1058,109 @@ installs on that exact SHA (`~/.cache/int1503/rc-chain.sh` does the rebuild, the
 download, the aliases and the `--require` checksum list, and exits non-zero if the list is
 incomplete), then add PP's UI and the login run — or record them as
 explicitly approved exceptions — and publish only after that.
+
+### 15.1 Current decision: Assistant visual acceptance blocks 0.1.3
+
+**NO-GO.** The personal Linux/XWayland preview (`f4a7cf179b`, §13.1.1) showed an oversized
+Assistant composer and a dark rectangle with a partially clipped status line after collapse.
+This is pre-merge preview evidence, not an installed-package result. The local #221 merge watcher,
+the dependent #214 merge watcher, and `rc-chain.sh` are on hold; do not restart this automatic
+path until the fix and the visual acceptance evidence are recorded.
+
+| Check | Status | Evidence / required follow-up |
+|---|---|---|
+| Composer size | **FAIL in Linux preview** | With the same bundled page in WebKitGTK, changing only the root size from 125% to 100% changed the input text from 17.5 px to 14 px and the composer height from about 109 px to 88 px. The external-agent size rule is shared across platforms. |
+| Exposed backing after collapse | **REPRODUCED in Linux X11 VM** | At 125% app scale, a pixel outside the rounded panel but inside the WebView rectangle was RGB (13,13,13). Closing the Assistant changed the same pixel to RGB (28,28,28), the colour of the neighbouring viewport. |
+| Partially clipped status | **OBSERVED in Linux/XWayland preview; not reproduced in XFCE/X11** | The first fixture produced `Connection failed · OpenCode`. A follow-up kept synthetic ACP connected and reproduced the original missing-`intcad-cli` notice in the compact row. Its text ellipsized horizontally; no vertically clipped glyphs were found in the sampled frames. |
+| macOS visual acceptance | **NOT TESTED** | The macOS host uses a transparent WKWebView and a separate clipping container, but shares the page's sizing and folding logic. Verify open, collapse and resize on macOS; the Linux result does not count as a Mac pass. |
+
+The user saw the clipped notice after expanding the conversation and then collapsing it.
+A later screen update appeared to restore the row, but the action and timing are unknown.
+Capture the transition as well as the settled state: compare a no-input replay with separate
+replays that move the pointer or resize the window after collapse. This is a timing clue,
+not proof of a repaint defect or an explanation for the exposed backing.
+
+The isolated `ui221-repro` VM initially could not run the local NixOS build (glibc 2.44 vs
+Ubuntu 24.04's 2.39). The Ubuntu 24.04 E2E builder has now produced a standalone visual-test
+binary from clean source `f4a7cf179bd358db94931623e97a2d34f59aeb73`, with verified SHA-256
+`57f993c3074001af4cbb55811a1eaa84b9771472dcb130db024669ed97b36761`. The deployed guest binary
+matched that hash. It is not an installer or a release candidate.
+
+Local evidence lives in the `ui221-repro` run's `diagnostic/` directory: screenshots
+`10-fractional-expanded.png`, `11-fractional-collapsed.png`, and
+`12-fractional-assistant-closed.png`, with the corresponding X11 geometry logs. At 125% app
+scale the WebView shrank from 650×375 to 650×284 physical pixels, held its bottom edge at the
+same position, and matched `ui.rects`. This is evidence against a window-size mismatch in
+that transition, not an explanation for the clipped notice in the XWayland screenshot.
+
+The same binary's `acp-followup/` evidence shows a second backing symptom at 960×750 and 125%
+app scale: the compact notice had returned, but the expanded backing still covered the
+viewport. In the no-input replay, the last sample with extra backing was at 390 ms and the
+first with the viewport restored was at 405 ms. Pointer-move and resize replays also cleared
+before either input at 650 ms. A separate untimed replay kept extra backing in its settled
+screenshot. The samples were roughly 15 ms apart in the first 500 ms, not a capture of every
+presented frame. The collapsed panel's own rectangular backing remained after the extra area
+cleared. These are separate observations; neither proves the cause of vertical clipping.
+
+To clear the visual gate, use the merged candidate's installed packages to check consistent
+composer sizing across agent types, fully visible or fully hidden status text, and no exposed
+backing rectangle or stale content. Repeat collapse and resize at normal and scaled DPI in light
+and dark themes. Existing login, slash-menu, update, and publication-approval gates still apply.
+
+### 15.2 Parallel release audits
+
+- **RC provenance — BLOCKED.** `45248432170` attempt 2 built rehearsal SHA `14a6c95ae`, not
+  a descendant of the current merged `develop` snapshot `6032271178`. Rehashing the cached
+  Linux x64, Windows x64 and macOS payloads against their descriptors validates those
+  bytes, not a new candidate. Do not resume the old `rc-chain.sh` unchanged: it can continue
+  after failed Git preparation or a failed run, omits four package channels, and can
+  overwrite same-named evidence while flattening. Require the landed #217/#189/#221/#214
+  commits to be ancestors of one reviewed `develop` snapshot, then bind the run ID, workflow,
+  SHA, final success, and all 14 package/evidence pairs to the same candidate. Verify each
+  manifest and payload hash before flattening, keep evidence namespaced, and reject duplicate
+  payload names. The four PRs are the packaging and UI prerequisites, not the whole release
+  scope: verify the approved login and slash-command fixes are also present before treating an
+  RC as satisfying those feature gates.
+- **#214 standalone package verdict — BLOCKED in final review, not landed.** At `6717ef201c`, the
+  workflow's real package-evidence step inspected a fixture tarball with a complete agent
+  file layout except Node. The report named `mastra-agent/node` as missing, but the step
+  exited `0`: its final failure check was inside the native-distribution branch. Local
+  commit `bad89b5c4f` on `int1503-package-verdict` makes the failure check apply to both
+  branches. Review exposed a second problem: the inspector missed the agent in
+  `0.1.3-beta.1` archive wrappers. That failed in real workflow tests for Linux tar and
+  Windows portable ZIP before `83a38fbf97` fixed wrapper recognition. Stable Linux and
+  both prerelease fixtures now pass with a Node entry and explicitly fail without one.
+  Native packages still reject runtime markers and unreadable archives.
+  The scoped review passed those cases and found that an invalid numeric prerelease
+  identifier with a leading zero was still recognised. The `beta.01` archive regression
+  failed before `020da5b3d2` aligned that rule with the workflow's version check.
+  The local gate, release-content and package-content suites passed 73, 27 and 28 tests
+  respectively, and `actionlint` passed for `release.yml`. These tests do not launch a
+  package or replace hosted CI and the separate release gate. Scoped re-review passed.
+  Final review found a case newly reachable after the inspector learned prerelease
+  roots: a legal `preview-cli-build` version makes the app's portable ZIP contain
+  `-cli-` in its filename. `carries_no_agent()` mistakes it for a CLI-only archive.
+  A verified mixed fixture (complete MSI, ZIP missing Node) yielded no problems from
+  the aggregate check. Restrict the CLI exemption to the actual CLI archive name and
+  prove both the standalone and aggregate paths reject the broken ZIP.
+- **Gate B — BLOCKED / NOT RUN.** #213 is draft and behind at `22f427c8`. The [tested Windows
+  job](https://github.com/intgral-ai/intcad/actions/runs/45109730998/job/137479303661) passed
+  startup, then timed out in `tools/windows-resize-smoke.ps1`: after moving the window to
+  `(20,20)–(1004,640)`, `WM_NCHITTEST` at `(20,330)` did not return `HTLEFT` within 2 s
+  (Win32 error 1460). Assistant smoke was skipped, not failed. The latest completed green
+  `develop` job and the older package rehearsal do not include the login change. The newer
+  [#224 login integration PR](https://github.com/intgral-ai/intcad/pull/224), head `0519d3aba6`,
+  has a separate [failed Windows startup job](https://github.com/intgral-ai/intcad/actions/runs/45314675673/job/138179044898).
+  Actions identifies `windows-resize-smoke.ps1` as the failed step. Full log detail was
+  unavailable while the run was still in progress; do not assume the same error code as #213. On an
+  approved installed candidate, record SHA, installer hashes, a clean profile, offline CAD
+  smoke and anonymous controlled-request refusals separately from live staging login.
+  The login owner still owns the CI failure and live staging readiness.
+  `git merge-tree` on `0519d3aba6` found no conflict with `6032271178` alone, but conflicts
+  with the #221 head in the Assistant host, bridge and Windows smoke, and with the #214 local
+  patch stack in the bare-system Linux smoke and Windows smoke. These are integration
+  conflicts, not license to discard either branch's behaviour. Recheck on the reviewed heads
+  and run the affected smokes on the resolved integration SHA.
+- **macOS — NOT TESTED.** Follow the [Mac acceptance runbook](release-acceptance-macos-0.1.3.md)
+  for the exact reviewed DMG. An ad-hoc CI launch is not a clean Gatekeeper assessment or
+  native Intel acceptance.
