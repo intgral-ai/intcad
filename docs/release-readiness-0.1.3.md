@@ -2099,3 +2099,18 @@ so Gate B cannot produce staging packages until an admin adds a policy — `main
 promotion creates and the one `release-signing` already allows. `release-signing` itself is
 correctly restricted to `main` and to the two human reviewers (`Huaiyuan-Jing`, `paipeline`),
 which is the approval step the publisher is designed to wait on.
+
+**Resolved: the `staging` environment now allows `main`.** The Login Agent added the policy
+(`POST …/environments/staging/deployment-branch-policies {name: main, type: branch}` → 201,
+policy id 68111243). Independently verified:
+
+```
+GET …/environments/staging/deployment-branch-policies
+  {"total_count": 1, "branch_policies": [{"name": "main", "type": "branch"}]}
+GET …/environments/staging
+  deployment_branch_policy = {protected_branches: false, custom_branch_policies: true}
+```
+
+So `staging-packages.yml`'s `environment: staging` job will be permitted once the workflow is
+dispatched from `main` after the promotion. `release-signing` is unchanged: `main` only, with
+`Huaiyuan-Jing`/`paipeline` required reviewers.
