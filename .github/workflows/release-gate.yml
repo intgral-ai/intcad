@@ -216,7 +216,8 @@ jobs:
             echo "::error::Release gate not started: $CANDIDATE_REASON"
             exit 1
           fi
-          python3 - <<'PY'
+          # Isolated mode: the candidate checkout's root cannot shadow an import.
+          python3 -I - <<'PY'
           import hashlib, json, os, re, subprocess, sys
           from pathlib import Path
           sys.path.insert(0, 'scripts/ci')
