@@ -32,8 +32,8 @@ description: |
 adopt-info: solidcraft
 license: MIT OR Apache-2.0
 contact: https://github.com/intgral-ai/intcad-releases/issues
-website: https://intgral-ai.github.io/intcad-releases/
-source-code: https://intgral-ai.github.io/intcad-releases/
+website: https://github.com/intgral-ai/intcad
+source-code: https://github.com/intgral-ai/intcad
 issues: https://github.com/intgral-ai/intcad-releases/issues
 icon: stage/share/icons/hicolor/512x512/apps/ai.intgral.intcad.png
 base: core24

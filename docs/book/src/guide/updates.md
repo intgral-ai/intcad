@@ -1,7 +1,8 @@
 # Updates and privacy
 
-SolidCraft tells you when a newer release is out. It never updates itself without asking, and
-the check sends nothing about you or your designs.
+Intcad tells you when a newer release is out. It never updates itself without asking, and
+the check sends nothing about you or your designs. The first upgrade from v0.1.0–v0.1.2
+to v0.1.3 is [manual](#updating-from-010-011-or-012).
 
 ## What you see
 
@@ -16,7 +17,7 @@ room, then to its icon alone.
 - **Skip this version** hides the pill until an even newer release comes out.
 - **Remind me later** hides it for three days.
 
-SolidCraft checks every time it starts, so a release that came out since you last opened it shows
+Intcad checks every time it starts, so a release that came out since you last opened it shows
 up straight away, and again once a day while it stays open.
 
 **Preferences ▸ General ▸ Updates** has **Check for updates automatically** (on by default) and
@@ -29,46 +30,68 @@ even when automatic checks are turned off; builds that cannot check explain that
 
 ## Updating in one click
 
-Where SolidCraft can replace itself safely, the window also has **Update now**:
+Starting with v0.1.3, this window uses the new public release feed. Where an installation
+supports in-app updates, the window also has **Update now**:
 
 | Installed as | Update now does |
 |---|---|
 | AppImage | Downloads the new AppImage next to the old one, verifies it, renames it over the old file and offers **Restart now**; a file named like a release (`intcad-<version>-linux-<arch>.AppImage`) takes the new release's name, so tools such as Gearlever keep finding its update data, and any other name is kept |
-| Windows installer (`.msi`) | **Install (closes SolidCraft)**: downloads and verifies the `.msi`, closes SolidCraft (asking about unsaved designs first) and starts the installer |
+| Windows installer (`.msi`) | Downloads and verifies the `.msi`, closes Intcad (asking about unsaved designs first) and starts the installer |
 | Windows portable `.zip` or `.exe` | Downloads and verifies the package, swaps in the new `intcad.exe` (and `intcad-cli.exe`) and offers **Restart now**; the old file is removed at the next start |
-| macOS | **Download and open**: downloads and verifies the `.dmg` and opens it; quit SolidCraft, then drag the new SolidCraft to Applications to replace the old copy (macOS won't replace an app that is running) |
+| macOS | **Download and open**: downloads and verifies the `.dmg` and opens it; quit Intcad, then drag the new `Intcad.app` to Applications to replace the old copy |
 | Flatpak, Snap, `.deb`, `.rpm`, `.tar.gz` | Nothing: your package manager updates these (the window shows the command), or you unpack the new archive |
 
-Every download is verified before anything changes: its SHA-256 must match the release's
-`SHA256SUMS.txt`, fetched over HTTPS from the same release, and that list must carry a valid
-minisign signature by Intcad's release key whose comment names the release (see
-[releasing](https://github.com/intgral-ai/intcad-releases) for the published signatures). A build
-that carries the key refuses a release with no signature, with the old `SHA256SUMS` name instead
-of `SHA256SUMS.txt`, or with a signature for another version: there is no unsigned fallback. A
-download that doesn't verify is deleted and the installed copy is left as it was; **Download**
-still gets the package for a manual install. On macOS Intcad opens the disk image rather than
-replacing the app itself: you drag the new app to Applications, as you did the first time. The
-macOS package is not signed with a Developer ID in this release, so macOS may ask you to confirm
-the first launch of the new copy.
+Before applying an update, Intcad compares the package's SHA-256 with the checksum list from
+the same release. A build with the release key also requires a valid minisign signature with a
+trusted comment naming that release. It does not fall back to an unsigned checksum check.
+If verification fails, the installed copy is left unchanged. **Download** opens the package or
+release page in a browser; it does not verify a manual download for you.
 
 Update now needs write access to the installed file: an AppImage in a folder you can't write to
 fails with a message, and **Download** is the way to update it.
 
 ## Updating from 0.1.0, 0.1.1 or 0.1.2
 
-Those three releases read updates from a repository that is no longer public. They will not
-find a newer release there, so **Update now** cannot start: nothing is downloaded and your
-installed copy is unchanged.
+**Upgrade directly to v0.1.3 from your browser, not from the old app's update window.** The
+older Intcad builds use the old feed and do not switch to the new one. In v0.1.2 (commit
+`65af7346`), the updater accepts only the old `intgral-ai/intcad` release URL prefix and
+requires `SHA256SUMS.txt`, not `SHA256SUMS`. That build has no configured minisign key,
+so its checksum check does not require a minisign signature.
 
-Use **Download** (which opens the public release page) or the
-[download links](https://github.com/intgral-ai/intcad-releases#download) once, and install the new
-version over the old one as you first installed it. From 0.1.3 on, Intcad reads the public
-distribution repository and **Update now** works again. Your designs, preferences and account
-session are kept; only the program files are replaced.
+1. Save and back up your designs, then quit Intcad.
+2. Open the [v0.1.3 release page](https://github.com/intgral-ai/intcad-releases/releases/tag/v0.1.3)
+   in your browser. If it returns **404**, wait until the approved release is public.
+3. Download the package that matches your installation and architecture and
+   [verify it](#verify-a-manual-download). Run the MSI, replace `Intcad.app` or the AppImage,
+   or unpack the new archive to replace the old program files. For installations managed by
+   a package manager or launcher, use its upgrade instructions.
+
+The manual upgrade is intended to leave user data in place. An end-to-end upgrade from the
+published v0.1.2 installers has not been verified, including whether designs, preferences and
+sign-in are retained. Starting with v0.1.3, supported in-app checks use the new public feed.
+
+## Verify a manual download
+
+Get the installer, `SHA256SUMS.txt`, and `SHA256SUMS.txt.minisig` from the same release. Confirm
+the published minisign public key separately through a trusted official Intcad channel. A key
+listed alongside the installer is not proof of its identity.
+
+Set `INTCAD_MINISIGN_PUBLIC_KEY` to the confirmed base64 key. In the download folder, run:
+
+```sh
+minisign -Vm SHA256SUMS.txt -x SHA256SUMS.txt.minisig -P "$INTCAD_MINISIGN_PUBLIC_KEY" &&
+  sha256sum --check --ignore-missing SHA256SUMS.txt
+```
+
+For v0.1.3, the verified signature's trusted comment should read `Intcad v0.1.3`. Check that
+your exact downloaded filename reports `OK`. If `sha256sum` is unavailable, compute the
+file's SHA-256 with `shasum -a 256` on macOS or `Get-FileHash -Algorithm SHA256` in PowerShell.
+Compare it with the entry for that filename in the verified list. Do not install if a check
+fails or you cannot confirm the key.
 
 ## What is sent
 
-One HTTPS request each time SolidCraft starts, and once a day while it stays open:
+The new feed gets an HTTPS request each time Intcad starts and once a day while it stays open:
 
 ```text
 GET https://api.github.com/repos/intgral-ai/intcad-releases/releases/latest
@@ -77,10 +100,10 @@ Accept: application/vnd.github+json
 X-GitHub-Api-Version: 2022-11-28
 ```
 
-**Update now** then downloads `SHA256SUMS.txt` (and its signature) and the one package from the
-release's own `github.com/intgral-ai/intcad-releases/releases/download/…` links, with the same
-User-Agent. That's all: no version number, no machine or user identifier, no usage data, no cookies. GitHub
-sees the request like any other visit to the API (your IP address, the time); see
+**Update now** then downloads the checksum list (and its signature when required) and the package
+from the release's own `github.com/intgral-ai/intcad-releases/releases/download/…` links, with the
+same User-Agent. The check sends no installed version number, machine or user identifier, usage
+data or cookies. GitHub sees the request like any other visit to the API (your IP address, the time); see
 [GitHub's privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
 SolidCraft compares the answer with its own version on your computer.
 
@@ -117,7 +140,7 @@ off.
 
 ## Which file Download gets
 
-Releases attach the main packages under fixed names (see [releasing](https://github.com/intgral-ai/intcad-releases)),
+The [public releases](https://github.com/intgral-ai/intcad-releases/releases) list the main packages,
 and Intcad picks the one matching how it was installed:
 
 | Installed as | Detected by | Download | How to update |
@@ -132,7 +155,7 @@ and Intcad picks the one matching how it was installed:
 | Windows installer | under Program Files, or in the folder the installer recorded | `intcad-windows-<arch>.msi` | Run the installer |
 | Windows portable | `intcad-cli.exe` beside it | `intcad-windows-<arch>-portable.zip` | Unzip over the old copy |
 | Windows `.exe` | anywhere else on Windows | `Intcad-<version>-windows-x64.exe` | Replace the old `.exe` |
-| macOS | inside `Intcad.app` | `intcad-macos-universal.dmg` | Quit SolidCraft, then drag the new app to Applications |
+| macOS | inside `Intcad.app` | `intcad-macos-universal.dmg` | Quit Intcad, then drag the new app to Applications |
 
 The window shows the command for Snap, `.deb` and `.rpm` installations, with a Copy button. The
 Flatpak has no network permission and Flatpak itself (or your software center) offers its
