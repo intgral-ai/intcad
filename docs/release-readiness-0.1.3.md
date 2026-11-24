@@ -1251,6 +1251,11 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
 
 ### 15.2 Parallel release audits
 
+- **#221 native shape fix does not build yet — BLOCKED locally.** The E2E build of
+  `27bdaa577e` failed to compile `apps/solidcraft/src/assistant_web.rs`: `connect_map_event`
+  needs `gtk::prelude::WidgetExtManual`, and the import was `WidgetExt` (unused). This is
+  exactly the class the isolated geometry driver hid. Fix and a real
+  `cargo check -p solidcraft --profile ci` are in progress; no native acceptance exists yet.
 - **#221 composer sizing — local browser fix reviewed, not landed.** `b002647acb` held the
   centred input at 14 px and the composer at 86 px for both agent modes in the same browser
   viewport. Independent Spec and Quality review approved; controller rerun had 12 passes and
@@ -1282,7 +1287,10 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   reproduced the exact CI error first, then `crates/engine/src/validation` adopts the
   winning verifiable terminal report (and its state) when a writer published only the
   report; a different terminal state still returns `REPORT_MISMATCH` (a guard test covers
-  that). Focused run: `55 passed, 3594 filtered out` on `validation::tests`. Two other failures in that job are
+  that). Focused run: `56 passed, 3594 filtered out` on `validation::tests`;
+  `cargo clippy -p solidcraft-engine --all-targets --profile ci -- -D warnings` reported no
+  issues; `cargo fmt --all -- --check` and `git diff --check` were clean. Published as
+  [#226](https://github.com/intgral-ai/intcad/pull/226); the hosted gate is the remaining proof. Two other failures in that job are
   listed known failures (SMLib variable fillet `Unsupported`, the dialog variable round
   status 1001). The `ci` verifier then failed with `rust: real job result is not success`
   and `rust: missing receipt`. Until `ci` is green at a reviewed `develop`, no release-gate
