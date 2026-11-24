@@ -414,8 +414,11 @@ def frozen_notes(sha, name, version, repo="."):
     return notes
 
 
-def api(*args):
-    return parse_json(subprocess.check_output(["gh", "api", *args]))
+def api(*args, token=None):
+    """A GitHub API read. `token` overrides GH_TOKEN for source reads after the App token
+    step has replaced it with a token that only the distribution repository can use."""
+    env = None if token is None else {**os.environ, "GH_TOKEN": token}
+    return parse_json(subprocess.check_output(["gh", "api", *args], env=env))
 
 
 def pages(endpoint):
@@ -578,19 +581,19 @@ def require_producers(sha, repo="."):
         require(frozen == protected, f"{tree}: the release candidate changed the evidence producer")
 
 
-def remote_tag_commit(repo, tag):
+def remote_tag_commit(repo, tag, token=None):
     """The commit a remote tag names, read from the repository API (exact ref, no git auth).
 
     Uses the API rather than `git ls-remote` so the tag and branch are read by their exact
     names and the check also works for a private source, where anonymous Git is not allowed.
     """
     try:
-        ref = api(f"repos/{repo}/git/ref/tags/{tag}")
+        ref = api(f"repos/{repo}/git/ref/tags/{tag}", token=token)
     except subprocess.CalledProcessError as error:
         raise ValueError(f"tag {tag} does not exist on the source") from error
     obj = ref.get("object") or {}
     if obj.get("type") == "tag":
-        tagged = api(f"repos/{repo}/git/tags/{obj.get('sha')}")
+        tagged = api(f"repos/{repo}/git/tags/{obj.get('sha')}", token=token)
         commit = (tagged.get("object") or {}).get("sha")
     elif obj.get("type") == "commit":
         commit = obj.get("sha")
@@ -607,14 +610,14 @@ def verify_remote_tag(tag_commit, main_commit, sha, ancestor):
     require(ancestor, "frozen SHA is not on the remote main branch")
 
 
-def require_remote_tag(repo, tag, sha, local="."):
+def require_remote_tag(repo, tag, sha, local=".", token=None):
     """Read the live tag and main tip, then prove the frozen SHA is on main.
 
     Called before signing and again immediately before creating the draft, so a tag moved
     or deleted after the gate stops staging even if the local checkout still has it.
     """
-    commit = remote_tag_commit(repo, tag)
-    main = (api(f"repos/{repo}/git/ref/heads/main").get("object") or {}).get("sha")
+    commit = remote_tag_commit(repo, tag, token)
+    main = (api(f"repos/{repo}/git/ref/heads/main", token=token).get("object") or {}).get("sha")
     require(matches(COMMIT, main), "cannot read the remote main branch")
     # The tip must exist locally to answer the ancestry question; it normally does because
     # the publisher checks out main at dispatch. Fail closed if it does not.
@@ -718,6 +721,14 @@ def upload_asset(draft_id, path, token):
 
 def draft_release(env, work, candidate):
     tag = "v" + candidate["version"]
+    # The verified-summary claim must be backed by a record taken at admission; refuse
+    # before creating anything if it is missing or if the settings changed since.
+    approval_file = work / "approval.json"
+    require(approval_file.is_file(), "no approval record from the environment check")
+    approval = parse_json(approval_file.read_bytes())
+    require(approval.get("mode") in ("independent", "single-owner"), "invalid approval record")
+    require(check_environment(env)["mode"] == approval["mode"],
+            "release-signing approval mode changed after admission")
     out = work / "out"
     notes = (work / "notes.md").read_bytes()
     require(sha256(notes) == candidate["notesSha256"], "frozen notes changed")
@@ -732,7 +743,10 @@ def draft_release(env, work, candidate):
             "distribution release or draft already exists")
     assert_tag_absent(tag)
     # Last check before the POST: the live tag must still name the frozen SHA on main.
-    require_remote_tag(candidate["source"], tag, candidate["sourceRevision"])
+    # It runs with the job token (SOURCE_TOKEN), because GH_TOKEN may already be the App
+    # token that can only read the distribution repository.
+    require_remote_tag(candidate["source"], tag, candidate["sourceRevision"],
+                       token=env.get("SOURCE_TOKEN") or None)
     create = dict(tag_name=tag, target_commitish="main", name=f"Intcad {candidate['version']}",
                   body=notes.decode(), draft=True, prerelease=False)
     body = work / "draft-request.json"
@@ -759,10 +773,6 @@ def draft_release(env, work, candidate):
         download(f"{release_endpoint}/assets/{asset['id']}", downloaded / name, asset=True)
     verify_downloaded(out, downloaded)
     verify_signature(downloaded, tag, key)
-    approval_file = work / "approval.json"
-    require(approval_file.is_file(), "no approval record from the environment check")
-    approval = parse_json(approval_file.read_bytes())
-    require(approval.get("mode") in ("independent", "single-owner"), "invalid approval record")
     with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
         if approval["mode"] == "single-owner":
             review_note = ("single-owner exception enabled by RELEASE_SINGLE_OWNER; reviewer "
