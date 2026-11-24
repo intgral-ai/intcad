@@ -251,33 +251,41 @@ class StagingWorkflow(unittest.TestCase):
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, expected, result.stderr)
 
-    def test_version_guard_rejects_other_workflows_and_events(self):
+    def test_account_config_guard_rejects_other_callers_and_anonymous_candidates(self):
         version = workflow("release.yml")["jobs"]["version"]
         step = next((step for step in version["steps"]
-                     if step.get("id") == "staging-guard"), None)
-        self.assertIsNotNone(step, "missing staging caller guard")
-        self.assertEqual(step["if"], "inputs.staging_account_config != '' || "
-                         "github.workflow_ref == format('{0}/.github/workflows/staging-packages.yml@{1}', "
-                         "github.repository, github.ref)")
+                     if step.get("id") == "account-config-guard"), None)
+        self.assertIsNotNone(step, "missing account configuration caller guard")
+        self.assertIn("inputs.staging_account_config != ''", step["if"])
+        self.assertIn("inputs.production_account_config != ''", step["if"])
+        self.assertIn("release-gate.yml", step["if"])
         self.assertEqual(step["env"], {
             "CALLER_WORKFLOW_REF": "${{ github.workflow_ref }}",
             "STAGING_WORKFLOW_REF": "${{ format('{0}/.github/workflows/staging-packages.yml@{1}', github.repository, github.ref) }}",
+            "RELEASE_GATE_WORKFLOW_REF": "${{ format('{0}/.github/workflows/release-gate.yml@{1}', github.repository, github.ref) }}",
             "HAS_STAGING_CONFIG": "${{ inputs.staging_account_config != '' && '1' || '0' }}",
+            "HAS_PRODUCTION_CONFIG": "${{ inputs.production_account_config != '' && '1' || '0' }}",
         })
-        canonical = "fixture/repo/.github/workflows/staging-packages.yml@refs/heads/fixture"
-        for caller, event, snapshot, ok in (
-            (canonical, "workflow_dispatch", "1", True),
-            (canonical, "workflow_dispatch", "0", False),
-            (canonical, "pull_request", "1", False),
-            (canonical.replace("staging-packages", "release"), "workflow_dispatch", "1", False),
-            (canonical.replace("fixture/repo", "other/repo"), "workflow_dispatch", "1", False),
-            (canonical + "-other", "workflow_dispatch", "1", False),
+        staging = "fixture/repo/.github/workflows/staging-packages.yml@refs/heads/fixture"
+        gate = "fixture/repo/.github/workflows/release-gate.yml@refs/heads/fixture"
+        for caller, event, staging_config, production_config, ok in (
+            (staging, "workflow_dispatch", "1", "0", True),
+            (staging, "workflow_dispatch", "0", "0", False),
+            (staging, "pull_request", "1", "0", False),
+            (staging, "workflow_dispatch", "1", "1", False),
+            (gate, "pull_request", "0", "1", True),
+            (gate, "pull_request", "0", "0", False),
+            (gate, "pull_request", "1", "0", False),
+            (gate.replace("release-gate", "release"), "pull_request", "0", "1", False),
+            (staging.replace("fixture/repo", "other/repo"), "workflow_dispatch", "1", "0", False),
+            (staging + "-other", "workflow_dispatch", "1", "0", False),
         ):
-            with self.subTest(caller=caller, event=event):
+            with self.subTest(caller=caller, event=event, staging=staging_config, production=production_config):
                 result = subprocess.run(
                     ["bash", "-ec", step["run"]],
-                    env={**os.environ, "CALLER_WORKFLOW_REF": caller, "STAGING_WORKFLOW_REF": canonical,
-                         "GITHUB_EVENT_NAME": event, "HAS_STAGING_CONFIG": snapshot},
+                    env={**os.environ, "CALLER_WORKFLOW_REF": caller, "STAGING_WORKFLOW_REF": staging,
+                         "RELEASE_GATE_WORKFLOW_REF": gate, "GITHUB_EVENT_NAME": event,
+                         "HAS_STAGING_CONFIG": staging_config, "HAS_PRODUCTION_CONFIG": production_config},
                     capture_output=True,
                 )
                 self.assertEqual(result.returncode == 0, ok)
