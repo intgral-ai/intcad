@@ -1410,7 +1410,10 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   (cleanup), i.e. ~28 minutes of silence inside `apt-get update`. The same job took **3 min 39 s**
   on the successful run at `ba52b76d4c`. Re-running is the right response; a later infrastructure
   change should add bounded retries/timeout to that step so a slow mirror fails fast instead of
-  burning the job's whole budget.
+  burning the job's whole budget. Evidence it is per-runner: in the same attempt, `Native
+  Linux Clippy` finished its apt step at `08:36:42` while the gate job had been in apt since
+  `08:15:08`. A separate PR (#231) now bounds every `apt-get update` in `ci.yml` and
+  `release.yml` to three 180 s attempts.
 - **`develop` required CI is red — BLOCKED.** The latest `CI` run on merged `develop`
   (`6032271178`) is [run 45299000127](https://github.com/intgral-ai/intcad/actions/runs/45299000127),
   conclusion `failure`. Its `Native Linux selected regression gate` failed the
