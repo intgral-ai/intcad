@@ -1209,6 +1209,15 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   viewport. Independent Spec and Quality review approved; controller rerun had 12 passes and
   one pytest-plugin deprecation warning. This is not installed acceptance. Native backing work
   continues separately; vertical clipping stays unverified.
+- **#223 slash commands — BLOCKED, owner not confirmed.** The issue is open and unassigned.
+  A read-only review at `b002647acb` confirms the packaged agent emits
+  `available_commands_update` (`agent-smoke.mjs`), while the client's `acp.rs` ignores it.
+  Handoff: scope displayed commands to the active ACP session. In the bundled-browser
+  regression, `/` and `/skill` show the advertised command, selecting it keeps it in the
+  draft, and an old session's late update cannot repopulate a new session. An empty list
+  clears the current session's menu. Coordinate the composer and bundle with PP and the
+  Rust state/event bridge with the Login Agent; leave authorization unchanged. No code
+  change or acceptance run for #223 yet.
 - **RC provenance — BLOCKED.** `45248432170` attempt 2 built rehearsal SHA `14a6c95ae`, not
   a descendant of the current merged `develop` snapshot `6032271178`. Rehashing the cached
   Linux x64, Windows x64 and macOS payloads against their descriptors validates those
@@ -1266,7 +1275,9 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   with the #221 head in the Assistant host, bridge and Windows smoke, and with the #214 local
   patch stack in the bare-system Linux smoke and Windows smoke. These are integration
   conflicts, not license to discard either branch's behaviour. Recheck on the reviewed heads
-  and run the affected smokes on the resolved integration SHA.
+  and run the affected smokes on the resolved integration SHA. A new simulation at local
+  `b002647acb` and `ee17261b82` still finds those conflicts with `0519d3aba6`, but no conflict
+  when either is tested against `6032271178` or when the two are tested against each other.
 - **macOS — NOT TESTED.** Follow the [Mac acceptance runbook](release-acceptance-macos-0.1.3.md)
   for the exact reviewed DMG. An ad-hoc CI launch is not a clean Gatekeeper assessment or
   native Intel acceptance.
@@ -1284,7 +1295,15 @@ nonpublishing build, not proof of the new production signing or publication path
 Anonymous readiness probe (no credentials, redirects followed): `https://intgral.ai/` returned
 HTTP 200. Both `https://github.com/intgral-ai/intcad-releases` and its GitHub API
 `releases/latest` returned HTTP 404. This does not tell us whether the tentative repository is
-absent or private, or prove that the homepage links to working downloads.
+absent or private. The homepage's `#download` section says the installers are coming soon
+and has no download links in the returned HTML; an accessible homepage is not an accessible
+product distribution path.
+
+Legacy upgrade inputs are ready for testing: the published 0.1.2 Linux tarball, Windows MSI
+and universal DMG match a freshly downloaded anonymous `SHA256SUMS`. The DMG is newly
+downloaded (302,524,433 bytes), not copied from CI. Full digests and local locations are in
+`~/.local/state/intcad-release-readiness/v0.1.3/legacy-baseline.Nyw4DRC8/README.md`.
+This identifies the old installers only; no cutover, install or migration verdict follows.
 
 The Release Manager requested the two owner handoffs in their respective local sessions:
 Login Agent for Gate B and integration, Migration Agent for the isolated build location,
