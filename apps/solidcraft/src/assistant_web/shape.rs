@@ -42,9 +42,10 @@ pub(super) fn spans(surfaces: &[[f64; 12]], zoom: f64, width: i32, height: i32) 
             }
         };
         let start = out.len();
-        for y in (t.floor() as i32).clamp(0, height)..(b.ceil() as i32).clamp(0, height) {
-            // Include pixels touched by the curve, not just those whose centre lies in it;
-            // WebKit's antialiased border is part of the surface too.
+        // A row starting above a fractional top can be entirely unpainted by WebKit.
+        // Don't expose this opaque native row by rounding the top outwards.
+        for y in (t.ceil() as i32).clamp(0, height)..(b.ceil() as i32).clamp(0, height) {
+            // Keep the horizontal coverage of the antialiased corner on each included row.
             let top = f64::from(y + 1) - t;
             let bottom = b - f64::from(y);
             let left = (l + inset(tlx, tly, top).max(inset(blx, bly, bottom))).floor() as i32;

@@ -1141,6 +1141,17 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn centre_shape_excludes_the_backing_row_above_a_fractional_top() {
+        // At 125% the header starts at y=0.75; the opaque native row starting at y=0
+        // must not be included. The second surface must not fill it back in.
+        let surfaces = [[0., 0.6, 16., 8., 4., 4., 4., 4., 0., 0., 0., 0.], [0., 8., 16., 20., 4., 4., 4., 4., 4., 4., 4., 4.]];
+        let spans = shape::spans(&surfaces, 1.25, 20, 25);
+        assert!(spans.iter().all(|&[_, y, _, _]| y >= 1), "{spans:?}");
+        assert!(spans.iter().any(|&[x, y, width, _]| y == 1 && x <= 10 && x + width > 10), "{spans:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn centre_shape_allocation_allows_one_css_pixel_of_rounding_not_two() {
         assert!(shape::matches_allocation(520., 137., 1.25, 650, 171));
         assert!(shape::matches_allocation(519., 137., 1.25, 650, 171));
