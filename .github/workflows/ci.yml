@@ -503,7 +503,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' && fromJSON(needs.changes.outputs.plan).jobs.rust.decision == 'run'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    # A pull request restores the base branch's Cargo cache, and a changed Cargo.lock misses it, so
+    # the first run of a branch builds the whole workspace cold. With the vendored kernel that no
+    # longer fits 60 minutes (develop, warm cache: 27 minutes; #185, cold: 40; this branch: still
+    # building when the old budget ran out). The budget changes; the archive, its content and the
+    # tests that read it do not.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
