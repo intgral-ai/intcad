@@ -21,3 +21,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # Account credentials in the OS-protected store: Keychain, Credential Manager, Secret Service.
 # Native only (this crate is cfg(not(wasm32))); same version and features as the app (Task 4).
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["user"] }
+
+[target.'cfg(windows)'.dependencies]
+dirs-sys = "0.5"

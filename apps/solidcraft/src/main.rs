@@ -928,9 +928,9 @@ fn adopt_legacy_settings() {
 /// Open the account runtime only after legacy settings adoption has run. The account ledger's
 /// `open` creates its directory, which would otherwise make a fresh settings folder non-fresh
 /// and drop the previous release's `app.ron`.
-fn prepare_account_runtime(settings: Option<&std::path::Path>, migrate: impl FnOnce()) -> account::AccountRuntime {
+fn prepare_account_runtime(migrate: impl FnOnce(), open: impl FnOnce() -> account::AccountRuntime) -> account::AccountRuntime {
     migrate();
-    account::AccountRuntime::desktop(settings)
+    open()
 }
 
 fn adopt_settings(
@@ -1152,11 +1152,14 @@ fn main() -> eframe::Result {
     // folder: creating the account ledger first makes the folder look non-fresh and silently
     // drops the previous release's app.ron. The probe and ledger open still happen before the
     // window exists, off the UI thread.
-    let account_runtime = prepare_account_runtime(settings.as_deref(), || {
-        if std::env::var_os("SOLIDCRAFT_SETTINGS_DIR").is_none() {
-            adopt_legacy_settings();
-        }
-    });
+    let account_runtime = prepare_account_runtime(
+        || {
+            if std::env::var_os("SOLIDCRAFT_SETTINGS_DIR").is_none() {
+                adopt_legacy_settings();
+            }
+        },
+        account::AccountRuntime::desktop,
+    );
     let account_startup = account_runtime.startup();
     // `--max-file-size 2GB`: the largest files this run reads, over Preferences, never saved (#4086).
     if let Some(value) = max_file_size {
@@ -2445,9 +2448,13 @@ mod msaa_tests {
         std::fs::write(legacy_eframe.join("app.ron"), "(previous release settings)").unwrap();
         assert!(!current.exists());
 
-        let runtime = super::prepare_account_runtime(Some(&current), || {
-            super::adopt_settings(&current, &[], &legacy, Some(&legacy_eframe)).unwrap();
-        });
+        let runtime = super::prepare_account_runtime(
+            || super::adopt_settings(&current, &[], &legacy, Some(&legacy_eframe)).unwrap(),
+            || {
+                solidcraft_account_native::FileOperationStore::open(current.join("account")).unwrap();
+                super::account::AccountRuntime::with_session(solidcraft_account_native::CredentialSession::without_persistence())
+            },
+        );
         // The migration saw a fresh folder and copied app.ron; only afterwards did the runtime
         // create the ledger directory.
         assert_eq!(std::fs::read_to_string(current.join("app.ron")).unwrap(), "(previous release settings)");

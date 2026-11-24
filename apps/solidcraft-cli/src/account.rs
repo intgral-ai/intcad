@@ -3,14 +3,13 @@
 //! A reachable app control port or a request field is never authority for a charged tool.
 
 use std::cell::Cell;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Read as _;
-use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use solidcraft_account_native::{
-    ACCOUNT_KEYRING_SERVICE, CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePrompt, KeyringStore, MemorySession, NoPersistentStore,
-    SessionBilling, UreqDeviceCodeTransport, UreqTransport, WireConnection, WorkOsPublicClient,
+    ACCOUNT_KEYRING_SERVICE, AccountPaths, CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePrompt, KeyringStore, MemorySession,
+    NoPersistentStore, SessionBilling, UreqDeviceCodeTransport, UreqTransport, WireConnection, WorkOsPublicClient,
 };
 #[cfg(test)]
 use solidcraft_engine::entitlement::BillingPort;
@@ -54,48 +53,16 @@ pub fn configured_billing() -> Option<(SessionBilling, File)> {
     let connection = WireConnection::product_origin(option_env!("INTCAD_PRODUCT_HTTPS_ORIGIN")?, env!("CARGO_PKG_VERSION")).ok()?;
     let clock = BootClock::default();
     clock.sample()?;
-    // The origin-bound keyring does not record a data directory. A trusted deployment must
-    // pin the desktop's canonical directory for this build's origin and launch the desktop
-    // with that directory for this keyring. Never pick or create a second lock from CLI env.
-    let root = pinned_desktop_data_dir(option_env!("INTCAD_ACCOUNT_DESKTOP_DIR"), &desktop_data_dir()?)?;
-    let lock_path = root.join("account-keyring.lock");
-    if !std::fs::symlink_metadata(&lock_path).ok()?.is_file() {
-        return None;
-    }
-    let lock = OpenOptions::new().read(true).write(true).open(lock_path).ok()?;
-    lock.try_lock().ok()?;
+    let (journal, lock) = AccountPaths::lock_existing(AccountPaths::for_current_user()?.root())?;
     let store = KeyringStore::new(format!("{ACCOUNT_KEYRING_SERVICE} [{}]", connection.base_url()));
     let billing = SessionBilling::new(
         CredentialSession::new(Box::new(store)),
         connection,
         Box::new(UreqTransport::with_limits(Duration::from_secs(5), Duration::from_secs(3))),
-        root.join("account"),
+        journal,
         clock,
     );
     Some((billing, lock))
-}
-
-fn pinned_desktop_data_dir(pin: Option<&str>, resolved: &std::path::Path) -> Option<PathBuf> {
-    let pin = PathBuf::from(pin?);
-    if !pin.is_absolute() || pin.canonicalize().ok()? != pin || resolved.canonicalize().ok()? != pin {
-        return None;
-    }
-    let journal = pin.join("account");
-    (journal.canonicalize().ok()? == journal && journal.is_dir()).then_some(pin)
-}
-
-fn desktop_data_dir() -> Option<PathBuf> {
-    if cfg!(windows) {
-        return std::env::var_os("APPDATA").map(PathBuf::from).filter(|path| path.is_absolute()).map(|path| path.join("Intcad/data"));
-    }
-    if cfg!(target_os = "macos") {
-        return std::env::home_dir().map(|home| home.join("Library/Application Support/Intcad"));
-    }
-    std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| std::env::home_dir().map(|home| home.join(".local/share")))
-        .map(|path| path.join("intcad"))
 }
 
 /// Linux uptime includes suspend. Other hosts stay closed until there is a trustworthy clock.
@@ -346,6 +313,7 @@ mod tests {
     use solidcraft_mcp::Headless;
 
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn configured_origin_uses_the_desktop_keyring_namespace() {
@@ -358,20 +326,46 @@ mod tests {
 
     #[test]
     fn runtime_data_directory_cannot_select_another_keyring_lock() {
-        let mut entropy = [0_u8; 16];
-        getrandom::fill(&mut entropy).unwrap();
-        let root = std::env::temp_dir().join(OperationId::mint_from_entropy(&entropy).unwrap().as_str());
-        let other = root.join("other");
-        std::fs::create_dir_all(root.join("account")).unwrap();
-        std::fs::create_dir_all(other.join("account")).unwrap();
-        let pinned = root.canonicalize().unwrap();
-        let pin = pinned.to_str().unwrap();
-        assert_eq!(pinned_desktop_data_dir(Some(pin), &root), Some(pinned.clone()));
-        assert_eq!(pinned_desktop_data_dir(Some(pin), &other), None);
-        assert_eq!(pinned_desktop_data_dir(None, &root), None);
-        std::fs::remove_dir(other.join("account")).unwrap();
-        std::fs::remove_dir(other).unwrap();
-        std::fs::remove_dir(root.join("account")).unwrap();
+        // Use a child to inject environment values without mutating this test process's env.
+        const CHILD: &str = "INTCAD_TEST_ACCOUNT_PATH_CHILD";
+        let root = AccountPaths::for_current_user();
+        if let Some(expected) = std::env::var_os(CHILD) {
+            assert_eq!(root.as_ref().map(|paths| paths.root().as_os_str()).unwrap_or_default(), expected);
+            return;
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+        assert!(root.is_some(), "the test user has an OS account directory");
+        let other = std::env::temp_dir().join("intcad-test-untrusted-account-location");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "account::tests::runtime_data_directory_cannot_select_another_keyring_lock"])
+            .env(CHILD, root.as_ref().map(|paths| paths.root().as_os_str()).unwrap_or_default())
+            .env("HOME", &other)
+            .env("XDG_DATA_HOME", &other)
+            .env("APPDATA", &other)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
+    #[test]
+    fn cli_requires_both_desktop_lock_and_ledger() {
+        let root = std::env::temp_dir().join(format!("intcad-existing-store-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        assert!(AccountPaths::lock_existing(&root).is_none());
+        let ledger = root.join("account");
+        let lock_path = root.join("account-keyring.lock");
+        assert!(!ledger.exists() && !lock_path.exists());
+        std::fs::create_dir(&ledger).unwrap();
+        assert!(AccountPaths::lock_existing(&root).is_none());
+        assert!(!lock_path.exists());
+        File::create(&lock_path).unwrap();
+        let (opened, lock) = AccountPaths::lock_existing(&root).unwrap();
+        assert_eq!(opened, ledger.canonicalize().unwrap());
+        assert!(AccountPaths::lock_existing(&root).is_none(), "the CLI must acquire the shared lock");
+        drop(lock);
+        std::fs::remove_file(lock_path).unwrap();
+        std::fs::remove_dir(ledger).unwrap();
         std::fs::remove_dir(root).unwrap();
     }
 

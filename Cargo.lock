@@ -5094,7 +5094,9 @@ version = "0.1.2"
 name = "solidcraft-account-native"
 version = "0.1.2"
 dependencies = [
+ "dirs-sys",
  "keyring",
+ "nix 0.31.3",
  "rustls",
  "serde",
  "serde_json",

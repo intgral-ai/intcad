@@ -96,9 +96,9 @@ A readable sign-out marker offers cleanup, and an unreadable one keeps account a
 After restart, a complete pair remains a candidate until the bounded product status check accepts
 it. The startup worker can retry recorded settlement for the same operation without re-execution.
 While that worker is pending, fresh sign-in is refused rather than replacing the credentials it
-is using. Participating desktop processes with the same default data directory serialize
-account-store access. A second process that cannot acquire the lock keeps ordinary CAD available
-but cannot access the account store. The ledger-directory override does not move the lock.
-This does not coordinate with older clients or with launches that resolve a different default
-data directory (for example, different `XDG_DATA_HOME` values on Linux).
+is using. The desktop and CLI use the same OS-resolved per-user account directory for the lock
+and ledger. `HOME`, `XDG_DATA_HOME`, `APPDATA`, and settings overrides do not change it.
+A process that cannot acquire the lock keeps ordinary CAD available but cannot access the
+account store. The CLI does not create the desktop's lock or ledger directory. Older clients
+using a different data directory do not participate in the shared lock.
 These steps do not install controlled execution, admission or commit authority.

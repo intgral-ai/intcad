@@ -831,32 +831,38 @@ pub struct AccountRuntime {
 }
 
 impl AccountRuntime {
-    /// The production desktop runtime: the operating-system credential store and the durable
-    /// ledger under the settings folder. Both are optional; a missing one fails closed.
-    pub fn desktop(settings: Option<&Path>) -> Self {
-        Self::desktop_with_config(settings, trusted_desktop_config())
+    /// The production desktop runtime: the operating-system credential store and the shared
+    /// per-user ledger. Missing account storage fails closed.
+    pub fn desktop() -> Self {
+        Self::desktop_with_config(trusted_desktop_config())
     }
 
     /// The production desktop runtime with explicit trusted account configuration. A missing
     /// configuration keeps the same anonymous CAD and leaves the explicit sign-in refused.
-    fn desktop_with_config(settings: Option<&Path>, config: Option<DesktopAccountConfig>) -> Self {
-        let lock_directory = eframe::storage_dir(crate::SETTINGS_FOLDER);
-        Self::desktop_with_store(settings, config, lock_directory.as_deref(), |service| {
+    fn desktop_with_config(config: Option<DesktopAccountConfig>) -> Self {
+        let paths = solidcraft_account_native::AccountPaths::for_current_user();
+        Self::desktop_with_store(config, paths.as_ref().map(solidcraft_account_native::AccountPaths::root), |service| {
             Box::new(solidcraft_account_native::KeyringStore::new(service))
         })
     }
 
     fn desktop_with_store(
-        settings: Option<&Path>,
         config: Option<DesktopAccountConfig>,
-        lock_directory: Option<&Path>,
+        directory: Option<&Path>,
         open_store: impl FnOnce(&str) -> Box<dyn solidcraft_engine::entitlement::CredentialStore + Send>,
     ) -> Self {
         // No reviewed origin means there is no keyring namespace to open. Never fall back to
         // another origin or to pre-binding entries, even when a ledger is available.
         let keyring_lock =
-            config.as_ref().and(lock_directory).and_then(|directory| crate::keyring_store::try_lock_account_namespace(directory).ok().flatten());
-        let credentials = match (&config, &keyring_lock) {
+            config.as_ref().and(directory).and_then(|directory| crate::keyring_store::try_lock_account_namespace(directory).ok().flatten());
+        let ledger = keyring_lock.as_ref().and(directory).and_then(|directory| match FileOperationStore::open(directory.join("account")) {
+            Ok(store) => Some(store),
+            Err(error) => {
+                solidcraft_engine::note!("account: the durable operation ledger could not be opened ({error})");
+                None
+            }
+        });
+        let credentials = match (&config, &ledger) {
             (Some(config), Some(_)) => CredentialSession::new(open_store(&crate::keyring_store::account_keyring_service(&config.product))),
             (config, _) => {
                 if config.is_some() {
@@ -865,13 +871,6 @@ impl AccountRuntime {
                 CredentialSession::without_persistence()
             }
         };
-        let ledger = settings.and_then(|directory| match FileOperationStore::open(directory.join("account")) {
-            Ok(store) => Some(store),
-            Err(error) => {
-                solidcraft_engine::note!("account: the durable operation ledger could not be opened ({error})");
-                None
-            }
-        });
         let mut runtime = Self::new(credentials, ledger, config);
         runtime._keyring_lock = keyring_lock;
         #[cfg(target_os = "linux")]
@@ -2791,12 +2790,29 @@ mod tests {
     fn desktop_does_not_open_the_keyring_without_a_reviewed_origin_or_the_lock() {
         let open_store = |_: &str| -> Box<dyn CredentialStore + Send> { panic!("the OS keyring must not open") };
         let lock_dir = std::env::temp_dir().join(format!("intcad-no-origin-{}", std::process::id()));
-        let no_origin = AccountRuntime::desktop_with_store(None, None, Some(&lock_dir), open_store);
+        let no_origin = AccountRuntime::desktop_with_store(None, Some(&lock_dir), open_store);
         assert!(!no_origin.startup().secure_store);
         assert!(!lock_dir.exists(), "no reviewed origin need not reserve the keyring");
         let config = DesktopAccountConfig::new("client_test", "https://api.example", "https://auth.example").unwrap();
-        let no_lock = AccountRuntime::desktop_with_store(None, Some(config), None, open_store);
+        let no_lock = AccountRuntime::desktop_with_store(Some(config), None, open_store);
         assert!(!no_lock.startup().secure_store);
+    }
+
+    #[test]
+    fn cli_borrows_the_desktop_ledger_and_respects_its_lock() {
+        use solidcraft_account_native::AccountPaths;
+
+        let root = std::env::temp_dir().join(format!("intcad-desktop-cli-lock-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let config = DesktopAccountConfig::new("client_test", "https://api.example", "https://auth.example").unwrap();
+        let desktop = AccountRuntime::desktop_with_store(Some(config), Some(&root), |_| Box::new(TestStore::default()));
+        let ledger = desktop.ledger.as_ref().unwrap().root().canonicalize().unwrap();
+        assert!(AccountPaths::lock_existing(&root).is_none());
+        drop(desktop);
+        let (cli_ledger, lock) = AccountPaths::lock_existing(&root).unwrap();
+        assert_eq!(cli_ledger, ledger);
+        drop(lock);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -2816,8 +2832,7 @@ mod tests {
         let store_for = |service: &str| stores.borrow_mut().entry(service.to_owned()).or_default().clone();
         let open = |origin, product: ScriptedProduct| {
             let config = DesktopAccountConfig::new("client_test", origin, "https://auth.example").unwrap();
-            let mut runtime =
-                AccountRuntime::desktop_with_store(Some(&scratch.0), Some(config), Some(&scratch.0), |service| Box::new(store_for(service)));
+            let mut runtime = AccountRuntime::desktop_with_store(Some(config), Some(&scratch.0), |service| Box::new(store_for(service)));
             runtime.restart_transport = Some(Arc::new(move || Box::new(product.clone())));
             runtime
         };
