@@ -1982,3 +1982,17 @@ handling. On that composed tree, `scripts/ci/test_gate.py`, `test_release_conten
 **exit 0**, `Finished ci profile … in 8m 17s`. The account/authority crates
 (`solidcraft-account-native`, `solidcraft-engine`, `solidcraft-mcp`) check together, so the
 four in-scope PRs do not break each other at compile time.
+
+**The five in-scope PRs have no green full CI to inherit.** Measured 2026-11-24T18:20Z:
+
+| Branch | Latest `CI` run | Failing/short jobs |
+|---|---|---|
+| `task/int1497-v013-integration` | in progress (`9f664c828f`) | none so far |
+| `task/int1497-cli-authority` | completed, **cancelled** (`589d6514e2`) | every heaviest job cancelled with the run |
+| `task/int1497-control-bound` | completed, **cancelled** (`f021890892`) | same |
+| `task/int1497-monotonic-clock` | completed, **cancelled** (`4362693ed0`) | same |
+| `task/int1497-gui-bridge` | completed, **cancelled** (`a6ea9653e8`) | same |
+
+Each was cancelled by a newer push on the same branch, so no run of theirs is evidence for a
+merge. Every in-scope PR needs a fresh full CI on the SHA that will actually merge; the five
+cycles in §9 are therefore the real budget, not an upper bound.
