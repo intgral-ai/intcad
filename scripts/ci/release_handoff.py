@@ -37,6 +37,7 @@ SIGNATURE = SUMS + ".minisig"
 SIGNING_ASSETS = (SUMS, LEGACY_SUMS, SIGNATURE)
 STABLE = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 HEX = r"[0-9a-f]{64}"
+COMMIT = r"[0-9a-f]{40}"
 ARCHES = ("x86_64", "aarch64")
 WINDOWS = {"x64": "x86_64", "x86": "i686", "arm64": "aarch64"}
 DERIVED = {"flatpak": ".flatpak", "arch": ".pkg.tar.zst", "snap": ".snap"}
@@ -501,11 +502,14 @@ def verify_environment(environment, policies, allow_single_owner=False):
     rules = [rule for rule in environment.get("protection_rules") or []
              if rule.get("type") == "required_reviewers"]
     reviewers = (rules[0].get("reviewers") if rules else None) or []
-    independent = rules[0].get("prevent_self_review") is True if rules else False
+    self_review = rules[0].get("prevent_self_review") if rules else None
+    require(isinstance(self_review, bool), "release-signing must state prevent_self_review")
+    independent = self_review is True
     # A one-person project cannot dispatch and also be forbidden to approve its own
-    # deployment. That shape is accepted ONLY when the owner set RELEASE_SINGLE_OWNER;
-    # the default stays strict.
-    single_owner = allow_single_owner and len(reviewers) == 1 and not independent
+    # deployment. That shape is accepted ONLY when the owner set RELEASE_SINGLE_OWNER,
+    # and only for exactly one named person (a team stands for several people).
+    single_owner = (allow_single_owner and len(reviewers) == 1 and self_review is False
+                    and (reviewers[0] or {}).get("type") == "User")
     require(environment.get("name") == "release-signing" and len(rules) == 1
             and bool(reviewers) and (independent or single_owner)
             # GitHub may omit the field on some plans. Only an explicit `true` is a bypass;
@@ -527,6 +531,11 @@ def check_environment(env):
         print("::warning::release-signing omitted can_admins_bypass; confirm in the UI that "
               "administrators cannot bypass its protection rules", flush=True)
     allow_single = (env.get("RELEASE_SINGLE_OWNER") or "").strip().lower() == "true"
+    if allow_single:
+        actor = env.get("GITHUB_ACTOR") or ""
+        permission = (api(f"repos/{repo}/collaborators/{actor}/permission") or {}).get("permission")
+        require(permission == "admin",
+                "RELEASE_SINGLE_OWNER may only be used by a repository administrator")
     mode = verify_environment(environment, [row for page in pages(f"{endpoint}/deployment-branch-policies")
                                             for row in page["branch_policies"]],
                               allow_single_owner=allow_single)
@@ -569,30 +578,52 @@ def require_producers(sha, repo="."):
         require(frozen == protected, f"{tree}: the release candidate changed the evidence producer")
 
 
-def remote_tag_commit(remote, tag, repo="."):
-    lines = git("-C", repo, "ls-remote", remote, f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}").decode().splitlines()
-    require(bool(lines), f"tag {tag} does not exist on the remote")
-    peeled = [line.split()[0] for line in lines if line.endswith("^{}")]
-    direct = [line.split()[0] for line in lines if not line.endswith("^{}")]
-    return peeled[0] if peeled else direct[0]
+def remote_tag_commit(repo, tag):
+    """The commit a remote tag names, read from the repository API (exact ref, no git auth).
 
-
-def require_remote_tag(remote, tag, sha, repo="."):
-    """The remote tag still names the frozen SHA, and that SHA is on the remote main branch.
-
-    The publisher's own checkout can hold a stale local tag, so this reads the remote
-    every time it is called: before signing and again before creating the draft.
+    Uses the API rather than `git ls-remote` so the tag and branch are read by their exact
+    names and the check also works for a private source, where anonymous Git is not allowed.
     """
-    commit = remote_tag_commit(remote, tag, repo)
-    require(commit == sha, f"remote tag {tag} points at {commit}, not the frozen source SHA")
-    main = git("-C", repo, "ls-remote", remote, "refs/heads/main").decode().split()
-    require(len(main) == 2 and re.fullmatch("[0-9a-f]{40}", main[0]) is not None,
-            "cannot read the remote main branch")
-    # Bind ancestry to the remote tip, not to a possibly stale local main.
-    git("-C", repo, "fetch", "--quiet", "--no-tags", remote, "+refs/heads/main:refs/remotes/release-main")
-    require(subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", sha, "refs/remotes/release-main"],
+    try:
+        ref = api(f"repos/{repo}/git/ref/tags/{tag}")
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"tag {tag} does not exist on the source") from error
+    obj = ref.get("object") or {}
+    if obj.get("type") == "tag":
+        tagged = api(f"repos/{repo}/git/tags/{obj.get('sha')}")
+        commit = (tagged.get("object") or {}).get("sha")
+    elif obj.get("type") == "commit":
+        commit = obj.get("sha")
+    else:
+        commit = None
+    require(matches(COMMIT, commit), f"tag {tag} does not resolve to a commit on the source")
+    return commit
+
+
+def verify_remote_tag(tag_commit, main_commit, sha, ancestor):
+    """Pure check: the remote tag names the frozen SHA, which is on the remote main tip."""
+    require(tag_commit == sha, f"remote tag points at {tag_commit}, not the frozen source SHA")
+    require(matches(COMMIT, main_commit), "cannot read the remote main branch")
+    require(ancestor, "frozen SHA is not on the remote main branch")
+
+
+def require_remote_tag(repo, tag, sha, local="."):
+    """Read the live tag and main tip, then prove the frozen SHA is on main.
+
+    Called before signing and again immediately before creating the draft, so a tag moved
+    or deleted after the gate stops staging even if the local checkout still has it.
+    """
+    commit = remote_tag_commit(repo, tag)
+    main = (api(f"repos/{repo}/git/ref/heads/main").get("object") or {}).get("sha")
+    require(matches(COMMIT, main), "cannot read the remote main branch")
+    # The tip must exist locally to answer the ancestry question; it normally does because
+    # the publisher checks out main at dispatch. Fail closed if it does not.
+    require(subprocess.run(["git", "-C", local, "cat-file", "-e", main + "^{commit}"],
                            capture_output=True).returncode == 0,
-            "frozen SHA is not on the remote main branch")
+            "the remote main tip is not available in the publisher checkout; re-dispatch from main")
+    ancestor = subprocess.run(["git", "-C", local, "merge-base", "--is-ancestor", sha, main],
+                              capture_output=True).returncode == 0
+    verify_remote_tag(commit, main, sha, ancestor)
 
 
 def require_tag_on_main(tag, sha, repo="."):
@@ -616,7 +647,7 @@ def selection(env, *, resolve_tag=False):
     require(source_version == version, "tag does not match the frozen workspace version")
     if resolve_tag:
         require_tag_on_main(env["TAG"], sha)
-        require_remote_tag(env.get("RELEASE_REMOTE") or "origin", env["TAG"], sha)
+        require_remote_tag(repo, env["TAG"], sha)
     live_execution(repo, repo_id, run, attempt)
     return repo, repo_id, run, attempt, sha, version, contract
 
@@ -663,7 +694,7 @@ def confirm(env):
     # Re-read the tag before the next upload: it must still name the frozen SHA on main,
     # both locally and on the remote (a deleted or moved remote tag must stop staging).
     require_tag_on_main(env["TAG"], candidate["sourceRevision"])
-    require_remote_tag(env.get("RELEASE_REMOTE") or "origin", env["TAG"], candidate["sourceRevision"])
+    require_remote_tag(repo, env["TAG"], candidate["sourceRevision"])
     live = artifact_index(run_artifacts(repo, run), (*pair_names(attempt), manifest_name(attempt)))
     require(live == candidate["archives"], "accepted archive identities changed before signing/staging")
 
@@ -700,6 +731,8 @@ def draft_release(env, work, candidate):
     require(not any(release.get("tag_name") == tag for page in pages(release_endpoint) for release in page),
             "distribution release or draft already exists")
     assert_tag_absent(tag)
+    # Last check before the POST: the live tag must still name the frozen SHA on main.
+    require_remote_tag(candidate["source"], tag, candidate["sourceRevision"])
     create = dict(tag_name=tag, target_commitish="main", name=f"Intcad {candidate['version']}",
                   body=notes.decode(), draft=True, prerelease=False)
     body = work / "draft-request.json"
@@ -726,11 +759,11 @@ def draft_release(env, work, candidate):
         download(f"{release_endpoint}/assets/{asset['id']}", downloaded / name, asset=True)
     verify_downloaded(out, downloaded)
     verify_signature(downloaded, tag, key)
+    approval_file = work / "approval.json"
+    require(approval_file.is_file(), "no approval record from the environment check")
+    approval = parse_json(approval_file.read_bytes())
+    require(approval.get("mode") in ("independent", "single-owner"), "invalid approval record")
     with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-        approval = {"mode": "unknown", "singleOwner": False, "reviewers": [], "actor": ""}
-        approval_file = work / "approval.json"
-        if approval_file.is_file():
-            approval = json.loads(approval_file.read_text(encoding="utf-8"))
         if approval["mode"] == "single-owner":
             review_note = ("single-owner exception enabled by RELEASE_SINGLE_OWNER; reviewer "
                            + ", ".join(str(r) for r in approval["reviewers"])
