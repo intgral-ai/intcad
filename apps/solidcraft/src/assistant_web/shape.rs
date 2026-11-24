@@ -45,11 +45,15 @@ pub(super) fn spans(surfaces: &[[f64; 12]], zoom: f64, width: i32, height: i32) 
         // A row starting above a fractional top can be entirely unpainted by WebKit.
         // Don't expose this opaque native row by rounding the top outwards.
         for y in (t.ceil() as i32).clamp(0, height)..(b.ceil() as i32).clamp(0, height) {
-            // Keep the horizontal coverage of the antialiased corner on each included row.
-            let top = f64::from(y + 1) - t;
-            let bottom = b - f64::from(y);
-            let left = (l + inset(tlx, tly, top).max(inset(blx, bly, bottom))).floor() as i32;
-            let right = (r - inset(trx, try_, top).max(inset(brx, bry, bottom))).ceil() as i32;
+            // Use the narrowest point of the curve across the whole row, then include only
+            // complete pixels on that side. Partial arc pixels can expose opaque backing.
+            // Preserve the old rounding on a straight side, including opposite a curve.
+            let top = f64::from(y) - t;
+            let bottom = b - f64::from(y + 1);
+            let left_inset = inset(tlx, tly, top).max(inset(blx, bly, bottom));
+            let right_inset = inset(trx, try_, top).max(inset(brx, bry, bottom));
+            let left = if left_inset > 0.0 { (l + left_inset).ceil() } else { l.floor() } as i32;
+            let right = if right_inset > 0.0 { (r - right_inset).floor() } else { r.ceil() } as i32;
             let (left, right) = (left.clamp(0, width), right.clamp(0, width));
             if right <= left {
                 continue;

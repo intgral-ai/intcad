@@ -1119,7 +1119,7 @@ mod tests {
         assert!(contains(10, 0));
         assert!(contains(19, 9));
         assert!(!contains(10, 12));
-        assert!(contains(3, 15));
+        assert!(contains(5, 15));
         assert!(contains(10, 24));
         assert!(!contains(0, 24));
         assert!(!contains(19, 24));
@@ -1148,6 +1148,26 @@ mod tests {
         let spans = shape::spans(&surfaces, 1.25, 20, 25);
         assert!(spans.iter().all(|&[_, y, _, _]| y >= 1), "{spans:?}");
         assert!(spans.iter().any(|&[x, y, width, _]| y == 1 && x <= 10 && x + width > 10), "{spans:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_keeps_only_full_pixels_on_rounded_sides() {
+        let surface = [[0.2, 0.6, 16., 20., 0., 0., 4., 4., 0., 0., 4., 4.]];
+        let spans = shape::spans(&surface, 1.25, 20, 25);
+        let covers = |x, y| spans.iter().any(|&[l, t, w, h]| l <= x && x < l + w && t <= y && y < t + h);
+        // The top-right arc crosses y=1 at x≈16.56: column 15 fits the whole row,
+        // while 16 is partially covered. The square left side keeps its old rounding.
+        assert!(!covers(15, 0));
+        assert!(covers(15, 1));
+        assert!(!covers(16, 1));
+        assert!(covers(0, 1));
+        // The straight right edge keeps its last pixel once the arc ends.
+        assert!(covers(19, 6));
+        // The bottom-left arc is narrowest at the bottom of the last row (x=5.25).
+        assert!(!covers(5, 24));
+        assert!(covers(6, 24));
+        assert!(covers(19, 24));
     }
 
     #[cfg(target_os = "linux")]
