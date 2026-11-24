@@ -296,6 +296,13 @@ class AgentContents(unittest.TestCase):
             self.assertTrue(data["agent"]["node"])
             self.assertEqual(data["agent"]["missing"], [])
 
+    def test_a_wrapper_with_a_leading_zero_prerelease_identifier_does_not_count(self):
+        # The release workflow rejects numeric prerelease identifiers like `01`.
+        with tempfile.TemporaryDirectory() as directory:
+            names = ["intcad-0.1.3-beta.01-linux-x86_64/" + name for name in self.AGENT]
+            data = self.report(directory, names)
+            self.assertIsNone(data["agent"])
+
     def test_a_directory_is_not_the_file_it_is_named(self):
         # A tar lists a directory without a type of its own; it must not satisfy a required file
         # (`node`) or a skill (`SKILL.md`).

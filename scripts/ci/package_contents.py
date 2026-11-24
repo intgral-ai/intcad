@@ -221,8 +221,12 @@ AGENT_ROOTS = {
 
 # Release archives put the platform after the version, including any prerelease.
 # Keep recognising the original stable version-only root as well.
+# As in release.yml, numeric identifiers cannot have leading zeroes.
+VERSION_NUMBER = r"(?:0|[1-9][0-9]*)"
+PRERELEASE_ID = rf"(?:{VERSION_NUMBER}|[0-9]*[a-z-][a-z0-9-]*)"
 APP_WRAPPER = re.compile(
-    r"^intcad-\d+\.\d+\.\d+(?:-(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*-)?"
+    rf"^intcad-{VERSION_NUMBER}\.{VERSION_NUMBER}\.{VERSION_NUMBER}"
+    rf"(?:-(?:{PRERELEASE_ID}(?:\.{PRERELEASE_ID})*-)?"
     r"(?:linux|macos|windows|freebsd|netbsd|openbsd)-|$)"
 )
 
