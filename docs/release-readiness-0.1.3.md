@@ -2017,3 +2017,30 @@ inferred from prose.
 One documentation defect is worth fixing while #233 is rebased: its
 `docs/account/control-safe-stop-bound.md` calls the 300 s lease `AUTHORIZATION_TTL_SECONDS`,
 a name that exists nowhere in the code; the actual constant is `MAX_ABSOLUTE_GRANT_LEASE`.
+
+**#224 alone cannot keep paid desktop entries usable; #227 is a functional dependency.**
+Measured on the branches themselves:
+
+```
+origin/task/int1497-v013-integration:crates/account-native/src/http.rs
+    const MAX_ABSOLUTE_GRANT_LEASE: Duration = Duration::from_secs(60);   // rev3 comment
+origin/task/int1497-cli-authority:crates/account-native/src/http.rs
+    const MAX_ABSOLUTE_GRANT_LEASE: Duration = Duration::from_secs(300);  // rev4 pin
+   plus contracts/pin.json = "…fixed vectors v1 rev4"
+```
+
+`crates/account-native/` is introduced by #224, so the 60 s clamp is what `develop + #224` would
+ship. With a 60 s lease, `remaining_covers` (`remaining >= required`, `crates/ui-egui/src/control.rs:1009-1018`)
+cannot admit the five 280 s desktop entries, and the Review panel's 600 s ceiling is cut to at
+most 60 s. #227 `b1f664bf62` raises the clamp to the rev4 300 s and re-pins the contract, which is
+what makes the 280 s bounds (and Review) work. So the merge order #224 → #227 is a real
+dependency, not bookkeeping: a candidate cut between them would violate the owner's rule that
+every paid capability stays usable.
+
+**#214's `Native Linux selected regression gate` failed on infrastructure, not on a test.**
+Measured on run `45447415365`, job `138635737954`: it started 17:21:29, ended 18:19:31 (58 min,
+well inside the 240-minute full-scope timeout) with step 10 `Measure selected execution` still
+`in_progress`, steps 11–12 and both post-steps `null`, **no log blob** (`BlobNotFound` from the
+job-logs API), and an empty check-run summary. A test failure would have a failing step and a
+log. GitHub refuses `gh run rerun --failed` while the run is still in progress, so the rerun is
+issued once the remaining matrix shards finish; the gate itself is unchanged.
