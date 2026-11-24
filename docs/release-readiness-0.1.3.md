@@ -284,6 +284,22 @@ accepting migration PRs. The login version-admission policy is separate from upd
 selection; neither can substitute for the other. No conflict resolution may weaken authorization,
 signature enforcement, or packaging checks.
 
+#### Landed foundations
+
+GitHub's merged PR records and `git merge-base --is-ancestor` identify the following
+commits in `develop` snapshot `6032271178140b356e4a7ed2e9bb0f1352d81048`. This proves
+the integrations, not installed behavior. Verify them again against the final checkout.
+
+| PR | Landed revision |
+|---|---|
+| #204 — Skills | `41089b606b89dd44f6b852db77d8664b21b991cd` |
+| #212 — Assistant agent behavior | `be9cb2c163c46529a9a4b3472f6a5c69168390f8` |
+| #217 — release tooling | `7bc8992c125d67437d5cf4f93be6fe9875bcee87` |
+| #218 — cookie advisory | `3751144fc129d0ae3b28777875d69ada2f8b1892` |
+| #219 — FreeBSD fix | `ef2273e92d575667e6f556a92e0905ac1888065b` |
+| #222 — packaging lint | `7abe4f5e3cb249bacaf2d081d1b11198b4b080c0` |
+| #189 — verification harness | `6032271178140b356e4a7ed2e9bb0f1352d81048` |
+
 #### Execution and approval checklist
 
 - [ ] **Integrate features and migration.** Record each approved delivery PR and landed SHA,
@@ -292,6 +308,9 @@ signature enforcement, or packaging checks.
   Classify changes before pushing: confidential integration and CI require an already authorized,
   isolated private location outside the public fork network. No such location is confirmed yet.
   If required before cutover and unavailable, freeze is BLOCKED; continue nonconfidential work.
+  The designated signing owner must also confirm the production public-key identity and protected
+  signing environment before freeze. This preparatory approval does not authorize source cutover
+  or publishing; do not paste credentials or commit a private key.
 - [ ] **Freeze one candidate.** Record a reviewed `develop` snapshot and the candidate's full SHA.
   Prove the landed integration commits are ancestors of the tested checkout. Under the current
   promotion workflow, that checkout is the `release/v0.1.3` main-target PR merge SHA or the main
@@ -1266,8 +1285,9 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   `develop` job and the older package rehearsal do not include the login change. The newer
   [#224 login integration PR](https://github.com/intgral-ai/intcad/pull/224), head `0519d3aba6`,
   has a separate [failed Windows startup job](https://github.com/intgral-ai/intcad/actions/runs/45314675673/job/138179044898).
-  Actions identifies `windows-resize-smoke.ps1` as the failed step. Full log detail was
-  unavailable while the run was still in progress; do not assume the same error code as #213. On an
+  Direct job logs now confirm `windows-resize-smoke.ps1` hit `WM_NCHITTEST` Win32 error
+  1460 at `(1,360)` within the 2 s limit and the process was still running at cleanup.
+  This is separate evidence for #224, not proof that both failures share a cause. On an
   approved installed candidate, record SHA, installer hashes, a clean profile, offline CAD
   smoke and anonymous controlled-request refusals separately from live staging login.
   The login owner still owns the CI failure and live staging readiness.
