@@ -65,6 +65,9 @@ keyring = { version = "3.6", default-features = false, features = ["apple-native
 egui-winit = { version = "=0.36.2", default-features = false }
 quick-xml = { workspace = true }
 
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+solidcraft-suspend-clock = { workspace = true }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 hidapi = { version = "2.6.7", default-features = false, features = ["windows-native"] }
 # The main window's handle for src/native_frame.rs (already in the tree through eframe and winit).

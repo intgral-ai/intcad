@@ -5075,6 +5075,7 @@ dependencies = [
  "solidcraft-engine",
  "solidcraft-gpu",
  "solidcraft-space-mouse",
+ "solidcraft-suspend-clock",
  "solidcraft-ui-egui",
  "ureq",
  "url",
@@ -5137,6 +5138,7 @@ dependencies = [
  "solidcraft-gpu",
  "solidcraft-kernel",
  "solidcraft-mcp",
+ "solidcraft-suspend-clock",
 ]
 
 [[package]]
@@ -5369,6 +5371,15 @@ dependencies = [
  "solidcore-record",
  "solidcraft-geom",
  "solidcraft-profile",
+]
+
+[[package]]
+name = "solidcraft-suspend-clock"
+version = "0.1.2"
+dependencies = [
+ "libc",
+ "rustix 1.1.6",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

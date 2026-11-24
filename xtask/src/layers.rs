@@ -46,6 +46,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("derive", Class::Standalone),
     // the 3Dconnexion driver's client API on macOS (no workspace dependencies)
     ("3dx-client", Class::Standalone),
+    // suspend-inclusive native account clock (no workspace dependencies)
+    ("suspend-clock", Class::Standalone),
     // the profiler: timed spans for every layer, the kernel's calls to commands (no workspace dependencies)
     ("profile", Class::Standalone),
     ("sketch", Class::Layer(1)),
@@ -291,9 +293,9 @@ impl ClosureTarget {
 /// The browser roots that must never compose native account adapters.
 pub const BROWSER_ROOTS: &[&str] = &["solidcraft-web", "solidcraft-ui-egui"];
 /// Native-only crates forbidden below the browser roots on every target.
-pub const NATIVE_ONLY_CRATES: &[&str] = &["solidcraft-account-native"];
+pub const NATIVE_ONLY_CRATES: &[&str] = &["solidcraft-account-native", "solidcraft-suspend-clock"];
 /// Native-only crates forbidden in the browser target's closure.
-pub const WASM_FORBIDDEN_CRATES: &[&str] = &["solidcraft-account-native", "keyring", "ureq"];
+pub const WASM_FORBIDDEN_CRATES: &[&str] = &["solidcraft-account-native", "solidcraft-suspend-clock", "keyring", "ureq"];
 
 /// Build the resolved graph from `cargo metadata --format-version 1 --locked` (without
 /// `--no-deps`). Build and normal edges are followed, dev edges are not.

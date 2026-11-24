@@ -30,6 +30,7 @@ solidcraft-dfm-rules = { path = "crates/dfm-rules" }
 solidcraft-io = { path = "crates/io" }
 solidcraft-engine = { path = "crates/engine" }
 solidcraft-account-native = { path = "crates/account-native" }
+solidcraft-suspend-clock = { path = "crates/suspend-clock" }
 solidcraft-agent-task = { path = "crates/agent-task" }
 solidcraft-agent-task-engine = { path = "crates/agent-task-engine" }
 solidcraft-ui-egui = { path = "crates/ui-egui" }
