@@ -94,7 +94,7 @@ impl ContractPin {
         if self.verification_state != "FROZEN" {
             return Err(ContractError::NotFrozen);
         }
-        if (self.manifest_embedded_bytes, self.openapi_embedded_bytes, self.fixtures_embedded_bytes) != (1_405, 47_822, 176_410)
+        if (self.manifest_embedded_bytes, self.openapi_embedded_bytes, self.fixtures_embedded_bytes) != (1_410, 47_828, 176_487)
             || (self.vector_count, self.primary_vector_count, self.support_vector_count) != (68, 64, 4)
             || (self.permission_count, self.race_matrix_count, self.rollback_matrix_count) != (16, 10, 6)
         {
@@ -391,14 +391,14 @@ mod tests {
         assert_eq!(pin.artifact_slug, super::EXPECTED_ARTIFACT_SLUG);
         assert_eq!(pin.protocol_version, super::EXPECTED_PROTOCOL_VERSION);
         assert_eq!(pin.verification_state, "FROZEN");
-        assert_eq!(pin.manifest_embedded_sha256, "f4d677dd066429854eac45e7776f7e2611845db9c174e26833704af5faf6b45e");
-        assert_eq!(pin.openapi_embedded_sha256, "20f32b8cde8141220489cbd0db4dafd42a01a1d14d9ad9c20078807c5c8afcb8");
-        assert_eq!(pin.openapi_canonical_sha256, "16d732b54c695a070201aa17469d9813d16782d072218aa887b04772a28b9e77");
-        assert_eq!(pin.fixtures_embedded_sha256, "ee1d8dde51fac40debf95d1bc29555b787adfa60175901f98be2b97c73529b2b");
-        assert_eq!(pin.fixtures_canonical_sha256, "ba9e0cb1e74bb0ce127052266faedd5eb7f16863dc60ddd295fd3fea0e370a33");
+        assert_eq!(pin.manifest_embedded_sha256, "9b4bfff93f331fa18d22b981cbb79019a24b38632fbb1270bec63e20f9a30231");
+        assert_eq!(pin.openapi_embedded_sha256, "9128c91cc8c3b40e151bf47ffd31d9760e56f6d6c72075e064cd3db55e93cfaf");
+        assert_eq!(pin.openapi_canonical_sha256, "b9c80bc007e8ddb5642b176fa2c9862073f3714e72138c842a439b8f7a255818");
+        assert_eq!(pin.fixtures_embedded_sha256, "b78ee28692652ddb4fc310c515675599dae600f16d6f448ffcecb408939bf4f1");
+        assert_eq!(pin.fixtures_canonical_sha256, "6f7e7936654da0ea048a507b8c376f51140ff8cacd978db482f8b4a73f145b79");
         assert_eq!(pin.operation_id_pattern, "^op_[A-Za-z0-9_-]{8,64}$");
-        assert_eq!(pin.openapi_embedded_bytes, 47_822);
-        assert_eq!(pin.fixtures_embedded_bytes, 176_410);
+        assert_eq!(pin.openapi_embedded_bytes, 47_828);
+        assert_eq!(pin.fixtures_embedded_bytes, 176_487);
         assert_eq!(pin.vector_count, 68);
         assert_eq!(pin.primary_vector_count, 64);
         assert_eq!(pin.support_vector_count, 4);
