@@ -409,6 +409,19 @@ Nothing here authorizes merging the promotion PR, approving the signing job or
 publishing. The source repository stays public and CI stays on GitHub-hosted runners
 for this release.
 
+**Migration branch status for this path (`5ca2f08edb`, not yet a PR).** The production
+public key is now embedded at
+`crates/ui-egui/src/update/trusted-release-key.pub` (one 56-character base64 line, no
+placeholder), `PUBLIC_KEY` is a plain `&str` from that file so verification cannot be
+compiled out, and a test parses it as a minisign key. The publisher's
+`scripts/ci/release_handoff.py` verifies the signature it makes against the **tracked**
+key (`git show <sha>:crates/ui-egui/src/update/trusted-release-key.pub`, decoded as an
+`Ed…` key, `minisign -Vm`) rather than against the secret, and the signing step refuses to
+run without `MINISIGN_SECRET_KEY` and writes the secret key only to a temp file removed by
+a trap. Local gate/publish-content/publish-verify Python tests pass on that branch.
+This is not landed, not reviewed to completion and not a candidate; the key must still be
+merged before the freeze as the CTO requires.
+
 ## 9. Acceptance matrix for the candidate (not yet run)
 
 Rows marked *rehearsal* are the §12 tree (`develop` + #204 + this branch), not a versioned
