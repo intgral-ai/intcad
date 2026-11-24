@@ -482,6 +482,20 @@ tree: `scripts/test-format-pending.sh` OK, `aliases/checksums/nightly` packaging
 (`Finished ci profile … in 1m 51s`). #224 is not in this dry run; it is the remaining
 integration.
 
+**Integration conflict found and handed to owners (#214 vs merged #230).** Rebasing #214 onto
+`e8c4b1be2d` (which contains #226, #231, #221, #230) merges cleanly except
+`.github/workflows/release-gate.yml`, where the merged gate's `DISTRIBUTION` check was kept
+(it refuses a declaration substituting for inspection). Two tests then disagree with the
+merged receipt contract: `test_a_derived_package_needs_a_cleaned_source_scan` fails with
+`release-flatpak-x86_64: derived content evidence does not cover the built package bytes;
+missing solidcraft.flatpak` because the merged `problems()` requires every package, including
+a derived Flatpak/Snap/Arch repack, to record its own artifact digest in `checked`, while
+#214 records only `derivedFrom`/`sourceArtifact`; and
+`test_aggregate_no_longer_appends_unconditional_mastra_failures` still expects the older
+`SOLIDCRAFT_DISTRIBUTION` string. The local rebased branch is kept but **not pushed**: the
+packaging owner decides between recording derived artifacts in `checked` (preferred) or asking
+the gate owner for a documented exemption.
+
 ## 9. Acceptance matrix for the candidate (not yet run)
 
 Rows marked *rehearsal* are the §12 tree (`develop` + #204 + this branch), not a versioned
