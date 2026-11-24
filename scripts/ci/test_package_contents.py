@@ -286,6 +286,15 @@ class AgentContents(unittest.TestCase):
             self.assertEqual(data["agent"]["missing"], [])
             self.assertEqual(data["markers"], [])
 
+    def test_a_malformed_wrapper_name_is_not_the_packages_own(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for wrapper in ("intcad-0.1.2-extras", "intcad-0.1.2-beta-linux-next.01"):
+                names = [wrapper + "/lib/intcad/mastra-agent/node"]
+                data = self.report(directory, names)
+                self.assertIsNone(data["agent"], wrapper)
+            data = self.report(directory, ["intcad-0.1.0-beta.1-linux-x86_64/lib/intcad/mastra-agent/node"])
+            self.assertTrue(data["agent"]["present"], "a real prerelease wrapper still counts")
+
     def test_a_linux_tarball_wrapper_around_usr_is_the_packages_own(self):
         # `intcad-<version>/usr/lib/...` is what the tarball carries, and the app finds it there.
         with tempfile.TemporaryDirectory() as directory:

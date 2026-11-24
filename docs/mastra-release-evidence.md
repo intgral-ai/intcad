@@ -153,14 +153,16 @@ recorded each package's `contents.json`:
 | Flatpak aarch64 | fail — `flatpak install --reinstall` refused the bundle as "already installed" after the job's own smoke had installed it; the recorder now uninstalls that ref and installs the bundle again |
 | Flatpak x86_64 | recorded an uninspected bundle (its own `contents.json` said so) and the job did **not** fail: the per-job rejection was, at that commit, only inside the `native` branch. Both defects were fixed before the run below |
 
-The three repacks were proved from their own bytes for the first time in this run; the Flatpak
-failure was in reading the bundle, not in what the bundle carries.
+Snap and Arch x86_64 were proved from their own bytes in this run. The Flatpak x86_64 job passed
+while its own evidence said the bundle was uninspected — the per-job rejection for `mastra-agent`
+packages, at that commit, only ran in the `native` branch. The next run exercises the corrected
+rejection.
 
 Run [45318917333](https://github.com/intgral-ai/intcad/actions/runs/45318917333) at `6717ef201c`
-(the tested SHA; later commits change documentation only) is green as a whole, including the
-Flatpak jobs, and the release gate's own decision
-(`release_content.problems`) over its downloaded `build.json`/`contents.json` artifacts returns no
-problems for all fourteen package identities:
+is green as a whole, including the Flatpak jobs; at that commit the per-job rejection for
+`mastra-agent` packages still ran only in the `native` branch (fixed afterwards), while the
+release gate's own decision (`release_content.problems`) over the downloaded
+`build.json`/`contents.json` artifacts returns no problems for all fourteen package identities:
 
 | Identity | Recorded |
 |---|---|

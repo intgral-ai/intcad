@@ -298,7 +298,7 @@ jobs:
               app_artifacts = [name for name in inspected
                                if name != source
                                and name in verdicts
-                               and not release.carries_no_agent(name)
+                               and not release.carries_no_agent(name, data.get('packageId'))
                                and not (verdicts[name] or {}).get('coveredBy')]
               for name in sorted(app_artifacts):
                   problem = release.agent_problem(verdicts[name])
@@ -315,11 +315,14 @@ jobs:
                       if absent:
                           carries.append(name + ': no Node for ' + ', '.join(absent))
           else:
-              # A native package proves it carries none: no runtime marker and nothing unread.
-              if data.get('markers') or data.get('agentMarkers'):
-                  carries.append('a native package carries a runtime marker or a Node')
-              if data.get('unchecked'):
-                  carries.append('an artifact not inspected')
+              # A native package proves it carries none.
+              if any((carried or {}).get('present') for carried in verdicts.values()):
+                  carries.append('a native package carries the agent')
+          # Both distributions: nothing unread, and no runtime marker or Node beside the agent.
+          if data.get('markers') or data.get('agentMarkers'):
+              carries.append('a runtime marker or a Node outside the agent')
+          if data.get('unchecked'):
+              carries.append('an artifact not inspected')
           if carries:
               raise SystemExit('package contents do not match the distribution: ' + '; '.join(carries))
       - &upload-package

@@ -60,7 +60,10 @@ _HEADLESS_CLI_ARCHIVE = re.compile(
 )
 
 
-def carries_no_agent(name):
+def carries_no_agent(name, identity=None):
+    """Whether an artifact is the headless CLI archive, which only the macOS package ships."""
+    if identity is not None and identity != "release-macos":
+        return False
     return _HEADLESS_CLI_ARCHIVE.fullmatch(str(name)) is not None
 
 
@@ -144,7 +147,7 @@ def problems(source_revision, descriptors, contents, declaration="native"):
                     failures.append(identity + ": " + str(name) + ": inspected without an agent "
                                     "verdict")
                 for name in sorted(per_artifact):
-                    if carries_no_agent(name) or (per_artifact[name] or {}).get("coveredBy"):
+                    if carries_no_agent(name, identity) or (per_artifact[name] or {}).get("coveredBy"):
                         continue
                     carried = per_artifact[name]
                     problem = agent_problem(carried)
@@ -154,7 +157,7 @@ def problems(source_revision, descriptors, contents, declaration="native"):
                 # only the headless CLI archive has nothing a user can start the agent from.
                 app_artifacts = [
                     name for name in per_artifact
-                    if not carries_no_agent(name) and not (per_artifact[name] or {}).get("coveredBy")
+                    if not carries_no_agent(name, identity) and not (per_artifact[name] or {}).get("coveredBy")
                 ]
                 if not any((per_artifact[name] or {}).get("present") for name in app_artifacts):
                     failures.append(identity + ": no artifact of the package carries the agent")
@@ -166,7 +169,7 @@ def problems(source_revision, descriptors, contents, declaration="native"):
                 # slices of their own.
                 summaries = [agent] if isinstance(agent, dict) else []
                 for name in sorted(per_artifact or {}):
-                    if carries_no_agent(name) or (per_artifact[name] or {}).get("coveredBy"):
+                    if carries_no_agent(name, identity) or (per_artifact[name] or {}).get("coveredBy"):
                         continue
                     summaries.append(per_artifact[name])
                 for carried in summaries:
@@ -284,7 +287,7 @@ def problems(source_revision, descriptors, contents, declaration="native"):
             for name in sorted(inspected - set(per_artifact or {})):
                 failures.append(identity + ": " + str(name) + ": inspected without an agent verdict")
             for name in sorted(own):
-                if carries_no_agent(name) or (own[name] or {}).get("coveredBy"):
+                if carries_no_agent(name, identity) or (own[name] or {}).get("coveredBy"):
                     continue
                 problem = agent_problem(own[name])
                 if problem:

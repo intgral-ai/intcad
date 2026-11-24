@@ -338,6 +338,19 @@ class AgentContentDecision(unittest.TestCase):
         problems = content.problems(SHA, descriptors, contents, "mastra-agent")
         self.assertTrue(any(identity in problem and "runtime marker" in problem for problem in problems), problems)
 
+    def test_the_headless_cli_exemption_belongs_to_the_macos_package_only(self):
+        # A Linux package that ships only a macOS-named CLI archive carries no agent.
+        descriptors, contents = self.evidence()
+        identity = "release-linux-x86_64"
+        name = "intcad-cli-0.1.2-macos-arm64.zip"
+        descriptors[identity] = build(identity, [(name, DG)])
+        contents[identity] = report(identity, [(name, DG)], distribution="mastra-agent")
+        contents[identity]["agents"] = {name: {"present": False, "node": False, "nodeTargets": [],
+                                               "missing": [], "skills": []}}
+        problems = content.problems(SHA, descriptors, contents, "mastra-agent")
+        self.assertTrue(any(identity in problem and name + ": carries no mastra-agent/" in problem
+                            for problem in problems), problems)
+
     def test_a_native_repack_is_not_asked_for_the_agent(self):
         # The agent is built for x86_64 Linux only; the aarch64 Flatpak is native on both sides.
         descriptors = {

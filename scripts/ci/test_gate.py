@@ -928,7 +928,7 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                 package.addfile(entry, io.BytesIO(b"x"))
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("a native package carries a runtime marker or a Node", result.stderr)
+            self.assertIn("a runtime marker or a Node outside the agent", result.stderr)
             archive.write_bytes(b"not a tar archive")
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)

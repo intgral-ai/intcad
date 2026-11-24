@@ -225,9 +225,9 @@ AGENT_ROOTS = {
 VERSION_NUMBER = r"(?:0|[1-9][0-9]*)"
 PRERELEASE_ID = rf"(?:{VERSION_NUMBER}|[0-9]*[a-z-][a-z0-9-]*)"
 APP_WRAPPER = re.compile(
-    rf"^intcad-{VERSION_NUMBER}\.{VERSION_NUMBER}\.{VERSION_NUMBER}"
-    rf"(?:-(?:{PRERELEASE_ID}(?:\.{PRERELEASE_ID})*-)?"
-    r"(?:linux|macos|windows|freebsd|netbsd|openbsd)-|$)"
+    rf"intcad-{VERSION_NUMBER}\.{VERSION_NUMBER}\.{VERSION_NUMBER}"
+    rf"(?:-{PRERELEASE_ID}(?:\.{PRERELEASE_ID})*)?"
+    r"-(?:linux|macos|windows|freebsd|netbsd|openbsd)-[A-Za-z0-9_-]+"
 )
 
 
@@ -258,7 +258,7 @@ def _root_allowed(platform, parts, start):
         if before == []:
             return True
         if len(before) == 1:
-            return before[0] == "intcad" or APP_WRAPPER.match(before[0]) is not None
+            return before[0] == "intcad" or APP_WRAPPER.fullmatch(before[0]) is not None
         return (len(before) == 2 and before[0] in ("pfiles64", "pfiles")
                 and before[1] == "intcad")
     # linux: an FHS `usr`, the package's own wrapper folder, or a wrapper around that tree
@@ -266,8 +266,8 @@ def _root_allowed(platform, parts, start):
     if before == []:
         return True
     if len(before) == 1:
-        return before[0] == "usr" or APP_WRAPPER.match(before[0]) is not None
-    return len(before) == 2 and APP_WRAPPER.match(before[0]) is not None and before[1] == "usr"
+        return before[0] == "usr" or APP_WRAPPER.fullmatch(before[0]) is not None
+    return len(before) == 2 and APP_WRAPPER.fullmatch(before[0]) is not None and before[1] == "usr"
 
 
 def _agent_index(parts, roots):
