@@ -31,6 +31,13 @@ installers, and adds accounts with a verified paid Review path.
 - Signed in, online and authorised, the paid Review capability uses your own account;
   anonymous and offline use of CAD, completion, save, export, undo and redo is
   unchanged.
+- The command-line tool charges its own paid work: a DFM validation or a headless MCP
+  tool call is admitted only with the signed-in account's authorization, settles once,
+  and publishes no result after the authorization deadline. A run that is refused or
+  expires leaves a refusal report instead of results.
+- Desktop operations that spend an authorization declare a safe-stop bound that fits one
+  authorization lease; an operation that cannot fit is refused before it starts, and
+  Windows and macOS count time spent asleep toward the deadline.
 
 ## Packages and updates
 
