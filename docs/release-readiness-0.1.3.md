@@ -1355,6 +1355,13 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   Rust state/event bridge with the Login Agent; leave authorization unchanged. No code
   change or acceptance run for #223 yet. Ownership and acceptance were requested on
   [the existing issue](https://github.com/intgral-ai/intcad/issues/223#issuecomment-7121993793).
+- **PR CI timeout is a runner/mirror flake, not a code failure.** #226's `CI` on `c12cd1ba70`
+  was cancelled at exactly the 30-minute job bound: the `Native Linux selected regression gate`
+  log shows `Run sudo apt-get update` starting at `07:41:09` and the next line at `08:09:07`
+  (cleanup), i.e. ~28 minutes of silence inside `apt-get update`. The same job took **3 min 39 s**
+  on the successful run at `ba52b76d4c`. Re-running is the right response; a later infrastructure
+  change should add bounded retries/timeout to that step so a slow mirror fails fast instead of
+  burning the job's whole budget.
 - **`develop` required CI is red — BLOCKED.** The latest `CI` run on merged `develop`
   (`6032271178`) is [run 45299000127](https://github.com/intgral-ai/intcad/actions/runs/45299000127),
   conclusion `failure`. Its `Native Linux selected regression gate` failed the
