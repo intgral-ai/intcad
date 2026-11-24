@@ -451,6 +451,15 @@ local resolution on the PR branch (rebase onto the merged `develop`), not a GitH
 button. The bundled `dist/` must be rebuilt with the pinned generator after the page sources
 merge; never merge generated files by hand.
 
+**Stacked resolution prepared for #229.** Rebasing the menu onto #221's head (`9903e8e788`)
+conflicted in `agent_chat/mod.rs` (adjacent field blocks — both kept) and
+`packages/assistant-web/src/App.tsx` (kept `{header}` and inserted the menu before
+`<ComposerRing>`). Regenerating `dist/` with the pinned generator in a clean `TMPDIR` passes
+`--check`. The combined tree also needed `#![recursion_limit = "256"]` in
+`crates/ui-egui/src/lib.rs`: one `json!` web-state value with both #221's and the menu's fields
+exceeded the default macro limit (`cargo check -p solidcraft-ui-egui --profile ci` failed, then
+passed). Pushed as `9ca2ddaff2`; Assistant browser suite on that tree: **21 passed**.
+
 ## 9. Acceptance matrix for the candidate (not yet run)
 
 Rows marked *rehearsal* are the §12 tree (`develop` + #204 + this branch), not a versioned
