@@ -2281,3 +2281,35 @@ the one already measured (`installed-check-inside.sh` keeps `/packaging/linux/as
 with `check+=(--built-in-agent)`; `windows-assistant-smoke.ps1` keeps exactly one
 `CheckBuiltInAgent`). The `#233` documentation constant name (`AUTHORIZATION_TTL_SECONDS` →
 `MAX_ABSOLUTE_GRANT_LEASE`) rides along with that merge.
+
+## 12. #236 merged; my earlier "subsumed" conclusion was wrong and is corrected here
+
+On the owner's instruction, **#236 was squash-merged into `develop`**:
+
+```
+develop 085675557d  Derived packages record their own artifact, covered by the inspected source (#236)
+```
+
+My earlier comparison (§ after the conflict map, and the comment I posted on the PR) said #214
+already contained everything except two tests. That was wrong in the part that matters: #214's
+producer side inspects each derived artifact and puts anything it cannot read into `unchecked`,
+and its consumer side refuses a non-empty `unchecked`. No runner has a reader for a squashfs
+Flatpak, a squashfs Snap, or a zstd Arch package, so #214 alone would have refused six of the
+fourteen packages in the formal gate. #236's fallback — record such a wrapper as
+`format: covered` with `coveredBy` naming the inspected Linux source — is what makes #214's
+stricter check satisfiable. The tests were a symptom, not the whole contribution.
+
+**#214 updated to `318b87cc94`**, merging `develop` and resolving four conflicts:
+
+| File | Resolution |
+|---|---|
+| `.github/workflows/release.yml` | kept #214's unconditional artifact pass and its comment |
+| `scripts/ci/package_contents.py` | #214's derived loop, plus #236's behaviour: ignored suffixes are recorded in `ignored`, and an unreadable wrapper is recorded as `covered` with `coveredBy=<source>` instead of `unchecked` |
+| `scripts/ci/release_content.py` | one coverage check (no duplicated failure text) plus #236's `coveredBy`-must-be-the-inspected-source validation |
+| `packaging/tests/publish_verify_test.py` | the covered-wrapper expectation from #236 |
+| `scripts/ci/test_release_content.py` | #236's three assertions, adapted to #214's `problems(..., distribution)` signature |
+
+Verified on that tree: `test_release_content.py`, `test_package_contents.py`, `test_gate.py`,
+`packaging/tests/publish_verify_test.py` all OK; `packaging/tests` **118 tests, 0 failures**;
+`scripts/test-format-pending.sh` OK. The superseded run 45447415365 was cancelled by the branch's
+concurrency group; the new run is **45463466599** on `318b87cc94`.
