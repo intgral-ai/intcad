@@ -409,6 +409,15 @@ Nothing here authorizes merging the promotion PR, approving the signing job or
 publishing. The source repository stays public and CI stays on GitHub-hosted runners
 for this release.
 
+**Review status of the signing path (GPT-6.2 Sol High).** Client trust, gate binding,
+independent signature verification against the tracked key, draft-only, read-back, secrets
+handling and the notes path pass by inspection. `can_admins_bypass` handling is fixed (missing
+field accepted with a warning, `false` accepted, `true` refused, three tests). Two items remain:
+the tag→SHA recheck still uses a **local** tag and a stale main checkout, so remote tag drift
+after checkout is missed; and the new "one-person release environment with a warning" weakens
+separation of duties unless the owner explicitly opts in. **Explicit owner decision required
+before using that exception.** Local Python gate/publish tests pass on the branch.
+
 **Migration branch status for this path (`5ca2f08edb`, not yet a PR).** The production
 public key is now embedded at
 `crates/ui-egui/src/update/trusted-release-key.pub` (one 56-character base64 line, no
