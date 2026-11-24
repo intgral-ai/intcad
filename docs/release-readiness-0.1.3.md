@@ -2684,3 +2684,8 @@ the project brief skill". The other note claims already have their evidence in t
 updater repository and signature names (§17), the distribution repo policy (§17), the CLI paid path
 and the declared bounds (§9, §12), the packages' licence texts (gate content checks), and the
 Windows installer replacement (packaging evidence from #214).
+
+**No platform incident explains the wait.** `githubstatus.com` reports *All Systems Operational*
+(Git Actions = operational, Git Operations = operational) at 19:14Z, so the remaining time is the
+measured full-CI duration itself, not an outage. #214's heavy jobs started 18:49Z and their
+240-minute ceiling is 22:49Z, so there is a wide margin.
