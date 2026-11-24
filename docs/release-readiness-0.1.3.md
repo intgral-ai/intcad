@@ -1313,7 +1313,11 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   becomes `cancelled`). The fix was narrowed: adopt only a **cancelled** report when the
   cancellation marker exists, and a new guard test proves a provisional result report still
   returns `REPORT_MISMATCH`. Pushed as `dc71fadad3`; focused run after the narrowing:
-  **57 passed**. A local run of the originating CLI test itself is in progress. Two other failures in that job are
+  **57 passed**, and a local run of the originating CLI test itself now **passes**:
+  `cargo test -p solidcraft-cli --profile ci --test script_roundtrip --
+  cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit --exact`
+  → `1 passed, 7 filtered out (1 suite, 0.12s)`. That is the path the hosted gate had
+  failed on, so the fix is proven against the original failure rather than by a subset. Two other failures in that job are
   listed known failures (SMLib variable fillet `Unsupported`, the dialog variable round
   status 1001). The `ci` verifier then failed with `rust: real job result is not success`
   and `rust: missing receipt`. Until `ci` is green at a reviewed `develop`, no release-gate
