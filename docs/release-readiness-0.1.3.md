@@ -1461,6 +1461,16 @@ candidate evidence; it is a check that the packaging shape is right.
 | Rust/TypeScript source outside `node_modules` | none matched |
 | Credential-shaped names | 243 matches, all inside dependency packages (e.g. AWS credential providers) except `mastra-agent/agent/secrets.mjs`, which is the agent's key-withholding module: it strips provider keys from the command sandbox and throws if the SDK shape is unexpected. No secret value is present. |
 
+The Windows rehearsal portable ZIP (`rc-complete/intcad-0.1.3-windows-x64-portable.zip`)
+was listed directly (11,646 entries, Python `zipfile`): `LICENSE-APACHE`, `LICENSE-MIT`,
+`NOTICE`, `THIRD-PARTY-LICENSES.txt`, `ASSISTANT-THIRD-PARTY-NOTICES.txt` and
+`WEB-VIEW-PLATFORM-NOTICES.txt` are present, `mastra-agent/node.exe` and
+`mastra-agent/agent/main.mjs` are present, and no sourcemap, `.pdb`, `.git` or internal
+release docs matched. The build-time `contents.json` for `release-windows-x64` records
+`agent.present: true`, `node: true`, the five skills and `missing: []`. The MSI itself could
+not be listed here (`7z` shows the compound document, not installed files); its installed
+inventory remains the Windows CI/installer check.
+
 Open questions this does not settle: whether shipped `node_modules` documentation and the
 modelling-skill `scripts/tests/` should be trimmed for size/policy, and whether every
 dependency text required by licence is present (that needs the legal audit, not a listing).
