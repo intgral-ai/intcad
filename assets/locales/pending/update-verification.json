@@ -13,5 +13,14 @@
   },
   "zh": {
     "update.verification_failed": "Intcad 无法验证此更新。更新未安装。"
+  },
+  "ar": {
+    "update.verification_failed": "تعذّر على Intcad التحقق من هذا التحديث. لم يتم تثبيت التحديث."
+  },
+  "he": {
+    "update.verification_failed": "Intcad לא הצליח לאמת את העדכון הזה. העדכון לא הותקן."
+  },
+  "vi": {
+    "update.verification_failed": "Intcad không thể xác minh bản cập nhật này. Bản cập nhật chưa được cài đặt."
   }
 }
