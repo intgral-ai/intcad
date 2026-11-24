@@ -1256,7 +1256,9 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   viewport. Independent Spec and Quality review approved; controller rerun had 12 passes and
   one pytest-plugin deprecation warning. This is not installed acceptance. Native backing work
   continues separately; vertical clipping stays unverified.
-- **#223 slash commands — BLOCKED, owner not confirmed.** The issue is open and unassigned.
+- **#223 slash commands — IN PROGRESS, Release Manager owns it.** The issue was open and
+  unassigned; the Release Manager took it for 0.1.3 ([issue note](https://github.com/intgral-ai/intcad/issues/223#issuecomment-7122373320)).
+  Implementation is in local branch `int223-slash-menu` from `develop` `6032271178`.
   A read-only review at `b002647acb` confirms the packaged agent emits
   `available_commands_update` (`agent-smoke.mjs`), while the client's `acp.rs` ignores it.
   Handoff: scope displayed commands to the active ACP session. In the bundled-browser
