@@ -2234,3 +2234,39 @@ packages and the installed checks (roughly 2–3 hours each). The only way to pa
 merge queue: a `merge_group` run is accepted as the required `release-gate`, and the tested
 merge-group commit becomes `main`'s tip when the queue merges. That needs the repository ruleset
 to require a merge queue (an admin change), so it is recorded as an option, not assumed.
+
+## 11. Owner decisions (2026-11-24T18:4xZ)
+
+1. **Batching approved** for the four paid-authority PRs, keeping each original PR, commit,
+   review and test traceable, with a full acceptance of the integrated tree. No merge queue and
+   no change to `main`'s protection or ruleset.
+2. **The post-promotion `workflow_dispatch` gate is contractually invalid** and must not be used:
+   `verify_execution` accepts only `pull_request`/`merge_group`
+   (`release_handoff.py:100-105`), the gate writes `stable-release-handoff` only for the formal
+   context, and `docs/releasing.md:299-309` excludes diagnostic dispatch.
+
+**Verification of the reuse question (1a): reuse is impossible as written.** The successful formal
+gate for `release/v0.1.0` (run 43632954490) recorded its `GITHUB_SHA` in the artifact names:
+`kernel-rig-build-b32a88b299a2d0defd92a75aedf33fc3258f804a`. That object cannot be fetched from
+the repository at all:
+
+```
+git fetch origin b32a88b2…  →  fatal: remote error: upload-pack: not our ref b32a88b2…
+git cat-file -t  b32a88b2…  →  fatal: could not get object info
+```
+
+The PR that run gated (#132) merged as `3e6183cfae` whose parents are
+`b0a7b7ace1` (main) and `dba468b256` (PR head) — a different object. So a pull-request gate's
+SHA is a synthetic merge commit that is not part of `main`, and `require_tag_on_main`
+(`release_handoff.py:664-674`) will always reject it. `docs/releasing.md:302-307` states the same
+rule from the other side: the tag must name the exact tested commit and "the PR head and a
+different commit with the same tree are not substitutes". A post-promotion rebuild is therefore
+unavoidable, but it must be a **formal** one.
+
+**Proposed minimal formal path (handed to the Migration Agent).** Trigger the gate on the *tag
+push* that names `main`'s tip (`push: tags: ['v*']`), accept `event == "push"` in
+`verify_execution` only for a `vX.Y.Z` tag whose commit is on `main`, keep `workflow_dispatch`
+diagnostic, keep every existing check (SHA equality, main ancestry, producer trees, run id,
+attempt, 14 pairs, signing approval), and prove the whole contract with regression tests before
+any multi-hour run. A tag is created only by a maintainer, so it is as unforgeable as the
+protected branch, while an ordinary `push` to `main` does not need to pay for a gate.
