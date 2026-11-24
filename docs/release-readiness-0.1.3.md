@@ -2138,3 +2138,11 @@ publication is therefore not achievable while keeping every gate. The only lever
 weaken a gate is to batch the four stacked paid-authority PRs into one integration branch and let
 a single full CI run judge that tree (their individual reviews already exist); that is a process
 decision for the owner, not something the release manager may change alone.
+
+**Gate B server-side preflight passed (Login Agent, 18:34Z).** With a refreshed account token,
+the staging product answered `/healthz` 200, `/readyz` 200, `/v1/status` 200
+(`min_client=0.1.3`, `supported=true`, `balance=1000`), `authorize` for
+chat/harness/review/dfm/mcp/control returned 200 with `remaining=299`, and a 0.1.2 client was
+refused `403 VERSION_UNSUPPORTED`. Together with the `staging` environment policy above, the
+Gate B prerequisites are satisfied; what remains is the staging package run itself, which can
+only be dispatched from `main` after the promotion.
