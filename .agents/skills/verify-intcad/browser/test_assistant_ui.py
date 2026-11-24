@@ -106,17 +106,41 @@ def x11_shape_page(page, site):
 FOOTPRINT = """window.assistantFixture.actions.filter(action => action.type === 'painted-footprint')"""
 
 
-def test_x11_shape_leaves_room_for_the_busy_glow(x11_shape_page):
+def test_x11_shape_covers_busy_glow_without_covering_the_viewport(x11_shape_page):
     page = x11_shape_page
-    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.surfaces.length === 2", timeout=3000)
+    last = f"{FOOTPRINT}.at(-1)"
+    ring = page.locator('[data-slot="composer-ring"]')
+
+    def exact_ring():
+        return ring.evaluate("""el => {
+            const {left, top, right, bottom} = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            const radii = ['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomRightRadius',
+              'borderBottomLeftRadius'].flatMap(name => [parseFloat(style[name]), parseFloat(style[name])]);
+            return [left, top, right, bottom, ...radii];
+        }""")
+
+    page.wait_for_function(f"() => {last}?.surfaces.length === 2", timeout=3000)
+    idle_ring = exact_ring()
+    assert page.evaluate(f"() => {last}").get("surfaces")[-1] == idle_ring
     show(page, centre=300, state="busy")
-    ring = page.locator('[data-slot="composer-ring"][data-busy="true"]')
-    expect(ring).to_have_count(1)
-    assert ring.evaluate("el => getComputedStyle(el).boxShadow") != "none"
-    # No mask means the entire existing native viewport, including the glow, can paint.
-    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.surfaces.length === 0", timeout=3000)
-    show(page, centre=300)
-    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.surfaces.length > 0", timeout=3000)
+    expect(ring).to_have_attribute("data-busy", "true")
+    # Once the transition reaches its authored shadow (0 4px 20px -4px), the footprint
+    # must extend beyond the ring without including the empty upper viewport.
+    page.wait_for_function(f"() => {last}?.surfaces.some(s => s[0] <= -20)", timeout=3000)
+    footprint = page.evaluate(f"() => {last}")
+    glow = footprint["surfaces"][-1]
+    assert glow[0] <= idle_ring[0] - 20 and glow[2] >= idle_ring[2] + 20
+    assert glow[1] < idle_ring[1] and glow[3] > idle_ring[3]
+    assert all(s[1] > 0 for s in footprint["surfaces"]), footprint
+    assert footprint["popup"] is None
+
+    show(page, centre=300, items=[{"kind": "notice", "text": "Status", "error": True}])
+    page.wait_for_function(f"expected => JSON.stringify({last}?.surfaces.at(-1)) === JSON.stringify(expected)",
+                           arg=idle_ring, timeout=3000)
+    page.emulate_media(forced_colors="active")
+    page.wait_for_function(f"() => {last}?.surfaces.some(s => s[0] === -1)", timeout=3000)
+    assert all(s[1] > 0 for s in page.evaluate(f"() => {last}").get("surfaces"))
 
 
 def test_x11_shape_retries_menu_ack_and_fails_open(x11_shape_page):

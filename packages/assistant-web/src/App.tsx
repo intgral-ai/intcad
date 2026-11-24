@@ -2807,23 +2807,52 @@ const ON_BLUR = POPUPS.filter(entry => entry.blur).map(entry => entry.selector).
 const DIALOGS = POPUPS.filter(entry => !entry.blur).map(entry => entry.selector).join(', ');
 const NATIVE_PORTALS = `${OPEN}, [role="tooltip"], [data-slot="alert-dialog-content"]`;
 
+/** A computed length we can use without guessing at unresolved units or expressions. */
+function paintPixels(value: string) {
+  return /^-?(?:\d+\.?\d*|\.\d+)px$/.test(value) ? parseFloat(value) : NaN;
+}
+
+/** Conservative CSS-pixel outsets on the four sides. Unknown effects keep the border shape. */
+function paintOverflow(surface: HTMLElement, style: CSSStyleDeclaration) {
+  let left = 0, top = 0, right = 0, bottom = 0;
+  const outset = (x: number, y: number, extent: number) => {
+    left = Math.max(left, extent - x);
+    right = Math.max(right, extent + x);
+    top = Math.max(top, extent - y);
+    bottom = Math.max(bottom, extent + y);
+  };
+  // Remove serialized color functions before splitting the list: their comma-separated
+  // channels aren't additional shadows. An inset shadow does not extend the border box.
+  for (const shadow of style.boxShadow.replace(/[\w-]+\([^()]*\)/g, '').split(',')) {
+    const words = shadow.trim().split(/\s+/);
+    if (words.includes('inset') || words.length < 2 || words.length > 4) continue;
+    const [x, y, blur = 0, spread = 0] = words.map(paintPixels);
+    // Box shadow's standard deviation is half its blur radius. Include three deviations.
+    if ([x, y, blur, spread].every(Number.isFinite)) outset(x, y, blur * 1.5 + spread);
+  }
+  const outline = paintPixels(style.outlineWidth) + paintPixels(style.outlineOffset);
+  if (style.outlineStyle !== 'none' && Number.isFinite(outline)) outset(0, 0, outline);
+
+  const box = surface.querySelector('[data-slot="composer-box"]');
+  if (box) {
+    const boxStyle = getComputedStyle(box);
+    // The current composer clips its spotlight to the inner box. If it no longer clips,
+    // an active blur() can extend at most this far beyond the enclosing ring.
+    if (boxStyle.overflowX === 'visible' || boxStyle.overflowY === 'visible') {
+      const spotlight = getComputedStyle(box, '::before');
+      const blur = /^blur\(([^()]+)\)$/.exec(spotlight.filter)?.[1];
+      const radius = blur ? paintPixels(blur) : NaN;
+      if (spotlight.display !== 'none' && Number(spotlight.opacity) > 0 && Number.isFinite(radius)) outset(0, 0, radius * 3);
+    }
+  }
+  return { left, top, right, bottom };
+}
+
 /** Border boxes that paint the centred composer, with CSS ellipses in TL/TR/BR/BL order. */
 function paintedFootprint(element: HTMLElement) {
   const surfaces = Array.from(
     element.querySelectorAll<HTMLElement>('[data-slot="composer-ring"], [data-slot="composer-header-surface"]'),
   );
-  // CSS filter/shadow raster bounds aren't exposed by the DOM. Keep the allocation unshaped
-  // while they paint, including their fade-out, rather than trimming the glow to its border box.
-  if (surfaces.some(surface => {
-    const style = getComputedStyle(surface);
-    if (style.boxShadow !== 'none' || style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0) return true;
-    if (surface.dataset.busy === 'true' && !matchMedia('(prefers-reduced-motion: reduce)').matches) return true;
-    const box = surface.querySelector('[data-slot="composer-box"]');
-    if (!box) return false;
-    const spotlight = getComputedStyle(box, '::before');
-    return spotlight.filter !== 'none' && spotlight.display !== 'none' &&
-      (Number(spotlight.opacity) > 0 || Number(style.getPropertyValue('--composer-spotlight-strength')) > 0);
-  })) return [];
   return surfaces.flatMap(surface => {
     const rect = surface.getBoundingClientRect();
     const style = getComputedStyle(surface);
@@ -2846,8 +2875,12 @@ function paintedFootprint(element: HTMLElement) {
       ...radius(style.borderBottomRightRadius), ...radius(style.borderBottomLeftRadius),
     ];
     if (!radii.every(Number.isFinite)) return [];
-    if (bottom < rect.bottom) radii.fill(0, 4);
-    return [[rect.left, rect.top, rect.right, bottom, ...radii]];
+    const paint = paintOverflow(surface, style);
+    const clipped = bottom < rect.bottom;
+    const edges = [paint.left, paint.top, paint.right, paint.top, paint.right, paint.bottom, paint.left, paint.bottom];
+    const outerRadii = radii.map((value, index) => clipped && index >= 4 ? 0 : value + edges[index]);
+    return [[rect.left - paint.left, rect.top - paint.top, rect.right + paint.right,
+      clipped ? bottom : bottom + paint.bottom, ...outerRadii]];
   });
 }
 
