@@ -528,7 +528,7 @@ def live_execution(repo, repo_id, run, attempt):
 # Every executable input the gate and package jobs use. Comparing the whole trees,
 # not a hand-picked file list, closes the gap where one unpinned helper (a planner,
 # a candidate classifier, a packaging script) could fake the evidence.
-PRODUCER_TREES = ("scripts", ".github/workflows", "packaging")
+PRODUCER_TREES = ("scripts", ".github/workflows", "packaging", "tools")
 
 
 def require_producers(sha, repo="."):
@@ -555,6 +555,11 @@ def selection(env, *, resolve_tag=False):
     if resolve_tag:
         tag = git("rev-parse", "--verify", f"refs/tags/{env['TAG']}^{{commit}}").decode().strip()
         require(tag == sha, "source tag does not point to the frozen source SHA")
+        # The released commit must already be on the protected branch this dispatch runs from:
+        # a tag on a private or unmerged commit is not a promoted release.
+        require(subprocess.run(["git", "merge-base", "--is-ancestor", sha, "HEAD"],
+                               capture_output=True).returncode == 0,
+                "source SHA is not on the protected main branch")
     live_execution(repo, repo_id, run, attempt)
     return repo, repo_id, run, attempt, sha, version, contract
 
