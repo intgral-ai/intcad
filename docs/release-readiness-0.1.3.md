@@ -2837,3 +2837,12 @@ cargo test -p xtask --bin xtask  →  132 passed; 0 failed; 0 ignored  (18.16 s)
 
 So the regression that cost the previous gate run is gone at the binary level, not only in the one
 assertion that failed.
+
+**The `licences --check` notice is informational, not a gate failure.** On the release tree it prints
+"THIRD-PARTY-LICENSES.txt will change when this lands (the Generated files workflow rewrites it on
+main)" and exits **0**; CI's repository step treats it accordingly. Consequences checked for the
+tag gate: the generated-file commit a workflow may push to `main` afterwards only moves `main`
+forward, so the tag still names an ancestor commit, and the publisher's `require_producers`
+compares only `scripts`, `.github/workflows`, `packaging` and `tools`, not the generated licence
+file. Nothing in the tag-gate path depends on that file being byte-identical to the generator's
+next output.
