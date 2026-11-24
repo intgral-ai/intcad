@@ -1836,3 +1836,16 @@ Both conflicts are semantic, not textual:
 Neither PR's own CI can catch this, because each is green on a tree that lacks the other.
 The second merge must therefore include the port and re-run the installed checks; a
 GitHub merge button cannot resolve it.
+
+**The merged #214 + #224 tree compiles.** On the same throwaway merge tree (develop
+`f18a9aec27` + `#214 d4819c6a9d` + `#224 da73900d6b`), `cargo check -p solidcraft-ui-egui
+--profile ci --locked` finished with **exit 0** (`Finished ci profile … in 1m 58s`), with
+`CARGO_TARGET_DIR` in a fresh directory. So the agent and account changes to
+`crates/ui-egui/src/agent_chat/*` do not break each other; the packaging-check conflicts
+above are the only measured blockers in this pair.
+
+**#214's own packaging suites pass locally.** On `d4819c6a9d`, with `jq` on `PATH`:
+`unittest discover -s packaging/tests -p '*_test.py'` ran **118 tests, 0 failures,
+0 errors** (excluding `windows_icon_test.py`, which needs PowerShell and is covered on the
+Windows runners). `nightly_test.py` alone: 12 tests OK; it fails without `jq` only because
+the harness insists on that tool.
