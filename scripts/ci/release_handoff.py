@@ -343,6 +343,19 @@ def verify_signature(root, tag, key):
     subprocess.run(["minisign", "-Vm", str(root / SUMS), "-x", str(root / SIGNATURE), "-P", key], check=True)
 
 
+def verify_downloaded(out, downloaded):
+    """Every local release file must come back from the draft with the same bytes."""
+    require(downloaded.is_dir() and not downloaded.is_symlink(), "invalid download folder")
+    for folder in (out, downloaded):
+        require(all(path.is_file() and not path.is_symlink() for path in folder.iterdir()),
+                "release folder must hold regular files only")
+    names = {path.name for path in out.iterdir()}
+    require({path.name for path in downloaded.iterdir()} == names, "download set differs from the upload")
+    for name in sorted(names):
+        require(digest(downloaded / name) == digest(out / name),
+                f"{name}: downloaded bytes differ from the signed upload")
+
+
 def verify_draft(draft, root, tag, notes):
     require(positive(draft.get("id")) and draft.get("tag_name") == tag and draft.get("draft") is True
             and draft.get("prerelease") is False and draft.get("body") == notes,
@@ -389,9 +402,9 @@ def frozen_notes(sha, name, version, repo="."):
             and name.endswith(".md"), "notes must be a repository-relative Markdown path")
     # Only the reviewed release-notes location for this version. Any tracked Markdown
     # would otherwise let internal documentation be published as the update text.
-    require(name.startswith(("docs/release-notes-", "docs/release-notes/"))
-            and version in PurePosixPath(name).name,
-            "notes must be docs/release-notes-<version>.md or under docs/release-notes/<version>")
+    exact = {"docs/release-notes-" + version + ".md", "docs/release-notes/" + version + ".md"}
+    require(name in exact,
+            f"notes must be exactly {sorted(exact)}")
     mode = git("-C", repo, "ls-tree", sha, "--", name).split(b" ", 1)[0]
     require(mode in (b"100644", b"100755"), "notes must be a tracked regular file at the frozen SHA")
     notes = git("-C", repo, "show", f"{sha}:{name}").decode("utf-8")
@@ -512,24 +525,25 @@ def live_execution(repo, repo_id, run, attempt):
     verify_execution(api(prefix), jobs, run, attempt, repo_id)
 
 
-PRODUCERS = (
-    WORKFLOW, ".github/workflows/release.yml", "scripts/ci/gate.py",
-    "scripts/ci/package_contents.py", "scripts/ci/release_content.py",
-    "scripts/ci/release_handoff.py",
-)
+# Every executable input the gate and package jobs use. Comparing the whole trees,
+# not a hand-picked file list, closes the gap where one unpinned helper (a planner,
+# a candidate classifier, a packaging script) could fake the evidence.
+PRODUCER_TREES = ("scripts", ".github/workflows", "packaging")
 
 
 def require_producers(sha, repo="."):
-    """The gate evidence must have been produced by the protected main workflow.
+    """The gate evidence must have been produced by the protected main revision.
 
-    The gate runs the candidate checkout's workflow, so a candidate could otherwise
-    rewrite it to emit self-consistent evidence. The publisher re-checks the tagged
-    producer against its own protected-main checkout before it trusts the handoff.
+    The gate runs the candidate checkout, so a candidate could otherwise rewrite any
+    script or workflow to emit self-consistent evidence. The publisher re-checks the
+    tagged trees against its own protected-main checkout before it trusts the handoff.
+    A change that is already merged into main is outside this boundary: main is the
+    reviewed trust root.
     """
-    for path in PRODUCERS:
-        frozen = sha256(git("-C", repo, "show", f"{sha}:{path}"))
-        protected = sha256(git("-C", repo, "show", f"HEAD:{path}"))
-        require(frozen == protected, f"{path}: the release candidate changed the evidence producer")
+    for tree in PRODUCER_TREES:
+        frozen = git("-C", repo, "ls-tree", "-r", "--full-tree", sha, "--", tree)
+        protected = git("-C", repo, "ls-tree", "-r", "--full-tree", "HEAD", "--", tree)
+        require(frozen == protected, f"{tree}: the release candidate changed the evidence producer")
 
 
 def selection(env, *, resolve_tag=False):
@@ -641,9 +655,8 @@ def draft_release(env, work, candidate):
         # agree while the stored bytes do not.
         name = asset["name"]
         require(positive(asset.get("id")), "invalid downloaded release asset ID")
-        path = downloaded / name
-        download(f"{release_endpoint}/assets/{asset['id']}", path, asset=True)
-        require(digest(path) == digest(out / name), f"{name}: downloaded bytes differ from the signed upload")
+        download(f"{release_endpoint}/assets/{asset['id']}", downloaded / name, asset=True)
+    verify_downloaded(out, downloaded)
     verify_signature(downloaded, tag, key)
     with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
         print(f"### Verified draft {tag}\n"
