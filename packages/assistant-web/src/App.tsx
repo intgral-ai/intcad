@@ -1148,9 +1148,24 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
   const { strings } = state;
   const [text, setText] = useState('');
   const [sent, setSent] = useState(0);
+  const [menuClosed, setMenuClosed] = useState(false);
+  const [highlight, setHighlight] = useState(0);
   const input = useRef<HTMLTextAreaElement>(null);
+  const listbox = useRef<HTMLDivElement>(null);
   const busy = state.state === 'busy';
   const reading = state.loading.length > 0;
+  // The agent's own slash commands: the menu is open while the draft starts with `/` and the
+  // agent has a command whose name starts with what follows it.
+  const afterSlash = text.startsWith('/') ? text.slice(1) : null;
+  const matches = afterSlash === null ? [] : state.commands.filter(command => command.name.startsWith(afterSlash));
+  const menuOpen = matches.length > 0 && !menuClosed;
+  const highlighted = Math.min(highlight, matches.length - 1);
+
+  // Keep the highlighted row in the list's own viewport, not the page's.
+  useEffect(() => {
+    if (!menuOpen) return;
+    listbox.current?.children.item(highlighted)?.scrollIntoView({ block: 'nearest' });
+  }, [highlighted, menuOpen]);
   const canSend = !reading && (text.trim().length > 0 || state.attachments.length > 0);
   const selection = state.selected > 0 ? `${strings.attachSelection} (${state.selected})` : strings.attachSelection;
   const modes = [
@@ -1177,8 +1192,52 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
     input.current?.focus();
   }
 
+  // A command goes into the draft as the agent named it; it is never sent by choosing it.
+  function choose(name: string) {
+    setText(name);
+    setMenuClosed(true);
+    input.current?.focus();
+  }
+
+  function edit(next: string) {
+    setText(next);
+    setMenuClosed(false);
+    setHighlight(0);
+  }
+
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     const composing = event.nativeEvent.isComposing || event.keyCode === 229;
+    // An IME owns every key it is composing, Enter, Escape and the arrows included.
+    if (menuOpen && !composing) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setHighlight(index => (index + 1) % matches.length);
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setHighlight(index => (index - 1 + matches.length) % matches.length);
+        return;
+      }
+      // Every Enter variant picks the highlighted command; none of them sends.
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        const command = matches[highlighted];
+        if (command) choose(command.name);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setMenuClosed(true);
+        return;
+      }
+    }
+    // A held Enter repeats keydowns; a repeat must never send the draft it just inserted. A
+    // composing key is left entirely to the input method.
+    if (event.key === 'Enter' && event.repeat && !composing) {
+      event.preventDefault();
+      return;
+    }
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !composing) {
       // Send now: this message and what is queued go next, the running step stops for them.
       event.preventDefault();
@@ -1187,7 +1246,7 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
     } else if (event.key === 'Enter' && !event.shiftKey && !composing) {
       event.preventDefault();
       submit();
-    } else if (event.key === 'Escape' && busy) {
+    } else if (event.key === 'Escape' && busy && !composing) {
       post({ type: 'stop' });
     }
   }
@@ -1201,6 +1260,33 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
       }}
     >
       {header}
+      {menuOpen && (
+        <div
+          ref={listbox}
+          role="listbox"
+          aria-label={strings.composer}
+          className="absolute bottom-full left-0 z-50 mb-2 max-h-64 w-full overflow-y-auto rounded-md border border-border bg-card p-1 shadow-md"
+        >
+          {matches.map((command, index) => (
+            <button
+              key={command.name}
+              type="button"
+              role="option"
+              tabIndex={-1}
+              aria-selected={index === highlighted}
+              aria-label={command.name}
+              className={`flex w-full flex-col items-start rounded-sm px-2 py-1.5 text-left ${index === highlighted ? 'bg-surface-overlay-strong' : ''}`}
+              onMouseDown={event => {
+                event.preventDefault();
+                choose(command.name);
+              }}
+            >
+              <span className="w-full truncate text-sm">{command.name}</span>
+              {command.description !== '' && <span className="w-full truncate text-xs text-muted-foreground">{command.description}</span>}
+            </button>
+          ))}
+        </div>
+      )}
       <ComposerRing tone={session?.tone} busy={busy}>
         <ComposerBox sendingPulseKey={sent}>
           {chips && (
@@ -1275,7 +1361,7 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
             aria-label={strings.messageBox}
             placeholder={centre ? oneLine(input.current, hint) : hint}
             value={text}
-            onChange={event => setText(event.target.value)}
+            onChange={event => edit(event.target.value)}
             onKeyDown={onKeyDown}
             onPaste={event => {
               // A picture on the clipboard is attached by the app, which reads the clipboard itself.

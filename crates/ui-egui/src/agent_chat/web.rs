@@ -9,8 +9,6 @@ use super::*;
 
 /// Longest raw tool input or output sent to the page (characters), as the panel's own Details.
 const MAX_DETAIL: usize = 8000;
-/// Longest message the page may send (characters).
-const MAX_MESSAGE: usize = 100_000;
 
 /// Why the desktop host has no web view to offer. The panel shows this as a diagnostic, never as
 /// a second conversation: the Assistant has one interface, the page in the host's view.
@@ -684,6 +682,8 @@ pub fn state(app: &mut SolveApp) -> String {
         "customModels": custom_models,
         "config": chat.config_options,
         "configPending": chat.config_pending,
+        // The agent's slash commands for this session: its names, shown when the draft starts `/`.
+        "commands": chat.commands,
         "notes": notes,
         "auth": auth,
         // The built-in agent's connections: an object exactly while it is the agent, so the
@@ -730,7 +730,7 @@ pub fn state(app: &mut SolveApp) -> String {
 /// `open_link` (`url`, web addresses only). Anything else is refused with the reason.
 pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::result::Result<(), String> {
     let _language = crate::i18n::scope(&app.preferences.language);
-    if message.len() > MAX_MESSAGE * 4 {
+    if message.len() > MAX_MESSAGE_BYTES {
         return Err("message too long".into());
     }
     let action: Value = serde_json::from_str(message).map_err(|error| format!("not JSON: {error}"))?;

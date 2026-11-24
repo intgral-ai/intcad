@@ -7,7 +7,7 @@ const session = {
   permissions: 'ask', skill: '', skills: [], turn: null, detecting: false,
   agents: [{ id: 'fixture', name: 'Fixture', detail: '', hint: null }], agent: 'fixture',
   modes: [], mode: '', models: [], model: '', customModels: false, config: null,
-  configPending: false, notes: [], auth: null, missing: [], confirmNew: false,
+  configPending: false, commands: [], notes: [], auth: null, missing: [], confirmNew: false,
   left: false, dark: false, dfm: { display: 'off', selected: null },
   strings: new Proxy({
     messageBox: 'Message', send: 'Send', stop: 'Stop', removeChip: 'Remove',
