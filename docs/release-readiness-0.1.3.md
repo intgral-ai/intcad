@@ -496,6 +496,19 @@ a derived Flatpak/Snap/Arch repack, to record its own artifact digest in `checke
 packaging owner decides between recording derived artifacts in `checked` (preferred) or asking
 the gate owner for a documented exemption.
 
+**Production account configuration is not wired into the formal release build — BLOCKED.**
+`docs/account/desktop-configuration.md` (on #224's branch) says the three values
+`INTCAD_WORKOS_PUBLIC_CLIENT_ID`, `INTCAD_AUTHKIT_VERIFICATION_ORIGIN` and
+`INTCAD_PRODUCT_HTTPS_ORIGIN` are compiled in with `option_env!`, that no production values are
+checked in, and that the release builder must set them together. Measured on the same branch:
+`release.yml` contains **no** `vars.`/`secrets.`/`INTCAD_*` reference (`rg` output empty),
+`staging-packages.yml` covers only the staging tuple, and `repos/.../actions/variables` is empty.
+A formal gate run therefore builds packages with no account configuration; the sign-in entry
+fails closed. The Login Agent has been asked to add a reviewed production-config path (for
+example a protected environment/repo variable surfaced as a `production_account_config` input,
+fail closed when absent), record `accountConfig` evidence for the candidate without secrets, and
+provide a verification of the final binary plus the Gate B staging plan.
+
 ## 9. Acceptance matrix for the candidate (not yet run)
 
 Rows marked *rehearsal* are the §12 tree (`develop` + #204 + this branch), not a versioned
