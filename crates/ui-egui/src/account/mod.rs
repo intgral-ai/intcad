@@ -14,7 +14,7 @@ pub(crate) mod tests;
 use solidcraft_engine::entitlement::{AccountService, AuthenticatedHostScope, MonotonicClock, Refusal, RefusalCode};
 
 pub use panel::{PromptContext, show_inline_sign_in, show_product_prompt, show_summary, status_chip};
-pub(crate) use panel::{compact_menu_entry, status_chip_width};
+pub(crate) use panel::{compact_menu_entry, refusal_text, status_chip_width};
 
 /// A point in time for a device-code login, in seconds since the Unix epoch.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

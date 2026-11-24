@@ -1063,28 +1063,17 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
     Ok(())
 }
 
-/// Run `dfm.check` for the button and the chat phrase, and keep one Tool row per run so the page
-/// can show running, done or error.
+/// The button and chat shortcut ask to start a new controlled check, not read a report. The
+/// Assistant entry is not a paid entry: it refuses before dispatch and leaves no operation,
+/// hold or tool row behind.
 fn run_check(app: &mut SolveApp) {
-    let n = app.dfm_chat.next;
-    app.dfm_chat.next = app.dfm_chat.next.saturating_add(1);
-    let id = format!("dfm-check-{n}");
-    app.agent_chat.push(Item::Tool {
-        id: id.clone(),
-        title: tr("ui.dfm_check.title").to_string(),
-        kind: "dfm.check".into(),
-        status: Some(backend::ToolStatus::InProgress),
-        input: None,
-        output: None,
-    });
-    let card = crate::dfm_chat::run(app);
-    let failed = card.status == "error";
-    set_check_item(app, &id, card);
-    if !failed {
-        // The run may already be finished (a small sheet); ask once, then the page polls.
-        poll_check(app);
-    }
-    app.agent_chat.notice(tr("ui.dfm_check.title"), failed);
+    let refusal = super::assistant_dfm_refusal(app);
+    let text = if refusal == solidcraft_engine::entitlement::RefusalCode::UnsafeToStart {
+        tr("ui.dfm_check.assistant_unavailable").to_string()
+    } else {
+        crate::account::refusal_text(app, refusal)
+    };
+    app.agent_chat.notice(text, true);
 }
 
 /// Ask `inspect.dfm` for the live report and update the newest check row. The page calls this

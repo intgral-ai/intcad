@@ -19310,7 +19310,7 @@ fn assistant_inspection_carries_the_marker_the_windows_smoke_reads() {
     h.app.agent_chat.open = true;
     h.frames(3);
     assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": false, "host": "available"}), "no page has spoken yet");
-    h.app.agent_chat.web_canvas = Some(egui::Color32::from_rgb(14, 14, 14));
+    h.app.agent_chat.web_canvas = Some(crate::theme::Tokens::get().panel);
     assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": true, "host": "available"}), "the page said its surface");
     h.app.agent_chat.open = false;
     assert_eq!(
