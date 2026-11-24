@@ -471,6 +471,15 @@ passed). Pushed as `9ca2ddaff2`; Assistant browser suite on that tree: **21 pass
 `rc=0`. So rebasing the promotion branch after the feature merges is a no-conflict step;
 the promotion PR can then be opened against `main` to run the formal gate.
 
+**Composed candidate dry run.** A local branch `candidate-dryrun` merges, in order,
+`#229`'s stacked head (`9ca2ddaff2`, which already contains #221), `#226` (`c12cd1ba70`),
+`#214` (`feat/int1503-mastra-release-skills`) and the promotion commit `994b280dda`. All four
+merges were clean (no conflicts beyond the ones already resolved on the #229 stack). On that
+tree: `scripts/test-format-pending.sh` OK, `aliases/checksums/nightly` packaging tests OK,
+`test_gate`/`test_release_content`/`test_package_contents` OK, workspace version `0.1.3`,
+`docs/release-notes-0.1.3.md` present and zero pending format files. #224 is not in this dry
+run; it is the remaining integration.
+
 ## 9. Acceptance matrix for the candidate (not yet run)
 
 Rows marked *rehearsal* are the §12 tree (`develop` + #204 + this branch), not a versioned
