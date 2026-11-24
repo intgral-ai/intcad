@@ -2425,10 +2425,24 @@ throw away #214's nearly finished full run and force a rebase plus another two h
 4. **Paid-authority integration PR** (base `develop`, the four reviewed PRs as merge commits):
    merge the new `develop`, final head, one full CI, squash merge. Close #227/#233/#235/#234 with
    a pointer to it.
-5. **Rebase `release/v0.1.3`** onto that `develop`: cherry-pick `c929f797e1` and `fa6582f8c9`,
-   then **regenerate `Cargo.lock` and amend the version commit** (the two `0.1.2 → 0.1.3` member
-   entries measured in §14), prove `cargo metadata --locked`, run `test-format-pending.sh` and the
-   pure-Python suites, force-push with lease.
+5. **Rebase `release/v0.1.3`** onto that `develop`, rehearsed end to end on the simulated final
+   tree:
+
+```
+git checkout -B release/v0.1.3 <final-develop>
+git cherry-pick c929f797e1            # version 0.1.3, notes, folded format 51
+cargo metadata --format-version 1 >/dev/null   # regenerate: account-native, suspend-clock 0.1.2 -> 0.1.3
+git commit --amend --no-edit          # fold the lock into the version commit
+git cherry-pick fa6582f8c9            # the widened notes
+cargo metadata --locked               # must pass
+bash scripts/test-format-pending.sh   # ok: … fold into v52
+python3 scripts/ci/test_gate.py …     # test_gate / test_release_content / test_release_candidate ok
+git push --force-with-lease origin release/v0.1.3
+```
+
+   On the rehearsal the amended version commit carries the 50-line lock update plus the two
+   `0.1.2 → 0.1.3` member entries, `cargo metadata --locked` passes, and the gate, release-content,
+   release-candidate and publish-verify suites all pass.
 6. **#237 ready → required `release-gate`** on the PR merge ref (full 14-package build, installed
    checks). Merge #237 into `main` with a **merge commit** (squash would drop the tested commit
    from `main`; see §10).
