@@ -876,3 +876,76 @@ This is isolated hosted Windows evidence, not a full Windows VM E2E run, a Windo
 - Product source `581e606f0e30f3404b1bc9cd786a44bc015537ea`, clean. Local Ubuntu 24.04 build produced a direct desktop binary; build and deployment each exited `0`. Build manifest, recomputed host binary, and recomputed deployed binary agree on SHA-256 `ad6f54323258ae93c17ddd9c0d973adf1e9a1f3e3a9d9122aa9b2f5fe1c6cef0`.
 - In a dedicated Ubuntu 24.04.5 LTS VM, 16 authenticated simultaneous read-only clients succeeded; client 17 received the exact `too many connections` response and clean EOF; an admitted client remained usable; new admission resumed after disconnection. The guest-local check exited `0`. Log SHA-256 `9e56039cf8bc60379daa69595c756db8dd3ed051e974816af91a0cb8ad4a3c59`. Raw logs and script are retained locally under `/tmp/opencode/int1454-a6-real-tcp/`. The same directory's `vm-shutdown-status.txt` records the dedicated VM in `shutoff` state (SHA-256 `188f984d6d9358f5d4a1446a17340e41e151b7c03aab15f0ceae3f3339ef62df`).
 - This covers normal-client Linux loopback refusal on the isolated product SHA. It is not Windows TCP parity, full platform E2E, combined CI, evidence on `develop`, or independent merge approval.
+
+
+### 11.18 PR #220 head evidence: kernel rig green, the dropped list measured, Packaging lint explained
+
+Branch `prep/int1454-kvl`, reviewed head `89377829c7`, then `40eb677031` (the Packaging lint fix
+below). `develop` stayed `be9cb2c16` at the time of these runs; it has since advanced to
+`7bc8992c12`, so **no integration SHA exists yet** and B3 stays closed. Nothing here is a landed-
+`develop` claim, a merge approval, a K12 outcome or a platform/PP acceptance.
+
+**Kernel rig (authoritative on this head).** Run
+[45284624556](https://github.com/intgral-ai/intcad/actions/runs/45284624556), attempt 1,
+`completed success`, 22/22 jobs, `head_sha 89377829c7512ff963b3064f01fe6cf87f6527b5`
+(`gh api repos/intgral-ai/intcad/actions/runs/45284624556`). It only ran at all after
+`.github/workflows/kernel-rig.yml` replaced the removed `crates/step/**` trigger with
+`solidcore/crates/**`: the plan asserts every area lies under a trigger path and had aborted with
+`AssertionError: solidcore/crates/solidcore/**: not under the workflow's trigger paths`.
+`scripts/ci/test_kernel_rig_plan.py`: 26 tests, `OK`, exit `0`.
+
+**CI on the same head was cancelled, not decided.** Run
+[45284624506](https://github.com/intgral-ai/intcad/actions/runs/45284624506) ended
+`completed cancelled` (22:58:18Z–00:21:20Z). Its `Native Linux selected regression gate` job
+(`138080883946`) has steps 1–9 `success` (checkout, plan download, dependencies, `build-jobs.sh`,
+toolchain, cache, nextest install) and step 10 `Measure selected execution (including GPU paths and
+full-mode properties)` still in progress; no `evidence-rust` artifact was produced and the job log
+answers `BlobNotFound`. The same head's `Kernel rig`, `Fillet rig` and `PR checks` completed
+`success`. The run's bound base is `be9cb2c16` while `develop` moved to `7bc8992c12` at 00:15Z:
+treat it as a superseded merge ref, not as a test result, and do not cite it as a pass or a failure.
+
+**The 20 known-failing entries the vendoring drops, measured.** `tests/KNOWN_FAILING_TESTS` goes
+from 33 entries at `be9cb2c16` to 13, dropping 20 with no additions. Each was matched against a
+local suite log with `classify-dropped.py --log <log> --sha <head>`:
+
+| Suite (local, Rust 1.99.1, `--profile ci`) | Result | Dropped entries measured |
+|---|---|---|
+| `solidcraft-kernel --lib` | `932 passed; 6 failed; 5 ignored`, exit `101` | 7 now pass |
+| `solidcraft-kernel --test boolean_props` | `19 passed; 0 failed; 2 ignored`, exit `0` | 3 now pass (`identity_on_grid`, `scale_invariant`, `translation_invariant`) |
+| `solidcraft-doc --lib` | `874 passed; 0 failed; 2 ignored`, exit `0` | 2 now pass |
+| `solidcraft-engine --lib` | `5351 passed; 4 failed; 18 ignored`, exit `101` | 7 now pass |
+| `solidcraft-ui-egui --lib` | `5189 passed; 0 failed; 23 ignored`, exit `0` | 1 now passes |
+
+7 + 3 + 2 + 7 + 1 = 20, **0 measured failing**, so no entry goes back. The 6 kernel failures and
+the 4 engine failures are all on the retained 13; `check-known-failing.py --rev 89377829c7`
+answers `OK: every raw failure is listed, and no listed test passed` for both logs. `--lib` is not
+the whole workspace: the finding covers these 20 entries, not a workspace-wide claim.
+
+**Packaging lint had two distinct causes, both fixed.**
+
+1. `scripts/ci/test_gate.py` hard-coded `solidcraft-kernel::boolean_props::translation_invariant` as
+   its fixture and asserted it was listed. The vendored kernel makes that test pass
+   (`boolean_props` 19/0 above), and a listed-but-passing test fails the gate, so the fixture now
+   reads the first reviewed kernel identity from `tests/KNOWN_FAILING_TESTS` — what the migration
+   does. `python3 scripts/ci/test_gate.py`: 71 tests `OK`; with the CI's `-I`: 71 `OK`, exit `0`.
+2. `packaging/tests/mastra_agent_test.py` failed with
+   `error: the built-in agent's folder did not pass its check; nothing was staged` and
+   `missing: skills/modelling-skills/skill-set.json`, `missing: skills/context-skills/skill-set.json`.
+   The agent check now reads each skill set the agent carries (`agent/skills.mjs`), and the test's
+   made-up folder carried none. This branch's base predates develop's fix; `7d866f828f` writes each
+   set with its stamp and passes the test-only `--skills-root`, and `stage-agent.sh` forwards it
+   behind the same guard as `--pin`. Both files were taken from `7bc8992c12`;
+   `python3 packaging/tests/mastra_agent_test.py`: 8 tests `OK`.
+
+`test_beta_gate.py` counts 212 oracle exceptions (the 213th, `oracle/77-fillet-variable-linear`, no
+longer throws its load exception); the file already holds 212. Not adopted from the migration:
+`packaging/*`, `scripts/ci/main_merge.py` and `scripts/test-format-pending.sh` (the last would
+revert landed #203).
+
+**Still open.** Landed-SHA classification, K12's 17 mapped IDs, same-kernel before/after receipts,
+B6 rechecks on the final SHA, CD-1 with `open_newer_files` both ways, and cross-platform/PP
+acceptance all need the single landed SHA that does not exist yet.
+
+Commands and receipts: `kvl/kernel-suite.log`, `kvl/kernel-boolean.log`, `suite-*.log`,
+`full-*.log`, `kernel-rig-45284624556.json`, `rules2-*.log`, `pl-*.log`,
+`packaging-lint-89377829c7.log` under `~/.local/state/intcad-e2e/a6-pr209-receipts/`.
