@@ -433,6 +433,24 @@ a trap. Local gate/publish-content/publish-verify Python tests pass on that bran
 This is not landed, not reviewed to completion and not a candidate; the key must still be
 merged before the freeze as the CTO requires.
 
+### 8.3 Integration conflict map (simulated, not merged)
+
+`git merge-tree` over the current PR heads chained onto develop `6032271178`, in the planned
+order #226 → #214 → #224 → #221 → #229:
+
+| Step | Result |
+|---|---|
+| #226 `int225-ci-race` | clean |
+| #214 `feat/int1503-mastra-release-skills` | clean |
+| #224 `task/int1497-v013-integration` | **conflicts**: `crates/engine/src/validation/tests.rs`, `packaging/linux/installed-check-inside.sh`, `tools/windows-assistant-smoke.ps1` |
+| #221 `ui/int-1500-centre-chat` | clean |
+| #229 `int223-slash-menu` | **conflicts**: `crates/ui-egui/src/agent_chat/mod.rs`, `packages/assistant-web/{dist/assistant.js,dist/style.css,inventory.json}`, `packages/assistant-web/src/App.tsx` |
+
+Both conflicting PRs are already based on the same develop, so the real merge will need a
+local resolution on the PR branch (rebase onto the merged `develop`), not a GitHub merge
+button. The bundled `dist/` must be rebuilt with the pinned generator after the page sources
+merge; never merge generated files by hand.
+
 ## 9. Acceptance matrix for the candidate (not yet run)
 
 Rows marked *rehearsal* are the §12 tree (`develop` + #204 + this branch), not a versioned
