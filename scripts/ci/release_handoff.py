@@ -542,9 +542,10 @@ def check_environment(env):
     mode = verify_environment(environment, [row for page in pages(f"{endpoint}/deployment-branch-policies")
                                             for row in page["branch_policies"]],
                               allow_single_owner=allow_single)
-    reviewers = [((rule.get("reviewers") or [{}])[0].get("reviewer") or {}).get("login")
+    reviewers = [((row.get("reviewer") or {}).get("login") or (row.get("reviewer") or {}).get("slug"))
                  for rule in environment.get("protection_rules") or []
-                 if rule.get("type") == "required_reviewers" and rule.get("reviewers")]
+                 if rule.get("type") == "required_reviewers"
+                 for row in rule.get("reviewers") or []]
     if mode == "single-owner":
         print("::warning::RELEASE_SINGLE_OWNER is set: release-signing has one reviewer who can "
               "approve their own run; approval is a checkpoint, not independent review", flush=True)
