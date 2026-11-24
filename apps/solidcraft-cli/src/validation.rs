@@ -4,12 +4,14 @@
 //! actual `CheckProfile` for a task profile comes from `--profile FILE`. `submit` runs the local
 //! headless worker to a terminal state and prints `status`.
 
+use std::borrow::Borrow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
 
+use solidcraft_account_native::SessionBilling;
 use solidcraft_engine::entitlement::{
     BillingPort, BillingResult, BudgetTable, Capability, EntryCategory, Grant, OperationId, Refusal, RefusalCode, UpperBound,
 };
@@ -143,11 +145,14 @@ pub fn mint_operation() -> Option<OperationId> {
     None
 }
 
-/// The only billing authority until a host composition supplies the real one. It never grants;
-/// a mixed DFM check therefore fails closed with a stable refusal instead of running unbilled.
+/// Fail closed when the CLI has no configured native session.
 pub struct NoAuthorityBilling;
 
 impl BillingPort for NoAuthorityBilling {
+    fn preflight(&self) -> Result<(), Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "no host billing authority is installed for a controlled CLI check"))
+    }
+
     fn admit(&mut self, _operation: &OperationId, _capability: Capability, _entry: EntryCategory) -> Result<Grant, Refusal> {
         Err(Refusal::new(RefusalCode::AuthUnavailable, "no host billing authority is installed for a controlled CLI check"))
     }
@@ -172,25 +177,7 @@ pub struct ControlledCheck {
 }
 
 fn coded_refusal(code: RefusalCode, message: impl std::fmt::Display) -> String {
-    format!("{}: {message}", refusal_name(code))
-}
-
-fn refusal_name(code: RefusalCode) -> &'static str {
-    match code {
-        RefusalCode::AuthRequired => "AUTH_REQUIRED",
-        RefusalCode::EmailUnverified => "EMAIL_UNVERIFIED",
-        RefusalCode::AccountDisabled => "ACCOUNT_DISABLED",
-        RefusalCode::CapabilityDenied => "CAPABILITY_DENIED",
-        RefusalCode::VersionUnsupported => "VERSION_UNSUPPORTED",
-        RefusalCode::ProtocolUnsupported => "PROTOCOL_UNSUPPORTED",
-        RefusalCode::UnsafeToStart => "UNSAFE_TO_START",
-        RefusalCode::CreditsExhausted => "CREDITS_EXHAUSTED",
-        RefusalCode::CreditsHeld => "CREDITS_HELD",
-        RefusalCode::OperationConflict => "OPERATION_CONFLICT",
-        RefusalCode::OperationFinalized => "OPERATION_FINALIZED",
-        RefusalCode::OperationOwnedElsewhere => "OPERATION_OWNED_ELSEWHERE",
-        RefusalCode::AuthUnavailable => "AUTH_UNAVAILABLE",
-    }
+    format!("{}: {message}", code.as_str())
 }
 
 fn settle_check(billing: &mut dyn BillingPort, operation: &OperationId, produced: bool) -> Result<(), String> {
@@ -221,6 +208,7 @@ fn settle_check(billing: &mut dyn BillingPort, operation: &OperationId, produced
 /// A produced quality report (passed or quality_failed, violations or not) settles once; an
 /// incomplete, cancelled, timed-out or failed run releases once. A replay of an already terminal
 /// run releases this invocation's admission and does not charge again.
+#[allow(clippy::too_many_arguments)]
 pub fn run_controlled_check(
     port: &ValidationPort,
     candidate: &CandidateRef,
@@ -231,9 +219,24 @@ pub fn run_controlled_check(
     budget: &BudgetTable,
     billing: &mut dyn BillingPort,
 ) -> Result<ControlledCheck, String> {
+    run_controlled_check_using(|| Ok(port), candidate, profile, request_id, owner, operation, budget, billing).map(|(run, _)| run)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_controlled_check_using<P: Borrow<ValidationPort>>(
+    open: impl FnOnce() -> Result<P, String>,
+    candidate: &CandidateRef,
+    profile: CheckProfile,
+    request_id: &str,
+    owner: &str,
+    operation: &OperationId,
+    budget: &BudgetTable,
+    billing: &mut dyn BillingPort,
+) -> Result<(ControlledCheck, P), String> {
     if profile_scope(&profile) != ProfileScope::Dfm {
         return Err("CAPABILITY_DENIED: the controlled path only accepts a profile that contains a DFM check".to_string());
     }
+    billing.preflight().map_err(|error| coded_refusal(error.code, error.message))?;
     let bound = match budget.bound(Capability::Dfm, EntryCategory::CliDfm) {
         UpperBound::Verified(bound) => bound,
         UpperBound::Unverified => {
@@ -241,13 +244,22 @@ pub fn run_controlled_check(
         }
     };
     let grant = billing.admit(operation, Capability::Dfm, EntryCategory::CliDfm).map_err(|error| coded_refusal(error.code, error.message))?;
-    drop(grant); // A grant is execution authority, not a value the CLI stores or logs.
+    drop(grant); // The billing adapter retains the live execution window.
+    let worker = match open() {
+        Ok(worker) => worker,
+        Err(error) => {
+            settle_check(billing, operation, false)?;
+            return Err(error);
+        }
+    };
+    let port = worker.borrow();
     let now = now_ms();
     let stop_at_ms = now.saturating_add(duration_ms(bound));
     let reserved_run = generate_run_id(now);
 
     enum Claimed {
         Ran(String),
+        Refused(String, Refusal),
         Replayed(String, ValidationState),
     }
 
@@ -282,31 +294,55 @@ pub fn run_controlled_check(
                 _ => Ok(Claimed::Replayed(submitted.run_id, state)),
             };
         };
+        if let Err(refusal) = billing.dispatch(operation, bound) {
+            port.refuse_claimed(&job, &refusal).map_err(|error| error.to_string())?;
+            return Ok(Claimed::Refused(submitted.run_id, refusal));
+        }
         executed = true;
-        port.run_claimed_with_stop(&job, Some(stop_at_ms)).map_err(|error| error.to_string())?;
-        Ok(Claimed::Ran(submitted.run_id))
+        match port.run_claimed_checked(&job, Some(stop_at_ms), || billing.check_commit(operation)).map_err(|error| error.to_string())? {
+            Some(refusal) => Ok(Claimed::Refused(submitted.run_id, refusal)),
+            None => Ok(Claimed::Ran(submitted.run_id)),
+        }
     })();
 
     match run {
         Ok(Claimed::Ran(run_id)) => {
-            let status = port.status(&run_id).map_err(|error| {
-                format!("the check ran but its status could not be read; operation {} stays for recovery: {error}", operation.as_str())
-            })?;
+            let status = match port.status(&run_id) {
+                Ok(status) => status,
+                Err(error) => {
+                    let _ = billing.commit(operation, BillingResult::Unknown);
+                    return Err(format!(
+                        "the check ran but its status could not be read; operation {} stays for recovery: {error}",
+                        operation.as_str()
+                    ));
+                }
+            };
             let produced = matches!(status.state, ValidationState::Passed | ValidationState::QualityFailed);
             settle_check(billing, operation, produced)?;
-            Ok(ControlledCheck { run_id, state: status.state, report_produced: produced })
+            Ok((ControlledCheck { run_id, state: status.state, report_produced: produced }, worker))
         }
         Ok(Claimed::Replayed(run_id, state)) => {
             settle_check(billing, operation, false)?;
-            Ok(ControlledCheck { run_id, state, report_produced: false })
+            Ok((ControlledCheck { run_id, state, report_produced: false }, worker))
         }
-        Err(error) if executed || uncertain => Err(coded_refusal(
-            RefusalCode::AuthUnavailable,
-            format!(
-                "the controlled check may have started but its result is not proven; keep operation {} and settle it, never rerun it: {error}",
-                operation.as_str()
-            ),
-        )),
+        Ok(Claimed::Refused(run_id, refusal)) => {
+            billing.release(operation, refusal.code).map_err(|error| coded_refusal(error.code, error.message))?;
+            Err(coded_refusal(refusal.code, format!("{} ({run_id})", refusal.message)))
+        }
+        Err(error) if executed || uncertain => {
+            // UNKNOWN is not a second run or a charge. Never settle on behalf of a different
+            // worker, which still owns the original operation's final disposition.
+            if executed && !uncertain {
+                let _ = billing.commit(operation, BillingResult::Unknown);
+            }
+            Err(coded_refusal(
+                RefusalCode::AuthUnavailable,
+                format!(
+                    "the controlled check may have started but its result is not proven; keep operation {} and settle it, never rerun it: {error}",
+                    operation.as_str()
+                ),
+            ))
+        }
         Err(error) => {
             settle_check(billing, operation, false)?;
             Err(error)
@@ -363,18 +399,24 @@ fn open_worker(store: PathBuf, candidates: PathBuf) -> Result<ValidationPort, St
 }
 
 /// Run one `validate` mode.
-pub fn run(args: &[String]) -> Result<(), String> {
+pub fn run(args: &[String], budget: &BudgetTable) -> Result<(), String> {
+    run_with_billing(args, budget, || crate::account::configured_billing().map(|(billing, lock)| (billing, Some(lock))))
+}
+
+/// Run the CLI command with a host-owned billing session. Free validation never opens it.
+pub fn run_with_billing(
+    args: &[String],
+    budget: &BudgetTable,
+    open_billing: impl FnOnce() -> Option<(SessionBilling, Option<std::fs::File>)>,
+) -> Result<(), String> {
     let positionals = positional(args);
     let mode = positionals.first().map(|arg| arg.as_str()).ok_or_else(|| format!("usage:\n{USAGE}"))?;
     let store = validation_dir(args);
     let candidates = candidate_dir(args);
-    // Only the worker host reconciles. Status/report/cancel are read-only observers: opening
-    // them must not turn another process's live job into a restart.
-    let port = if mode == "submit" || mode == "skill" {
-        open_worker(store, candidates)
-    } else {
-        ValidationPort::open_read_only(store, candidates).map_err(|error| error.to_string())
-    }?;
+    // Only an admitted worker reconciles. Status/report/cancel are read-only observers:
+    // opening them must not turn another process's live job into a restart.
+    let open = || open_worker(store.clone(), candidates.clone());
+    let observer = || ValidationPort::open_read_only(store.clone(), candidates.clone()).map_err(|error| error.to_string());
     match mode {
         "submit" => {
             let request_path = positionals.get(1).ok_or_else(|| "validate submit needs <request.json>".to_string())?;
@@ -397,13 +439,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 // installed authority it is refused whole, never run with the DFM part skipped.
                 let operation = mint_operation()
                     .ok_or_else(|| coded_refusal(RefusalCode::AuthUnavailable, "the host could not mint an operation for this controlled check"))?;
-                let budget = BudgetTable::unverified_default();
-                let mut billing = NoAuthorityBilling;
-                let controlled =
-                    run_controlled_check(&port, &request.candidate, profile, &request.request_id, owner, &operation, &budget, &mut billing)?;
+                let mut session = open_billing();
+                let billing: &mut dyn BillingPort = match session.as_mut() {
+                    Some((billing, _lock)) => billing,
+                    None => &mut NoAuthorityBilling,
+                };
+                let (controlled, port) =
+                    run_controlled_check_using(open, &request.candidate, profile, &request.request_id, owner, &operation, budget, billing)?;
                 let status = port.status(&controlled.run_id).map_err(|error| error.to_string())?;
                 return print_json(&serde_json::to_value(status).map_err(|error| error.to_string())?, output(args));
             }
+            let port = open()?;
             let reference = port.register_profile(profile).map_err(|error| error.to_string())?;
             let submitted = port.submit_for(&request.candidate, &reference, &request.request_id, owner).map_err(|error| error.to_string())?;
             port.pump_free().map_err(|error| error.to_string())?;
@@ -435,23 +481,24 @@ pub fn run(args: &[String]) -> Result<(), String> {
                     "a mixed skill profile cannot be billed on this path; run it as validate submit or wait for the controlled skill entry",
                 ));
             }
+            let port = open()?;
             let report = validate_skill_snapshot(&port, SkillValidationRequest::new(&request.candidate, profile, request.request_id).with_live(live))
                 .map_err(|error| error.to_string())?;
             print_json(&serde_json::to_value(report).map_err(|error| error.to_string())?, output(args))
         }
         "status" => {
             let run_id = positionals.get(1).ok_or_else(|| "validate status needs <runId>".to_string())?;
-            let status = port.status(run_id).map_err(|error| error.to_string())?;
+            let status = observer()?.status(run_id).map_err(|error| error.to_string())?;
             print_json(&serde_json::to_value(status).map_err(|error| error.to_string())?, output(args))
         }
         "report" => {
             let run_id = positionals.get(1).ok_or_else(|| "validate report needs <runId>".to_string())?;
-            let report = port.report(run_id).map_err(|error| error.to_string())?;
+            let report = observer()?.report(run_id).map_err(|error| error.to_string())?;
             print_json(&serde_json::to_value(report).map_err(|error| error.to_string())?, output(args))
         }
         "cancel" => {
             let run_id = positionals.get(1).ok_or_else(|| "validate cancel needs <runId>".to_string())?;
-            let cancelled = port.cancel(run_id).map_err(|error| error.to_string())?;
+            let cancelled = observer()?.cancel(run_id).map_err(|error| error.to_string())?;
             print_json(&serde_json::to_value(cancelled).map_err(|error| error.to_string())?, output(args))
         }
         other => Err(format!("validate: unknown mode `{other}`\nusage:\n{USAGE}")),

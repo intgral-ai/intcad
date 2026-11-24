@@ -78,6 +78,26 @@ pub enum RefusalCode {
     AuthUnavailable,
 }
 
+impl RefusalCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthRequired => "AUTH_REQUIRED",
+            Self::EmailUnverified => "EMAIL_UNVERIFIED",
+            Self::AccountDisabled => "ACCOUNT_DISABLED",
+            Self::CapabilityDenied => "CAPABILITY_DENIED",
+            Self::VersionUnsupported => "VERSION_UNSUPPORTED",
+            Self::ProtocolUnsupported => "PROTOCOL_UNSUPPORTED",
+            Self::UnsafeToStart => "UNSAFE_TO_START",
+            Self::CreditsExhausted => "CREDITS_EXHAUSTED",
+            Self::CreditsHeld => "CREDITS_HELD",
+            Self::OperationConflict => "OPERATION_CONFLICT",
+            Self::OperationFinalized => "OPERATION_FINALIZED",
+            Self::OperationOwnedElsewhere => "OPERATION_OWNED_ELSEWHERE",
+            Self::AuthUnavailable => "AUTH_UNAVAILABLE",
+        }
+    }
+}
+
 /// `INVALID_REQUEST` and `INTERNAL_ERROR` describe a broken exchange, not a business refusal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TransportError {

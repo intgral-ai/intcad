@@ -769,6 +769,18 @@ impl ValidationPort {
     /// configured execution deadline, and an unsafe caller-supplied value is clamped rather than
     /// extending the run.
     pub fn run_claimed_with_stop(&self, job: &RunJob, stop_at_ms: Option<u64>) -> Result<()> {
+        self.run_claimed_checked(job, stop_at_ms, || Ok(()))?;
+        Ok(())
+    }
+
+    /// A controlled host can withhold the computed quality report and its evidence when
+    /// authorization is withdrawn. The durable run still records a terminal refusal.
+    pub fn run_claimed_checked(
+        &self,
+        job: &RunJob,
+        stop_at_ms: Option<u64>,
+        check: impl FnOnce() -> std::result::Result<(), crate::entitlement::Refusal>,
+    ) -> Result<Option<crate::entitlement::Refusal>> {
         let control = RunControl {
             clock: Arc::clone(&self.clock),
             deadline_ms: job.started_at_ms.saturating_add(duration_ms(self.limits.execution)),
@@ -776,8 +788,25 @@ impl ValidationPort {
             cancel_path: self.store.cancel_path(&job.run_id),
         };
         let outcome = self.runner.run(job, &control);
+        if let Err(refusal) = check() {
+            self.refuse_claimed(job, &refusal)?;
+            return Ok(Some(refusal));
+        }
         self.complete(&job.run_id, outcome)?;
-        Ok(())
+        Ok(None)
+    }
+
+    /// Finish without publishing any quality result when the host refuses the claimed job.
+    pub fn refuse_claimed(&self, job: &RunJob, refusal: &crate::entitlement::Refusal) -> Result<()> {
+        let _guard = self.commit.lock().map_err(|_| ValidationError::internal("validation commit lock was poisoned"))?;
+        let admission = self.load_admission(&job.run_id)?;
+        let profile = self.store.read_profile(&job.run_id)?;
+        let error = ValidationError::internal(&refusal.message).with_details(json!({"reason": refusal.code.as_str()}));
+        let mut report = self.recovery_report(&admission, &profile, ValidationState::InfrastructureError, Some(error));
+        for check in &mut report.checks {
+            check.actual = json!({"reason": refusal.code.as_str()});
+        }
+        self.commit_report(&job.run_id, report, ValidationState::InfrastructureError)
     }
 
     /// Claim the oldest unclassified queued job and persist its worker identity. `None` when no

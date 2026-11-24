@@ -5,15 +5,25 @@
 //! Every double here is local to this test file. No production path installs a fake grant, and
 //! no test sends a live request.
 
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
-use solidcraft_cli::validation::{ControlledCheck, NoAuthorityBilling, ProfileScope, profile_scope, run_controlled_check};
+use solidcraft_account_native::{
+    CredentialSession, FileOperationStore, ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession, Secret, SessionBilling,
+    Transport, TransportFailure, WireConnection, WireRequest, WireResponse,
+};
+use solidcraft_cli::account::{McpAccount, McpRoute, compose_mcp_server};
+use solidcraft_cli::validation::{ControlledCheck, NoAuthorityBilling, ProfileScope, profile_scope, run_controlled_check, run_with_billing};
 use solidcraft_engine::entitlement::{
-    BillingPort, BillingResult, BudgetTable, Capability, EntryCategory, Grant, GrantId, MonotonicInstant, OperationId, Refusal, RefusalCode,
+    AccountId, AuthenticatedHostScope, BillingPort, BillingResult, BudgetTable, Capability, CredentialError, CredentialStore, EntryCategory, Grant,
+    GrantId, HostSessionBinding, InstallationId, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, OperationStore, Refusal,
+    RefusalCode, UpperBound,
 };
 use solidcraft_engine::io::candidate::{self, CandidateFile};
 use solidcraft_engine::schema::snapshot::{CandidateArtifact, CandidateRef, SnapshotSource};
@@ -216,7 +226,7 @@ fn fixture(name: &str, probe: Probe) -> Fixture {
     Fixture { _scratch: scratch, port, candidate }
 }
 
-fn run_check(fixture: &Fixture, billing: &mut CountingBilling) -> Result<ControlledCheck, String> {
+fn run_check(fixture: &Fixture, billing: &mut dyn BillingPort) -> Result<ControlledCheck, String> {
     let operation = OperationId::parse("op_cli_dfm_test_0001").unwrap();
     run_controlled_check(
         &fixture.port,
@@ -304,8 +314,7 @@ fn classification_comes_from_the_resolved_profile_not_its_name() {
     assert_eq!(profile_scope(&misleading), ProfileScope::Dfm, "a free-looking profile name cannot hide DFM work");
 }
 
-/// The shipped binary has no installed authority yet, so a mixed request is refused before it
-/// reaches the validation port instead of running with the DFM part silently skipped.
+/// Without a product session the whole mixed request is refused.
 #[test]
 fn binary_refuses_an_unauthorized_mixed_check_whole() {
     let scratch = Scratch::new("binary-refusal");
@@ -352,11 +361,14 @@ fn binary_refuses_an_unauthorized_mixed_check_whole() {
         .arg(&validation)
         .env("SOLIDCRAFT_CANDIDATE_DIR", &candidates)
         .env("SOLIDCRAFT_VALIDATION_DIR", &validation)
+        .env("XDG_DATA_HOME", scratch.dir())
+        .env("APPDATA", scratch.dir())
+        .env("HOME", scratch.dir())
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stdout));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("UNSAFE_TO_START"), "{stderr}");
+    assert!(stderr.contains("AUTH_UNAVAILABLE"), "{stderr}");
     // Refusal happens before admission: no run record is created for this request.
     let runs = validation.join("runs");
     let created = runs.is_dir() && std::fs::read_dir(&runs).map(|entries| entries.count() > 0).unwrap_or(false);
@@ -421,4 +433,444 @@ fn no_authority_billing_never_grants() {
     let error = billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap_err();
     assert_eq!(error.code, RefusalCode::AuthUnavailable);
     assert_eq!(billing.release(&operation, RefusalCode::UnsafeToStart), Ok(()));
+}
+
+#[derive(Default)]
+struct FakeKeyring(BTreeMap<String, String>);
+
+impl CredentialStore for FakeKeyring {
+    fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
+        Ok(self.0.get(key).cloned())
+    }
+    fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
+        self.0.insert(key.into(), secret.into());
+        Ok(())
+    }
+    fn delete(&mut self, key: &str) -> Result<(), CredentialError> {
+        self.0.remove(key);
+        Ok(())
+    }
+    fn persistent(&self) -> bool {
+        true
+    }
+}
+
+struct FixtureExchange;
+
+impl ProductSessionExchange for FixtureExchange {
+    fn exchange(&self, _: &ProviderSession) -> Result<ProductSession, ProductExchangeError> {
+        Ok(ProductSession::from_trusted_exchange("acct_cli_fixture", Secret::new("product-fixture"), None))
+    }
+}
+
+fn fixture_session() -> CredentialSession {
+    let mut session = CredentialSession::new(Box::new(FakeKeyring::default()));
+    session.complete_provider_login("provider_fixture", "provider-fixture").unwrap();
+    session.activate_product_session(&FixtureExchange).unwrap();
+    session
+        .bind_scope(&AuthenticatedHostScope::new(
+            AccountId::new("acct_cli_fixture"),
+            InstallationId::new("ins_cli_fixture"),
+            HostSessionBinding::new("fixture-binding"),
+        ))
+        .unwrap();
+    solidcraft_account_native::CredentialHandoff::installation_credential(&mut session, "ins_cli_fixture", Secret::new("installation-fixture"))
+        .unwrap();
+    session
+}
+
+#[derive(Clone, Default)]
+struct WireClock(Rc<Cell<u64>>);
+
+impl MonotonicClock for WireClock {
+    fn now(&self) -> MonotonicInstant {
+        MonotonicInstant::from_millis(self.0.get())
+    }
+
+    fn wall_now(&self) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(1_800_000_000)
+    }
+}
+
+enum Step {
+    Status,
+    Denied,
+    Withdraw(CredentialSession),
+    Admit,
+    Renew,
+    Finalize(BillingResult),
+    LoseFinalize,
+    Lookup,
+}
+
+#[derive(Clone)]
+struct Script {
+    steps: Rc<RefCell<VecDeque<Step>>>,
+    operation: Rc<RefCell<Option<OperationId>>>,
+    capability: Capability,
+    entry: EntryCategory,
+}
+
+impl Script {
+    fn new(capability: Capability, entry: EntryCategory, steps: impl IntoIterator<Item = Step>) -> Self {
+        Self { steps: Rc::new(RefCell::new(steps.into_iter().collect())), operation: Rc::default(), capability, entry }
+    }
+
+    fn operation(&self) -> OperationId {
+        self.operation.borrow().clone().expect("admission observed")
+    }
+
+    fn done(&self) {
+        assert!(self.steps.borrow().is_empty(), "unconsumed product requests");
+    }
+}
+
+impl Transport for Script {
+    fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
+        let step = self.steps.borrow_mut().pop_front().expect("unexpected product request");
+        assert_eq!(request.header("X-Protocol-Version"), Some("intcad-auth/1.0"));
+        let url = request.url().strip_prefix("https://test.invalid").unwrap();
+        let body = || serde_json::from_slice::<Value>(request.body().unwrap()).unwrap();
+        let (status, response) = match step {
+            Step::Status | Step::Denied | Step::Withdraw(_) => {
+                assert_eq!((request.method(), url), ("GET", "/v1/status"));
+                assert_eq!(request.header("Authorization"), Some("Bearer product-fixture"));
+                assert_eq!(request.header("X-Installation-Credential"), None);
+                if let Step::Withdraw(session) = step {
+                    session.revoke_in_process();
+                } else if matches!(step, Step::Denied) {
+                    return Ok(WireResponse::new(401, br#"{"error":{"code":"AUTH_REQUIRED"}}"#.to_vec()));
+                }
+                (
+                    200,
+                    json!({
+                        "account":{"id":"acct_cli_fixture","status":"active","email_verified":true},"eligible":true,"reasons":[],
+                        "balance":10,"held":0,"available":10,"client":{"supported":true},
+                        "protocol":{"supported":true,"version":"intcad-auth/1.0"},"capabilities":{"chat":true,"mcp":true,"dfm":true}
+                    }),
+                )
+            }
+            Step::Admit => {
+                assert_eq!((request.method(), url), ("POST", "/v1/operations"));
+                assert_eq!(request.header("Authorization"), Some("Bearer product-fixture"));
+                assert_eq!(request.header("X-Installation-Credential"), Some("installation-fixture"));
+                let data = body();
+                let id = OperationId::parse(data["operation_id"].as_str().unwrap()).unwrap();
+                assert_eq!(
+                    data,
+                    json!({
+                        "operation_id":id.as_str(),"capability":self.capability.wire(),
+                        "entry_category":self.entry.wire_entry_category().unwrap().wire()
+                    })
+                );
+                *self.operation.borrow_mut() = Some(id.clone());
+                (
+                    200,
+                    json!({
+                        "outcome":"NEWLY_ADMITTED","operation_id":id.as_str(),"installation_id":"ins_cli_fixture","state":"HELD",
+                        "settlement_deadline":null,"authorization_expires_at":"2027-01-15T08:01:00Z","settlement_credential":"settlement-fixture",
+                        "execution_grant":{"grant_id":"grant_cli_fixture","capability":self.capability.wire(),
+                            "expires_at":"2027-01-15T08:01:00Z","session_proof":"proof-fixture","renew_after_seconds":20}
+                    }),
+                )
+            }
+            Step::Renew => {
+                assert_eq!((request.method(), url), ("POST", "/v1/authorizations"));
+                assert_eq!(request.header("Authorization"), Some("Bearer product-fixture"));
+                assert_eq!(request.header("X-Execution-Session-Proof"), Some("proof-fixture"));
+                assert_eq!(request.header("X-Settlement-Credential"), None);
+                let id = self.operation();
+                assert_eq!(
+                    body(),
+                    json!({
+                        "operation_id":id.as_str(),"capability":self.capability.wire(),"renewal":{"authorization_id":"grant_cli_fixture"}
+                    })
+                );
+                (
+                    200,
+                    json!({
+                        "operation_id":id.as_str(),"capability":self.capability.wire(),"authorization_id":"grant_cli_fixture",
+                        "remaining_seconds":60,"renewed":true,"execution_session_proof":null,"renew_after_seconds":20
+                    }),
+                )
+            }
+            Step::Finalize(_) | Step::LoseFinalize => {
+                let result = match step {
+                    Step::Finalize(result) => result,
+                    _ => BillingResult::Succeeded,
+                };
+                let id = self.operation();
+                assert_eq!(request.method(), "POST");
+                assert_eq!(url, format!("/v1/operations/{}/finalize", id.as_str()));
+                assert_eq!(request.header("X-Settlement-Credential"), Some("settlement-fixture"));
+                assert_eq!(request.header("Authorization"), None);
+                assert_eq!(request.header("X-Execution-Session-Proof"), None);
+                let wire = match result {
+                    BillingResult::Succeeded => "SUCCEEDED",
+                    BillingResult::FailedNoEffect => "FAILED_NO_EFFECT",
+                    _ => panic!("unplanned settlement"),
+                };
+                assert_eq!(body(), json!({"result":wire}));
+                if matches!(step, Step::LoseFinalize) {
+                    return Err(TransportFailure::Timeout);
+                }
+                let state = if result == BillingResult::FailedNoEffect { "RELEASED" } else { "CHARGED" };
+                (
+                    200,
+                    json!({
+                    "operation_id":id.as_str(),"state":state,"terminal":true,"result":wire,
+                        "settlement_deadline":"2027-01-15T08:11:00Z","finalized_at":"2027-01-15T08:00:01Z"
+                    }),
+                )
+            }
+            Step::Lookup => {
+                let id = self.operation();
+                assert_eq!(request.method(), "GET");
+                assert_eq!(url, format!("/v1/operations/{}", id.as_str()));
+                assert_eq!(request.header("X-Settlement-Credential"), Some("settlement-fixture"));
+                assert_eq!(request.header("Authorization"), None);
+                (
+                    200,
+                    json!({
+                        "operation_id":id.as_str(),"state":"CHARGED","terminal":true,"result":"SUCCEEDED",
+                        "authorization_expires_at":"2027-01-15T08:01:00Z","settlement_deadline":"2027-01-15T08:11:00Z"
+                    }),
+                )
+            }
+        };
+        Ok(WireResponse::new(status, response.to_string().into_bytes()))
+    }
+}
+
+fn live_billing(session: CredentialSession, script: Script, journal: PathBuf, clock: WireClock) -> SessionBilling {
+    SessionBilling::new(session, WireConnection::new("https://test.invalid", "test").unwrap(), Box::new(script), journal, clock)
+}
+
+#[test]
+fn server_revoked_session_is_refused_without_a_run_or_journal() {
+    let fixture = fixture("revoked", Probe::Passed);
+    let journal = fixture._scratch.dir().join("journal");
+    let script = Script::new(Capability::Dfm, EntryCategory::CliDfm, [Step::Denied]);
+    let mut billing = live_billing(fixture_session(), script.clone(), journal.clone(), WireClock::default());
+    assert!(run_check(&fixture, &mut billing).unwrap_err().starts_with("AUTH_REQUIRED:"));
+    assert!(!journal.exists());
+    assert_eq!(std::fs::read_dir(fixture._scratch.dir().join("validation/runs")).unwrap().count(), 0);
+    script.done();
+}
+
+#[test]
+fn withdrawal_at_report_commit_releases_and_persists_only_the_refusal() {
+    let fixture = fixture("withdrawal", Probe::Passed);
+    let journal = fixture._scratch.dir().join("journal");
+    let session = fixture_session();
+    let script = Script::new(
+        Capability::Dfm,
+        EntryCategory::CliDfm,
+        [Step::Status, Step::Admit, Step::Status, Step::Withdraw(session.clone()), Step::Finalize(BillingResult::FailedNoEffect)],
+    );
+    let mut billing = live_billing(session, script.clone(), journal.clone(), WireClock::default());
+    let error = run_check(&fixture, &mut billing).unwrap_err();
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    let run_id = error.rsplit_once('(').unwrap().1.trim_end_matches(')');
+    let report = serde_json::to_value(fixture.port.report(run_id).unwrap()).unwrap();
+    assert_eq!(report["report"]["state"], "infrastructure_error", "{report}");
+    assert_eq!(report["report"]["error"]["details"]["reason"], "AUTH_UNAVAILABLE", "{report}");
+    assert!(!report.to_string().contains("\"fixture\":true"));
+    assert_eq!(FileOperationStore::open(journal).unwrap().load(&script.operation()).unwrap().unwrap().status, OperationStatus::Released);
+    script.done();
+}
+
+#[test]
+fn scripted_product_grant_allows_validate_submit_and_one_settlement() {
+    let scratch = Scratch::new("live-submit");
+    let root = scratch.dir();
+    let candidates = root.join("candidates");
+    let snapshot = root.join("snapshot.json");
+    let mut capture = std::process::Command::new(env!("CARGO_BIN_EXE_intcad-cli"));
+    let recipe = root.join("capture.json");
+    std::fs::write(
+        &recipe,
+        json!({"commands":[
+            {"command":"sketch.create","params":{"plane":"XY","name":"Base"}},
+            {"command":"sketch.rectangle.two_point","params":{"p0":[0,0],"p1":[20,20]}},
+            {"command":"sketch.finish","params":{}},
+            {"command":"sheet.flange","params":{"sketch":"Base","body_name":"Plate"}},
+            {"command":"document.snapshot.capture","params":{}}
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let out = capture
+        .arg("run")
+        .arg(recipe)
+        .args(["--results", "--json-out"])
+        .arg(&snapshot)
+        .env("SOLIDCRAFT_CANDIDATE_DIR", &candidates)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let capture: Value = serde_json::from_slice(&std::fs::read(&snapshot).unwrap()).unwrap();
+    let mut profile = solidcraft_engine::validation::native_basic_profile();
+    profile.profile_id = "task-cli-dfm".into();
+    profile.checks.insert(
+        0,
+        CheckRequirement {
+            check_id: "dfm.sheet.flat_overlap".into(),
+            kind: "dfm.sheet.flat_overlap".into(),
+            required: true,
+            parameters: json!({
+                "modelVersion":"doc-1","sheets":[{"sheet":0,"body":"Plate"}],"toleranceMm2":0.01,
+            }),
+        },
+    );
+    let reference = solidcraft_engine::validation::profile_ref(&profile).unwrap();
+    let request_path = root.join("request.json");
+    let profile_path = root.join("profile.json");
+    let validation = root.join("validation");
+    let status_path = root.join("status.json");
+    std::fs::write(&profile_path, serde_json::to_vec(&profile).unwrap()).unwrap();
+    std::fs::write(
+        &request_path,
+        json!({
+            "candidate":capture.as_array().unwrap().last().unwrap()["candidate"],"profile":reference,"requestId":generate_submission_key(now_ms())
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let args = vec![
+        "submit".into(),
+        request_path.display().to_string(),
+        "--profile".into(),
+        profile_path.display().to_string(),
+        "--candidate-dir".into(),
+        candidates.display().to_string(),
+        "--validation-dir".into(),
+        validation.display().to_string(),
+        "--json-out".into(),
+        status_path.display().to_string(),
+    ];
+    let denied = Script::new(Capability::Dfm, EntryCategory::CliDfm, [Step::Denied]);
+    let billing = live_billing(fixture_session(), denied.clone(), root.join("journal"), WireClock::default());
+    let error = run_with_billing(&args, &verified_budget(), || Some((billing, None))).unwrap_err();
+    assert!(error.starts_with("AUTH_REQUIRED:"), "{error}");
+    assert!(!validation.exists() && !status_path.exists() && !root.join("journal").exists());
+    denied.done();
+
+    let script = Script::new(
+        Capability::Dfm,
+        EntryCategory::CliDfm,
+        [Step::Status, Step::Admit, Step::Status, Step::Status, Step::Finalize(BillingResult::Succeeded)],
+    );
+    let billing = live_billing(fixture_session(), script.clone(), root.join("journal"), WireClock::default());
+    run_with_billing(&args, &verified_budget(), || Some((billing, None))).unwrap();
+    let status: Value = serde_json::from_slice(&std::fs::read(&status_path).unwrap()).unwrap();
+    let port = ValidationPort::open_read_only(validation, candidates).unwrap();
+    let report = serde_json::to_value(port.report(status["runId"].as_str().unwrap()).unwrap()).unwrap();
+    let dfm = report["report"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["checkId"] == "dfm.sheet.flat_overlap")
+        .expect("DFM was not skipped");
+    assert_eq!(dfm["state"], "passed", "{report}");
+    assert!(!dfm["evidence"].as_array().unwrap().is_empty(), "{report}");
+    script.done();
+}
+
+#[test]
+fn retry_original_id_does_not_admit_execute_or_finalize_again() {
+    let scratch = Scratch::new("same-id");
+    let session = fixture_session();
+    let journal = scratch.dir().join("journal");
+    let clock = WireClock::default();
+    let script = Script::new(
+        Capability::Dfm,
+        EntryCategory::CliDfm,
+        [Step::Status, Step::Admit, Step::Status, Step::Renew, Step::Status, Step::Finalize(BillingResult::Succeeded), Step::Status],
+    );
+    let operation = OperationId::parse("op_cli_retry_original").unwrap();
+    let mut billing = live_billing(session.clone(), script.clone(), journal.clone(), clock.clone());
+    billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap();
+    clock.0.set(20_000);
+    billing.dispatch(&operation, Duration::from_secs(1)).unwrap();
+    assert_eq!(billing.commit(&operation, BillingResult::Succeeded), Ok(BillingResult::Succeeded));
+    drop(billing);
+
+    let mut reopened = live_billing(session, script.clone(), journal.clone(), clock);
+    assert_eq!(reopened.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap_err().code, RefusalCode::OperationConflict);
+    assert_eq!(reopened.commit(&operation, BillingResult::Succeeded), Ok(BillingResult::Succeeded));
+    assert_eq!(reopened.release(&operation, RefusalCode::UnsafeToStart).unwrap_err().code, RefusalCode::OperationFinalized);
+    assert_eq!(FileOperationStore::open(journal).unwrap().load(&operation).unwrap().unwrap().status, OperationStatus::Charged);
+    script.done();
+}
+
+#[test]
+fn lost_finalize_is_resolved_by_receipt_without_a_second_finalize() {
+    let scratch = Scratch::new("lost-receipt");
+    let session = fixture_session();
+    let journal = scratch.dir().join("journal");
+    let script = Script::new(
+        Capability::Dfm,
+        EntryCategory::CliDfm,
+        [Step::Status, Step::Admit, Step::Status, Step::Status, Step::LoseFinalize, Step::Lookup],
+    );
+    let operation = OperationId::parse("op_cli_lost_receipt").unwrap();
+    let mut billing = live_billing(session.clone(), script.clone(), journal.clone(), WireClock::default());
+    billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap();
+    billing.dispatch(&operation, Duration::from_secs(1)).unwrap();
+    assert_eq!(billing.commit(&operation, BillingResult::Succeeded).unwrap_err().code, RefusalCode::AuthUnavailable);
+    drop(billing);
+    let mut reopened = live_billing(session, script.clone(), journal.clone(), WireClock::default());
+    assert_eq!(reopened.commit(&operation, BillingResult::Succeeded), Ok(BillingResult::Succeeded));
+    assert_eq!(FileOperationStore::open(journal).unwrap().load(&operation).unwrap().unwrap().status, OperationStatus::Charged);
+    script.done();
+}
+
+#[test]
+fn an_expired_execution_grant_cannot_commit_or_renew() {
+    let scratch = Scratch::new("expired-grant");
+    let clock = WireClock::default();
+    let script =
+        Script::new(Capability::Dfm, EntryCategory::CliDfm, [Step::Status, Step::Admit, Step::Status, Step::Finalize(BillingResult::FailedNoEffect)]);
+    let operation = OperationId::parse("op_cli_expired_grant").unwrap();
+    let mut billing = live_billing(fixture_session(), script.clone(), scratch.dir().join("journal"), clock.clone());
+    billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap();
+    billing.dispatch(&operation, Duration::from_secs(1)).unwrap();
+    clock.0.set(60_000);
+    assert_eq!(billing.commit(&operation, BillingResult::Succeeded).unwrap_err().code, RefusalCode::UnsafeToStart);
+    script.done();
+}
+
+#[test]
+fn only_headless_mcp_dispatches_and_settles_via_the_credential_session() {
+    let scratch = Scratch::new("mcp");
+    let mut budget = BudgetTable::unverified_default();
+    budget.set_bound(Capability::Mcp, EntryCategory::HeadlessMcp, UpperBound::Verified(Duration::from_secs(1)));
+    let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"measure","arguments":{}}}).to_string();
+    let journal = scratch.dir().join("journal");
+    let offline = Script::new(Capability::Mcp, EntryCategory::HeadlessMcp, []);
+    let account = McpAccount::from_session(live_billing(fixture_session(), offline.clone(), journal.clone(), WireClock::default()));
+    let mut gui = compose_mcp_server(Box::new(solidcraft_mcp::Headless::default()), None, account, McpRoute::GuiBridge, budget.clone());
+    let reply: Value = serde_json::from_str(&gui.handle_line(&request).unwrap()).unwrap();
+    assert_eq!(reply["result"]["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE");
+    assert!(!journal.exists());
+    offline.done();
+
+    let script = Script::new(
+        Capability::Mcp,
+        EntryCategory::HeadlessMcp,
+        [Step::Status, Step::Admit, Step::Status, Step::Status, Step::Finalize(BillingResult::Succeeded)],
+    );
+    let account = McpAccount::from_session(live_billing(fixture_session(), script.clone(), journal, WireClock::default()));
+    let mut headless = compose_mcp_server(Box::new(solidcraft_mcp::Headless::default()), None, account, McpRoute::Headless, budget);
+    let reply: Value = serde_json::from_str(&headless.handle_line(&request).unwrap()).unwrap();
+    assert_ne!(reply["result"]["isError"], true, "{reply}");
+    assert!(reply["result"].is_object(), "{reply}");
+
+    let destination = scratch.dir().join("unauthorized.sc");
+    let save = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"save","arguments":{"path":destination}}}).to_string();
+    let reply: Value = serde_json::from_str(&headless.handle_line(&save).unwrap()).unwrap();
+    assert_eq!(reply["result"]["structuredContent"]["errorDetails"]["reason"], "UNSAFE_TO_START");
+    assert!(!destination.exists());
+    script.done();
 }

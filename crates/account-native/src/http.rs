@@ -376,6 +376,31 @@ pub struct WireConnection {
 }
 
 impl WireConnection {
+    /// Normalize a configured product origin to the keyring namespace shared with desktop.
+    pub fn product_origin(origin: &str, client_version: &str) -> Result<Self, HttpConfigError> {
+        let validated = Self::new(origin, client_version)?;
+        if origin.contains(['\\', '%']) {
+            return Err(HttpConfigError::MalformedBaseUrl);
+        }
+        let uri: ureq::http::Uri = validated.base_url().parse().map_err(|_| HttpConfigError::MalformedBaseUrl)?;
+        let authority = uri.authority().ok_or(HttpConfigError::MalformedBaseUrl)?;
+        let host = authority.host().to_ascii_lowercase();
+        if host.is_empty() {
+            return Err(HttpConfigError::MalformedBaseUrl);
+        }
+        let port = authority.as_str().strip_prefix(authority.host()).ok_or(HttpConfigError::MalformedBaseUrl)?;
+        let suffix = if port.is_empty() {
+            String::new()
+        } else {
+            match port.strip_prefix(':').and_then(|value| value.parse::<u16>().ok()) {
+                Some(443) => String::new(),
+                Some(port) if port != 0 => format!(":{port}"),
+                _ => return Err(HttpConfigError::MalformedBaseUrl),
+            }
+        };
+        Self::new(format!("https://{host}{suffix}"), client_version)
+    }
+
     /// Production connections are HTTPS-only. The base URL may contain only a host and an optional
     /// `/` path: no credentials, query, fragment, path prefix, or plain HTTP.
     pub fn new(base_url: impl Into<String>, client_version: impl Into<String>) -> Result<Self, HttpConfigError> {
@@ -826,7 +851,7 @@ impl<T: Transport> HttpAccountService<T> {
         self.exchange_renewal(scope, operation, authorization_id, capability, None).map(|(grant, _, _)| grant)
     }
 
-    fn exchange_renewal(
+    pub(crate) fn exchange_renewal(
         &mut self,
         scope: &AuthenticatedHostScope,
         operation: &OperationId,
@@ -1066,6 +1091,48 @@ impl<T: Transport> HttpAccountService<T> {
         }
         Ok(availability)
     }
+
+    pub(crate) fn controlled_status(&self, scope: &AuthenticatedHostScope, capability: Capability) -> Result<(), Refusal> {
+        let value = self.status_value()?;
+        let (account, snapshot) = self.parse_status_snapshot(&value)?;
+        if account != scope.account().as_str() {
+            return Err(refusal(RefusalCode::AuthRequired));
+        }
+        if let Some(code) = snapshot.reasons.first() {
+            return Err(refusal(*code));
+        }
+        if verified_account(&value).map_err(activation_refusal)? != scope.account().as_str() {
+            return Err(refusal(RefusalCode::AuthRequired));
+        }
+        match value.get("capabilities").and_then(|caps| caps.get(capability.wire())).and_then(Value::as_bool) {
+            Some(true) => Ok(()),
+            Some(false) => Err(refusal(RefusalCode::CapabilityDenied)),
+            None => Err(unavailable()),
+        }
+    }
+
+    pub(crate) fn operation_receipt(&self, operation: &OperationId) -> Result<(OperationStatus, Option<BillingResult>), Refusal> {
+        let mut request = self.request("GET", &format!("/v1/operations/{}", operation.as_str()), None);
+        self.push_auth(&mut request, "X-Settlement-Credential", self.credentials.settlement_credential(operation))?;
+        let (status, value) = self.exchange(request)?;
+        if status != 200 {
+            return Err(error_refusal(status, &value));
+        }
+        if value.get("operation_id").and_then(Value::as_str) != Some(operation.as_str()) {
+            return Err(unavailable());
+        }
+        let state = parse_operation_status(value.get("state").and_then(Value::as_str).ok_or_else(unavailable)?)?;
+        let terminal = value.get("terminal").and_then(Value::as_bool).ok_or_else(unavailable)?;
+        let result = match value.get("result").ok_or_else(unavailable)? {
+            Value::Null => None,
+            Value::String(raw) => Some(parse_billing_result(raw)?),
+            _ => return Err(unavailable()),
+        };
+        validate_operation_status(state, result, terminal)?;
+        validate_optional_timestamp(&value, "authorization_expires_at")?;
+        validate_optional_timestamp(&value, "settlement_deadline")?;
+        Ok((state, result))
+    }
 }
 
 impl<T: Transport> AccountService for HttpAccountService<T> {
@@ -1133,26 +1200,7 @@ impl<T: Transport> AccountService for HttpAccountService<T> {
     }
 
     fn operation(&self, _scope: &AuthenticatedHostScope, operation: &OperationId) -> Result<OperationStatus, Refusal> {
-        let mut request = self.request("GET", &format!("/v1/operations/{}", operation.as_str()), None);
-        self.push_auth(&mut request, "X-Settlement-Credential", self.credentials.settlement_credential(operation))?;
-        let (status, value) = self.exchange(request)?;
-        if status != 200 {
-            return Err(error_refusal(status, &value));
-        }
-        if value.get("operation_id").and_then(Value::as_str) != Some(operation.as_str()) {
-            return Err(unavailable());
-        }
-        let state = parse_operation_status(value.get("state").and_then(Value::as_str).ok_or_else(unavailable)?)?;
-        let terminal = value.get("terminal").and_then(Value::as_bool).ok_or_else(unavailable)?;
-        let result = match value.get("result").ok_or_else(unavailable)? {
-            Value::Null => None,
-            Value::String(raw) => Some(parse_billing_result(raw)?),
-            _ => return Err(unavailable()),
-        };
-        validate_operation_status(state, result, terminal)?;
-        validate_optional_timestamp(&value, "authorization_expires_at")?;
-        validate_optional_timestamp(&value, "settlement_deadline")?;
-        Ok(state)
+        self.operation_receipt(operation).map(|(status, _)| status)
     }
 }
 
@@ -1160,7 +1208,7 @@ fn require_provable(scope: &AuthenticatedHostScope) -> Result<(), Refusal> {
     if scope.is_provable() { Ok(()) } else { Err(refusal(RefusalCode::AuthRequired)) }
 }
 
-fn refusal(code: RefusalCode) -> Refusal {
+pub(crate) fn refusal(code: RefusalCode) -> Refusal {
     Refusal::new(code, message(code))
 }
 
@@ -1182,7 +1230,7 @@ fn message(code: RefusalCode) -> &'static str {
     }
 }
 
-fn unavailable() -> Refusal {
+pub(crate) fn unavailable() -> Refusal {
     refusal(RefusalCode::AuthUnavailable)
 }
 
