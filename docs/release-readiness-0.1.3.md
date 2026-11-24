@@ -2199,3 +2199,38 @@ packaging/tests                     152 tests, 0 failures, 0 errors
 So the last step of the release — rebasing `release/v0.1.3` onto the final `develop` — is a
 no-conflict operation, and the promoted tree is internally consistent before the formal gate
 starts. What remains unfrozen is nothing but the CI time and the batching decision.
+
+## 10. The publisher's SHA contract forces a second, post-merge gate (measured in code)
+
+Reading `scripts/ci/release_handoff.py` and `.github/workflows/release-gate.yml` together:
+
+```
+release-gate.yml:102,171,197   every checkout uses ref: ${{ github.sha }}
+release-gate.yml:249           require git rev-parse HEAD == GITHUB_SHA
+release-gate.yml:318           each build.json sourceRevision == that sha
+release_handoff.py:291         verify_manifest compares the whole manifest to make_manifest(…, sha, …)
+release_handoff.py:664-674     require_tag_on_main: tag resolves to sha AND sha is an ancestor of main
+release_handoff.py:601-613     require_producers compares scripts/workflows/packaging/tools trees at sha and at main
+```
+
+For a `pull_request` event `GITHUB_SHA` is the PR **merge ref**, which is never an ancestor of
+`main`. So a run produced by the PR's required `release-gate` cannot feed the publisher: its
+manifest names a SHA that `require_tag_on_main` rejects. `scripts/ci/release_candidate.py:44-46`
+confirms the difference — a `workflow_dispatch` sets `verify=True` but publishes the check name
+`release-gate-diagnostic`, i.e. it runs the real gate without satisfying `main`'s required check.
+
+The endgame is therefore:
+
+1. mark #237 ready → required `release-gate` on the PR merge ref (full 14-package build + installed checks);
+2. merge #237 into `main` (a merge commit keeps the release branch commits as ancestors);
+3. dispatch `release-gate` **on `main`** → the formal run whose manifest names a SHA that is on
+   `main` (this is the run the publisher accepts);
+4. tag that `main` SHA `v0.1.3`, dispatch `publish-release.yml` from `main` with that run id,
+   attempt and `source_sha`;
+5. `release-signing` then waits for `Huaiyuan-Jing`/`paipeline` approval.
+
+Consequence: **two full gates**, not one — the PR gate plus the post-merge gate, each with 14
+packages and the installed checks (roughly 2–3 hours each). The only way to pay once is GitHub's
+merge queue: a `merge_group` run is accepted as the required `release-gate`, and the tested
+merge-group commit becomes `main`'s tip when the queue merges. That needs the repository ruleset
+to require a merge queue (an admin change), so it is recorded as an option, not assumed.
