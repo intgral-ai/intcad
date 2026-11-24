@@ -2270,3 +2270,14 @@ diagnostic, keep every existing check (SHA equality, main ancestry, producer tre
 attempt, 14 pairs, signing approval), and prove the whole contract with regression tests before
 any multi-hour run. A tag is created only by a maintainer, so it is as unforgeable as the
 protected branch, while an ordinary `push` to `main` does not need to pay for a gate.
+
+**Integration branch ownership settled.** To avoid two parallel integration branches, the
+throwaway `integration/int1497-paid-authority` (which reproduced the four merges on #224's head,
+tree `91e76e3fb3d5…`) was deleted after its content was measured; the Login Agent builds the
+single `task/int1497-paid-integration`. The rule given to them: start from `#224`'s head, and merge
+`origin/develop` only **after** #214 and #224 have landed, so #214 keeps its own merge and CI and
+the integration diff stays the four paid PRs. The two-file resolution when `develop` comes in is
+the one already measured (`installed-check-inside.sh` keeps `/packaging/linux/assistant-check.py`
+with `check+=(--built-in-agent)`; `windows-assistant-smoke.ps1` keeps exactly one
+`CheckBuiltInAgent`). The `#233` documentation constant name (`AUTHORIZATION_TTL_SECONDS` →
+`MAX_ABSOLUTE_GRANT_LEASE`) rides along with that merge.
