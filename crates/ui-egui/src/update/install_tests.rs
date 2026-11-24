@@ -100,6 +100,32 @@ fn net(files: Vec<(String, Vec<u8>)>) -> Net {
 }
 
 #[test]
+fn a_release_that_lists_the_sums_under_the_old_name_still_updates() {
+    // `v0.1.2` and older published `SHA256SUMS`; the update check has to keep verifying that
+    // release's list instead of refusing to update at all.
+    let dir = scratch("legacy-sums");
+    let target = dir.join("Intcad.AppImage");
+    std::fs::write(&target, b"old version").unwrap();
+    let new = b"new version".to_vec();
+    let name = "intcad-linux-x86_64.AppImage";
+    let kind = InstallKind::AppImage(target.clone());
+    let m = Method::AppImage(target.clone());
+    let r = release_with(&[(name, new.len()), (SUMS_LEGACY, 100)]);
+
+    let good = format!("{}  {name}\n", hex(&new));
+    let n = net(vec![(name.into(), new.clone()), (SUMS_LEGACY.into(), good.into_bytes())]);
+    let outcome = run(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default()).unwrap();
+    assert!(matches!(outcome, Outcome::Restart(_)), "{outcome:?}");
+    assert_eq!(std::fs::read(&target).unwrap(), new);
+
+    // The old name is still a checksum list, not a free pass.
+    let bad = format!("{}  {name}\n", hex(b"something else"));
+    let n = net(vec![(name.into(), new.clone()), (SUMS_LEGACY.into(), bad.into_bytes())]);
+    let err = run(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default()).unwrap_err();
+    assert!(err.contains("doesn't match"), "{err}");
+}
+
+#[test]
 fn an_appimage_is_replaced_only_when_it_verifies() {
     let dir = scratch("appimage");
     let target = dir.join("SolidCraft.AppImage");
