@@ -1444,6 +1444,27 @@ Both merges used `ort` with no conflicts. On that tree:
 | Assistant browser suite `.agents/skills/verify-intcad/browser/test_assistant_ui.py` | 12 passed, one pytest-plugin deprecation warning |
 | `windows_icon_test.py` | NOT TESTED: no `powershell` on this host |
 
+### 15.5 Rehearsal package hygiene and notices (not a candidate)
+
+Independent listing of the earlier rehearsal Linux tarball
+`~/.cache/int1503/rc-complete/intcad-0.1.3-linux-x86_64.tar.gz`
+(SHA-256 prefix `35f114b267946d38`) shows what a shaped 0.1.3 package carries. It is not
+candidate evidence; it is a check that the packaging shape is right.
+
+| Item | Result |
+|---|---|
+| Entries | 13,656 |
+| Licences and notices under `share/doc/intcad/` | `LICENSE-MIT`, `LICENSE-APACHE`, `NOTICE`, `THIRD-PARTY-LICENSES.txt`, `ASSISTANT-THIRD-PARTY-NOTICES.txt`, `WEB-VIEW-PLATFORM-NOTICES.txt` — all present |
+| Built-in agent | 13,605 `mastra-agent/` entries, including `node`, `agent/main.mjs` and five `SKILL.md` (four modelling skills plus `intcad-context`) |
+| Sourcemaps, `.pdb`, `.dSYM`, `.git` | none matched |
+| Internal docs (`docs/release*`, `docs/superpowers`, `.dev/`) | none matched |
+| Rust/TypeScript source outside `node_modules` | none matched |
+| Credential-shaped names | 243 matches, all inside dependency packages (e.g. AWS credential providers) except `mastra-agent/agent/secrets.mjs`, which is the agent's key-withholding module: it strips provider keys from the command sandbox and throws if the SDK shape is unexpected. No secret value is present. |
+
+Open questions this does not settle: whether shipped `node_modules` documentation and the
+modelling-skill `scripts/tests/` should be trimmed for size/policy, and whether every
+dependency text required by licence is present (that needs the legal audit, not a listing).
+
 Not yet run: any Rust build, package build, install, launch, or native UI check. This tree
 excludes #224 (login) and the Migration Agent's in-progress fixes, so it is a combination
 check, not the release scope. It is not pushed and does not authorize a merge.
