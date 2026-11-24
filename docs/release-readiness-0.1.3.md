@@ -2760,3 +2760,13 @@ new CI run 45488557706 (pending), the old run is cancelled by the branch's concu
 Cost: one extra full CI (~2 h). No gate was skipped and no admin bypass was used. The lesson for
 the remaining steps: **no PR may be merged out of turn while a longer PR's CI is running**, or the
 longer run is paid for twice.
+
+**#238 did not touch the crash-safety skill, so the integration branch's fix survives the merge.**
+`git diff 085675557d..97236b5dd7 -- skills/solidcraft-crash-safety/SKILL.md` is empty and
+`develop`'s copy is 3589 bytes. The integration branch's trimmed copy (3538) is therefore the only
+side that changed it, and a `merge origin/develop` keeps 3538 rather than reverting it.
+
+The Login Agent prepared #224 locally against `97236b5dd7`: merge clean, head `92352e689c`,
+skills 3589, the two packaging files keep the #224 side (`--built-in-agent` at line 113 of
+`installed-check-inside.sh`; one `CheckBuiltInAgent` definition and one call), and the gate/packaging
+suites pass locally. **Nothing was pushed**, as instructed, until the post-#214 SHA is published.
