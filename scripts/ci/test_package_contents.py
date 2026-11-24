@@ -277,6 +277,16 @@ class AgentContents(unittest.TestCase):
             self.assertEqual(data["agent"]["missing"],
                              ["aarch64-apple-darwin/mastra-agent/skills/modelling-skills/<skill>/SKILL.md"])
 
+    def test_a_linux_tarball_wrapper_around_usr_is_the_packages_own(self):
+        # `intcad-<version>/usr/lib/...` is what the tarball carries, and the app finds it there.
+        with tempfile.TemporaryDirectory() as directory:
+            names = ["intcad-0.1.2-linux-x86_64/usr/lib/intcad/mastra-agent/" + name.split("mastra-agent/", 1)[1]
+                     for name in self.AGENT]
+            data = self.report(directory, names)
+            self.assertTrue(data["agent"]["present"])
+            self.assertTrue(data["agent"]["node"])
+            self.assertEqual(data["agent"]["missing"], [])
+
     def test_a_directory_is_not_the_file_it_is_named(self):
         # A tar lists a directory without a type of its own; it must not satisfy a required file
         # (`node`) or a skill (`SKILL.md`).

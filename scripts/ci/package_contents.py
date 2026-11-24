@@ -252,10 +252,13 @@ def _root_allowed(platform, parts, start):
             return before[0] == "intcad" or APP_WRAPPER.match(before[0]) is not None
         return (len(before) == 2 and before[0] in ("pfiles64", "pfiles")
                 and before[1] == "intcad")
-    # linux: an FHS `usr`, or the package's own wrapper folder.
+    # linux: an FHS `usr`, the package's own wrapper folder, or a wrapper around that tree
+    # (`intcad-<version>/usr/lib/...`).
     if before == []:
         return True
-    return len(before) == 1 and (before[0] == "usr" or APP_WRAPPER.match(before[0]) is not None)
+    if len(before) == 1:
+        return before[0] == "usr" or APP_WRAPPER.match(before[0]) is not None
+    return len(before) == 2 and APP_WRAPPER.match(before[0]) is not None and before[1] == "usr"
 
 
 def _agent_index(parts, roots):

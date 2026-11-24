@@ -276,8 +276,10 @@ jobs:
                   'missing': (carried or {}).get('missing'),
                   'skills': len((carried or {}).get('skills') or []),
               } for name, carried in verdicts.items()},
-              'markers': [item.get('path') for item in data.get('markers') or []],
-              'agentMarkers': [item.get('path') for item in data.get('agentMarkers') or []],
+              'markers': [item.get('path') for item in (data.get('markers') or [])[:5]],
+              'markerCount': len(data.get('markers') or []),
+              'agentMarkers': [item.get('path') for item in (data.get('agentMarkers') or [])[:5]],
+              'agentMarkerCount': len(data.get('agentMarkers') or []),
               'unchecked': [item.get('name') for item in data.get('unchecked') or []],
           }, sort_keys=True))
           # And each job fails here if its own package does not carry what its distribution
