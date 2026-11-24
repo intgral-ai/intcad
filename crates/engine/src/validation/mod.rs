@@ -1129,6 +1129,16 @@ impl ValidationPort {
                     if current.state.is_terminal() && current.state == state {
                         return Ok(());
                     }
+                    // A writer publishes the report before its state record. If the report that
+                    // won is a verifiable terminal report, adopt it and its state, then accept
+                    // only the same terminal state. A different state is still a mismatch.
+                    let admission = self.load_admission(run_id)?;
+                    if self.adopt_report(run_id, &admission)? {
+                        let current = self.load_state(run_id)?;
+                        if current.state.is_terminal() && current.state == state {
+                            return Ok(());
+                        }
+                    }
                     return Err(ValidationError::report_mismatch("a different terminal report already exists for this run"));
                 }
             }
