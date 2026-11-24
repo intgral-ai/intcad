@@ -623,6 +623,8 @@ pub struct AgentChat {
     pub tools_port: Option<u16>,
     tools_rx: Option<Receiver<ControlRequest>>,
     tools_tx: Option<Sender<ControlRequest>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) bridge_admission: Option<Receiver<ControlRequest>>,
     /// Settings → AI: the Add agent dialog and connection tests.
     pub settings: settings::State,
     /// Latest authentication evidence from a connection test or a chat, per agent; never saved.
@@ -1436,11 +1438,6 @@ pub(crate) fn ai_sync_failed(app: &mut SolveApp, error: host_ai::AiError) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn authenticated_bridge_scope(app: &SolveApp) -> Option<solidcraft_engine::entitlement::AuthenticatedHostScope> {
-    app.commit_scope.as_ref().filter(|scope| app.has_commit_authority() && scope.is_provable()).cloned()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     disconnect(app);
     let Some(entry) = agents::current(app) else {
@@ -1496,7 +1493,12 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     } else {
         None
     };
-    let host_scope = authenticated_bridge_scope(app);
+    let bridge_scope_check = app.commit_scope.as_ref().filter(|scope| app.has_commit_authority() && scope.is_provable()).and_then(|scope| {
+        let account = app.commit_account.as_ref()?;
+        // Without worker-backed durability, even a live identity cannot open the paid lane.
+        account.bridge_journal()?;
+        account.bridge_scope_check(scope)
+    });
     let chat = &mut app.agent_chat;
     if chat.tools_port.is_none()
         && let Some(start) = chat.control_starter.as_mut()
@@ -1559,7 +1561,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
                 tools,
                 // Only the installed, provable desktop authority can bind charged bridge tools.
                 // Without it the bridge retains its closed MCP authority.
-                host_scope,
+                bridge_scope_check,
                 instructions,
                 connection_auth: Arc::new(std::sync::Mutex::new(None)),
                 frozen_binding: Arc::new(std::sync::Mutex::new(None)),
@@ -2714,6 +2716,14 @@ fn hand_over(app: &mut SolveApp, mut req: ControlRequest) {
     }
     match crate::execution_guard::admit(app, &mut req) {
         Ok(()) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if req.entry() == solidcraft_engine::entitlement::EntryCategory::GuiBridgeMcp
+                && req.helper.is_none()
+                && app.commit_account.as_ref().is_some_and(|account| account.bridge_journal().is_some())
+            {
+                crate::control::queue_bridge_admission(app, req);
+                return;
+            }
             // The queue and every later seam carry this one typed admission; none may take it
             // again on resumption.
             if let Err(refusal) = crate::control::admit_once(app, &mut req) {
@@ -2818,6 +2828,21 @@ pub fn undo_changes(app: &mut SolveApp, index: usize) {
 
 /// The requests the agent's tools sent through the chat's endpoint: each one passes the gate.
 fn pump_tools(app: &mut SolveApp) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(rx) = app.agent_chat.bridge_admission.take() {
+        match rx.try_recv() {
+            Ok(mut req) => {
+                if req.refuse_cancelled_chat() {
+                    crate::control::release_unstarted(app, &mut req);
+                } else {
+                    app.control_held.push_back(req);
+                }
+                app.agent_chat.bridge_admission = Some(rx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => app.agent_chat.bridge_admission = Some(rx),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
+    }
     let Some(rx) = app.agent_chat.tools_rx.take() else { return };
     let configured = app.preferences.agent_chat_turn_limit;
     let limit = if configured == 0 { u32::MAX } else { configured.clamp(1, 1000) };
@@ -3099,6 +3124,10 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     }
     if !app.agent_chat.held.is_empty() || app.agent_chat.state() == State::Busy {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.agent_chat.bridge_admission.is_some() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }
 }
 

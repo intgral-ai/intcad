@@ -177,6 +177,11 @@ pub(crate) fn test_operation_store() -> Box<dyn OperationStore + Send> {
     Box::new(LedgerHandle(ReviewLedger::default()))
 }
 
+pub(crate) fn test_bridge_journal() -> solidcraft_engine::entitlement::BridgeJournal {
+    let ledger = ReviewLedger::default();
+    Arc::new(move || Some(Box::new(LedgerHandle(ledger.clone()))))
+}
+
 impl OperationStore for LedgerHandle {
     fn save_new(&mut self, record: &OperationRecord) -> Result<SaveOutcome, OperationStoreError> {
         self.0.records.lock().expect("records").insert(record.operation.as_str().to_string(), record.clone());
@@ -239,8 +244,16 @@ impl OperationStore for LedgerHandle {
         Ok(record)
     }
 
-    fn lookup_original_retry(&self, _key: &RetryScopeKey) -> RetryDecision {
-        RetryDecision::Unknown
+    fn lookup_original_retry(&self, key: &RetryScopeKey) -> RetryDecision {
+        let Some(raw) = key.transport_correlation.as_str().strip_prefix("gui-bridge:") else { return RetryDecision::Unknown };
+        let Ok(operation) = OperationId::parse(raw) else { return RetryDecision::Unknown };
+        if self.0.scopes.lock().unwrap().get(raw) != Some(&key.host_scope) {
+            return RetryDecision::Unprovable;
+        }
+        match self.load(&operation) {
+            Ok(Some(record)) => RetryDecision::Original(record),
+            _ => RetryDecision::Unknown,
+        }
     }
 
     fn record_review(&mut self, review: &ReviewOperation) -> Result<(), OperationStoreError> {

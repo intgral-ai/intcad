@@ -691,7 +691,7 @@ pub struct MastraConfig {
     /// The host's authenticated account/installation/session binding for forwarded Intcad tool
     /// calls. Without a verified desktop scope, charged bridge tools stay fail-closed.
     /// It never comes from the runtime or a request body.
-    pub host_scope: Option<solidcraft_engine::entitlement::AuthenticatedHostScope>,
+    pub bridge_scope_check: Option<solidcraft_engine::entitlement::BridgeScopeCheck>,
     /// Chat instructions copied into every new session.
     pub instructions: String,
     /// Set on the host worker when a `connection.describe` call answers; polled by the panel as
@@ -845,8 +845,7 @@ impl MastraBackend {
         let mut bridge_fallback: Option<String> = None;
         if config.bridge.is_some() {
             let tools = config.tools.clone().ok_or_else(|| crate::i18n::tr("ui.mastra_bridge_unavailable").to_string())?;
-            let provenance = config.host_scope.clone().map(super::host_bridge::HostProvenance::new);
-            match HostBridge::open(tools, provenance) {
+            match HostBridge::open_checked(tools, config.bridge_scope_check.take()) {
                 Ok(bridge) => {
                     let fd = bridge.child_fd();
                     launch.args.push(std::ffi::OsString::from(format!("--bridge-fd={fd}")));
