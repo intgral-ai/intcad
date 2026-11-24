@@ -2342,3 +2342,19 @@ from history. Planned closure: after this change merges, push a throwaway `v0.1.
 run's `head_branch`/`head_sha`, delete the tag, and either keep the strict check or accept an empty
 `head_branch` while still requiring `event=push`, `head_sha==sha`, the manifest's tag ref, and the
 tag-on-main check.
+
+**The `head_branch` assumption is confirmed empirically — no tolerance needed.** Before merging the
+tag-push gate, a throwaway tag was pushed on the Migration Agent's branch commit
+(`v0.1.3-preflight` at `50cef2b444`, which already carries the new trigger), then deleted:
+
+```
+run 45463965740  event=push  head_branch=v0.1.3-preflight  head_sha=50cef2b444
+Candidate mode: verify=False
+reason=push to refs/tags/v0.1.3-preflight: not a stable release tag
+release-gate: failure ("Release gate not started: … not a stable release tag")
+```
+
+Three facts from that single run: GitHub reports the **tag name** as `head_branch` on a tag push
+(so `head_branch == tag` in `verify_execution` is correct); a non-stable `v*` tag does **not**
+start the heavy jobs; and the YAML `push: tags: ["v*"]` trigger fires as intended. The tag was
+deleted from origin and locally afterwards, and no `v0.1.3*` tag exists.
