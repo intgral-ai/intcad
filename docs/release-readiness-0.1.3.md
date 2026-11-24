@@ -1976,3 +1976,9 @@ handling. On that composed tree, `scripts/ci/test_gate.py`, `test_release_conten
 (skipped=11), `test_package_contents.py`, `test_release_candidate.py` all pass, and
 `packaging/tests` ran **152 tests with 0 failures/0 errors** (excluding the PowerShell-only
 `windows_icon_test`).
+
+**The composed paid-authority tree compiles.** Same chain worktree, fresh
+`CARGO_TARGET_DIR`, `cargo check -p solidcraft --profile ci --locked`:
+**exit 0**, `Finished ci profile … in 8m 17s`. The account/authority crates
+(`solidcraft-account-native`, `solidcraft-engine`, `solidcraft-mcp`) check together, so the
+four in-scope PRs do not break each other at compile time.
