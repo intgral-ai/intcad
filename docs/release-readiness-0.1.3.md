@@ -1300,7 +1300,14 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   that). Focused run: `56 passed, 3594 filtered out` on `validation::tests`;
   `cargo clippy -p solidcraft-engine --all-targets --profile ci -- -D warnings` reported no
   issues; `cargo fmt --all -- --check` and `git diff --check` were clean. Published as
-  [#226](https://github.com/intgral-ai/intcad/pull/226); the hosted gate is the remaining proof. Two other failures in that job are
+  [#226](https://github.com/intgral-ai/intcad/pull/226). Hosted CI passed
+  (`known-failing: 17 ran, 17 pass … no regression`), **but** the PR's selected gate need not
+  include that CLI test, so a local run of it is still required.
+  An independent review then found that adopting *any* winning terminal report can bind a
+  terminal state to a report a worker may still replace (a provisional `passed` report that
+  becomes `cancelled`). The fix was narrowed: adopt only a **cancelled** report when the
+  cancellation marker exists, and a new guard test proves a provisional result report still
+  returns `REPORT_MISMATCH`. Re-running the focused tests and the CLI test is in progress. Two other failures in that job are
   listed known failures (SMLib variable fillet `Unsupported`, the dialog variable round
   status 1001). The `ci` verifier then failed with `rust: real job result is not success`
   and `rust: missing receipt`. Until `ci` is green at a reviewed `develop`, no release-gate
@@ -1318,6 +1325,9 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   payload names. The four PRs are the packaging and UI prerequisites, not the whole release
   scope: verify the approved login and slash-command fixes are also present before treating an
   RC as satisfying those feature gates.
+- **#214 package builds — green on the author's head.** `Package builds (nonpublishing)`
+  run 45332120863 on `5e94f155fa` (which contains the reviewed commits) concluded `success`
+  with no failed job. The branch is still `BEHIND` develop and needs an update before merge.
 - **#214 package verdict — local fix reviewed, not landed.** At `6717ef201c`, the
   workflow's real package-evidence step inspected a fixture tarball with a complete agent
   file layout except Node. The report named `mastra-agent/node` as missing, but the step
