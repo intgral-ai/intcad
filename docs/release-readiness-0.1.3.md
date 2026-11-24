@@ -1277,7 +1277,10 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   `error: REPORT_MISMATCH: a different terminal report already exists for this run`, which
   looks like leftover run state rather than a product regression; the owner must decide
   whether the test's isolation is wrong or the runner state must be cleaned. Filed with
-  the logs and the owner question as [#225](https://github.com/intgral-ai/intcad/issues/225). Two other failures in that job are
+  the logs and the owner question as [#225](https://github.com/intgral-ai/intcad/issues/225).
+  The Release Manager now owns the fix: a regression test and a change in
+  `crates/engine/src/validation` so a report another writer committed before its state
+  record is adopted instead of reported as a mismatch (local branch `int225-ci-race`). Two other failures in that job are
   listed known failures (SMLib variable fillet `Unsupported`, the dialog variable round
   status 1001). The `ci` verifier then failed with `rust: real job result is not success`
   and `rust: missing receipt`. Until `ci` is green at a reviewed `develop`, no release-gate
@@ -1323,6 +1326,9 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   `actionlint` on `release.yml` exited zero. The standalone regression uses a real ZIP and
   a fixture for the MSI file listing. It does not prove a real MSI install or hosted CI.
   The stack is not on #214; integration and real-package evidence are still blocked.
+  **Landed on the PR:** the four reviewed commits (including `ee17261b82`) were
+  rebased onto the branch and pushed; the author then added `e4fac55e57` on top. New CI
+  is running on that head.
 - **Gate B — BLOCKED / NOT RUN.** #213 is now closed; #224 carries INT-1497. The previously
   [tested Windows job](https://github.com/intgral-ai/intcad/actions/runs/45109730998/job/137479303661) passed
   startup, then timed out in `tools/windows-resize-smoke.ps1`: after moving the window to
