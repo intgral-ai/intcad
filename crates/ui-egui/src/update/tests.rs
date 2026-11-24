@@ -2,6 +2,97 @@ use super::*;
 use serde_json::json;
 use std::collections::BTreeMap;
 
+// The updater tests prove that the current feed works, not that every shipped caller can be
+// moved to a different channel by changing distribution.rs alone.
+#[test]
+fn source_repository_slug_is_only_in_distribution_config() {
+    use std::fs;
+    use std::path::Path;
+    use syn::visit::{self, Visit};
+
+    const SLUG: &str = "intgral-ai/intcad";
+
+    #[derive(Default)]
+    struct SlugMatch(bool);
+    impl<'ast> Visit<'ast> for SlugMatch {
+        fn visit_item(&mut self, item: &'ast syn::Item) {
+            let attrs = match item {
+                syn::Item::Const(i) => &i.attrs,
+                syn::Item::Fn(i) => &i.attrs,
+                syn::Item::Macro(i) => &i.attrs,
+                syn::Item::Mod(i) => &i.attrs,
+                syn::Item::Static(i) => &i.attrs,
+                _ => return visit::visit_item(self, item),
+            };
+            if !attrs
+                .iter()
+                .any(|a| a.path().is_ident("test") || (a.path().is_ident("cfg") && a.parse_args::<syn::Path>().is_ok_and(|p| p.is_ident("test"))))
+            {
+                visit::visit_item(self, item);
+            }
+        }
+
+        fn visit_attribute(&mut self, attr: &'ast syn::Attribute) {
+            if !attr.path().is_ident("doc") {
+                visit::visit_attribute(self, attr);
+            }
+        }
+
+        fn visit_lit_str(&mut self, lit: &'ast syn::LitStr) {
+            self.0 |= lit.value().contains(SLUG);
+        }
+
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            self.0 |= mac.tokens.to_string().contains(SLUG);
+        }
+    }
+
+    fn scan(dir: &Path, config: &Path, failures: &mut Vec<std::path::PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name.to_str().unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                if !matches!(name, "tests" | "docs") && !name.ends_with("_tests") {
+                    scan(&path, config, failures);
+                }
+            } else if path != config && name.ends_with(".rs") && name != "tests.rs" && !name.ends_with("_tests.rs") {
+                let text = fs::read_to_string(&path).unwrap();
+                if text.contains(SLUG) {
+                    let mut found = SlugMatch::default();
+                    found.visit_file(&syn::parse_file(&text).unwrap());
+                    if found.0 {
+                        failures.push(path);
+                    }
+                }
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let config = root.join("crates/ui-egui/src/distribution.rs");
+    let mut failures = Vec::new();
+    for group in ["crates", "apps"] {
+        for entry in fs::read_dir(root.join(group)).unwrap() {
+            let src = entry.unwrap().path().join("src");
+            if src.is_dir() {
+                scan(&src, &config, &mut failures);
+            }
+        }
+    }
+    failures.sort();
+    assert!(failures.is_empty(), "Use distribution.rs instead of hard-coding {SLUG} in {failures:#?}");
+}
+
+#[test]
+fn distribution_download_url_uses_the_published_tag_and_asset_name() {
+    assert_eq!(
+        crate::distribution::asset_download_url("v0.10.0", "intcad-windows-x64.msi"),
+        "https://github.com/intgral-ai/intcad-releases/releases/download/v0.10.0/intcad-windows-x64.msi",
+    );
+}
+
 #[test]
 fn versions_compare_as_semver() {
     assert!(is_newer("v0.10.0", "0.9.0"));

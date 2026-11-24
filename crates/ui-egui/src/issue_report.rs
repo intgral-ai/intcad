@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use egui::{ColorImage, TextureHandle};
 
+use crate::distribution::ISSUE_URL;
 use crate::{SolveApp, dialogs, help};
 
 mod form;
@@ -21,9 +22,6 @@ const MAX_BODY: usize = 24_000;
 // context.
 const MAX_REPORT: usize = 3 * 4 * MAX_ANSWER + MAX_BODY + 1000;
 const MAX_IMAGE_PIXELS: usize = 16_000_000;
-/// The public tracker. Reports must stay openable without access to the private source
-/// repository (docs/releasing.md, "Distribution repository").
-const ISSUE_URL: &str = "https://github.com/intgral-ai/intcad-releases/issues/new";
 
 thread_local! {
     static CAD_INPUT_BLOCKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
