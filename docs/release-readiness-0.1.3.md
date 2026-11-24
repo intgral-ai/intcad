@@ -1421,6 +1421,31 @@ smoke or green CI does not replace real installed-client acceptance.
 | Cross-repo publication | BLOCKED / NOT RUN | Bind the exact `intgral-ai/intcad` candidate and accepted assets to an authorized nonproduction rehearsal of the public distribution workflow, with scoped credentials and fail-closed read-back. Private CI is post-release work. |
 | Production publication and anonymous handoff | NOT RUN | CTO publication approval; then fresh anonymous download/install/launch, independent production 0.1.2 upgrade or approved fallback, and new-client detection, signature and authorization checks. |
 
+### 15.4 Integration preview (local, not a candidate)
+
+A local integration branch proves the reviewed pieces combine, without claiming candidate
+status. Worktree `int1503-integration-preview`, branch of the same name, built from the
+reviewed `develop` snapshot `6032271178` plus two merge commits:
+
+- `3b04fbece5` merges the reviewed #214 packaging verdict fix `ee17261b82`.
+- `4ce096fc37` merges the reviewed #221 composer sizing fix `b002647acb`.
+
+Both merges used `ort` with no conflicts. On that tree:
+
+| Check | Result |
+|---|---|
+| `python3 -I scripts/ci/test_gate.py` | 74 tests, OK |
+| `python3 -I scripts/ci/test_release_content.py` | 30 tests, OK |
+| `python3 -I scripts/ci/test_package_contents.py` | 28 tests, OK |
+| `packaging/tests/{aliases,apprun,checksums,flatpak,mastra_agent,mastra_runtime,web_channels}_test.py` | OK individually |
+| `packaging/tests/nightly_test.py` with `jq` on `PATH` | 12 tests, OK |
+| Assistant browser suite `.agents/skills/verify-intcad/browser/test_assistant_ui.py` | 12 passed, one pytest-plugin deprecation warning |
+| `windows_icon_test.py` | NOT TESTED: no `powershell` on this host |
+
+Not yet run: any Rust build, package build, install, launch, or native UI check. This tree
+excludes #224 (login) and the Migration Agent's in-progress fixes, so it is a combination
+check, not the release scope. It is not pushed and does not authorize a merge.
+
 **Approved deferrals:** Windows Authenticode, Apple Developer ID and notarization. These do not
 block on a certificate request and do not waive Minisign, real installation, or OS-policy
 evidence. A real launch prevented by policy is blocked, not PASS.
