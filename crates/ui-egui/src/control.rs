@@ -3515,6 +3515,86 @@ mod tests {
     }
 
     #[test]
+    fn fresh_control_grant_allows_admission_and_commit_before_its_expiry() {
+        // A fresh lease with and without a transit deduction.
+        for expiry in [300_000, 299_500] {
+            let (mut app, _authority, commits, releases) = app_with_commit_authority_grant(expiry);
+            app.budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(280));
+            let (mut req, _) = ControlRequest::trusted_control("engine.execute", json!({"command":"parameters.list"}));
+            let admission = admit_once(&mut app, &mut req).expect("one operation fits the fresh grant");
+            assert!(matches!(admission, Admission::NewlyAdmitted { .. }));
+            let now = app.commit_clock.as_ref().unwrap().now();
+            assert_eq!(authorization_bound(&app, &req, &admission).unwrap().remaining(now), Some(Duration::from_millis(expiry)));
+            // At dispatch the clock reads 0; at commit it reads just before grant expiry,
+            // after the declared 280 s has elapsed.
+            app.commit_clock = Some(Box::new(DispatchThenCommitClock::new(expiry - 1)));
+            let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &mut req) else { panic!("expected a synchronous reply") };
+            assert_eq!(reply["ok"], true, "{reply}");
+            assert_eq!(commits.load(Ordering::Relaxed), 1);
+            assert_eq!(releases.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn control_grant_below_the_declared_bound_is_refused_before_dispatch() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority_grant(300_000);
+        app.budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(280));
+        authority.advance(20_001);
+        let (mut req, _) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &mut req) else { panic!("expected a synchronous refusal") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(!req.work_started.load(Ordering::Relaxed));
+        assert_eq!(bodies(&app), 0);
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 1);
+    }
+
+    /// First read at dispatch, subsequent reads when the result is ready.
+    struct DispatchThenCommitClock {
+        before_dispatch: std::cell::Cell<bool>,
+        finished_at: u64,
+    }
+
+    impl DispatchThenCommitClock {
+        fn new(finished_at: u64) -> Self {
+            Self { before_dispatch: std::cell::Cell::new(true), finished_at }
+        }
+    }
+
+    impl MonotonicClock for DispatchThenCommitClock {
+        fn now(&self) -> MonotonicInstant {
+            MonotonicInstant::from_millis(if self.before_dispatch.replace(false) { 0 } else { self.finished_at })
+        }
+
+        fn wall_now(&self) -> std::time::SystemTime {
+            std::time::SystemTime::UNIX_EPOCH
+        }
+    }
+
+    #[test]
+    fn control_result_at_or_after_grant_expiry_has_one_deferred_settlement() {
+        for finished_at in [300_000, 300_001] {
+            let (mut app, _authority, commits, releases) = app_with_commit_authority_grant(300_000);
+            app.budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(280));
+            let (mut req, _) =
+                ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+            let operation = req.operation().unwrap().clone();
+            admit_once(&mut app, &mut req).expect("enough authorization at admission");
+            app.commit_clock = Some(Box::new(DispatchThenCommitClock::new(finished_at)));
+            let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &mut req) else { panic!("expected a synchronous refusal") };
+            assert_eq!(reply["ok"], false, "{reply}");
+            assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+            assert_eq!(bodies(&app), 1, "dropping a late result does not undo an already-applied mutation");
+            assert_eq!(commits.load(Ordering::Relaxed), 0);
+            assert_eq!(releases.load(Ordering::Relaxed), 0);
+            let [notice] = app.pending_settlements.as_slice() else { panic!("expected one deferred settlement: {reply}") };
+            assert_eq!(notice.operation, operation);
+            assert_eq!(notice.kind, SettlementNoticeKind::Deferred { evidence: ResultEvidence::Effect });
+        }
+    }
+
+    #[test]
     fn recovery_of_a_terminal_row_is_refused_without_admitting_or_settling_again() {
         let (mut app, authority, admits, releases) = app_with_billing_and_authority();
         authority.set_status(OperationStatus::Charged);
@@ -3653,7 +3733,7 @@ mod tests {
         let (mut inspect, _) = ControlRequest::trusted_control("ui.inspect", json!({}));
         let Outcome::Done(reply) = handle(&mut app, &ctx, &mut inspect) else { panic!("inspection must answer synchronously") };
         assert_eq!(reply["ok"], true, "{reply}");
-        assert_eq!(reply["result"]["assistant"], json!({"open": false, "surface_ready": false, "host": "unavailable"}));
+        assert_eq!(reply["result"]["assistant"], json!({"open": false, "surface_ready": false, "host": "unavailable", "centred": false}));
 
         let (mut open, _) = ControlRequest::trusted_control("ui.agent_chat", json!({"open": true}));
         let Outcome::Done(reply) = handle(&mut app, &ctx, &mut open) else { panic!("a refused action must answer synchronously") };
@@ -3893,6 +3973,24 @@ mod tests {
         assert_eq!(admits.load(Ordering::Relaxed), 1, "the grant was taken then released");
         assert_eq!(releases.load(Ordering::Relaxed), 1, "a proven-unstarted batch releases once");
         assert_eq!(bodies(&app), 0, "no batch step ran");
+    }
+
+    #[test]
+    fn control_batch_reserves_every_step_even_with_a_fresh_grant() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority_grant(300_000);
+        app.budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(280));
+        let (mut req, _) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"solid.box","params":{"length":5,"width":5,"height":5}}
+            ]}),
+        );
+        let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &mut req) else { panic!("expected a synchronous refusal") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(bodies(&app), 0, "one step would fit, but two do not");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 1);
     }
 
     #[test]
