@@ -97,7 +97,13 @@ jobs:
       - run: scripts/ci/build-jobs.sh
       - name: Install packaging tools
         run: |
-          sudo apt-get update
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
           sudo apt-get install -y --no-install-recommends desktop-file-utils appstream zsync rpm
           # The Assistant's web view links the system's GTK and WebKitGTK (apps/solidcraft, wry).
           sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
@@ -257,7 +263,13 @@ jobs:
           path: dist/linux
       - name: Install flatpak-builder and smoke tools
         run: |
-          sudo apt-get update
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
           sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common xvfb xauth weston xwayland dbus-x11
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build and smoke-test the Flatpak in its network-denying sandbox
@@ -288,7 +300,15 @@ jobs:
           name: release-linux-${{ matrix.arch }}
           path: dist/linux
       - name: Install libarchive (bsdtar) for .PKGINFO/.MTREE
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libarchive-tools
+        run: |
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
+          sudo apt-get install -y --no-install-recommends libarchive-tools
       - id: pkgver
         name: Arch version
         env:
@@ -400,7 +420,13 @@ jobs:
           echo 'Snap Assistant desktop smoke NOT run in the normal step: a strict snap uses the host network, and release policy forbids starting a network-enabled desktop. The gnome extension supplies GTK 3 and WebKitGTK 4.1 (checked above).' >>"$GITHUB_STEP_SUMMARY"
       - name: Open the Assistant on a network-isolated desktop
         run: |
-          sudo apt-get update
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
           sudo apt-get install -y --no-install-recommends xvfb xauth iproute2
           mkdir -p "$RUNNER_TEMP/snap-offline"
           set +e
