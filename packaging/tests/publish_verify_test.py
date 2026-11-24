@@ -146,8 +146,12 @@ class Publish(unittest.TestCase):
             with self.subTest(mode=mode), self.assertRaises(ValueError):
                 release.verify_execution(run | {"event": "workflow_dispatch", "head_branch": "main"},
                                          jobs, 42, 1, mode=mode, sha=sha, tag="v0.1.3")
+        # An omitted branch field is tolerated (older responses); a different branch
+        # or tag is not, and the manifest still has to name the tag.
+        for branch in (None, ""):
+            release.verify_execution(run | {"head_branch": branch}, jobs, 42, 1, mode="tag", sha=sha, tag="v0.1.3")
         # Wrong tag name, wrong head commit or another attempt are refused.
-        for change in ({"head_branch": "v0.1.4"}, {"head_sha": "b" * 40}, {"run_attempt": 2}):
+        for change in ({"head_branch": "v0.1.4"}, {"head_branch": "main"}, {"head_sha": "b" * 40}, {"run_attempt": 2}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 release.verify_execution(run | change, jobs, 42, 1, mode="tag", sha=sha, tag="v0.1.3")
 

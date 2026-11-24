@@ -320,6 +320,10 @@ future task.
    gate, and a manual dispatch stays diagnostic (`release-gate-diagnostic`) and
    is never publication evidence.
 
+   A handoff without `mode`/`ref` — any draft produced before this contract — is
+   refused (`unknown handoff mode`). The publisher has never accepted such a draft,
+   so none is valid and no older draft may be published.
+
    **Known boundary.** The publisher also re-checks the gate's executable trees
    (`scripts/`, `.github/workflows/`, `packaging/`, `tools/`) at the tagged commit
    against its own protected-`main` checkout. If `main` advances past the tag and
