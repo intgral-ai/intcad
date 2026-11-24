@@ -135,4 +135,34 @@ def problems(source_revision, descriptors, contents):
         if source_artifacts.get(report.get("sourceArtifact")) != source_digest and source_digest not in source_artifacts.values():
             failures.append(identity + ": derived package source digest does not match the " + str(source)
                             + " package bytes")
+            continue
+        # The derived artifact itself must be covered: inspected, or explicitly covered
+        # by the source package that was inspected. A wrapper that records neither is
+        # not proven and must not pass.
+        ignored = set(report.get("ignored") or [])
+        expected = {
+            name: digest
+            for name, digest in _artifacts(derived[identity]).items()
+            if name not in ignored
+        }
+        entries = {
+            item.get("name"): item
+            for item in report.get("checked") or []
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        checked = {name: item.get("sha256") for name, item in entries.items()}
+        if checked != expected:
+            missing = sorted(set(expected) - set(checked))
+            extra = sorted(set(checked) - set(expected))
+            failures.append(identity + ": derived content evidence does not cover the built package bytes"
+                            + (f"; missing {_sample(missing)}" if missing else "")
+                            + (f"; unexpected {_sample(extra)}" if extra else ""))
+            continue
+        for name, item in sorted(entries.items()):
+            if item.get("format") == "covered":
+                if item.get("coveredBy") != source or source == identity:
+                    failures.append(identity + ": " + str(name) + " claims coverage by "
+                                    + str(item.get("coveredBy")) + ", not the inspected source "
+                                    + str(source))
+                    continue
     return failures
