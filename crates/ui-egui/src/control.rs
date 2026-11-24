@@ -3733,7 +3733,7 @@ mod tests {
         let (mut inspect, _) = ControlRequest::trusted_control("ui.inspect", json!({}));
         let Outcome::Done(reply) = handle(&mut app, &ctx, &mut inspect) else { panic!("inspection must answer synchronously") };
         assert_eq!(reply["ok"], true, "{reply}");
-        assert_eq!(reply["result"]["assistant"], json!({"open": false, "surface_ready": false, "host": "unavailable"}));
+        assert_eq!(reply["result"]["assistant"], json!({"open": false, "surface_ready": false, "host": "unavailable", "centred": false}));
 
         let (mut open, _) = ControlRequest::trusted_control("ui.agent_chat", json!({"open": true}));
         let Outcome::Done(reply) = handle(&mut app, &ctx, &mut open) else { panic!("a refused action must answer synchronously") };
