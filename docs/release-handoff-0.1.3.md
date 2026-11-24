@@ -74,6 +74,9 @@ built binary embeds exactly that tuple without printing secrets. As of 2026-11-2
 `client_` + 33 alphanumerics, AuthKit origin `https://cuddly-globe-52.authkit.app`, product origin
 `https://api-production-02512b4a.up.railway.app`, both bare HTTPS origins. The candidate still has
 to prove the same tuple is embedded in its binaries (`verify_embedded_account.py`).
+Expected account identity for that check: **sha256
+`89abe5c94fb1fbaa608e0763224f4c9e241fee7087c3bd6ee4da96c3a75f41bb`** (canonical JSON of the three
+variable values, sorted keys, no spaces).
 
 ## Publication approval
 
