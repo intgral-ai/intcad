@@ -1450,6 +1450,14 @@ In order, with the owner who must act. Nothing here is approved yet.
 7. Publish to `intgral-ai/intcad-releases` only with CTO approval; then verify anonymous
    download, signature, update discovery and install on the published bytes.
 
+**Local E2E harness defect found while installing the integration build (release infrastructure).**
+`intcad-e2e` derives the VM name from the worktree and task and truncates it to 60 characters;
+its SSH identity check then compares the truncated expected name with the guest hostname and
+refuses ("refusing to act on another VM"). Task `int1503-integ` produced a 61-character name and
+the deploy failed before any product check. Retrying with the short task `i3int` gives 57
+characters and reuses the same build artifact. Fix belongs in the harness (compare the truncated
+name or reject over-long names with a clear error message), not in the release docs.
+
 ### 15.4 Integration preview (local, not a candidate)
 
 A local integration branch proves the reviewed pieces combine, without claiming candidate
