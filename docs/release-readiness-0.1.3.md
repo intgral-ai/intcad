@@ -465,6 +465,12 @@ conflicted in `agent_chat/mod.rs` (adjacent field blocks — both kept) and
 exceeded the default macro limit (`cargo check -p solidcraft-ui-egui --profile ci` failed, then
 passed). Pushed as `9ca2ddaff2`; Assistant browser suite on that tree: **21 passed**.
 
+**Promotion commit applies cleanly.** `git merge-tree` of `release/v0.1.3`'s single commit
+`994b280dda` (version 0.1.3, notes, format 51) on top of the planned integration
+(develop + #226 + #214 + #221) returns `rc=0`, and on top of #229's stacked head also
+`rc=0`. So rebasing the promotion branch after the feature merges is a no-conflict step;
+the promotion PR can then be opened against `main` to run the formal gate.
+
 ## 9. Acceptance matrix for the candidate (not yet run)
 
 Rows marked *rehearsal* are the §12 tree (`develop` + #204 + this branch), not a versioned
