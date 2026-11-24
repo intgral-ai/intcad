@@ -29,7 +29,7 @@ or a measurement that exists on the machine or on GitHub.
 | v0.1.2 tarball + MSI, hashes from `sha256sum --check SHA256SUMS` | the baseline package contents: 49 entries / 8 MSI files, **no** agent or Mastra runtime |
 | run 45230019033 (FreeBSD on #219) | the FreeBSD compile fix works; the job is `success` |
 | run 45248432170 (candidate, SHA `14a6c95ae`) | the first `release.yml` build carrying the agent: every platform `success` after the macOS rerun, DMG included |
-| `build.json` / `contents.json` of that run | `sourceRevision` = the candidate SHA; `agent.present`, `node`, five skill sets, `missing: []` on Linux, Windows and macOS |
+| `build.json` / `contents.json` of that run | `sourceRevision` = the candidate SHA; `agent.present`, `node`, five skill folders in two sets, `missing: []` on Linux, Windows and macOS |
 | `7z l` of the DMG | both Darwin slices carry `node`, `agent/main.mjs` and all five `SKILL.md` |
 | `checksums.sh --require` on the flattened set | 18-line list (16 files plus the two legacy `.zsync` names) under both names, every hash OK; refuses a set that omits the DMG. The set is the three downloaded channels, not every artifact `release.yml` builds |
 | Ubuntu VM `…rc013` | CI tarball and AppImage installed and run; agent starts; five sets installed; 0.1.2 → CI 0.1.3 upgrade opens the design 0.1.2 saved |
@@ -387,7 +387,7 @@ candidate: they show the path works, and they must be repeated for the candidate
 
 | Platform | Build | Package | Startup | Login | Mastra | Skills + commands | UI | Update | Evidence |
 |---|---|---|---|---|---|---|---|---|---|
-| Linux x86_64 | 0.1.3 candidate built (Ubuntu 24.04, 5m25s) | 0.1.3 tar 462 MB, sha256 `e30b1cf8…`, checksum list written | PASS (0.1.3 window, sample design) | NOT TESTED | 0.1.3 agent ships, starts from the install prefix, installs the four skills; workflow runtime absent (B6) | 0.1.3 agent smoke 8/8 with the four `skill/<name>` commands; slash list not seen (B5) | Assistant page renders | one-click path NOT TESTED (feed URL is a constant); in-place 0.1.2→0.1.3 PASS, design saved by 0.1.2 opens in 0.1.3 | §12.3 |
+| Linux x86_64 | 0.1.3 candidate built (Ubuntu 24.04, 5m25s) | 0.1.3 tar 462 MB, sha256 `e30b1cf8…`, checksum list written | PASS (0.1.3 window, sample design) | NOT TESTED | 0.1.3 agent ships, starts from the install prefix, installs the four modelling skills and the context skill; workflow runtime absent (B6) | 0.1.3 agent smoke 8/8 with the four `skill/<name>` commands; slash list not seen (B5) | Assistant page renders | one-click path NOT TESTED (feed URL is a constant); in-place 0.1.2→0.1.3 PASS, design saved by 0.1.2 opens in 0.1.3 | §12.3 |
 | Windows x64 | 0.1.3 exe + cli built (cargo-xwin, 3m40s + 3m36s) | 0.1.3 MSI built in the guest (WiX 5.0.2), 100.7 MB, sha256 `894e04fb…` | PASS (window `v0.1.3`, sample design) | NOT TESTED | **no agent** (B7) | NOT TESTED | rail + Assistant page render | one-click NOT TESTED; in-place MSI 0.1.2→0.1.3 PASS (one ARP entry, `intcad-cli 0.1.3`) | §12.4 |
 | macOS universal | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | CI-only DMG mount, no DMG for a candidate yet |
 
@@ -431,7 +431,7 @@ WorkOS/Railway configuration; this role only verifies what the installed package
     parameter.
 11. The three platforms behave the same, and nothing unimplemented is presented as available.
 
-**Gate C, skills.** In the installed app, on a clean profile: the four skill folders exist under
+**Gate C, skills.** In the installed app, on a clean profile: the five skill folders exist under
 `<MASTRA_APP_DATA_DIR>/home/.agents/skills` (and `intcad-text-to-cad` beside them once #204 adds
 its set); each `SKILL.md` is byte-identical to the package's copy (the `skill-set.json` stamp);
 `skill_search` finds them; one request per skill makes the agent read and use it; and the
@@ -530,7 +530,7 @@ pushed, nothing merged).
 | `agent-smoke.mjs --only "skill sets"` against the **packaged** folder | `commands: skill/solidcraft-checking, skill/solidcraft-editing, skill/solidcraft-mechanisms, skill/solidcraft-modeling`; all four told to the model, `installedAsPackaged: true`, `read: true`, `permissionsAsked: 0`; `{"summary":"all passed"}` exit 0 |
 
 That is the first evidence in this release that the shipped agent carries the four skills, installs
-them, and offers the four `skill/<name>` commands — the part #204's PR could only show from a
+them, and offers the four modelling `skill/<name>` commands — the part #204's PR could only show from a
 package-shaped folder. What it does **not** show is the Assistant drawing those commands in its
 slash menu, which needs the app (next rows) and is still open.
 
@@ -788,7 +788,7 @@ stamp     .modelling-skills.json present
 ```
 
 So on Windows, from the CI-built MSI: install → start → Assistant → agent runs from the install
-directory → five skill sets land in the user's data folder.
+directory → five skill folders in two sets land in the user's data folder.
 
 Not shown for this Windows build: a real-model turn, the `installed-check.ps1` result CI produces per
 architecture, and the same on a machine without WebView2.
@@ -820,7 +820,7 @@ install published intcad-0.1.2-windows-x64.msi (sha256 b8d8037b…) -> exit 0
 install the CI intcad-0.1.3-windows-x64.msi (sha256 f467db17…) over it -> exit 0
     intcad-cli 0.1.3
     uninstall entries: exactly one, "Intcad 0.1.3"
-    mastra-agent present, 10,739 files, five skill sets
+    mastra-agent present, 10,739 files, five skill folders in two sets
     %LOCALAPPDATA%\Intcad still present
 ```
 
@@ -1174,7 +1174,7 @@ Historical rehearsal verdict only. The old GO instructions below are superseded 
 do not restart `rc-chain.sh`, waive the UI or login requirement, or use rehearsal bytes.
 
 Verdict: **NO-GO.** Not because the packages are broken — the 0.1.3 candidate builds, installs,
-starts, carries the agent and installs five skill sets on both Linux and Windows — but because three
+starts, carries the agent and installs five skill folders on both Linux and Windows — but because three
 required things do not exist yet and one is unverified.
 
 | Gate | Status | Evidence / what is missing |
