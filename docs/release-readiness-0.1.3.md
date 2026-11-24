@@ -1373,6 +1373,16 @@ downloaded (302,524,433 bytes), not copied from CI. Full digests and local locat
 `~/.local/state/intcad-release-readiness/v0.1.3/legacy-baseline.Nyw4DRC8/README.md`.
 This identifies the old installers only; no cutover, install or migration verdict follows.
 
+The published 0.1.2 Linux binary itself was also inspected (`bin/intcad` from that tarball,
+SHA-256 prefix `a5ec6ca6e4618bf9`): its embedded strings are
+`https://api.github.com/repos/intgral-ai/intcad/releases/latest`,
+the asset allowlist prefix `https://github.com/intgral-ai/intcad/releases/`, and
+`SHA256SUMS.txt`. So the unchanged 0.1.2 client can only read a list named
+`SHA256SUMS.txt` under the old repository, while every published release carries only
+`SHA256SUMS`. Its in-app update is therefore already unable to verify an update today;
+this is a fact about the shipped bytes, not a projection from source. No signature
+requirement was found in those strings, matching `PUBLIC_KEY = None` at tag `v0.1.2`.
+
 The Release Manager notified the owners to continue in the existing repository and lifted
 the earlier push-pause request. The Login Agent owns Gate B and integration, and the Migration
 Agent owns distribution, signing, migration and rights evidence. Neither notice authorizes
