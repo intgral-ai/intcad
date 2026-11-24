@@ -497,14 +497,15 @@ def authorize(env):
     return repo, repo_id
 
 
-def verify_environment(environment, policies):
+def verify_environment(environment, policies, allow_single_owner=False):
     rules = [rule for rule in environment.get("protection_rules") or []
              if rule.get("type") == "required_reviewers"]
     reviewers = (rules[0].get("reviewers") if rules else None) or []
     independent = rules[0].get("prevent_self_review") is True if rules else False
     # A one-person project cannot dispatch and also be forbidden to approve its own
-    # deployment. Accept that shape, but only with exactly one reviewer, and warn.
-    single_owner = len(reviewers) == 1 and not independent
+    # deployment. That shape is accepted ONLY when the owner set RELEASE_SINGLE_OWNER;
+    # the default stays strict.
+    single_owner = allow_single_owner and len(reviewers) == 1 and not independent
     require(environment.get("name") == "release-signing" and len(rules) == 1
             and bool(reviewers) and (independent or single_owner)
             # GitHub may omit the field on some plans. Only an explicit `true` is a bypass;
@@ -525,11 +526,18 @@ def check_environment(env):
     if "can_admins_bypass" not in environment:
         print("::warning::release-signing omitted can_admins_bypass; confirm in the UI that "
               "administrators cannot bypass its protection rules", flush=True)
+    allow_single = (env.get("RELEASE_SINGLE_OWNER") or "").strip().lower() == "true"
     mode = verify_environment(environment, [row for page in pages(f"{endpoint}/deployment-branch-policies")
-                                            for row in page["branch_policies"]])
+                                            for row in page["branch_policies"]],
+                              allow_single_owner=allow_single)
+    reviewers = [((rule.get("reviewers") or [{}])[0].get("reviewer") or {}).get("login")
+                 for rule in environment.get("protection_rules") or []
+                 if rule.get("type") == "required_reviewers" and rule.get("reviewers")]
     if mode == "single-owner":
-        print("::warning::release-signing has one reviewer who can approve their own run: "
-              "approval is a deliberate checkpoint, not independent review", flush=True)
+        print("::warning::RELEASE_SINGLE_OWNER is set: release-signing has one reviewer who can "
+              "approve their own run; approval is a checkpoint, not independent review", flush=True)
+    return {"mode": mode, "singleOwner": allow_single, "reviewers": reviewers,
+            "actor": env.get("GITHUB_ACTOR") or ""}
 
 
 def live_execution(repo, repo_id, run, attempt):
@@ -561,6 +569,32 @@ def require_producers(sha, repo="."):
         require(frozen == protected, f"{tree}: the release candidate changed the evidence producer")
 
 
+def remote_tag_commit(remote, tag, repo="."):
+    lines = git("-C", repo, "ls-remote", remote, f"refs/tags/{tag}", f"refs/tags/{tag}^{{}}").decode().splitlines()
+    require(bool(lines), f"tag {tag} does not exist on the remote")
+    peeled = [line.split()[0] for line in lines if line.endswith("^{}")]
+    direct = [line.split()[0] for line in lines if not line.endswith("^{}")]
+    return peeled[0] if peeled else direct[0]
+
+
+def require_remote_tag(remote, tag, sha, repo="."):
+    """The remote tag still names the frozen SHA, and that SHA is on the remote main branch.
+
+    The publisher's own checkout can hold a stale local tag, so this reads the remote
+    every time it is called: before signing and again before creating the draft.
+    """
+    commit = remote_tag_commit(remote, tag, repo)
+    require(commit == sha, f"remote tag {tag} points at {commit}, not the frozen source SHA")
+    main = git("-C", repo, "ls-remote", remote, "refs/heads/main").decode().split()
+    require(len(main) == 2 and re.fullmatch("[0-9a-f]{40}", main[0]) is not None,
+            "cannot read the remote main branch")
+    # Bind ancestry to the remote tip, not to a possibly stale local main.
+    git("-C", repo, "fetch", "--quiet", "--no-tags", remote, "+refs/heads/main:refs/remotes/release-main")
+    require(subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", sha, "refs/remotes/release-main"],
+                           capture_output=True).returncode == 0,
+            "frozen SHA is not on the remote main branch")
+
+
 def require_tag_on_main(tag, sha, repo="."):
     """The tag still names the frozen SHA, and that SHA is already on this protected branch.
 
@@ -582,6 +616,7 @@ def selection(env, *, resolve_tag=False):
     require(source_version == version, "tag does not match the frozen workspace version")
     if resolve_tag:
         require_tag_on_main(env["TAG"], sha)
+        require_remote_tag(env.get("RELEASE_REMOTE") or "origin", env["TAG"], sha)
     live_execution(repo, repo_id, run, attempt)
     return repo, repo_id, run, attempt, sha, version, contract
 
@@ -593,6 +628,8 @@ def prepare(env):
     key = trusted_key(git("show", f"{sha}:{PUBLIC_KEY}"))
     work = Path("release-work")
     work.mkdir()
+    (work / "approval.json").write_text(json.dumps(check_environment(env), sort_keys=True) + "\n",
+                                        encoding="utf-8")
     live = artifact_index(run_artifacts(repo, run), (*pair_names(attempt), manifest_name(attempt)))
     handoff = work / "handoff"
     download_artifact(repo, live[manifest_name(attempt)], handoff, {"stable-release-handoff.json"})
@@ -623,8 +660,10 @@ def confirm(env):
     require(candidate["source"] == repo and candidate["repositoryId"] == ident, "frozen source changed")
     run, attempt = candidate["runId"], candidate["runAttempt"]
     live_execution(repo, ident, run, attempt)
-    # Re-read the tag before the next upload: it must still name the frozen SHA on main.
+    # Re-read the tag before the next upload: it must still name the frozen SHA on main,
+    # both locally and on the remote (a deleted or moved remote tag must stop staging).
     require_tag_on_main(env["TAG"], candidate["sourceRevision"])
+    require_remote_tag(env.get("RELEASE_REMOTE") or "origin", env["TAG"], candidate["sourceRevision"])
     live = artifact_index(run_artifacts(repo, run), (*pair_names(attempt), manifest_name(attempt)))
     require(live == candidate["archives"], "accepted archive identities changed before signing/staging")
 
@@ -688,7 +727,19 @@ def draft_release(env, work, candidate):
     verify_downloaded(out, downloaded)
     verify_signature(downloaded, tag, key)
     with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+        approval = {"mode": "unknown", "singleOwner": False, "reviewers": [], "actor": ""}
+        approval_file = work / "approval.json"
+        if approval_file.is_file():
+            approval = json.loads(approval_file.read_text(encoding="utf-8"))
+        if approval["mode"] == "single-owner":
+            review_note = ("single-owner exception enabled by RELEASE_SINGLE_OWNER; reviewer "
+                           + ", ".join(str(r) for r in approval["reviewers"])
+                           + " may approve their own run, so this is a checkpoint, not independent review")
+        else:
+            review_note = "independent reviewer required; self-review prevented"
         print(f"### Verified draft {tag}\n"
+              f"\n- Approval: `{approval['mode']}` ({review_note})"
+              f"\n- Dispatch actor: `{approval['actor']}`"
               f"\n- Distribution: `{DIST_REPO}` (draft ID `{draft_id}`)"
               f"\n- Source revision: `{candidate['sourceRevision']}`"
               f"\n- Release gate: `{candidate['runId']}` attempt `{candidate['runAttempt']}`"
