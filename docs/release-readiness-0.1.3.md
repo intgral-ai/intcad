@@ -1876,3 +1876,28 @@ above are the only measured blockers in this pair.
 0 errors** (excluding `windows_icon_test.py`, which needs PowerShell and is covered on the
 Windows runners). `nightly_test.py` alone: 12 tests OK; it fails without `jq` only because
 the harness insists on that tool.
+
+**#236 is subsumed by #214; only its two tests are unique.** Measured against
+`origin/feat/int1503-mastra-release-skills` (`d4819c6a9d`):
+
+| #236 change | #214 head equivalent |
+|---|---|
+| `release.yml`: derived jobs hand their own package to `package_contents.py` | `release.yml:252-256`, unconditional `command += files` |
+| `package_contents.py`: record a wrapper as `format: covered` + `coveredBy` | `package_contents.py:747-760`, with `coveredBy` restricted to an inspected source artifact and agent facts inherited |
+| `release_content.py`: fail when the derived artifact is not covered | `release_content.py:303-336`: `unchecked` empty, `checked == expected` including digest mismatch, distribution and source digest matched |
+| `publish_verify_test.py` | #214 `7cf82b2e53` changed the same place |
+
+Merging #236 into `develop` before #214 would therefore collide with #214's rewritten
+`problems()` and resolve to the same semantics. The unique contribution is two tests that
+assert the derived-coverage failure; #214 has no test for that path. Recommended: a
+tests-only PR rebased after #214. Comment posted on the PR with these references.
+
+**The promotion commit applies cleanly onto #214's tree.** `git cherry-pick c929f797e1`
+(the single promotion commit: version 0.1.3, notes, folded format 51) onto `d4819c6a9d`
+succeeds with no conflict, and the result has `version = "0.1.3"` and
+`docs/release-notes-0.1.3.md`. So the rebase after #214 merges is not a risk.
+
+**Open scope question for the owner, recorded rather than assumed.** `#227` (intcad-cli paid
+authority, based on #224) is not draft. The release notes and the desktop delivery do not
+mention it. Asked the Login Agent for an explicit "required for 0.1.3 / not required"; until
+then the candidate scope is #214 + #224 only, matching the notes.
