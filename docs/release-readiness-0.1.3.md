@@ -2064,3 +2064,19 @@ which is the value the 280 s entries need.
 The refreshed chain also compiles: `cargo check -p solidcraft --profile ci --locked` on the
 current-head tree returned **exit 0** (`Finished ci profile … in 1m 45s`), with
 `CARGO_TARGET_DIR` outside the worktree.
+
+**Release notes now match the widened scope.** The promotion branch carries a second commit,
+`fa6582f8c9` (local, pushed together with the rebase to avoid a superseded CI cycle), which adds
+two bullets to `docs/release-notes-0.1.3.md`:
+
+- the CLI charges its own paid work — a DFM validation or headless MCP tool call is admitted only
+  with the signed-in account's authorization, settles once, publishes nothing after the deadline,
+  and a refused or expired run leaves a refusal report instead of results (measured: #227's
+  staging/refusal behaviour);
+- desktop operations that spend an authorization declare a safe-stop bound that fits one lease,
+  an operation that cannot fit is refused before it starts, and Windows and macOS count sleep
+  toward the deadline (measured: #233's `UnsafeToStart` on an unverified or short bound, #235's
+  suspend-inclusive clocks).
+
+Nothing else in the promotion commit changed: version stays `0.1.3`, `crates/doc/src/format/pending/`
+still holds only its README, and the notes path is still the exact one the publisher accepts.
