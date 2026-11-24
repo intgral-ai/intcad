@@ -2379,3 +2379,17 @@ final crate set. The rebase step must therefore **regenerate `Cargo.lock` after 
 include it in the version commit**, then prove `cargo check --profile ci --locked` (or at least
 `cargo metadata --locked`) before pushing the promotion branch. Otherwise the formal gate's own
 `--locked` builds fail after the two-hour wait.
+
+**The lock fix is exactly two lines, and the composed final tree compiles.** Regenerating the lock
+on the simulated final tree changed only the two new members:
+
+```
+Cargo.lock
+  solidcraft-account-native  0.1.2 → 0.1.3
+  solidcraft-suspend-clock   0.1.2 → 0.1.3
+```
+
+After that, `cargo metadata --locked` passes, and `cargo check -p solidcraft --profile ci --offline`
+compiled **475 crates** and finished in **2m 50s** (exit 0). So the endgame tree — `develop` +
+#214 + #224 + the tag-push gate change + the paid-authority integration + both promotion commits —
+builds once that lock update rides with the version commit, which is the exact step recorded above.
