@@ -2393,3 +2393,23 @@ After that, `cargo metadata --locked` passes, and `cargo check -p solidcraft --p
 compiled **475 crates** and finished in **2m 50s** (exit 0). So the endgame tree — `develop` +
 #214 + #224 + the tag-push gate change + the paid-authority integration + both promotion commits —
 builds once that lock update rides with the version commit, which is the exact step recorded above.
+
+## 14. Second review of the tag-push gate (PR #239, head `7db657fa61`)
+
+The PR added the two pieces my first review did not ask for, and they are both necessary:
+
+- `release-gate.yml`: the handoff upload step now also runs for
+  `github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')`. Without it a tag run would
+  pass every check and upload **no** `stable-release-handoff`, and the publisher would have nothing
+  to read. The step still requires `needs.candidate.outputs.context == 'release-gate'`, so a
+  diagnostic dispatch never uploads one.
+- `release_handoff.gate_candidate`: accepts a `push` payload only when
+  `payload.ref == refs/tags/v<version>` and the repository id matches, i.e. the gate itself records
+  which tag it was gating.
+- The commit that tolerated an omitted `head_branch` was reverted
+  (`833431c934` → `01acc31291`) after the `v0.1.3-preflight` measurement, and the strict
+  `head_branch == tag` check stays, with the measurement cited in the code comment.
+
+Merge order chosen to minimise stale CI: **#214 → #224 → #239 → paid-authority integration**
+(#214 is 15/20 done at 19:01Z; #239 is a short affected-mode run). #239 merged before #214 would
+throw away #214's nearly finished full run and force a rebase plus another two hours.
