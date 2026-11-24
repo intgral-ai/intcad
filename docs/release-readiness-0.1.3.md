@@ -1274,7 +1274,8 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   (`apps/solidcraft-cli/tests/script_roundtrip.rs:660`) with
   `error: REPORT_MISMATCH: a different terminal report already exists for this run`, which
   looks like leftover run state rather than a product regression; the owner must decide
-  whether the test's isolation is wrong or the runner state must be cleaned. Two other failures in that job are
+  whether the test's isolation is wrong or the runner state must be cleaned. Filed with
+  the logs and the owner question as [#225](https://github.com/intgral-ai/intcad/issues/225). Two other failures in that job are
   listed known failures (SMLib variable fillet `Unsupported`, the dialog variable round
   status 1001). The `ci` verifier then failed with `rust: real job result is not success`
   and `rust: missing receipt`. Until `ci` is green at a reviewed `develop`, no release-gate
