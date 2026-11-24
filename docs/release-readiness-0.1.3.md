@@ -2737,3 +2737,26 @@ route and the suspend-clock exception, without splitting the skill. Their local
 local head `3c00b693e6` (not pushed yet). Verification is the pushed head's own `ci` plus my
 `xtask skills` run on the composed tree after the final `develop` merge; the fix must not be lost
 when `develop` (with #238/#239) is merged back in.
+
+## 20. #238 landed directly on `develop`; #214 was rebased and its CI restarted
+
+PR #238 was merged without waiting for the planned turn:
+
+```
+develop  085675557d → 97236b5dd7   (#238 squash: new projects' Spec at the root, chat without a project)
+```
+
+Under the strict up-to-date rule that made #214 (`318b87cc94`) stale, so its in-flight run
+(45463466599, 34/38 with 0 failures) could no longer authorize a merge. The branch was updated
+instead of bypassing anything:
+
+```
+merge origin/develop (97236b5dd7) into #214            → clean, no conflicts
+new head 22dce5cb48 "Merge develop after #238"
+repository checks on that tree: skills OK, lists OK, licences --check OK, i18n --check OK
+new CI run 45488557706 (pending), the old run is cancelled by the branch's concurrency group
+```
+
+Cost: one extra full CI (~2 h). No gate was skipped and no admin bypass was used. The lesson for
+the remaining steps: **no PR may be merged out of turn while a longer PR's CI is running**, or the
+longer run is paid for twice.
