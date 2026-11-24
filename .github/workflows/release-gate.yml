@@ -14,6 +14,12 @@ on:
     branches: [main]
   merge_group:
     types: [checks_requested]
+  push:
+    # A stable tag is the formal post-promotion gate: the PR gate runs on the synthetic
+    # merge ref, which never becomes a main commit, so the promoted commit is gated by
+    # the maintainer's tag instead. Branch pushes stay out so merges do not start the
+    # full matrix.
+    tags: ["v*"]
   workflow_dispatch:
   workflow_call:
 
@@ -50,6 +56,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           MERGE_BASE: ${{ github.event.merge_group.base_ref }}
           MERGE_HEAD: ${{ github.event.merge_group.head_ref }}
+          REF: ${{ github.ref }}
         run: python3 -I scripts/ci/release_candidate.py --out "$GITHUB_OUTPUT"
 
   ci:

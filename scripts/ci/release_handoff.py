@@ -97,10 +97,19 @@ def verify_repository(metadata, configured, mode):
             + ("" if mode != "private" else " (the private client must not be a fork)"))
 
 
-def verify_execution(run, jobs, run_id, attempt, repo_id=None):
-    # Do not substitute run.head_sha for the actual PR merge checkout.
+def verify_execution(run, jobs, run_id, attempt, repo_id=None, mode="candidate", sha=None, tag=None):
+    # A candidate run is a PR/merge-group gate. A tag run is the formal post-promotion
+    # gate that a maintainer's stable tag started at the promoted main commit; a manual
+    # dispatch is diagnostic and never stands in.
+    if mode == "tag":
+        require(sha is not None and tag is not None and run.get("event") == "push"
+                and run.get("head_branch") == tag and run.get("head_sha") == sha,
+                "tag evidence is not a push of this tag at this commit")
+    else:
+        require(run.get("event") in {"pull_request", "merge_group"},
+                "candidate evidence is not a pull-request or merge-group run")
     require(run.get("id") == run_id and run.get("run_attempt") == attempt
-            and run.get("path") == WORKFLOW and run.get("event") in {"pull_request", "merge_group"}
+            and run.get("path") == WORKFLOW
             and run.get("status") == "completed" and run.get("conclusion") == "success",
             "the current run attempt is not a successful formal release-gate run")
     if repo_id is not None:
@@ -265,9 +274,11 @@ def stage(root, out, version, sha, contract, accepted, *, attempt=None, distribu
         shutil.move(path, out / asset)
 
 
-def make_manifest(repo, run, attempt, sha, version, contract, distribution, archives, descriptors):
+def make_manifest(repo, run, attempt, sha, version, contract, distribution, archives, descriptors,
+                  mode="candidate", ref=""):
     return dict(schemaVersion=1, repositoryId=repo, workflow=WORKFLOW, runId=run, runAttempt=attempt,
                 sourceRevision=sha, version=version, contractDigest=contract, distribution=distribution,
+                mode=mode, ref=ref,
                 packages={
                     identity: {
                         "archives": {name: archives[name] for name in pair(identity, attempt)},
@@ -279,6 +290,10 @@ def make_manifest(repo, run, attempt, sha, version, contract, distribution, arch
 def verify_manifest(data, repo, run, attempt, sha, version, contract, archives):
     distribution = data.get("distribution")
     require(distribution in ("native", "mastra-agent"), "unknown or unapproved distribution")
+    mode = data.get("mode")
+    require(mode in ("candidate", "tag"), "unknown handoff mode")
+    expected_ref = f"refs/tags/v{version}" if mode == "tag" else ""
+    require(data.get("ref") == expected_ref, "handoff ref does not match its mode")
     packages = data.get("packages")
     require(isinstance(packages, dict) and set(packages) == set(TARGETS), "missing exact manifest pairs")
     require(set(archives) == set(pair_names(attempt)), "live archive names do not match the exact attempt")
@@ -288,8 +303,9 @@ def verify_manifest(data, repo, run, attempt, sha, version, contract, archives):
         require(isinstance(item, dict) and set(item) == set(DESCRIPTORS)
                 and all(matches(HEX, value) for value in item.values()), f"{identity}: invalid accepted descriptor digests")
         descriptors[identity] = item
-    require(data == make_manifest(repo, run, attempt, sha, version, contract, distribution, archives, descriptors),
-            "manifest does not match the approved source, exact attempt or live archive identities")
+    require(data == make_manifest(repo, run, attempt, sha, version, contract, distribution, archives, descriptors,
+                                 mode=mode, ref=data.get("ref", "")),
+            "manifest does not match the approved source, exact attempt, mode or live archive identities")
     return descriptors
 
 
@@ -483,7 +499,15 @@ def gate_record(env):
                     f"{name}: downloaded archive does not match the assessed descriptors")
     distribution = env["DISTRIBUTION"]
     require(distribution in ("native", "mastra-agent"), "unexpected distribution after gate evaluation")
-    manifest = make_manifest(repo_id, run, attempt, sha, version, contract, distribution, archives, descriptors)
+    mode, ref = "candidate", ""
+    if env.get("GITHUB_EVENT_NAME") == "push":
+        # A maintainer pushed a stable release tag: the formal post-promotion gate.
+        expect = f"refs/tags/v{version}"
+        require(env.get("GITHUB_REF") == expect,
+                f"push gate is only formal for {expect}, not {env.get('GITHUB_REF')}")
+        mode, ref = "tag", expect
+    manifest = make_manifest(repo_id, run, attempt, sha, version, contract, distribution, archives, descriptors,
+                             mode=mode, ref=ref)
     Path("stable-release-handoff.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     with open(env["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         print("eligible=true", file=output)
@@ -584,12 +608,12 @@ def check_environment(env):
             "protection": protection_digest(environment, policies)}
 
 
-def live_execution(repo, repo_id, run, attempt):
+def live_execution(repo, repo_id, run, attempt, mode="candidate", sha=None, tag=None):
     prefix = f"repos/{repo}/actions/runs/{run}"
     jobs = [job for page in pages(f"{prefix}/attempts/{attempt}/jobs") for job in page["jobs"]]
     # Use the latest run endpoint after reading attempt-scoped jobs. An earlier
     # attempt no longer authorizes signing once a rerun has started.
-    verify_execution(api(prefix), jobs, run, attempt, repo_id)
+    verify_execution(api(prefix), jobs, run, attempt, repo_id, mode=mode, sha=sha, tag=tag)
 
 
 # Every executable input the gate and package jobs use. Comparing the whole trees,
@@ -683,7 +707,6 @@ def selection(env, *, resolve_tag=False):
     if resolve_tag:
         require_tag_on_main(env["TAG"], sha)
         require_remote_tag(repo, env["TAG"], sha)
-    live_execution(repo, repo_id, run, attempt)
     return repo, repo_id, run, attempt, sha, version, contract
 
 
@@ -700,6 +723,12 @@ def prepare(env):
     handoff = work / "handoff"
     download_artifact(repo, live[manifest_name(attempt)], handoff, {"stable-release-handoff.json"})
     manifest = parse_json((handoff / "stable-release-handoff.json").read_bytes())
+    # The mode decides which kind of run may have produced this handoff; verify the
+    # live run only after reading it, so a candidate run cannot stand for a
+    # post-promotion run (or the reverse).
+    mode = manifest.get("mode")
+    require(mode in ("candidate", "tag"), "unknown handoff mode")
+    live_execution(repo, ident, run, attempt, mode, sha, "v" + version)
     descriptors = verify_manifest(manifest, ident, run, attempt, sha, version, contract,
                                   {name: live[name] for name in pair_names(attempt)})
     distribution = manifest["distribution"]
@@ -716,7 +745,7 @@ def prepare(env):
     (work / "acceptance-key.pub").write_text(key, encoding="ascii")
     (work / "candidate.json").write_text(json.dumps(dict(
         source=repo, repositoryId=ident, runId=run, runAttempt=attempt, sourceRevision=sha, version=version,
-        notesSha256=sha256(notes.encode()), archives=live,
+        mode=mode, notesSha256=sha256(notes.encode()), archives=live,
     )) + "\n", encoding="utf-8")
 
 
@@ -725,7 +754,8 @@ def confirm(env):
     repo, ident = authorize(env)
     require(candidate["source"] == repo and candidate["repositoryId"] == ident, "frozen source changed")
     run, attempt = candidate["runId"], candidate["runAttempt"]
-    live_execution(repo, ident, run, attempt)
+    live_execution(repo, ident, run, attempt, candidate.get("mode", "candidate"),
+                   candidate["sourceRevision"], "v" + candidate["version"])
     # Re-read the tag before the next upload: it must still name the frozen SHA on main,
     # both locally and on the remote (a deleted or moved remote tag must stop staging).
     require_tag_on_main(env["TAG"], candidate["sourceRevision"])
