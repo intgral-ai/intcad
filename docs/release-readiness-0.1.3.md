@@ -1996,3 +1996,24 @@ four in-scope PRs do not break each other at compile time.
 Each was cancelled by a newer push on the same branch, so no run of theirs is evidence for a
 merge. Every in-scope PR needs a fresh full CI on the SHA that will actually merge; the five
 cycles in §9 are therefore the real budget, not an upper bound.
+
+**The paid bounds fit one 300 s lease (measured in the chain tree).**
+
+```
+crates/account-native/src/http.rs:40   MAX_ABSOLUTE_GRANT_LEASE = 300 s (contract rev4)
+apps/solidcraft/src/account.rs:807     Control/Mcp(Headless,GuiBridge)/Dfm/Harness = 280 s
+apps/solidcraft/src/account.rs:805     Review / ReviewPanel = 600 s execution ceiling
+crates/engine/src/validation/mod.rs:128-129   MAX_EXECUTION = 600 s, MAX_QUEUE_ADMISSION = 300 s
+crates/ui-egui/src/dfm_review_tests.rs:1552-1554
+    review_stop_at_ms(now, 600 s ceiling, Some(300 s remaining)) == now + 300 s
+```
+
+So the five 280 s entries fit the 300 s lease with 20 s of admission transit, and Review is not
+refused for declaring 600 s: its run window is the earlier of the 600 s ceiling and the remaining
+grant, which the test above pins to 300 s under a rev4 lease. This is the property the owner
+asked for ("every paid capability stays usable"), and it is asserted by tests in the chain, not
+inferred from prose.
+
+One documentation defect is worth fixing while #233 is rebased: its
+`docs/account/control-safe-stop-bound.md` calls the 300 s lease `AUTHORIZATION_TTL_SECONDS`,
+a name that exists nowhere in the code; the actual constant is `MAX_ABSOLUTE_GRANT_LEASE`.
