@@ -2957,3 +2957,21 @@ So the gate's `Format and repository checks` step is expected to pass on the fir
 xtask test binary. The full `cargo xtask test` suite and the compile/clippy pass on this same tree
 are still running locally; platform-only work (Node/npm agent packaging, Windows/macOS builds)
 stays with CI by design and is not replaced by local checks.
+
+**The release contract's regression tests pass on the final Integration tree.** The owner's rule was
+to prove the contract closes before spending hours on the formal gate; run on the candidate
+(`eade4198c2`) rather than on the branch that introduced each change:
+
+```
+packaging/tests/publish_verify_test.py   Ran 32 tests  OK   (tag push formal; dispatch diagnostic;
+                                                             tag handoff names its tag; tag-mode refuse list)
+scripts/ci/test_release_candidate.py     Ran 14 tests  OK   (stable tag push is the formal candidate;
+                                                             branches/prereleases refused; dispatch stays diagnostic)
+scripts/ci/test_gate.py                  Ran 74 tests  OK
+scripts/ci/test_release_content.py       Ran 50 tests  OK (skipped=11)
+scripts/ci/test_package_contents.py      Ran 29 tests  OK
+```
+
+So the pieces that decide whether the publisher may consume a run — event/mode binding, tag-on-main,
+manifest mode/ref, exact attempt, 14 pairs and the covered-wrapper producer side — are exercised on
+the tree that will actually merge.
