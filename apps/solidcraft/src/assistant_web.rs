@@ -764,7 +764,7 @@ impl AssistantWeb {
             Ok(view) => {
                 #[cfg(target_os = "linux")]
                 {
-                    use gtk::prelude::WidgetExt;
+                    use gtk::prelude::WidgetExtManual;
                     if let Some(window) = gtk_window.as_ref() {
                         let remapped = self.gtk_remapped.clone();
                         let repaint = ctx.clone();
