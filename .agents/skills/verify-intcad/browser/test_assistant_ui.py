@@ -50,6 +50,48 @@ def actions(page):
     return page.evaluate("window.assistantFixture.actions.splice(0)")
 
 
+def test_centred_composer_uses_same_scale_across_agent_types(assistant):
+    assistant.set_viewport_size({"width": 520, "height": 700})
+    agents = [
+        {"id": "fixture", "name": "Fixture", "detail": "", "hint": None},
+        {"id": "built-in", "name": "Built-in", "detail": "", "hint": None},
+    ]
+    connect = {"plans": [], "keys": [], "custom": [], "login": None, "problem": None,
+               "error": None, "keySaves": 0, "dates": {}, "connected": True}
+    root = assistant.locator("html")
+    box = assistant.get_by_role("textbox", name="Message")
+    show(assistant, centre=600, agents=agents, agent="fixture")
+    expect(assistant.locator("html.centre:not([data-sizes])")).to_have_count(1)
+    box.fill("Inspect this")
+    expect(box).to_be_focused()
+
+    def sizing():
+        return box.evaluate("""input => ({
+            root: getComputedStyle(document.documentElement).fontSize,
+            input: getComputedStyle(input).fontSize,
+            height: input.closest('[data-slot="composer-box"]').getBoundingClientRect().height,
+        })""")
+
+    external = sizing()
+    # Acknowledge agent selection through the desktop state bridge while the draft has focus.
+    show(assistant, centre=600, agents=agents, agent="built-in", connect=connect)
+    expect(assistant.locator('html.centre[data-sizes="mastra"]')).to_have_count(1)
+    expect(box).to_have_value("Inspect this")
+    expect(box).to_be_focused()
+    built_in = sizing()
+
+    assistant.set_viewport_size({"width": 380, "height": 700})
+    show(assistant, agents=agents, agent="fixture")
+    expect(assistant.locator("html:not(.centre):not([data-sizes])")).to_have_count(1)
+    expect(root).to_have_css("font-size", "20px")
+
+    assert external["root"] == "16px", external
+    assert built_in["root"] == "16px", built_in
+    assert external["input"] == "14px", external
+    assert built_in["input"] == "14px", built_in
+    assert abs(external["height"] - built_in["height"]) <= 1, (external, built_in)
+
+
 @pytest.mark.parametrize(("choice", "allow", "outcome"), [
     ("Deny", False, "Denied"), ("Allow once", True, "Allowed"), ("Always allow", "always", "Allowed"),
 ])

@@ -27,14 +27,13 @@ body,
   background: transparent;
 }
 
-/* Mastra's sizes are for a browser page at arm's length from a wide column; in a narrow panel
-   beside a model they read small. Every size is in rem, so this is the one place they scale.
-   With the built-in agent the page keeps Mastra's own sizes (main.tsx sets `data-sizes`): its
-   panel is laid out as Mastra's own pages are. */
+/* Enlarge Mastra's rem sizes in the side panel for external agents. The built-in agent keeps
+   Mastra's own sizes (`data-sizes`), as does the bottom-centre composer for every agent. */
 html {
   font-size: 125%;
 }
 
+html.centre,
 html[data-sizes='mastra'] {
   font-size: 100%;
 }
