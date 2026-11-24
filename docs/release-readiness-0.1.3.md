@@ -1312,7 +1312,15 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   empty-region mismatches fell from **494 to 31** of 1300. The remaining 31 are a 1-px band
   along the **top-right rounded arc** (`(783,472)`, `(784,472)`, `(786,473)`, `(789,474)`,
   `(792,476)` …), all still `(13,13,13)` where CAD should show: the arc's partially painted
-  pixels are inside the mask. Not a pass.
+  pixels are inside the mask.
+  **Third measured run — PASSES the settled-state native check** (binary
+  `2058a119a8927041efd3ba2a51fd5e8a34c4421f8af0b6d0a389a0a587a5b521` from `9903e8e788`,
+  same VM/geometry/state, `SOLIDCRAFT_ASSISTANT_SHAPE_TRACE=1`): **0 of 1300** empty pixels
+  differ from the hidden reference, `(802,639)` = `(28,28,28)` and `(800,473)` =
+  `(133,133,133)`, and the trace shows the native child shaped for the page report
+  (`native=650x171 page=Some((520.0, 136.0, 2)) fits=true rectangles=Some(35) shaped=true`).
+  Still NOT measured: the expand→click→collapse transition, 100%/150%, popup click and
+  dismissal, first-key focus, click-through outside the shape, and wide↔narrow resize.
 - **#221 composer sizing — local browser fix reviewed, not landed.** `b002647acb` held the
   centred input at 14 px and the composer at 86 px for both agent modes in the same browser
   viewport. Independent Spec and Quality review approved; controller rerun had 12 passes and
