@@ -43,6 +43,16 @@ struct PageShape {
     surfaces: Vec<[f64; 12]>,
 }
 
+#[cfg(target_os = "linux")]
+impl PageShape {
+    fn decode(value: serde_json::Value, bytes: usize) -> Option<Self> {
+        if bytes > 4096 {
+            return None;
+        }
+        serde_json::from_value::<Self>(value).ok().filter(|report| report.surfaces.len() <= 8)
+    }
+}
+
 /// The page's own address: a scheme only this web view serves, from the files below.
 const SCHEME: &str = "openskyfall-assistant";
 const PAGE: &str = "openskyfall-assistant://localhost/index.html";
@@ -586,7 +596,11 @@ impl AssistantWeb {
     }
 
     fn receive(&mut self, solve: &mut SolveApp, ctx: &egui::Context, message: &str) {
-        let value = serde_json::from_str::<serde_json::Value>(message).unwrap_or_default();
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(message) else {
+            #[cfg(target_os = "linux")]
+            self.set_gtk_shape(None, ctx);
+            return;
+        };
         match value.get("type").and_then(serde_json::Value::as_str) {
             // The page (re)started: it knows nothing yet.
             Some("ready") => {
@@ -598,15 +612,8 @@ impl AssistantWeb {
                 }
             }
             #[cfg(target_os = "linux")]
-            Some("painted-footprint") if message.len() <= 4096 => {
-                if let Ok(report) = serde_json::from_value::<PageShape>(value)
-                    && report.surfaces.len() <= 8
-                    && self.gtk_shape.as_ref() != Some(&report)
-                {
-                    self.gtk_shape = Some(report);
-                    self.applied_shape = None;
-                    ctx.request_repaint();
-                }
+            Some("painted-footprint") => {
+                self.set_gtk_shape(PageShape::decode(value, message.len()), ctx);
             }
             Some("focus") => self.focused = value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false),
             Some("log") => note(&value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(600).collect::<String>()),
@@ -615,6 +622,24 @@ impl AssistantWeb {
                     note(&format!("refused: {reason}"));
                 }
             }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_gtk_shape(&mut self, report: Option<PageShape>, ctx: &egui::Context) {
+        use gtk::prelude::WidgetExt;
+        if report.as_ref().is_none_or(|p| p.popup.is_some() || p.surfaces.is_empty())
+            && let Some(native) = self.gtk_window.as_ref().and_then(WidgetExt::window)
+        {
+            // Remove the old shape even when placement is about to be deferred. Repeated
+            // popup requests are intentional; a previous script evaluation might not have run.
+            native.shape_combine_region(None, 0, 0);
+            native.display().flush();
+        }
+        if self.gtk_shape != report || report.as_ref().is_some_and(|p| p.popup.is_some()) {
+            self.gtk_shape = report;
+            self.applied_shape = None;
+            ctx.request_repaint();
         }
     }
 
@@ -888,13 +913,8 @@ impl AssistantWeb {
         let report = self.gtk_shape.as_ref().filter(|_| centred);
         let popup = report.and_then(|report| report.popup);
         let region = report
-            .filter(|p| {
-                p.popup.is_none()
-                    && (p.width * zoom - f64::from(width)).abs() <= zoom + 1.0
-                    && (p.height * zoom - f64::from(height)).abs() <= zoom + 1.0
-            })
-            .map(|p| shape::spans(&p.surfaces, zoom, width, height))
-            .filter(|spans| !spans.is_empty())
+            .filter(|p| p.popup.is_none() && shape::matches_allocation(p.width, p.height, zoom, width, height))
+            .and_then(|p| shape::mask(&p.surfaces, zoom, width, height))
             .map(|spans| {
                 let rectangles: Vec<_> = spans.into_iter().map(|[x, y, w, h]| gtk::cairo::RectangleInt::new(x, y, w, h)).collect();
                 gtk::cairo::Region::create_rectangles(&rectangles)
@@ -1117,6 +1137,41 @@ mod tests {
         assert_eq!(shape::spans(&surfaces, 2.0, 6, 6), [[0, 0, 6, 6]]);
         assert!(shape::spans(&surfaces, f64::NAN, 6, 6).is_empty());
         assert!(shape::spans(&surfaces[1..], 1.0, 6, 6).is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_allocation_allows_one_css_pixel_of_rounding_not_two() {
+        assert!(shape::matches_allocation(520., 137., 1.25, 650, 171));
+        assert!(shape::matches_allocation(519., 137., 1.25, 650, 171));
+        assert!(!shape::matches_allocation(520., 135., 1.25, 650, 171));
+        assert!(!shape::matches_allocation(518.4, 137., 1.25, 650, 171));
+        assert!(!shape::matches_allocation(520., 137., f64::NAN, 650, 171));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_empty_report_keeps_the_glow_and_clipped_edge_covers_its_corners() {
+        assert!(shape::mask(&[], 1., 100, 100).is_none(), "the glow has the whole allocation");
+        let header = [[0., 20., 100., 40., 16., 16., 16., 16., 0., 0., 0., 0.]];
+        let spans = shape::mask(&header, 1., 100, 100).unwrap();
+        assert!(
+            spans.iter().any(|&[x, y, width, height]| x == 0 && width == 100 && y + height == 40),
+            "a square clipped edge keeps both bottom corners"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_rejects_oversized_or_malformed_reports() {
+        let surface = serde_json::json!([0, 0, 10, 10, 2, 2, 2, 2, 0, 0, 0, 0]);
+        let mut valid = serde_json::json!({"width":10,"height":10,"popup":null,"surfaces":[surface.clone()]});
+        assert!(PageShape::decode(valid.clone(), 512).is_some());
+        assert!(PageShape::decode(valid.clone(), 4097).is_none());
+        valid["surfaces"] = serde_json::json!(vec![surface; 9]);
+        assert!(PageShape::decode(valid.clone(), 1024).is_none());
+        valid["surfaces"] = serde_json::json!([[0., 0., 10., 10., f64::NAN, 2., 2., 2., 0., 0., 0., 0.]]);
+        assert!(PageShape::decode(valid, 512).is_none());
     }
 
     fn get_with(path: &str, pictures: &Pictures) -> Response<Cow<'static, [u8]>> {

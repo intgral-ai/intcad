@@ -92,6 +92,91 @@ def test_centred_composer_uses_same_scale_across_agent_types(assistant):
     assert abs(external["height"] - built_in["height"]) <= 1, (external, built_in)
 
 
+@pytest.fixture
+def x11_shape_page(page, site):
+    page.set_viewport_size({"width": 520, "height": 300})
+    page.add_init_script(path=HERE / "host.js")
+    page.add_init_script("window.__assistantX11Shape = true;")
+    page.goto(site)
+    expect(page.get_by_role("textbox", name="Message")).to_be_visible()
+    show(page, centre=300, items=[{"kind": "notice", "text": "Status", "error": True}])
+    return page
+
+
+FOOTPRINT = """window.assistantFixture.actions.filter(action => action.type === 'painted-footprint')"""
+
+
+def test_x11_shape_leaves_room_for_the_busy_glow(x11_shape_page):
+    page = x11_shape_page
+    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.surfaces.length === 2", timeout=3000)
+    show(page, centre=300, state="busy")
+    ring = page.locator('[data-slot="composer-ring"][data-busy="true"]')
+    expect(ring).to_have_count(1)
+    assert ring.evaluate("el => getComputedStyle(el).boxShadow") != "none"
+    # No mask means the entire existing native viewport, including the glow, can paint.
+    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.surfaces.length === 0", timeout=3000)
+    show(page, centre=300)
+    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.surfaces.length > 0", timeout=3000)
+
+
+def test_x11_shape_retries_menu_ack_and_fails_open(x11_shape_page):
+    page = x11_shape_page
+    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.surfaces.length === 2", timeout=3000)
+    page.evaluate("""() => {
+      const send = window.ipc.postMessage;
+      window.ipc.postMessage = raw => {
+        const message = JSON.parse(raw);
+        if (message.type === 'painted-footprint' && message.popup) {
+          window.ipc.postMessage = send;
+          throw Error('one lost popup request');
+        }
+        send(raw);
+      };
+    }""")
+    edits = page.get_by_role("button", name="modeAsk", exact=True)
+    edits.click()
+    menu = page.locator('[role="menu"]')
+    menu.wait_for(state="attached")
+    token = page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.popup", timeout=3000).json_value()
+    expect(menu).to_have_attribute("data-centre-wait", "")
+    # Drop one request above, then withhold the first ack. The same token must be retried.
+    page.wait_for_function(f"token => {FOOTPRINT}.filter(action => action.popup === token).length >= 2", arg=token, timeout=3000)
+    page.evaluate("token => window.__assistantX11Unmasked(token)", token)
+    expect(menu).not_to_have_attribute("data-centre-wait", "")
+    page.keyboard.press("Escape")
+    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.popup === null", timeout=3000)
+
+    edits.click()
+    menu.wait_for(state="attached")
+    next_token = page.wait_for_function(f"token => {FOOTPRINT}.at(-1)?.popup > token && {FOOTPRINT}.at(-1).popup",
+                                       arg=token, timeout=3000).json_value()
+    page.evaluate("token => window.__assistantX11Unmasked(token)", token)
+    expect(menu).to_have_attribute("data-centre-wait", "")
+    # No ack for the new token: the portal must still become interactive.
+    expect(menu).not_to_have_attribute("data-centre-wait", "", timeout=4000)
+    expect(menu).to_have_css("pointer-events", "auto")
+    assert page.evaluate(f"token => {FOOTPRINT}.filter(action => action.popup === token).length", next_token) >= 2
+
+
+def test_x11_shape_samples_square_clipped_edge_and_skips_unresolved_radii(x11_shape_page):
+    page = x11_shape_page
+    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.surfaces.length === 2", timeout=3000)
+    page.evaluate("""() => {
+      const surface = document.querySelector('[data-slot="composer-header-surface"]');
+      surface.style.borderRadius = '20px';
+      surface.parentElement.style.height = '20px';
+      window.dispatchEvent(new Event('resize'));
+    }""")
+    footprint = page.evaluate(f"() => {FOOTPRINT}.at(-1)")
+    assert footprint["surfaces"][0][4:] == [20, 20, 20, 20, 0, 0, 0, 0], footprint
+    page.evaluate("""() => {
+      document.querySelector('[data-slot="composer-header-surface"]').style.borderRadius = 'calc(20% + 2px)';
+      window.dispatchEvent(new Event('resize'));
+    }""")
+    footprint = page.evaluate(f"() => {FOOTPRINT}.at(-1)")
+    assert len(footprint["surfaces"]) == 1 and None not in footprint["surfaces"][0], footprint
+
+
 @pytest.mark.parametrize(("choice", "allow", "outcome"), [
     ("Deny", False, "Denied"), ("Allow once", True, "Allowed"), ("Always allow", "always", "Allowed"),
 ])

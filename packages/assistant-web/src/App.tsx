@@ -2812,6 +2812,18 @@ function paintedFootprint(element: HTMLElement) {
   const surfaces = Array.from(
     element.querySelectorAll<HTMLElement>('[data-slot="composer-ring"], [data-slot="composer-header-surface"]'),
   );
+  // CSS filter/shadow raster bounds aren't exposed by the DOM. Keep the allocation unshaped
+  // while they paint, including their fade-out, rather than trimming the glow to its border box.
+  if (surfaces.some(surface => {
+    const style = getComputedStyle(surface);
+    if (style.boxShadow !== 'none' || style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0) return true;
+    if (surface.dataset.busy === 'true' && !matchMedia('(prefers-reduced-motion: reduce)').matches) return true;
+    const box = surface.querySelector('[data-slot="composer-box"]');
+    if (!box) return false;
+    const spotlight = getComputedStyle(box, '::before');
+    return spotlight.filter !== 'none' && spotlight.display !== 'none' &&
+      (Number(spotlight.opacity) > 0 || Number(style.getPropertyValue('--composer-spotlight-strength')) > 0);
+  })) return [];
   return surfaces.flatMap(surface => {
     const rect = surface.getBoundingClientRect();
     const style = getComputedStyle(surface);
@@ -2822,14 +2834,20 @@ function paintedFootprint(element: HTMLElement) {
     const bottom = header && clip ? Math.min(clip.bottom, rect.bottom) : rect.bottom;
     if (bottom <= rect.top) return [];
     const radius = (value: string) => {
-      const [x, y = x] = value.split(' ');
-      const resolve = (length: string, extent: number) =>
-        length.endsWith('%') ? parseFloat(length) * extent / 100 : parseFloat(length);
+      const [x, y = x] = value.trim().split(/\s+/);
+      const resolve = (length: string, extent: number) => {
+        if (!/^(?:\d+\.?\d*|\.\d+)(?:px|%)$/.test(length)) return NaN;
+        return length.endsWith('%') ? parseFloat(length) * extent / 100 : parseFloat(length);
+      };
       return [resolve(x, rect.width), resolve(y, rect.height)];
     };
-    return [[rect.left, rect.top, rect.right, bottom,
+    const radii = [
       ...radius(style.borderTopLeftRadius), ...radius(style.borderTopRightRadius),
-      ...radius(style.borderBottomRightRadius), ...radius(style.borderBottomLeftRadius)]];
+      ...radius(style.borderBottomRightRadius), ...radius(style.borderBottomLeftRadius),
+    ];
+    if (!radii.every(Number.isFinite)) return [];
+    if (bottom < rect.bottom) radii.fill(0, 4);
+    return [[rect.left, rect.top, rect.right, bottom, ...radii]];
   });
 }
 
@@ -2937,6 +2955,8 @@ function Centre({
     let nativePopup: number | null = null;
     let nextPopup = 0;
     let unmasked: number | null = null;
+    let popupSince = 0;
+    let retryPopup = 0;
     let sentFootprint = '';
     // The host resizes the native view a frame or two after it is asked, so a view resized while
     // something animates jumps. Taller is asked at once, so what opens has its room as it is drawn;
@@ -2973,10 +2993,16 @@ function Centre({
       for (const header of element.querySelectorAll(HEADERS)) header.toggleAttribute('data-centre-wait', growing && topOf(header) < -1);
       const portals = document.querySelectorAll(native.__assistantX11Shape ? NATIVE_PORTALS : OPEN);
       if (native.__assistantX11Shape) {
-        nativePopup = menu || portals.length ? (nativePopup ?? ++nextPopup) : null;
+        if (!menu && !portals.length) nativePopup = null;
+        else if (nativePopup === null) {
+          nativePopup = ++nextPopup;
+          popupSince = performance.now();
+        }
       }
+      const awaitingUnmask = nativePopup !== null && nativePopup !== unmasked;
+      const lostAck = awaitingUnmask && performance.now() - popupSince >= 800;
       for (const portal of portals) {
-        portal.toggleAttribute('data-centre-wait', growing || (nativePopup !== null && nativePopup !== unmasked));
+        portal.toggleAttribute('data-centre-wait', growing || (awaitingUnmask && !lostAck));
       }
       if (native.__assistantX11Shape) {
         const surfaces = nativePopup === null ? paintedFootprint(element) : [];
@@ -2984,13 +3010,27 @@ function Centre({
           type: 'painted-footprint', width: window.innerWidth, height: window.innerHeight, popup: nativePopup, surfaces,
         });
         if (footprint !== sentFootprint) {
-          window.ipc?.postMessage(footprint);
-          sentFootprint = footprint;
+          try {
+            window.ipc?.postMessage(footprint);
+            sentFootprint = footprint;
+          } catch {
+            // A send failure must not stop the retry timer or leave the portal hidden.
+          }
         }
+        if (!awaitingUnmask) {
+          window.clearTimeout(retryPopup);
+          retryPopup = 0;
+        } else if (!retryPopup) retryPopup = window.setTimeout(() => {
+          // Keep the request rectangular and resend even after the portal has failed open.
+          retryPopup = 0;
+          sentFootprint = '';
+          fit();
+        }, lostAck ? 400 : 100);
       }
     };
     if (native.__assistantX11Shape) {
       native.__assistantX11Unmasked = token => {
+        if (token !== nativePopup) return;
         unmasked = token;
         fit();
       };
@@ -3069,7 +3109,21 @@ function Centre({
       if (!menu) settleSize();
       settle();
     });
-    watch.observe(document.body, { childList: true, subtree: true });
+    watch.observe(document.body, native.__assistantX11Shape
+      ? { childList: true, subtree: true, attributes: true, attributeFilter: ['data-busy'] }
+      : { childList: true, subtree: true });
+    const effectChanged = () => { fit(); settleSize(); };
+    const ringHover = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.matches('[data-slot="composer-ring"]')) effectChanged();
+    };
+    const forcedColors = matchMedia('(forced-colors: active)');
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+    if (native.__assistantX11Shape) {
+      element.addEventListener('pointerenter', ringHover, true);
+      element.addEventListener('pointerleave', ringHover, true);
+      forcedColors.addEventListener('change', effectChanged);
+      reducedMotion.addEventListener('change', effectChanged);
+    }
     document.addEventListener('pointerdown', down, true);
     document.addEventListener('click', picked, true);
     window.addEventListener('blur', blur);
@@ -3093,6 +3147,13 @@ function Centre({
       window.clearTimeout(frame);
       window.clearTimeout(shrink);
       window.clearTimeout(late);
+      window.clearTimeout(retryPopup);
+      if (native.__assistantX11Shape) {
+        element.removeEventListener('pointerenter', ringHover, true);
+        element.removeEventListener('pointerleave', ringHover, true);
+        forcedColors.removeEventListener('change', effectChanged);
+        reducedMotion.removeEventListener('change', effectChanged);
+      }
       delete native.__assistantX11Unmasked;
     };
   }, []);

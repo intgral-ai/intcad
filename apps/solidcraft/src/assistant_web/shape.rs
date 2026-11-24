@@ -1,5 +1,17 @@
 //! Convert the CSS border boxes of the centred page's painted surfaces into a GDK region.
 
+/// WebKit reports integer CSS viewport dimensions. Allow one CSS pixel for rounding, not a
+/// further GTK pixel: a mask for the preceding allocation can clip the new controls.
+pub(super) fn matches_allocation(css_width: f64, css_height: f64, zoom: f64, width: i32, height: i32) -> bool {
+    zoom > 0.0 && zoom.is_finite() && (css_width * zoom - f64::from(width)).abs() <= zoom && (css_height * zoom - f64::from(height)).abs() <= zoom
+}
+
+/// `None` means keep the whole native allocation (e.g. for shadows and unmasked portals).
+pub(super) fn mask(surfaces: &[[f64; 12]], zoom: f64, width: i32, height: i32) -> Option<Vec<[i32; 4]>> {
+    let spans = spans(surfaces, zoom, width, height);
+    (!spans.is_empty()).then_some(spans)
+}
+
 /// Border box (left, top, right, bottom), then the horizontal/vertical radii of its corners
 /// clockwise from top left. Each rectangle returned is in GTK logical pixels.
 pub(super) fn spans(surfaces: &[[f64; 12]], zoom: f64, width: i32, height: i32) -> Vec<[i32; 4]> {
