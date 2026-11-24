@@ -438,6 +438,14 @@ class Publish(unittest.TestCase):
         group = dict(action="checks_requested", merge_group={"base_ref": "refs/heads/main"})
         self.assertTrue(release.gate_candidate("merge_group", group, 12, V))
         self.assertFalse(release.gate_candidate("merge_group", group, 12, V + "-beta.1"))
+        # The post-promotion gate is exactly the stable tag push on the promoted commit.
+        tag = dict(ref=f"refs/tags/v{V}", repository={"id": 12})
+        self.assertTrue(release.gate_candidate("push", tag, 12, V))
+        for payload in (tag | {"ref": "refs/heads/main"}, tag | {"ref": f"refs/tags/v{V}-preflight"},
+                        tag | {"ref": f"refs/tags/v{V}.1"}, tag | {"repository": {"id": 13}},
+                        dict(ref=f"refs/tags/v{V}"), tag | {"ref": "refs/tags/v9.9.9"}):
+            with self.subTest(payload=payload):
+                self.assertFalse(release.gate_candidate("push", payload, 12, V))
 
     def test_environment_requires_authorized_reviewers_and_only_exact_main_branch(self):
         reviewers = dict(type="required_reviewers", prevent_self_review=True,

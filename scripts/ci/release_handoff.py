@@ -471,6 +471,12 @@ def gate_candidate(event, payload, repo_id, version):
                 and pr.get("draft") is False and head.get("ref") == f"release/v{version}"
                 and base.get("ref") == "main"
                 and all((ref.get("repo") or {}).get("id") == repo_id for ref in (head, base)))
+    if event == "push":
+        # The formal post-promotion gate: a maintainer's stable tag on the promoted
+        # commit. The workflow only triggers on v* tags; the exact version tag is
+        # required here, and the commit is checked against GITHUB_SHA below.
+        ref = payload.get("ref") or ""
+        return ref == f"refs/tags/v{version}" and (payload.get("repository") or {}).get("id") == repo_id
     return (event == "merge_group" and payload.get("action") == "checks_requested"
             and (payload.get("merge_group") or {}).get("base_ref") == "refs/heads/main")
 

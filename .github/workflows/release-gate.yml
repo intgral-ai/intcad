@@ -361,7 +361,10 @@ jobs:
           PY
       - name: Attest package pairs accepted by the formal stable gate
         id: handoff
-        if: success() && needs.candidate.outputs.context == 'release-gate' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+        if: >-
+          success() && needs.candidate.outputs.context == 'release-gate'
+          && (github.event_name == 'pull_request' || github.event_name == 'merge_group'
+              || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')))
         env:
           GH_TOKEN: ${{ github.token }}
           DISTRIBUTION: ${{ needs.packages.outputs.distribution }}
