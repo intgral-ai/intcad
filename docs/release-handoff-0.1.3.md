@@ -1,6 +1,6 @@
 # v0.1.3 release handoff (for the signing and publication approvals)
 
-Status: **pre-candidate; five integration PRs merged, two open.** This page is the concise handoff that goes to the approving
+Status: **pre-candidate; six PRs merged, the paid-authority chain and the tag-push gate open.** This page is the concise handoff that goes to the approving
 owner. It is updated as facts land; a row that has not been run says NOT RUN, and nothing
 here is a publication authorization.
 
@@ -12,7 +12,8 @@ here is a publication authorization.
 | Release notes | `docs/release-notes-0.1.3.md` (the only notes path the publisher accepts) |
 | Design format | folded to format 51 by `scripts/fold-format-pending.sh` |
 | Candidate SHA | **NOT FROZEN** — must be the tested merge/group SHA of the `release/v0.1.3` → `main` promotion PR |
-| Promotion branch | `release/v0.1.3` (local `994b280dda`, to be rebased onto the merged `develop`) |
+| Promotion branch | `release/v0.1.3`: `c929f797e1` (version 0.1.3, notes, folded format 51), `fa6582f8c9` (widened notes), `cc4f68fdad` (FreeBSD limit); to be rebased onto the final `develop` |
+| `Cargo.lock` at promotion | must be regenerated with the version commit: `solidcraft-account-native` and `solidcraft-suspend-clock` move `0.1.2 → 0.1.3` (two lines); measured, `cargo metadata --locked` then passes |
 
 ## Merged pull requests (develop)
 
@@ -23,25 +24,38 @@ here is a publication authorization.
 | #221 — Assistant at the bottom centre, native shape | `1d523a54a7` |
 | #230 — signed updates and draft-only publisher | `e8c4b1be2d` |
 | #229 — slash commands in the Assistant | `f18a9aec27` |
+| #236 — derived packages record their own artifact | `085675557d` |
 
-`develop`'s full CI on `f18a9aec27` succeeded. Still open: **#214** (packages carry the
-built-in agent; rebased as `d4819c6a9d`, CI running) and **#224** (login; CI on `5776381321`).
-The promotion PR **#237** (`release/v0.1.3` → `main`) exists as a draft and has not started the
-formal gate.
+`develop` is `085675557d` and its full CI succeeded. Open, in merge order:
+
+| PR | Head | State |
+|---|---|---|
+| #214 — packages carry the built-in agent | `318b87cc94` | full CI running; archive done, 16 shards + determinism + properties + regression gate in flight |
+| #224 — sign-in, verified sessions, paid Review | `dc1f8f8d59` | waits for the new `develop`; two-file `--theirs` resolution ready |
+| #239 — a stable tag push is the formal post-promotion gate | `7db657fa61` | affected CI running |
+| integration `/ #227 #233 #235 #234` | `91f00898f8` | single full CI after `develop` merge; four PRs stay open as review records |
+
+The promotion PR **#237** (`release/v0.1.3` → `main`) is a draft and has not started the formal
+gate.
 
 ## Gates
 
 | Gate | State |
 |---|---|
-| Required CI (`ci` on develop, `release-gate` on main) | running on the open PRs; `develop`'s gate was red on #225 and is fixed by #226 |
-| Three-platform production packaging | NOT RUN — comes from the formal Release Gate's 14 package/evidence pairs |
+| Required CI (`ci` on develop, `release-gate` on main) | running on the open PRs |
+| Three-platform production packaging | NOT RUN — comes from the formal Release Gate's 14 package/evidence pairs (§18 of the readiness report lists every asset name) |
 | Linux install and launch | integration preview only: deployed binary in the `i3int` VM, 8/8 steps (not an installer) |
 | Windows install and launch | earlier rehearsal only, not this candidate |
 | macOS install and launch | **NOT TESTED — no Apple hardware** |
-| Production login / Gate B | pending the Login Agent's staging evidence |
+| Production login / Gate B | prerequisites ready, acceptance NOT RUN: `staging` environment allows `main`, staging service preflight PASS (`/healthz`, `/readyz`, `/v1/status` with `min_client=0.1.3`, six authorizations `remaining=299`, 0.1.2 → `VERSION_UNSUPPORTED`), two staging accounts verified (`…+intcad-staging@`, `…+intcad-gateb-switch@`) |
+| Candidate account tuple | production variable set and validated; expected identity `sha256 89abe5c9…f41bb`; CI proves the Linux build output only, so each packaged binary is verified at acceptance (§17 of the readiness report) |
 | Licences and notices | inherited rehearsal audit; the actual candidate package inventory is not yet inspected |
 | Package hygiene | rehearsal tarball/ZIP inspected, candidate not yet |
 | Minisign | production key embedded and client verification fails closed; candidate signing not yet run |
+
+Known limits recorded in the release notes: Windows Authenticode / Apple signing are out of scope;
+an installed 0.1.2 cannot update itself; the FreeBSD package carries no account configuration, so
+sign-in and paid operations are unavailable there.
 
 ## Signing
 
@@ -113,8 +127,13 @@ copy accepts no `staging_account_config` input. Consequences:
 
 ## Open blockers
 
-1. CI runs for the open release PRs are still in progress.
-2. #223's wasm/IME/byte-cap fixes and the Migration Agent's remote-tag check are in progress.
-3. Gate B needs real staging credentials and evidence from the Login Agent.
-4. macOS hardware is unavailable, so that platform cell stays NOT TESTED.
-5. `RELEASE_AGENT_LEGAL_APPROVED` / `RELEASE_AGENT_INSTALLED_APPROVED` are owner actions.
+1. #214's full CI is still running; #224 waits for the new `develop`; #239 and the integration PR
+   follow it.
+2. Gate B staging packages cannot be dispatched until #237 is on `main`; its acceptance cells are
+   all NOT RUN until then.
+3. macOS hardware is unavailable, so that platform cell stays NOT TESTED.
+4. `RELEASE_AGENT_LEGAL_APPROVED` / `RELEASE_AGENT_INSTALLED_APPROVED` are owner actions, set only
+   once the candidate and its evidence exist.
+5. The formal post-promotion gate is the **tag push** (#239): a PR gate's SHA is a synthetic merge
+   ref that never lands on `main`, so the publisher can only consume a run produced at the tagged
+   `main` commit.
