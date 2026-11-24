@@ -1423,6 +1423,27 @@ smoke or green CI does not replace real installed-client acceptance.
 | Cross-repo publication | BLOCKED / NOT RUN | Bind the exact `intgral-ai/intcad` candidate and accepted assets to an authorized nonproduction rehearsal of the public distribution workflow, with scoped credentials and fail-closed read-back. Private CI is post-release work. |
 | Production publication and anonymous handoff | NOT RUN | CTO publication approval; then fresh anonymous download/install/launch, independent production 0.1.2 upgrade or approved fallback, and new-client detection, signature and authorization checks. |
 
+### 15.3.1 What has to happen for a GO
+
+In order, with the owner who must act. Nothing here is approved yet.
+
+1. Clear the red `develop` gate [#225](https://github.com/intgral-ai/intcad/issues/225) so `ci`
+   can pass at a reviewed snapshot (owner of `script_roundtrip.rs`).
+2. Land #214 with the reviewed `ee17261b82` (author applies or approves it) and #221 with
+   the reviewed sizing `b002647acb` plus the shape fix after native acceptance.
+3. Land #223 (Release Manager, in progress) and obtain PP's visual sign-off on the final
+   Assistant, including the native backing evidence at 125% and 150%.
+4. Green Gate B from the Login Agent on #224: real staging sign-in, version admission,
+   revocation and offline CAD on installed clients; the Windows `WM_NCHITTEST` 1460 failure
+   must be fixed, not waived.
+5. Land the reviewed Migration Agent fixes (publisher provenance, checksum/signature contract,
+   key identity, distribution destination, notices) and prove cross-repo publication in an
+   authorized nonproduction rehearsal.
+6. Cut the promotion PR, record the tested merge SHA and all 14 package/evidence pairs,
+   install that exact Linux/Windows/macOS artifact set, and complete the acceptance table.
+7. Publish to `intgral-ai/intcad-releases` only with CTO approval; then verify anonymous
+   download, signature, update discovery and install on the published bytes.
+
 ### 15.4 Integration preview (local, not a candidate)
 
 A local integration branch proves the reviewed pieces combine, without claiming candidate
