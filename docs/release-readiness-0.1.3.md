@@ -1256,6 +1256,16 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   needs `gtk::prelude::WidgetExtManual`, and the import was `WidgetExt` (unused). This is
   exactly the class the isolated geometry driver hid. Fix and a real
   `cargo check -p solidcraft --profile ci` are in progress; no native acceptance exists yet.
+- **#221 native shape — first measured run: corners fixed, top-edge band still backed.**
+  Exact binary `a2b88840ebc8d8f4abc9b39d04e8949c0ad81416ab8ec63d0e2a0b66ef2d4076`
+  (source `a5753cedec`) in the `ui221-backing` VM at 125%, 960×750, collapsed height 137
+  (same geometry as the recorded baseline): `(802,639)` now `(28,28,28)` and `(800,473)`
+  now `(133,133,133)`, both equal to the hidden reference — before the fix both were
+  `(13,13,13)`. The whole empty region still fails: **494 of 1300** baseline-empty pixels
+  differ with the opaque `(13,13,13)`, concentrated in the child's top rows from `y=471`
+  (e.g. `(319,471)` expected CAD `(28,28,28)`). Rows from `473` down are correct. This is
+  a real remaining defect, not a pass; a targeted top-extent fix and another measured run
+  are in progress.
 - **#221 composer sizing — local browser fix reviewed, not landed.** `b002647acb` held the
   centred input at 14 px and the composer at 86 px for both agent modes in the same browser
   viewport. Independent Spec and Quality review approved; controller rerun had 12 passes and
