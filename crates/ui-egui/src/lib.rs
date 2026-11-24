@@ -1050,6 +1050,12 @@ impl SolveApp {
         budget: solidcraft_engine::entitlement::BudgetTable,
     ) {
         self.billing = Some(billing);
+        self.install_budget(budget);
+    }
+
+    /// Install the desktop host's measured safe-stop bounds without granting billing authority.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn install_budget(&mut self, budget: solidcraft_engine::entitlement::BudgetTable) {
         self.budget = budget;
     }
 
