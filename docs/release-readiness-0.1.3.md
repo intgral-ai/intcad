@@ -2627,3 +2627,22 @@ crates/ui-egui/src/update/install.rs:35-38  SUMS="SHA256SUMS.txt", SUMS_SIG="SHA
 So the file the updater fetches and the signature it verifies are produced with the exact names and
 the exact trusted comment the publisher re-checks; a signature made for another tag cannot be
 reused because the comment must equal `Intcad <tag>`.
+
+**The per-package embedded-account check is executable and was validated on all three extraction
+shapes.** Fixtures carrying the production tuple were packed and unpacked, then checked with the
+repository's own `verify_embedded_account.py` (`PRODUCTION_ACCOUNT_CONFIG` set from the repository
+variable):
+
+```
+tar.gz  → tar -xzf …                     → "embedded account tuple: 89abe5c9…f41bb; all three values present"
+zip     → python zipfile.extractall      → same
+.deb    → 7z x fake.deb && tar -xzf data → same
+negative: a 64-byte blob                 → rc=1, "does not embed the configured account: missing
+                                           INTCAD_WORKOS_PUBLIC_CLIENT_ID, INTCAD_AUTHKIT_VERIFICATION_ORIGIN,
+                                           INTCAD_PRODUCT_HTTPS_ORIGIN"
+```
+
+So at acceptance time every packaged binary (Linux `.deb`/`.tar.gz`/AppImage, Windows `.msi`/zip via
+`7z x`, macOS app via unzip) can be checked by extracting the program and running the verifier with
+`--expect-tuple-sha256 89abe5c94fb1fbaa608e0763224f4c9e241fee7087c3bd6ee4da96c3a75f41bb`; a
+platform whose binary cannot be extracted is recorded NOT VERIFIED.
