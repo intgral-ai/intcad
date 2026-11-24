@@ -1377,7 +1377,12 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   `cargo check -p solidcraft-ui-egui --profile ci` compiled 233 crates cleanly. The ~4 s
   delay matches DX12 surface reconfiguration on the window thread after maximize
   (`WindowEvent::Resized → surface.configure`), unchanged by this PR, with no account or
-  WebView2 work in that probe; it is recorded, not called a product regression. A new simulation at local
+  WebView2 work in that probe; it is recorded, not called a product regression.
+  **Re-run result (attempt 2, head `5580bf2976`): `Windows app startup` PASSES.**
+  `maximized : WM_NCHITTEST at (1),(360) answered after 4261 ms, attempt 2 (2000 ms missed)`,
+  then `PASS: resize border` and `PASS: assistant web view` with no edge-difference line.
+  The other required contexts were still running; this clears the Windows smoke, not Gate B's
+  real sign-in/authorization evidence. A new simulation at local
   `b002647acb` and `ee17261b82` still finds those conflicts with `0519d3aba6`, but no conflict
   when either is tested against `6032271178` or when the two are tested against each other.
 - **macOS — NOT TESTED.** Follow the [Mac acceptance runbook](release-acceptance-macos-0.1.3.md)
