@@ -22,9 +22,10 @@
 //! reviewed server scheme; it is written only after the server's status response confirms it.
 
 use serde_json::Value;
+use solidcraft_engine::entitlement::RefusalCode;
 
 use crate::credentials::{ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession};
-use crate::http::{MAX_RESPONSE_BYTES, PROTOCOL_VERSION, Secret, Transport, WireConnection, WireRequest};
+use crate::http::{MAX_RESPONSE_BYTES, PROTOCOL_VERSION, Secret, Transport, WireConnection, WireRequest, error_refusal};
 
 /// A [`ProductSessionExchange`] that asks the configured product service to verify the WorkOS
 /// session access token before activation.
@@ -73,7 +74,11 @@ impl<T: Transport> ProductSessionExchange for ServerVerifiedProductSession<T> {
         }
         let value: Value = serde_json::from_slice(response.body()).map_err(|_| ProductExchangeError::Unavailable)?;
         if response.status() != 200 {
-            return Err(ProductExchangeError::Rejected);
+            return Err(if error_refusal(response.status(), &value).code == RefusalCode::VersionUnsupported {
+                ProductExchangeError::VersionUnsupported
+            } else {
+                ProductExchangeError::Rejected
+            });
         }
 
         verified_account(&value).map(|account| ProductSession::from_trusted_exchange(account, Secret::new(token.expose_secret().to_owned()), None))
@@ -104,9 +109,21 @@ pub(crate) fn verified_account(value: &Value) -> Result<String, ProductExchangeE
     }
     if value.pointer("/protocol/version").and_then(Value::as_str) != Some(PROTOCOL_VERSION)
         || !value.pointer("/protocol/supported").and_then(Value::as_bool).unwrap_or(false)
-        || !value.pointer("/client/supported").and_then(Value::as_bool).unwrap_or(false)
     {
         return Err(ProductExchangeError::Rejected);
+    }
+    match value.pointer("/client/supported").and_then(Value::as_bool) {
+        Some(true) => {}
+        Some(false)
+            if value.get("eligible").and_then(Value::as_bool) == Some(false)
+                && value
+                    .get("reasons")
+                    .and_then(Value::as_array)
+                    .is_some_and(|reasons| reasons.iter().any(|reason| reason == "VERSION_UNSUPPORTED")) =>
+        {
+            return Err(ProductExchangeError::VersionUnsupported);
+        }
+        _ => return Err(ProductExchangeError::Rejected),
     }
     if !value.get("eligible").and_then(Value::as_bool).unwrap_or(false) || !value.get("reasons").and_then(Value::as_array).is_some_and(Vec::is_empty)
     {

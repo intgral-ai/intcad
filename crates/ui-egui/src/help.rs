@@ -76,6 +76,10 @@ pub fn available(app: &SolveApp, item: &str) -> bool {
     app.issue_report.draft.is_none() || !matches!(item, "about" | "shortcuts" | "messages" | "crashes" | "connect" | "updates")
 }
 
+pub(crate) fn open_url(ctx: &egui::Context, url: impl ToString) {
+    ctx.open_url(egui::OpenUrl::new_tab(url));
+}
+
 /// Run a Help menu item: `docs`, `about`, `updates`, `version` (the release notes), `shortcuts`, `messages`, `report`, `crashes`,
 /// `connect`, `install_cli` (macOS).
 pub fn run(app: &mut SolveApp, ctx: &egui::Context, item: &str) {
@@ -84,11 +88,9 @@ pub fn run(app: &mut SolveApp, ctx: &egui::Context, item: &str) {
         return;
     }
     match item {
-        "docs" => ctx.open_url(egui::OpenUrl::new_tab(DOCS_URL)),
+        "docs" => open_url(ctx, DOCS_URL),
         "about" => app.help.about = true,
-        "version" => {
-            ctx.open_url(egui::OpenUrl::new_tab(crate::update::release_notes_url(crate::update::current_version(), crate::update::release_build())))
-        }
+        "version" => open_url(ctx, crate::update::release_notes_url(crate::update::current_version(), crate::update::release_build())),
         "updates" => crate::update::check_now(app, ctx),
         "shortcuts" => {
             app.keymap.open = true;

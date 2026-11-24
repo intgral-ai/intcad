@@ -393,11 +393,11 @@ fn restart_status_enforces_every_fresh_login_activation_condition() {
     unsupported_protocol["eligible"] = json!(false);
     unsupported_protocol["reasons"] = json!(["PROTOCOL_UNSUPPORTED"]);
 
-    for (case, body) in [
-        ("unverified email", unverified_email),
-        ("ineligible client", ineligible_client),
-        ("wrong protocol version", wrong_protocol_version),
-        ("unsupported protocol", unsupported_protocol),
+    for (case, body, expected) in [
+        ("unverified email", unverified_email, RefusalCode::AuthRequired),
+        ("ineligible client", ineligible_client, RefusalCode::VersionUnsupported),
+        ("wrong protocol version", wrong_protocol_version, RefusalCode::AuthRequired),
+        ("unsupported protocol", unsupported_protocol, RefusalCode::AuthRequired),
     ] {
         // The generic status decoder stays a permissive snapshot; only restart activation narrows.
         let status = scripted(vec![ok(200, body.clone())]);
@@ -406,7 +406,7 @@ fn restart_status_enforces_every_fresh_login_activation_condition() {
         let restart = scripted(vec![ok(200, body)]);
         assert_eq!(
             restart.restart_status("acct_example_0001").unwrap_err().code,
-            RefusalCode::AuthRequired,
+            expected,
             "restart must enforce the fresh-login activation condition for {case}"
         );
     }

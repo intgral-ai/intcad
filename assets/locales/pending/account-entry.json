@@ -51,19 +51,31 @@
   },
   "ar": {
     "account.menu_tooltip": "فتح قائمة حساب Intcad",
+    "account.sign_in_waiting": "بانتظار إكمال تسجيل الدخول في المتصفح.",
+    "account.sign_in_code": "أدخل هذا الرمز في المتصفح: {code}",
     "account.sign_in_open_browser": "فتح صفحة تسجيل الدخول",
+    "account.sign_in_expired": "انتهت صلاحية رمز تسجيل الدخول. سجّل الدخول مرة أخرى.",
+    "account.sign_in_retry": "تسجيل الدخول مرة أخرى",
     "account.chat_prompt": "سجّل الدخول إلى حسابك في Intcad لاستخدام المحادثة بالذكاء الاصطناعي. يظل تسجيل الدخول الخاص بالنموذج المحدد منفصلًا.",
     "account.review_prompt": "سجّل الدخول إلى حسابك في Intcad لتشغيل فحوصات المراجعة."
   },
   "he": {
     "account.menu_tooltip": "פתיחת תפריט חשבון Intcad",
+    "account.sign_in_waiting": "ממתין שתסיים את ההתחברות בדפדפן.",
+    "account.sign_in_code": "הזן קוד זה בדפדפן: {code}",
     "account.sign_in_open_browser": "פתיחת עמוד ההתחברות",
+    "account.sign_in_expired": "קוד ההתחברות פג. התחבר שוב.",
+    "account.sign_in_retry": "התחבר שוב",
     "account.chat_prompt": "התחבר לחשבון Intcad שלך כדי להשתמש בצ׳אט עם בינה מלאכותית. ההתחברות למודל שבחרת נשארת נפרדת.",
     "account.review_prompt": "התחבר לחשבון Intcad שלך כדי להריץ בדיקות סקירה."
   },
   "vi": {
     "account.menu_tooltip": "Mở menu tài khoản Intcad",
+    "account.sign_in_waiting": "Đang chờ bạn hoàn tất đăng nhập trong trình duyệt.",
+    "account.sign_in_code": "Nhập mã này trong trình duyệt: {code}",
     "account.sign_in_open_browser": "Mở trang đăng nhập",
+    "account.sign_in_expired": "Mã đăng nhập đã hết hạn. Hãy đăng nhập lại.",
+    "account.sign_in_retry": "Đăng nhập lại",
     "account.chat_prompt": "Đăng nhập vào tài khoản Intcad của bạn để dùng Trò chuyện AI. Việc đăng nhập vào mô hình đã chọn vẫn được thực hiện riêng.",
     "account.review_prompt": "Đăng nhập vào tài khoản Intcad của bạn để chạy các phép kiểm tra trong mục Rà soát."
   }
