@@ -16630,7 +16630,6 @@ fn files_dropped_on_the_web_view_join_the_next_message() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-
 /// The web view is the window's, not one design's: a design opened in another tab, whose
 /// conversation starts afresh, is shown in it too, on the surface colour the page already said.
 #[test]
@@ -19297,4 +19296,30 @@ fn the_agent_is_handed_the_files_folder_only_when_it_is_the_designs_project() {
     assert_eq!(handed_project(None, Some(&project)), None, "no design shown");
     assert_eq!(handed_project(Some(&design), None), None, "no folder in the panel");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The Windows smoke reads exactly these three fields: an open page that has spoken proves its
+/// surface, a closed page keeps that proof while its view lives, and a missing runtime or a
+/// failed build never gives one.
+#[test]
+fn assistant_inspection_carries_the_marker_the_windows_smoke_reads() {
+    let mut h = crate::scenario::Harness::new();
+    web::set_host(&mut h.app, true);
+    let inspect = |h: &mut crate::scenario::Harness| h.call("ui.inspect", json!({}))["result"]["assistant"].clone();
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "available"}));
+    h.app.agent_chat.open = true;
+    h.frames(3);
+    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": false, "host": "available"}), "no page has spoken yet");
+    h.app.agent_chat.web_canvas = Some(egui::Color32::from_rgb(14, 14, 14));
+    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": true, "host": "available"}), "the page said its surface");
+    h.app.agent_chat.open = false;
+    assert_eq!(
+        inspect(&mut h),
+        json!({"open": false, "surface_ready": true, "host": "available"}),
+        "a closed page keeps the proof while its view lives"
+    );
+    web::set_problem(&mut h.app, web::Problem::Failed);
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "failed"}));
+    web::set_problem(&mut h.app, web::Problem::NativeWayland);
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "native_wayland"}));
 }

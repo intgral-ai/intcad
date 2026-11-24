@@ -1238,15 +1238,21 @@ impl AgentChat {
 /// Bounded, read-only evidence for the desktop control channel.
 pub(crate) fn inspect(app: &SolveApp) -> Value {
     #[cfg(not(target_arch = "wasm32"))]
-    let host = match app.agent_chat.web_problem {
-        Some(web::Problem::NativeWayland) => "native_wayland",
-        Some(web::Problem::Failed) => "failed",
-        None if app.agent_chat.web_host => "available",
-        None => "unavailable",
-    };
+    let (host, surface_ready) = (
+        match app.agent_chat.web_problem {
+            Some(web::Problem::NativeWayland) => "native_wayland",
+            Some(web::Problem::Failed) => "failed",
+            None if app.agent_chat.web_host => "available",
+            None => "unavailable",
+        },
+        // A view can only say its surface colour once its page runs. The colour stays
+        // after the page is hidden, so a closed page still reports a proven surface;
+        // a missing runtime or a failed build never said one.
+        app.agent_chat.web_host && app.agent_chat.web_problem.is_none() && app.agent_chat.web_canvas.is_some(),
+    );
     #[cfg(target_arch = "wasm32")]
-    let host = "unavailable";
-    json!({"open": app.agent_chat.open, "host": host})
+    let (host, surface_ready) = ("unavailable", false);
+    json!({"open": app.agent_chat.open, "surface_ready": surface_ready, "host": host})
 }
 
 /// What an event asks of the app.
