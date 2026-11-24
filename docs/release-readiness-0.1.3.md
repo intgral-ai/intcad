@@ -2770,3 +2770,10 @@ The Login Agent prepared #224 locally against `97236b5dd7`: merge clean, head `9
 skills 3589, the two packaging files keep the #224 side (`--built-in-agent` at line 113 of
 `installed-check-inside.sh`; one `CheckBuiltInAgent` definition and one call), and the gate/packaging
 suites pass locally. **Nothing was pushed**, as instructed, until the post-#214 SHA is published.
+
+**#214 is one job from green.** On `22dce5cb48` (run 45488557706): **37/38 jobs completed with zero
+failures**; only `Native Linux selected regression gate` is still inside its `Measure selected
+execution` step, which started 21:13Z and is now past the usual 1h48–2h04 window. Its ceiling is
+240 minutes (01:13Z), so it has room, but this job has already failed once for infrastructure and
+once been cancelled, so a hang would be the third mode. The merge stays blocked until it reports
+success; nothing is bypassed.
