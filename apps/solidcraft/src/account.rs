@@ -801,9 +801,18 @@ impl ControlRenewalJob {
 
 fn desktop_budget() -> BudgetTable {
     let mut budget = BudgetTable::unverified_default();
-    // docs/dfm-review-safe-stop-bound.md supports the 600 s engine ceiling for the measured
-    // Review panel envelope. Every other controlled pair stays unverified.
+    // docs/dfm-review-safe-stop-bound.md supports the Review panel's measured envelope.
     budget.set_verified(Capability::Review, EntryCategory::ReviewPanel, Duration::from_secs(600));
+    // docs/account/control-safe-stop-bound.md derives this one-lease envelope from docs/controlled-safe-stop-bounds.md.
+    let bound = Duration::from_secs(280);
+    budget.set_verified(Capability::Control, EntryCategory::DirectControl, bound);
+    budget.set_verified(Capability::Mcp, EntryCategory::HeadlessMcp, bound);
+    budget.set_verified(Capability::Mcp, EntryCategory::GuiBridgeMcp, bound);
+    budget.set_verified(Capability::Dfm, EntryCategory::CliDfm, bound);
+    budget.set_verified(Capability::Harness, EntryCategory::Mastra, bound);
+    // ExternalAcpMcp stays unverified: no measurement record for external ACP.
+    // ExternalUiAutomation stays unverified: no measurement record for external UI automation.
+    // Unknown stays unverified: unclassified entries are refused by design.
     budget
 }
 
@@ -4709,16 +4718,19 @@ mod tests {
     }
 
     #[test]
-    fn desktop_budget_verifies_only_review_panel() {
+    fn desktop_budget_verifies_only_the_recorded_pairs() {
         use solidcraft_engine::entitlement::UpperBound;
 
         let runtime = AccountRuntime::with_session(CredentialSession::without_persistence());
         for capability in Capability::ALL {
             for entry in EntryCategory::CONTROLLED {
-                let expected = if (capability, entry) == (Capability::Review, EntryCategory::ReviewPanel) {
-                    UpperBound::Verified(Duration::from_secs(600))
-                } else {
-                    UpperBound::Unverified
+                let expected = match (capability, entry) {
+                    (Capability::Review, EntryCategory::ReviewPanel) => UpperBound::Verified(Duration::from_secs(600)),
+                    (Capability::Control, EntryCategory::DirectControl)
+                    | (Capability::Mcp, EntryCategory::HeadlessMcp | EntryCategory::GuiBridgeMcp)
+                    | (Capability::Dfm, EntryCategory::CliDfm)
+                    | (Capability::Harness, EntryCategory::Mastra) => UpperBound::Verified(Duration::from_secs(280)),
+                    _ => UpperBound::Unverified,
                 };
                 assert_eq!(runtime.budget().bound(capability, entry), expected, "{capability:?}/{entry:?}");
             }
@@ -4726,8 +4738,10 @@ mod tests {
     }
 
     #[test]
-    fn proved_restart_passes_the_review_bound_gate_but_not_the_control_bound_gate() {
-        let runtime = verified_restart_runtime(active_session());
+    fn proved_restart_passes_both_review_and_control_bound_gates() {
+        let status = status_body_for("acct_desktop_0001").to_string().into_bytes();
+        let product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status.clone())), Ok(WireResponse::new(200, status))]);
+        let runtime = restart_runtime(active_session(), product, &RecordingOpener::default());
         let startup = runtime.startup();
         let mut app = solidcraft_ui_egui::SolveApp::new(solidcraft_engine::Session::default(), solidcraft_ui_egui::Services::default());
         install(&mut app, runtime, startup);
@@ -4744,8 +4758,10 @@ mod tests {
         let control::Outcome::Done(reply) = control::handle(&mut app, &egui::Context::default(), &mut control) else {
             panic!("expected an immediate refusal");
         };
-        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart");
-        assert_eq!(reply["error"], "this controlled entry has no verified safe-stop bound");
+        // Without a journal proving freshness, Control must still establish the original
+        // server operation state. This fixture has no settlement credential for it.
+        assert_eq!(reply["errorDetails"]["code"], "AuthUnavailable", "{reply}");
+        assert_eq!(reply["error"], "the durable operation state is unavailable");
 
         app.end_controlled_session();
         app.account.shutdown();

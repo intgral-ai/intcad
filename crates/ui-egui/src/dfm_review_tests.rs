@@ -22,6 +22,7 @@ struct CountingBilling {
     commits: Arc<Mutex<usize>>,
     releases: Arc<Mutex<usize>>,
     committed: Arc<Mutex<Vec<OperationId>>>,
+    grant_expiry_ms: Option<u64>,
 }
 
 impl CountingBilling {
@@ -45,7 +46,11 @@ impl CountingBilling {
 impl BillingPort for CountingBilling {
     fn admit(&mut self, operation: &OperationId, capability: Capability, _entry: EntryCategory) -> Result<Grant, Refusal> {
         *self.admits.lock().expect("count") += 1;
-        Ok(Grant::from_server(GrantId::new(format!("grant_test_{}", operation.as_str())), capability, MonotonicInstant::from_millis(60_000)))
+        Ok(Grant::from_server(
+            GrantId::new(format!("grant_test_{}", operation.as_str())),
+            capability,
+            MonotonicInstant::from_millis(self.grant_expiry_ms.unwrap_or(60_000)),
+        ))
     }
 
     fn commit(&mut self, operation: &OperationId, result: BillingResult) -> Result<BillingResult, Refusal> {
@@ -1502,6 +1507,22 @@ fn review_empty_inventory_keeps_fresh_start_available() {
     assert_eq!(billing.admits(), 1);
 }
 
+#[test]
+fn review_control_admits_a_300_second_grant_with_a_600_second_bound() {
+    let mut h = Harness::new();
+    let billing = CountingBilling { grant_expiry_ms: Some(300_000), ..Default::default() };
+    let ledger = ReviewLedger::default();
+    install(&mut h.app, &billing, &ledger);
+    let mut budget = BudgetTable::unverified_default();
+    budget.set_verified(Capability::Review, EntryCategory::ReviewPanel, Duration::from_secs(600));
+    h.app.install_budget(budget);
+
+    let operation = crate::control::mint_operation().expect("host entropy");
+    let (run, _) = crate::dfm_review::prepare_review_with(&mut h.app, operation.clone()).expect("Review clamps instead of refusing");
+    assert_eq!(billing.admits(), 1);
+    assert_eq!(ledger.operation_for(&run), Some(operation));
+}
+
 /// The Review stop bound must be the earlier of the measured window and the
 /// server grant's remaining time, exactly as `control.rs::authorization_bound`
 /// takes the earlier of the request deadline and the grant expiry.
@@ -1513,6 +1534,7 @@ fn review_stop_bound_takes_the_earlier_of_window_and_grant() {
     // A grant with more time left than the window: the window decides.
     assert_eq!(crate::dfm_review::review_stop_at_ms(now, window, Some(Duration::from_secs(300))), now + 60_000);
     // A grant that expires sooner than the window: the grant decides.
+    assert_eq!(crate::dfm_review::review_stop_at_ms(now, Duration::from_secs(600), Some(Duration::from_secs(300))), now + 300_000);
     assert_eq!(crate::dfm_review::review_stop_at_ms(now, window, Some(Duration::from_secs(5))), now + 5_000);
     // No monotonic clock installed: only the measured window applies.
     assert_eq!(crate::dfm_review::review_stop_at_ms(now, window, None), now + 60_000);

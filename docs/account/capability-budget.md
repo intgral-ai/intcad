@@ -1,15 +1,15 @@
 # Controlled-operation stop budgets
 
-Preflight does not verify a stop bound. Every controlled capability/entry pair starts **UNVERIFIED** unless explicitly listed as verified below. An unmeasured operation or batch path must refuse with `UNSAFE_TO_START`, not inherit a bound from a superficially similar operation.
+Preflight does not verify a stop bound. Every controlled capability/entry pair starts **UNVERIFIED** unless explicitly listed as verified below. A pair without a verified bound must refuse with `UNSAFE_TO_START`, not inherit a bound from another pair. These are envelope claims, not guarantees that every workload on a listed entry fits.
 
 | Capability | Production status |
 | --- | --- |
 | Chat | UNVERIFIED |
-| Harness | UNVERIFIED |
+| Harness | **VERIFIED: 280 s**, `Mastra` only; see [the controlled-entry record](control-safe-stop-bound.md). |
 | Review | **VERIFIED: 600 s**, desktop `ReviewPanel` only; every other Review entry is UNVERIFIED. See [the Review evidence record below](#desktop-review-panel). |
-| DFM | UNVERIFIED |
-| MCP | UNVERIFIED |
-| Control | UNVERIFIED |
+| DFM | **VERIFIED: 280 s**, `CliDfm` only; see [the controlled-entry record](control-safe-stop-bound.md). |
+| MCP | **VERIFIED: 280 s**, `HeadlessMcp` and `GuiBridgeMcp` only; `ExternalAcpMcp` is UNVERIFIED. See [the controlled-entry record](control-safe-stop-bound.md). |
+| Control | **VERIFIED: 280 s**, `DirectControl` only; `ExternalUiAutomation` is UNVERIFIED. See [the controlled-entry record](control-safe-stop-bound.md). |
 | AI autocomplete | UNVERIFIED; reserved only |
 | Design Intent | UNVERIFIED; reserved only |
 
