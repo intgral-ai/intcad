@@ -2992,3 +2992,17 @@ promotion tip for this candidate: 370759d51a
 So once the Integration PR merges, the promotion branch is a three-commit replay that has already
 been executed against the same content (it will be re-applied to the post-merge `develop` SHA, which
 differs only by the merge commit itself).
+
+**Correction: the earlier local `cargo xtask test` failure was self-inflicted, not a code defect.**
+While that build was running I created a promotion-rehearsal branch **in the same worktree**, which
+folded `crates/doc/src/format/pending/*.rs` out of the working tree; the running build then failed
+with `couldn't read …/pending/bridged-counterbore.rs`. On the untouched candidate:
+
+```
+git checkout --detach eade4198c2
+cargo check -p solidcraft-doc --profile ci --locked   →  rc=0
+```
+
+The full suite is therefore re-run in a **dedicated worktree** (`/tmp/opencode/testrun` at
+`eade4198c2`, `crates/doc/src/format/pending/` intact, skill 3538) with its own target directory,
+and only that run counts as evidence. No branch switch happens there while it builds.
