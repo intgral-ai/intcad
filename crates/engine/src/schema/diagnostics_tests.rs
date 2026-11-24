@@ -48,11 +48,7 @@ fn the_crash_test_mode_is_one_of_three() {
     let schema = schema.as_value();
     let listed: Vec<&str> = schema["$defs"]["CrashTestMode"]["oneOf"].as_array().into_iter().flatten().filter_map(|m| m["const"].as_str()).collect();
     assert_eq!(listed, ["panic", "kernel", "abort"], "{schema}");
-    for (mode, want) in [
-        ("panic", CrashTestMode::Panic),
-        ("kernel", CrashTestMode::Kernel),
-        ("abort", CrashTestMode::Abort),
-    ] {
+    for (mode, want) in [("panic", CrashTestMode::Panic), ("kernel", CrashTestMode::Kernel), ("abort", CrashTestMode::Abort)] {
         let p = json!({ "mode": mode });
         assert_eq!(serde_json::from_value::<CrashTestParams>(p.clone()).ok().map(|p| p.mode), Some(want), "{mode}");
         assert!(conforms(schema, schema, &p), "{p}");
