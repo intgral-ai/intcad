@@ -2080,3 +2080,22 @@ two bullets to `docs/release-notes-0.1.3.md`:
 
 Nothing else in the promotion commit changed: version stays `0.1.3`, `crates/doc/src/format/pending/`
 still holds only its README, and the notes path is still the exact one the publisher accepts.
+
+**Gate B is blocked by the `staging` environment's branch policy (measured).**
+
+```
+GET /repos/intgral-ai/intcad/environments/staging
+  deployment_branch_policy: {"protected_branches": false, "custom_branch_policies": true}
+  protection_rules: [{"type": "branch_policy"}], can_admins_bypass: true
+GET /repos/intgral-ai/intcad/environments/staging/deployment-branch-policies
+  {"total_count": 0, "branch_policies": []}
+GET /repos/intgral-ai/intcad/environments/release-signing/deployment-branch-policies
+  main (branch)
+```
+
+`staging-packages.yml` puts `environment: staging` on its `snapshot` job. With custom branch
+policies enabled and **no** allowed branch, GitHub refuses that deployment before the job runs,
+so Gate B cannot produce staging packages until an admin adds a policy — `main` is the ref the
+promotion creates and the one `release-signing` already allows. `release-signing` itself is
+correctly restricted to `main` and to the two human reviewers (`Huaiyuan-Jing`, `paipeline`),
+which is the approval step the publisher is designed to wait on.
