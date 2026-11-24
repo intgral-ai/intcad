@@ -308,6 +308,27 @@ future task.
    Standalone builds, diagnostic dispatches, Beta candidates and old attempts do
    not qualify. If a rerun only repeats some jobs, start a fresh formal gate;
    a previous attempt cannot supply the missing pairs.
+
+   **Post-promotion gate (tag push).** A pull-request gate checks the synthetic
+   GitHub merge ref, which never becomes a commit on `main`; its handoff therefore
+   cannot satisfy the publisher's "the released commit is on `main`" rule. After
+   promotion, a maintainer pushes the stable `vX.Y.Z` tag on the promoted `main`
+   commit. The `push` trigger on `tags: ["v*"]` runs the same full gate at that
+   commit and records a handoff with `mode: tag` and `ref: refs/tags/vX.Y.Z`; the
+   publisher accepts only that mode plus a live check that the tag still names
+   the commit and that the commit is on `main`. Branch pushes do not trigger the
+   gate, and a manual dispatch stays diagnostic (`release-gate-diagnostic`) and
+   is never publication evidence.
+
+   A handoff without `mode`/`ref` — any draft produced before this contract — is
+   refused (`unknown handoff mode`). The publisher has never accepted such a draft,
+   so none is valid and no older draft may be published.
+
+   **Known boundary.** The publisher also re-checks the gate's executable trees
+   (`scripts/`, `.github/workflows/`, `packaging/`, `tools/`) at the tagged commit
+   against its own protected-`main` checkout. If `main` advances past the tag and
+   changes one of those trees, staging is refused until a new tag is cut (a tag is
+   never moved). Tag and dispatch the publisher soon after promotion.
 2. For a release carrying #214's built-in agent, review the actual npm/Node and
    file rights and the installed-agent results for the exact candidate. The
    owner records each accepted review in `RELEASE_AGENT_LEGAL_APPROVED` and

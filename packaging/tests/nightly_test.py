@@ -586,7 +586,17 @@ class ForkWorkflowSafety(unittest.TestCase):
             with self.subTest(workflow=name):
                 text = self.workflow(name)
                 events = text.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
-                self.assertNotRegex(events, r"(?m)^  (release|schedule|push):")
+                self.assertNotRegex(events, r"(?m)^  (release|schedule):")
+                if name == "release-gate":
+                    # A tag-only push is the formal post-promotion gate. Any branch
+                    # push, or a push with branches, would turn merges into a full
+                    # matrix and must stay out.
+                    push = re.search(r"(?ms)^  push:\n(.*?)(?=^  \w)", events)
+                    self.assertIsNotNone(push, "the post-promotion tag trigger is missing")
+                    self.assertRegex(push[1], r'(?m)^    tags: \["v\*"\]$')
+                    self.assertNotRegex(push[1], r"(?m)^    branches:")
+                else:
+                    self.assertNotRegex(events, r"(?m)^  push:")
                 self.assertNotRegex(events, r"(?m)^      (draft|signpath_signing_policy|packages_only):")
                 self.assertNotRegex(text, r"gh release (create|edit|upload|delete)|snapcraft (upload|promote)|--submit\b|gh workflow run")
 
