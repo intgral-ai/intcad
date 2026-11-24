@@ -1906,7 +1906,7 @@ then the candidate scope is #214 + #224 only, matching the notes.
 chain measured on #224 `9f664c828f`:
 
 ```
-release.yml:186-193  inject-auto → staging_account_config.py inject-production
+release.yml:186-192  inject-auto → staging_account_config.py inject-production
                      → writes INTCAD_WORKOS_PUBLIC_CLIENT_ID / INTCAD_AUTHKIT_VERIFICATION_ORIGIN /
                        INTCAD_PRODUCT_HTTPS_ORIGIN + source/tuple markers to $GITHUB_ENV
 apps/solidcraft/src/account.rs:353-355  option_env! reads exactly those three names
