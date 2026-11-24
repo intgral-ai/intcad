@@ -102,14 +102,10 @@ def verify_execution(run, jobs, run_id, attempt, repo_id=None, mode="candidate",
     # gate that a maintainer's stable tag started at the promoted main commit; a manual
     # dispatch is diagnostic and never stands in.
     if mode == "tag":
-        # GitHub reports the tag name as `head_branch` for tag pushes (seen on other
-        # repositories), but older/edge responses can omit it. The manifest still has
-        # to say mode=tag and ref=refs/tags/vX.Y.Z, a branch push carries `main`, and
-        # the tag->SHA and main-ancestry checks run separately, so an omitted branch
-        # field is not a hole. A different branch or tag is refused.
-        branch = run.get("head_branch")
+        # A tag push reports the tag name in `head_branch`; the preflight tag
+        # `v0.1.3-preflight` produced run 45463965740 with exactly that shape.
         require(sha is not None and tag is not None and run.get("event") == "push"
-                and (branch in (None, "") or branch == tag) and run.get("head_sha") == sha,
+                and run.get("head_branch") == tag and run.get("head_sha") == sha,
                 "tag evidence is not a push of this tag at this commit")
     else:
         require(run.get("event") in {"pull_request", "merge_group"},
