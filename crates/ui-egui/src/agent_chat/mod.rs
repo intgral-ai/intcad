@@ -1436,6 +1436,11 @@ pub(crate) fn ai_sync_failed(app: &mut SolveApp, error: host_ai::AiError) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+fn authenticated_bridge_scope(app: &SolveApp) -> Option<solidcraft_engine::entitlement::AuthenticatedHostScope> {
+    app.commit_scope.as_ref().filter(|scope| app.has_commit_authority() && scope.is_provable()).cloned()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     disconnect(app);
     let Some(entry) = agents::current(app) else {
@@ -1491,6 +1496,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     } else {
         None
     };
+    let host_scope = authenticated_bridge_scope(app);
     let chat = &mut app.agent_chat;
     if chat.tools_port.is_none()
         && let Some(start) = chat.control_starter.as_mut()
@@ -1551,9 +1557,9 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
                 workflow_id,
                 bridge,
                 tools,
-                // Task 11's composition root supplies the authenticated host scope. Until then
-                // charged bridge tools stay fail-closed instead of trusting a source label.
-                host_scope: None,
+                // Only the installed, provable desktop authority can bind charged bridge tools.
+                // Without it the bridge retains its closed MCP authority.
+                host_scope,
                 instructions,
                 connection_auth: Arc::new(std::sync::Mutex::new(None)),
                 frozen_binding: Arc::new(std::sync::Mutex::new(None)),

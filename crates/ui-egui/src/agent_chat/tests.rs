@@ -14011,6 +14011,7 @@ mod mastra_backend_tests {
     ) -> (SolveApp, egui::Context, Arc<Mutex<test_support::Log>>, Arc<std::sync::mpsc::Sender<ControlRequest>>) {
         use super::mastra_worker_support::*;
         app.install_billing(Box::<BridgeTestBilling>::default(), bridge_test_budget());
+        app.install_review_store(crate::dfm_review::tests::test_operation_store());
         crate::control::test_support::TestAuthority::new("test-account", "test-installation", "test-session").install(&mut app);
         let program = super::mastra_peer_program().unwrap();
         let script_path = program.directory.join("bridge-peer");
@@ -14026,11 +14027,8 @@ mod mastra_backend_tests {
         config.workflow_id = "w".into();
         config.bridge = Some(crate::agent_chat::acp::McpBridge { cli: "/bin/true".into(), port: 1 });
         config.tools = Some(tools.clone());
-        config.host_scope = Some(solidcraft_engine::entitlement::AuthenticatedHostScope::new(
-            solidcraft_engine::entitlement::AccountId::new("test-account"),
-            solidcraft_engine::entitlement::InstallationId::new("test-installation"),
-            solidcraft_engine::entitlement::HostSessionBinding::new("test-session"),
-        ));
+        config.host_scope = agent_chat::authenticated_bridge_scope(&app);
+        assert!(config.host_scope.is_some(), "the installed desktop authority binds the bridge");
         let launch = runtime_client::RuntimeLaunch {
             executable: program.executable.clone(),
             args: vec![script_path.into_os_string()],

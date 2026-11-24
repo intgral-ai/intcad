@@ -57,8 +57,8 @@ use serde_json::{Value, json};
 use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps, run_document_steps_gated};
 use solidcraft_engine::entitlement::{
     AccountService, Admission, AuthenticatedHostScope, AuthorizationBound, BillingPort, BudgetTable, Capability, CommitDecision, CommitGate,
-    ConservativeDeadline, EntryCategory, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, Refusal, RefusalCode, ResultEvidence,
-    SettlementAction, TrustedContext, UpperBound, settlement_for,
+    ConservativeDeadline, EntryCategory, FreshIntent, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, OperationStore, Refusal,
+    RefusalCode, ResultEvidence, SettlementAction, TransportCorrelation, TrustedContext, UpperBound, settlement_for,
 };
 use solidcraft_engine::io::vfs;
 use solidcraft_engine::render::{Camera, StandardView};
@@ -934,18 +934,21 @@ fn remaining_covers(bound: Option<AuthorizationBound<'_>>, now: MonotonicInstant
     }
 }
 
-/// Only a positive journal read can establish that an unmarked Direct Control request is
-/// fresh. A retry after a lost reply can carry neither context nor admission. Without a
-/// journal, require the original server lookup to succeed rather than assuming freshness.
+/// Before `begin`, the journal must prove a bridge intent or establish that an unmarked Direct
+/// Control request is fresh. A retry after a lost reply can carry neither context nor admission;
+/// other paths retain their server operation lookup.
 fn check_operation_before_admission(
-    app: &SolveApp,
+    store: Option<&mut (dyn OperationStore + Send + 'static)>,
     req: &ControlRequest,
     scope: &AuthenticatedHostScope,
     account: &dyn AccountService,
     operation: &OperationId,
 ) -> Result<(), Refusal> {
+    if req.entry == EntryCategory::GuiBridgeMcp {
+        return register_bridge_before_admission(store, req, operation);
+    }
     let journal_terminal = if req.entry == EntryCategory::DirectControl
-        && let Some(store) = app.review_store.as_ref()
+        && let Some(store) = store
     {
         match store.load(operation) {
             Ok(None)
@@ -970,14 +973,53 @@ fn check_operation_before_admission(
     }
 }
 
+/// Register the new, bound bridge call in the same journal used by Direct Control. An empty
+/// journal read alone does not admit this forwarded request: it must produce a durable intent
+/// for this exact operation and scope. The row is not a grant; `begin` still refuses duplicates
+/// and supplies the settlement credential for subsequent live operation-state reads.
+fn register_bridge_before_admission(
+    store: Option<&mut (dyn OperationStore + Send + 'static)>,
+    req: &ControlRequest,
+    operation: &OperationId,
+) -> Result<(), Refusal> {
+    let trusted =
+        req.trusted.as_ref().ok_or_else(|| Refusal::new(RefusalCode::AuthUnavailable, "the bridge call has no authenticated host context"))?;
+    let unavailable = || Refusal::new(RefusalCode::AuthUnavailable, "the durable operation journal is unavailable");
+    let conflict = || Refusal::new(RefusalCode::OperationConflict, "this bridge operation is already registered or has a conflicting durable intent");
+    let store = store.ok_or_else(unavailable)?;
+    match store.load(operation).map_err(|_| unavailable())? {
+        Some(record) if record.status.is_terminal() => {
+            return Err(Refusal::new(RefusalCode::OperationFinalized, "this operation is already settled"));
+        }
+        Some(_) => return Err(conflict()),
+        None if req.work_started.load(Ordering::Relaxed) => return Err(conflict()),
+        None => {}
+    }
+    let intent =
+        FreshIntent::new(operation.clone(), trusted.scope().clone(), TransportCorrelation::new(format!("gui-bridge:{}", operation.as_str())));
+    let record = store.persist_fresh_intent(&intent, trusted.capability(), req.entry).map_err(|_| conflict())?;
+    if record.operation != *operation
+        || record.account != *trusted.scope().account()
+        || record.capability != trusted.capability()
+        || record.entry != req.entry
+        || record.status != OperationStatus::Held
+        || record.grant_id.is_some()
+        || record.review_run_id.is_some()
+    {
+        return Err(conflict());
+    }
+    Ok(())
+}
+
 /// Scheduling check before a grant is taken or work starts.
 ///
 /// The current account snapshot is re-read (so a revocation observed before scheduling stops the
 /// request), the forwarded scope must match the host's current account/installation/session, and
 /// a measured request window must still be open. A fresh host-minted Direct Control operation
-/// skips the server operation lookup; recovery keeps it. The grant's own
+/// can prove freshness from an empty journal read. A fresh forwarded bridge operation must
+/// register its exact durable intent instead. The grant's own
 /// expiry is checked by [`authority_refusal`] once the server has admitted the operation.
-fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Refusal> {
+fn authority_snapshot_refusal(app: &mut SolveApp, req: &ControlRequest) -> Option<Refusal> {
     if free_entry(req.entry) || req.helper.is_some() {
         return None;
     }
@@ -991,7 +1033,7 @@ fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Re
     if !app.budget.is_verified(capability, req.entry) {
         return Some(Refusal::new(RefusalCode::UnsafeToStart, "this controlled entry has no verified safe-stop bound"));
     }
-    let Some((scope, account, clock)) = host_authority(app) else {
+    let (Some(scope), Some(account), Some(clock)) = (app.commit_scope.as_ref(), app.commit_account.as_deref(), app.commit_clock.as_deref()) else {
         return Some(Refusal::new(RefusalCode::AuthUnavailable, "the host has no commit authority for this controlled entry"));
     };
     if !scope.is_provable() {
@@ -1023,11 +1065,6 @@ fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Re
         Ok(required) => required,
         Err(refusal) => return Some(refusal),
     };
-    if let Some(operation) = req.operation.as_ref()
-        && let Err(refusal) = check_operation_before_admission(app, req, scope, account, operation)
-    {
-        return Some(refusal);
-    }
     // A forwarded request already carries a measured window; it must cover the whole operation
     // before any grant is taken. The grant path is checked again in `authority_refusal`.
     if let Some(deadline) = req.deadline.as_ref() {
@@ -1035,6 +1072,11 @@ fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Re
         if let Err(refusal) = remaining_covers(Some(bound), now, required) {
             return Some(refusal);
         }
+    }
+    if let Some(operation) = req.operation.as_ref()
+        && let Err(refusal) = check_operation_before_admission(app.review_store.as_deref_mut(), req, scope, account, operation)
+    {
+        return Some(refusal);
     }
     None
 }
@@ -3296,8 +3338,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use solidcraft_engine::entitlement::{
-        FreshIntent, OperationRecord, OperationStore, OperationStoreError, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome,
-        SettlementIntent, TransportCorrelation, UnsettledOperation,
+        OperationRecord, OperationStoreError, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, SettlementIntent, UnsettledOperation,
     };
 
     /// Script the existing journal's read for one operation. Classification must not write it.
@@ -3515,19 +3556,50 @@ mod tests {
     }
 
     #[test]
-    fn a_forwarded_bridge_mint_is_not_proof_of_pre_admission_state() {
+    fn a_forwarded_bridge_mint_requires_an_available_journal_before_admission() {
         let (mut app, authority, admits, releases) = app_with_lookup_before_admission();
         let operation = OperationId::mint_from_entropy(&[7; 16]).unwrap();
         let trusted = TrustedContext::mint(authority.scope(), operation.as_str(), Capability::Mcp, EntryCategory::GuiBridgeMcp).unwrap();
         let (mut req, _) = ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"parameters.list"}), trusted, None, None);
-        // The local journal is readable but has no row for this fresh operation. Unlike
-        // Direct Control, the bridge cannot yet use it to prove the pre-admission state.
-        app.install_review_store(Box::new(ControlJournal(operation, Ok(None))));
-        let refusal = admit_once(&mut app, &mut req).expect_err("host provenance alone must not admit a charged tool");
-        assert_eq!(refusal.code, RefusalCode::AuthUnavailable);
-        assert_eq!(authority.operation_lookups(), 1);
+        for store in [None, Some(Box::new(ControlJournal(operation, Err(OperationStoreError::Unavailable))) as Box<dyn OperationStore + Send>)] {
+            app.review_store = store;
+            let refusal = admit_once(&mut app, &mut req).expect_err("host provenance alone must not admit a charged tool");
+            assert_eq!(refusal.code, RefusalCode::AuthUnavailable);
+        }
+        assert_eq!(authority.operation_lookups(), 0, "an unavailable journal cannot be rescued by a server lookup");
         assert_eq!(admits.load(Ordering::Relaxed), 0);
         assert_eq!(releases.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_forwarded_bridge_mint_cannot_reuse_an_existing_journal_row() {
+        let (mut app, authority, admits, releases) = app_with_lookup_before_admission();
+        let operation = OperationId::mint_from_entropy(&[8; 16]).unwrap();
+        let trusted = TrustedContext::mint(authority.scope(), operation.as_str(), Capability::Mcp, EntryCategory::GuiBridgeMcp).unwrap();
+        let (mut req, _) = ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"parameters.list"}), trusted, None, None);
+        let mut record =
+            OperationRecord::held(operation.clone(), authority.scope().account().clone(), Capability::Mcp, EntryCategory::GuiBridgeMcp, 0);
+        for (status, code) in [(OperationStatus::Held, RefusalCode::OperationConflict), (OperationStatus::Charged, RefusalCode::OperationFinalized)] {
+            record.status = status;
+            app.install_review_store(Box::new(ControlJournal(operation.clone(), Ok(Some(record.clone())))));
+            assert_eq!(admit_once(&mut app, &mut req).unwrap_err().code, code);
+        }
+        assert_eq!(authority.operation_lookups(), 0);
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_bridge_from_a_prior_session_cannot_register_an_operation() {
+        let (mut app, _authority, admits, _) = app_with_lookup_before_admission();
+        let prior = test_support::TestAuthority::new("test-account", "test-installation", "prior-session");
+        let operation = OperationId::mint_from_entropy(&[9; 16]).unwrap();
+        let trusted = TrustedContext::mint(prior.scope(), operation.as_str(), Capability::Mcp, EntryCategory::GuiBridgeMcp).unwrap();
+        let (mut req, _) = ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"parameters.list"}), trusted, None, None);
+        app.install_review_store(crate::dfm_review::tests::test_operation_store());
+        assert_eq!(admit_once(&mut app, &mut req).unwrap_err().code, RefusalCode::AuthRequired);
+        assert!(app.review_store.as_ref().unwrap().load(&operation).unwrap().is_none());
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
     }
 
     #[test]

@@ -689,8 +689,8 @@ pub struct MastraConfig {
     /// gate, undo ownership and document state as every other chat tool call.
     pub tools: Option<std::sync::mpsc::Sender<crate::control::ControlRequest>>,
     /// The host's authenticated account/installation/session binding for forwarded Intcad tool
-    /// calls. The desktop composition root supplies it (Task 11); without it charged bridge
-    /// tools stay fail-closed. It never comes from the runtime or a request body.
+    /// calls. Without a verified desktop scope, charged bridge tools stay fail-closed.
+    /// It never comes from the runtime or a request body.
     pub host_scope: Option<solidcraft_engine::entitlement::AuthenticatedHostScope>,
     /// Chat instructions copied into every new session.
     pub instructions: String,

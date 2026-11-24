@@ -183,8 +183,8 @@ struct ChatBackend {
     state: Arc<BridgeState>,
     events: Arc<Mutex<VecDeque<Event>>>,
     next_call: Arc<AtomicU64>,
-    /// Host-minted provenance, `None` keeps the bridge closed until Task 11 composes a real
-    /// authority. It is never read from the runtime's wire messages.
+    /// Host-minted provenance. Without a verified desktop scope the bridge stays closed to
+    /// charged calls. Provenance is never read from the runtime's wire messages.
     provenance: Option<HostProvenance>,
     /// The logical call the server announced for the current request. Replaced on every call
     /// and cleared at [`Backend::end_tool_call`], so protocol/resource paths cannot inherit it.

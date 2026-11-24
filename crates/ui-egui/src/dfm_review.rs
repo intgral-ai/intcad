@@ -1149,4 +1149,4 @@ fn unit_ink(state: &str, ink: Color32) -> Color32 {
 
 #[cfg(test)]
 #[path = "dfm_review_tests.rs"]
-mod tests;
+pub(crate) mod tests;

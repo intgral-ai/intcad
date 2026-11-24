@@ -173,6 +173,10 @@ impl ReviewLedger {
 
 struct LedgerHandle(ReviewLedger);
 
+pub(crate) fn test_operation_store() -> Box<dyn OperationStore + Send> {
+    Box::new(LedgerHandle(ReviewLedger::default()))
+}
+
 impl OperationStore for LedgerHandle {
     fn save_new(&mut self, record: &OperationRecord) -> Result<SaveOutcome, OperationStoreError> {
         self.0.records.lock().expect("records").insert(record.operation.as_str().to_string(), record.clone());
