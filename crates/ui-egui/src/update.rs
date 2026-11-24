@@ -26,7 +26,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::SolveApp;
-pub use crate::distribution::{LATEST_API, RELEASES_PAGE, REPO};
+#[cfg(test)]
+pub(crate) use crate::distribution::{LATEST_API, RELEASES_PAGE};
 use crate::distribution::{RELEASE_HISTORY, is_release_url, version_release_url};
 use crate::theme::Tokens;
 use crate::ui_kit;

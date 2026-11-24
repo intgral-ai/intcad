@@ -222,6 +222,10 @@ const NON_DISTRIBUTION_URLS: &[(&str, &[&str])] = &[
     ),
 ];
 
+// This is not a general URL policy. The Rust guard looks for lowercase HTTP(S) schemes
+// inside individual literals. It does not reconstruct URLs split across literals,
+// including `format!`/`concat!` without a complete scheme in any piece. It also does not
+// catch uppercase schemes, `ftp://`, `s3://`, bare host names, or non-Rust files unless pinned below.
 fn web_url_literal(value: &str) -> bool {
     value.contains("https://") || value.contains("http://")
 }
@@ -353,36 +357,53 @@ fn source_url_literals_are_distribution_config_or_explicitly_allowed() {
     assert!(remaining.is_empty(), "Remove stale URL exceptions: {remaining:#?}");
 }
 
+// These files put each URL on its own line. Ignore comments and consume exactly one
+// complete line per pin; an extra or differently written element must remain unconsumed.
+fn check_metadata_urls(source: &str, fields: &[(&str, &str, &str)]) -> Result<(), String> {
+    let mut uncommented = String::new();
+    let mut rest = source;
+    while let Some((before, comment)) = rest.split_once("<!--") {
+        uncommented.push_str(before);
+        rest = comment.split_once("-->").ok_or("unterminated metadata comment")?.1;
+    }
+    uncommented.push_str(rest);
+    let mut url_lines: Vec<_> = uncommented.lines().map(str::trim).filter(|line| web_url_literal(line)).collect();
+    for (prefix, suffix, expected) in fields {
+        let expected = format!("{prefix}{expected}{suffix}");
+        let index = url_lines.iter().position(|line| *line == expected).ok_or_else(|| format!("missing pinned line {expected:?}"))?;
+        url_lines.remove(index);
+    }
+    if !url_lines.is_empty() {
+        return Err(format!("unpinned metadata URL lines: {url_lines:?}"));
+    }
+    Ok(())
+}
+
 #[test]
-fn installer_metadata_uses_the_distribution_urls() {
-    use crate::distribution::{APPSTREAM_SCREENSHOT, ISSUE_TRACKER, PROJECT_HOME, PROJECT_README, RELEASE_HISTORY};
+fn metadata_pin_rejects_a_second_image_even_with_a_different_element_end() {
+    use crate::distribution::APPSTREAM_SCREENSHOT;
+
+    let fields = [("<image>", "</image>", APPSTREAM_SCREENSHOT)];
+    let image = format!("<image>{APPSTREAM_SCREENSHOT}</image>");
+    assert_eq!(check_metadata_urls(&image, &fields), Ok(()));
+    let extra = format!("<image>{APPSTREAM_SCREENSHOT}</image >");
+    let both = format!("{image}\n{extra}");
+    assert_eq!(check_metadata_urls(&both, &fields), Err(format!("unpinned metadata URL lines: [{extra:?}]")));
+}
+
+#[test]
+fn shipped_metadata_uses_the_distribution_urls() {
+    use crate::distribution::{APPSTREAM_SCREENSHOT, ISSUE_TRACKER, PROJECT_HOME, PROJECT_README, RELEASE_HISTORY, WEB_PREVIEW_IMAGE};
 
     const LINUX: &str = "assets/platforms/linux/ai.intgral.intcad.metainfo.xml.in";
     const WINDOWS: &str = "assets/platforms/windows/solidcraft.wxs";
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-
-    // These templates put one field per line. Ignore commented-out fields and require exactly
-    // one value per field so duplicating a correct entry cannot hide a stale destination.
-    fn pin(root: &Path, file: &str, fields: &[(&str, &str, &str)]) {
+    let pin = |file, fields: &[(&str, &str, &str)]| {
         let source = std::fs::read_to_string(root.join(file)).unwrap();
-        let mut uncommented = String::new();
-        let mut rest = source.as_str();
-        while let Some((before, comment)) = rest.split_once("<!--") {
-            uncommented.push_str(before);
-            rest = comment.split_once("-->").expect("unterminated metadata comment").1;
-        }
-        uncommented.push_str(rest);
-        let mut url_lines: Vec<_> = uncommented.lines().map(str::trim).filter(|line| web_url_literal(line)).collect();
-        for (prefix, suffix, expected) in fields {
-            let actual: Vec<_> = url_lines.iter().filter_map(|line| line.strip_prefix(prefix).and_then(|line| line.strip_suffix(suffix))).collect();
-            assert_eq!(actual, [*expected], "{file}: {prefix} must match distribution.rs");
-            url_lines.retain(|line| !line.starts_with(prefix));
-        }
-        assert!(url_lines.is_empty(), "{file}: unpinned metadata URL lines: {url_lines:?}");
-    }
+        check_metadata_urls(&source, fields).unwrap_or_else(|error| panic!("{file}: {error}"));
+    };
 
     pin(
-        &root,
         LINUX,
         &[
             (r#"<url type="homepage">"#, "</url>", PROJECT_HOME),
@@ -392,7 +413,6 @@ fn installer_metadata_uses_the_distribution_urls() {
         ],
     );
     pin(
-        &root,
         WINDOWS,
         &[
             (r#"<Wix xmlns=""#, "\"", "http://wixtoolset.org/schemas/v4/wxs"), // WiX XML namespace.
@@ -400,6 +420,16 @@ fn installer_metadata_uses_the_distribution_urls() {
             (r#"<Property Id="ARPURLINFOABOUT" Value=""#, r#"" />"#, PROJECT_HOME),
             (r#"<Property Id="ARPURLUPDATEINFO" Value=""#, r#"" />"#, RELEASE_HISTORY),
             (r#"<Property Id="ARPHELPLINK" Value=""#, r#"" />"#, ISSUE_TRACKER),
+        ],
+    );
+    // Trunk ships this HTML with the browser build, so pin its canonical sharing URL
+    // and both social preview images alongside the installer metadata.
+    pin(
+        "apps/solidcraft-web/index.html",
+        &[
+            (r#"<meta property="og:url" content=""#, "\">", PROJECT_HOME),
+            (r#"<meta property="og:image" content=""#, "\">", WEB_PREVIEW_IMAGE),
+            (r#"<meta name="twitter:image" content=""#, "\">", WEB_PREVIEW_IMAGE),
         ],
     );
 }

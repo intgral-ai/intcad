@@ -67,6 +67,7 @@ macro_rules! issues_path {
 }
 
 /// The public distribution repository, exposed for updater test fixtures.
+#[cfg(test)]
 pub(crate) const REPO: &str = releases_repo!();
 
 /// The update feed. The Migration Agent supplies the closed-source channel's public JSON URL.
@@ -112,4 +113,11 @@ pub(crate) fn is_release_url(url: &str) -> bool {
 /// supplies the versioned release URL pattern for the closed-source channel.
 pub(crate) fn version_release_url(version: &str) -> String {
     format!("{RELEASE_PREFIX}tag/v{version}")
+}
+
+/// Build a direct download URL for a known published `tag` (including `v`) and `asset` filename.
+/// The Migration Agent supplies the asset URL pattern for the closed-source channel.
+/// The updater continues to prefer the exact URLs in the feed instead of constructing them.
+pub fn asset_download_url(tag: &str, asset: &str) -> String {
+    format!("{RELEASE_PREFIX}download/{tag}/{asset}")
 }

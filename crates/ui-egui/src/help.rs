@@ -4,7 +4,7 @@
 //! opens a local editable report draft.
 
 use crate::SolveApp;
-pub use crate::distribution::DOCS_URL;
+pub(crate) use crate::distribution::DOCS_URL;
 use crate::ui_kit;
 use crate::ui_kit::{Container, Surface};
 
