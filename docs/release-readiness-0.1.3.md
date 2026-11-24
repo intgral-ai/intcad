@@ -1285,9 +1285,9 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
 ### 15.3 Current release readiness: closed-source cutover
 
 **NO-GO.** No frozen candidate SHA, run/attempt or acceptance manifest is recorded. The
-`develop` snapshot is `6032271178140b356e4a7ed2e9bb0f1352d81048`; a read-only open-PR listing
-confirmed the feature heads in §15.2, but did not identify the Migration Agent's delivery PRs.
-That does not establish their absence in another workspace or repository. Baseline checkout
+`develop` snapshot is `6032271178140b356e4a7ed2e9bb0f1352d81048`. The Migration Agent has
+handed off local commit `5f7a3462075fc4a83b38d0ce97f4666d58c1fde1`, not a landed PR or a
+candidate. Baseline checkout
 evidence still has old `intgral-ai/intcad` release URLs in the updater fixtures and `PUBLIC_KEY`
 set to `None` in `crates/ui-egui/src/update/install.rs`. The baseline `release.yml` is a
 nonpublishing build, not proof of the new production signing or publication path.
@@ -1308,7 +1308,7 @@ This identifies the old installers only; no cutover, install or migration verdic
 The Release Manager requested the two owner handoffs in their respective local sessions:
 Login Agent for Gate B and integration, Migration Agent for the isolated build location,
 distribution, signing, migration and rights evidence. Neither request is a cutover or
-publication authorization. Handoff evidence is pending.
+publication authorization. Login handoff is pending; migration delivery review is below.
 
 Runtime scope for the current packaging integration is the built-in Mastra agent, including
 bundled Node and required Skills (`mastra-agent/`, #214). The legacy workflow runtime
@@ -1343,3 +1343,47 @@ smoke or green CI does not replace real installed-client acceptance.
 **Approved deferrals:** Windows Authenticode, Apple Developer ID and notarization. These do not
 block on a certificate request and do not waive Minisign, real installation, or OS-policy
 evidence. A real launch prevented by policy is blocked, not PASS.
+
+#### Migration handoff and review
+
+- **Delivery:** `feat/closed-source-distribution` at `5f7a3462075fc4a83b38d0ce97f4666d58c1fde1`,
+  based on `6032271178`. Source, handoff and audit are local to the Migration Agent's worktree.
+  A read-only merge simulation found no textual conflicts with the recorded `develop` snapshot,
+  #224 `0519d3aba6`, #221 plus local sizing `b002647acb`, or #214 plus local verdict fix
+  `ee17261b82` individually. This does not establish semantic compatibility on the integrated
+  checkout and does not change the separate Login Agent overlap in §15.2.
+- **Local checks only:** 10 publisher verifier fixtures passed from the pinned commit;
+  `actionlint` on `publish-release.yml` and `git diff --check` exited zero. No hosted publisher,
+  credential exchange, key generation or cross-repo upload was run.
+- **Provenance mismatch — BLOCKED:** the delivered publisher accepts a standalone
+  `release.yml` run, but §8.1 requires the packages from the same stable `release-gate` run
+  that was accepted. The publisher's handoff must bind the actual tested checkout, approved
+  run and attempt, and accepted artifact digests. The hardcoded source repository condition
+  also needs reconciliation with the approved private source location.
+- **Independent standards review — CHANGES REQUIRED:** `publish-release.yml` mixes evidence
+  into the flat checksum directory, reads a key file different from the client/test file, and
+  permits a public release before full read-back. The publisher must separate staging and
+  publication, require every read-back digest, and treat dispatch inputs as data. New updater
+  errors also require the repository's locale handling.
+- **Independent spec review — CHANGES REQUIRED:** the verifier does not require the whole
+  14-pair set, the original artifact hashes or contract identity. A local verifier fixture
+  with `build.json` removed still exited 0 and emitted `"build_revisions": {}`. The new guide
+  still leaves part of the old download path in place; user-facing v0.1.2 instructions must
+  not rely on its old in-app Download button. Re-review the Migration Agent's next pinned
+  commit. Local verifier fixtures are not evidence that the publisher can safely publish.
+- **Trust and distribution — BLOCKED:** the migration commit changes the feed and adds a
+  signing contract; the embedded key remains `None`, the public-key file is a placeholder,
+  and no approved signing identity or publisher environment was supplied. The proposed
+  destination is not publicly reachable. No received path grants an exception to Minisign
+  or moves migration out of the 0.1.3 scope.
+- **Legacy migration — NOT TESTED:** pinned v0.1.2 source fetches the old repository's latest
+  endpoint and only accepts its release asset URLs. It expects `SHA256SUMS.txt`, while
+  v0.1.2's public release serves `SHA256SUMS`; its production signing key is `None`,
+  so it does not itself require Minisign. The Migration Agent proposes an official download
+  and in-place installation fallback after cutover. It is not approved or verified on
+  the exact old and candidate installers. The new candidate must enforce Minisign for
+  its own in-app updates.
+- **Rights and private CI — BLOCKED:** the handoff raises shipped font and asset notices,
+  agent dependency attribution and legacy workflow runtime licensing. It is a baseline
+  audit, not legal clearance or a final installer inventory. A local worktree does not
+  prove an isolated hosted build or cross-repo publisher can run.
