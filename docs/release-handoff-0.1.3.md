@@ -1,6 +1,6 @@
 # v0.1.3 release handoff (for the signing and publication approvals)
 
-Status: **pre-candidate.** This page is the concise handoff that goes to the approving
+Status: **pre-candidate; five integration PRs merged, two open.** This page is the concise handoff that goes to the approving
 owner. It is updated as facts land; a row that has not been run says NOT RUN, and nothing
 here is a publication authorization.
 
@@ -14,11 +14,20 @@ here is a publication authorization.
 | Candidate SHA | **NOT FROZEN** — must be the tested merge/group SHA of the `release/v0.1.3` → `main` promotion PR |
 | Promotion branch | `release/v0.1.3` (local `994b280dda`, to be rebased onto the merged `develop`) |
 
-## Merged pull requests
+## Merged pull requests (develop)
 
-To be filled from the actual merge history when the candidate is frozen. Planned order:
-#226 (validation race), #214 (packages carry the agent), #224 (login), the Migration
-Agent's signed-distribution PRs, #221 (Assistant), #223 (slash commands).
+| PR | Squash merge |
+|---|---|
+| #226 — validation race fix | `e6ba5b1bfd` |
+| #231 — bounded `apt-get update` in CI | `70e0af0ae7` |
+| #221 — Assistant at the bottom centre, native shape | `1d523a54a7` |
+| #230 — signed updates and draft-only publisher | `e8c4b1be2d` |
+| #229 — slash commands in the Assistant | `f18a9aec27` |
+
+`develop`'s full CI on `f18a9aec27` succeeded. Still open: **#214** (packages carry the
+built-in agent; rebased as `d4819c6a9d`, CI running) and **#224** (login; CI on `5776381321`).
+The promotion PR **#237** (`release/v0.1.3` → `main`) exists as a draft and has not started the
+formal gate.
 
 ## Gates
 
