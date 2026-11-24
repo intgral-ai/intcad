@@ -70,8 +70,10 @@ built with an anonymous account"). The repository variable must hold the JSON tu
 `{"INTCAD_WORKOS_PUBLIC_CLIENT_ID": ..., "INTCAD_AUTHKIT_VERIFICATION_ORIGIN":
 "https://<host>", "INTCAD_PRODUCT_HTTPS_ORIGIN": "https://<host>"}`. It is public configuration,
 not a secret, and must not be committed. `scripts/ci/verify_embedded_account.py` verifies the
-built binary embeds exactly that tuple without printing secrets. Measured today: the repository
-variables list is empty, so the gate will fail closed until the owner sets it.
+built binary embeds exactly that tuple without printing secrets. As of 2026-11-24T17:40Z the repository variable **is set** and validates: three keys,
+`client_` + 33 alphanumerics, AuthKit origin `https://cuddly-globe-52.authkit.app`, product origin
+`https://api-production-02512b4a.up.railway.app`, both bare HTTPS origins. The candidate still has
+to prove the same tuple is embedded in its binaries (`verify_embedded_account.py`).
 
 ## Publication approval
 
