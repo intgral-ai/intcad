@@ -2728,3 +2728,12 @@ Byte counts per ref: `develop`, `#214`, `#224` = 3589 (inside the limit); the in
 = 3730. The repository checks run `xtask skills`, so merging the integration branch as it stands
 would turn the required `ci` red. The Login/Build side was asked to trim or split the skill below
 3600 and to re-run `cargo run -p xtask -- skills` before pushing the final head.
+
+**The integration branch's skill-length defect is fixed locally (awaiting its push).** The Login
+Agent trimmed `skills/solidcraft-crash-safety/SKILL.md` from **3730 → 3538 bytes** (under the 3600
+limit) by removing duplicated wording from the unsafe-exception paragraph, keeping every file,
+route and the suspend-clock exception, without splitting the skill. Their local
+`cargo run -p xtask -- skills` reports `skills: AGENTS.md and 17 skills are consistent` (rc=0), on
+local head `3c00b693e6` (not pushed yet). Verification is the pushed head's own `ci` plus my
+`xtask skills` run on the composed tree after the final `develop` merge; the fix must not be lost
+when `develop` (with #238/#239) is merged back in.
