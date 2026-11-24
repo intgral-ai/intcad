@@ -799,15 +799,21 @@ impl ControlRenewalJob {
     }
 }
 
+fn desktop_budget() -> BudgetTable {
+    let mut budget = BudgetTable::unverified_default();
+    // docs/dfm-review-safe-stop-bound.md supports the 600 s engine ceiling for the measured
+    // Review panel envelope. Every other controlled pair stays unverified.
+    budget.set_verified(Capability::Review, EntryCategory::ReviewPanel, Duration::from_secs(600));
+    budget
+}
+
 /// The host-owned account runtime. `service` stays `None` until a completed sign-in or the
 /// bounded online restart check proves the current session's scope; a local persisted pair alone
 /// never installs it.
 pub struct AccountRuntime {
     credentials: CredentialSession,
     ledger: Option<FileOperationStore>,
-    /// Measured safe-stop bounds for controlled entries. Retained unverified until a reviewed
-    /// billing adapter and its evidence exist; nothing in this task makes a bound verified.
-    #[allow(dead_code)]
+    /// Measured safe-stop bounds for desktop controlled entries.
     budget: BudgetTable,
     clock: Option<Arc<dyn MonotonicClock + Send + Sync>>,
     service: Option<Box<dyn AccountService + Send + Sync>>,
@@ -907,7 +913,7 @@ impl AccountRuntime {
         Self {
             credentials,
             ledger,
-            budget: BudgetTable::unverified_default(),
+            budget: desktop_budget(),
             clock: Some(Arc::new(SystemMonotonicClock::new())),
             service: None,
             service_proof: None,
@@ -1012,8 +1018,7 @@ impl AccountRuntime {
         })
     }
 
-    /// The current safe-stop bounds, still unverified in this task.
-    #[allow(dead_code)]
+    /// The current desktop safe-stop bounds.
     pub fn budget(&self) -> &BudgetTable {
         &self.budget
     }
@@ -2135,6 +2140,7 @@ pub fn install(app: &mut SolveApp, runtime: AccountRuntime, startup: AccountStar
     } else {
         solidcraft_engine::note!("account: no account session restored; CAD stays anonymous and offline");
     }
+    app.install_budget(runtime.budget().clone());
     // Start the port while the runtime can still supply the ledger path. Recovery opens its own
     // handle on the worker; the window gets the existing handle for normal Review queries.
     let mut port = DesktopAccountPort::new(runtime, &startup);
@@ -4688,7 +4694,24 @@ mod tests {
     }
 
     #[test]
-    fn the_app_installs_restart_authority_but_paid_entries_still_need_bounds() {
+    fn desktop_budget_verifies_only_review_panel() {
+        use solidcraft_engine::entitlement::UpperBound;
+
+        let runtime = AccountRuntime::with_session(CredentialSession::without_persistence());
+        for capability in Capability::ALL {
+            for entry in EntryCategory::CONTROLLED {
+                let expected = if (capability, entry) == (Capability::Review, EntryCategory::ReviewPanel) {
+                    UpperBound::Verified(Duration::from_secs(600))
+                } else {
+                    UpperBound::Unverified
+                };
+                assert_eq!(runtime.budget().bound(capability, entry), expected, "{capability:?}/{entry:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn proved_restart_passes_the_review_bound_gate_but_not_the_control_bound_gate() {
         let runtime = verified_restart_runtime(active_session());
         let startup = runtime.startup();
         let mut app = solidcraft_ui_egui::SolveApp::new(solidcraft_engine::Session::default(), solidcraft_ui_egui::Services::default());
@@ -4700,7 +4723,8 @@ mod tests {
 
         let operation = OperationId::parse("op_bound_fixture").unwrap();
         let review = solidcraft_ui_egui::dfm_review::start_with_operation(&mut app, operation).unwrap_err();
-        assert_eq!(review, "UNSAFE_TO_START: this Review path has no verified safe-stop bound");
+        // Reaching the journal gate proves both the bound and the verified authority were installed.
+        assert_eq!(review, "AUTH_UNAVAILABLE: no durable Review journal is installed; the run cannot be bound before dispatch");
         let (mut control, _) = solidcraft_ui_egui::ControlRequest::trusted_control("engine.execute", json!({"command": "document.inspect"}));
         let control::Outcome::Done(reply) = control::handle(&mut app, &egui::Context::default(), &mut control) else {
             panic!("expected an immediate refusal");
@@ -4708,8 +4732,6 @@ mod tests {
         assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart");
         assert_eq!(reply["error"], "this controlled entry has no verified safe-stop bound");
 
-        let (gui, _) = solidcraft_ui_egui::ControlRequest::trusted_gui("engine.execute", json!({"command": "document.inspect"}));
-        assert!(matches!(control::admit_control_request(&gui, &BudgetTable::unverified_default(), &mut NoBilling), Admission::Allowed));
         app.end_controlled_session();
         app.account.shutdown();
     }
@@ -4735,8 +4757,10 @@ mod tests {
         let app = solidcraft_ui_egui::SolveApp::new(solidcraft_engine::Session::default(), solidcraft_ui_egui::Services::default());
         assert!(!app.account.is_installed());
         assert!(!app.account.view().sign_in_visible);
+        let runtime = AccountRuntime::with_session(CredentialSession::without_persistence());
         let (gui, _) = solidcraft_ui_egui::ControlRequest::trusted_gui("engine.execute", json!({"command": "document.inspect"}));
-        assert!(matches!(control::admit_control_request(&gui, &BudgetTable::unverified_default(), &mut NoBilling), Admission::Allowed));
+        assert_eq!(gui.entry_category(), EntryCategory::HumanGuiFree);
+        assert!(matches!(control::admit_control_request(&gui, runtime.budget(), &mut NoBilling), Admission::Allowed));
     }
 
     #[test]
