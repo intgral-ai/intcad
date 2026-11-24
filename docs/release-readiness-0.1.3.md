@@ -1360,8 +1360,16 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   **Regression evidence:** the green `develop` Windows job (`138141577913`, run 45299000127)
   shows `PASS: assistant web view`, with **zero** "native page edges differ" lines and no
   hit-test timeout. So the ~4 s UI-thread delay and the 7 px bottom mismatch are introduced
-  in #224's range, not load noise. Both are reported to the login owner; the harness change
-  records them rather than hiding them. A new simulation at local
+  in #224's range, not load noise.
+  **Cause and fix.** The 7 px came from publishing `agent_chat:web` with the panel's
+  pre-inset rect while the native child is placed after the custom title bar's resize-zone
+  inset: the child was placed correctly, the published rect was 7 px taller (`panel.rs`
+  vs `web::placement`). `web::placement` now publishes the rect the native view is actually
+  given (`5580bf2976`), with layout, placement and the 2 px tolerance unchanged;
+  `cargo check -p solidcraft-ui-egui --profile ci` compiled 233 crates cleanly. The ~4 s
+  delay matches DX12 surface reconfiguration on the window thread after maximize
+  (`WindowEvent::Resized → surface.configure`), unchanged by this PR, with no account or
+  WebView2 work in that probe; it is recorded, not called a product regression. A new simulation at local
   `b002647acb` and `ee17261b82` still finds those conflicts with `0519d3aba6`, but no conflict
   when either is tested against `6032271178` or when the two are tested against each other.
 - **macOS — NOT TESTED.** Follow the [Mac acceptance runbook](release-acceptance-macos-0.1.3.md)
