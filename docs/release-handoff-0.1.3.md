@@ -86,6 +86,31 @@ triggered themselves; admin bypass stays disabled and no agent may approve on a 
 behalf. A Linear comment counts only when it names the **version and the candidate SHA**
 and approves publication of the verified draft; anything less is not authorization.
 
+## Release sequence is forced by workflow registration
+
+`workflow_dispatch` only accepts a workflow that exists on the **default branch** (`main`),
+measured 2026-11-24T17:45Z:
+
+```
+main:  release-gate.yml present (18263 B), release.yml present (31275 B)
+       release.yml on main declares only `beta_three_platforms` (no account inputs)
+       publish-release.yml  absent
+       staging-packages.yml absent
+develop: publish-release.yml present (5264 B), staging-packages.yml absent
+```
+
+So `Package builds (nonpublishing)` on `main` cannot start a staging build either: its `main`
+copy accepts no `staging_account_config` input. Consequences:
+
+1. Gate B (staging installation and sign-in acceptance) **cannot be dispatched before #237
+   merges into `main`**; the merged promotion carries `staging-packages.yml` and the account
+   inputs, after which `Staging desktop packages (nonpublishing)` becomes dispatchable.
+2. `publish-release.yml` (draft-only publisher, from #230) likewise becomes dispatchable only
+   after #237 is on `main`. The signing approval therefore necessarily follows the promotion,
+   the formal gate and Gate B — never before them.
+3. This is a GitHub registration rule, not a gate we may bypass: no local or ad-hoc build may
+   substitute for the Gate B run.
+
 ## Open blockers
 
 1. CI runs for the open release PRs are still in progress.
