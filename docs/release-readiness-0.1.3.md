@@ -1319,8 +1319,14 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   differ from the hidden reference, `(802,639)` = `(28,28,28)` and `(800,473)` =
   `(133,133,133)`, and the trace shows the native child shaped for the page report
   (`native=650x171 page=Some((520.0, 136.0, 2)) fits=true rectangles=Some(35) shaped=true`).
-  Still NOT measured: the expand→click→collapse transition, 100%/150%, popup click and
-  dismissal, first-key focus, click-through outside the shape, and wide↔narrow resize.
+  Independent visual confirmation on the same captures (GPT-6.2 Sol High): the dark
+  rectangle and corners are gone, the top band is clean, and the status row, ellipsis,
+  chevron, composer and rounded corners show no clipping or mask artefact.
+  **Not measured:** the expand→click→collapse transition, 100%/150%, popup click and
+  dismissal, first-key focus, click-through outside the shape, and wide↔narrow resize. The
+  transition replay was attempted twice with the offline OpenCode fixture and both times
+  stopped at the layout wait (`height 137` while the fixture's notice never appeared), so
+  it is recorded as NOT RUN rather than inferred from the settled captures.
 - **#221 composer sizing — local browser fix reviewed, not landed.** `b002647acb` held the
   centred input at 14 px and the composer at 86 px for both agent modes in the same browser
   viewport. Independent Spec and Quality review approved; controller rerun had 12 passes and
