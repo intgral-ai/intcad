@@ -42,8 +42,11 @@ class Publish(unittest.TestCase):
                 arch = identity.rsplit("-", 1)[1]
                 linux = "release-linux-" + arch
                 tar = f"intcad-{V}-linux-{arch}.tar.gz"
+                # The repack's own bytes are published and checked like any other package's:
+                # the gate binds every artifact it ships to a digest in this report.
                 report.update(derivedFrom=linux, sourceArtifact=tar, sourceSha256=hashlib.sha256(tar.encode()).hexdigest(),
-                              checked=[], ignored=[])
+                              checked=[a for a in entries if not a["name"].endswith(".zsync")],
+                              ignored=[a["name"] for a in entries if a["name"].endswith(".zsync")])
             for name, data in (("build.json", build), ("contents.json", report)):
                 raw = json.dumps(data).encode()
                 for directory in (package, pair):

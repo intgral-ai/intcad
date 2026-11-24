@@ -121,13 +121,14 @@ class NativeContentDecision(unittest.TestCase):
         }
         contents = {
             "release-linux-x86_64": report("release-linux-x86_64", [("solidcraft.tar.gz", DG)]),
-            "release-flatpak-x86_64": report("release-flatpak-x86_64", [], derived="release-linux-x86_64",
+            "release-flatpak-x86_64": report("release-flatpak-x86_64", [("solidcraft.flatpak", DG2)],
+                                             derived="release-linux-x86_64",
                                              source_name="solidcraft.tar.gz", source_sha=DG),
         }
         self.assertEqual(content.problems(SHA, descriptors, contents), [])
         for field, value in (("markers", ["usr/lib/intcad/mastra"]), ("unchecked", ["solidcraft.tar.gz"])):
             contents["release-flatpak-x86_64"] = report(
-                "release-flatpak-x86_64", [], derived="release-linux-x86_64",
+                "release-flatpak-x86_64", [("solidcraft.flatpak", DG2)], derived="release-linux-x86_64",
                 source_name="solidcraft.tar.gz", source_sha=DG, **{field: value})
             problems = content.problems(SHA, descriptors, contents)
             self.assertTrue(problems, field)
@@ -398,8 +399,12 @@ class ReleaseWorkflowWiring(unittest.TestCase):
     def test_aggregate_no_longer_appends_unconditional_mastra_failures(self):
         self.assertNotIn("problems.append('#15: required runtime-artifact", self.gate)
         self.assertNotIn("problems.append('#14: required installed-runtime", self.gate)
-        self.assertIn("content.problems(sha, descriptors, contents, os.environ.get('SOLIDCRAFT_DISTRIBUTION', 'mastra-agent'))", self.gate)
-        self.assertIn('SOLIDCRAFT_DISTRIBUTION: "mastra-agent"', self.gate, "a release gate must declare what it ships")
+        # The merged gate reads the distribution the packages job observed; a static
+        # declaration cannot stand in for the installer bytes.
+        self.assertIn("distribution = os.environ['DISTRIBUTION']", self.gate)
+        self.assertIn("elif distribution == 'mastra-agent':", self.gate)
+        self.assertIn("problems.append('missing or unapproved package distribution')", self.gate)
+        self.assertNotIn("SOLIDCRAFT_DISTRIBUTION", self.gate, "the gate must not keep a declaration the script ignores")
 
     def test_release_jobs_record_actual_package_contents(self):
         self.assertIn('SOLIDCRAFT_DISTRIBUTION: "mastra-agent"', self.release)
