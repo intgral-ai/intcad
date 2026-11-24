@@ -1338,12 +1338,11 @@ mod tests {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         let before = app.agent_chat.items.len();
         act(&mut app, &egui::Context::default(), r#"{"type":"send","text":"检查一下当前钣金件"}"#).expect("send");
-        assert_eq!(app.agent_chat.items.len(), before + 2, "a check row and its notice");
-        assert_eq!(app.agent_chat.items.iter().filter(|item| matches!(item, Item::Tool { kind, .. } if kind == "dfm.check")).count(), 1);
-        // The command is C's; until it lands the card says why, and the row is an error, not a result.
-        let card = app.dfm_chat.card.as_ref().expect("a card");
-        assert_eq!(card.status, "error");
-        assert!(card.error.as_deref().is_some_and(|why| why.contains("dfm.check")));
+        // The DFM entry refuses a signed-out/unverified session before dispatch: one notice,
+        // no check row and no card. The phrase still routes to that entry.
+        assert_eq!(app.agent_chat.items.len(), before + 1, "a refusal notice");
+        assert!(!app.agent_chat.items.iter().any(|item| matches!(item, Item::Tool { kind, .. } if kind == "dfm.check")));
+        assert!(app.dfm_chat.card.is_none(), "no check ran");
         act(&mut app, &egui::Context::default(), r#"{"type":"dfm_display","mode":"off"}"#).expect("display");
         assert_eq!(app.dfm_chat.display.id(), "off");
         assert!(act(&mut app, &egui::Context::default(), r#"{"type":"dfm_display","mode":"nope"}"#).is_err());
