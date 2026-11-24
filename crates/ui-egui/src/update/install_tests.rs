@@ -485,3 +485,14 @@ fn unauthenticated_lists_stop_the_update_before_the_package_download() {
     assert_eq!(std::fs::read(&target).unwrap(), b"old version");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The build carries a real production key, not the placeholder: parsing it is the
+/// gate that keeps a release from shipping with one-click installs silently dead.
+/// Restoring the placeholder makes this test fail on purpose.
+#[test]
+fn the_embedded_release_key_is_a_configured_minisign_key() {
+    assert!(!PUBLIC_KEY.contains("NOT CONFIGURED"), "the placeholder is still in the tree");
+    let key = minisign_verify::PublicKey::from_base64(PUBLIC_KEY.trim()).expect("embedded key parses");
+    assert_eq!(PUBLIC_KEY.trim().len(), 56, "one base64 line");
+    let _ = key;
+}
