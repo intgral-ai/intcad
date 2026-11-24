@@ -2413,3 +2413,36 @@ The PR added the two pieces my first review did not ask for, and they are both n
 Merge order chosen to minimise stale CI: **#214 → #224 → #239 → paid-authority integration**
 (#214 is 15/20 done at 19:01Z; #239 is a short affected-mode run). #239 merged before #214 would
 throw away #214's nearly finished full run and force a rebase plus another two hours.
+
+## 15. Endgame checklist (each step has a measured reason behind it)
+
+1. **#214 → develop** (squash) once `ci` is green on `318b87cc94`.
+2. **#224**: Login Agent merges the new `develop`, resolves the two packaging files with `--theirs`
+   (`installed-check-inside.sh` keeps `/packaging/linux/assistant-check.py` plus
+   `check+=(--built-in-agent)`; `windows-assistant-smoke.ps1` keeps exactly one
+   `CheckBuiltInAgent`), pushes, CI green, squash merge.
+3. **#239** (tag-push gate): merge the new `develop`, CI green (affected mode), squash merge.
+4. **Paid-authority integration PR** (base `develop`, the four reviewed PRs as merge commits):
+   merge the new `develop`, final head, one full CI, squash merge. Close #227/#233/#235/#234 with
+   a pointer to it.
+5. **Rebase `release/v0.1.3`** onto that `develop`: cherry-pick `c929f797e1` and `fa6582f8c9`,
+   then **regenerate `Cargo.lock` and amend the version commit** (the two `0.1.2 → 0.1.3` member
+   entries measured in §14), prove `cargo metadata --locked`, run `test-format-pending.sh` and the
+   pure-Python suites, force-push with lease.
+6. **#237 ready → required `release-gate`** on the PR merge ref (full 14-package build, installed
+   checks). Merge #237 into `main` with a **merge commit** (squash would drop the tested commit
+   from `main`; see §10).
+7. **Tag `v0.1.3` on `main`'s tip** → the tag-push formal gate from #239 runs on the real `main`
+   commit; its handoff is the only one the publisher accepts. Before the real tag, repeat the
+   `v0.1.3-preflight` check (cheap, §13) to confirm the run fields once more.
+8. **Acceptance on that run**: all 14 package/evidence pairs present with matching
+   `sourceRevision`; embedded account tuple `89abe5c9…f41bb` verified in the **packaged** binaries
+   on Linux/Windows/macOS (§ earlier); Gate B staging install and sign-in; macOS real hardware by
+   PP (NOT TESTED if unavailable).
+9. **Owner actions**: set `RELEASE_AGENT_LEGAL_APPROVED` and `RELEASE_AGENT_INSTALLED_APPROVED` to
+   `<source SHA>:<run ID>:<attempt>` (they must not be pre-set), then dispatch
+   `publish-release.yml` from `main` with tag, source SHA, run id, attempt, notes path.
+   `release-signing` waits for `Huaiyuan-Jing` or `paipeline`; no agent may approve it.
+10. **After approval**: the draft release is published, post-release acceptance runs, then the
+    closed-source migration is coordinated (INT-1501), with the source repo staying public until
+    publication is complete.
