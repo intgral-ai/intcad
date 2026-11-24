@@ -6,14 +6,15 @@
 
 #![cfg(unix)]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{
-    AccountId, Admission, AuthenticatedHostScope, BillingPort, BillingResult, BudgetTable, Capability, ConservativeDeadline, EntryCategory, Grant,
-    GrantId, HostSessionBinding, InstallationId, MonotonicInstant, OperationId, Refusal, RefusalCode,
+    AccountId, AccountService, Admission, AuthenticatedHostScope, Availability, BillingPort, BillingResult, BudgetTable, Capability,
+    ConservativeDeadline, EntryCategory, Grant, GrantId, HostSessionBinding, InstallationId, MonotonicClock, MonotonicInstant, OperationId,
+    OperationStatus, Refusal, RefusalCode, UnsettledOperation,
 };
 
 use super::host_bridge::{HostBridge, HostProvenance};
@@ -119,6 +120,25 @@ fn reply_to(req: ControlRequest, ok: bool, result: Value) {
 }
 
 #[test]
+fn bridge_without_authenticated_provenance_refuses_charged_tools_before_the_queue() {
+    for app in [crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default()), {
+        let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        crate::control::test_support::TestAuthority::new("test-account", "test-installation", "").install(&mut app);
+        app
+    }] {
+        let (tools, requests) = std::sync::mpsc::channel();
+        let check = app.commit_scope.as_ref().and_then(|scope| app.commit_account.as_ref()?.bridge_scope_check(scope));
+        let mut bridge = HostBridge::open_checked(tools, check).expect("the bridge opens without account authority");
+        bridge.begin_turn(Arc::new(AtomicBool::new(true)));
+        let mut child = child(&mut bridge);
+        let reply = wire(&mut child, tools_call(1, "execute", json!({"command":"parameters.list"}), Value::Null));
+        assert_eq!(reply["result"]["isError"], true, "{reply}");
+        assert_eq!(reply["result"]["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE", "{reply}");
+        assert!(requests.try_recv().is_err(), "a charged call without authority never reaches Control");
+    }
+}
+
+#[test]
 fn external_acp_cannot_forge_trusted_context() {
     let (mut bridge, rx, _active) = authorized_bridge();
     let mut child = child(&mut bridge);
@@ -209,7 +229,9 @@ fn forwarded_call_is_admitted_once_across_reissue() {
     let billing = CountingBilling::default();
     let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
     app.install_billing(Box::new(billing.clone()), bridge_budget());
-    crate::control::test_support::TestAuthority::from_scope(call.trusted().scope().clone()).install(&mut app);
+    app.install_review_store(crate::dfm_review::tests::test_operation_store());
+    crate::control::test_support::TestAuthority::from_scope(call.trusted().scope().clone())
+        .install_with_bridge_billing(&mut app, Some(Box::new(billing.clone())));
     let (mut req, _rx) =
         ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"engine.commands"}), call.trusted().clone(), None, None);
     let first = admit_once(&mut app, &mut req).expect("the forwarded host call is admitted");
@@ -218,6 +240,206 @@ fn forwarded_call_is_admitted_once_across_reissue() {
     let (mut reissued, _rx) = crate::control::reissue(Reissue::from_request(&req), "engine.execute", json!({"command":"engine.commands"}));
     assert!(matches!(admit_once(&mut app, &mut reissued), Ok(Admission::NewlyAdmitted { .. })), "a reissued request keeps the first admission");
     assert_eq!(billing.admits(), 1, "one logical call is admitted once, not once per seam");
+}
+
+/// Advance at dispatch, not after a wall-clock sleep. The next authorization read is at commit.
+struct BridgeResultClock {
+    dispatched: Arc<AtomicBool>,
+    result_ms: u64,
+}
+
+impl MonotonicClock for BridgeResultClock {
+    fn now(&self) -> MonotonicInstant {
+        MonotonicInstant::from_millis(if self.dispatched.load(Ordering::Relaxed) { self.result_ms } else { 0 })
+    }
+
+    fn wall_now(&self) -> std::time::SystemTime {
+        std::time::SystemTime::UNIX_EPOCH
+    }
+}
+
+#[derive(Default)]
+struct BridgeAccounts {
+    refuse_next_begin: bool,
+    begun: Vec<OperationId>,
+    finalized: Vec<(OperationId, BillingResult)>,
+}
+
+#[derive(Clone)]
+struct BridgeAccount(Arc<Mutex<BridgeAccounts>>, solidcraft_engine::entitlement::BridgeJournal);
+
+impl AccountService for BridgeAccount {
+    fn bridge_generation_matches(&self, scope: &AuthenticatedHostScope) -> bool {
+        scope == &host_scope()
+    }
+
+    fn bridge_worker_account(&self) -> Option<Box<dyn AccountService + Send>> {
+        Some(Box::new(self.clone()))
+    }
+
+    fn bridge_journal(&self) -> Option<solidcraft_engine::entitlement::BridgeJournal> {
+        Some(self.1.clone())
+    }
+
+    fn begin_covered_bridge(
+        &mut self,
+        scope: &AuthenticatedHostScope,
+        operation: &OperationId,
+        required: Duration,
+        _deadline: Option<&ConservativeDeadline>,
+    ) -> Result<Admission, Refusal> {
+        assert_eq!(required, Duration::from_secs(280));
+        self.begin(scope, operation, Capability::Mcp, EntryCategory::GuiBridgeMcp)
+    }
+
+    fn status(&self) -> Result<Availability, Refusal> {
+        Ok(Availability { online: true, version_supported: true, model_available: true, balance: 100, held: 0, reasons: Vec::new() })
+    }
+
+    fn authorize(&mut self, _: &AuthenticatedHostScope, _: Capability) -> Result<Grant, Refusal> {
+        panic!("standalone authorization is not operation admission");
+    }
+
+    fn begin(
+        &mut self,
+        scope: &AuthenticatedHostScope,
+        operation: &OperationId,
+        capability: Capability,
+        entry: EntryCategory,
+    ) -> Result<Admission, Refusal> {
+        assert_eq!(scope, &host_scope());
+        assert_eq!((capability, entry), (Capability::Mcp, EntryCategory::GuiBridgeMcp));
+        let mut state = self.0.lock().unwrap();
+        if std::mem::take(&mut state.refuse_next_begin) {
+            return Ok(Admission::Refused(Refusal::new(RefusalCode::CreditsExhausted, "fixture rejected the hold")));
+        }
+        if state.begun.contains(operation) {
+            return Ok(Admission::AlreadyExists { status: OperationStatus::Held });
+        }
+        state.begun.push(operation.clone());
+        let grant =
+            Grant::from_server(GrantId::new(format!("grant_test_{}", operation.as_str())), capability, MonotonicInstant::from_millis(300_000));
+        Ok(Admission::NewlyAdmitted { operation: operation.clone(), grant })
+    }
+
+    fn finalize(&mut self, scope: &AuthenticatedHostScope, operation: &OperationId, result: BillingResult) -> Result<OperationStatus, Refusal> {
+        assert_eq!(scope, &host_scope());
+        let mut account = self.0.lock().unwrap();
+        assert!(account.begun.contains(operation), "settlement uses the admitted operation");
+        account.finalized.push((operation.clone(), result));
+        Ok(OperationStatus::Charged)
+    }
+
+    fn operation(&self, scope: &AuthenticatedHostScope, operation: &OperationId) -> Result<OperationStatus, Refusal> {
+        assert_eq!(scope, &host_scope());
+        let account = self.0.lock().unwrap();
+        if !account.begun.contains(operation) {
+            return Err(Refusal::new(RefusalCode::AuthRequired, "there is no settlement credential before begin"));
+        }
+        Ok(if account.finalized.iter().any(|(id, _)| id == operation) { OperationStatus::Charged } else { OperationStatus::Held })
+    }
+}
+
+#[test]
+fn a_refused_bridge_begin_can_retry_only_the_original_id() {
+    let scope = host_scope();
+    let call = provenance().begin_logical_call(EntryCategory::GuiBridgeMcp, "execute").unwrap();
+    let operation = call.operation_id();
+    let request =
+        || ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"parameters.list"}), call.trusted().clone(), None, None);
+    let journal = crate::dfm_review::tests::test_bridge_journal();
+    let account = Arc::new(Mutex::new(BridgeAccounts { refuse_next_begin: true, ..Default::default() }));
+    let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.install_commit_authority(
+        scope,
+        Box::new(BridgeAccount(account.clone(), journal.clone())),
+        Box::new(BridgeResultClock { dispatched: Arc::default(), result_ms: 0 }),
+    );
+    let mut budget = BudgetTable::unverified_default();
+    budget.set_verified(Capability::Mcp, EntryCategory::GuiBridgeMcp, Duration::from_secs(280));
+    app.install_budget(budget);
+    let (req, reply) = request();
+    crate::control::queue_bridge_admission(&mut app, req);
+    assert_eq!(reply.recv_timeout(Duration::from_secs(5)).unwrap()["errorDetails"]["code"], "CreditsExhausted");
+    drop(app.agent_chat.bridge_admission.take());
+    assert_eq!(journal().unwrap().load(operation).unwrap().unwrap().status, OperationStatus::Held);
+    let (req, reply) = request();
+    crate::control::queue_bridge_admission(&mut app, req);
+    let req = app.agent_chat.bridge_admission.take().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+    app.run_control(&egui::Context::default(), req);
+    assert_eq!(reply.recv_timeout(Duration::from_secs(5)).unwrap()["ok"], true);
+    let (req, reply) = request();
+    crate::control::queue_bridge_admission(&mut app, req);
+    assert_eq!(reply.recv_timeout(Duration::from_secs(5)).unwrap()["errorDetails"]["code"], "OperationFinalized");
+    let account = account.lock().unwrap();
+    assert_eq!(account.begun.as_slice(), std::slice::from_ref(operation));
+    assert_eq!(account.finalized.as_slice(), &[(operation.clone(), BillingResult::Succeeded)]);
+}
+
+#[test]
+fn bridge_registers_and_settles_the_minted_id_only_before_the_deadline() {
+    use crate::control::{Outcome, queue_bridge_admission};
+    use solidcraft_engine::entitlement::SettlementIntent;
+
+    for result_ms in [299_999, 300_000, 300_001] {
+        let (mut bridge, requests, _active) = authorized_bridge();
+        let mut child = child(&mut bridge);
+        let args = json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}});
+        write_wire(&mut child, &tools_call(1, "execute", args, Value::Null));
+        let req = requests.recv_timeout(Duration::from_secs(5)).expect("the bridge forwards the paid call");
+        let operation = req.operation().expect("the bridge minted an id").clone();
+        let account = Arc::new(Mutex::new(BridgeAccounts::default()));
+        let scope = host_scope();
+        let journal = crate::dfm_review::tests::test_bridge_journal();
+        let worker_journal = {
+            let journal = journal.clone();
+            let window = std::thread::current().id();
+            Arc::new(move || {
+                assert_ne!(std::thread::current().id(), window, "the window must not open the bridge journal");
+                journal()
+            })
+        };
+        let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        app.install_commit_authority(
+            scope.clone(),
+            Box::new(BridgeAccount(Arc::clone(&account), worker_journal)),
+            Box::new(BridgeResultClock { dispatched: Arc::clone(&req.work_started), result_ms }),
+        );
+        let mut budget = BudgetTable::unverified_default();
+        budget.set_verified(Capability::Mcp, EntryCategory::GuiBridgeMcp, Duration::from_secs(280));
+        app.install_budget(budget);
+
+        queue_bridge_admission(&mut app, req);
+        let mut req = app.agent_chat.bridge_admission.take().unwrap().recv_timeout(Duration::from_secs(5)).expect("the worker admits the request");
+        let admission = req.admission.clone().unwrap();
+        assert!(matches!(admission, Admission::NewlyAdmitted { operation: id, .. } if id == operation));
+        let store = journal().unwrap();
+        let record = store.load(&operation).unwrap().expect("durable operation intent");
+        assert_eq!(record.account, *scope.account());
+        assert_eq!((record.capability, record.entry, record.status), (Capability::Mcp, EntryCategory::GuiBridgeMcp, OperationStatus::Pending));
+        assert_eq!(store.unsettled_operations(Some(&scope)).unwrap(), [UnsettledOperation::Owned(record)]);
+
+        let Outcome::Done(value) = crate::control::handle(&mut app, &egui::Context::default(), &mut req) else { panic!("expected a tool reply") };
+        assert!(req.work_started.load(Ordering::Relaxed));
+        assert_eq!(app.session.doc.features.len(), 1, "the authorized tool dispatched");
+        req.reply.send(value.clone()).unwrap();
+        let forwarded = read_wire(&mut child);
+        let account = account.lock().unwrap();
+        assert_eq!(account.begun.as_slice(), std::slice::from_ref(&operation));
+        let store = journal().unwrap();
+        assert_eq!(store.settlement_intent(&operation).unwrap(), Some(SettlementIntent::Commit(BillingResult::Succeeded)));
+        if result_ms < 300_000 {
+            assert_eq!(value["ok"], true, "{value}");
+            assert_eq!(forwarded["result"]["isError"], Value::Null, "{forwarded}");
+            assert_eq!(account.finalized, [(operation, BillingResult::Succeeded)]);
+            assert_eq!(store.load(&account.begun[0]).unwrap().unwrap().status, OperationStatus::Charged);
+        } else {
+            assert_eq!(value["errorDetails"]["code"], "UnsafeToStart", "{value}");
+            assert_eq!(forwarded["result"]["isError"], true, "{forwarded}");
+            assert!(account.finalized.is_empty(), "an expired result is neither charged nor released");
+            assert_eq!(store.load(&operation).unwrap().unwrap().status, OperationStatus::Pending, "restart owns the unsettled intent");
+        }
+    }
 }
 
 #[test]

@@ -57,9 +57,11 @@ use serde_json::{Value, json};
 use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps, run_document_steps_gated};
 use solidcraft_engine::entitlement::{
     AccountService, Admission, AuthenticatedHostScope, AuthorizationBound, BillingPort, BudgetTable, Capability, CommitDecision, CommitGate,
-    ConservativeDeadline, EntryCategory, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, Refusal, RefusalCode, ResultEvidence,
-    SettlementAction, TrustedContext, UpperBound, settlement_for,
+    ConservativeDeadline, EntryCategory, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, OperationStore, Refusal, RefusalCode,
+    ResultEvidence, SettlementAction, SettlementIntent, TrustedContext, UpperBound, settlement_for,
 };
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use solidcraft_engine::entitlement::{FreshIntent, TransportCorrelation};
 use solidcraft_engine::io::vfs;
 use solidcraft_engine::render::{Camera, StandardView};
 use solidcraft_engine::schema::ParamCheck;
@@ -67,11 +69,19 @@ use solidcraft_engine::schema::ParamCheck;
 use crate::SolveApp;
 
 pub type ControlResponse = Value;
+#[derive(Clone, Copy)]
+enum BridgeDisposition {
+    Settle { intent: SettlementIntent, deferred: bool },
+    AlreadyTerminal,
+}
+type BridgeEffect = std::sync::Arc<Mutex<Option<BridgeDisposition>>>;
 
 pub struct ControlRequest {
     pub method: String,
     pub params: Value,
     pub reply: Sender<ControlResponse>,
+    /// Disposition for the bridge journal worker; it never comes from the reply's wire fields.
+    bridge_effect: Option<BridgeEffect>,
     /// Set once the window starts on it; until then it waits its turn (`control.running`, #3654).
     pub started: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Chat requests already admitted by the gate may outlive a tab switch. This turn's
@@ -274,6 +284,7 @@ impl ControlRequest {
             method: method.into(),
             params,
             reply: tx,
+            bridge_effect: None,
             started: Default::default(),
             chat_turn: None,
             guarded: None,
@@ -329,6 +340,7 @@ impl ControlRequest {
             method: method.into(),
             params,
             reply: tx,
+            bridge_effect: None,
             started: Default::default(),
             chat_turn: None,
             guarded: None,
@@ -360,6 +372,7 @@ impl ControlRequest {
             method: method.into(),
             params,
             reply: tx,
+            bridge_effect: None,
             started: Default::default(),
             chat_turn: None,
             guarded: None,
@@ -416,6 +429,7 @@ impl ControlRequest {
             method: method.into(),
             params,
             reply: tx,
+            bridge_effect: None,
             started: Default::default(),
             chat_turn: None,
             guarded: None,
@@ -463,6 +477,7 @@ impl ControlRequest {
 /// once. A later caller cannot re-issue an arbitrary entry or grant.
 #[derive(Clone)]
 pub(crate) struct Reissue {
+    bridge_effect: Option<BridgeEffect>,
     entry: EntryCategory,
     operation: Option<OperationId>,
     admission: Option<Admission>,
@@ -490,6 +505,7 @@ impl Reissue {
             deadline: req.deadline.clone(),
             now: req.now,
             helper: req.helper.clone(),
+            bridge_effect: req.bridge_effect.clone(),
         }
     }
 }
@@ -499,13 +515,26 @@ impl Reissue {
 ///
 /// The origin is not chosen here; it comes only from [`Reissue::from_request`].
 pub(crate) fn reissue(parts: Reissue, method: impl Into<String>, params: Value) -> (ControlRequest, std::sync::mpsc::Receiver<ControlResponse>) {
-    let Reissue { entry, operation, admission, admission_scope, work_started, local_no_effect, local_unknown_effect, trusted, deadline, now, helper } =
-        parts;
+    let Reissue {
+        entry,
+        operation,
+        admission,
+        admission_scope,
+        work_started,
+        local_no_effect,
+        local_unknown_effect,
+        trusted,
+        deadline,
+        now,
+        helper,
+        bridge_effect,
+    } = parts;
     let (tx, rx) = std::sync::mpsc::channel();
     let request = ControlRequest {
         method: method.into(),
         params,
         reply: tx,
+        bridge_effect,
         started: Default::default(),
         chat_turn: None,
         guarded: None,
@@ -602,10 +631,63 @@ pub fn admit_control_request(req: &ControlRequest, budget: &BudgetTable, billing
 /// entries stay refused before dispatch; free GUI, browser CAD and ordinary local commands are
 /// unaffected either way.
 fn admit_for_app(app: &mut SolveApp, req: &ControlRequest) -> Admission {
+    if req.entry == EntryCategory::GuiBridgeMcp && req.helper.is_none() {
+        #[cfg(test)]
+        if app.commit_account.as_ref().is_some_and(|account| account.bridge_journal().is_none()) {
+            return begin_covered_bridge(app, req).unwrap_or_else(Admission::Refused);
+        }
+        return Admission::Refused(Refusal::new(RefusalCode::AuthUnavailable, "the bridge worker did not supply an admission"));
+    }
     let budget = app.budget.clone();
     match app.billing_source() {
         Some(mut source) => admit_control_request(req, &budget, source.port()),
         None => admit_control_request(req, &budget, &mut NoAuthorityBilling),
+    }
+}
+
+#[cfg(test)]
+fn begin_covered_bridge(app: &mut SolveApp, req: &ControlRequest) -> Result<Admission, Refusal> {
+    let required = bridge_start_bound(app, req)?;
+    let (Some(scope), Some(account), Some(store)) = (app.commit_scope.as_ref(), app.commit_account.as_deref_mut(), app.review_store.as_deref_mut())
+    else {
+        return Err(Refusal::new(RefusalCode::AuthUnavailable, "the host has no bridge account authority or journal"));
+    };
+    begin_registered_bridge(req, scope, account, store, required)
+}
+
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn bridge_start_bound(app: &SolveApp, req: &ControlRequest) -> Result<Duration, Refusal> {
+    let step = required_bound(app, req)?;
+    let count =
+        if req.method == "engine.batch" { req.params.get("commands").and_then(Value::as_array).map_or(1, |steps| steps.len().max(1)) } else { 1 };
+    Ok(step.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX)))
+}
+
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn begin_registered_bridge(
+    req: &ControlRequest,
+    scope: &AuthenticatedHostScope,
+    account: &mut dyn AccountService,
+    store: &mut dyn OperationStore,
+    required: Duration,
+) -> Result<Admission, Refusal> {
+    let operation =
+        req.operation.as_ref().ok_or_else(|| Refusal::new(RefusalCode::CapabilityDenied, "the bridge did not mint a logical operation"))?;
+    match account.begin_covered_bridge(scope, operation, required, req.deadline.as_ref())? {
+        Admission::NewlyAdmitted { operation: admitted, grant } if &admitted == operation => {
+            let admission = Admission::NewlyAdmitted { operation: admitted, grant };
+            // HELD records an intent only, not an admitted server hold. A refused or ambiguous
+            // begin leaves HELD; only a newly admitted same-ID receipt advances it to PENDING.
+            // A retry uses the original ID and scope; ALREADY_EXISTS never grants execution.
+            if store.mark_started(operation, crate::now_ms() as u64).is_err() {
+                let _ = settle_bridge_intent(store, account, scope, operation, SettlementIntent::Release(RefusalCode::AuthUnavailable), false);
+                return Err(Refusal::new(RefusalCode::AuthUnavailable, "the journal could not mark the bridge admission"));
+            }
+            Ok(admission)
+        }
+        Admission::Refused(refusal) => Err(refusal),
+        Admission::AlreadyExists { .. } => Err(Refusal::new(RefusalCode::OperationConflict, "the bridge operation already exists on the server")),
+        _ => Err(Refusal::new(RefusalCode::AuthUnavailable, "the account service did not return a matching bridge grant")),
     }
 }
 
@@ -647,11 +729,7 @@ pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result
         if let Some(refusal) = authority_refusal(app, req, &admission) {
             // A false host-marked start is positive proof that no step of this operation ran.
             // Release the one held admission and consume it so it cannot be reused.
-            if !req.work_started.load(Ordering::Relaxed) {
-                release_admission(app, &admission, refusal.code);
-                req.admission = None;
-                req.admission_scope = None;
-            }
+            release_unstarted_with(app, req, refusal.code);
             return Err(refusal);
         }
         return match admission {
@@ -729,6 +807,10 @@ pub(crate) fn release_unstarted_with(app: &mut SolveApp, req: &mut ControlReques
     }
     let admission = req.admission.take();
     req.admission_scope = None;
+    if req.bridge_effect.is_some() {
+        // The worker owns settlement for the admitted bridge request.
+        return;
+    }
     if let Some(admission) = admission {
         release_admission(app, &admission, reason);
     }
@@ -740,6 +822,9 @@ pub(crate) fn release_reissue_unstarted(app: &mut SolveApp, reissue: &mut Reissu
     }
     let admission = reissue.admission.take();
     reissue.admission_scope = None;
+    if reissue.bridge_effect.is_some() {
+        return;
+    }
     if let Some(admission) = admission {
         release_admission(app, &admission, reason);
     }
@@ -934,18 +1019,25 @@ fn remaining_covers(bound: Option<AuthorizationBound<'_>>, now: MonotonicInstant
     }
 }
 
-/// Only a positive journal read can establish that an unmarked Direct Control request is
-/// fresh. A retry after a lost reply can carry neither context nor admission. Without a
-/// journal, require the original server lookup to succeed rather than assuming freshness.
+/// Before `begin`, the journal must prove a bridge intent or establish that an unmarked Direct
+/// Control request is fresh. A retry after a lost reply can carry neither context nor admission;
+/// other paths retain their server operation lookup.
 fn check_operation_before_admission(
-    app: &SolveApp,
+    store: Option<&mut (dyn OperationStore + Send + 'static)>,
     req: &ControlRequest,
     scope: &AuthenticatedHostScope,
     account: &dyn AccountService,
     operation: &OperationId,
 ) -> Result<(), Refusal> {
+    if req.entry == EntryCategory::GuiBridgeMcp {
+        #[cfg(test)]
+        if account.bridge_journal().is_none() {
+            return register_bridge_before_admission(store.map(|store| store as &mut dyn OperationStore), req, operation);
+        }
+        return Err(Refusal::new(RefusalCode::AuthUnavailable, "the bridge must take its admission on the account worker"));
+    }
     let journal_terminal = if req.entry == EntryCategory::DirectControl
-        && let Some(store) = app.review_store.as_ref()
+        && let Some(store) = store
     {
         match store.load(operation) {
             Ok(None)
@@ -970,14 +1062,224 @@ fn check_operation_before_admission(
     }
 }
 
+/// Register the new, bound bridge call in the same journal used by Direct Control. An empty
+/// journal read alone does not admit this forwarded request: it must produce a durable intent
+/// for this exact operation and scope. The row is not a grant; `begin` still refuses duplicates
+/// and supplies the settlement credential for subsequent live operation-state reads.
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn register_bridge_before_admission(store: Option<&mut dyn OperationStore>, req: &ControlRequest, operation: &OperationId) -> Result<(), Refusal> {
+    let trusted =
+        req.trusted.as_ref().ok_or_else(|| Refusal::new(RefusalCode::AuthUnavailable, "the bridge call has no authenticated host context"))?;
+    let unavailable = || Refusal::new(RefusalCode::AuthUnavailable, "the durable operation journal is unavailable");
+    let conflict = || Refusal::new(RefusalCode::OperationConflict, "this bridge operation is already registered or has a conflicting durable intent");
+    let store = store.ok_or_else(unavailable)?;
+    if req.work_started.load(Ordering::Relaxed) {
+        return Err(conflict());
+    }
+    let correlation = TransportCorrelation::new(format!("gui-bridge:{}", operation.as_str()));
+    let intent = FreshIntent::new(operation.clone(), trusted.scope().clone(), correlation.clone());
+    let record = match store.load(operation).map_err(|_| unavailable())? {
+        Some(record) if record.status.is_terminal() => {
+            return Err(Refusal::new(RefusalCode::OperationFinalized, "this operation is already settled"));
+        }
+        Some(record) if record.status == OperationStatus::Held => {
+            let key = solidcraft_engine::entitlement::RetryScopeKey { host_scope: trusted.scope().clone(), transport_correlation: correlation };
+            match store.lookup_original_retry(&key) {
+                solidcraft_engine::entitlement::RetryDecision::Original(original) if original == record => original,
+                _ => return Err(conflict()),
+            }
+        }
+        Some(_) => return Err(conflict()),
+        None => store.persist_fresh_intent(&intent, trusted.capability(), req.entry).map_err(|_| conflict())?,
+    };
+    if record.operation != *operation
+        || record.account != *trusted.scope().account()
+        || record.capability != trusted.capability()
+        || record.entry != req.entry
+        || record.status != OperationStatus::Held
+        || record.grant_id.is_some()
+        || record.review_run_id.is_some()
+    {
+        return Err(conflict());
+    }
+    Ok(())
+}
+
+/// The window queues a locally approved bridge request here. The worker owns the journal and
+/// does not return a dispatchable request until both the durable intent and a covered hold exist.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn queue_bridge_admission(app: &mut SolveApp, mut req: ControlRequest) {
+    let available = || Refusal::new(RefusalCode::AuthUnavailable, "the bridge has no verified account worker or durable journal");
+    let prepare = || -> Result<_, Refusal> {
+        if let Some(refusal) = entry_refusal(&req)
+            .or_else(|| async_native_refusal(&req))
+            .or_else(|| controlled_multi_step_refusal(&req))
+            .or_else(|| controlled_capture_refusal(&req))
+        {
+            return Err(refusal);
+        }
+        let required = bridge_start_bound(app, &req)?;
+        let (scope, account, _) = host_authority(app).ok_or_else(available)?;
+        if !req.trusted.as_ref().is_some_and(|trusted| trusted.scope() == scope && scope.is_provable()) {
+            return Err(Refusal::new(RefusalCode::AuthRequired, "the bridge belongs to a different account, installation or session"));
+        }
+        if app.agent_chat.bridge_admission.is_some() {
+            return Err(Refusal::new(RefusalCode::UnsafeToStart, "a bridge admission is already in progress"));
+        }
+        Ok((scope.clone(), account.bridge_worker_account().ok_or_else(available)?, account.bridge_journal().ok_or_else(available)?, required))
+    };
+    let (scope, mut account, open_store, required) = match prepare() {
+        Ok(parts) => parts,
+        Err(refusal) => {
+            let _ = req.reply.send(admission_refusal_json(&refusal));
+            return;
+        }
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reply = req.reply.clone();
+    if std::thread::Builder::new()
+        .name("bridge-account".into())
+        .spawn(move || {
+            let mut admit = || -> Result<_, Refusal> {
+                let mut store = open_store().ok_or_else(available)?;
+                check_available(account.as_ref())?;
+                let operation = req.operation.as_ref().ok_or_else(available)?.clone();
+                if chat_turn_cancelled(req.chat_turn.as_deref()) {
+                    return Err(Refusal::new(RefusalCode::UnsafeToStart, "the chat turn ended before admission"));
+                }
+                register_bridge_before_admission(Some(store.as_mut()), &req, &operation)?;
+                if chat_turn_cancelled(req.chat_turn.as_deref()) {
+                    return Err(Refusal::new(RefusalCode::UnsafeToStart, "the chat turn ended before admission"));
+                }
+                let admission = begin_registered_bridge(&req, &scope, account.as_mut(), store.as_mut(), required)?;
+                Ok((store, operation, admission))
+            };
+            let (mut store, operation, admission) = match admit() {
+                Ok(parts) => parts,
+                Err(refusal) => {
+                    drop(tx);
+                    let _ = req.reply.send(admission_refusal_json(&refusal));
+                    return;
+                }
+            };
+            req.admission_scope = Some(scope.clone());
+            req.admission = Some(admission);
+            let effect = BridgeEffect::default();
+            req.bridge_effect = Some(effect.clone());
+            let work_started = req.work_started.clone();
+            let (to_worker, from_window) = std::sync::mpsc::channel();
+            let to_bridge = std::mem::replace(&mut req.reply, to_worker);
+            if tx.send(req).is_err() {
+                let _ = settle_bridge_intent(
+                    store.as_mut(),
+                    account.as_mut(),
+                    &scope,
+                    &operation,
+                    SettlementIntent::Release(RefusalCode::UnsafeToStart),
+                    false,
+                );
+                return;
+            }
+            let result = from_window.recv();
+            let disposition = effect.lock().ok().and_then(|effect| *effect);
+            let disposition = disposition.unwrap_or_else(|| {
+                if work_started.load(Ordering::Acquire) {
+                    BridgeDisposition::Settle {
+                        intent: SettlementIntent::Commit(solidcraft_engine::entitlement::BillingResult::Unknown),
+                        deferred: true,
+                    }
+                } else {
+                    BridgeDisposition::Settle { intent: SettlementIntent::Release(RefusalCode::UnsafeToStart), deferred: false }
+                }
+            });
+            let settled = match disposition {
+                BridgeDisposition::Settle { intent, deferred } => {
+                    settle_bridge_intent(store.as_mut(), account.as_mut(), &scope, &operation, intent, deferred)
+                }
+                BridgeDisposition::AlreadyTerminal => Ok(()),
+            };
+            drop(tx);
+            if let Ok(result) = result {
+                let _ = to_bridge.send(settled.map_or_else(|refusal| admission_refusal_json(&refusal), |()| result));
+            }
+        })
+        .is_err()
+    {
+        let _ = reply.send(admission_refusal_json(&available()));
+        return;
+    }
+    app.agent_chat.bridge_admission = Some(rx);
+}
+
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn settle_bridge_intent(
+    store: &mut dyn OperationStore,
+    account: &mut dyn AccountService,
+    scope: &AuthenticatedHostScope,
+    operation: &OperationId,
+    intent: SettlementIntent,
+    deferred: bool,
+) -> Result<(), Refusal> {
+    use solidcraft_engine::entitlement::{BillingResult, SaveOutcome};
+    let unavailable = || Refusal::new(RefusalCode::AuthUnavailable, "the bridge settlement could not be recorded; do not rerun the tool");
+    if store.record_settlement_intent(operation, intent).map_err(|_| unavailable())? != SaveOutcome::Saved {
+        return Err(unavailable());
+    }
+    if deferred {
+        return Ok(());
+    }
+    if !account.bridge_generation_matches(scope) {
+        return Err(Refusal::new(RefusalCode::AuthRequired, "the bridge session changed; settlement is kept under the original ID"));
+    }
+    let current = account.operation(scope, operation)?;
+    let status = if current.is_terminal() {
+        current
+    } else {
+        let result = match intent {
+            SettlementIntent::Commit(result) => result,
+            SettlementIntent::Release(_) => BillingResult::FailedNoEffect,
+        };
+        account.finalize(scope, operation, result)?
+    };
+    if status.is_terminal() {
+        store.mark_terminal(operation, status).map_err(|_| unavailable())?;
+        let settled = matches!(
+            (intent, status),
+            (SettlementIntent::Commit(BillingResult::Succeeded | BillingResult::PartialRetained), OperationStatus::Charged)
+                | (SettlementIntent::Release(_), OperationStatus::Released)
+        );
+        if !settled {
+            return Err(Refusal::new(RefusalCode::OperationFinalized, "the bridge operation is already terminal with a different outcome"));
+        }
+    } else if intent != SettlementIntent::Commit(BillingResult::Unknown) {
+        return Err(unavailable());
+    }
+    Ok(())
+}
+
+fn check_available(account: &dyn AccountService) -> Result<(), Refusal> {
+    let available = account.status().map_err(|_| Refusal::new(RefusalCode::AuthUnavailable, "the current account status is unavailable"))?;
+    if let Some(code) = available.reasons.first() {
+        return Err(Refusal::new(*code, "the current account reports a refusal"));
+    }
+    if !available.online {
+        return Err(Refusal::new(RefusalCode::AuthUnavailable, "the current account is not online"));
+    }
+    if !available.version_supported {
+        return Err(Refusal::new(RefusalCode::VersionUnsupported, "the current client version is not supported"));
+    }
+    Ok(())
+}
+
 /// Scheduling check before a grant is taken or work starts.
 ///
 /// The current account snapshot is re-read (so a revocation observed before scheduling stops the
 /// request), the forwarded scope must match the host's current account/installation/session, and
 /// a measured request window must still be open. A fresh host-minted Direct Control operation
-/// skips the server operation lookup; recovery keeps it. The grant's own
+/// can prove freshness from an empty journal read. A fresh forwarded bridge operation must
+/// register its exact durable intent instead. The grant's own
 /// expiry is checked by [`authority_refusal`] once the server has admitted the operation.
-fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Refusal> {
+fn authority_snapshot_refusal(app: &mut SolveApp, req: &ControlRequest) -> Option<Refusal> {
     if free_entry(req.entry) || req.helper.is_some() {
         return None;
     }
@@ -991,7 +1293,7 @@ fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Re
     if !app.budget.is_verified(capability, req.entry) {
         return Some(Refusal::new(RefusalCode::UnsafeToStart, "this controlled entry has no verified safe-stop bound"));
     }
-    let Some((scope, account, clock)) = host_authority(app) else {
+    let (Some(scope), Some(account), Some(clock)) = (app.commit_scope.as_ref(), app.commit_account.as_deref(), app.commit_clock.as_deref()) else {
         return Some(Refusal::new(RefusalCode::AuthUnavailable, "the host has no commit authority for this controlled entry"));
     };
     if !scope.is_provable() {
@@ -1006,28 +1308,13 @@ fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Re
     {
         return Some(Refusal::new(RefusalCode::AuthRequired, "the forwarded operation belongs to a different account, installation or session"));
     }
-    let availability = match account.status() {
-        Ok(availability) => availability,
-        Err(_) => return Some(Refusal::new(RefusalCode::AuthUnavailable, "the current account status is unavailable")),
-    };
-    if let Some(code) = availability.reasons.first() {
-        return Some(Refusal::new(*code, "the current account reports a refusal"));
-    }
-    if !availability.online {
-        return Some(Refusal::new(RefusalCode::AuthUnavailable, "the current account is not online"));
-    }
-    if !availability.version_supported {
-        return Some(Refusal::new(RefusalCode::VersionUnsupported, "the current client version is not supported"));
+    if let Err(refusal) = check_available(account) {
+        return Some(refusal);
     }
     let required = match required_bound(app, req) {
         Ok(required) => required,
         Err(refusal) => return Some(refusal),
     };
-    if let Some(operation) = req.operation.as_ref()
-        && let Err(refusal) = check_operation_before_admission(app, req, scope, account, operation)
-    {
-        return Some(refusal);
-    }
     // A forwarded request already carries a measured window; it must cover the whole operation
     // before any grant is taken. The grant path is checked again in `authority_refusal`.
     if let Some(deadline) = req.deadline.as_ref() {
@@ -1035,6 +1322,11 @@ fn authority_snapshot_refusal(app: &SolveApp, req: &ControlRequest) -> Option<Re
         if let Err(refusal) = remaining_covers(Some(bound), now, required) {
             return Some(refusal);
         }
+    }
+    if let Some(operation) = req.operation.as_ref()
+        && let Err(refusal) = check_operation_before_admission(app.review_store.as_deref_mut(), req, scope, account, operation)
+    {
+        return Some(refusal);
     }
     None
 }
@@ -1059,6 +1351,9 @@ fn authority_refusal_with(app: &SolveApp, req: &ControlRequest, admission: &Admi
     let Some((scope, account, clock)) = host_authority(app) else {
         return Some(Refusal::new(RefusalCode::AuthUnavailable, "the host has no commit authority for this controlled entry"));
     };
+    if req.bridge_effect.is_some() && !account.bridge_generation_matches(scope) {
+        return Some(Refusal::new(RefusalCode::AuthRequired, "the verified bridge session is no longer current"));
+    }
     if let Some(refusal) = app.account.renewal_refusal(scope, operation) {
         return Some(refusal);
     }
@@ -1127,6 +1422,9 @@ fn authority_refusal_with(app: &SolveApp, req: &ControlRequest, admission: &Admi
     }
     if let CommitDecision::Drop { code } = gate.check() {
         return Some(Refusal::new(code, "the operation's authorization is no longer valid at this commit point"));
+    }
+    if req.bridge_effect.is_some() && !account.bridge_generation_matches(scope) {
+        return Some(Refusal::new(RefusalCode::AuthRequired, "the verified bridge session changed during the account checks"));
     }
     // A renewal can complete concurrently with the authority reads above.
     app.account.renewal_refusal(scope, operation)
@@ -1967,8 +2265,30 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
     if let Admission::NewlyAdmitted { operation, .. } = &admission {
         app.account.control_finished(operation);
     }
-    let notice =
-        settle_result(app, &admission, decision, req.local_no_effect.load(Ordering::Relaxed), req.local_unknown_effect.load(Ordering::Relaxed), &out);
+    let no_effect = req.local_no_effect.load(Ordering::Relaxed);
+    let unknown = req.local_unknown_effect.load(Ordering::Relaxed);
+    let notice = if let Some(effect) = &req.bridge_effect {
+        let evidence = result_evidence(&out, no_effect, unknown);
+        let action = settlement_for(evidence);
+        let disposition = match (decision, action) {
+            (CommitDecision::Drop { code: RefusalCode::OperationFinalized }, _) => BridgeDisposition::AlreadyTerminal,
+            (decision, SettlementAction::Commit(result)) => {
+                BridgeDisposition::Settle { intent: SettlementIntent::Commit(result), deferred: !decision.allowed() }
+            }
+            (_, SettlementAction::Release(reason)) => BridgeDisposition::Settle { intent: SettlementIntent::Release(reason), deferred: false },
+        };
+        if let Ok(mut effect) = effect.lock() {
+            *effect = Some(disposition);
+        }
+        match (&admission, disposition) {
+            (Admission::NewlyAdmitted { operation, .. }, BridgeDisposition::Settle { deferred: true, .. }) => {
+                Some(SettlementNotice { operation: operation.clone(), kind: SettlementNoticeKind::Deferred { evidence } })
+            }
+            _ => None,
+        }
+    } else {
+        settle_result(app, &admission, decision, no_effect, unknown, &out)
+    };
     if !decision.allowed() {
         let CommitDecision::Drop { code } = decision else { return out };
         let reply = with_settlement_notice(
@@ -3091,8 +3411,8 @@ pub(crate) mod test_support {
     use std::time::{Duration, SystemTime};
 
     use solidcraft_engine::entitlement::{
-        AccountId, AccountService, AuthenticatedHostScope, Availability, BillingResult, Capability, EntryCategory, Grant, HostSessionBinding,
-        MonotonicClock, MonotonicInstant, OperationId, OperationStatus, Refusal, RefusalCode,
+        AccountId, AccountService, Admission, AuthenticatedHostScope, Availability, BillingPort, BillingResult, Capability, ConservativeDeadline,
+        EntryCategory, Grant, HostSessionBinding, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, Refusal, RefusalCode,
     };
 
     use crate::SolveApp;
@@ -3106,6 +3426,7 @@ pub(crate) mod test_support {
         /// zero, modelling the native client, where the settlement credential arrives with
         /// `begin` and does not exist before admission.
         lookup_needs_admission: Option<Arc<AtomicUsize>>,
+        bridge_billing: Option<std::sync::Mutex<Box<dyn BillingPort + Send>>>,
     }
 
     fn status_from_code(code: u8) -> OperationStatus {
@@ -3129,6 +3450,19 @@ pub(crate) mod test_support {
     }
 
     impl AccountService for TestAccount {
+        fn begin_covered_bridge(
+            &mut self,
+            _: &AuthenticatedHostScope,
+            operation: &OperationId,
+            required: Duration,
+            _: Option<&ConservativeDeadline>,
+        ) -> Result<Admission, Refusal> {
+            assert!(required <= Duration::from_secs(30), "this bridge fixture injects a 60 s grant");
+            let billing = self.bridge_billing.as_mut().ok_or_else(|| Refusal::new(RefusalCode::AuthUnavailable, "no fixture hold"))?;
+            let grant = billing.get_mut().unwrap().admit(operation, Capability::Mcp, EntryCategory::GuiBridgeMcp)?;
+            Ok(Admission::NewlyAdmitted { operation: operation.clone(), grant })
+        }
+
         fn status(&self) -> Result<Availability, Refusal> {
             let mut availability = Availability {
                 online: true,
@@ -3237,6 +3571,10 @@ pub(crate) mod test_support {
         }
 
         pub(crate) fn install(&self, app: &mut SolveApp) {
+            self.install_with_bridge_billing(app, None);
+        }
+
+        pub(crate) fn install_with_bridge_billing(&self, app: &mut SolveApp, billing: Option<Box<dyn BillingPort + Send>>) {
             app.install_commit_authority(
                 self.scope.clone(),
                 Box::new(TestAccount {
@@ -3245,6 +3583,7 @@ pub(crate) mod test_support {
                     version_supported: Arc::clone(&self.version_supported),
                     lookups: Arc::clone(&self.lookups),
                     lookup_needs_admission: self.lookup_needs_admission.clone(),
+                    bridge_billing: billing.map(std::sync::Mutex::new),
                 }),
                 Box::new(TestClock {
                     now_ms: Arc::clone(&self.now_ms),
@@ -3296,8 +3635,7 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use solidcraft_engine::entitlement::{
-        FreshIntent, OperationRecord, OperationStore, OperationStoreError, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome,
-        SettlementIntent, TransportCorrelation, UnsettledOperation,
+        OperationRecord, OperationStoreError, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, SettlementIntent, UnsettledOperation,
     };
 
     /// Script the existing journal's read for one operation. Classification must not write it.
@@ -3340,7 +3678,9 @@ mod tests {
         }
 
         fn lookup_original_retry(&self, _: &RetryScopeKey) -> RetryDecision {
-            unreachable!()
+            // This scripted row has no authenticated mapping. Reading it may not authorize a
+            // second bridge attempt; the stub still rejects every write.
+            RetryDecision::Unprovable
         }
 
         fn record_review(&mut self, _: &ReviewOperation) -> Result<(), OperationStoreError> {
@@ -3512,6 +3852,53 @@ mod tests {
         assert_eq!(admits.load(Ordering::Relaxed), 1, "the fresh operation is admitted exactly once");
         assert_eq!(releases.load(Ordering::Relaxed), 0, "an admitted operation is not released");
         assert!(req.admission.is_some(), "the admission is stored for dispatch");
+    }
+
+    #[test]
+    fn a_forwarded_bridge_mint_requires_an_available_journal_before_admission() {
+        let (mut app, authority, admits, releases) = app_with_lookup_before_admission();
+        let operation = OperationId::mint_from_entropy(&[7; 16]).unwrap();
+        let trusted = TrustedContext::mint(authority.scope(), operation.as_str(), Capability::Mcp, EntryCategory::GuiBridgeMcp).unwrap();
+        let (mut req, _) = ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"parameters.list"}), trusted, None, None);
+        for store in [None, Some(Box::new(ControlJournal(operation, Err(OperationStoreError::Unavailable))) as Box<dyn OperationStore + Send>)] {
+            app.review_store = store;
+            let refusal = admit_once(&mut app, &mut req).expect_err("host provenance alone must not admit a charged tool");
+            assert_eq!(refusal.code, RefusalCode::AuthUnavailable);
+        }
+        assert_eq!(authority.operation_lookups(), 0, "an unavailable journal cannot be rescued by a server lookup");
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_forwarded_bridge_mint_cannot_reuse_an_existing_journal_row() {
+        let (mut app, authority, admits, releases) = app_with_lookup_before_admission();
+        let operation = OperationId::mint_from_entropy(&[8; 16]).unwrap();
+        let trusted = TrustedContext::mint(authority.scope(), operation.as_str(), Capability::Mcp, EntryCategory::GuiBridgeMcp).unwrap();
+        let (mut req, _) = ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"parameters.list"}), trusted, None, None);
+        let mut record =
+            OperationRecord::held(operation.clone(), authority.scope().account().clone(), Capability::Mcp, EntryCategory::GuiBridgeMcp, 0);
+        for (status, code) in [(OperationStatus::Held, RefusalCode::OperationConflict), (OperationStatus::Charged, RefusalCode::OperationFinalized)] {
+            record.status = status;
+            app.install_review_store(Box::new(ControlJournal(operation.clone(), Ok(Some(record.clone())))));
+            assert_eq!(admit_once(&mut app, &mut req).unwrap_err().code, code);
+        }
+        assert_eq!(authority.operation_lookups(), 0);
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_bridge_from_a_prior_session_cannot_register_an_operation() {
+        let (mut app, _authority, admits, _) = app_with_lookup_before_admission();
+        let prior = test_support::TestAuthority::new("test-account", "test-installation", "prior-session");
+        let operation = OperationId::mint_from_entropy(&[9; 16]).unwrap();
+        let trusted = TrustedContext::mint(prior.scope(), operation.as_str(), Capability::Mcp, EntryCategory::GuiBridgeMcp).unwrap();
+        let (mut req, _) = ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"parameters.list"}), trusted, None, None);
+        app.install_review_store(crate::dfm_review::tests::test_operation_store());
+        assert_eq!(admit_once(&mut app, &mut req).unwrap_err().code, RefusalCode::AuthRequired);
+        assert!(app.review_store.as_ref().unwrap().load(&operation).unwrap().is_none());
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
     }
 
     #[test]

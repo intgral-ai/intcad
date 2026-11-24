@@ -822,6 +822,7 @@ fn desktop_budget() -> BudgetTable {
 pub struct AccountRuntime {
     credentials: CredentialSession,
     ledger: Option<FileOperationStore>,
+    ledger_root: Option<std::path::PathBuf>,
     /// Measured safe-stop bounds for desktop controlled entries.
     budget: BudgetTable,
     clock: Option<Arc<dyn MonotonicClock + Send + Sync>>,
@@ -918,9 +919,11 @@ impl AccountRuntime {
     }
 
     fn new(credentials: CredentialSession, ledger: Option<FileOperationStore>, config: Option<DesktopAccountConfig>) -> Self {
+        let ledger_root = ledger.as_ref().map(|store| store.root().to_owned());
         Self {
             credentials,
             ledger,
+            ledger_root,
             budget: desktop_budget(),
             clock: Some(Arc::new(SystemMonotonicClock::new())),
             service: None,
@@ -1000,10 +1003,7 @@ impl AccountRuntime {
             return None;
         }
         let generation = self.credentials.authority_generation();
-        let scope = self.authenticated_scope()?;
-        if !crate::startup::can_restore_account_session(secure_store, self.credentials.product_session_active(), scope.is_provable()) {
-            return None;
-        }
+        let scope = restorable_scope(&self.credentials)?;
         let product = WireCredentials::product_session(&self.credentials)?;
         if !WireCredentials::installation_bound(&self.credentials) {
             return None;
@@ -1060,7 +1060,15 @@ impl AccountRuntime {
             Some(factory) => factory,
             None => Arc::new(|| Box::new(UreqTransport::with_limits(RESTART_STATUS_TIMEOUT, RESTART_STATUS_CONNECT_TIMEOUT))),
         };
-        self.service = Some(Box::new(HttpSessionAccountService { connection, transport, credentials: self.credentials.clone(), clock }));
+        self.service = Some(Box::new(HttpSessionAccountService {
+            connection,
+            transport,
+            credentials: self.credentials.clone(),
+            clock,
+            proved_scope: scope.clone(),
+            generation,
+            ledger_root: self.ledger_root.clone(),
+        }));
         self.service_proof = Some((scope.clone(), generation));
         true
     }
@@ -1127,11 +1135,15 @@ impl MonotonicClock for SharedClock {
 /// sendable ingredients and builds the HTTP adapter per call. Every call therefore reads the live
 /// [`CredentialSession`]: a signed-out, switched or expired session refuses instead of replaying a
 /// token captured at install time.
+#[derive(Clone)]
 struct HttpSessionAccountService {
     connection: WireConnection,
     transport: ProductTransportFactory,
     credentials: CredentialSession,
     clock: SharedClock,
+    proved_scope: AuthenticatedHostScope,
+    generation: u64,
+    ledger_root: Option<std::path::PathBuf>,
 }
 
 impl HttpSessionAccountService {
@@ -1147,8 +1159,57 @@ impl HttpSessionAccountService {
 }
 
 impl AccountService for HttpSessionAccountService {
+    fn bridge_generation_matches(&self, scope: &AuthenticatedHostScope) -> bool {
+        scope == &self.proved_scope && !self.credentials.is_revoked() && self.credentials.authority_generation() == self.generation
+    }
+
+    fn bridge_worker_account(&self) -> Option<Box<dyn AccountService + Send>> {
+        Some(Box::new(self.clone()))
+    }
+
+    fn bridge_journal(&self) -> Option<solidcraft_engine::entitlement::BridgeJournal> {
+        let root = self.ledger_root.clone()?;
+        Some(Arc::new(move || FileOperationStore::open(&root).ok().map(|store| Box::new(store) as Box<dyn OperationStore>)))
+    }
+
+    fn bridge_scope_check(&self, scope: &AuthenticatedHostScope) -> Option<solidcraft_engine::entitlement::BridgeScopeCheck> {
+        if scope != &self.proved_scope {
+            return None;
+        }
+        let scope = self.proved_scope.clone();
+        let credentials = self.credentials.clone();
+        let generation = self.generation;
+        Some(Box::new(move || {
+            // A cached scope can outlive sign-out or a credential-store change before the
+            // window drains lifecycle events. On the bridge worker, recheck persistence, the
+            // logout marker, the active product session and the provable scope under the
+            // same revocation generation the installed service was verified with.
+            if credentials.is_revoked() || credentials.authority_generation() != generation {
+                return None;
+            }
+            let live = restorable_scope(&credentials)?;
+            (live == scope && !credentials.is_revoked() && credentials.authority_generation() == generation).then_some(live)
+        }))
+    }
+
     fn status(&self) -> Result<Availability, Refusal> {
         self.service().status()
+    }
+
+    fn begin_covered_bridge(
+        &mut self,
+        scope: &AuthenticatedHostScope,
+        operation: &OperationId,
+        required: Duration,
+        deadline: Option<&solidcraft_engine::entitlement::ConservativeDeadline>,
+    ) -> Result<Admission, Refusal> {
+        let Some(check) = self.bridge_scope_check(scope) else {
+            return Err(Refusal::new(RefusalCode::AuthUnavailable, "the live bridge credential binding is no longer proved"));
+        };
+        if check().is_none() {
+            return Err(Refusal::new(RefusalCode::AuthUnavailable, "the live bridge credential binding is no longer proved"));
+        }
+        self.service().begin_covered_bridge(scope, operation, required, deadline, || check().is_some())
     }
 
     fn authorize(&mut self, scope: &AuthenticatedHostScope, capability: Capability) -> Result<Grant, Refusal> {
@@ -1172,6 +1233,15 @@ impl AccountService for HttpSessionAccountService {
     fn operation(&self, scope: &AuthenticatedHostScope, operation: &OperationId) -> Result<OperationStatus, Refusal> {
         self.service().operation(scope, operation)
     }
+}
+
+/// The same persisted authority prerequisites for restart and a new bridge binding.
+fn restorable_scope(credentials: &CredentialSession) -> Option<AuthenticatedHostScope> {
+    if !credentials.is_persistent() || credentials.logout_pending().ok()? {
+        return None;
+    }
+    let scope = credentials.authenticated_scope()?;
+    crate::startup::can_restore_account_session(true, credentials.product_session_active(), scope.is_provable()).then_some(scope)
 }
 
 fn account_unavailable(message: &'static str) -> Refusal {
@@ -2935,7 +3005,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_restart_replays_only_the_original_settlement_intent() {
+    fn desktop_restart_replays_only_the_original_bridge_settlement_intent() {
         use solidcraft_engine::entitlement::{OperationStore, SettlementIntent, TransportCorrelation};
 
         static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -2954,7 +3024,7 @@ mod tests {
         let foreign = AuthenticatedHostScope::new(scope.account().clone(), scope.installation().clone(), HostSessionBinding::new("foreign_session"));
         let mut ledger = FileOperationStore::open(&scratch.0).unwrap();
         let mut add = |owner, correlation, has_intent| {
-            let row = ledger.persist_intent(owner, &TransportCorrelation::new(correlation), Capability::Review, EntryCategory::ReviewPanel).unwrap();
+            let row = ledger.persist_intent(owner, &TransportCorrelation::new(correlation), Capability::Mcp, EntryCategory::GuiBridgeMcp).unwrap();
             if has_intent {
                 ledger.record_settlement_intent(&row.operation, SettlementIntent::Commit(BillingResult::Succeeded)).unwrap();
             }
@@ -2964,11 +3034,12 @@ mod tests {
         let original = add(&scope, "original_settlement", true);
         let foreign = add(&foreign, "foreign_settlement", true);
         let no_intent = add(&scope, "missing_settlement", false);
+        ledger.mark_started(&original, 1).unwrap();
         drop(ledger);
         drop(session);
 
         for (reply, expected, local_state) in [
-            (Some(Err(TransportFailure::Timeout)), 2, OperationStatus::Held),
+            (Some(Err(TransportFailure::Timeout)), 2, OperationStatus::Pending),
             (
                 Some(Ok(WireResponse::new(
                     200,
@@ -4651,6 +4722,81 @@ mod tests {
         assert!(availability.online, "the served status is parsed as the online snapshot");
         assert!(port.take_commit_authority().is_none(), "the same sign-in can hand over authority only once");
         port.shutdown();
+    }
+
+    #[test]
+    fn bridge_binding_rechecks_live_session_even_before_lifecycle_events_are_drained() {
+        let port = verified_sign_in_port();
+        let credentials = port.runtime.credentials.clone();
+        let mut port = port;
+        let (scope, service, _) = port.take_commit_authority().unwrap();
+        let bind = service.bridge_scope_check(&scope).expect("the desktop supplies a bridge recheck");
+        assert_eq!(bind(), Some(scope.clone()), "an untouched verified session binds");
+
+        credentials.revoke_in_process();
+        assert_eq!(bind(), None, "the barrier closes even while the installed authority is still present");
+        credentials.end_revocation();
+        assert_eq!(credentials.authenticated_scope(), Some(scope.clone()), "the labels alone still match");
+        assert_eq!(bind(), None, "a moved generation cannot reuse the verified binding");
+    }
+
+    #[test]
+    fn bridge_binding_does_not_trust_the_undrained_scope_after_store_or_session_changes() {
+        for missing in ["store", "product", "logout"] {
+            let store = TestStore::default();
+            let session = activate_session(&store);
+            let mut runtime = verified_restart_runtime(session.clone());
+            assert!(runtime.install_verified_service());
+            let (scope, service, _) = runtime.take_commit_authority(None).unwrap();
+            let bind = service.bridge_scope_check(&scope).unwrap();
+            assert_eq!(bind(), Some(scope.clone()));
+            match missing {
+                "store" => store.persistent.store(false, Ordering::SeqCst),
+                "product" => {
+                    store.entries.lock().unwrap().remove("auth/product_session");
+                }
+                "logout" => {
+                    store.entries.lock().unwrap().insert("auth/logout_pending".into(), "sign_out".into());
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(bind(), None, "stale stored authority must not bind after loss of {missing}");
+        }
+    }
+
+    #[test]
+    fn bridge_bound_above_the_native_grant_cap_refuses_without_a_hold_request() {
+        let product = ScriptedProduct::default();
+        let session = active_session();
+        let mut runtime = restart_runtime(session, product.clone(), &RecordingOpener::default());
+        assert!(runtime.install_verified_service());
+        let (scope, mut service, _) = runtime.take_commit_authority(None).unwrap();
+        let operation = OperationId::mint_from_entropy(&[1; 16]).unwrap();
+        let refusal = service.begin_covered_bridge(&scope, &operation, Duration::MAX, None).unwrap_err();
+        assert_eq!(refusal.code, RefusalCode::UnsafeToStart);
+        assert!(product.requests().is_empty(), "the transport was not asked for a hold");
+    }
+
+    #[test]
+    fn a_short_live_bridge_lease_never_requests_an_operation_hold() {
+        let product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(
+            200,
+            json!({
+                "capability":"mcp", "renewed":false, "operation_id":null, "remaining_seconds":29,
+                "authorization_id":"grant_short_bridge", "execution_session_proof":"test_short_proof"
+            })
+            .to_string()
+            .into_bytes(),
+        ))]);
+        let mut runtime = restart_runtime(active_session(), product.clone(), &RecordingOpener::default());
+        assert!(runtime.install_verified_service());
+        let (scope, mut service, _) = runtime.take_commit_authority(None).unwrap();
+        let operation = OperationId::mint_from_entropy(&[2; 16]).unwrap();
+        let refusal = service.begin_covered_bridge(&scope, &operation, Duration::from_secs(30), None).unwrap_err();
+        assert_eq!(refusal.code, RefusalCode::UnsafeToStart);
+        let requests = product.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url(), "https://api.example/v1/authorizations");
     }
 
     #[test]

@@ -21,7 +21,7 @@ pub use gate::{
     AuthorizationBound, CommitDecision, CommitGate, FinalizeLookupResponse, LookupDisposition, LookupEvidence, ResultEvidence, SafeStopPlan,
     SettlementAction, finalize_lookup_disposition, plan_safe_stop, settlement_for,
 };
-pub use ports::{AccountService, BillingPort, CredentialStore, OperationStore};
+pub use ports::{AccountService, BillingPort, BridgeJournal, BridgeScopeCheck, CredentialStore, OperationStore};
 #[cfg(test)]
 pub use ports::{CountingBilling, FakeAccountService, InMemoryOperationStore};
 pub use types::*;

@@ -906,6 +906,33 @@ impl<T: Transport> HttpAccountService<T> {
         Ok((self.grant(sent_at, id, capability, remaining), sent_at, interval))
     }
 
+    /// Prove coverage using a server lease before asking for any operation hold. The same local
+    /// clamp used for absolute admission receipts must be able to represent that coverage.
+    pub fn begin_covered_bridge(
+        &mut self,
+        scope: &AuthenticatedHostScope,
+        operation: &OperationId,
+        required: Duration,
+        deadline: Option<&solidcraft_engine::entitlement::ConservativeDeadline>,
+        live_binding: impl Fn() -> bool,
+    ) -> Result<Admission, Refusal> {
+        if required > MAX_ABSOLUTE_GRANT_LEASE {
+            return Err(refusal(RefusalCode::UnsafeToStart));
+        }
+        let lease = self.authorize(scope, Capability::Mcp)?;
+        if !live_binding() {
+            return Err(refusal(RefusalCode::AuthUnavailable));
+        }
+        let now = self.clock.now();
+        if lease.expires_at() <= now
+            || lease.expires_at().as_duration().saturating_sub(now.as_duration()) < required
+            || deadline.is_some_and(|deadline| deadline.remaining(now).is_none_or(|remaining| remaining < required))
+        {
+            return Err(refusal(RefusalCode::UnsafeToStart));
+        }
+        self.begin_with_authorization(scope, operation, Capability::Mcp, EntryCategory::GuiBridgeMcp, Some(lease.id()))
+    }
+
     /// Start with an optional trusted authorization lease.
     ///
     /// The frozen trait has no lease argument, so [`AccountService::begin`] passes `None`. A host

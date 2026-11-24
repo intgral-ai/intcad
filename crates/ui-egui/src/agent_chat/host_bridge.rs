@@ -10,12 +10,12 @@ use std::collections::VecDeque;
 use std::io::{BufReader, BufWriter};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use serde_json::Value;
 use solidcraft_engine::entitlement::{
-    AuthenticatedHostScope, Capability, ConservativeDeadline, EntryCategory, MonotonicInstant, OperationId, TrustedContext,
+    AuthenticatedHostScope, BridgeScopeCheck, Capability, ConservativeDeadline, EntryCategory, MonotonicInstant, OperationId, TrustedContext,
 };
 use solidcraft_engine::schema::ParamCheck;
 use solidcraft_mcp::{Backend, GuardedCallError, GuardedReply, Server, ToolCallContext};
@@ -183,8 +183,8 @@ struct ChatBackend {
     state: Arc<BridgeState>,
     events: Arc<Mutex<VecDeque<Event>>>,
     next_call: Arc<AtomicU64>,
-    /// Host-minted provenance, `None` keeps the bridge closed until Task 11 composes a real
-    /// authority. It is never read from the runtime's wire messages.
+    /// Host-minted provenance. Without a verified desktop scope the bridge stays closed to
+    /// charged calls. Provenance is never read from the runtime's wire messages.
     provenance: Option<HostProvenance>,
     /// The logical call the server announced for the current request. Replaced on every call
     /// and cleared at [`Backend::end_tool_call`], so protocol/resource paths cannot inherit it.
@@ -310,17 +310,31 @@ pub(crate) struct HostBridge {
     state: Arc<BridgeState>,
     error: Arc<Mutex<Option<String>>>,
     events: Arc<Mutex<VecDeque<Event>>>,
-    provenance: Option<HostProvenance>,
+    provenance: Arc<OnceLock<HostProvenance>>,
 }
 
 impl HostBridge {
     /// Create the lane and start serving MCP on the host end. `tools` is the chat's existing
-    /// control queue; no second command catalog is used. `provenance` is only supplied by the
-    /// host composition root; `None` keeps charged tools fail-closed.
+    /// control queue; test fixtures may supply their own provenance.
+    #[cfg(test)]
     pub(crate) fn open(tools: Sender<ControlRequest>, provenance: Option<HostProvenance>) -> Result<Self, String> {
+        let slot = Arc::new(OnceLock::new());
+        if let Some(provenance) = provenance {
+            let _ = slot.set(provenance);
+        }
+        Self::open_lane(tools, slot, None)
+    }
+
+    /// Run the host's live credential check on the MCP worker immediately before choosing the
+    /// server's authority. A missing or failed check preserves the default closed server.
+    pub(crate) fn open_checked(tools: Sender<ControlRequest>, check: Option<BridgeScopeCheck>) -> Result<Self, String> {
+        Self::open_lane(tools, Arc::new(OnceLock::new()), check)
+    }
+
+    fn open_lane(tools: Sender<ControlRequest>, provenance: Arc<OnceLock<HostProvenance>>, check: Option<BridgeScopeCheck>) -> Result<Self, String> {
         #[cfg(not(unix))]
         {
-            let _ = (tools, provenance);
+            let _ = (tools, provenance, check);
             return Err("the Mastra bridge lane is unavailable on this platform".into());
         }
         #[cfg(unix)]
@@ -337,22 +351,26 @@ impl HostBridge {
             let reader = host.try_clone().map_err(|error| format!("the Mastra bridge lane could not be cloned: {error}"))?;
             let writer = host.try_clone().map_err(|error| format!("the Mastra bridge lane could not be cloned: {error}"))?;
             let events = Arc::new(Mutex::new(VecDeque::new()));
-            let backend = ChatBackend {
+            let mut backend = ChatBackend {
                 tools,
                 state: Arc::clone(&state),
                 events: Arc::clone(&events),
                 next_call: Arc::new(AtomicU64::new(0)),
-                provenance: provenance.clone(),
+                provenance: None,
                 forwarded: None,
                 helper: None,
             };
             let reported = Arc::clone(&error);
             let close_state = Arc::clone(&state);
-            let lane_provenance = provenance.clone();
+            let lane_provenance = Arc::clone(&provenance);
             std::thread::Builder::new()
                 .name("mastra-bridge".into())
                 .spawn(move || {
-                    let mut server = match &lane_provenance {
+                    if let Some(scope) = check.and_then(|check| check()).filter(AuthenticatedHostScope::is_provable) {
+                        let _ = lane_provenance.set(HostProvenance::new(scope));
+                    }
+                    backend.provenance = lane_provenance.get().cloned();
+                    let mut server = match lane_provenance.get() {
                         Some(_) => Server::with_forwarded_authority(Box::new(backend)),
                         None => Server::new(Box::new(backend)),
                     };
@@ -420,20 +438,20 @@ impl HostBridge {
 
     /// The authenticated host scope this lane can bind. `None` keeps it closed.
     pub(crate) fn scope(&self) -> Option<AuthenticatedHostScope> {
-        self.provenance.as_ref().map(|provenance| provenance.scope().clone())
+        self.provenance.get().map(|provenance| provenance.scope().clone())
     }
 
     /// Mint one logical call for the host bridge itself. Tests and the host composition root use
     /// this to prove that sub-steps share an id while separate calls do not.
     #[cfg(test)]
     pub(crate) fn begin_logical_call(&self, entry: EntryCategory, tool: &str) -> Result<LogicalCall, String> {
-        self.provenance.as_ref().ok_or_else(|| "the bridge has no authenticated host provenance".to_string())?.begin_logical_call(entry, tool)
+        self.provenance.get().ok_or_else(|| "the bridge has no authenticated host provenance".to_string())?.begin_logical_call(entry, tool)
     }
 
     /// How many logical operations this lane has minted (test evidence only).
     #[cfg(test)]
     pub(crate) fn minted_operations(&self) -> usize {
-        self.provenance.as_ref().map_or(0, HostProvenance::minted)
+        self.provenance.get().map_or(0, HostProvenance::minted)
     }
 }
 

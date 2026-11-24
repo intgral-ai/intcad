@@ -14,6 +14,39 @@ use super::types::{
 };
 
 pub trait AccountService {
+    /// An owned, worker-safe check for a paid desktop bridge bind. A cached identity or a
+    /// service that does not implement live verification cannot bind the charged lane.
+    fn bridge_scope_check(&self, _scope: &AuthenticatedHostScope) -> Option<BridgeScopeCheck> {
+        None
+    }
+
+    /// Nonblocking revocation check for the window's final dispatch and commit gates. The
+    /// worker checks the full persistent binding; the window must not open the keyring here.
+    fn bridge_generation_matches(&self, _scope: &AuthenticatedHostScope) -> bool {
+        false
+    }
+
+    /// Take a GUI bridge hold only after obtaining a live lease that covers the required bound.
+    /// Implementations without a pre-hold coverage check must not fall back to ordinary `begin`.
+    fn begin_covered_bridge(
+        &mut self,
+        _scope: &AuthenticatedHostScope,
+        _operation: &OperationId,
+        _required: std::time::Duration,
+        _deadline: Option<&crate::entitlement::ConservativeDeadline>,
+    ) -> Result<Admission, Refusal> {
+        Err(Refusal::new(crate::entitlement::RefusalCode::AuthUnavailable, "the host cannot prove bridge coverage before a hold"))
+    }
+
+    /// Take worker-owned copies, without performing credential, network or journal I/O here.
+    fn bridge_worker_account(&self) -> Option<Box<dyn AccountService + Send>> {
+        None
+    }
+
+    fn bridge_journal(&self) -> Option<BridgeJournal> {
+        None
+    }
+
     fn status(&self) -> Result<Availability, Refusal>;
     fn authorize(&mut self, scope: &AuthenticatedHostScope, capability: Capability) -> Result<Grant, Refusal>;
     /// Start one logical operation. A business refusal is `Ok(Admission::Refused)`; `Err` is
@@ -31,6 +64,9 @@ pub trait AccountService {
     fn finalize(&mut self, scope: &AuthenticatedHostScope, operation: &OperationId, result: BillingResult) -> Result<OperationStatus, Refusal>;
     fn operation(&self, scope: &AuthenticatedHostScope, operation: &OperationId) -> Result<OperationStatus, Refusal>;
 }
+
+pub type BridgeScopeCheck = Box<dyn Fn() -> Option<AuthenticatedHostScope> + Send>;
+pub type BridgeJournal = std::sync::Arc<dyn Fn() -> Option<Box<dyn OperationStore>> + Send + Sync>;
 
 /// The durable operation journal. It records identity and settlement state; it never grants
 /// execution authority.
