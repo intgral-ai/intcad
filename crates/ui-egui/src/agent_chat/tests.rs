@@ -8362,7 +8362,7 @@ fn app_in_a_turn() -> (SolveApp, Sender<ControlRequest>) {
 }
 
 fn ask(tx: &Sender<ControlRequest>, method: &str, params: Value) -> Receiver<Value> {
-    let (req, rx) = ControlRequest::new(method, params);
+    let (req, rx) = ControlRequest::trusted_gui(method, params);
     tx.send(req).unwrap();
     rx
 }
@@ -8795,7 +8795,7 @@ fn ended(script: &Script, reason: &str) {
 fn guarded_stop_request(app: &mut SolveApp, method: &str, mut params: Value) -> (ControlRequest, Receiver<Value>) {
     let stamp = app.session.document_stamp();
     params["expectedDocument"] = json!({"documentId":stamp.document_id,"revision":stamp.revision.to_string()});
-    let (mut req, reply) = ControlRequest::new(method, params);
+    let (mut req, reply) = ControlRequest::trusted_gui(method, params);
     req.chat_turn = Some(app.agent_chat.turn.as_ref().unwrap().active.clone());
     crate::execution_guard::admit(app, &mut req).unwrap_or_else(|_| panic!("matching admission"));
     (req, reply)
@@ -8857,7 +8857,7 @@ fn guarded_stop_refuses_matching_queue_cursor_and_ahead() {
         send(&mut app, &ctx, "make a box".into());
         let method = if route == "copy" { "document.inspect" } else { "engine.batch" };
         let params = if route == "copy" { json!({}) } else { json!({"commands":[boxed(0.0),boxed(20.0)]}) };
-        let (req, reply) = guarded_stop_request(&mut app, method, params);
+        let (mut req, reply) = guarded_stop_request(&mut app, method, params);
         let expected = req.guarded.as_ref().unwrap().expected.clone();
         let mut gate = None;
         let mut immediate = None;
@@ -8869,7 +8869,7 @@ fn guarded_stop_refuses_matching_queue_cursor_and_ahead() {
                 app.preferences.agent_off_thread = true;
                 gate = Some(crate::history_off_thread_tests::guarded_workers::gate());
             }
-            assert!(crate::agent_cursor::intercept(&mut app, &req));
+            assert!(crate::agent_cursor::intercept(&mut app, &mut req));
         } else if matches!(route, "ahead" | "copy") {
             app.apply_off_thread = Some(std::time::Duration::ZERO);
             app.preferences.agent_off_thread = true;
@@ -8935,7 +8935,7 @@ fn guarded_stop_inactive_direct_calls_ignore_forged_authority() {
             let doc = app.session.doc.clone();
             let history = guarded_stop_history(&app);
             let r = match route {
-                "handle" => match crate::control::handle(&mut app, &ctx, &req) {
+                "handle" => match crate::control::handle(&mut app, &ctx, &mut req) {
                     crate::control::Outcome::Done(r) => r,
                     _ => panic!("not a screenshot"),
                 },
@@ -9006,13 +9006,13 @@ fn guarded_command_chip_stop_allows_next_request() {
         let active = app.agent_chat.turn.as_ref().unwrap().active.clone();
         app.apply_off_thread = Some(std::time::Duration::ZERO);
         app.preferences.agent_off_thread = true;
-        let (req, reply) = guarded_stop_request(&mut app, "engine.execute", boxed(0.0));
+        let (mut req, reply) = guarded_stop_request(&mut app, "engine.execute", boxed(0.0));
         let (next, next_reply) = guarded_stop_request(&mut app, "engine.execute", boxed(20.0));
         let gate = crate::history_off_thread_tests::guarded_workers::gate();
         if cursor {
             app.ui.agent_cursor.show = true;
             crate::scenario::publish_handle("toolbar:solid.box", egui::pos2(100.0, 100.0));
-            assert!(crate::agent_cursor::intercept(&mut app, &req));
+            assert!(crate::agent_cursor::intercept(&mut app, &mut req));
             for _ in 0..8 {
                 app.now += 2.0;
                 crate::agent_cursor::step(&mut app, &ctx);
@@ -9057,14 +9057,14 @@ fn assert_legacy_command_chip_reply(cursor: bool) {
     let active = app.agent_chat.turn.as_ref().unwrap().active.clone();
     app.apply_off_thread = Some(std::time::Duration::ZERO);
     app.preferences.agent_off_thread = true;
-    let (mut req, reply) = ControlRequest::new("engine.execute", boxed(0.0));
+    let (mut req, reply) = ControlRequest::trusted_gui("engine.execute", boxed(0.0));
     req.chat_turn = Some(active.clone());
     assert!(req.guarded.is_none() && req.params.get("expectedDocument").is_none());
     let gate = crate::history_off_thread_tests::guarded_workers::gate();
     if cursor {
         app.ui.agent_cursor.show = true;
         crate::scenario::publish_handle("toolbar:solid.box", egui::pos2(100.0, 100.0));
-        assert!(crate::agent_cursor::intercept(&mut app, &req));
+        assert!(crate::agent_cursor::intercept(&mut app, &mut req));
         for _ in 0..8 {
             app.now += 2.0;
             crate::agent_cursor::step(&mut app, &ctx);
@@ -9098,7 +9098,7 @@ fn assert_legacy_command_chip_reply(cursor: bool) {
     assert!(Arc::ptr_eq(&doc, &app.session.doc));
     assert_eq!(guarded_stop_history(&app), history);
     assert_eq!(app.run("edit.checkpoint", json!({})).unwrap()["checkpoint"], checkpoint + 1);
-    let (mut next, next_reply) = ControlRequest::new("engine.execute", boxed(20.0));
+    let (mut next, next_reply) = ControlRequest::trusted_gui("engine.execute", boxed(20.0));
     next.chat_turn = Some(active);
     app.run_control(&ctx, next);
     assert_eq!(next_reply.try_recv().unwrap()["ok"], true);
@@ -9558,7 +9558,7 @@ fn a_script_resets_chat_only_after_a_replacement_succeeds() {
         for params in [steps.clone(), json!({"commands": steps})] {
             let (mut app, _script, ctx) = app_with_script();
             send(&mut app, &ctx, "first request".into());
-            let (req, reply) = ControlRequest::new("engine.script", params);
+            let (req, reply) = ControlRequest::trusted_gui("engine.script", params);
             app.run_control(&ctx, req);
             assert!(reply.try_recv().is_ok());
             assert_eq!(app.agent_chat.backend.is_none(), replaced);
@@ -13355,6 +13355,7 @@ mod mastra_backend_tests {
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
             tools: None,
+            host_scope: None,
             instructions: String::new(),
             connection_auth: auth,
             frozen_binding: Arc::new(Mutex::new(None)),
@@ -13783,7 +13784,7 @@ mod mastra_backend_tests {
 
         send(&mut app, &ctx, "add a width".into());
         let (request, reply) =
-            ControlRequest::new("engine.execute", json!({"command": "parameters.add", "params": {"name": "w", "expression": "10 mm"}}));
+            ControlRequest::trusted_gui("engine.execute", json!({"command": "parameters.add", "params": {"name": "w", "expression": "10 mm"}}));
         tx.send(request).unwrap();
         super::frame(&mut app);
         assert_eq!(reply.recv_timeout(Duration::from_secs(30)).unwrap()["ok"], true, "the running turn may change the design");
@@ -13807,7 +13808,7 @@ mod mastra_backend_tests {
         assert!(!active.load(std::sync::atomic::Ordering::Relaxed));
         let doc = Arc::clone(&app.session.doc);
         let revision = app.session.document_stamp();
-        let (mut deferred, _reply) = ControlRequest::new(
+        let (mut deferred, _reply) = ControlRequest::trusted_gui(
             "engine.execute",
             json!({
                 "command": "parameters.change",
@@ -13822,7 +13823,7 @@ mod mastra_backend_tests {
 
         // Unguarded requests enforce the same trusted flag; they are not exempt because they
         // carry no expected document.
-        let mut unguarded = ControlRequest::new("document.revision", json!({})).0;
+        let mut unguarded = ControlRequest::trusted_gui("document.revision", json!({})).0;
         unguarded.chat_turn = Some(stopped.clone());
         assert!(crate::execution_guard::admit(&mut app, &mut unguarded).is_err(), "an unguarded stopped-turn request is refused");
         assert!(Arc::ptr_eq(&app.session.doc, &doc));
@@ -13832,7 +13833,8 @@ mod mastra_backend_tests {
         send(&mut app, &ctx, "fresh turn".into());
         let current = app.agent_chat.turn.as_ref().expect("the new turn").active.clone();
         assert!(current.load(std::sync::atomic::Ordering::Relaxed), "the new turn may write");
-        let mut late = ControlRequest::new("engine.execute", json!({"command":"parameters.change","params":{"name":"w","expression":"30 mm"}})).0;
+        let mut late =
+            ControlRequest::trusted_gui("engine.execute", json!({"command":"parameters.change","params":{"name":"w","expression":"30 mm"}})).0;
         late.chat_turn = Some(stopped.clone());
         assert!(crate::execution_guard::admit(&mut app, &mut late).is_err(), "the old turn's flag cannot borrow the new turn's permission");
         assert!(Arc::ptr_eq(&app.session.doc, &doc));
@@ -13955,12 +13957,61 @@ mod mastra_backend_tests {
     }
 
     #[cfg(unix)]
+    #[derive(Default)]
+    struct BridgeTestBilling;
+
+    #[cfg(unix)]
+    impl solidcraft_engine::entitlement::BillingPort for BridgeTestBilling {
+        fn admit(
+            &mut self,
+            operation: &solidcraft_engine::entitlement::OperationId,
+            capability: solidcraft_engine::entitlement::Capability,
+            _entry: solidcraft_engine::entitlement::EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Grant, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::Grant::from_server(
+                solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
+                capability,
+                solidcraft_engine::entitlement::MonotonicInstant::from_millis(60_000),
+            ))
+        }
+
+        fn commit(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::BillingResult, solidcraft_engine::entitlement::Refusal> {
+            Ok(result)
+        }
+
+        fn release(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _reason: solidcraft_engine::entitlement::RefusalCode,
+        ) -> Result<(), solidcraft_engine::entitlement::Refusal> {
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    fn bridge_test_budget() -> solidcraft_engine::entitlement::BudgetTable {
+        let mut budget = solidcraft_engine::entitlement::BudgetTable::unverified_default();
+        budget.set_verified(
+            solidcraft_engine::entitlement::Capability::Mcp,
+            solidcraft_engine::entitlement::EntryCategory::GuiBridgeMcp,
+            Duration::from_secs(30),
+        );
+        budget
+    }
+
+    #[cfg(unix)]
     fn bridge_app(
         mut app: SolveApp,
         script: String,
         limits: Limits,
     ) -> (SolveApp, egui::Context, Arc<Mutex<test_support::Log>>, Arc<std::sync::mpsc::Sender<ControlRequest>>) {
         use super::mastra_worker_support::*;
+        app.install_billing(Box::<BridgeTestBilling>::default(), bridge_test_budget());
+        crate::control::test_support::TestAuthority::new("test-account", "test-installation", "test-session").install(&mut app);
         let program = super::mastra_peer_program().unwrap();
         let script_path = program.directory.join("bridge-peer");
         std::fs::write(&script_path, script).unwrap();
@@ -13975,6 +14026,11 @@ mod mastra_backend_tests {
         config.workflow_id = "w".into();
         config.bridge = Some(crate::agent_chat::acp::McpBridge { cli: "/bin/true".into(), port: 1 });
         config.tools = Some(tools.clone());
+        config.host_scope = Some(solidcraft_engine::entitlement::AuthenticatedHostScope::new(
+            solidcraft_engine::entitlement::AccountId::new("test-account"),
+            solidcraft_engine::entitlement::InstallationId::new("test-installation"),
+            solidcraft_engine::entitlement::HostSessionBinding::new("test-session"),
+        ));
         let launch = runtime_client::RuntimeLaunch {
             executable: program.executable.clone(),
             args: vec![script_path.into_os_string()],
@@ -14415,6 +14471,7 @@ mod mastra_backend_tests {
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
             tools: None,
+            host_scope: None,
             instructions: String::new(),
             connection_auth: Arc::new(Mutex::new(None)),
             frozen_binding: Arc::new(Mutex::new(None)),
@@ -15017,6 +15074,7 @@ done
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
             tools: None,
+            host_scope: None,
             instructions: String::new(),
             connection_auth: Arc::clone(&auth),
             frozen_binding: Arc::new(std::sync::Mutex::new(None)),
@@ -15487,7 +15545,7 @@ fn an_anatomy_turn_refuses_a_write_before_the_gate() {
     let (mut app, _script, ctx) = app_with_script();
     app.agent_chat.skill = skill::Skill::Anatomy;
     send(&mut app, &ctx, "explain the cover".into());
-    let (request, reply) = ControlRequest::new("engine.execute", json!({"command": "solid.box", "params": {"length": 1}}));
+    let (request, reply) = ControlRequest::trusted_gui("engine.execute", json!({"command": "solid.box", "params": {"length": 1}}));
     let (tx, rx) = channel();
     tx.send(request).unwrap();
     app.agent_chat.tools_rx = Some(rx);
@@ -15761,13 +15819,12 @@ fn the_web_page_may_only_ask_for_listed_actions_that_fit_the_chat() {
     h.app.agent_chat.items.push(Item::Changes { steps: 1, doc: other, undone: false });
     assert!(act(&mut h, json!({"type": "undo", "index": 1})).is_err(), "the design has moved on since those changes");
 
-    // The page says what colour its own surface is, for the frame the app draws around it. It
-    // is the page's first word to the app, so the control channel's status tells from it that
-    // the page is up.
+    // A backing colour by itself is not evidence of a live native view.
     assert_eq!(status(&h.app)["webView"]["page"], false);
     act(&mut h, json!({"type": "surface", "color": "#0e0e0e"})).expect("a colour");
     assert_eq!(h.app.agent_chat.web_canvas.map(|colour| colour.to_array()), Some([14, 14, 14, 255]));
     assert_eq!(status(&h.app)["webView"], json!({"host": h.app.agent_chat.web_host, "page": true}));
+    assert_eq!(h.call("ui.inspect", json!({}))["result"]["assistant"]["surface_ready"], false);
 
     // The panel's own controls are the page's too.
     act(&mut h, json!({"type": "side", "left": true})).expect("a listed panel control");
@@ -16572,6 +16629,7 @@ fn files_dropped_on_the_web_view_join_the_next_message() {
     assert!(matches!(h.app.agent_chat.items.as_slice(), [Item::Notice { error: true, .. }]), "the missing file is said, the empty path is nothing");
     let _ = std::fs::remove_dir_all(&d);
 }
+
 
 /// The web view is the window's, not one design's: a design opened in another tab, whose
 /// conversation starts afresh, is shown in it too, on the surface colour the page already said.
@@ -18515,6 +18573,21 @@ fn step_text(session: &mut solidcraft_engine::Session, name: &str) -> String {
     text.lines().filter(|l| !l.starts_with("FILE_NAME")).collect::<Vec<_>>().join("\n")
 }
 
+/// A controlled bridge request is refused before the preview copy computes anything. Ordinary
+/// GUI preview stays on the existing path; the refusal is an inert, in-process check.
+#[test]
+fn a_controlled_request_is_refused_before_preview_computation() {
+    let (mut app, _tx, _script, _ctx) = previewed_turn("middle box");
+    assert!(review::running(&app.agent_chat));
+    let (req, reply) = ControlRequest::trusted_bridge("engine.execute", boxed(0.0));
+    super::hand_over(&mut app, req);
+    let reply = reply.recv_timeout(std::time::Duration::from_secs(30)).expect("a refusal before the copy computes");
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+    assert!(review::computing(&app.agent_chat).is_none(), "nothing started on the copy");
+    assert_eq!(body_count(&app.session), 0, "the open design was not touched");
+}
+
 /// Off (the default), a turn changes the open design as before and no card asks anything.
 #[test]
 fn without_the_preference_a_turn_changes_the_design_as_before() {
@@ -19100,8 +19173,8 @@ fn ask_here_sends_no_view_picture_and_waits_for_the_card() {
 }
 
 /// PIL-305: the automatic check reads the project's `ci.toml` switch when it decides. A design
-/// opened from a project whose checks are on must run its check even when no project command has
-/// refreshed the switch yet (the open path adopts the session without `finish_command`).
+/// opened from a project whose checks are on still decides the trigger even when no project
+/// command has refreshed the switch yet (the open path adopts the session without `finish_command`).
 #[test]
 fn an_accepted_preview_reads_the_projects_check_switch() {
     let dir = std::env::temp_dir().join(format!("solidcraft-dfm-switch-{}", std::process::id()));
@@ -19116,7 +19189,7 @@ fn an_accepted_preview_reads_the_projects_check_switch() {
     let id = review_card(&app).id;
     review::accept(&mut app, id).unwrap();
     assert!(app.agent_chat.dfm.auto_enabled(), "the project says checks run by themselves");
-    assert_eq!(app.agent_chat.dfm.fired, before + 1, "so the accept runs one check");
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "accept decides one trigger, not execution authority");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -19135,6 +19208,23 @@ fn a_project_with_checks_on(app: &mut SolveApp) -> std::path::PathBuf {
     dir
 }
 
+/// The project's automatic-check setting is not execution authority for a committed edit,
+/// including when it came from a preview accepted by the user.
+#[test]
+fn assistant_dfm_automatic_dispatch_has_no_verified_scope() {
+    for trigger in [
+        dfm_runtime::Trigger::Edits { document_id: "doc".into(), turn: "turn".into(), revision: "rev".into() },
+        dfm_runtime::Trigger::AcceptedPreview { document_id: "doc".into(), turn: "preview".into(), revision: "rev".into() },
+    ] {
+        let (mut app, _, _) = app_with_script();
+        let dir = a_project_with_checks_on(&mut app);
+        app.account = crate::account::State::with_port(crate::account::tests::signed_in_unknown_port());
+        let submitted = submit_dfm(&app, trigger);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(!submitted, "a committed edit does not authorize an automatic DFM run");
+    }
+}
+
 /// The page's Accept button posts `review`; the host turns it into the same accept the panel's
 /// button calls, so the page can finish a previewed turn.
 #[test]
@@ -19146,24 +19236,24 @@ fn the_web_page_accepts_a_waiting_preview() {
     let id = review_card(&app).id;
     web::act(&mut app, &ctx, &json!({"type": "review", "id": id, "accept": true}).to_string()).expect("the page may accept");
     assert_eq!(review_card(&app).outcome, review::Outcome::Accepted);
-    assert_eq!(app.agent_chat.dfm.fired, before + 1, "and the accepted change runs one check");
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "the accepted change decides one trigger");
     assert!(
         web::act(&mut app, &ctx, &json!({"type": "review", "id": id, "accept": true}).to_string()).is_err(),
         "a second accept has nothing to accept"
     );
 }
 
-/// PIL-305: accepting a preview submits exactly one check; a rejection or a stale accept submits
-/// none. The trigger is the same one direct commits use.
+/// PIL-305: accepting a preview decides exactly one check trigger; a rejection or a stale accept
+/// decides none. Dispatch requires separate authority.
 #[test]
-fn an_accepted_preview_runs_one_check_and_a_rejection_or_stale_accept_runs_none() {
+fn an_accepted_preview_triggers_one_check_and_a_rejection_or_stale_accept_triggers_none() {
     let (mut app, tx, script, _ctx) = previewed_turn("a box");
     let _project = a_project_with_checks_on(&mut app);
     let before = app.agent_chat.dfm.fired;
     finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
     let id = review_card(&app).id;
     review::accept(&mut app, id).unwrap();
-    assert_eq!(app.agent_chat.dfm.fired, before + 1, "accept commits and runs one check");
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "accept commits and decides one trigger");
 
     let (mut app, tx, script, _ctx) = previewed_turn("a box");
     let _project = a_project_with_checks_on(&mut app);

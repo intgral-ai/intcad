@@ -822,6 +822,18 @@ no box selection.
 | `ui.resize` | `width`, `height` | |
 | `app.quit` | `force?` (quit without asking about unsaved designs) | `quitting` (the window closes), `asking` (a "save changes?" prompt is open) |
 
+`ui.inspect` also reports a read-only `assistant` object:
+
+- `open` is whether the Assistant panel is open.
+- `surface_ready` means the current native WebView sent a valid `surface` message. A retained
+  view keeps its proof when hidden and reopened. A replacement needs its own message. This
+  field does not report visibility and is false when there is no native view.
+- `host` is `available` (a native host can try to create a view), `unavailable` (no native host),
+  `native_wayland` (no X11 child window for WebKitGTK), or `failed` (view creation failed).
+
+The object exposes no page payload, view identifier or account state. Reading it does not grant
+access to controlled actions such as `ui.agent_chat`.
+
 `dialog` (in `ui.inspect`, `ui.start` and `ui.editFeature`) is `null`, or the open dialog as
 an object that doesn't change with the form's internals:
 

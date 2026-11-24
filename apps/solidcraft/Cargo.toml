@@ -36,6 +36,7 @@ neg_cmp_op_on_partial_ord = "allow"
 
 [dependencies]
 solidcraft-engine = { workspace = true }
+solidcraft-account-native = { workspace = true }
 # The D3D12 shader compiler the window starts with (#6756).
 solidcraft-gpu = { workspace = true }
 solidcraft-ui-egui = { workspace = true }
@@ -54,6 +55,7 @@ getrandom = "0.3"
 # The update check (docs/updates.md): HTTPS with rustls, certificates from the operating system.
 ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+url = "2.5"
 # API keys of the agent chat's API agents (docs/agent-chat.md) live in the system keychain:
 # Keychain on macOS, Credential Manager on Windows, the Secret Service (pure-Rust D-Bus) elsewhere.
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
@@ -121,6 +123,8 @@ raw-window-handle = "0.6"
 x11rb = { version = "0.13", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Safe access to CLOCK_BOOTTIME for suspend-inclusive account deadlines.
+rustix = { version = "1.1.6", features = ["time"] }
 # The desktop's dark or light preference through the XDG Desktop Portal (src/desktop_theme.rs,
 # #7944); already in the tree through eframe's accessibility support (accesskit_unix).
 zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }

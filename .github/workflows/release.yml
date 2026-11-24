@@ -18,6 +18,10 @@ on:
         description: "Build only the Beta Linux x86_64, macOS universal and Windows x64 packages"
         type: boolean
         default: false
+      staging_account_config:
+        description: Validated public account snapshot from the staging wrapper
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -27,6 +31,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  ARTIFACT_PREFIX: ${{ inputs.staging_account_config != '' && 'staging-' || '' }}
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   # Release packages bind a real reviewed revision; source/Nix builds use the unbound sentinel.
@@ -48,11 +53,32 @@ jobs:
       date: ${{ steps.v.outputs.date }}
       distribution: ${{ steps.v.outputs.distribution }}
     steps:
+      - id: staging-guard
+        name: Require the manual staging wrapper
+        # A missing output must not turn a staging dispatch into an ordinary build.
+        if: >-
+          inputs.staging_account_config != '' ||
+          github.workflow_ref == format('{0}/.github/workflows/staging-packages.yml@{1}', github.repository, github.ref)
+        env:
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          STAGING_WORKFLOW_REF: ${{ format('{0}/.github/workflows/staging-packages.yml@{1}', github.repository, github.ref) }}
+          HAS_STAGING_CONFIG: ${{ inputs.staging_account_config != '' && '1' || '0' }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ "$CALLER_WORKFLOW_REF" != "$STAGING_WORKFLOW_REF" ] || [ "$HAS_STAGING_CONFIG" != 1 ]; then
+            echo '::error::Staging account configuration requires the manual staging wrapper and a snapshot'
+            exit 1
+          fi
       - &checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - id: verify-staging-config
+        name: Verify the staging snapshot against the committed configuration
+        if: inputs.staging_account_config != ''
+        env:
+          STAGING_ACCOUNT_CONFIG: ${{ inputs.staging_account_config }}
+        run: python -I scripts/ci/staging_account_config.py verify
       - id: v
         name: Resolve checkout version (never a publication decision)
         run: |
@@ -81,7 +107,7 @@ jobs:
           make_icons target/release/intcad-cli icons
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: icons-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
+          name: ${{ env.ARTIFACT_PREFIX }}icons-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: icons
           if-no-files-found: error
 
@@ -93,9 +119,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { arch: x86_64, runner: ubuntu-22.04, deb: amd64 }
-          - { arch: aarch64, runner: ubuntu-22.04-arm, deb: arm64 }
+        include: >-
+          ${{ fromJSON(inputs.staging_account_config != '' &&
+          '[{"arch":"x86_64","runner":"ubuntu-22.04","deb":"amd64"}]' ||
+          '[{"arch":"x86_64","runner":"ubuntu-22.04","deb":"amd64"},
+            {"arch":"aarch64","runner":"ubuntu-22.04-arm","deb":"arm64"}]') }}
     env:
       SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
       SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
@@ -125,6 +153,12 @@ jobs:
         with:
           key: release-linux-${{ matrix.arch }}
           save-if: false
+      - &inject-staging-account
+        name: Inject public staging account configuration before compile
+        if: inputs.staging_account_config != ''
+        env:
+          STAGING_ACCOUNT_CONFIG: ${{ inputs.staging_account_config }}
+        run: python -I scripts/ci/staging_account_config.py inject
       - name: Build and package (AppImage, deb, rpm, tar.gz)
         run: packaging/linux/package.sh
       - name: Check the packages (no desktop launch)
@@ -175,13 +209,15 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: installed-check-linux-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
+          name: ${{ env.ARTIFACT_PREFIX }}installed-check-linux-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: ${{ runner.temp }}/installed-check
           if-no-files-found: warn
       # Shared *build metadata* only: this is neither #15 inventory nor installed
       # acceptance. Null contractDigest explicitly blocks the release gate.
       - &package-evidence
         name: Bind package bytes to this checkout and contract manifest
+        env:
+          STAGING_ACCOUNT_CONFIG: ${{ inputs.staging_account_config }}
         shell: python {0}
         run: |
           import hashlib, json, os, subprocess, sys
@@ -214,6 +250,16 @@ jobs:
           data = dict(version=1, packageId=os.environ['PACKAGE_ID'], sourceRevision=sha,
                       target=os.environ['PACKAGE_TARGET'], contractDigest=contract_digest,
                       artifacts=[dict(name=p.name, sha256=digest(p)) for p in files])
+          snapshot = os.environ.get('STAGING_ACCOUNT_CONFIG')
+          if snapshot:
+              sys.path.insert(0, str(Path('scripts/ci').resolve()))
+              from staging_account_config import CONFIG_PATH, verify_snapshot
+              try:
+                  values = verify_snapshot(snapshot, sha)
+              except ValueError as error:
+                  raise SystemExit(str(error)) from None
+              data['accountConfig'] = dict(source='checked-in:staging', path=CONFIG_PATH,
+                                           sourceRevision=sha, values=values)
           (directory / 'build.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
 
           # The runtime requirement is decided from the package bytes themselves.
@@ -235,13 +281,13 @@ jobs:
       - &upload-package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ${{ env.PACKAGE_ID }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
+          name: ${{ env.ARTIFACT_PREFIX }}${{ env.PACKAGE_ID }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: dist/release/*
           if-no-files-found: error
       - &upload-evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: package-evidence-${{ env.PACKAGE_ID }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
+          name: ${{ env.ARTIFACT_PREFIX }}package-evidence-${{ env.PACKAGE_ID }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: |
             dist/release/build.json
             dist/release/contents.json
@@ -527,11 +573,12 @@ jobs:
         with:
           key: release-macos-${{ matrix.arch }}
           save-if: false
+      - *inject-staging-account
       - name: Build
         run: packaging/macos/package.sh --build-only ${{ matrix.target }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: macos-bin-${{ matrix.arch }}-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
+          name: ${{ env.ARTIFACT_PREFIX }}macos-bin-${{ matrix.arch }}-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: |
             target/${{ matrix.target }}/release/intcad
             target/${{ matrix.target }}/release/intcad-cli
@@ -550,11 +597,11 @@ jobs:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: macos-bin-aarch64-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
+          name: ${{ env.ARTIFACT_PREFIX }}macos-bin-aarch64-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: target/aarch64-apple-darwin/release
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: macos-bin-x86_64-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
+          name: ${{ env.ARTIFACT_PREFIX }}macos-bin-x86_64-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: target/x86_64-apple-darwin/release
       - name: Join, package and mount-check (no credential signing)
         run: |
@@ -578,7 +625,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: installed-check-macos${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
+          name: ${{ env.ARTIFACT_PREFIX }}installed-check-macos${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: ${{ runner.temp }}/installed-check
           if-no-files-found: warn
       - *package-evidence
@@ -592,10 +639,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { arch: x64, target: x86_64-pc-windows-msvc }
-          - { arch: x86, target: i686-pc-windows-msvc }
-          - { arch: arm64, target: aarch64-pc-windows-msvc }
+        include: >-
+          ${{ fromJSON(inputs.staging_account_config != '' &&
+          '[{"arch":"x64","target":"x86_64-pc-windows-msvc"}]' ||
+          '[{"arch":"x64","target":"x86_64-pc-windows-msvc"},
+            {"arch":"x86","target":"i686-pc-windows-msvc"},
+            {"arch":"arm64","target":"aarch64-pc-windows-msvc"}]') }}
     env:
       SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
       PACKAGE_ID: release-windows-${{ matrix.arch }}
@@ -604,7 +653,7 @@ jobs:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: icons-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
+          name: ${{ env.ARTIFACT_PREFIX }}icons-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: icons
       - uses: dtolnay/rust-toolchain@1.99.1
         with:
@@ -618,6 +667,7 @@ jobs:
         run: |
           dotnet tool install --global wix --version 5.0.2
           wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
+      - *inject-staging-account
       - name: Build and check package (msi, portable zip; CLI on runnable architectures)
         shell: pwsh
         env:
@@ -635,7 +685,7 @@ jobs:
         if: always() && matrix.arch != 'arm64'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: installed-check-windows-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
+          name: ${{ env.ARTIFACT_PREFIX }}installed-check-windows-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: ${{ runner.temp }}/installed-check
           if-no-files-found: warn
       - *package-evidence
@@ -675,17 +725,20 @@ jobs:
   package-builds:
     name: All nonpublishing package builds
     needs: [version, icons, linux, flatpak, arch, snap, freebsd, macos-build, macos, windows, web]
-    if: always()
+    if: always() && (inputs.staging_account_config == '' || needs.version.result == 'success')
     runs-on: ubuntu-24.04
     steps:
       - name: Require every build and check (not runtime release acceptance)
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          STAGING_PACKAGES: ${{ inputs.staging_account_config != '' && '1' || '0' }}
         run: |
           python3 - <<'PY'
           import json, os, sys
           needs = json.loads(os.environ['NEEDS_JSON'])
           expected = {'version', 'icons', 'linux', 'flatpak', 'arch', 'snap', 'freebsd', 'macos-build', 'macos', 'windows', 'web'}
+          if os.environ.get('STAGING_PACKAGES') == '1':
+              expected -= {'flatpak', 'arch', 'snap', 'freebsd', 'web'}
           bad = [job for job in sorted(expected) if needs.get(job, {}).get('result') != 'success']
           for job in bad:
               print('FAIL: ' + job + ': missing/failed/cancelled/skipped package build')

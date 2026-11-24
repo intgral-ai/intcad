@@ -9,7 +9,7 @@
 #   the app's file must then find every library it names. An AppImage brings no system
 #   libraries, so there the launcher must say which are missing, and they are installed. Then
 #   the test's own tools go on: a display, a software GPU, the checking script's Python.
-# run: the installed app is started and packaging/assistant-check.py opens the Assistant. This
+# run: the installed app is started and packaging/linux/assistant-check.py opens the Assistant. This
 #   system has no network by then, and the step says so before it starts the app.
 set -euo pipefail
 STEP="$1"
@@ -100,7 +100,7 @@ run_step() {
   fi
   echo "ok: this system has no network"
   chmod 777 /evidence
-  local check=(python3 /packaging/assistant-check.py --exe "$exe" --evidence /evidence --screen)
+  local check=(python3 /packaging/linux/assistant-check.py --exe "$exe" --evidence /evidence --screen)
 
   if [ "$session" = x11 ]; then
     export DISPLAY=:99

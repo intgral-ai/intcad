@@ -69,6 +69,7 @@ pub struct Card {
     pub error: Option<String>,
     /// Whether a saved report exists (`inspect.dfm.available`).
     pub available: bool,
+    pub report_produced: bool,
 }
 
 impl Card {

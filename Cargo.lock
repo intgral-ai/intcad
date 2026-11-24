@@ -5066,15 +5066,18 @@ dependencies = [
  "raw-window-handle",
  "rfd",
  "ron",
+ "rustix 1.1.6",
  "rustls",
  "serde",
  "serde_json",
  "solidcraft-3dx-client",
+ "solidcraft-account-native",
  "solidcraft-engine",
  "solidcraft-gpu",
  "solidcraft-space-mouse",
  "solidcraft-ui-egui",
  "ureq",
+ "url",
  "windows-sys 0.61.2",
  "winit",
  "winreg",
@@ -5086,6 +5089,20 @@ dependencies = [
 [[package]]
 name = "solidcraft-3dx-client"
 version = "0.1.2"
+
+[[package]]
+name = "solidcraft-account-native"
+version = "0.1.2"
+dependencies = [
+ "keyring",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "solidcraft-engine",
+ "solidcraft-io",
+ "ureq",
+]
 
 [[package]]
 name = "solidcraft-agent-task"
@@ -5108,10 +5125,12 @@ dependencies = [
 name = "solidcraft-cli"
 version = "0.1.2"
 dependencies = [
+ "getrandom 0.3.4",
  "image",
  "log",
  "serde_json",
  "solidcore-record",
+ "solidcraft-account-native",
  "solidcraft-engine",
  "solidcraft-gpu",
  "solidcraft-kernel",

@@ -86,7 +86,7 @@ impl Api {
             return js_sys::Promise::reject(&error("too many pending Intcad requests (maximum 256)"));
         }
         js_sys::Promise::new(&mut |resolve, reject| {
-            let (request, reply) = ControlRequest::new(method, params.clone());
+            let (request, reply) = ControlRequest::trusted_web(method, params.clone());
             if self.sender.send(request).is_err() {
                 let _ = reject.call1(&JsValue::UNDEFINED, &error("Intcad is not running"));
                 return;
