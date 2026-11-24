@@ -2935,3 +2935,25 @@ the release; they are left alone.
 **Release freeze:** from now on no PR is merged to `develop` except the #214 and Integration merges.
 Both other agents were told to stop pushing and merging and to pin #239 (`7db657fa61`) and the
 integration branch head.
+
+**Every repository check the gate runs passes locally on the Integration candidate
+(`eade4198c2`).** On the composed tree (`develop + #214 + paid chain 3c00b693e6 + #239`):
+
+```
+cargo fmt --all -- --check   OK
+xtask skills                 OK      (crash-safety 3538 < 3600, packaging 3579 with npm/Node)
+xtask lists                  OK
+xtask mesh-decisions         OK      (181 known decision sites, no new ones)
+xtask ui-containers          OK
+xtask layers                 OK
+xtask assets                 OK
+xtask icons                  OK
+xtask licences --check       OK
+xtask i18n --check           OK
+```
+
+So the gate's `Format and repository checks` step is expected to pass on the first try, and the
+`npm/Node` regression that failed the previous #214 run is covered by `licences --check` + the
+xtask test binary. The full `cargo xtask test` suite and the compile/clippy pass on this same tree
+are still running locally; platform-only work (Node/npm agent packaging, Windows/macOS builds)
+stays with CI by design and is not replaced by local checks.
