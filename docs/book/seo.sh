@@ -4,7 +4,7 @@
 # tree (usage: seo.sh <book-dir>). index.html and introduction.html are the same page: both point at /.
 set -euo pipefail
 dir="${1:?usage: seo.sh <built-book-dir>}"
-base="https://docs.solidcraft.io"
+base="${INTCAD_DOCS_URL:-https://intgral-ai.github.io/intcad-releases}"
 cd "$dir"
 urls=()
 while IFS= read -r f; do

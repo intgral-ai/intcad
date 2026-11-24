@@ -143,12 +143,12 @@ fn release() -> Release {
     let assets: Vec<Value> = names
         .iter()
         .map(
-            |n| json!({"name": n, "size": 10, "browser_download_url": format!("https://github.com/intgral-ai/intcad/releases/download/v0.10.0/{n}")}),
+            |n| json!({"name": n, "size": 10, "browser_download_url": format!("https://github.com/intgral-ai/intcad-releases/releases/download/v0.10.0/{n}")}),
         )
         .collect();
     let body = json!({
         "tag_name": "v0.10.0", "name": "SolidCraft v0.10.0", "body": "**What's new**\n\n- Surface tools.",
-        "html_url": "https://github.com/intgral-ai/intcad/releases/tag/v0.10.0", "draft": false, "prerelease": false, "assets": assets,
+        "html_url": "https://github.com/intgral-ai/intcad-releases/releases/tag/v0.10.0", "draft": false, "prerelease": false, "assets": assets,
     });
     Release::parse(body.to_string().as_bytes()).unwrap()
 }
@@ -174,14 +174,14 @@ fn each_installation_gets_its_own_file() {
     // Download: the file, or the page when there is none or a package manager updates it.
     assert_eq!(
         r.download_url(&InstallKind::WindowsMsi, "x86_64"),
-        "https://github.com/intgral-ai/intcad/releases/download/v0.10.0/intcad-windows-x64.msi"
+        "https://github.com/intgral-ai/intcad-releases/releases/download/v0.10.0/intcad-windows-x64.msi"
     );
-    assert_eq!(r.download_url(&InstallKind::Other, "x86_64"), "https://github.com/intgral-ai/intcad/releases/tag/v0.10.0");
+    assert_eq!(r.download_url(&InstallKind::Other, "x86_64"), "https://github.com/intgral-ai/intcad-releases/releases/tag/v0.10.0");
     assert_eq!(r.download_url(&InstallKind::Flatpak(APP_ID.into()), "x86_64"), r.page);
     assert_eq!(r.download_url(&InstallKind::Snap { store: true }, "x86_64"), r.page);
     assert_eq!(
         r.download_url(&InstallKind::Snap { store: false }, "x86_64"),
-        "https://github.com/intgral-ai/intcad/releases/download/v0.10.0/intcad-linux-x86_64.snap"
+        "https://github.com/intgral-ai/intcad-releases/releases/download/v0.10.0/intcad-linux-x86_64.snap"
     );
     assert_eq!(
         InstallKind::Snap { store: false }.update_command(Some("intcad-linux-x86_64.snap")).as_deref(),
@@ -205,7 +205,7 @@ fn release_answers_are_checked() {
     let r = Release::parse(
         json!({"tag_name": "v1.0.0", "html_url": "https://evil.example/x", "assets": [
             {"name": "intcad-windows-x64.msi", "browser_download_url": "https://evil.example/a.msi"},
-            {"name": "intcad-windows-x86.msi", "browser_download_url": "https://github.com/intgral-ai/intcad/releases/download/v1.0.0/intcad-windows-x86.msi"},
+            {"name": "intcad-windows-x86.msi", "browser_download_url": "https://github.com/intgral-ai/intcad-releases/releases/download/v1.0.0/intcad-windows-x86.msi"},
         ]})
         .to_string()
         .as_bytes(),
@@ -213,7 +213,7 @@ fn release_answers_are_checked() {
     .unwrap();
     assert_eq!(r.page, RELEASES_PAGE);
     assert_eq!(r.assets.len(), 1);
-    assert_eq!(r.name, "SolidCraft v1.0.0");
+    assert_eq!(r.name, "Intcad v1.0.0");
     // Huge notes are cut (on a character boundary).
     let r = Release::parse(json!({"tag_name": "v1.0.0", "body": "é".repeat(MAX_NOTES)}).to_string().as_bytes()).unwrap();
     assert!(r.notes.len() <= MAX_NOTES + 8 && r.notes.ends_with('…'));
@@ -300,7 +300,7 @@ fn next_release_feed(dir: &Path) -> (PathBuf, String) {
         "tag_name": format!("v{v}"),
         "name": format!("SolidCraft {v}"),
         "body": "## What's new\n\n- Faster rebuilds.",
-        "html_url": format!("https://github.com/intgral-ai/intcad/releases/tag/v{v}"),
+        "html_url": format!("https://github.com/intgral-ai/intcad-releases/releases/tag/v{v}"),
         "assets": []
     });
     std::fs::write(&path, body.to_string()).unwrap();
@@ -641,15 +641,16 @@ fn releases_under_this_project_only_are_accepted() {
         )
         .unwrap()
     };
-    let owner = "intgral-ai/intcad";
+    let owner = "intgral-ai/intcad-releases";
     let r = parse(owner);
     assert_eq!(r.page, format!("https://github.com/{owner}/releases/tag/v1.0.0"));
     assert_eq!(r.assets.len(), 1, "{owner}");
-    // Any other owner, repository, host or scheme is dropped, including the projects this one
-    // grew out of: they are not update sources for Intcad.
+    // Any other owner, repository, host or scheme is dropped, including the private source
+    // repository and the projects this one grew out of: they are not update sources for Intcad.
     for owner in [
         "evil/solidcraft",
-        "intgral-ai/intcad-evil",
+        "intgral-ai/intcad",
+        "intgral-ai/intcad-releases-evil",
         "tangency-labs.evil/solidcraft",
         "bherbruck/other",
         "bherbruck/solidcraft",
@@ -659,21 +660,24 @@ fn releases_under_this_project_only_are_accepted() {
         assert_eq!(r.page, RELEASES_PAGE, "{owner}");
         assert!(r.assets.is_empty(), "{owner}");
     }
-    assert!(!is_release_url("http://github.com/intgral-ai/intcad/releases/x"));
-    assert!(!is_release_url("https://github.com.evil.example/intgral-ai/intcad/releases/x"));
-    assert!(!is_release_url("https://github.com/intgral-ai/intcad/issues/1"));
+    assert!(!is_release_url("http://github.com/intgral-ai/intcad-releases/releases/x"));
+    assert!(!is_release_url("https://github.com.evil.example/intgral-ai/intcad-releases/releases/x"));
+    assert!(!is_release_url("https://github.com/intgral-ai/intcad-releases/issues/1"));
+    // The private source repository is never a download source, even under the old name.
+    assert!(!is_release_url("https://github.com/intgral-ai/intcad/releases/download/v1.0.0/intcad-windows-x64.msi"));
+    assert!(!is_release_url("https://github.com/intgral-ai/open-skyfall-desktop/releases/download/v1.0.0/intcad-windows-x64.msi"));
 }
 
 #[test]
 fn the_version_links_to_its_release_notes() {
     // A release build opens the page of its own release; stable, candidate and nightly tags all exist.
     for v in ["0.17.0", "0.21.0-rc.2", "0.20.0-nightly.20261023.69.1"] {
-        assert_eq!(release_notes_url(v, true), format!("https://github.com/intgral-ai/intcad/releases/tag/v{v}"));
+        assert_eq!(release_notes_url(v, true), format!("https://github.com/intgral-ai/intcad-releases/releases/tag/v{v}"));
     }
     // A development build has no release of its own: the release history, which is what the issue asks for.
-    assert_eq!(release_notes_url("0.17.0", false), "https://github.com/intgral-ai/intcad/releases");
+    assert_eq!(release_notes_url("0.17.0", false), "https://github.com/intgral-ai/intcad-releases/releases");
     // Anything that is not a version never ends up in a URL.
-    assert_eq!(release_notes_url("0.1/../../x", true), "https://github.com/intgral-ai/intcad/releases");
+    assert_eq!(release_notes_url("0.1/../../x", true), "https://github.com/intgral-ai/intcad-releases/releases");
 }
 
 #[test]
@@ -953,8 +957,8 @@ fn install_selection_refreshes_the_button_and_progress_before_completion() {
     h.app.services.http_get = Some(Arc::new(move |url| {
         if url == LATEST_API {
             return Ok(json!({"tag_name":"v999.1.0", "assets":[
-                {"name": name, "browser_download_url":format!("https://github.com/intgral-ai/intcad/releases/download/v999.1.0/{name}")},
-                {"name": install::SUMS, "browser_download_url":"https://github.com/intgral-ai/intcad/releases/download/v999.1.0/SHA256SUMS.txt"}
+                {"name": name, "browser_download_url":format!("https://github.com/intgral-ai/intcad-releases/releases/download/v999.1.0/{name}")},
+                {"name": install::SUMS, "browser_download_url":"https://github.com/intgral-ai/intcad-releases/releases/download/v999.1.0/SHA256SUMS.txt"}
             ]})
             .to_string()
             .into_bytes());
@@ -1001,8 +1005,8 @@ fn cancel_download_leaves_downloading_immediately() {
     h.app.services.http_get = Some(Arc::new(move |url| {
         if url == LATEST_API {
             return Ok(json!({"tag_name":"v999.1.0", "assets":[
-                {"name": name, "browser_download_url":format!("https://github.com/intgral-ai/intcad/releases/download/v999.1.0/{name}")},
-                {"name": install::SUMS, "browser_download_url":"https://github.com/intgral-ai/intcad/releases/download/v999.1.0/SHA256SUMS.txt"}
+                {"name": name, "browser_download_url":format!("https://github.com/intgral-ai/intcad-releases/releases/download/v999.1.0/{name}")},
+                {"name": install::SUMS, "browser_download_url":"https://github.com/intgral-ai/intcad-releases/releases/download/v999.1.0/SHA256SUMS.txt"}
             ]})
             .to_string()
             .into_bytes());

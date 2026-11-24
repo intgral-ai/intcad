@@ -41,6 +41,9 @@ pub const SUMS_LEGACY: &str = "SHA256SUMS";
 pub const SUMS_SIG: &str = "SHA256SUMS.txt.minisig";
 /// No package is bigger than this (they are about 30 MB).
 pub const MAX_PACKAGE: u64 = 1 << 30;
+/// The checksum list and its signature are small; a response claiming to be one that is bigger
+/// is refused before it is parsed (it comes from the network).
+const MAX_SUMS_BYTES: usize = 1 << 20;
 /// Nor a single file inside the portable zip.
 const MAX_UNZIPPED: u64 = 1 << 30;
 
@@ -201,6 +204,23 @@ pub fn run(
     staging: &Path,
     progress: &Progress,
 ) -> Result<Outcome, String> {
+    run_trusting(release, kind, method, arch, net, staging, progress, PUBLIC_KEY)
+}
+
+/// [`run`] with the trusted signing key given explicitly, so a test can prove the behaviour of a
+/// build that ships a key. A key is never optional at the call site: the release build passes
+/// [`PUBLIC_KEY`], and a key there means a missing signature fails the install instead of falling
+/// back to an unsigned one.
+pub fn run_trusting(
+    release: &Release,
+    kind: &InstallKind,
+    method: &Method,
+    arch: &str,
+    net: &Net,
+    staging: &Path,
+    progress: &Progress,
+    public_key: Option<&str>,
+) -> Result<Outcome, String> {
     // Honour Cancel before each network wait: feed refresh and checksum fetches used to run
     // without looking at the flag, so Cancel looked dead until the body download started (#8908).
     if progress.cancel.load(Ordering::Relaxed) {
@@ -226,7 +246,13 @@ pub fn run(
         .find_map(|name| release.assets.iter().find(|a| a.name == *name).map(|a| (*name, a.url.clone())))
         .ok_or_else(|| format!("this release has no {SUMS} or {SUMS_LEGACY}"))?;
     let sums = get_unless_cancelled(net, progress, &sums_url).map_err(|e| format!("{sums_name}: {e}"))?;
-    if let Some(key) = PUBLIC_KEY {
+    if sums.len() > MAX_SUMS_BYTES {
+        return Err(format!("{sums_name} is too large ({} bytes)", sums.len()));
+    }
+    if let Some(key) = public_key {
+        // A signed build has no unsigned path: the release must carry a signature, whatever
+        // name its checksum list has. Removing the signature, or publishing only the pre-0.1.3
+        // `SHA256SUMS`, therefore stops the install instead of falling back to the hash alone.
         let sig_url = release
             .assets
             .iter()
@@ -234,6 +260,9 @@ pub fn run(
             .map(|a| a.url.clone())
             .ok_or_else(|| format!("this release isn't signed (no {SUMS_SIG})"))?;
         let sig = get_unless_cancelled(net, progress, &sig_url).map_err(|e| format!("{SUMS_SIG}: {e}"))?;
+        if sig.len() > MAX_SUMS_BYTES {
+            return Err(format!("{SUMS_SIG} is too large ({} bytes)", sig.len()));
+        }
         verify_signature(&sums, &String::from_utf8_lossy(&sig), key, &release.tag)?;
     }
     let sums = String::from_utf8_lossy(&sums);

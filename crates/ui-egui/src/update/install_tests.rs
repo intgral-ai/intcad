@@ -42,6 +42,22 @@ fn signatures_must_match_the_key_the_list_and_the_release() {
     assert!(verify_signature(SIGNED_SUMS.as_bytes(), "garbage", TEST_KEY, "v9.9.9").is_err());
 }
 
+/// The key a release build verifies with and the key the publisher signs with are one file, so
+/// enabling signing cannot silently disagree with itself. The placeholder is refused at publish
+/// time (`publish-release.yml`) and here while it is still a placeholder.
+#[test]
+fn the_trusted_key_and_the_published_key_are_the_same_file() {
+    const FILE: &str = include_str!("trusted-release-key.pub");
+    match PUBLIC_KEY {
+        Some(key) => {
+            assert_eq!(key, FILE.trim(), "install.rs and trusted-release-key.pub disagree");
+            assert!(!key.contains("NOT CONFIGURED"), "the placeholder was copied into PUBLIC_KEY");
+            minisign_verify::PublicKey::from_base64(key).expect("PUBLIC_KEY is a minisign public key");
+        }
+        None => assert!(FILE.contains("NOT CONFIGURED"), "the key file is set, but PUBLIC_KEY is still None"),
+    }
+}
+
 #[test]
 fn methods_per_installation() {
     let exe = Path::new("/x/intcad.exe");
@@ -64,14 +80,14 @@ fn methods_per_installation() {
     }
 }
 
-const BASE: &str = "https://github.com/intgral-ai/intcad/releases/download/v9.9.9/";
+const BASE: &str = "https://github.com/intgral-ai/intcad-releases/releases/download/v9.9.9/";
 
 fn release_with(assets: &[(&str, usize)]) -> Release {
     Release {
         tag: "v9.9.9".into(),
         name: "SolidCraft v9.9.9".into(),
         notes: String::new(),
-        page: "https://github.com/intgral-ai/intcad/releases/tag/v9.9.9".into(),
+        page: "https://github.com/intgral-ai/intcad-releases/releases/tag/v9.9.9".into(),
         assets: assets.iter().map(|(n, size)| Asset { name: n.to_string(), url: format!("{BASE}{n}"), size: *size as u64 }).collect(),
     }
 }
@@ -305,7 +321,7 @@ fn installation_refreshes_the_release_and_verifies_the_final_package() {
     let target = dir.join("SolidCraft.AppImage");
     let name = "intcad-linux-x86_64.AppImage";
     let shown = release_with(&[(name, 3), (SUMS, 100)]);
-    let base = "https://github.com/intgral-ai/intcad/releases/download/v10.0.0/";
+    let base = "https://github.com/intgral-ai/intcad-releases/releases/download/v10.0.0/";
     let feed = serde_json::json!({
         "tag_name": "v10.0.0",
         "assets": [
@@ -359,5 +375,66 @@ fn installation_refreshes_the_release_and_verifies_the_final_package() {
             assert_eq!(std::fs::read(&target).unwrap(), b"new");
         }
     }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A build that ships a signing key: `PUBLIC_KEY` is `Some`, so every install must verify a
+/// signature. The test key and its signature over [`SIGNED_SUMS`] name release `v9.9.9`.
+#[test]
+fn a_signed_build_never_installs_an_unsigned_release() {
+    let dir = scratch("signed-refusals");
+    let target = dir.join("Intcad.AppImage");
+    std::fs::write(&target, b"old version").unwrap();
+    let new = b"new version".to_vec();
+    let name = "intcad-linux-x86_64.AppImage";
+    let kind = InstallKind::AppImage(target.clone());
+    let m = Method::AppImage(target.clone());
+    let good = format!("{}  {name}\n", hex(&new));
+
+    // No `SHA256SUMS.txt.minisig` in the release: refused before anything is downloaded, even
+    // though the checksum list would verify the package.
+    let r = release_with(&[(name, new.len()), (SUMS, 100)]);
+    let n = net(vec![(name.into(), new.clone()), (SUMS.into(), good.clone().into_bytes())]);
+    let err = run_trusting(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default(), Some(TEST_KEY)).unwrap_err();
+    assert!(err.contains("isn't signed"), "{err}");
+    assert_eq!(std::fs::read(&target).unwrap(), b"old version");
+
+    // A pre-0.1.3 release that only has `SHA256SUMS` is not a way around the signature either.
+    let r = release_with(&[(name, new.len()), (SUMS_LEGACY, 100)]);
+    let n = net(vec![(name.into(), new.clone()), (SUMS_LEGACY.into(), good.clone().into_bytes())]);
+    let err = run_trusting(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default(), Some(TEST_KEY)).unwrap_err();
+    assert!(err.contains("isn't signed"), "{err}");
+    assert_eq!(std::fs::read(&target).unwrap(), b"old version");
+
+    // A list signed for a different release (the trusted comment names `v9.9.9`).
+    let mut r = release_with(&[(name, new.len()), (SUMS, 100), (SUMS_SIG, 100)]);
+    r.tag = "v9.9.8".into();
+    let n = net(vec![(name.into(), new.clone()), (SUMS.into(), good.clone().into_bytes()), (SUMS_SIG.into(), SIGNATURE.into())]);
+    let err = run_trusting(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default(), Some(TEST_KEY)).unwrap_err();
+    assert!(err.contains("not v9.9.8"), "{err}");
+    assert_eq!(std::fs::read(&target).unwrap(), b"old version");
+
+    // A signed legacy list next to an unsigned `SHA256SUMS.txt`: the signature is checked over
+    // the list the client uses, so attaching an old signed list cannot authorise a new one.
+    let r = release_with(&[(name, new.len()), (SUMS, 100), (SUMS_LEGACY, 100), (SUMS_SIG, 100)]);
+    let n = net(vec![
+        (name.into(), new.clone()),
+        (SUMS.into(), good.clone().into_bytes()),
+        (SUMS_LEGACY.into(), SIGNED_SUMS.as_bytes().to_vec()),
+        (SUMS_SIG.into(), SIGNATURE.into()),
+    ]);
+    let err = run_trusting(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default(), Some(TEST_KEY)).unwrap_err();
+    assert!(err.contains("isn't signed by"), "{err}");
+    assert_eq!(std::fs::read(&target).unwrap(), b"old version");
+
+    // A valid signature lets the install go on to the checksum it names (here the list is the
+    // signed one, so the package name is simply not listed): no signature error is reported.
+    let r = release_with(&[(name, new.len()), (SUMS, 100), (SUMS_SIG, 100)]);
+    let n = net(vec![(name.into(), new.clone()), (SUMS.into(), SIGNED_SUMS.as_bytes().to_vec()), (SUMS_SIG.into(), SIGNATURE.into())]);
+    let err = run_trusting(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default(), Some(TEST_KEY)).unwrap_err();
+    assert!(err.contains("doesn't list"), "{err}");
+    assert!(!err.contains("signed"), "{err}");
+    assert_eq!(std::fs::read(&target).unwrap(), b"old version");
+
     let _ = std::fs::remove_dir_all(dir);
 }

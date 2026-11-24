@@ -1,0 +1,349 @@
+# Publish one already-built release to the public distribution repository.
+#
+# Nothing here builds a package: it takes the package artifacts of one `release.yml` run at one
+# reviewed source revision, checks that they are exactly what the in-app update check can install,
+# writes the two checksum lists, signs them with minisign, and only then creates the release in
+# `intgral-ai/intcad-releases`. The private source repository is never a download source and its
+# name is never written into an installer or a release page.
+#
+# Why a separate workflow: `packaging/tests/nightly_test.py` keeps `release.yml` and the other
+# builder workflows free of publishers, signing credentials and `secrets.` so a manual build cannot
+# publish by accident. This file is the one publisher, it is manual, and it runs in the
+# `release-signing` environment, which an owner must approve before its secrets are released.
+#
+# Setup (owner, once): create `intgral-ai/intcad-releases`; install a GitHub App on that repository
+# only, with Contents: read and write; add `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` and the
+# minisign key as `MINISIGN_SECRET_KEY` (and `MINISIGN_PASSWORD` when the key has a passphrase) to
+# the `release-signing` environment; create the environment with required reviewers. docs/releasing.md,
+# "Distribution repository", lists the exact steps and the read-back.
+
+name: Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release tag to publish (for example v0.1.3); it must match Cargo.toml"
+        required: true
+      run_id:
+        description: "The successful release.yml run whose package artifacts are published"
+        required: true
+      notes_file:
+        description: "Repository file with the release notes shown in the update window (Markdown)"
+        required: true
+      draft:
+        description: "Create the release as a draft first (not offered by the update check)"
+        type: boolean
+        default: true
+      publish_docs:
+        description: "Also build the guide and deploy it to the distribution repository's Pages"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: publish-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  DIST_REPO: intgral-ai/intcad-releases
+  MDBOOK_VERSION: v0.5.4
+
+jobs:
+  publish:
+    name: Verify, sign and publish ${{ inputs.tag }}
+    if: github.repository == 'intgral-ai/intcad'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: release-signing
+    outputs:
+      version: ${{ steps.candidate.outputs.version }}
+      revision: ${{ steps.candidate.outputs.revision }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and check the candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          . packaging/env.sh
+          test "v$VERSION" = "$TAG" || { echo "::error::tag $TAG is not v$VERSION from Cargo.toml"; exit 1; }
+          sha="$(git rev-parse HEAD)"
+          test "$(git rev-parse "$TAG^{commit}")" = "$sha" || { echo "::error::$TAG does not point at the checkout"; exit 1; }
+          # The packages must come from this revision, from a run that actually succeeded.
+          run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")"
+          echo "$run" | SHA="$sha" python3 -I -c '
+          import json, os, sys
+          run = json.load(sys.stdin)
+          sha = os.environ["SHA"]
+          problems = []
+          if run.get("head_sha") != sha: problems.append("run head_sha %s is not %s" % (run.get("head_sha"), sha))
+          if run.get("conclusion") != "success": problems.append("run conclusion is %s" % run.get("conclusion"))
+          if run.get("path", "").split("@")[0] != ".github/workflows/release.yml": problems.append("run workflow is %s" % run.get("path"))
+          for line in problems: print("::error::" + line)
+          sys.exit(1 if problems else 0)
+          '
+          { echo "version=$VERSION"; echo "revision=$sha"; } >>"$GITHUB_OUTPUT"
+          echo "::notice::$TAG at $sha, from run $RUN_ID"
+
+      - name: Download the package artifacts of that run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" --pattern 'release-*' -D artifacts
+          find artifacts -mindepth 1 -maxdepth 1 -type d | sort
+
+      - name: Flatten and refuse collisions
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # Package build.json/contents.json are evidence, not downloads: keep them out of the
+          # release directory the checksum list covers, but where release-verify.py finds them.
+          while IFS= read -r -d '' file; do
+            name="$(basename "$file")"
+            case "$name" in
+              build.json|contents.json)
+                artifact="$(basename "$(dirname "$file")")"
+                mkdir -p "out/evidence/$artifact"
+                cp "$file" "out/evidence/$artifact/$name"
+                ;;
+              *)
+                if [ -e "out/$name" ]; then
+                  first="$(sha256sum "out/$name" | cut -d' ' -f1)"
+                  second="$(sha256sum "$file" | cut -d' ' -f1)"
+                  if [ "$first" != "$second" ]; then
+                    echo "::error::$name appears twice with different bytes"
+                    exit 1
+                  fi
+                  echo "::warning::$name appears twice with the same bytes"
+                else
+                  cp "$file" "out/$name"
+                fi
+                ;;
+            esac
+          done < <(find artifacts -mindepth 2 -maxdepth 2 -type f -print0)
+
+      - name: Write the unversioned aliases the updater resolves
+        run: packaging/aliases.sh out "${{ steps.candidate.outputs.version }}"
+
+      - name: Write both checksum lists
+        run: packaging/checksums.sh out
+
+      - name: Check the release shape before anything is published
+        run: |
+          python3 -I packaging/publish/release-verify.py \
+            --dir out \
+            --version "${{ steps.candidate.outputs.version }}" \
+            --revision "${{ steps.candidate.outputs.revision }}" \
+            --manifest out/../release-manifest.json
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          minisign -v || true
+
+      - name: Sign the checksum list
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          VERSION: ${{ steps.candidate.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "${MINISIGN_SECRET_KEY:-}" || { echo "::error::MINISIGN_SECRET_KEY is not configured"; exit 1; }
+          test -s packaging/publish/trusted-release-key.pub || { echo "::error::no trusted public key in the tree"; exit 1; }
+          if grep -q 'NOT CONFIGURED' packaging/publish/trusted-release-key.pub; then
+            echo "::error::packaging/publish/trusted-release-key.pub is still the placeholder"
+            exit 1
+          fi
+          key="$RUNNER_TEMP/minisign.key"
+          (umask 077; printf '%s' "$MINISIGN_SECRET_KEY" >"$key")
+          if [ -n "${MINISIGN_PASSWORD:-}" ]; then
+            printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$key" -m out/SHA256SUMS.txt \
+              -x out/SHA256SUMS.txt.minisig -t "Intcad v$VERSION"
+          else
+            minisign -S -s "$key" -m out/SHA256SUMS.txt -x out/SHA256SUMS.txt.minisig -t "Intcad v$VERSION"
+          fi
+          rm -f "$key"
+          public="$(tr -d '\n' <packaging/publish/trusted-release-key.pub)"
+          minisign -Vm out/SHA256SUMS.txt -x out/SHA256SUMS.txt.minisig -P "$public"
+          # The client only enforces a signature when its build carries the same key.
+          if grep -q 'PUBLIC_KEY: Option<&str> = Some(' crates/ui-egui/src/update/install.rs; then
+            echo "::notice::the client carries the release key; an unsigned release is refused by it"
+          else
+            echo "::warning::the client does not carry the release key yet: this release is signed but an install does not enforce it"
+          fi
+
+      - name: Check the release shape again, now signed
+        run: |
+          python3 -I packaging/publish/release-verify.py \
+            --dir out \
+            --version "${{ steps.candidate.outputs.version }}" \
+            --revision "${{ steps.candidate.outputs.revision }}" \
+            --require-signature
+
+      - uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
+        id: app
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: intgral-ai
+          repositories: intcad-releases
+
+      - name: Refuse an existing tag, then create the release
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ steps.candidate.outputs.version }}
+          NOTES: ${{ inputs.notes_file }}
+        run: |
+          set -euo pipefail
+          test -f "$NOTES" || { echo "::error::notes file $NOTES does not exist"; exit 1; }
+          if gh release view "$TAG" -R "$DIST_REPO" >/dev/null 2>&1; then
+            echo "::error::$TAG already exists in $DIST_REPO; a published version is never replaced"
+            exit 1
+          fi
+          if gh api "repos/$DIST_REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::$TAG is already a tag in $DIST_REPO without a release; do not reuse it"
+            exit 1
+          fi
+          args=(--title "Intcad $VERSION" --notes-file "$NOTES")
+          if [ "${{ inputs.draft }}" = "true" ]; then args+=(--draft); fi
+          # The tag marks the release in the public repository; the source revision it was built
+          # from is recorded in the run and in build.json, never as a commit in this repository.
+          gh release create "$TAG" -R "$DIST_REPO" --target main "${args[@]}"
+          echo "release $TAG created in $DIST_REPO (draft: ${{ inputs.draft }})"
+
+      - name: Upload the files
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          # Everything at the top of `out` is a download; `evidence/` is not.
+          find out -mindepth 1 -maxdepth 1 -type f -print0 \
+            | sort -z \
+            | xargs -0 -r gh release upload "$TAG" -R "$DIST_REPO"
+
+      - name: Read the release back and verify what a user will download
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          import hashlib, json, os, subprocess, sys
+          from pathlib import Path
+
+          tag, repo = os.environ["TAG"], os.environ["DIST_REPO"]
+          local = {}
+          for path in sorted(Path("out").glob("*")):
+              if not path.is_file() or path.name.startswith("SHA256SUMS"):
+                  continue
+              local[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+          assets = json.loads(subprocess.check_output(["gh", "api", f"repos/{repo}/releases/tags/{tag}"]))
+          published = {a["name"]: (a.get("digest") or "").removeprefix("sha256:") for a in assets["assets"]}
+          problems = []
+          for name, digest in local.items():
+              if name not in published:
+                  problems.append(f"{name} was not uploaded")
+              elif published[name] and published[name] != digest:
+                  problems.append(f"{name}: published digest {published[name]} is not {digest}")
+          for name in published:
+              if name not in local and name not in ("SHA256SUMS", "SHA256SUMS.txt", "SHA256SUMS.txt.minisig"):
+                  problems.append(f"{name} is in the release but not in the build")
+          for problem in problems:
+              print("::error::" + problem)
+          sys.exit(1 if problems else 0)
+          PY
+          mkdir -p downloaded
+          gh release download "$TAG" -R "$DIST_REPO" -D downloaded --pattern 'SHA256SUMS.txt*'
+          (cd downloaded && sha256sum --check --ignore-missing SHA256SUMS.txt)
+          public="$(tr -d '\n' <packaging/publish/trusted-release-key.pub)"
+          minisign -Vm downloaded/SHA256SUMS.txt -x downloaded/SHA256SUMS.txt.minisig -P "$public"
+          echo "::notice::the published assets match the built bytes and the signature verifies"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published ${{ inputs.tag }}"
+            echo
+            echo "- Repository: \`$DIST_REPO\` (draft: ${{ inputs.draft }})"
+            echo "- Source revision: \`${{ steps.candidate.outputs.revision }}\`"
+            echo "- Package run: \`${{ inputs.run_id }}\`"
+            echo "- Assets: $(find out -maxdepth 1 -type f | wc -l)"
+            echo "- Signed: SHA256SUMS.txt.minisig"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  docs:
+    name: Publish the guide
+    if: github.repository == 'intgral-ai/intcad' && inputs.publish_docs
+    needs: [publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+      - name: Install mdbook and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build the guide
+        env:
+          SOLIDCRAFT_GPU: software
+        run: cargo xtask book
+      - name: Assemble the site
+        run: |
+          mkdir -p site/assets
+          cp -r target/book/. site/
+          bash docs/book/seo.sh site
+          cp docs/screenshots/sample-plate.png site/assets/sample-plate.png
+          cp assets/branding/logo/open-skyfall-mark-1024.png site/assets/open-skyfall-mark-1024.png
+      - uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
+        id: app
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: intgral-ai
+          repositories: intcad-releases
+      - name: Push the guide to the distribution repository's gh-pages branch
+        env:
+          TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch gh-pages "https://x-access-token:${TOKEN}@github.com/${DIST_REPO}.git" published 2>/dev/null \
+            || { mkdir published && git -C published init -b gh-pages; }
+          git -C published config user.name "intcad-release-bot"
+          git -C published config user.email "release-bot@users.noreply.github.com"
+          git -C published remote set-url origin "https://x-access-token:${TOKEN}@github.com/${DIST_REPO}.git"
+          find published -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -r site/. published/
+          touch published/.nojekyll
+          git -C published add -A
+          git -C published diff --cached --quiet || git -C published commit -m "Guide for ${{ inputs.tag }}"
+          git -C published push origin gh-pages
