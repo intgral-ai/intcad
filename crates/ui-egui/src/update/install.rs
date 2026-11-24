@@ -3,10 +3,9 @@
 //!
 //! Verification is never skipped. The package's SHA-256 must match the release's
 //! `SHA256SUMS.txt` (or `SHA256SUMS`, the name releases before 0.1.3 used), fetched over HTTPS
-//! from the same release. When SolidCraft is built with an
-//! update signing key ([`PUBLIC_KEY`]), `SHA256SUMS.txt.minisig` must also be a valid minisign
-//! signature by that key whose trusted comment names the release, so a compromised download host
-//! alone can't push a package. Anything that doesn't verify is deleted and nothing is replaced.
+//! from the same release. `SHA256SUMS.txt.minisig` must be a valid minisign signature of that
+//! list by the embedded release key, with the exact trusted comment `Intcad v<version>`.
+//! Nothing is installed if the key, signature, or package does not verify.
 //!
 //! What "put in place" means per installation:
 //! - AppImage: the new AppImage is written next to the old one and renamed over it (atomic on
@@ -28,19 +27,20 @@ use sha2::{Digest, Sha256};
 
 use super::{FetchError, InstallKind, Release};
 
-/// The minisign public key releases are signed with (the base64 line of `minisign.pub`), or None
-/// while the project has no update signing key: then the SHA-256 check over HTTPS is what
-/// guards an update. See docs/releasing.md, "Update signing".
-pub const PUBLIC_KEY: Option<&str> = None;
+/// The publisher reads this same single-line minisign key. Until it is provisioned, parsing the
+/// placeholder fails and one-click installation is unavailable.
+pub(crate) const PUBLIC_KEY: &str = include_str!("trusted-release-key.pub");
 
 /// The checksum list every release carries, and its signature.
 pub const SUMS: &str = "SHA256SUMS.txt";
-/// The same list under the name releases before `SUMS` published it (`v0.1.2` and older): the
-/// client has to keep updating an installed copy of one of those.
+/// The historical name is still recognized, but the list must verify against `SUMS_SIG` too.
 pub const SUMS_LEGACY: &str = "SHA256SUMS";
 pub const SUMS_SIG: &str = "SHA256SUMS.txt.minisig";
 /// No package is bigger than this (they are about 30 MB).
 pub const MAX_PACKAGE: u64 = 1 << 30;
+/// The checksum list and its signature are small; a response claiming to be one that is bigger
+/// is refused before it is parsed (it comes from the network).
+const MAX_SUMS_BYTES: usize = 1 << 20;
 /// Nor a single file inside the portable zip.
 const MAX_UNZIPPED: u64 = 1 << 30;
 
@@ -84,6 +84,28 @@ pub enum Outcome {
     Installer(PathBuf, Vec<String>),
     /// The disk image was opened for the user.
     Opened(PathBuf),
+}
+
+#[derive(Debug)]
+pub enum Error {
+    Cancelled,
+    Verification(String),
+    Other(String),
+}
+
+impl From<String> for Error {
+    fn from(detail: String) -> Self {
+        Self::Other(detail)
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => f.write_str("cancelled"),
+            Self::Verification(detail) | Self::Other(detail) => f.write_str(detail),
+        }
+    }
 }
 
 /// `SHA256SUMS.txt` lines (`<hex>  <name>` or `<hex> *<name>`): the lowercase hex for `name`.
@@ -131,14 +153,20 @@ pub fn relaunch_after(installer: &Path, args: &[String], exe: &Path) -> (PathBuf
 }
 
 /// `sums` is signed by `key` (minisign, prehashed) with a trusted comment naming `tag`.
-pub fn verify_signature(sums: &[u8], signature: &str, key: &str, tag: &str) -> Result<(), String> {
-    let key = minisign_verify::PublicKey::from_base64(key.trim()).map_err(|e| format!("update signing key: {e}"))?;
+pub(super) fn verify_signature(sums: &[u8], signature: &str, key: &minisign_verify::PublicKey, tag: &str) -> Result<(), String> {
     let sig = minisign_verify::Signature::decode(signature).map_err(|e| format!("{SUMS_SIG}: {e}"))?;
-    key.verify(sums, &sig, false).map_err(|e| format!("{SUMS} isn't signed by SolidCraft's release key: {e}"))?;
+    key.verify(sums, &sig, false).map_err(|e| format!("checksum list isn't signed by Intcad's release key: {e}"))?;
+    if !tag
+        .strip_prefix('v')
+        .and_then(|version| semver::Version::parse(version).ok())
+        .is_some_and(|version| version.pre.is_empty() && version.build.is_empty())
+    {
+        return Err(format!("invalid stable release tag {tag:?}"));
+    }
     // The comment is covered by the signature: an older release's signed list can't stand in.
     let comment = sig.trusted_comment();
-    if !comment.split_whitespace().any(|w| w == tag) {
-        return Err(format!("{SUMS_SIG} is for `{comment}`, not {tag}"));
+    if comment.strip_prefix("Intcad ") != Some(tag) {
+        return Err(format!("{SUMS_SIG} trusted comment {comment:?} does not match {tag}: expected `Intcad {tag}`"));
     }
     Ok(())
 }
@@ -174,17 +202,23 @@ pub struct Net {
     pub get: super::HttpGet,
     pub download: HttpDownload,
     pub feed: Option<PathBuf>,
+    #[cfg(test)]
+    pub(super) test_key: Option<&'static str>,
+}
+
+fn check_cancel(progress: &Progress) -> Result<(), Error> {
+    if progress.cancel.load(Ordering::Relaxed) { Err(Error::Cancelled) } else { Ok(()) }
 }
 
 /// GET `url` unless Cancel was pressed; check again after the response so a cancel during the
 /// wait still ends the install without starting the package download (#8908).
-fn get_unless_cancelled(net: &Net, progress: &Progress, url: &str) -> Result<Vec<u8>, FetchError> {
-    if progress.cancel.load(Ordering::Relaxed) {
-        return Err(FetchError::Failed("cancelled".into()));
-    }
-    let body = (net.get)(url)?;
-    if progress.cancel.load(Ordering::Relaxed) {
-        return Err(FetchError::Failed("cancelled".into()));
+fn get_verification_file(net: &Net, progress: &Progress, asset: &super::Asset) -> Result<Vec<u8>, Error> {
+    check_cancel(progress)?;
+    let response = (net.get)(&asset.url);
+    check_cancel(progress)?;
+    let body = response.map_err(|e| Error::Verification(format!("{}: {e}", asset.name)))?;
+    if body.len() > MAX_SUMS_BYTES {
+        return Err(Error::Verification(format!("{} is too large ({} bytes)", asset.name, body.len())));
     }
     Ok(body)
 }
@@ -200,12 +234,14 @@ pub fn run(
     net: &Net,
     staging: &Path,
     progress: &Progress,
-) -> Result<Outcome, String> {
+) -> Result<Outcome, Error> {
     // Honour Cancel before each network wait: feed refresh and checksum fetches used to run
     // without looking at the flag, so Cancel looked dead until the body download started (#8908).
-    if progress.cancel.load(Ordering::Relaxed) {
-        return Err("cancelled".into());
-    }
+    check_cancel(progress)?;
+    let key = PUBLIC_KEY;
+    #[cfg(test)]
+    let key = net.test_key.unwrap_or(key);
+    let key = minisign_verify::PublicKey::from_base64(key.trim()).map_err(|e| Error::Verification(format!("update signing key: {e}")))?;
     // The release shown may be stale by now: install the newest one the feed names, or the one
     // shown when the feed can't be read.
     let (release, fallback) = match super::fetch_latest(net.feed.as_deref(), Some(&net.get)) {
@@ -214,30 +250,22 @@ pub fn run(
         Err(_) => (release.clone(), true),
     };
     *progress.selected.lock().unwrap_or_else(|e| e.into_inner()) = Some((release.clone(), fallback));
-    if progress.cancel.load(Ordering::Relaxed) {
-        return Err("cancelled".into());
-    }
+    check_cancel(progress)?;
     let asset = release.asset_for(kind, arch).ok_or_else(|| format!("this release has no package for a {} on {arch}", kind.label()))?;
     if asset.size > MAX_PACKAGE {
-        return Err(format!("{} is too large ({} bytes)", asset.name, asset.size));
+        return Err(Error::Other(format!("{} is too large ({} bytes)", asset.name, asset.size)));
     }
-    let (sums_name, sums_url) = [SUMS, SUMS_LEGACY]
-        .iter()
-        .find_map(|name| release.assets.iter().find(|a| a.name == *name).map(|a| (*name, a.url.clone())))
-        .ok_or_else(|| format!("this release has no {SUMS} or {SUMS_LEGACY}"))?;
-    let sums = get_unless_cancelled(net, progress, &sums_url).map_err(|e| format!("{sums_name}: {e}"))?;
-    if let Some(key) = PUBLIC_KEY {
-        let sig_url = release
-            .assets
-            .iter()
-            .find(|a| a.name == SUMS_SIG)
-            .map(|a| a.url.clone())
-            .ok_or_else(|| format!("this release isn't signed (no {SUMS_SIG})"))?;
-        let sig = get_unless_cancelled(net, progress, &sig_url).map_err(|e| format!("{SUMS_SIG}: {e}"))?;
-        verify_signature(&sums, &String::from_utf8_lossy(&sig), key, &release.tag)?;
-    }
-    let sums = String::from_utf8_lossy(&sums);
-    let expected = expected_sha256(&sums, &asset.name).ok_or_else(|| format!("{sums_name} doesn't list {}", asset.name))?;
+    let by_name = |name| release.assets.iter().find(|a| a.name == name);
+    let list =
+        by_name(SUMS).or_else(|| by_name(SUMS_LEGACY)).ok_or_else(|| Error::Verification(format!("this release has no {SUMS} or {SUMS_LEGACY}")))?;
+    let sums_name = &list.name;
+    let sig = by_name(SUMS_SIG).ok_or_else(|| Error::Verification(format!("this release isn't signed (no {SUMS_SIG})")))?;
+    let sums = get_verification_file(net, progress, list)?;
+    let sig = get_verification_file(net, progress, sig)?;
+    let sig = std::str::from_utf8(&sig).map_err(|e| Error::Verification(format!("{SUMS_SIG}: {e}")))?;
+    verify_signature(&sums, sig, &key, &release.tag).map_err(Error::Verification)?;
+    let sums = std::str::from_utf8(&sums).map_err(|e| Error::Verification(format!("{sums_name}: {e}")))?;
+    let expected = expected_sha256(sums, &asset.name).ok_or_else(|| Error::Verification(format!("{sums_name} doesn't list {}", asset.name)))?;
 
     // Where the download goes: beside its target when it replaces a file (one file system, so
     // the final rename is atomic), else in the staging folder.
@@ -249,9 +277,8 @@ pub fn run(
             staging.join(&asset.name)
         }
     };
-    let cleanup = |e: String| {
+    let cleanup = || {
         let _ = std::fs::remove_file(&part);
-        e
     };
     progress.total.store(asset.size, Ordering::Relaxed);
     let report = |done: u64, total: Option<u64>| {
@@ -261,15 +288,18 @@ pub fn run(
         }
         !progress.cancel.load(Ordering::Relaxed) && done <= MAX_PACKAGE
     };
-    (net.download)(&asset.url, &part, &report).map_err(|e| cleanup(format!("{}: {e}", asset.name)))?;
-    if progress.cancel.load(Ordering::Relaxed) {
-        return Err(cleanup("cancelled".into()));
-    }
-    let actual = sha256_file(&part).map_err(cleanup)?;
-    if actual != expected {
-        return Err(cleanup(format!("{} doesn't match {sums_name} (got {actual}, expected {expected}); it was deleted", asset.name)));
-    }
-    let outcome = apply(method, &part).map_err(cleanup)?;
+    let outcome = (|| {
+        let downloaded = (net.download)(&asset.url, &part, &report);
+        check_cancel(progress)?;
+        downloaded.map_err(|e| format!("{}: {e}", asset.name))?;
+        let actual = sha256_file(&part)?;
+        if actual != expected {
+            return Err(Error::Verification(format!("{} doesn't match {sums_name} (got {actual}, expected {expected})", asset.name)));
+        }
+        check_cancel(progress)?;
+        Ok(apply(method, &part)?)
+    })()
+    .inspect_err(|_| cleanup())?;
     Ok(match (method, outcome) {
         // Zsync-based tools (Gearlever, AppImageUpdate) find the update data by the release's file name.
         (Method::AppImage(_), Outcome::Restart(placed)) => {

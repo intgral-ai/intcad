@@ -36,8 +36,8 @@
     <Icon Id="SolidcraftIcon.exe" SourceFile="$(var.IconPath)" />
     <Property Id="ARPPRODUCTICON" Value="SolidcraftIcon.exe" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/intgral-ai/intcad" />
-    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/intgral-ai/intcad/releases" />
-    <Property Id="ARPHELPLINK" Value="https://github.com/intgral-ai/intcad/issues" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/intgral-ai/intcad-releases/releases" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/intgral-ai/intcad-releases/issues" />
 
     <StandardDirectory Id="ProgramFiles6432Folder">
       <Directory Id="INSTALLFOLDER" Name="Intcad" />

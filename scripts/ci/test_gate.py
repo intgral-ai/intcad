@@ -652,7 +652,7 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                 self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", text)
 
     def script(self):
-        match = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", self.text())
+        match = re.search(r"(?ms)^          python3 -I - <<'PY'\n(.*?)^          PY$", self.text())
         self.assertIsNotNone(match, "release-gate needs a source-bound execution/evidence aggregate")
         return "\n".join(line[10:] for line in match[1].splitlines()) + "\n"
 
@@ -684,7 +684,10 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                 (package / "runtime-artifact.json").write_text(json.dumps(dict(mode="host_only", status="not_applicable")))
             default = dict(ci="failure" if beta else "success", packages="success",
                            **{"kernel-rig": "success", "beta-gate": "success" if beta else "skipped"})
+            # The workflow exports the declared distribution to this step; the fixture models
+            # that environment so the gate reads the same inputs as a real run.
             env = dict(os.environ, GITHUB_SHA=sha, EVENT_NAME="pull_request", BASE_REF="main", HEAD_REF=head,
+                       DISTRIBUTION="native",
                        NEEDS_JSON=json.dumps({job: {"result": status} for job, status in
                 (statuses or default).items()}))
             return subprocess.run([sys.executable, "-c", self.script()], cwd=root, env=env,

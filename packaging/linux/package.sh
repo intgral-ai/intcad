@@ -189,8 +189,13 @@ if has appimage; then
   # Update information: AppImageUpdate and the like fetch only the changed blocks of a newer
   # release through the .zsync published next to each AppImage. `latest` is the newest published
   # release that is not a pre-release.
-  REPO="${GITHUB_REPOSITORY:-intgral-ai/intcad}"
-  UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|intcad-*-linux-$ARCH.AppImage.zsync"
+  #
+  # It is embedded in every AppImage and read by an anonymous AppImageUpdate, so it must name the
+  # public distribution repository. Never derive it from `GITHUB_REPOSITORY`: a package built in
+  # the private source repository would then tell every user's updater to fetch from a repository
+  # they cannot read.
+  DIST_REPO="${SOLIDCRAFT_DIST_REPO:-intgral-ai/intcad-releases}"
+  UPDATE_INFO="gh-releases-zsync|${DIST_REPO%%/*}|${DIST_REPO#*/}|latest|intcad-*-linux-$ARCH.AppImage.zsync"
   # Extract-and-run: works without FUSE (containers, CI). With zsyncmake on the host appimagetool
   # also writes the .zsync, into its working directory, hence the cd.
   (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream -u "$UPDATE_INFO" "$APPDIR" "$OUT")
