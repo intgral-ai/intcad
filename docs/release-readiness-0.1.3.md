@@ -2564,3 +2564,21 @@ package ships without an account configuration and sign-in/paid operations fail 
 is not a gate failure (the gate requires content coverage, not a tuple on every target), so it is
 recorded honestly in the release notes' known limits instead of being added to the release as an
 untested code change.
+
+**The updater, the publisher and the aliases agree on names and location (measured on the composed
+tree).**
+
+```
+crates/ui-egui/src/update.rs:35   REPO = "intgral-ai/intcad-releases"
+crates/ui-egui/src/update.rs:37   LATEST_API = …/intgral-ai/intcad-releases/releases/latest
+crates/ui-egui/src/update.rs:43   RELEASE_PREFIX = https://github.com/intgral-ai/intcad-releases/releases/
+scripts/ci/release_handoff.py:29  DIST_REPO = "intgral-ai/intcad-releases"
+crates/ui-egui/src/update/install.rs:35-38  SUMS="SHA256SUMS.txt", SUMS_LEGACY="SHA256SUMS", SUMS_SIG="SHA256SUMS.txt.minisig"
+packaging/aliases.sh               writes the unversioned names asset_name() resolves (AppImage/deb/rpm/
+                                   flatpak/snap/msi/portable-zip/dmg) as copies, never links
+```
+
+So the release the publisher stages into `intcad-releases` is exactly what the installed app looks
+for, the checksum pair has both the new and legacy names, and every asset the updater resolves by
+an unversioned name gets an alias. The only pieces that can still fail are runtime (signature,
+network), not name or repository mismatches.
