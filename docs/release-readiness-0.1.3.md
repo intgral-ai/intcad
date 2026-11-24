@@ -2540,3 +2540,10 @@ gh workflow run publish-release.yml --repo intgral-ai/intcad --ref main \
 The `draft` job then lands in `release-signing` and waits for `Huaiyuan-Jing` or `paipeline`; no
 agent approves it. That waiting state is the hand-off point the objective calls the
 signing-approval link.
+
+**Stale CI cancelled to free runner capacity (19:08Z).** `#224`'s run `45459270639` on
+`dc1f8f8d59` had 20/38 jobs done and 18 running. It could never be the merge evidence: the moment
+#214 lands, `develop` moves and the branch is stale under the strict rule, so the whole run is
+superseded. It was cancelled (`completed cancelled`), which frees 18 concurrent jobs for #214's two
+remaining heavy jobs and for #239. The Login Agent was told not to restart it and to do one
+`merge origin/develop` with the two-file `--theirs` resolution after the new SHA is published.
