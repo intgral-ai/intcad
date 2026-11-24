@@ -40,44 +40,45 @@ Where SolidCraft can replace itself safely, the window also has **Update now**:
 | Flatpak, Snap, `.deb`, `.rpm`, `.tar.gz` | Nothing: your package manager updates these (the window shows the command), or you unpack the new archive |
 
 Every download is verified before anything changes: its SHA-256 must match the release's
-`SHA256SUMS.txt`, fetched over HTTPS from the same release, and, once the project signs its
-releases, that list must carry a valid signature by SolidCraft's release key that names the
-release (see [releasing](https://github.com/tangency-labs/solidcraft/blob/main/docs/releasing.md#update-signing)).
-A download that doesn't verify is deleted and the installed copy is left as it was; **Download**
-still gets the package for a manual install. On macOS SolidCraft opens the disk image rather than
+`SHA256SUMS.txt`, fetched over HTTPS from the same release, and that list must carry a valid
+minisign signature by Intcad's release key whose comment names the release (see
+[releasing](https://github.com/intgral-ai/intcad-releases) for the published signatures). A build
+that carries the key refuses a release with no signature, with the old `SHA256SUMS` name instead
+of `SHA256SUMS.txt`, or with a signature for another version: there is no unsigned fallback. A
+download that doesn't verify is deleted and the installed copy is left as it was; **Download**
+still gets the package for a manual install. On macOS Intcad opens the disk image rather than
 replacing the app itself: you drag the new app to Applications, as you did the first time. The
-app and the disk image are signed with a Developer ID and notarized by Apple, so macOS opens the
-new copy without a warning.
+macOS package is not signed with a Developer ID in this release, so macOS may ask you to confirm
+the first launch of the new copy.
 
 Update now needs write access to the installed file: an AppImage in a folder you can't write to
 fails with a message, and **Download** is the way to update it.
 
-## Updating from 0.11 to 0.14
+## Updating from 0.1.0, 0.1.1 or 0.1.2
 
-SolidCraft 0.11.0 to 0.14.0 only accept packages from the project's old GitHub address. Since
-the repository moved to `github.com/tangency-labs/solidcraft`, every release names the new address,
-so these versions see that a newer release is out but find no package in it: **Update now** can't
-install it, and **Download** opens the release page.
+Those three releases read updates from a repository that is no longer public. They will not
+find a newer release there, so **Update now** cannot start: nothing is downloaded and your
+installed copy is unchanged.
 
-Download 0.15.0 or later once yourself, from the release page or the
-[download links](https://github.com/tangency-labs/solidcraft#download), and install it over the old
-version as you first installed it. From 0.15.0 on, SolidCraft accepts either address, and
-**Update now** works again. Package managers (Flatpak, Snap, WinGet, `.deb`, `.rpm`) aren't
-affected.
+Use **Download** (which opens the public release page) or the
+[download links](https://github.com/intgral-ai/intcad-releases#download) once, and install the new
+version over the old one as you first installed it. From 0.1.3 on, Intcad reads the public
+distribution repository and **Update now** works again. Your designs, preferences and account
+session are kept; only the program files are replaced.
 
 ## What is sent
 
 One HTTPS request each time SolidCraft starts, and once a day while it stays open:
 
 ```text
-GET https://api.github.com/repos/tangency-labs/solidcraft/releases/latest
+GET https://api.github.com/repos/intgral-ai/intcad-releases/releases/latest
 User-Agent: SolidCraft-update-check
 Accept: application/vnd.github+json
 X-GitHub-Api-Version: 2022-11-28
 ```
 
 **Update now** then downloads `SHA256SUMS.txt` (and its signature) and the one package from the
-release's own `github.com/tangency-labs/solidcraft/releases/download/…` links, with the same
+release's own `github.com/intgral-ai/intcad-releases/releases/download/…` links, with the same
 User-Agent. That's all: no version number, no machine or user identifier, no usage data, no cookies. GitHub
 sees the request like any other visit to the API (your IP address, the time); see
 [GitHub's privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement).
@@ -116,8 +117,8 @@ off.
 
 ## Which file Download gets
 
-Releases attach the main packages under fixed names (see [releasing](https://github.com/tangency-labs/solidcraft/blob/main/docs/releasing.md)),
-and SolidCraft picks the one matching how it was installed:
+Releases attach the main packages under fixed names (see [releasing](https://github.com/intgral-ai/intcad-releases)),
+and Intcad picks the one matching how it was installed:
 
 | Installed as | Detected by | Download | How to update |
 |---|---|---|---|

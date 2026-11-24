@@ -29,16 +29,18 @@ use crate::SolveApp;
 use crate::theme::Tokens;
 use crate::ui_kit;
 
-/// The repository releases come from.
-pub const REPO: &str = "intgral-ai/intcad";
+/// The public distribution repository updates come from. It holds release notes, installers,
+/// checksums and signatures, never source (docs/releasing.md, "Distribution repository").
+/// The source repository is private, so no client may name it as a download or update source.
+pub const REPO: &str = "intgral-ai/intcad-releases";
 /// The one request an update check makes.
-pub const LATEST_API: &str = "https://api.github.com/repos/intgral-ai/intcad/releases/latest";
+pub const LATEST_API: &str = "https://api.github.com/repos/intgral-ai/intcad-releases/releases/latest";
 /// Where Download goes when no package fits this installation.
-pub const RELEASES_PAGE: &str = "https://github.com/intgral-ai/intcad/releases/latest";
-/// Release pages and assets must be on GitHub, under this project, and nowhere else: an old
-/// upstream repository is not an update source for Intcad. The trailing slash rules out
-/// look-alike names such as `intcad-evil`.
-const RELEASE_PREFIX: &str = "https://github.com/intgral-ai/intcad/releases/";
+pub const RELEASES_PAGE: &str = "https://github.com/intgral-ai/intcad-releases/releases/latest";
+/// Release pages and assets must be on GitHub, in the public distribution repository, and nowhere
+/// else: neither the private source repository nor an old upstream one is an update source. The
+/// trailing slash rules out look-alike names such as `intcad-releases-evil`.
+const RELEASE_PREFIX: &str = "https://github.com/intgral-ai/intcad-releases/releases/";
 
 fn is_release_url(url: &str) -> bool {
     url.starts_with(RELEASE_PREFIX)
@@ -110,7 +112,7 @@ pub fn comparable(v: &semver::Version) -> semver::Version {
 /// candidate and nightly releases are all tagged `v<version>`), else, for a development build or
 /// a string that is not a version, the release history.
 pub fn release_notes_url(version: &str, release_build: bool) -> String {
-    const HISTORY: &str = "https://github.com/intgral-ai/intcad/releases";
+    const HISTORY: &str = "https://github.com/intgral-ai/intcad-releases/releases";
     if release_build && parse_version(version).is_some() && version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')) {
         format!("{HISTORY}/tag/v{version}")
     } else {
@@ -526,7 +528,7 @@ impl Release {
             })
             .collect();
         Ok(Release {
-            name: Some(s("name")).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| format!("SolidCraft {tag}")),
+            name: Some(s("name")).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| format!("Intcad {tag}")),
             tag,
             notes,
             page,
