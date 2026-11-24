@@ -2607,3 +2607,23 @@ Together with `cargo fmt --all --check` (clean) and the three `cargo check` runs
 account-native, full workspace path), the composed tree now has: formatting, lint and type
 checking all green for every crate the release changes. That removes the cheapest ways the
 integration PR's single full CI could fail late.
+
+## 17. The signing/publish path matches what the installed updater verifies
+
+Read from the final tree (`publish-release.yml` + `release_handoff.py`):
+
+```
+publish-release.yml  minisign -S -s <secret> -m release-work/out/SHA256SUMS.txt \
+                              -x release-work/out/SHA256SUMS.txt.minisig -t "Intcad $TAG"
+release_handoff.py:358-362  require signature line 3 == "trusted comment: Intcad v0.1.3"
+                            minisign -Vm SHA256SUMS.txt -x SHA256SUMS.txt.minisig -P <tracked key>
+release_handoff.py:797-808  before the POST: re-verify every file, the signature, that
+                            intgral-ai/intcad-releases is public with main as default, that no
+                            release/draft exists, that the tag is absent, and that the live tag still
+                            names the frozen SHA on main
+crates/ui-egui/src/update/install.rs:35-38  SUMS="SHA256SUMS.txt", SUMS_SIG="SHA256SUMS.txt.minisig"
+```
+
+So the file the updater fetches and the signature it verifies are produced with the exact names and
+the exact trusted comment the publisher re-checks; a signature made for another tag cannot be
+reused because the comment must equal `Intcad <tag>`.
