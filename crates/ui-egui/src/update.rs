@@ -26,25 +26,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::SolveApp;
+#[cfg(test)]
+pub(crate) use crate::distribution::{LATEST_API, RELEASES_PAGE};
+use crate::distribution::{RELEASE_HISTORY, is_release_url, version_release_url};
 use crate::theme::Tokens;
 use crate::ui_kit;
-
-/// The public distribution repository updates come from. It holds release notes, installers,
-/// checksums and signatures, never source (docs/releasing.md, "Distribution repository").
-/// The source repository is private, so no client may name it as a download or update source.
-pub const REPO: &str = "intgral-ai/intcad-releases";
-/// The one request an update check makes.
-pub const LATEST_API: &str = "https://api.github.com/repos/intgral-ai/intcad-releases/releases/latest";
-/// Where Download goes when no package fits this installation.
-pub const RELEASES_PAGE: &str = "https://github.com/intgral-ai/intcad-releases/releases/latest";
-/// Release pages and assets must be on GitHub, in the public distribution repository, and nowhere
-/// else: neither the private source repository nor an old upstream one is an update source. The
-/// trailing slash rules out look-alike names such as `intcad-releases-evil`.
-const RELEASE_PREFIX: &str = "https://github.com/intgral-ai/intcad-releases/releases/";
-
-fn is_release_url(url: &str) -> bool {
-    url.starts_with(RELEASE_PREFIX)
-}
 
 /// While the app stays open, automatic checks run once a day (every start checks too).
 pub const CHECK_INTERVAL_S: f64 = 24.0 * 3600.0;
@@ -112,12 +98,11 @@ pub fn comparable(v: &semver::Version) -> semver::Version {
 /// release history. Nightlies and candidates stay on the history: the public feed publishes stable
 /// releases only, so a tag page for a prerelease would not exist there.
 pub fn release_notes_url(version: &str, release_build: bool) -> String {
-    const HISTORY: &str = "https://github.com/intgral-ai/intcad-releases/releases";
     let stable = parse_version(version).is_some_and(|v| v.pre.is_empty());
     if release_build && stable && version.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+')) {
-        format!("{HISTORY}/tag/v{version}")
+        version_release_url(version)
     } else {
-        HISTORY.to_string()
+        RELEASE_HISTORY.to_string()
     }
 }
 

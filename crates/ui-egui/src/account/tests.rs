@@ -1485,6 +1485,64 @@ fn chat_unavailable_is_explained_even_with_credits() {
 }
 
 #[test]
+fn unsupported_version_offers_an_upgrade_only_on_a_human_click() {
+    let mut harness = crate::scenario::Harness::new();
+    harness.app.home.open = true;
+    harness.app.account = State::with_port(Box::new(FakeAccountPort::with_view(
+        AccountView { tool_blocked: Some(RefusalCode::VersionUnsupported), ..signed_in_view() },
+        Arc::default(),
+    )));
+    harness.frames(2);
+    let text = painted_text(&harness.shapes);
+    assert!(text.contains("This Intcad version is no longer supported for billed tools. Update to use them again."), "{text}");
+    assert!(text.contains("Get the latest version"), "{text}");
+    assert!(harness.output.commands.is_empty(), "rendering must not open the release page");
+    let at = crate::scenario::handle_at("account:upgrade").unwrap();
+    harness.app.synthetic.extend([pointer(at, true), pointer(at, false)]);
+    for _ in 0..2 {
+        harness.frame();
+        assert!(harness.output.commands.is_empty(), "automation must not open the release page");
+    }
+    native_click(&mut harness, "account:upgrade");
+    assert_eq!(harness.output.commands, [egui::OutputCommand::OpenUrl(egui::OpenUrl::new_tab(crate::distribution::RELEASES_PAGE))]);
+}
+
+#[test]
+fn supported_version_does_not_offer_an_upgrade() {
+    let texts = render_view(signed_in_view());
+    let text = joined(&texts);
+    assert!(!text.contains("no longer supported") && !text.contains("get the latest version"), "{text}");
+    assert!(crate::scenario::handle_at("account:upgrade").is_none());
+}
+
+#[test]
+fn sign_in_version_refusal_offers_an_upgrade_instead_of_retry() {
+    let texts = render_view(AccountView {
+        sign_in_state: SignInState::Failed,
+        sign_in_error: Some(RefusalCode::VersionUnsupported),
+        ..AccountView::signed_out()
+    });
+    let text = joined(&texts);
+    assert!(text.contains("no longer supported") && text.contains("get the latest version"), "{text}");
+    assert!(crate::scenario::handle_at("account:sign_in").is_none());
+}
+
+#[test]
+fn account_catalog_has_the_same_keys_in_every_language() {
+    type Messages = std::collections::BTreeMap<String, String>;
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/locales/pending/account.json");
+    let source = match std::fs::read_to_string(path) {
+        // The generated-files workflow removes pending files after folding their messages.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        result => result.unwrap(),
+    };
+    let catalog: std::collections::BTreeMap<String, Messages> = serde_json::from_str(&source).unwrap();
+    for (language, messages) in &catalog {
+        assert!(messages.keys().eq(catalog["en"].keys()), "{language} has different account message keys");
+    }
+}
+
+#[test]
 fn own_model_login_is_shown_separately_from_product_account() {
     let view = AccountView { own_model_label: Some("Anthropic · signed in".into()), ..signed_in_view() };
     let texts = render_view(view);
@@ -1550,13 +1608,16 @@ fn switching_refreshes_status_and_delete_guidance_without_stale_text() {
     assert!(joined.contains("bob@example.com"), "{texts:?}");
 }
 
-struct TestCommitAccount;
+struct TestCommitAccount {
+    online: bool,
+    version_supported: bool,
+}
 
 impl solidcraft_engine::entitlement::AccountService for TestCommitAccount {
     fn status(&self) -> Result<solidcraft_engine::entitlement::Availability, Refusal> {
         Ok(solidcraft_engine::entitlement::Availability {
-            online: true,
-            version_supported: true,
+            online: self.online,
+            version_supported: self.version_supported,
             model_available: true,
             balance: 10,
             held: 0,
@@ -1612,16 +1673,30 @@ impl solidcraft_engine::entitlement::MonotonicClock for TestCommitClock {
     }
 }
 
-fn install_test_commit_authority(app: &mut crate::SolveApp) {
+fn install_test_commit_authority(app: &mut crate::SolveApp, online: bool, version_supported: bool) {
     app.install_commit_authority(
         AuthenticatedHostScope::new(
             solidcraft_engine::entitlement::AccountId::new("alice"),
             solidcraft_engine::entitlement::InstallationId::new("installation"),
             solidcraft_engine::entitlement::HostSessionBinding::new("session"),
         ),
-        Box::new(TestCommitAccount),
+        Box::new(TestCommitAccount { online, version_supported }),
         Box::new(TestCommitClock),
     );
+}
+
+#[test]
+fn ordinary_human_cad_stays_available_offline_with_an_unsupported_version() {
+    let mut app = crate::test_support::sample_app();
+    install_test_commit_authority(&mut app, false, false);
+    let (request, reply) = crate::control::ControlRequest::trusted_gui(
+        "engine.execute",
+        json!({"command": "solid.box", "params": {"length": 10, "width": 10, "height": 10}}),
+    );
+    let revision = app.session.design_revision();
+    app.run_control(&crate::fonts::test_context(), request);
+    assert_eq!(reply.try_recv().unwrap()["ok"], true);
+    assert_ne!(app.session.design_revision(), revision);
 }
 
 #[test]
@@ -1630,7 +1705,7 @@ fn sign_out_and_switch_end_the_old_sessions_authority() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mut app = crate::test_support::sample_app();
         app.account = State::with_port(Box::new(FakeAccountPort::with_view(signed_in_view(), calls)));
-        install_test_commit_authority(&mut app);
+        install_test_commit_authority(&mut app, true, true);
         app.account.request(action);
         app.account.process_actions();
         assert!(!app.account.view().signed_in, "the port's new signed-out view is shown");
@@ -1646,7 +1721,7 @@ fn an_ordinary_refresh_keeps_the_current_sessions_authority() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let mut app = crate::test_support::sample_app();
     app.account = State::with_port(Box::new(FakeAccountPort::with_view(signed_in_view(), calls)));
-    install_test_commit_authority(&mut app);
+    install_test_commit_authority(&mut app, true, true);
     app.account.request(Action::RefreshStatus);
     app.account.process_actions();
     app.drain_account_lifecycle();

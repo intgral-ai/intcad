@@ -59,6 +59,7 @@ struct RestartShared {
     /// The complete binding of an online-verified original pair. Presentation uses only its
     /// account label; the service installer requires the whole provable scope.
     scope: Option<AuthenticatedHostScope>,
+    version_unsupported: bool,
     /// The bounded check has finished, failed or been retired.
     done: bool,
 }
@@ -586,6 +587,10 @@ fn run_login<T: DeviceCodeTransport>(task: LoginTask, transport: T, exchange: &d
             finish(&status, attempt, LoginPhase::Failed(RefusalCode::AuthRequired), None);
             return;
         }
+        Err(ProductExchangeError::VersionUnsupported) => {
+            finish(&status, attempt, LoginPhase::Failed(RefusalCode::VersionUnsupported), None);
+            return;
+        }
         Err(ProductExchangeError::NotConfigured | ProductExchangeError::Unavailable) => {
             finish(&status, attempt, LoginPhase::Failed(RefusalCode::AuthUnavailable), None);
             return;
@@ -817,6 +822,8 @@ pub struct AccountRuntime {
     budget: BudgetTable,
     clock: Option<Arc<dyn MonotonicClock + Send + Sync>>,
     service: Option<Box<dyn AccountService + Send + Sync>>,
+    /// UI-only signal from the current service's existing requests; the panel does not query HTTP.
+    service_version_unsupported: Option<Arc<AtomicBool>>,
     /// The scope checked against the live credentials and its revocation generation.
     service_proof: Option<(AuthenticatedHostScope, u64)>,
     control_renewal: Option<ControlRenewalJob>,
@@ -916,6 +923,7 @@ impl AccountRuntime {
             budget: desktop_budget(),
             clock: Some(Arc::new(SystemMonotonicClock::new())),
             service: None,
+            service_version_unsupported: None,
             service_proof: None,
             control_renewal: None,
             control_renewal_factory: None,
@@ -1052,7 +1060,15 @@ impl AccountRuntime {
             Some(factory) => factory,
             None => Arc::new(|| Box::new(UreqTransport::with_limits(RESTART_STATUS_TIMEOUT, RESTART_STATUS_CONNECT_TIMEOUT))),
         };
-        self.service = Some(Box::new(HttpSessionAccountService { connection, transport, credentials: self.credentials.clone(), clock }));
+        let version_unsupported = Arc::new(AtomicBool::new(false));
+        self.service = Some(Box::new(HttpSessionAccountService {
+            connection,
+            transport,
+            credentials: self.credentials.clone(),
+            clock,
+            version_unsupported: Arc::clone(&version_unsupported),
+        }));
+        self.service_version_unsupported = Some(version_unsupported);
         self.service_proof = Some((scope.clone(), generation));
         true
     }
@@ -1074,6 +1090,7 @@ impl AccountRuntime {
     fn clear_account_service(&mut self) {
         self.service = None;
         self.service_proof = None;
+        self.service_version_unsupported = None;
     }
 
     /// Take the installed account service and clock only for the exact scope this runtime proved
@@ -1124,6 +1141,7 @@ struct HttpSessionAccountService {
     transport: ProductTransportFactory,
     credentials: CredentialSession,
     clock: SharedClock,
+    version_unsupported: Arc<AtomicBool>,
 }
 
 impl HttpSessionAccountService {
@@ -1140,7 +1158,13 @@ impl HttpSessionAccountService {
 
 impl AccountService for HttpSessionAccountService {
     fn status(&self) -> Result<Availability, Refusal> {
-        self.service().status()
+        let result = self.service().status();
+        match &result {
+            Ok(status) => self.version_unsupported.store(!status.version_supported, Ordering::Relaxed),
+            Err(refusal) if refusal.code == RefusalCode::VersionUnsupported => self.version_unsupported.store(true, Ordering::Relaxed),
+            Err(_) => {}
+        }
+        result
     }
 
     fn authorize(&mut self, scope: &AuthenticatedHostScope, capability: Capability) -> Result<Grant, Refusal> {
@@ -1154,7 +1178,15 @@ impl AccountService for HttpSessionAccountService {
         capability: Capability,
         entry: EntryCategory,
     ) -> Result<Admission, Refusal> {
-        self.service().begin(scope, operation, capability, entry)
+        let result = self.service().begin(scope, operation, capability, entry);
+        match &result {
+            Ok(Admission::NewlyAdmitted { .. }) => self.version_unsupported.store(false, Ordering::Relaxed),
+            Ok(Admission::Refused(refusal)) | Err(refusal) if refusal.code == RefusalCode::VersionUnsupported => {
+                self.version_unsupported.store(true, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+        result
     }
 
     fn finalize(&mut self, scope: &AuthenticatedHostScope, operation: &OperationId, result: BillingResult) -> Result<OperationStatus, Refusal> {
@@ -1188,10 +1220,11 @@ impl RestartVerifier {
 
     /// Ask the configured service whether the exact local bearer belongs to the expected account.
     /// Only a 200 snapshot for that account, followed by an unchanged pair and revocation
-    /// generation, yields a presentable scope. This check never writes credentials or opens a browser.
-    fn verify(&self, binding: &RestartBinding, cancel: &RestartCancellation) -> Option<AuthenticatedHostScope> {
+    /// generation, yields a presentable scope. Preserve a minimum-version denial as a notice only.
+    /// This check never writes credentials or opens a browser.
+    fn verify(&self, binding: &RestartBinding, cancel: &RestartCancellation) -> Result<AuthenticatedHostScope, RefusalCode> {
         if cancel.is_cancelled() {
-            return None;
+            return Err(RefusalCode::AuthUnavailable);
         }
         let service = HttpAccountService::with_transport(
             self.transport(),
@@ -1200,11 +1233,17 @@ impl RestartVerifier {
             Box::new(self.credentials.clone()),
             Box::new(SystemMonotonicClock::new()),
         );
-        service.restart_status(binding.scope.account().as_str()).ok()?;
-        if cancel.is_cancelled() {
-            return None;
+        let status = service.restart_status(binding.scope.account().as_str()).map_err(|refusal| refusal.code);
+        if let Err(code) = status
+            && code != RefusalCode::VersionUnsupported
+        {
+            return Err(code);
         }
-        restart_binding_unchanged(&self.credentials, binding)
+        if cancel.is_cancelled() {
+            return Err(RefusalCode::AuthUnavailable);
+        }
+        let scope = restart_binding_unchanged(&self.credentials, binding).ok_or(RefusalCode::AuthUnavailable)?;
+        status.map(|_| scope)
     }
 
     /// Replay durable intent only. The original settlement credential is deliberately the
@@ -1460,11 +1499,11 @@ impl DesktopAccountPort {
         let worker_cancel = cancel.clone();
         let worker = std::thread::Builder::new().name("intcad-account-restart".into()).spawn(move || {
             let mut verified = verifier.verify(&binding, &worker_cancel);
-            if verified.is_some() && verifier.ledger_root.is_some() {
+            if verified.is_ok() && verifier.ledger_root.is_some() {
                 verifier.recover_settlement(&binding, &worker_cancel);
-                verified = restart_binding_unchanged(&verifier.credentials, &binding);
+                verified = restart_binding_unchanged(&verifier.credentials, &binding).ok_or(RefusalCode::AuthUnavailable);
             }
-            let accepted = verified.is_some();
+            let accepted = verified.is_ok();
             // Retirement already marks the shared result done and clears any cached account. A
             // late reply is dropped instead of writing after that decision.
             if worker_cancel.is_cancelled() {
@@ -1475,7 +1514,8 @@ impl DesktopAccountPort {
                 return;
             }
             shared.done = true;
-            shared.scope = verified;
+            shared.version_unsupported = matches!(verified, Err(RefusalCode::VersionUnsupported));
+            shared.scope = verified.ok();
             drop(shared);
             if accepted {
                 solidcraft_engine::note!(
@@ -1502,6 +1542,7 @@ impl DesktopAccountPort {
             job.cancel.cancel();
             if let Ok(mut shared) = job.shared.lock() {
                 shared.scope = None;
+                shared.version_unsupported = false;
                 shared.done = true;
             }
         }
@@ -1513,6 +1554,15 @@ impl DesktopAccountPort {
 
     fn verified_restart_account(&self) -> Option<String> {
         self.verified_restart_scope().map(|scope| scope.account().as_str().to_owned())
+    }
+
+    fn with_version_notice(&self, mut view: AccountView) -> AccountView {
+        if self.runtime.service_version_unsupported.as_ref().is_some_and(|unsupported| unsupported.load(Ordering::Relaxed))
+            || self.restart.as_ref().is_some_and(|job| job.shared.lock().is_ok_and(|shared| shared.version_unsupported))
+        {
+            view.tool_blocked = Some(RefusalCode::VersionUnsupported);
+        }
+        view
     }
 
     fn restart_waiting(&self) -> bool {
@@ -1924,10 +1974,7 @@ impl AccountPort for DesktopAccountPort {
     }
 
     fn view(&self) -> AccountView {
-        if let Some(account) = self.verified_restart_account() {
-            return signed_in_view(account);
-        }
-        self.view.clone()
+        self.with_version_notice(self.verified_restart_account().map_or_else(|| self.view.clone(), signed_in_view))
     }
 
     fn refresh_status(&mut self) -> Result<AccountView, Refusal> {
@@ -1999,7 +2046,7 @@ impl AccountPort for DesktopAccountPort {
             return Some(view);
         }
         self.reconcile_account_service();
-        self.poll_cleanup().or_else(|| self.verified_restart_account().map(signed_in_view))
+        self.poll_cleanup().or_else(|| self.verified_restart_account().map(signed_in_view)).map(|view| self.with_version_notice(view))
     }
 
     fn sign_out(&mut self) -> Result<(), Refusal> {
@@ -3333,6 +3380,11 @@ mod tests {
             let port = DesktopAccountPort::new(runtime, &startup);
             wait_for_restart(&port);
             assert!(!port.view().signed_in, "{case}: an ineligible restart is not presented as signed in");
+            assert_eq!(
+                port.view().tool_blocked,
+                Some(if case == "ineligible client" { RefusalCode::VersionUnsupported } else { RefusalCode::AuthRequired }),
+                "{case}: only minimum-version denial should surface as an upgrade prompt"
+            );
             assert_eq!(product.requests().len(), 1, "{case}: still one bounded status read");
             assert!(opener.urls().is_empty(), "{case}: restart opens no browser");
         }
@@ -4612,6 +4664,56 @@ mod tests {
         assert!(availability.online, "the served status is parsed as the online snapshot");
         assert!(port.take_commit_authority().is_none(), "the same sign-in can hand over authority only once");
         port.shutdown();
+    }
+
+    #[test]
+    fn a_live_minimum_version_refusal_is_visible_until_status_recovers() {
+        let device = ScriptedDevice::scripted(vec![(200, device_body()), (200, token_body())]);
+        let mut old_status = status_body();
+        old_status["client"]["supported"] = json!(false);
+        old_status["eligible"] = json!(false);
+        old_status["reasons"] = json!(["VERSION_UNSUPPORTED"]);
+        let product = ScriptedProduct::scripted(vec![
+            Ok(WireResponse::new(200, status_body().to_string().into_bytes())),
+            Ok(WireResponse::new(201, installation_body().to_string().into_bytes())),
+            Ok(WireResponse::new(200, old_status.to_string().into_bytes())),
+            Ok(WireResponse::new(200, status_body().to_string().into_bytes())),
+        ]);
+        let opener = RecordingOpener::default();
+        let runtime = harness_runtime(installed_session(), device, product.clone(), Arc::new(VirtualTiming::default()), &opener);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, true);
+
+        let (_, service, _) = port.take_commit_authority().unwrap();
+        assert!(!service.status().unwrap().version_supported);
+        assert_eq!(port.view().tool_blocked, Some(RefusalCode::VersionUnsupported));
+        assert!(service.status().unwrap().version_supported);
+        assert_ne!(port.view().tool_blocked, Some(RefusalCode::VersionUnsupported));
+        assert_eq!(product.requests().len(), 4, "reading the view adds no network work");
+        assert!(opener.urls().is_empty());
+    }
+
+    #[test]
+    fn sign_in_reports_a_minimum_version_refusal_without_installing_authority() {
+        let device = ScriptedDevice::scripted(vec![(200, device_body()), (200, token_body())]);
+        let mut old_status = status_body();
+        old_status["client"]["supported"] = json!(false);
+        old_status["eligible"] = json!(false);
+        old_status["reasons"] = json!(["VERSION_UNSUPPORTED"]);
+        let product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, old_status.to_string().into_bytes()))]);
+        let opener = RecordingOpener::default();
+        let runtime = harness_runtime(installed_session(), device, product.clone(), Arc::new(VirtualTiming::default()), &opener);
+        let startup = runtime.startup();
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        port.sign_in().unwrap();
+        wait_for_login(&mut port, false);
+
+        assert_eq!(port.view().sign_in_error, Some(RefusalCode::VersionUnsupported));
+        assert!(port.take_commit_authority().is_none());
+        assert_eq!(product.requests().len(), 1, "no installation bootstrap after version refusal");
+        assert!(opener.urls().is_empty());
     }
 
     #[test]

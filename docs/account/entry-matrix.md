@@ -14,3 +14,5 @@ Classification comes from the host dispatch path, never from a caller-supplied m
 | Unknown source or command class | Native trust boundary | Deny by default; no interactive login window on a programmatic request. |
 
 The matrix describes intended gates, not evidence that these entry points are already guarded.
+
+Open-source builds released before the account authorization system existed never had controlled capabilities under that system. They cannot be revoked or disabled remotely. Version admission and revocation apply only to controlled capabilities in official builds that installed an account service. This policy does not provide or promise remote control over historical open-source builds.

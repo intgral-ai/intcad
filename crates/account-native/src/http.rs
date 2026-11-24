@@ -1059,11 +1059,11 @@ impl<T: Transport> HttpAccountService<T> {
     /// grant, or claims that the installation credential is still server-valid.
     pub fn restart_status(&self, expected_account: &str) -> Result<Availability, Refusal> {
         let value = self.status_value()?;
-        let (_, availability) = self.parse_status_snapshot(&value)?;
-        let account = verified_account(&value).map_err(activation_refusal)?;
+        let (account, availability) = self.parse_status_snapshot(&value)?;
         if account != expected_account {
             return Err(refusal(RefusalCode::AuthRequired));
         }
+        verified_account(&value).map_err(activation_refusal)?;
         Ok(availability)
     }
 }
@@ -1191,6 +1191,7 @@ fn unavailable() -> Refusal {
 fn activation_refusal(error: ProductExchangeError) -> Refusal {
     match error {
         ProductExchangeError::Rejected => refusal(RefusalCode::AuthRequired),
+        ProductExchangeError::VersionUnsupported => refusal(RefusalCode::VersionUnsupported),
         ProductExchangeError::NotConfigured | ProductExchangeError::Unavailable => unavailable(),
     }
 }
@@ -1229,7 +1230,7 @@ fn require_timestamp(value: &Value) -> Result<(), Refusal> {
     value.as_str().filter(|text| !text.is_empty()).map(|_| ()).ok_or_else(unavailable)
 }
 
-fn error_refusal(status: u16, value: &Value) -> Refusal {
+pub(crate) fn error_refusal(status: u16, value: &Value) -> Refusal {
     let Some(raw) = value.pointer("/error/code").and_then(Value::as_str) else {
         return generic_status_refusal(status);
     };

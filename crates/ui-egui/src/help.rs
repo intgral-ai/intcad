@@ -4,16 +4,13 @@
 //! opens a local editable report draft.
 
 use crate::SolveApp;
+pub(crate) use crate::distribution::DOCS_URL;
 use crate::ui_kit;
 use crate::ui_kit::{Container, Surface};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COMMIT: &str = env!("SOLIDCRAFT_COMMIT");
 pub const BUILD_DATE: &str = env!("SOLIDCRAFT_BUILD_DATE");
-/// The user and developer guide (docs/book). It lives in the public source repository, which
-/// stays readable after the closed-source switch, so this link keeps working without a new
-/// guide site. Move it to the public guide when that is published (docs/releasing.md).
-pub const DOCS_URL: &str = "https://github.com/intgral-ai/intcad/blob/main/docs/book/src/SUMMARY.md";
 const ATTRIBUTION: &str = include_str!("../../../ATTRIBUTION.md");
 use solidcraft_engine::licences::{LICENSE_APACHE, LICENSE_MIT, NOTICE, THIRD_PARTY};
 /// What the Assistant's page holds that is not Intcad's own (Mastra's components, the npm
@@ -79,6 +76,10 @@ pub fn available(app: &SolveApp, item: &str) -> bool {
     app.issue_report.draft.is_none() || !matches!(item, "about" | "shortcuts" | "messages" | "crashes" | "connect" | "updates")
 }
 
+pub(crate) fn open_url(ctx: &egui::Context, url: impl ToString) {
+    ctx.open_url(egui::OpenUrl::new_tab(url));
+}
+
 /// Run a Help menu item: `docs`, `about`, `updates`, `version` (the release notes), `shortcuts`, `messages`, `report`, `crashes`,
 /// `connect`, `install_cli` (macOS).
 pub fn run(app: &mut SolveApp, ctx: &egui::Context, item: &str) {
@@ -87,11 +88,9 @@ pub fn run(app: &mut SolveApp, ctx: &egui::Context, item: &str) {
         return;
     }
     match item {
-        "docs" => ctx.open_url(egui::OpenUrl::new_tab(DOCS_URL)),
+        "docs" => open_url(ctx, DOCS_URL),
         "about" => app.help.about = true,
-        "version" => {
-            ctx.open_url(egui::OpenUrl::new_tab(crate::update::release_notes_url(crate::update::current_version(), crate::update::release_build())))
-        }
+        "version" => open_url(ctx, crate::update::release_notes_url(crate::update::current_version(), crate::update::release_build())),
         "updates" => crate::update::check_now(app, ctx),
         "shortcuts" => {
             app.keymap.open = true;

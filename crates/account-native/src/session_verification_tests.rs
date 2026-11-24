@@ -4,8 +4,8 @@ use serde_json::{Value, json};
 
 use solidcraft_engine::entitlement::CredentialErrorCode;
 
-use crate::credentials::{BlockedProductExchange, CredentialSession, MemorySession};
-use crate::http::{MAX_RESPONSE_BYTES, PROTOCOL_VERSION, ScriptedTransport, TransportFailure, WireConnection, WireCredentials, WireResponse};
+use crate::credentials::{BlockedProductExchange, CredentialSession, MemorySession, ProductExchangeError, ProductSessionExchange, ProviderSession};
+use crate::http::{MAX_RESPONSE_BYTES, PROTOCOL_VERSION, ScriptedTransport, Secret, TransportFailure, WireConnection, WireCredentials, WireResponse};
 use crate::session_verification::ServerVerifiedProductSession;
 
 const BASE: &str = "https://auth.intcad.invalid";
@@ -142,6 +142,19 @@ fn unsupported_client_or_protocol_metadata_never_activates_a_product_session() {
             "unsupported metadata or an ineligible snapshot must not activate"
         );
         assert_not_activated(&session);
+    }
+}
+
+#[test]
+fn minimum_version_refusal_is_distinct_from_a_sign_in_refusal() {
+    let mut old = active_body();
+    old["client"]["supported"] = json!(false);
+    old["eligible"] = json!(false);
+    old["reasons"] = json!(["VERSION_UNSUPPORTED"]);
+    let provider = ProviderSession::from_authorized("user_provider_0001".to_owned(), Secret::new(PROVIDER_TOKEN));
+    for reply in [response(200, old), response(403, json!({"error": {"code": "VERSION_UNSUPPORTED"}}))] {
+        let exchange = exchange(vec![reply]);
+        assert_eq!(exchange.exchange(&provider).unwrap_err(), ProductExchangeError::VersionUnsupported);
     }
 }
 

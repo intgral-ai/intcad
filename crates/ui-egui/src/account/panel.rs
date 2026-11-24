@@ -55,7 +55,8 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
     }
     let t = Tokens::get();
     let view = app.account.view().clone();
-    let notice = app.account.notice().cloned();
+    let notice = app.account.notice().map(|refusal| refusal.code);
+    let upgrade_required = upgrade_required(&view, notice);
     let guide = app.account.delete_account_guide();
     let pending = app.account.pending_action();
     let title = app.tr("account.title").to_string();
@@ -74,9 +75,8 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let chat_review_sign_in = app.tr("account.chat_review_sign_in").to_string();
     let blocked = view
         .tool_blocked
-        .filter(|code| !matches!(code, RefusalCode::CreditsExhausted | RefusalCode::CreditsHeld))
+        .filter(|code| !matches!(code, RefusalCode::CreditsExhausted | RefusalCode::CreditsHeld | RefusalCode::VersionUnsupported))
         .map(|code| refusal_text(app, code));
-    let notice = notice.map(|refusal| refusal_text(app, refusal.code));
     let mut retry_sign_out_clicked = false;
     let mut sign_out_clicked = false;
     let mut switch_clicked = false;
@@ -135,7 +135,7 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
             }
         } else if needs_sign_out_attention(&view) {
             retry_sign_out_clicked = sign_out_controls(app, ui, &view);
-        } else if view.sign_in_visible {
+        } else if view.sign_in_visible && !upgrade_required {
             if view.sign_in_state == SignInState::Idle && pending.is_none() {
                 FileView::detail(ui, &chat_review_sign_in);
             }
@@ -143,11 +143,14 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
             if pending.is_some() {
                 FileView::detail(ui, &action_pending);
             }
-        } else {
+        } else if !upgrade_required {
             FileView::detail(ui, &unavailable);
         }
-        if let Some(notice) = &notice {
-            text(ui, notice, Text::Error("account_notice"));
+        if upgrade_required {
+            show_upgrade_prompt(app, ui, "account_upgrade", "account:upgrade");
+        }
+        if let Some(code) = notice.filter(|code| *code != RefusalCode::VersionUnsupported) {
+            text(ui, &refusal_text(app, code), Text::Error("account_notice"));
         }
     });
 
@@ -174,7 +177,7 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
 /// account support says "Sign in"; a signed-in account reports its credit state.
 pub(crate) fn chip_label(app: &SolveApp, view: &AccountView) -> Option<String> {
     if !view.signed_in {
-        if needs_sign_out_attention(view) {
+        if needs_sign_out_attention(view) || upgrade_required(view, app.account.notice().map(|refusal| refusal.code)) {
             return Some(app.tr("account.title").to_string());
         }
         return view.sign_in_visible.then(|| app.tr("account.sign_in").to_string());
@@ -261,7 +264,10 @@ pub(crate) fn menu_available(app: &SolveApp) -> bool {
         return false;
     }
     let view = app.account.view();
-    view.signed_in || view.sign_in_visible || needs_sign_out_attention(view)
+    view.signed_in
+        || view.sign_in_visible
+        || needs_sign_out_attention(view)
+        || upgrade_required(view, app.account.notice().map(|refusal| refusal.code))
 }
 
 /// The File menu's compact fallback when the caption chip lacks room. It opens the same
@@ -288,7 +294,8 @@ pub(crate) fn compact_menu_entry(app: &mut SolveApp, ui: &mut Ui) -> bool {
 pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let t = Tokens::get();
     let view = app.account.view().clone();
-    let notice = app.account.notice().cloned();
+    let notice = app.account.notice().map(|refusal| refusal.code);
+    let upgrade_required = upgrade_required(&view, notice);
     let pending = app.account.pending_action();
     ui.set_min_width(t.space_24 * 8.0);
     let title = app.tr("account.title").to_string();
@@ -329,14 +336,17 @@ pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
         });
     } else if needs_sign_out_attention(&view) {
         sign_out_clicked = sign_out_controls(app, ui, &view);
-    } else if view.sign_in_visible {
+    } else if view.sign_in_visible && !upgrade_required {
         sign_in_action = sign_in_controls(app, ui, &view, "account:menu", "account:sign_in", "account:sign_in_browser", "account:sign_in_cancel");
-    } else {
+    } else if !upgrade_required {
         let unavailable = app.tr("account.unavailable").to_string();
         crate::ui_kit::text(ui, &unavailable, Text::Note("account_menu_unavailable"));
     }
-    if let Some(notice) = notice {
-        let message = refusal_text(app, notice.code);
+    if upgrade_required {
+        show_upgrade_prompt(app, ui, "account_menu_upgrade", "account:menu_upgrade");
+    }
+    if let Some(code) = notice.filter(|code| *code != RefusalCode::VersionUnsupported) {
+        let message = refusal_text(app, code);
         text(ui, &message, Text::Error("account_menu_notice"));
     }
     if pending.is_some() {
@@ -354,6 +364,19 @@ pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
 
 fn needs_sign_out_attention(view: &AccountView) -> bool {
     view.sign_out_pending || view.sign_out_recovery || view.sign_out_error.is_some()
+}
+
+fn upgrade_required(view: &AccountView, notice: Option<RefusalCode>) -> bool {
+    [view.tool_blocked, view.sign_in_error, notice].contains(&Some(RefusalCode::VersionUnsupported))
+}
+
+fn show_upgrade_prompt(app: &SolveApp, ui: &mut Ui, text_id: &str, handle: &str) {
+    text(ui, &refusal_text(app, RefusalCode::VersionUnsupported), Text::Error(text_id));
+    let response = button(ui, app.tr("account.upgrade"), Button::Small);
+    publish(handle, &response);
+    if app.trusted_click(&response) {
+        crate::help::open_url(ui.ctx(), crate::distribution::RELEASES_PAGE);
+    }
 }
 
 fn sign_out_controls(app: &SolveApp, ui: &mut Ui, view: &AccountView) -> bool {
@@ -487,7 +510,15 @@ pub(super) fn manual_address(uri: &str) -> Option<&str> {
 /// as the account menu, so the surface that refused the operation can complete the flow.
 /// `handle` must be unique on the surface so scripted UI checks can address the button.
 pub fn show_inline_sign_in(app: &mut SolveApp, ui: &mut Ui, message_id: &str, handle: &str) -> bool {
-    if !app.account.is_installed() || !app.account.view().product_sign_in_required() {
+    if !app.account.is_installed() {
+        return false;
+    }
+    if upgrade_required(app.account.view(), app.account.notice().map(|refusal| refusal.code)) {
+        show_upgrade_prompt(app, ui, "account_context_upgrade", &format!("{handle}:upgrade"));
+        ui.add_space(Tokens::get().space_4);
+        return true;
+    }
+    if !app.account.view().product_sign_in_required() {
         return false;
     }
     let view = app.account.view().clone();

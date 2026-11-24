@@ -319,6 +319,8 @@ pub enum ProductExchangeError {
     NotConfigured,
     /// The exchange refused the provider session.
     Rejected,
+    /// The server refused controlled features for this client version.
+    VersionUnsupported,
     /// The exchange could not complete (transport or malformed result).
     Unavailable,
 }
@@ -885,6 +887,7 @@ fn product_exchange_error(error: ProductExchangeError) -> CredentialError {
     let message = match error {
         ProductExchangeError::NotConfigured => "no documented product-session exchange is configured",
         ProductExchangeError::Rejected => "the product-session exchange was rejected",
+        ProductExchangeError::VersionUnsupported => "the client version is not supported",
         ProductExchangeError::Unavailable => "the product-session exchange is unavailable",
     };
     CredentialError { code: CredentialErrorCode::Unavailable, message: message.into() }
