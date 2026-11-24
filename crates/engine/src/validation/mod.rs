@@ -1208,13 +1208,33 @@ impl ValidationPort {
         if current.state.is_terminal() {
             return Ok(current.state);
         }
-        let admission = self.load_admission(run_id)?;
         if self.store.report_exists(run_id) {
-            if self.adopt_report(run_id, &admission, transaction)? {
-                self.unpin(run_id)?;
-                return Ok(self.load_state(run_id)?.state);
+            // A cancellation report is final once written; a result report may still be replaced
+            // by the marker check below, so adopting it could bind a terminal state to a report
+            // that changes afterwards (#226 review). Adopt only the final cancellation, and only
+            // for our own cancelled state.
+            let existing = self
+                .store
+                .read_bounded(&self.store.report_path(run_id), self.limits.report_bytes)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<ValidationReport>(&bytes).ok());
+            if state == ValidationState::Cancelled
+                && self.store.marker_exists(run_id)
+                && existing.is_some_and(|winner| winner.state == ValidationState::Cancelled)
+            {
+                let admission = self.load_admission(run_id)?;
+                // `adopt_report` returns true even when it observes a different terminal state and
+                // writes nothing, so re-read and accept only our own state; a competing terminal
+                // completion must still be a mismatch.
+                if self.adopt_report(run_id, &admission, transaction)? {
+                    let current = self.load_state(run_id)?;
+                    if current.state.is_terminal() && current.state == state {
+                        self.unpin(run_id)?;
+                        return Ok(current.state);
+                    }
+                }
             }
-            return Err(ValidationError::report_mismatch("the existing terminal report could not be verified for this run"));
+            return Err(ValidationError::report_mismatch("a different terminal report already exists for this run"));
         }
         // Marker and report selection share the transaction. No cooperating writer can
         // insert a marker between report publication and state publication.

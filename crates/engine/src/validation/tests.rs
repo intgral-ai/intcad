@@ -2673,3 +2673,126 @@ fn skill_validation_refuses_a_weakened_profile_or_an_unsupported_required_check(
     assert_eq!(port.store.count_admissions(), 0, "a refused profile is never admitted");
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn a_report_committed_before_its_state_is_adopted_not_reported_as_a_mismatch() {
+    // #225: `cancel` writes the terminal report and then the state. A concurrent submit that
+    // finishes in that window reads a still-running state, loses the report write to the
+    // cancel's report, and must adopt that same terminal report instead of failing
+    // REPORT_MISMATCH (the CLI test `cli_status_and_cancel_from_a_second_process…`).
+    let root = scratch("report-before-state");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-report-before-state", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    let job = port.start_next().unwrap().unwrap();
+    assert_eq!(port.status(&job.run_id).unwrap().state, ValidationState::Running);
+
+    // The cancel commits its report, then the state record.
+    let cancelled = port.cancel(&job.run_id).unwrap();
+    assert_eq!(cancelled.state, ValidationState::Cancelled);
+    let bytes = port.store.read_bounded(&port.store.report_path(&run.run_id), 1 << 24).unwrap();
+    let existing: ValidationReport = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(existing.state, ValidationState::Cancelled);
+
+    // Rewind the state to the moment before the cancel's terminal write.
+    let running = StateRecord {
+        schema_version: RECORD_SCHEMA.into(),
+        run_id: run.run_id.clone(),
+        state: ValidationState::Running,
+        updated_at_ms: clock.now_ms(),
+        report_available: true,
+    };
+    port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
+
+    // The submit's own report differs (a later finish time), and the report file is taken.
+    let mut own = existing.clone();
+    own.finished_at = "2999-01-01T00:00:00Z".into();
+    let transaction = port.store.transaction().unwrap();
+    let result = port.commit_report(&run.run_id, own, ValidationState::Cancelled, &transaction);
+    assert!(result.is_ok(), "the cancel's report must be adopted: {result:?}");
+    // Our `status` takes the store transaction, so release the guard before asking it.
+    drop(transaction);
+    assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::Cancelled);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_provisional_result_report_is_not_adopted_before_its_marker_check() {
+    // A worker publishes its result report and only then checks the cancellation marker. A
+    // second writer that adopted that report could leave a terminal `passed` state bound to a
+    // report the worker later replaces with `cancelled` (#226 review). Only a final cancelled
+    // report may be adopted, so a provisional `passed` report still collides.
+    let root = scratch("report-provisional");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-report-provisional", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    port.pump().unwrap();
+    assert_eq!(port.status(&run.run_id).unwrap().state, ValidationState::Passed);
+
+    let bytes = port.store.read_bounded(&port.store.report_path(&run.run_id), 1 << 24).unwrap();
+    let mut own: ValidationReport = serde_json::from_slice(&bytes).unwrap();
+    own.finished_at = "2999-01-01T00:00:00Z".into();
+    let running = StateRecord {
+        schema_version: RECORD_SCHEMA.into(),
+        run_id: run.run_id.clone(),
+        state: ValidationState::Running,
+        updated_at_ms: clock.now_ms(),
+        report_available: true,
+    };
+    port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
+    let transaction = port.store.transaction().unwrap();
+    let result = port.commit_report(&run.run_id, own, ValidationState::Passed, &transaction);
+    assert_eq!(result.unwrap_err().code, ErrorCode::ReportMismatch);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_report_for_another_terminal_state_is_still_a_mismatch() {
+    // The adoption above must not turn every collision into success: a writer that committed a
+    // *different* terminal state still loses to REPORT_MISMATCH (#225).
+    let root = scratch("report-other-state");
+    let candidates = root.join("candidates");
+    let store = root.join("validation");
+    let candidate = write_candidate(&candidates, "cand-report-other-state", analytic_design());
+    let clock = Arc::new(ManualClock::new(1_760_000_000_000));
+    let profile = native_basic_profile();
+    let reference = profile_ref(&profile).unwrap();
+    let port = port_with(&store, &candidates, runner_with(pass_checks(&profile)), Limits::default(), clock.clone());
+    port.register_profile(profile.clone()).unwrap();
+    let run = port.submit(&candidate, &reference, &generate_submission_key(clock.now_ms())).unwrap();
+    let job = port.start_next().unwrap().unwrap();
+    assert_eq!(port.status(&job.run_id).unwrap().state, ValidationState::Running);
+    let cancelled = port.cancel(&job.run_id).unwrap();
+    assert_eq!(cancelled.state, ValidationState::Cancelled);
+    let bytes = port.store.read_bounded(&port.store.report_path(&run.run_id), 1 << 24).unwrap();
+    let mut other: ValidationReport = serde_json::from_slice(&bytes).unwrap();
+    other.state = ValidationState::QualityFailed;
+    let running = StateRecord {
+        schema_version: RECORD_SCHEMA.into(),
+        run_id: run.run_id.clone(),
+        state: ValidationState::Running,
+        updated_at_ms: clock.now_ms(),
+        report_available: true,
+    };
+    port.store.write_json_replace(&port.store.state_path(&run.run_id), &running).unwrap();
+    let transaction = port.store.transaction().unwrap();
+    let result = port.commit_report(&run.run_id, other, ValidationState::QualityFailed, &transaction);
+    assert_eq!(result.unwrap_err().code, ErrorCode::ReportMismatch);
+    // Our `status` takes the store transaction, so release the guard before asking it.
+    drop(transaction);
+    // A rejected commit must not write its requested terminal state either.
+    assert_ne!(port.status(&run.run_id).unwrap().state, ValidationState::QualityFailed);
+    let _ = std::fs::remove_dir_all(root);
+}

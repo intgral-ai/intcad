@@ -2,7 +2,8 @@
 //! installation, verify it, and put it in place.
 //!
 //! Verification is never skipped. The package's SHA-256 must match the release's
-//! `SHA256SUMS.txt`, fetched over HTTPS from the same release. When SolidCraft is built with an
+//! `SHA256SUMS.txt` (or `SHA256SUMS`, the name releases before 0.1.3 used), fetched over HTTPS
+//! from the same release. When SolidCraft is built with an
 //! update signing key ([`PUBLIC_KEY`]), `SHA256SUMS.txt.minisig` must also be a valid minisign
 //! signature by that key whose trusted comment names the release, so a compromised download host
 //! alone can't push a package. Anything that doesn't verify is deleted and nothing is replaced.
@@ -34,6 +35,9 @@ pub const PUBLIC_KEY: Option<&str> = None;
 
 /// The checksum list every release carries, and its signature.
 pub const SUMS: &str = "SHA256SUMS.txt";
+/// The same list under the name releases before `SUMS` published it (`v0.1.2` and older): the
+/// client has to keep updating an installed copy of one of those.
+pub const SUMS_LEGACY: &str = "SHA256SUMS";
 pub const SUMS_SIG: &str = "SHA256SUMS.txt.minisig";
 /// No package is bigger than this (they are about 30 MB).
 pub const MAX_PACKAGE: u64 = 1 << 30;
@@ -217,8 +221,11 @@ pub fn run(
     if asset.size > MAX_PACKAGE {
         return Err(format!("{} is too large ({} bytes)", asset.name, asset.size));
     }
-    let sums_url = release.assets.iter().find(|a| a.name == SUMS).map(|a| a.url.clone()).ok_or_else(|| format!("this release has no {SUMS}"))?;
-    let sums = get_unless_cancelled(net, progress, &sums_url).map_err(|e| format!("{SUMS}: {e}"))?;
+    let (sums_name, sums_url) = [SUMS, SUMS_LEGACY]
+        .iter()
+        .find_map(|name| release.assets.iter().find(|a| a.name == *name).map(|a| (*name, a.url.clone())))
+        .ok_or_else(|| format!("this release has no {SUMS} or {SUMS_LEGACY}"))?;
+    let sums = get_unless_cancelled(net, progress, &sums_url).map_err(|e| format!("{sums_name}: {e}"))?;
     if let Some(key) = PUBLIC_KEY {
         let sig_url = release
             .assets
@@ -230,7 +237,7 @@ pub fn run(
         verify_signature(&sums, &String::from_utf8_lossy(&sig), key, &release.tag)?;
     }
     let sums = String::from_utf8_lossy(&sums);
-    let expected = expected_sha256(&sums, &asset.name).ok_or_else(|| format!("{SUMS} doesn't list {}", asset.name))?;
+    let expected = expected_sha256(&sums, &asset.name).ok_or_else(|| format!("{sums_name} doesn't list {}", asset.name))?;
 
     // Where the download goes: beside its target when it replaces a file (one file system, so
     // the final rename is atomic), else in the staging folder.
@@ -260,7 +267,7 @@ pub fn run(
     }
     let actual = sha256_file(&part).map_err(cleanup)?;
     if actual != expected {
-        return Err(cleanup(format!("{} doesn't match {SUMS} (got {actual}, expected {expected}); it was deleted", asset.name)));
+        return Err(cleanup(format!("{} doesn't match {sums_name} (got {actual}, expected {expected}); it was deleted", asset.name)));
     }
     let outcome = apply(method, &part).map_err(cleanup)?;
     Ok(match (method, outcome) {
