@@ -1837,6 +1837,33 @@ Neither PR's own CI can catch this, because each is green on a tree that lacks t
 The second merge must therefore include the port and re-run the installed checks; a
 GitHub merge button cannot resolve it.
 
+**Update: #224 `9f664c828f` supplies the port itself, and the conflict is now mechanical.**
+That head adds `--built-in-agent` (option, three assertions and stop/start) to
+`packaging/linux/assistant-check.py`, the agent block to `installed-check-inside.sh`, and
+`CheckBuiltInAgent` to its rewritten Windows flow. Re-measured on
+`develop f18a9aec27 + #214 d4819c6a9d + #224 9f664c828f`:
+
+- `installed-check-inside.sh`: only the checker path line conflicts.
+- `tools/windows-assistant-smoke.ps1`: #214's `CheckBuiltInAgent`/call site meets #224's
+  `ScreenRect`/`Quit` region.
+
+Both files should therefore keep **#224's side** (`git checkout --theirs`): #214's whole
+contribution to them is duplicated, while #214's macOS work (`packaging/assistant-check.py`,
+`packaging/macos/installed-check.sh`) is untouched by #224 and merges cleanly.
+
+That resolution was applied in a scratch merge and tested on the resulting tree:
+
+```
+packaging/tests (no PowerShell-only windows_icon_test)  Ran 152 tests ... OK
+scripts/ci/test_gate.py                                 OK
+scripts/ci/test_release_content.py                      OK (skipped=11)
+scripts/ci/test_package_contents.py                     OK
+scripts/ci/test_release_candidate.py                    OK
+scripts/test-format-pending.sh                          ok: … fold into v51
+resolved: installed-check-inside.sh:103 = /packaging/linux/assistant-check.py, :113 = check+=(--built-in-agent)
+          windows smoke has exactly one CheckBuiltInAgent definition
+```
+
 **The merged #214 + #224 tree compiles.** On the same throwaway merge tree (develop
 `f18a9aec27` + `#214 d4819c6a9d` + `#224 da73900d6b`), `cargo check -p solidcraft-ui-egui
 --profile ci --locked` finished with **exit 0** (`Finished ci profile … in 1m 58s`), with
