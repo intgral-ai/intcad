@@ -1266,6 +1266,17 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   Rust state/event bridge with the Login Agent; leave authorization unchanged. No code
   change or acceptance run for #223 yet. Ownership and acceptance were requested on
   [the existing issue](https://github.com/intgral-ai/intcad/issues/223#issuecomment-7121993793).
+- **`develop` required CI is red — BLOCKED.** The latest `CI` run on merged `develop`
+  (`6032271178`) is [run 45299000127](https://github.com/intgral-ai/intcad/actions/runs/45299000127),
+  conclusion `failure`. Its `Native Linux selected regression gate` failed the
+  `known-failing` check with a regression not on the list:
+  `solidcraft-cli::script_roundtrip::cli_status_and_cancel_from_a_second_process_do_not_reconcile_a_live_submit`
+  (`apps/solidcraft-cli/tests/script_roundtrip.rs`). Two other failures in that job are
+  listed known failures (SMLib variable fillet `Unsupported`, the dialog variable round
+  status 1001). The `ci` verifier then failed with `rust: real job result is not success`
+  and `rust: missing receipt`. Until `ci` is green at a reviewed `develop`, no release-gate
+  candidate can pass; this is not caused by the 0.1.3 feature PRs and is reported, not fixed
+  here, because the file belongs to its owner.
 - **RC provenance — BLOCKED.** `45248432170` attempt 2 built rehearsal SHA `14a6c95ae`, not
   a descendant of the current merged `develop` snapshot `6032271178`. Rehashing the cached
   Linux x64, Windows x64 and macOS payloads against their descriptors validates those
