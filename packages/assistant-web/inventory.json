@@ -48,6 +48,7 @@
       "packages/playground-ui/src/ds/components/Combobox/combobox-styles.ts",
       "packages/playground-ui/src/ds/components/Combobox/combobox.tsx",
       "packages/playground-ui/src/ds/components/Command/command.tsx",
+      "packages/playground-ui/src/ds/components/Composer/composer-header.tsx",
       "packages/playground-ui/src/ds/components/Composer/composer.tsx",
       "packages/playground-ui/src/ds/components/Composer/use-composer-pointer.ts",
       "packages/playground-ui/src/ds/components/CopyButton/copy-button.tsx",
@@ -112,6 +113,7 @@
       "packages/playground-ui/src/ds/components/Tooltip/tooltip.tsx",
       "packages/playground-ui/src/ds/components/Txt/Txt.tsx",
       "packages/playground-ui/src/ds/components/ai/activity/activity.tsx",
+      "packages/playground-ui/src/ds/components/ai/activity/presets/message-preview.ts",
       "packages/playground-ui/src/ds/components/ai/activity/use-relative-paths.ts",
       "packages/playground-ui/src/ds/components/ai/task-list/task-graph-node.ts",
       "packages/playground-ui/src/ds/components/ai/task-list/task-graph.tsx",
@@ -819,7 +821,7 @@
       "name": "lucide-react",
       "version": "1.67.0",
       "licence": "ISC",
-      "modulesInScript": 50,
+      "modulesInScript": 54,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -1494,16 +1496,16 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1747084,
-      "sha256": "137b5aa43433e4a29ad491d5c5ad9b2136b9f73c0320418e1dd1e68864922fa5"
+      "bytes": 1766899,
+      "sha256": "7b1ef9ad4f0fad87cf91c414cbf0e19c1f0aa58f0d2024c612e7e783995ef4f6"
     },
     "index.html": {
       "bytes": 822,
       "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
     },
     "style.css": {
-      "bytes": 351393,
-      "sha256": "0d8b8dca6b8c488459c3c3c807c773af36f99e2b2cc13e6455cdea00ccfddc37"
+      "bytes": 353458,
+      "sha256": "2dbebdf7ae8b771e3313c4ba7f8d01add8eb6707cb0986c276749ef3b6007306"
     }
   }
 }

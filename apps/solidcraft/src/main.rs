@@ -20,6 +20,8 @@
 #[cfg(not(target_os = "macos"))]
 #[path = "../../../assets/icons/app/shared/source/app_icon.rs"]
 mod app_icon;
+#[cfg(target_os = "macos")]
+mod assistant_clip;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod assistant_web;
 mod come_forward;
@@ -799,9 +801,16 @@ fn easyprint_upload(name: &str, bytes: Vec<u8>, done: std::sync::mpsc::Sender<Re
 /// API keys in the system keychain (service "SolidCraft agent chat", one entry per agent).
 struct Keychain;
 
+/// The keychain service the keys are kept under. A run given `SOLIDCRAFT_KEYCHAIN_SERVICE` keeps
+/// them under that name instead: a test copy then starts without the keys the app in use saved,
+/// as an own settings folder (`SOLIDCRAFT_SETTINGS_DIR`) starts it without the plan sign-ins.
+fn keychain_service() -> String {
+    std::env::var("SOLIDCRAFT_KEYCHAIN_SERVICE").ok().filter(|name| !name.trim().is_empty()).unwrap_or_else(|| "SolidCraft agent chat".to_string())
+}
+
 impl Keychain {
     fn entry(id: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new("SolidCraft agent chat", id).map_err(|e| e.to_string())
+        keyring::Entry::new(&keychain_service(), id).map_err(|e| e.to_string())
     }
 }
 

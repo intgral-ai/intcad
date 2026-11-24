@@ -517,7 +517,10 @@ they need is kept in three places:
   the provider (`anthropic`, `openai`, `google`, `openrouter`, `deepseek`), and
   `mastra/custom/` and the name for a custom address that has a key. The app hands every key to
   the agent when it starts and whenever one changes. A key is not written to the preferences, not
-  shown again, and not in what the control channel reports.
+  shown again, and not in what the control channel reports. Every copy of the app run by the same
+  user reads the same entries (service "SolidCraft agent chat"); a run given
+  `SOLIDCRAFT_KEYCHAIN_SERVICE` keeps its keys under that service name instead, so a test copy
+  with its own settings folder starts with no key and no sign-in.
 - **Custom addresses** (the name, the address, the models, and whether a key is kept for it) are
   the `mastra_custom` preference. An address is `http` or `https` with a host, and carries no
   user name, password or query: a secret belongs in the key box, which goes to the keychain.

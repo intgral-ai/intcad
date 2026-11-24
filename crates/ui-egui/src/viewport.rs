@@ -7039,7 +7039,9 @@ pub(crate) fn refresh_layout(app: &mut SolveApp, ctx: &egui::Context) {
         }
         // The full-height Assistant reserves control space, while rendering and picking
         // keep the original viewport projection. Ordinary feature dialogs do not move controls.
+        // At the bottom centre of the window it is no side panel and reserves nothing.
         if app.ui.layout == crate::shell::LayoutMode::Floating
+            && !crate::agent_chat::centred(app)
             && crate::agent_chat::shown(app)
             && app.agent_chat.open
             && !app.preferences.agent_chat_minimized

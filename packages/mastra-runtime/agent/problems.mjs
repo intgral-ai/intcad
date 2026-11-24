@@ -3,7 +3,7 @@
 
 const KINDS = [
   // Nothing left on the plan or key. Before `rate`: providers send 429 for both and name the reason.
-  ['quota', /insufficient[_ ]quota|exceeded your current quota|quota|credit balance|billing|usage limit|payment required|\b402\b/i],
+  ['quota', /insufficient[_ ]quota|insufficient[_ ]balance|exceeded your current quota|quota|credit balance|billing|usage limit|payment required|\b402\b/i],
   ['auth', /\b401\b|unauthori[sz]ed|invalid[_ ]api[_ ]key|incorrect api key|invalid x-api-key|could not find api key|api key (is )?(missing|required)|authentication|invalid[_ ]grant|token (has )?expired|expired token|sign in again|login required|not logged in/i],
   ['rate', /\b429\b|rate[_ -]?limit|too many requests|overloaded/i],
   ['model', /\b403\b|\b404\b|model[^.]{0,60}(not found|does not exist|not supported|not available|no access|not allowed)|unsupported model|do(es)? not have access to/i],

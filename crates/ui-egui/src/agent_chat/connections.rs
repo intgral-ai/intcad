@@ -737,6 +737,10 @@ pub(crate) struct Conn {
     /// What the last action could not do: the catalog id of its sentence. It is worded where it
     /// is shown, as a failed turn is, because it can be set outside a frame.
     pub error: Option<&'static str>,
+    /// The keys saved here, or refused, counted. The page's key dialog waits for it to move on
+    /// from the count it saw at Save, then reads `error` for how it went: an update that worked
+    /// leaves the rest of the state as it was, and so does a refusal like the one before it.
+    pub key_saves: u64,
     pub session: Session,
     /// The agent refused a session since its last snapshot: it is not asked again before the next.
     pub refused: bool,
@@ -978,6 +982,7 @@ fn page(conn: &Conn) -> Value {
         "login": login,
         "problem": snapshot.problem.as_ref().map(|problem| json!({"id": problem.id, "kind": problem.kind.id()})),
         "error": conn.error.map(tr),
+        "keySaves": conn.key_saves,
         "dates": snapshot.dates,
         "connected": snapshot.connected(),
     })
@@ -1084,7 +1089,9 @@ pub(super) fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &
             send(app, Request::Logout(id.to_string()));
         }
         "conn_key" => {
-            let provider = provider()?;
+            // Every save is answered, kept or refused, so the dialog that asked stops waiting.
+            app.agent_chat.conn.key_saves = app.agent_chat.conn.key_saves.wrapping_add(1);
+            let Ok(provider) = provider() else { return refuse(app, ctx, REFUSED, "conn_key: provider must be one of the five".into()) };
             let key =
                 text("key").map(js_trim).filter(|key| !key.is_empty() && key.chars().count() <= MAX_SECRET && !key.chars().any(char::is_control));
             let Some(key) = key else { return refuse(app, ctx, REFUSED, "conn_key: a key has 1 to 4096 characters".into()) };

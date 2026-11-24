@@ -71,7 +71,7 @@ use crate::i18n::{format as trf, tr};
 use crate::{ControlRequest, SolveApp};
 use backend::{ChatBackend, Event, PermissionOption, PromptPart, ToolStatus};
 
-pub(crate) use panel::{left_inset, owns_keyboard_input, tool_space};
+pub(crate) use panel::{centre_preferred, centred, left_inset, owns_keyboard_input, tool_space};
 pub use panel::{show, tip as panel_tip, toggle, toggle_shortcut};
 
 /// Most entries kept in the conversation; older ones are dropped.
@@ -504,6 +504,23 @@ pub struct AgentChat {
     /// Files are being dragged over the host's web view ([`web::dragging`]).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_drag: bool,
+    /// The height the page asked for at the bottom centre of the window, in points ([`web::act`],
+    /// `size`), and while it is shown there, the most it may take (`panel::centre`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_height: Option<f32>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_centre: Option<f32>,
+    /// The host keeps its view at the bottom centre as tall as `web_centre` and shows and takes
+    /// presses in only its foot, `web_reveal` tall ([`web::set_clips`], macOS): the view never
+    /// changes size as the page grows, so no frame shows the page's old picture at its new top.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_clips: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_reveal: Option<f32>,
+    /// Primary presses in the app's window, outside the page, while it is shown at the bottom
+    /// centre (`panel::centre`): the page collapses its conversation when the count goes up.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_presses: u64,
     /// A pointer press in the transcript owns keys just like a focused text editor.
     keyboard_owned: bool,
     /// Unreserved sheet space, shared by the actual dock and its drag preview.
@@ -564,6 +581,11 @@ pub struct AgentChat {
     typed_model: Option<String>,
     pub config_options: Option<Vec<acp::ConfigOption>>,
     pub config_pending: bool,
+    /// A listed choice (a model) picked while the agent replies or while another change is on its
+    /// way: shown as chosen at once and sent once the agent is free ([`send_held_config`]), so it
+    /// serves the next message. An agent takes it only after the reply anyway (Mastra Code queues
+    /// it behind the turn), and waiting on it held the picker busy for the whole reply.
+    config_next: Option<(String, String)>,
     /// An API endpoint's models, kept per endpoint (its base URL) for the next connection.
     models_cache: std::collections::HashMap<String, Vec<acp::ModelInfo>>,
     /// The running API agent's endpoint (empty for other agents).
@@ -660,6 +682,11 @@ impl AgentChat {
             std::mem::swap(&mut self.web_host, &mut other.web_host);
             std::mem::swap(&mut self.web_canvas, &mut other.web_canvas);
             std::mem::swap(&mut self.web_drag, &mut other.web_drag);
+            std::mem::swap(&mut self.web_height, &mut other.web_height);
+            std::mem::swap(&mut self.web_centre, &mut other.web_centre);
+            std::mem::swap(&mut self.web_clips, &mut other.web_clips);
+            std::mem::swap(&mut self.web_reveal, &mut other.web_reveal);
+            std::mem::swap(&mut self.web_presses, &mut other.web_presses);
         }
         // Hit regions must be measured again for the incoming conversation.
         self.panel_rect = None;
@@ -693,9 +720,16 @@ impl AgentChat {
         }
         self.config_pending = false;
         self.typed_model = None;
+        self.config_next = None;
     }
 
-    fn apply_config_snapshot(&mut self, options: Vec<acp::ConfigOption>) {
+    fn apply_config_snapshot(&mut self, mut options: Vec<acp::ConfigOption>) {
+        // A choice still to be sent stays the one shown.
+        if let Some((id, value)) = &self.config_next
+            && let Some(option) = options.iter_mut().find(|option| option.id == *id)
+        {
+            option.current_value = value.clone();
+        }
         self.config_options = Some(options.clone());
         let model = options.iter().find(|o| o.category == "model");
         self.models = model
@@ -2909,6 +2943,8 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
                 let pending = app.control_job.is_some() || !app.control_held.is_empty();
                 app.agent_chat.attach_anatomy_refs(&mut app.session);
                 end_turn(app);
+                // A model picked during the reply goes before a queued message.
+                send_held_config(app);
                 if let Some((turn, changed)) = ended {
                     refresh_dfm_auto(app);
                     let stamp = app.session.document_stamp();
@@ -2949,6 +2985,9 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         }
         // A session of the built-in agent that opened while nothing is connected takes no message.
         let usable = !app.agent_chat.conn.active || app.agent_chat.state() == State::Ready;
+        if configured {
+            send_held_config(app);
+        }
         if (ready || configured) && !app.agent_chat.config_pending && usable {
             if app.agent_chat.config_options.is_some()
                 && let Some(mode) = app.agent_chat.restore_mode.take()
@@ -3297,16 +3336,37 @@ fn set_config_option_checked(app: &mut SolveApp, id: &str, value: &str, listed_o
     let Some(option) = app.agent_chat.config_options.as_ref().and_then(|xs| xs.iter().find(|x| x.id == id)) else {
         return false;
     };
-    if app.agent_chat.config_pending
-        || !matches!(app.agent_chat.state(), State::Ready | State::Busy)
-        || (listed_only && !option.options.iter().any(|x| x.value == value))
-    {
+    if !matches!(app.agent_chat.state(), State::Ready | State::Busy) || (listed_only && !option.options.iter().any(|x| x.value == value)) {
+        return false;
+    }
+    // While the agent replies, or while another change is on its way, a listed choice is held and
+    // shown as chosen; it goes once the agent is free, before a queued message. A typed model waits
+    // for no one: the agent may refuse it, so it is one request at a time.
+    if listed_only && (app.agent_chat.state() == State::Busy || app.agent_chat.config_pending) {
+        let chat = &mut app.agent_chat;
+        chat.config_next = Some((id.to_string(), value.to_string()));
+        if let Some(options) = chat.config_options.take() {
+            chat.apply_config_snapshot(options);
+        }
+        return true;
+    }
+    if app.agent_chat.config_pending {
         return false;
     }
     let Some(b) = app.agent_chat.backend.as_mut() else { return false };
     b.set_config_option(id, value);
     app.agent_chat.config_pending = true;
     true
+}
+
+/// Sends the choice held while the agent replied ([`AgentChat::config_next`]), once it is free.
+fn send_held_config(app: &mut SolveApp) {
+    if app.agent_chat.state() != State::Ready || app.agent_chat.config_pending {
+        return;
+    }
+    if let Some((id, value)) = app.agent_chat.config_next.take() {
+        set_config_option_checked(app, &id, &value, true);
+    }
 }
 
 /// `ui.agent_chat` on the control channel (tests and screenshots): `enabled`, `command`,

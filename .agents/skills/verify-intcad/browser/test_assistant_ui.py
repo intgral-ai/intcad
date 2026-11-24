@@ -50,6 +50,157 @@ def actions(page):
     return page.evaluate("window.assistantFixture.actions.splice(0)")
 
 
+def test_centred_composer_uses_same_scale_across_agent_types(assistant):
+    assistant.set_viewport_size({"width": 520, "height": 700})
+    agents = [
+        {"id": "fixture", "name": "Fixture", "detail": "", "hint": None},
+        {"id": "built-in", "name": "Built-in", "detail": "", "hint": None},
+    ]
+    connect = {"plans": [], "keys": [], "custom": [], "login": None, "problem": None,
+               "error": None, "keySaves": 0, "dates": {}, "connected": True}
+    root = assistant.locator("html")
+    box = assistant.get_by_role("textbox", name="Message")
+    show(assistant, centre=600, agents=agents, agent="fixture")
+    expect(assistant.locator("html.centre:not([data-sizes])")).to_have_count(1)
+    box.fill("Inspect this")
+    expect(box).to_be_focused()
+
+    def sizing():
+        return box.evaluate("""input => ({
+            root: getComputedStyle(document.documentElement).fontSize,
+            input: getComputedStyle(input).fontSize,
+            height: input.closest('[data-slot="composer-box"]').getBoundingClientRect().height,
+        })""")
+
+    external = sizing()
+    # Acknowledge agent selection through the desktop state bridge while the draft has focus.
+    show(assistant, centre=600, agents=agents, agent="built-in", connect=connect)
+    expect(assistant.locator('html.centre[data-sizes="mastra"]')).to_have_count(1)
+    expect(box).to_have_value("Inspect this")
+    expect(box).to_be_focused()
+    built_in = sizing()
+
+    assistant.set_viewport_size({"width": 380, "height": 700})
+    show(assistant, agents=agents, agent="fixture")
+    expect(assistant.locator("html:not(.centre):not([data-sizes])")).to_have_count(1)
+    expect(root).to_have_css("font-size", "20px")
+
+    assert external["root"] == "16px", external
+    assert built_in["root"] == "16px", built_in
+    assert external["input"] == "14px", external
+    assert built_in["input"] == "14px", built_in
+    assert abs(external["height"] - built_in["height"]) <= 1, (external, built_in)
+
+
+@pytest.fixture
+def x11_shape_page(page, site):
+    page.set_viewport_size({"width": 520, "height": 300})
+    page.add_init_script(path=HERE / "host.js")
+    page.add_init_script("window.__assistantX11Shape = true;")
+    page.goto(site)
+    expect(page.get_by_role("textbox", name="Message")).to_be_visible()
+    show(page, centre=300, items=[{"kind": "notice", "text": "Status", "error": True}])
+    return page
+
+
+FOOTPRINT = """window.assistantFixture.actions.filter(action => action.type === 'painted-footprint')"""
+
+
+def test_x11_shape_covers_busy_glow_without_covering_the_viewport(x11_shape_page):
+    page = x11_shape_page
+    last = f"{FOOTPRINT}.at(-1)"
+    ring = page.locator('[data-slot="composer-ring"]')
+
+    def exact_ring():
+        return ring.evaluate("""el => {
+            const {left, top, right, bottom} = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            const radii = ['borderTopLeftRadius', 'borderTopRightRadius', 'borderBottomRightRadius',
+              'borderBottomLeftRadius'].flatMap(name => [parseFloat(style[name]), parseFloat(style[name])]);
+            return [left, top, right, bottom, ...radii];
+        }""")
+
+    page.wait_for_function(f"() => {last}?.surfaces.length === 2", timeout=3000)
+    idle_ring = exact_ring()
+    assert page.evaluate(f"() => {last}").get("surfaces")[-1] == idle_ring
+    show(page, centre=300, state="busy")
+    expect(ring).to_have_attribute("data-busy", "true")
+    # Once the transition reaches its authored shadow (0 4px 20px -4px), the footprint
+    # must extend beyond the ring without including the empty upper viewport.
+    page.wait_for_function(f"() => {last}?.surfaces.some(s => s[0] <= -20)", timeout=3000)
+    footprint = page.evaluate(f"() => {last}")
+    glow = footprint["surfaces"][-1]
+    assert glow[0] <= idle_ring[0] - 20 and glow[2] >= idle_ring[2] + 20
+    assert glow[1] < idle_ring[1] and glow[3] > idle_ring[3]
+    assert all(s[1] > 0 for s in footprint["surfaces"]), footprint
+    assert footprint["popup"] is None
+
+    show(page, centre=300, items=[{"kind": "notice", "text": "Status", "error": True}])
+    page.wait_for_function(f"expected => JSON.stringify({last}?.surfaces.at(-1)) === JSON.stringify(expected)",
+                           arg=idle_ring, timeout=3000)
+    page.emulate_media(forced_colors="active")
+    page.wait_for_function(f"() => {last}?.surfaces.some(s => s[0] === -1)", timeout=3000)
+    assert all(s[1] > 0 for s in page.evaluate(f"() => {last}").get("surfaces"))
+
+
+def test_x11_shape_retries_menu_ack_and_fails_open(x11_shape_page):
+    page = x11_shape_page
+    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.surfaces.length === 2", timeout=3000)
+    page.evaluate("""() => {
+      const send = window.ipc.postMessage;
+      window.ipc.postMessage = raw => {
+        const message = JSON.parse(raw);
+        if (message.type === 'painted-footprint' && message.popup) {
+          window.ipc.postMessage = send;
+          throw Error('one lost popup request');
+        }
+        send(raw);
+      };
+    }""")
+    edits = page.get_by_role("button", name="modeAsk", exact=True)
+    edits.click()
+    menu = page.locator('[role="menu"]')
+    menu.wait_for(state="attached")
+    token = page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.popup", timeout=3000).json_value()
+    expect(menu).to_have_attribute("data-centre-wait", "")
+    # Drop one request above, then withhold the first ack. The same token must be retried.
+    page.wait_for_function(f"token => {FOOTPRINT}.filter(action => action.popup === token).length >= 2", arg=token, timeout=3000)
+    page.evaluate("token => window.__assistantX11Unmasked(token)", token)
+    expect(menu).not_to_have_attribute("data-centre-wait", "")
+    page.keyboard.press("Escape")
+    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.popup === null", timeout=3000)
+
+    edits.click()
+    menu.wait_for(state="attached")
+    next_token = page.wait_for_function(f"token => {FOOTPRINT}.at(-1)?.popup > token && {FOOTPRINT}.at(-1).popup",
+                                       arg=token, timeout=3000).json_value()
+    page.evaluate("token => window.__assistantX11Unmasked(token)", token)
+    expect(menu).to_have_attribute("data-centre-wait", "")
+    # No ack for the new token: the portal must still become interactive.
+    expect(menu).not_to_have_attribute("data-centre-wait", "", timeout=4000)
+    expect(menu).to_have_css("pointer-events", "auto")
+    assert page.evaluate(f"token => {FOOTPRINT}.filter(action => action.popup === token).length", next_token) >= 2
+
+
+def test_x11_shape_samples_square_clipped_edge_and_skips_unresolved_radii(x11_shape_page):
+    page = x11_shape_page
+    page.wait_for_function(f"() => {FOOTPRINT}.at(-1)?.surfaces.length === 2", timeout=3000)
+    page.evaluate("""() => {
+      const surface = document.querySelector('[data-slot="composer-header-surface"]');
+      surface.style.borderRadius = '20px';
+      surface.parentElement.style.height = '20px';
+      window.dispatchEvent(new Event('resize'));
+    }""")
+    footprint = page.evaluate(f"() => {FOOTPRINT}.at(-1)")
+    assert footprint["surfaces"][0][4:] == [20, 20, 20, 20, 0, 0, 0, 0], footprint
+    page.evaluate("""() => {
+      document.querySelector('[data-slot="composer-header-surface"]').style.borderRadius = 'calc(20% + 2px)';
+      window.dispatchEvent(new Event('resize'));
+    }""")
+    footprint = page.evaluate(f"() => {FOOTPRINT}.at(-1)")
+    assert len(footprint["surfaces"]) == 1 and None not in footprint["surfaces"][0], footprint
+
+
 @pytest.mark.parametrize(("choice", "allow", "outcome"), [
     ("Deny", False, "Denied"), ("Allow once", True, "Allowed"), ("Always allow", "always", "Allowed"),
 ])

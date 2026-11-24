@@ -10369,6 +10369,43 @@ fn a_typed_model_that_cannot_be_one_is_not_sent() {
     assert_eq!(app.agent_chat.models.first().map(|m| m.id.as_str()), Some("one-more"));
 }
 
+/// A model picked while the agent replies is shown as chosen at once and sent when the reply ends,
+/// before a queued message, so the next message runs on it. The agent would take it only after the
+/// reply anyway, and waiting on it held the picker busy for the whole reply (INT-1500).
+#[test]
+fn a_model_picked_while_the_agent_replies_is_shown_at_once_and_serves_the_next_message() {
+    let (mut app, script, ctx) = app_with_script();
+    app.agent_chat.running_id = "modern".into();
+    script.report(Event::ConfigOptions(modern_options("fast")));
+    poll(&mut app, &ctx);
+    send(&mut app, &ctx, "make a box".into());
+    assert_eq!(app.agent_chat.state(), State::Busy);
+    set_config_option(&mut app, "some.provider.model", "smart");
+    assert_eq!(script.calls(), ["prompt: make a box"], "nothing goes to the agent while it replies");
+    assert!(!app.agent_chat.config_pending, "and the picker is not held busy");
+    assert_eq!(app.agent_chat.model, "smart", "shown as chosen at once");
+    // The agent's own word on its options during the reply does not take the choice back.
+    script.report(Event::ConfigOptions(modern_options("fast")));
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.model, "smart");
+    // A second pick replaces the first.
+    set_config_option(&mut app, "some.provider.model", "fast");
+    set_config_option(&mut app, "some.provider.model", "smart");
+    send(&mut app, &ctx, "now round it".into());
+    ended(&script, "");
+    poll(&mut app, &ctx);
+    let calls = script.calls();
+    let set = calls.iter().position(|call| call == "set_config_option: some.provider.model=smart").expect("sent once the reply ended");
+    assert_eq!(calls.iter().filter(|call| call.starts_with("set_config_option")).count(), 1, "{calls:?}");
+    if let Some(next) = calls.iter().position(|call| call == "prompt: now round it") {
+        assert!(set < next, "before the queued message: {calls:?}");
+    }
+    script.report(Event::ConfigOptionFinished { id: "some.provider.model".into(), result: Ok(modern_options("smart")) });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.model, "smart");
+    assert!(!app.agent_chat.config_pending);
+}
+
 /// An agent with a model option gets a typed model through it. Nothing changes until it answers,
 /// and a refusal leaves the old model with the agent's reason in the chat.
 #[test]
@@ -16276,6 +16313,177 @@ fn the_web_view_follows_its_panel_through_window_resizes() {
     assert_eq!(web::placement(&mut h.app, &h.ctx), places.last().copied(), "the last frame's place is the one the host takes, once");
 }
 
+/// A host that shows only its view's foot (macOS) is given a view as tall as the page may grow,
+/// so the view never changes size as the page opens: the page's height is how much of it is shown
+/// and takes presses, and the app's own layer holds only that (INT-1500).
+#[test]
+fn at_the_bottom_centre_a_host_that_shows_the_views_foot_keeps_the_view_as_tall_as_the_page_may_grow() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
+    h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    h.app.ui.show_navigation_bar = false;
+    web::set_host(&mut h.app, true);
+    web::set_clips(&mut h.app, true);
+    h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the page says how tall it is");
+    h.frames(3);
+    let most = serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["centre"].as_f64().expect("the most") as f32;
+    let view = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let shown = crate::scenario::rect_of("agent_chat:panel").expect("the part shown");
+    assert!((view.height() - most).abs() < 0.5, "the view as tall as the page may grow: {view:?}, most {most}");
+    assert!(
+        (shown.height() - 181.0).abs() < 0.5 && shown.bottom() == view.bottom(),
+        "the page's height of it shown, at its foot: {shown:?} {view:?}"
+    );
+    assert_eq!(web::reveal(&h.app), Some(181.0));
+    assert_eq!(web::placement(&mut h.app, &h.ctx), Some(view), "the whole view goes to the host");
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":420}"#).expect("the conversation opens");
+    h.frames(2);
+    assert_eq!(crate::scenario::rect_of("agent_chat:web"), Some(view), "opening changes what is shown, not the view");
+    assert_eq!(web::reveal(&h.app), Some(420.0_f32.min(most)));
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("and closes");
+    h.frames(2);
+    // Without it the view is the page's height again, as on the other systems.
+    web::set_clips(&mut h.app, false);
+    h.frames(2);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!((place.height() - 181.0).abs() < 0.5, "without: as tall as the page: {place:?}");
+    assert_eq!(web::reveal(&h.app), None);
+}
+
+/// At the bottom centre of the window (the `agent_chat_centre` preference, on by default) the
+/// host's view is the page's message box: centred on the window, not on the room beside the
+/// browser, above the history and left of the rail, as tall as the page says and never more than
+/// half the window, which the page is told. Off, the Assistant is the side panel again (INT-1500).
+#[test]
+fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the_page() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
+    h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    // Centred on the window first; the navigation bar, which it keeps clear of, comes back below.
+    h.app.ui.show_navigation_bar = false;
+    web::set_host(&mut h.app, true);
+    h.frames(3);
+    let told =
+        |h: &mut crate::scenario::Harness| serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["centre"].as_f64();
+    for (width, height) in [(1600.0, 1000.0), (1100.0, 700.0)] {
+        h.call("ui.resize", json!({"width": width, "height": height}));
+        h.frames(2);
+        let window = h.ctx.content_rect();
+        let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+        assert!((place.center().x - window.center().x).abs() < 1.0, "centred on the window at {width}x{height}: {place:?} in {window:?}");
+        assert!(place.width() <= 520.0 + 0.5 && place.width() > 400.0, "the message box's width: {place:?}");
+        let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
+        assert!(place.right() < rail.left(), "left of the rail: {place:?} {rail:?}");
+        let history = h.app.shell.history.expect("the history below the view");
+        assert!(place.bottom() <= history.top() && place.bottom() > history.top() - 40.0, "just above the history: {place:?} {history:?}");
+        let most = told(&mut h).expect("the page is told how tall it may be");
+        assert!(most <= f64::from(window.height()) / 2.0 + 0.5, "at most half the window: {most} of {window:?}");
+        assert_eq!(web::placement(&mut h.app, &h.ctx), Some(place));
+    }
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":260}"#).expect("the page says how tall it is");
+    h.frames(2);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!((place.height() - 260.0).abs() < 0.5, "as tall as the page: {place:?}");
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":5000}"#).expect("however tall");
+    h.frames(2);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!(place.height() <= h.ctx.content_rect().height() / 2.0 + 0.5, "never more than half the window: {place:?}");
+    assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"size"}"#).is_err(), "a size without a height is refused");
+
+    // It is no side panel: in the floating layout the axis view keeps the view's top right, and the
+    // navigation bar leaves the bottom centre to it for the view's bottom right.
+    h.call("ui.set", json!({"layout": "floating"}));
+    h.app.ui.show_navigation_bar = true;
+    for (width, height) in [(1600.0, 1000.0), (1100.0, 700.0)] {
+        h.call("ui.resize", json!({"width": width, "height": height}));
+        h.frames(3);
+        let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+        let layout = h.app.viewport.layout.clone().expect("the view's layout");
+        let axis = layout.axis_view;
+        assert!(
+            axis.right() > layout.content.right() - 40.0 && !axis.intersects(place),
+            "the axis view stays at the view's top right at {width}: {axis:?} {place:?} {:?}",
+            layout.content
+        );
+        let bar = layout.navigation;
+        assert!(bar.right() > layout.content.right() - 40.0, "the navigation bar at the bottom right at {width}: {bar:?}");
+        assert!(bar.left() > place.right() || bar.top() > place.bottom(), "clear of the Assistant at {width}: {bar:?} {place:?}");
+    }
+    // Closed, the bar keeps its place: it does not move as the Assistant comes and goes.
+    let bar = h.app.viewport.layout.clone().expect("the view's layout").navigation;
+    h.call("ui.agent_chat", json!({"open": false}));
+    h.frames(2);
+    assert_eq!(h.app.viewport.layout.clone().expect("the view's layout").navigation, bar, "the bar stays where it was with the Assistant closed");
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(2);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let window = h.ctx.content_rect();
+    h.call("ui.resize", json!({"width": 2200.0, "height": 1200.0}));
+    h.frames(3);
+    let wide = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!((wide.center().x - h.ctx.content_rect().center().x).abs() < 1.0, "a wide window has it centred again: {wide:?}");
+    assert!(place.center().x <= window.center().x + 0.5, "a narrow one moves it left of the bar, never right: {place:?} in {window:?}");
+
+    h.call("ui.prefs", json!({"agent_chat_centre": false}));
+    h.frames(3);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the side panel's place");
+    assert!(place.height() > h.ctx.content_rect().height() / 2.0, "off: the side panel, as before: {place:?}");
+    assert_eq!(told(&mut h), None, "and the page is not at the centre");
+    let layout = h.app.viewport.layout.clone().expect("the view's layout");
+    assert!(
+        (layout.navigation.center().x - layout.content.center().x).abs() < 1.0,
+        "and the navigation bar back at the bottom centre: {:?}",
+        layout.navigation
+    );
+}
+
+/// At the bottom centre, while the conversation is open, a primary press that reaches the app (the
+/// page's native view takes its own) is outside the Assistant: the model, the rail. The page is
+/// told the count and collapses its opened conversation when it goes up; switching to another app
+/// is no press. With the box closed, or in the side panel, nothing is counted (INT-1500).
+#[test]
+fn at_the_bottom_centre_a_press_in_the_app_outside_the_view_is_told_to_the_page() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
+    h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    web::set_host(&mut h.app, true);
+    h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+    h.frames(3);
+    let presses = |h: &mut crate::scenario::Harness| {
+        serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["outsidePresses"].as_u64()
+    };
+    assert_eq!(presses(&mut h), Some(0), "nothing pressed yet");
+    // Closed, a press changes nothing on the page and is not told.
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the closed box");
+    h.frames(2);
+    let closed = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    click_at(&mut h, egui::pos2(closed.center().x, closed.top() - 200.0), egui::PointerButton::Primary);
+    assert_eq!(presses(&mut h), Some(0), "with the box closed a press is not told");
+    // Opened: the page asks for all the room it may take.
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":5000}"#).expect("the conversation opens");
+    h.frames(2);
+    let view = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let model = egui::pos2(view.center().x, view.top() - 120.0);
+    let content = h.app.viewport.layout.clone().expect("the view's layout").content;
+    assert!(content.contains(model) && !view.contains(model), "a point on the model, above the page: {model:?} {view:?} {content:?}");
+    click_at(&mut h, model, egui::PointerButton::Primary);
+    assert_eq!(presses(&mut h), Some(1), "a press on the model");
+    click_at(&mut h, model, egui::PointerButton::Secondary);
+    assert_eq!(presses(&mut h), Some(1), "a secondary press is not counted");
+    let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
+    click_at(&mut h, egui::pos2(rail.center().x, rail.bottom() - 4.0), egui::PointerButton::Primary);
+    assert_eq!(presses(&mut h), Some(2), "a press on the rail");
+
+    h.call("ui.prefs", json!({"agent_chat_centre": false}));
+    h.frames(3);
+    click_at(&mut h, model, egui::PointerButton::Primary);
+    assert_eq!(presses(&mut h), Some(2), "in the side panel a press is not counted");
+}
+
 /// Files dropped on the host's web view are attached to the next message as files dropped on the
 /// panel are, and one that cannot be says why; while they are over the view the page is told.
 #[test]
@@ -17131,6 +17339,17 @@ fn everywhere_a_key_could_leak(app: &mut SolveApp, script: &Script) -> String {
     .join("\n")
 }
 
+/// What the page is told of a key save, from the connections it was told before: the count of
+/// answered saves has moved on by one, and the save's `error` (returned) is all else that changed.
+fn answered_save(before: &Value, after: Value) -> Value {
+    assert_eq!(after["keySaves"].as_u64(), before["keySaves"].as_u64().map(|count| count + 1), "the save is answered");
+    let mut rest = after.clone();
+    rest["keySaves"] = before["keySaves"].clone();
+    rest["error"] = before["error"].clone();
+    assert_eq!(&rest, before, "nothing else the page is told changed");
+    after["error"].clone()
+}
+
 /// B10: `conn_key` puts the key in the keychain and hands it to the agent with `setup`, and the
 /// key is nowhere else; `conn_key_remove` takes it out again. A keychain that refuses, or that
 /// is not there, is told to the page in the user's words, without the key.
@@ -17155,8 +17374,9 @@ fn a_key_goes_to_the_keychain_and_the_agent_and_nowhere_else() {
     }
     assert!(keys.get("mastra/key/openai").unwrap().is_none() && script.calls() == ["conn: setup"], "nothing refused was kept or sent");
     // A key the page could send and the app does not take is told to the page, so its dialog stops waiting.
+    let before = page_state(&mut app)["connect"].clone();
     conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "openai", "key": "k".repeat(4097)})).expect_err("too long");
-    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_refused"));
+    assert_eq!(answered_save(&before, page_state(&mut app)["connect"].clone()), tr("ui.agent_chat_conn_refused"));
 
     conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "openai", "key": format!("  {BUILTIN_KEY}\n")}))
         .expect("a key for one of the five");
@@ -17188,7 +17408,12 @@ fn a_key_goes_to_the_keychain_and_the_agent_and_nowhere_else() {
     app.services.secrets = Some(Arc::new(RefusingKeys));
     let calls = script.calls().len();
     conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": BUILTIN_KEY})).expect("the action itself is in range");
-    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.host_ai_key_unavailable"));
+    let refused = page_state(&mut app)["connect"].clone();
+    assert_eq!(refused["error"], tr("ui.host_ai_key_unavailable"));
+    // The same refusal again: its sentence is the one before, and the count of answered saves
+    // alone tells the dialog that this save has its answer.
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": BUILTIN_KEY})).expect("in range");
+    assert_eq!(answered_save(&refused, page_state(&mut app)["connect"].clone()), tr("ui.host_ai_key_unavailable"));
     poll(&mut app, &ctx);
     assert_eq!(script.calls().len(), calls, "no setup without the key kept");
     assert!(!everywhere_a_key_could_leak(&mut app, &script).contains(BUILTIN_KEY), "not even in the keychain's own words");
@@ -17201,8 +17426,13 @@ fn a_key_goes_to_the_keychain_and_the_agent_and_nowhere_else() {
     // The next thing that works clears the word.
     app.services.secrets = Some(keys.clone());
     conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": BUILTIN_KEY})).expect("in range");
-    assert_eq!(page_state(&mut app)["connect"]["error"], Value::Null);
+    let saved = page_state(&mut app)["connect"].clone();
+    assert_eq!(saved["error"], Value::Null);
     assert_eq!(keys.get("mastra/key/anthropic").unwrap().as_deref(), Some(BUILTIN_KEY));
+    // Saving a key that is kept again (an update) changes nothing else the page is told.
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": CUSTOM_KEY})).expect("an update");
+    assert_eq!(answered_save(&saved, page_state(&mut app)["connect"].clone()), Value::Null);
+    assert_eq!(keys.get("mastra/key/anthropic").unwrap().as_deref(), Some(CUSTOM_KEY));
 
     // A start whose keychain cannot be read says so and still starts, without the key.
     let (mut app, _keys, ctx) = app_with_builtin();
@@ -17434,7 +17664,8 @@ fn a_request_the_agent_refuses_is_told_to_the_page_until_the_next_action() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_built_in_agent_that_failed_or_ended_leaves_the_page_its_notice_and_no_connections() {
-    let nothing = json!({"plans": [], "keys": [], "custom": [], "login": null, "problem": null, "error": null, "dates": {}, "connected": false});
+    let nothing =
+        json!({"plans": [], "keys": [], "custom": [], "login": null, "problem": null, "error": null, "keySaves": 0, "dates": {}, "connected": false});
     let notices = |state: &Value| -> Vec<String> {
         let items = state["items"].as_array().expect("items");
         items

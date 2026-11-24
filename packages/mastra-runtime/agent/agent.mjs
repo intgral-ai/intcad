@@ -150,13 +150,37 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       if (move && !usable.includes(entry.session.model.get() ?? '')) await entry.session.model.switch(usable.filter(id => connections.isCustom(id) || isChatModel(id)).sort(newestFirst(dates()))[0] ?? usable[0]);
     }
 
+    /**
+     * A session's list can be older than the keys and sign-ins (opened while they changed, or after
+     * a refresh that failed). Before a turn on a model it does not list is refused, the list is
+     * worked out once more: whether the model can be used now. If it can, the app is told the new
+     * list. A list that cannot be worked out leaves the turn refused as before.
+     */
+    async #usableNow(sessionId, entry, model) {
+      try {
+        entry.controller.invalidateAvailableModelsCache?.();
+        await this.#settle(entry, false);
+      } catch (error) {
+        process.stderr.write(`[intcad] could not check the models of a session again: ${error}\n`);
+        return false;
+      }
+      if (!entry.usable?.includes(model)) return false;
+      try {
+        await this.connection.sessionUpdate({ sessionId, update: { sessionUpdate: 'config_option_update', configOptions: this.configOptions(entry) } });
+      } catch (error) {
+        // The turn can be answered all the same; the app learns the list with the next refresh.
+        process.stderr.write(`[intcad] could not tell the app the models of a session: ${error}\n`);
+      }
+      return true;
+    }
+
     /** A turn that fails says why in a word the Assistant has a sentence for, and for which provider. */
     async prompt(request) {
       const entry = this.sessions.get(request.sessionId);
       // A session is not moved off a model nothing serves by itself (see #settle), so a turn can be
       // asked for on one. No provider is asked: the Assistant says to pick another model.
       const using = entry?.session.model.get() ?? '';
-      if (entry?.usable?.length && !entry.usable.includes(using)) {
+      if (entry?.usable?.length && !entry.usable.includes(using) && !(await this.#usableNow(request.sessionId, entry, using))) {
         throw new RequestError(INTERNAL, `no connection serves ${using}`, { intcad: { kind: 'model', prefix: connections.prefixOf(using, { known: true }) } });
       }
       this.#gate.prompted(request.sessionId);

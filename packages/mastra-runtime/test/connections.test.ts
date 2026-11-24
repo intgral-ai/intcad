@@ -427,6 +427,8 @@ test("a failed turn is put into one of the kinds the Assistant has words for", (
     ["OAuth token has expired. Please sign in again.", "auth"],
     ["You exceeded your current quota, please check your plan and billing details.", "quota"],
     ["429 insufficient_quota", "quota"],
+    // DeepSeek's words for a key with no money left on it.
+    ["Insufficient Balance", "quota"],
     ["Rate limit reached for requests", "rate"],
     ["429 Too Many Requests", "rate"],
     ["TypeError: fetch failed", "network"],
@@ -557,6 +559,78 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
     sessionId: "s1",
     update: { sessionUpdate: "config_option_update", configOptions: [{ id: "model", currentValue: newest.value, options: listed }, { id: "mode", currentValue: "build", options: [] }] },
   });
+});
+
+test("a session's model list older than its keys is worked out again before a turn on a model it does not list is refused", async () => {
+  class RequestError extends Error {
+    code: number;
+    data: unknown;
+    constructor(code: number, message: string, data?: unknown) {
+      super(message);
+      this.code = code;
+      this.data = data;
+    }
+  }
+  const updates: Json[] = [];
+  let keyThere = false;
+  let unreadable = false;
+  let invalidated = 0;
+  let asked = 0;
+  const entry = {
+    // Worked out before the DeepSeek key was saved; the refresh after it never reached this session.
+    usable: ["openai/gpt-5"],
+    models: [{ modelId: "openai/gpt-5", name: "openai/gpt-5" }],
+    controller: {
+      invalidateAvailableModelsCache: () => void (invalidated += 1),
+      listAvailableModels: async () => {
+        if (unreadable) throw new Error("the catalog could not be read");
+        return [
+          { id: "openai/gpt-5", hasApiKey: true },
+          { id: "deepseek/deepseek-chat", hasApiKey: keyThere },
+        ];
+      },
+    },
+    session: { model: { get: () => "deepseek/deepseek-chat", switch: async () => assert.fail("nobody chose another model") } },
+  };
+  class Base {
+    connection = { sessionUpdate: async (update: Json) => void updates.push(update) };
+    sessions = new Map([["s1", entry]]);
+    configOptions(of: Json) {
+      return [{ id: "model", currentValue: of.session.model.get(), options: of.models.map((item: Json) => ({ value: item.modelId, name: item.name })) }];
+    }
+    async prompt(): Promise<Json> {
+      asked += 1;
+      return { stopReason: "end_turn" };
+    }
+  }
+  const { connections } = world();
+  const Agent = intcadAgent({ Base, RequestError, connections, dates: () => new Map(DATES), reloadSignIns: () => {} });
+  const agent = new Agent();
+  const refusedForTheModel = (error: Json) => {
+    assert.deepEqual(error.data, { intcad: { kind: "model", prefix: "deepseek" } });
+    return error.code === -32603;
+  };
+
+  // No key: refused as before, after one more look, and no provider is asked.
+  await assert.rejects(agent.prompt({ sessionId: "s1" }), refusedForTheModel);
+  assert.deepEqual({ asked, invalidated, told: updates.length }, { asked: 0, invalidated: 1, told: 0 });
+  // The key is there but the list cannot be worked out: refused as before, not as some other failure.
+  keyThere = true;
+  unreadable = true;
+  await assert.rejects(agent.prompt({ sessionId: "s1" }), refusedForTheModel);
+  assert.deepEqual({ asked, told: updates.length }, { asked: 0, told: 0 });
+  // The list can be worked out: the turn goes ahead on the model in use, and the app is told the new list.
+  unreadable = false;
+  assert.deepEqual(await agent.prompt({ sessionId: "s1" }), { stopReason: "end_turn" });
+  assert.equal(asked, 1);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0]!.update.sessionUpdate, "config_option_update");
+  const model = updates[0]!.update.configOptions[0];
+  assert.equal(model.currentValue, "deepseek/deepseek-chat");
+  assert.deepEqual(model.options.map((option: Json) => option.value), ["openai/gpt-5", "deepseek/deepseek-chat"]);
+  // The next turn needs no second look.
+  await agent.prompt({ sessionId: "s1" });
+  assert.deepEqual({ asked, invalidated, told: updates.length }, { asked: 2, invalidated: 3, told: 1 });
 });
 
 // ---- The session builder (session.mjs): Mastra Code's ACP session, without a vector store ---------

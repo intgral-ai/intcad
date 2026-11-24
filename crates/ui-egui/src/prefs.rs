@@ -1568,6 +1568,9 @@ preference_settings! {
     agent_chat_side: String = "right".into(), PAGE_ASSISTANT;
     agent_chat_width: f32 = 380.0, PAGE_ASSISTANT;
     agent_chat_minimized: bool = false, PAGE_ASSISTANT;
+    /// Where the host shows the Assistant's page: at the bottom of the window, centred, as one
+    /// message box with the conversation opened above it. Off: the side panel, as before.
+    agent_chat_centre: bool = true, PAGE_ASSISTANT;
     /// Whether the chat is in its own window instead of the side panel, and that window's place
     /// and size as the system last reported them (`[x, y, width, height]`, points; `x` can be
     /// negative or past the main screen when the window sits on another one).

@@ -4,6 +4,7 @@
 import {
   ArrowUp,
   Camera,
+  Check,
   ChevronDown,
   ChevronRight,
   ClipboardCheck,
@@ -11,13 +12,17 @@ import {
   FileImage,
   FileText,
   Hammer,
+  KeyRound,
   Map as MapIcon,
+  Maximize2,
   MessageSquare,
+  Minimize2,
   MousePointerClick,
   Pencil,
   Plug,
   Plus,
   ShieldCheck,
+  Sparkles,
   Square,
   SquarePen,
   Target,
@@ -25,14 +30,18 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import type { LucideIcon } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import type { AssistantState, Connect, ContextChip, ContextGroups, Item, MissingAgent, PermissionOption, PictureRef, QueuedMessage, Strings, TurnProblem } from './host';
 import { pictureUrl, post } from './host';
 import { ModelPicker as MastraModelPicker } from '@/domains/llm/model-picker';
 import type { ModelPickerProvider } from '@/domains/llm/model-picker-types';
 import { ProviderLogoMonogram } from '@/domains/llm/provider-logo-monogram';
-import { Activity, ActivityContent, ActivityHeadline, ActivityTrigger } from '@/ds/components/ai/activity';
+import { agentGlyph } from '@/ds/components/AgentIndicator';
+import { Activity, ActivityContent, ActivityDetail, ActivityDisclosure, ActivityHeader, ActivityHeadline, ActivityIcon, ActivityLabel, ActivitySpacer, ActivityTrigger } from '@/ds/components/ai/activity';
+import { messagePreview } from '@/ds/components/ai/activity/presets/message-preview';
 import type { TaskListItem } from '@/ds/components/ai/task-list';
 import { TaskList, TaskListContainer } from '@/ds/components/ai/task-list';
 import { ToolCallBody, ToolCallGroup, ToolCallOutput, presentTool } from '@/ds/components/ai/tool-call';
@@ -50,6 +59,10 @@ import {
   ComposerActionsStart,
   ComposerAttachments,
   ComposerBox,
+  ComposerHeader,
+  ComposerHeaderActions,
+  ComposerHeaderContent,
+  ComposerHeaderRow,
   ComposerInput,
   ComposerRing,
   ComposerStatus,
@@ -75,6 +88,7 @@ import type { ThinkingLevelOption } from '@/ds/components/ThinkingLevel';
 import { Txt } from '@/ds/components/Txt';
 import { SettingsContainer } from '@/ds/new/settings/settings-container';
 import { SettingsGroup, SettingsHeader, SettingsTitle } from '@/ds/new/settings/settings-header';
+import { humanize } from '@/lib/string';
 import { cn } from '@/lib/utils';
 import { compareModelReleaseDates, formatModelName } from '@/utils/model';
 
@@ -983,7 +997,8 @@ function ProviderPicker({ state, connect, onConnections }: { state: AssistantSta
   const at = current ? placeOf(connect, current) : null;
   const inUse = at ? groups.get(at.group) : undefined;
   // Before the agent has a model there is no connection in use to keep to: every connection's models, a group each.
-  const providers = inUse ? [inUse] : [...groups.values()].sort((a, b) => rank(a.id) - rank(b.id));
+  // At the bottom centre, every connection's models: the picker's provider filter switches between them.
+  const providers = inUse && !centred(state) ? [inUse] : [...groups.values()].sort((a, b) => rank(a.id) - rank(b.id));
   const effort = effortOf(state);
   const mark = (group: string) => <Mark name={names.get(group) ?? group} size={14} />;
   // Mastra's picker has no property for its own words: the build puts these in their place
@@ -1006,6 +1021,7 @@ function ProviderPicker({ state, connect, onConnections }: { state: AssistantSta
       }}
       renderProviderIcon={mark}
       addProvider={{ label: strings.connTitle, render: <button type="button" onClick={onConnections} /> }}
+      header={centred(state) ? <PickerConnection via={at?.via} strings={strings} onConnections={onConnections} /> : undefined}
       busy={state.configPending}
       side="top"
       align="end"
@@ -1116,7 +1132,8 @@ function SessionMode({ state, session }: { state: AssistantState; session: NonNu
           {current?.name ?? option.currentValue}
         </ComposerToneLabel>
       </SelectTrigger>
-      <SelectContent>
+      {/* Named, so the page can tell an open select from one closed and kept mounted (Base UI hides it). */}
+      <SelectContent data-slot="select-content">
         {option.options.map(choice => (
           <SelectItem key={choice.value} value={choice.value}>
             {choice.name}
@@ -1127,7 +1144,7 @@ function SessionMode({ state, session }: { state: AssistantState; session: NonNu
   );
 }
 
-function AssistantComposer({ state, onConnections }: { state: AssistantState; onConnections: () => void }) {
+function AssistantComposer({ state, onConnections, header }: { state: AssistantState; onConnections: () => void; header?: ReactNode }) {
   const { strings } = state;
   const [text, setText] = useState('');
   const [sent, setSent] = useState(0);
@@ -1147,6 +1164,10 @@ function AssistantComposer({ state, onConnections }: { state: AssistantState; on
   const picked = state.picked.groups.length > 0 || state.picked.omitted !== null;
   const selected = state.selection.groups.length > 0 || state.selection.omitted !== null;
   const chips = state.attachments.length + state.loading.length > 0 || picked || selected || (state.attachView && state.images);
+  // At the bottom centre the box is 520 wide and as tall as it was at rest whatever happens: its
+  // controls stay on one row (the model's name is cut short instead) and its placeholder on one line.
+  const centre = centred(state);
+  const hint = busy ? strings.placeholderBusy : strings.placeholder;
 
   function submit(now = false) {
     if (!canSend) return;
@@ -1179,6 +1200,7 @@ function AssistantComposer({ state, onConnections }: { state: AssistantState; on
         submit();
       }}
     >
+      {header}
       <ComposerRing tone={session?.tone} busy={busy}>
         <ComposerBox sendingPulseKey={sent}>
           {chips && (
@@ -1249,8 +1271,9 @@ function AssistantComposer({ state, onConnections }: { state: AssistantState; on
           )}
           <ComposerInput
             ref={input}
+            className={centre ? 'placeholder:truncate' : undefined}
             aria-label={strings.messageBox}
-            placeholder={busy ? strings.placeholderBusy : strings.placeholder}
+            placeholder={centre ? oneLine(input.current, hint) : hint}
             value={text}
             onChange={event => setText(event.target.value)}
             onKeyDown={onKeyDown}
@@ -1263,7 +1286,7 @@ function AssistantComposer({ state, onConnections }: { state: AssistantState; on
               }
             }}
           />
-          <ComposerActions>
+          <ComposerActions className={centre ? 'flex-nowrap' : undefined}>
             <ComposerActionsStart className="gap-1">
               <DropdownMenu>
                 <DropdownMenu.Trigger variant="ghost" size="icon-sm" aria-label={strings.add} tooltip={strings.add}>
@@ -1367,8 +1390,24 @@ function notReadyOf(state: AssistantState) {
 /** What is known of an agent, at the end of its row in the menu. */
 const ROW_HINT = 'ml-auto inline-block pl-4 whitespace-nowrap text-muted-foreground first-letter:uppercase';
 
-/** The panel's own bar: the agent and what it runs with, its state, and the panel's controls. */
-function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState; onSetup: (id: string) => void; onConnections: () => void }) {
+/**
+ * The panel's own bar: the agent and what it runs with, its state, and the panel's controls. With
+ * `onBack`, the connections page is open in place of the conversation, and its way back stands
+ * where the connection and its state are named.
+ */
+function AssistantBar({
+  state,
+  onSetup,
+  onConnections,
+  onCollapse,
+  onBack,
+}: {
+  state: AssistantState;
+  onSetup: (id: string) => void;
+  onConnections: () => void;
+  onCollapse?: () => void;
+  onBack?: () => void;
+}) {
   const { strings } = state;
   const agent = state.agents.find(entry => entry.id === state.agent);
   const name = agent?.name ?? (state.detecting ? strings.detecting : strings.noneFound);
@@ -1402,11 +1441,29 @@ function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState
       ))}
     </>
   );
+  // At the bottom centre the bar's empty part collapses the conversation, as Collapse does.
+  const centre = centred(state);
   return (
-    <ChatShell.Bar>
-      <ChatShell.Column className="flex-row items-center justify-between gap-2 py-2">
+    <ChatShell.Bar className={centre ? 'relative' : undefined}>
+      {/* Under the row: what is not a control (the gaps, the state badge) lets the press through to
+          it. Not a second tab stop: the bar's Collapse is the keyboard's way. */}
+      {centre && (
+        <div
+          aria-hidden
+          data-centre-bar-collapse
+          title={strings.collapse}
+          onClick={onCollapse}
+          className="absolute inset-0 cursor-pointer rounded-lg transition-colors duration-fast ease-out-custom hover:bg-fill-subtle motion-reduce:transition-none"
+        />
+      )}
+      <ChatShell.Column className={cn('flex-row items-center justify-between gap-2 py-2', centre && 'pointer-events-none relative [&_button]:pointer-events-auto')}>
         <div className="-m-0.5 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-1.5 gap-y-2 overflow-hidden p-0.5">
-          {connect ? (
+          {onBack ? (
+            // On the connections page the page itself says what is connected and how it stands.
+            <Button type="button" size="sm" variant="primary" className="shrink-0" onClick={onBack}>
+              {strings.connBack}
+            </Button>
+          ) : connect ? (
             <ConnectionButton state={state} connect={connect} onOpen={onConnections} />
           ) : (
             <DropdownMenu>
@@ -1469,7 +1526,7 @@ function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState
             </DropdownMenu>
           )}
           {/* It wraps out of sight when the name leaves it no room. With nothing connected the button beside it says so, and a state would only repeat it. */}
-          {!nothingConnected(state) && (
+          {!onBack && !nothingConnected(state) && (
             <Badge variant={badge.variant} emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
               {badge.label}
             </Badge>
@@ -1489,10 +1546,15 @@ function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState
               <Ellipsis />
             </DropdownMenu.Trigger>
             <DropdownMenu.Content align="end">
-              <DropdownMenu.Item onClick={() => post({ type: 'side', left: !state.left })}>
-                {state.left ? strings.dockRight : strings.dockLeft}
-              </DropdownMenu.Item>
-              <DropdownMenu.Item onClick={() => post({ type: 'minimize' })}>{strings.minimize}</DropdownMenu.Item>
+              {/* At the bottom centre the Assistant neither docks to a side nor folds to a strip. */}
+              {!centre && (
+                <>
+                  <DropdownMenu.Item onClick={() => post({ type: 'side', left: !state.left })}>
+                    {state.left ? strings.dockRight : strings.dockLeft}
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item onClick={() => post({ type: 'minimize' })}>{strings.minimize}</DropdownMenu.Item>
+                </>
+              )}
               {/* The built-in agent has no menu of its own in the bar: what that menu held for the agent is here. */}
               {connect && (
                 <>
@@ -1510,9 +1572,17 @@ function AssistantBar({ state, onSetup, onConnections }: { state: AssistantState
               )}
             </DropdownMenu.Content>
           </DropdownMenu>
-          <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.close} tooltip={strings.close} onClick={() => post({ type: 'close' })}>
-            <X />
-          </Button>
+          {/* At the bottom centre the right rail's Assistant button shows and hides it: in the close
+              button's place is Collapse, back to the message box. */}
+          {centre ? (
+            <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.collapse} tooltip={strings.collapse} onClick={onCollapse}>
+              <Minimize2 />
+            </Button>
+          ) : (
+            <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.close} tooltip={strings.close} onClick={() => post({ type: 'close' })}>
+              <X />
+            </Button>
+          )}
         </div>
       </ChatShell.Column>
     </ChatShell.Bar>
@@ -1690,41 +1760,41 @@ function Wrong({ children }: { children: ReactNode }) {
 
 /**
  * A key for one provider. What is typed stays in this box until Save hands it to the app, which
- * keeps it in the system keychain; nothing shows it again. A save is answered by a later state:
- * the key saved and no error, and the dialog is done; an error, and it stays to say so.
+ * keeps it in the system keychain; nothing shows it again. A save is answered when the app's
+ * count of answered saves moves on: with no error the key is kept and the dialog is done; with
+ * one it stays, with what was typed, to say so.
  */
 function KeyDialog({
   entry,
   error,
-  stamp,
+  saves,
   strings,
   onClose,
+  onSaved,
 }: {
   entry: Connect['keys'][number];
   error: string | null;
-  stamp: unknown;
+  saves: number;
   strings: Strings;
   onClose: () => void;
+  onSaved: () => void;
 }) {
   const [draft, setDraft] = useState('');
-  // Whether a save waits for its answer, and whether the last one was refused. An error that
-  // was there before this save is not about this key, so only an answer is shown.
-  const [waiting, setWaiting] = useState(false);
+  // The count of answered saves when Save was pressed (`null`: no save waits), and whether the
+  // last save was refused. An error that was there before this save is not about this key.
+  const [asked, setAsked] = useState<number | null>(null);
   const [refused, setRefused] = useState(false);
   useEffect(() => {
-    if (!waiting) return;
-    if (error) {
-      setWaiting(false);
-      setRefused(true);
-    } else if (entry.saved) {
-      onClose();
-    }
-  }, [stamp]);
+    if (asked === null || saves === asked) return;
+    setAsked(null);
+    if (error) setRefused(true);
+    else onSaved();
+  }, [saves, asked]);
   const title = entry.title;
   function save() {
     const key = draft.trim();
-    if (!key) return;
-    setWaiting(true);
+    if (!key || asked !== null) return;
+    setAsked(saves);
     setRefused(false);
     post({ type: 'conn_key', provider: entry.id, key });
   }
@@ -1752,13 +1822,44 @@ function KeyDialog({
           {refused && error && <Wrong>{error}</Wrong>}
         </DialogBody>
         <DialogFooter>
+          {/* Cancel stays: an answer that never comes must not keep the dialog open. */}
           <DialogCancel>{strings.cancel}</DialogCancel>
-          <DialogAction disabled={!draft.trim()} onConfirm={save}>
-            {strings.connSave}
+          <DialogAction disabled={!draft.trim() || asked !== null} onConfirm={save}>
+            {asked !== null ? strings.working : strings.connSave}
           </DialogAction>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** An element's ref that brings it into sight when it appears and when `news` changes: the page may be scrolled away from it. */
+function useInSight(news: unknown) {
+  const ref = useRef<HTMLDivElement>(null);
+  // A block body: scrolling can return a promise, which React would take for the effect's cleanup.
+  useEffect(() => {
+    ref.current?.scrollIntoView({ block: 'nearest' });
+  }, [news]);
+  return ref;
+}
+
+/** A key the app has just kept, said under its row: the row can be at the page's lower edge. */
+function KeySaved({ strings }: { strings: Strings }) {
+  const ref = useInSight(null);
+  return (
+    <Notice ref={ref} variant="success" icon={<Check />} role="status" className="mt-1">
+      <Notice.Message>{strings.connKeySaved}</Notice.Message>
+    </Notice>
+  );
+}
+
+/** What the app could not do, at the top of the connections page however far down it was asked. */
+function PageError({ text }: { text: string }) {
+  const ref = useInSight(text);
+  return (
+    <Notice ref={ref} variant="destructive" role="alert">
+      <Notice.Message>{text}</Notice.Message>
+    </Notice>
   );
 }
 
@@ -1973,9 +2074,11 @@ function SignInProblem({ problem, busy, strings }: { problem: NonNullable<Connec
  * it stands and what can be done. A new user lands here, and the button in the bar comes back to
  * it at any time.
  */
-function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; connect: Connect; onClose: () => void }) {
+function ConnectionsPage({ state, connect }: { state: AssistantState; connect: Connect }) {
   const { strings } = state;
   const [keyFor, setKeyFor] = useState<string | null>(null);
+  // The key whose save the app has just answered as kept: its row says so until something else is done here.
+  const [savedNow, setSavedNow] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const { option, current, ids } = modelChoice(state);
   const used = connectionOf(connect, current);
@@ -2003,17 +2106,18 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
       )
     );
   };
-  const askKey = (id: string) => setKeyFor(id);
+  const askKey = (id: string) => {
+    setSavedNow(null);
+    setKeyFor(id);
+  };
   return (
     <div className="flex min-w-0 flex-col gap-3 py-2">
-      <div className="flex min-w-0 items-center justify-between gap-2">
-        <h2 className="min-w-0 truncate text-sm font-medium">{strings.connTitle}</h2>
-        {connect.connected && (
-          <Button type="button" size="sm" variant="primary" className="shrink-0" onClick={onClose}>
-            {strings.connBack}
-          </Button>
-        )}
-      </div>
+      {/* The way back to the conversation is in the bar (AssistantBar's `onBack`). */}
+      <h2 className="min-w-0 truncate text-sm font-medium">{strings.connTitle}</h2>
+      {/* What the app could not do outside the key dialog and the address form, which say it
+          themselves: a sign-in or sign-out the agent refused, a keychain that would not read a key
+          or remove one. */}
+      {connect.error && !keyEntry && !adding && <PageError text={connect.error} />}
       {/* What is in use is marked on its row below. */}
       {!connect.connected && (
         <Txt variant="caption" tone="muted">
@@ -2086,31 +2190,45 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
         <SettingsTitle>{strings.connKeys}</SettingsTitle>
       </SettingsHeader>
       <SettingsContainer>
-      {connect.keys.map(key => (
-        <ConnRow
-          key={key.id}
-          entry={key}
-          note={key.saved && key.shadowed ? strings.connShadowed : undefined}
-          status={key.saved ? standing(strings.connKeySaved, 'success') : undefined}
-          actions={
-            key.saved ? (
-              <>
-                {!key.shadowed && usedOrUse(key)}
+      {connect.keys.map(key => {
+        // A key the app has just kept is saved before the agent's next list says so.
+        const saved = key.saved || savedNow === key.id;
+        return (
+          <ConnRow
+            key={key.id}
+            entry={key}
+            note={saved && key.shadowed ? strings.connShadowed : undefined}
+            status={saved ? standing(strings.connKeySaved, 'success') : undefined}
+            actions={
+              saved ? (
+                <>
+                  {!key.shadowed && usedOrUse(key)}
+                  <Button type="button" size="sm" onClick={() => askKey(key.id)}>
+                    {strings.connKeyUpdate}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => {
+                      setSavedNow(null);
+                      post({ type: 'conn_key_remove', provider: key.id });
+                    }}
+                  >
+                    {strings.connRemove}
+                  </Button>
+                </>
+              ) : (
                 <Button type="button" size="sm" onClick={() => askKey(key.id)}>
-                  {strings.connKeyUpdate}
+                  {strings.connKeyAdd}
                 </Button>
-                <Button type="button" size="sm" onClick={() => post({ type: 'conn_key_remove', provider: key.id })}>
-                  {strings.connRemove}
-                </Button>
-              </>
-            ) : (
-              <Button type="button" size="sm" onClick={() => askKey(key.id)}>
-                {strings.connKeyAdd}
-              </Button>
-            )
-          }
-        />
-      ))}
+              )
+            }
+          >
+            {/* An update leaves the row as it was: the save is said under it, where the dialog was opened. */}
+            {savedNow === key.id && <KeySaved strings={strings} />}
+          </ConnRow>
+        );
+      })}
       </SettingsContainer>
       </SettingsGroup>
 
@@ -2148,7 +2266,19 @@ function ConnectionsPage({ state, connect, onClose }: { state: AssistantState; c
       )}
       </SettingsContainer>
       </SettingsGroup>
-      {keyEntry && <KeyDialog entry={keyEntry} error={connect.error} stamp={state} strings={strings} onClose={() => setKeyFor(null)} />}
+      {keyEntry && (
+        <KeyDialog
+          entry={keyEntry}
+          error={connect.error}
+          saves={connect.keySaves}
+          strings={strings}
+          onClose={() => setKeyFor(null)}
+          onSaved={() => {
+            setSavedNow(keyEntry.id);
+            setKeyFor(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -2266,11 +2396,14 @@ export function App({ state }: { state: AssistantState | null }) {
   const [setup, setSetup] = useState<string | null>(null);
   // The built-in agent's connections page takes the conversation's place while it is open. With
   // the agent running and nothing connected it is the panel; once a connection is there it is not
-  // taken away behind the user's back: they go to the conversation with its button.
+  // taken away behind the user's back: they go to the conversation with the button in the bar.
   const [connOpen, setConnOpen] = useState(false);
+  // At the bottom centre: whether the conversation is open above the message box.
+  const [centreOpen, setCentreOpen] = useState(false);
   const none = nothingConnected(state);
   useEffect(() => {
-    if (none) setConnOpen(true);
+    // At the bottom centre a row over the message box offers the connections instead.
+    if (none && !centred(state)) setConnOpen(true);
   }, [none]);
   if (!state) return null;
   const { strings } = state;
@@ -2307,16 +2440,33 @@ export function App({ state }: { state: AssistantState | null }) {
     activeForm: step.text,
     status: step.status === 'completed' || step.status === 'in_progress' ? step.status : 'pending',
   }));
-  return (
-    <div className="h-dvh overflow-hidden bg-background" style={{ borderRadius: state.radius }}>
-      <FilePreviewDialog file={state.filePreview ?? null} />
-      <ChatShell className="h-full" style={ROOM} scroller={{ autoScroll: true, defaultScrollPosition: 'end' }}>
-        <AssistantBar state={state} onSetup={setSetup} onConnections={openConn} />
+  // At the bottom centre the same body (bar, conversation, dock) opens above the centre's own message box.
+  const centre = centred(state);
+  // Back to the message box there: the bar's Collapse and a press on the bar's empty part.
+  const collapse = () => {
+    setCentreOpen(false);
+    setConnOpen(false);
+  };
+  const shell = (
+      <ChatShell
+        className="h-full"
+        // There the veil above the message box ramps to the header's surface (ChatShell's `--chat-surface`).
+        style={centre ? ({ ...ROOM, '--chat-surface': 'var(--color-card)' } as CSSProperties) : ROOM}
+        scroller={{ autoScroll: true, defaultScrollPosition: 'end' }}
+      >
+        <AssistantBar
+          state={state}
+          onSetup={setSetup}
+          onConnections={openConn}
+          onCollapse={collapse}
+          // With nothing connected the page is the panel, and there is no conversation to go back to.
+          onBack={connect && showConn && connect.connected ? () => setConnOpen(false) : undefined}
+        />
         {connect && showConn && (
           <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
             {/* The bar's New chat asks here too: the conversation it is asked in is out of sight. */}
             {confirmNew}
-            <ConnectionsPage state={state} connect={connect} onClose={() => setConnOpen(false)} />
+            <ConnectionsPage state={state} connect={connect} />
           </div>
         )}
         {/* Out of sight, not gone: what is typed in the message box is still there on the way back. */}
@@ -2391,12 +2541,819 @@ export function App({ state }: { state: AssistantState | null }) {
                     </span>
                   )}
                 </ComposerStatus>
-                <AssistantComposer state={state} onConnections={openConn} />
+                {!centre && <AssistantComposer state={state} onConnections={openConn} />}
               </ChatShell.Column>
             </ChatShell.Dock>
           </ChatShell.Viewport>
         </ChatShell.Stage>
       </ChatShell>
+  );
+  if (centre)
+    return (
+      <Centre
+        state={state}
+        openConn={openConn}
+        body={shell}
+        conn={connect ? listed(connect) && connOpen : false}
+        none={none}
+        shown={centreOpen}
+        setShown={setCentreOpen}
+        collapse={collapse}
+      />
+    );
+  return (
+    <div className="h-dvh overflow-hidden bg-background" style={{ borderRadius: state.radius }}>
+      <FilePreviewDialog file={state.filePreview ?? null} />
+      {shell}
+    </div>
+  );
+}
+
+// ---- At the bottom centre of the window (INT-1500) ----
+// The host puts the page there with `centre` (the most height it may take). At rest the page is the
+// message box and, above it, one line: the state of the agent's activity, as a row of Mastra's
+// Activity (PreviewLine). Only that row, or Expand over a row that needs the user, opens the panel's
+// own body (bar, conversation, dock) above the message box, in Mastra's ComposerHeader. What needs
+// the user (an approval, an agent that is not running or must sign in, a sign-in under way, a turn
+// that failed on its connection, files dragged over) floats over the message box in an overlay
+// header while the body is closed, and is the last row above it while open (a failed turn is then at
+// the conversation's end).
+
+/** Whether the host shows the page at the bottom centre of the window. */
+const centred = (state: AssistantState | null) => typeof state?.centre === 'number';
+
+// A desktop page in a small box: Mastra's phone layouts (the model picker's bottom sheet below 640)
+// do not apply at the bottom centre. The page's width there is the box's, so its width query never
+// matches; in the side panel queries are answered as they are.
+let centreNow = false;
+const realMatchMedia = window.matchMedia.bind(window);
+window.matchMedia = (query: string) => (centreNow && /max-width:\s*639px/.test(query) ? realMatchMedia('(max-width: 0px)') : realMatchMedia(query));
+
+const plain = (text: string) => text.replace(/\*+|__|`/g, '').replace(/\s*\n+\s*/g, ' ').trim();
+
+let measure: CanvasRenderingContext2D | null = null;
+
+/** A placeholder that fits on one line of the message box, cut short with an ellipsis: a textarea's placeholder takes no `text-overflow`. */
+function oneLine(box: HTMLTextAreaElement | null, text: string) {
+  measure ??= document.createElement('canvas').getContext('2d');
+  if (!box || !measure) return text;
+  const style = getComputedStyle(box);
+  const room = box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  measure.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  if (!(room > 0) || measure.measureText(text).width <= room) return text;
+  let end = text.length;
+  while (end > 0 && measure.measureText(`${text.slice(0, end)}…`).width > room) end -= 1;
+  return `${text.slice(0, end).trimEnd()}…`;
+}
+
+/**
+ * What the line over the closed message box shows: the state of the agent's activity, as a row of
+ * Mastra's Activity. Never the words it streams: in CAD the result shows in the view, and what one
+ * wants from the line is what the agent is at. While it works, the most pressing first: an answer it
+ * waits for, the tool or the check it runs, else working (with its plan's step). At rest: a turn
+ * that failed, a turn done (what it changed, or its reply's first line), or which agent this is.
+ */
+interface Line {
+  kind: 'empty' | 'done' | 'note' | 'working' | 'tool' | 'check' | 'waiting' | 'error';
+  icon: LucideIcon;
+  /** What, in plain words: the action, the state. */
+  label?: string;
+  /** What it acts on, or more of it: cut to one line as Mastra cuts a preview. */
+  detail?: string;
+  /** The agent is at it: the row shimmers. */
+  live: boolean;
+  /** Where the agent is in its plan ("2/3"), while it follows one. */
+  step?: string;
+  /** A turn that failed on its connection: what failed, for its ways on (ProblemWays). */
+  problem?: TurnProblem;
+}
+
+// Mastra's agent indicator's poses held still, as its own rows use them.
+const IdleGlyph = agentGlyph('idle');
+const DoneGlyph = agentGlyph('done');
+const NoticeGlyph = agentGlyph('notice');
+const FailedGlyph = agentGlyph('error');
+
+/** A tool Mastra's presenter does not know by name, by the kind the host gives it (an ACP tool kind). */
+const KIND_TOOLS: Record<string, string> = { read: 'read_file', edit: 'edit_file', delete: 'delete_file', search: 'grep', execute: 'execute_command', fetch: 'web_fetch' };
+
+/** A tool's own name in words, without the server an MCP tool is named after: "intcad-app_export" is "Export". */
+const toolWords = (name: string) => humanize(name.replace(/^mcp__.+?__/, '').replace(/^\w+-[\w-]+?_(?=\w)/, ''));
+
+/** A running tool as the conversation's row names it (ToolRow): its icon, the action, what it acts on. */
+function toolLine(tool: Tool, own: boolean, step: string | undefined): Line {
+  const { name, detail } = nameOf(tool.title);
+  const args = (own ? argsOf(tool.input) : undefined) ?? {};
+  const named = presentTool(name, args);
+  const known = named.pose !== 'tool';
+  const kindTool = known ? undefined : KIND_TOOLS[tool.toolKind];
+  const byKind = kindTool ? presentTool(kindTool, args) : undefined;
+  const line: Line = { kind: 'tool', icon: (byKind ?? named).icon, live: true, step };
+  // The app's own words for what its tool does, in the user's language.
+  if (tool.words) return { ...line, label: tool.words };
+  if (known) return { ...line, label: named.description ?? named.label, detail: named.description ? undefined : (detail ?? named.detail) };
+  // What it acts on: the title's own detail, else the first of its arguments that is a word or a path.
+  const first = Object.values(args).find((value): value is string => typeof value === 'string' && value.trim() !== '');
+  return byKind ? { ...line, label: byKind.label, detail: detail ?? byKind.detail ?? toolWords(name) } : { ...line, label: toolWords(name), detail: detail ?? first };
+}
+
+function previewOf(state: AssistantState): Line {
+  const { items, strings } = state;
+  const busy = state.state === 'busy';
+  // This turn: everything since the last message sent.
+  const turn = items.slice(items.findLastIndex(item => item.kind === 'user') + 1);
+  // What the agent did last: a tool, a check, something it said or thought, what the app said.
+  const now = turn.findLast(item => item.kind === 'tool' || item.kind === 'check' || item.kind === 'notice' || (item.kind === 'text' && item.text.trim() !== ''));
+  const steps = turn.findLast((item): item is Of<'plan'> => item.kind === 'plan')?.steps ?? [];
+  const at = busy ? steps.findIndex(step => step.status === 'in_progress') : -1;
+  const step = at >= 0 ? `${at + 1}/${steps.length}` : undefined;
+  // An answer the agent waits for, whatever the state says (the state's badge puts it first too).
+  const asked = turn.findLast((item): item is Approval | Of<'permission'> => (item.kind === 'approval' && item.answer === null) || (item.kind === 'permission' && item.answered === null));
+  if (asked || state.waiting > 0) {
+    return { kind: 'waiting', icon: ShieldCheck, label: strings.waiting, detail: asked && (asked.kind === 'approval' ? asked.title : asked.heading), live: false, step };
+  }
+  if (busy) {
+    if (now?.kind === 'tool' && (now.status === 'running' || now.status === 'pending')) return toolLine(now, Boolean(state.connect), step);
+    if (now?.kind === 'check' && (now.status === 'running' || now.status === 'pending')) {
+      return { kind: 'check', icon: ClipboardCheck, label: strings.dfmCheckTitle, detail: strings.dfmRunning, live: true, step };
+    }
+    // Thinking, or writing its reply: working, on its plan's step if it follows one.
+    return { kind: 'working', icon: Sparkles, label: strings.working, detail: steps[at]?.text, live: true, step };
+  }
+  if (now?.kind === 'notice' && now.error) return { kind: 'error', icon: FailedGlyph, detail: plain(now.text), live: false, problem: now.problem ?? undefined };
+  if (now?.kind === 'check' && now.status === 'error') return { kind: 'error', icon: FailedGlyph, detail: strings.dfmError, live: false };
+  if (now?.kind === 'notice') return { kind: 'note', icon: NoticeGlyph, detail: plain(now.text), live: false };
+  if (items.some(item => item.kind === 'user')) {
+    // What the turn changed (the app counts it only when there is something), or its reply's first line.
+    const changed = turn.findLast((item): item is Of<'changes'> => item.kind === 'changes' && !item.undone);
+    const said = turn.findLast((item): item is Of<'text'> => item.kind === 'text' && !item.thought && item.text.trim() !== '');
+    const first = said?.text.split('\n').find(row => row.trim() !== '');
+    return { kind: 'done', icon: DoneGlyph, label: strings.dfmDone, detail: changed?.label ?? (first && plain(first)), live: false };
+  }
+  const agent = state.agents.find(entry => entry.id === state.agent);
+  return { kind: 'empty', icon: IdleGlyph, label: agent?.name ?? strings.noneFound, detail: agent ? stateBadge(state).label : undefined, live: false };
+}
+
+/**
+ * The line over the closed message box: a row of Mastra's Activity in its own looks, shimmering while
+ * the agent is at it and still at rest, in the body's size (the header's small text was hard to read).
+ * The whole row opens the conversation, with Mastra's disclosure chevron at its end.
+ */
+function PreviewLine({ line, open, strings, onExpand }: { line: Line; open: boolean; strings: Strings; onExpand: () => void }) {
+  const Icon = line.icon;
+  return (
+    <Activity
+      open={false}
+      onOpenChange={next => next && onExpand()}
+      // Under the open conversation the line is out of sight, and still.
+      status={line.kind === 'error' ? 'error' : line.live && !open ? 'running' : 'idle'}
+      className="w-full"
+    >
+      <ActivityTrigger title={strings.expand}>
+        <ActivityHeader>
+          <ActivityIcon className={cn(line.kind === 'waiting' && 'text-warning-foreground')}>
+            <Icon aria-hidden />
+          </ActivityIcon>
+          {/* A label alone takes the row, as in Mastra's ActivityHeadline; beside a detail it keeps Mastra's cap. */}
+          {line.label && <ActivityLabel className={cn('text-body', !line.detail && 'max-w-none min-w-0 shrink')}>{line.label}</ActivityLabel>}
+          {line.step && (
+            <Badge size="sm" className="shrink-0 tabular-nums">
+              {line.step}
+            </Badge>
+          )}
+          {line.detail && <ActivityDetail className="text-body">{messagePreview(line.detail)}</ActivityDetail>}
+          <ActivitySpacer />
+          <ActivityDisclosure />
+        </ActivityHeader>
+      </ActivityTrigger>
+    </Activity>
+  );
+}
+
+/** The model picker's header (Mastra's `header` slot): the connection the model runs on, and the way to sign in or add one. */
+function PickerConnection({ via, strings, onConnections }: { via: Connection | null | undefined; strings: Strings; onConnections: () => void }) {
+  const account = via && 'account' in via && via.account ? via.account : null;
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-2 px-2 pt-1 pb-2">
+      <Txt as="span" variant="caption" tone="muted" className="min-w-0 truncate">
+        {via ? `${via.name}${account ? ` · ${account}` : ''}` : strings.connTitle}
+      </Txt>
+      <Button
+        type="button"
+        size="sm"
+        icon={<KeyRound aria-hidden />}
+        onClick={event => {
+          onConnections();
+          // Closes the picker, as its own "+" does.
+          event.currentTarget.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        }}
+      >
+        {strings.connTitle}
+      </Button>
+    </div>
+  );
+}
+
+/** A waiting approval or permission with its answers, small enough for the header over the message box. */
+function WaitingRow({ item, strings }: { item: Approval | Of<'permission'>; strings: Strings }) {
+  return (
+    <ComposerHeaderRow>
+      <ComposerHeaderContent className="flex min-w-0 flex-col gap-2 text-foreground">
+        <span className="flex min-w-0 items-start gap-2">
+          <Badge variant="warning" emphasis="subtle" size="sm" icon={<ShieldCheck aria-hidden />}>
+            {strings.approval}
+          </Badge>
+          <span className="line-clamp-2 min-w-0">{item.kind === 'approval' ? item.title : item.heading}</span>
+        </span>
+        {item.kind === 'approval' ? (
+          <ApprovalChoices approval={item} strings={strings} />
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            {item.options.map(option => (
+              <Button
+                key={option.id}
+                type="button"
+                size="sm"
+                variant={option.kind === 'allow_once' ? 'primary' : 'default'}
+                onClick={() => post({ type: 'permission', index: item.index, option: option.id })}
+              >
+                {option.name}
+              </Button>
+            ))}
+          </div>
+        )}
+      </ComposerHeaderContent>
+    </ComposerHeaderRow>
+  );
+}
+
+/**
+ * What opens over the page, and whether a press outside the page closes it (`blur`) as a press
+ * outside it within the page would: menus, selects and the model and effort pickers do; a dialog
+ * keeps what was typed into it (a key copied from another app) and closes from its own buttons.
+ */
+const POPUPS = [
+  { selector: '[data-slot="popover-content"]', blur: true },
+  { selector: '[data-slot="drawer-content"]', blur: true },
+  { selector: '[role="menu"]', blur: true },
+  { selector: '[data-slot="select-content"][data-open]', blur: true },
+  { selector: '[data-slot="dialog-content"]', blur: false },
+];
+/** Every popup that is open. */
+const OPEN = POPUPS.map(entry => entry.selector).join(', ');
+/** The popups a press outside the page closes. */
+const ON_BLUR = POPUPS.filter(entry => entry.blur).map(entry => entry.selector).join(', ');
+/** The dialogs, which keep the page as it is through a press outside it. */
+const DIALOGS = POPUPS.filter(entry => !entry.blur).map(entry => entry.selector).join(', ');
+const NATIVE_PORTALS = `${OPEN}, [role="tooltip"], [data-slot="alert-dialog-content"]`;
+
+/** A computed length we can use without guessing at unresolved units or expressions. */
+function paintPixels(value: string) {
+  return /^-?(?:\d+\.?\d*|\.\d+)px$/.test(value) ? parseFloat(value) : NaN;
+}
+
+/** Conservative CSS-pixel outsets on the four sides. Unknown effects keep the border shape. */
+function paintOverflow(surface: HTMLElement, style: CSSStyleDeclaration) {
+  let left = 0, top = 0, right = 0, bottom = 0;
+  const outset = (x: number, y: number, extent: number) => {
+    left = Math.max(left, extent - x);
+    right = Math.max(right, extent + x);
+    top = Math.max(top, extent - y);
+    bottom = Math.max(bottom, extent + y);
+  };
+  // Remove serialized color functions before splitting the list: their comma-separated
+  // channels aren't additional shadows. An inset shadow does not extend the border box.
+  for (const shadow of style.boxShadow.replace(/[\w-]+\([^()]*\)/g, '').split(',')) {
+    const words = shadow.trim().split(/\s+/);
+    if (words.includes('inset') || words.length < 2 || words.length > 4) continue;
+    const [x, y, blur = 0, spread = 0] = words.map(paintPixels);
+    // Box shadow's standard deviation is half its blur radius. Include three deviations.
+    if ([x, y, blur, spread].every(Number.isFinite)) outset(x, y, blur * 1.5 + spread);
+  }
+  const outline = paintPixels(style.outlineWidth) + paintPixels(style.outlineOffset);
+  if (style.outlineStyle !== 'none' && Number.isFinite(outline)) outset(0, 0, outline);
+
+  const box = surface.querySelector('[data-slot="composer-box"]');
+  if (box) {
+    const boxStyle = getComputedStyle(box);
+    // The current composer clips its spotlight to the inner box. If it no longer clips,
+    // an active blur() can extend at most this far beyond the enclosing ring.
+    if (boxStyle.overflowX === 'visible' || boxStyle.overflowY === 'visible') {
+      const spotlight = getComputedStyle(box, '::before');
+      const blur = /^blur\(([^()]+)\)$/.exec(spotlight.filter)?.[1];
+      const radius = blur ? paintPixels(blur) : NaN;
+      if (spotlight.display !== 'none' && Number(spotlight.opacity) > 0 && Number.isFinite(radius)) outset(0, 0, radius * 3);
+    }
+  }
+  return { left, top, right, bottom };
+}
+
+/** Border boxes that paint the centred composer, with CSS ellipses in TL/TR/BR/BL order. */
+function paintedFootprint(element: HTMLElement) {
+  const surfaces = Array.from(
+    element.querySelectorAll<HTMLElement>('[data-slot="composer-ring"], [data-slot="composer-header-surface"]'),
+  );
+  return surfaces.flatMap(surface => {
+    const rect = surface.getBoundingClientRect();
+    const style = getComputedStyle(surface);
+    const header = surface.closest('[data-slot="composer-header"]');
+    if (!rect.width || !rect.height || style.visibility !== 'visible' || style.display === 'none' ||
+        header?.hasAttribute('data-centre-wait')) return [];
+    const clip = surface.parentElement?.getBoundingClientRect();
+    const bottom = header && clip ? Math.min(clip.bottom, rect.bottom) : rect.bottom;
+    if (bottom <= rect.top) return [];
+    const radius = (value: string) => {
+      const [x, y = x] = value.trim().split(/\s+/);
+      const resolve = (length: string, extent: number) => {
+        if (!/^(?:\d+\.?\d*|\.\d+)(?:px|%)$/.test(length)) return NaN;
+        return length.endsWith('%') ? parseFloat(length) * extent / 100 : parseFloat(length);
+      };
+      return [resolve(x, rect.width), resolve(y, rect.height)];
+    };
+    const radii = [
+      ...radius(style.borderTopLeftRadius), ...radius(style.borderTopRightRadius),
+      ...radius(style.borderBottomRightRadius), ...radius(style.borderBottomLeftRadius),
+    ];
+    if (!radii.every(Number.isFinite)) return [];
+    const paint = paintOverflow(surface, style);
+    const clipped = bottom < rect.bottom;
+    const edges = [paint.left, paint.top, paint.right, paint.top, paint.right, paint.bottom, paint.left, paint.bottom];
+    const outerRadii = radii.map((value, index) => clipped && index >= 4 ? 0 : value + edges[index]);
+    return [[rect.left - paint.left, rect.top - paint.top, rect.right + paint.right,
+      clipped ? bottom : bottom + paint.bottom, ...outerRadii]];
+  });
+}
+
+type X11ShapeHost = Window & {
+  __assistantX11Shape?: true;
+  __assistantX11Unmasked?: (token: number) => void;
+};
+
+/** Closes the page's open menus, selects and pickers, as a press outside them would; its dialogs stay. */
+function closePopups() {
+  if (!document.querySelector(ON_BLUR)) return;
+  document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  (document.activeElement ?? document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+}
+
+/** The headers over the message box: the line, a row that needs the user, the opened body. */
+const HEADERS = ':scope > [data-slot="composer"] > [data-slot="composer-header"]';
+
+/** Where a header over the message box ends at the top once its opening transition is over. */
+function topOf(header: Element) {
+  const rect = header.getBoundingClientRect();
+  const surface = header.querySelector<HTMLElement>('[data-slot="composer-header-surface"]');
+  return surface ? Math.min(rect.top, rect.bottom - surface.offsetHeight) : rect.top;
+}
+
+/** How tall the page is: the message box and every header over it, each as tall as it is opening to. */
+function heightOf(element: HTMLElement) {
+  const box = element.getBoundingClientRect();
+  let top = box.top;
+  for (const header of element.querySelectorAll(HEADERS)) top = Math.min(top, topOf(header));
+  return Math.ceil(box.bottom - top);
+}
+
+function Centre({
+  state,
+  openConn,
+  body,
+  conn,
+  none,
+  shown,
+  setShown,
+  collapse,
+}: {
+  state: AssistantState;
+  openConn: () => void;
+  body: ReactNode;
+  conn: boolean;
+  none: boolean;
+  shown: boolean;
+  setShown: (shown: boolean) => void;
+  collapse: () => void;
+}) {
+  const { strings } = state;
+  // The body's height: the host's most, less everything else the page shows.
+  const [room, setRoom] = useState(300);
+  // The line over the closed box, as tall as it is drawn.
+  const [lineHeight, setLineHeight] = useState(28);
+  const measured = useRef<HTMLDivElement>(null);
+  const most = useRef(500);
+  most.current = state.centre ?? 500;
+  centreNow = true;
+  // Asks the host for this much height at once and keeps it asked for until called with 0 (set by the effect below).
+  const grow = useRef<(to: number) => void>(() => {});
+  // The body's room is measured before the page is drawn: after each render, so the body opens at
+  // its height and not a frame later, and whenever the view or the page changes size (`now`: from
+  // outside React, drawn at once), so a smaller window keeps the bar with Collapse in sight. When the
+  // page has too little room the conversation gives way first, down to the bar; the rows that need
+  // the user and the message box keep their height.
+  // The connections page opens the body too.
+  const open = conn || shown;
+  const fitRoom = useRef<(now: boolean) => void>(() => {});
+  fitRoom.current = now => {
+    const element = measured.current;
+    const inBody = element?.querySelector<HTMLElement>('[data-centre-body]');
+    const fold = element?.querySelector<HTMLElement>('[data-centre-fold]');
+    if (!element || !inBody || !fold) return;
+    const line = element.querySelector<HTMLElement>('[data-centre-line]');
+    if (line && line.offsetHeight > 0 && line.offsetHeight !== lineHeight) setLineHeight(line.offsetHeight);
+    const bar = inBody.firstElementChild?.firstElementChild;
+    // Everything but the fold (the conversation open, the line closed, or between them while it
+    // moves) stays. Closed with a row floating over the box as well, the room measured last is kept.
+    if (!open && element.querySelectorAll(HEADERS).length > 1) return;
+    const others = heightOf(element) - fold.offsetHeight;
+    const next = Math.max(bar instanceof HTMLElement ? bar.offsetHeight : 0, Math.floor(most.current - others - 2));
+    if (Math.abs(next - room) <= 1) return;
+    if (now) flushSync(() => setRoom(next));
+    else setRoom(next);
+  };
+  useLayoutEffect(() => fitRoom.current(false));
+  // The page lost the focus with a popup open, which that closed: the press outside the page that
+  // the host tells of next is most likely the same press, and it only closes the popup.
+  const blurClosed = useRef(false);
+  // The page tells the host how tall it is; the host keeps it within `centre`. While a popup is open
+  // (model picker, mode menu, a dialog) the page asks for all the room there is, from the press that
+  // opens it, so the popup has room when it appears.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.add('centre');
+    const element = measured.current;
+    if (!element) return;
+    let menu = false;
+    let check = 0;
+    const native = window as X11ShapeHost;
+    let nativePopup: number | null = null;
+    let nextPopup = 0;
+    let unmasked: number | null = null;
+    let popupSince = 0;
+    let retryPopup = 0;
+    let sentFootprint = '';
+    // The host resizes the native view a frame or two after it is asked, so a view resized while
+    // something animates jumps. Taller is asked at once, so what opens has its room as it is drawn;
+    // shorter only once the page has been still for a moment, never under a closing animation.
+    // Never more than `centre`, which is all the host gives.
+    let told = -1;
+    let shrinkTo = -1;
+    let shrink = 0;
+    // A height asked for ahead of what needs it (the conversation about to open): not given back before.
+    let floor = 0;
+    const wanted = () => Math.min(most.current, Math.max(menu ? most.current : heightOf(element), floor));
+    const send = (next: number) => {
+      window.clearTimeout(shrink);
+      shrinkTo = -1;
+      if (next === told) return;
+      told = next;
+      post({ type: 'size', height: next });
+    };
+    // Nothing is drawn taller than the view. While the view grows to what the page asked for, a
+    // header whose top it would cut off, and any popup, waits unseen, and is shown in the frame the
+    // view has its room. It runs before the page is drawn: from the resize event, the observers'
+    // callbacks and the press that opens a popup. A host that never grows hides nothing past a second.
+    let since = 0;
+    let late = 0;
+    const fit = () => {
+      const view = window.innerHeight;
+      let growing = view + 1 < Math.min(told, most.current);
+      if (!growing) since = 0;
+      else if (!since) {
+        since = performance.now();
+        window.clearTimeout(late);
+        late = window.setTimeout(fit, 1000);
+      } else if (performance.now() - since > 990) growing = false;
+      for (const header of element.querySelectorAll(HEADERS)) header.toggleAttribute('data-centre-wait', growing && topOf(header) < -1);
+      const portals = document.querySelectorAll(native.__assistantX11Shape ? NATIVE_PORTALS : OPEN);
+      if (native.__assistantX11Shape) {
+        if (!menu && !portals.length) nativePopup = null;
+        else if (nativePopup === null) {
+          nativePopup = ++nextPopup;
+          popupSince = performance.now();
+        }
+      }
+      const awaitingUnmask = nativePopup !== null && nativePopup !== unmasked;
+      const lostAck = awaitingUnmask && performance.now() - popupSince >= 800;
+      for (const portal of portals) {
+        portal.toggleAttribute('data-centre-wait', growing || (awaitingUnmask && !lostAck));
+      }
+      if (native.__assistantX11Shape) {
+        const surfaces = nativePopup === null ? paintedFootprint(element) : [];
+        const footprint = JSON.stringify({
+          type: 'painted-footprint', width: window.innerWidth, height: window.innerHeight, popup: nativePopup, surfaces,
+        });
+        if (footprint !== sentFootprint) {
+          try {
+            window.ipc?.postMessage(footprint);
+            sentFootprint = footprint;
+          } catch {
+            // A send failure must not stop the retry timer or leave the portal hidden.
+          }
+        }
+        if (!awaitingUnmask) {
+          window.clearTimeout(retryPopup);
+          retryPopup = 0;
+        } else if (!retryPopup) retryPopup = window.setTimeout(() => {
+          // Keep the request rectangular and resend even after the portal has failed open.
+          retryPopup = 0;
+          sentFootprint = '';
+          fit();
+        }, lostAck ? 400 : 100);
+      }
+    };
+    if (native.__assistantX11Shape) {
+      native.__assistantX11Unmasked = token => {
+        if (token !== nativePopup) return;
+        unmasked = token;
+        fit();
+      };
+    }
+    grow.current = to => {
+      floor = Math.min(to, most.current);
+      if (floor > told) send(floor);
+      fit();
+    };
+    const tell = () => {
+      fitRoom.current(true);
+      const next = wanted();
+      // A pixel or two less is rounding, not a change: shrinking for it, then growing back, made the
+      // view flicker. Any growth is kept, or the top of the page would be cut off.
+      if (next < told && told - next <= 2) {
+        window.clearTimeout(shrink);
+        shrinkTo = -1;
+      } else if (next >= told) send(next);
+      else if (next !== shrinkTo) {
+        shrinkTo = next;
+        window.clearTimeout(shrink);
+        shrink = window.setTimeout(() => {
+          send(wanted());
+          fit();
+        }, 250);
+      }
+      fit();
+    };
+    // Headers open and close with a transition that changes no DOM: keep measuring until it settles.
+    // A timer, not animation frames: those pause where the page is not drawn.
+    let until = 0;
+    let frame = 0;
+    const follow = () => {
+      tell();
+      if (performance.now() < until) frame = window.setTimeout(follow, 16);
+    };
+    const settleSize = () => {
+      until = performance.now() + 700;
+      window.clearTimeout(frame);
+      frame = window.setTimeout(follow, 0);
+    };
+    const popup = () => Boolean(document.querySelector(OPEN));
+    const settle = () => {
+      window.clearTimeout(check);
+      check = window.setTimeout(() => {
+        if (menu && !popup()) {
+          menu = false;
+          tell();
+        }
+      }, 400);
+    };
+    // The line's own row (Mastra's disclosure, `aria-expanded`) opens the conversation, which asks for its room itself.
+    const down = (event: PointerEvent) => {
+      const at = event.target as Element | null;
+      if (!menu && at?.closest('[aria-haspopup], [aria-expanded]') && !at.closest('[data-centre-line]')) {
+        menu = true;
+        tell();
+        settle();
+      }
+    };
+    // A press outside the page (the model, the window) closes its menus, as one inside would;
+    // switching to another app to copy a key does not close the dialog it goes into.
+    const blur = () => {
+      blurClosed.current = Boolean(document.querySelector(ON_BLUR));
+      closePopups();
+    };
+    // A mode picked from its menu closes the menu.
+    const picked = (event: globalThis.MouseEvent) => {
+      if ((event.target as Element | null)?.closest('[role="menuitemradio"]')) window.setTimeout(closePopups, 120);
+    };
+    // What changed is measured before it is drawn (a mutation observer's callback runs before the
+    // page is painted), then followed while its transition settles.
+    const watch = new MutationObserver(() => {
+      if (popup()) menu = true;
+      tell();
+      if (!menu) settleSize();
+      settle();
+    });
+    watch.observe(document.body, native.__assistantX11Shape
+      ? { childList: true, subtree: true, attributes: true, attributeFilter: ['data-busy'] }
+      : { childList: true, subtree: true });
+    const effectChanged = () => { fit(); settleSize(); };
+    const ringHover = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.matches('[data-slot="composer-ring"]')) effectChanged();
+    };
+    const forcedColors = matchMedia('(forced-colors: active)');
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+    if (native.__assistantX11Shape) {
+      element.addEventListener('pointerenter', ringHover, true);
+      element.addEventListener('pointerleave', ringHover, true);
+      forcedColors.addEventListener('change', effectChanged);
+      reducedMotion.addEventListener('change', effectChanged);
+    }
+    document.addEventListener('pointerdown', down, true);
+    document.addEventListener('click', picked, true);
+    window.addEventListener('blur', blur);
+    window.addEventListener('resize', tell);
+    tell();
+    // The page, and the view itself (the root is as tall as the view): its observer is told of a
+    // new size in the frame it is drawn at, where the resize event can come a frame later.
+    const observer = new ResizeObserver(tell);
+    observer.observe(element);
+    observer.observe(root);
+    return () => {
+      root.classList.remove('centre');
+      centreNow = false;
+      observer.disconnect();
+      watch.disconnect();
+      document.removeEventListener('pointerdown', down, true);
+      document.removeEventListener('click', picked, true);
+      window.removeEventListener('blur', blur);
+      window.removeEventListener('resize', tell);
+      window.clearTimeout(check);
+      window.clearTimeout(frame);
+      window.clearTimeout(shrink);
+      window.clearTimeout(late);
+      window.clearTimeout(retryPopup);
+      if (native.__assistantX11Shape) {
+        element.removeEventListener('pointerenter', ringHover, true);
+        element.removeEventListener('pointerleave', ringHover, true);
+        forcedColors.removeEventListener('change', effectChanged);
+        reducedMotion.removeEventListener('change', effectChanged);
+      }
+      delete native.__assistantX11Unmasked;
+    };
+  }, []);
+  // A primary press in the app's window outside the page (the model, the rail, the toolbar, the
+  // browser), as the host counts them: not `blur`, which switching to another app fires too. It
+  // closes the page's popups and collapses the opened conversation, unless all it does is close a
+  // popup, or a dialog, the connections page (a sign-in may be under way there) or New chat's
+  // question is open.
+  const presses = state.outsidePresses ?? 0;
+  const pressesSeen = useRef(presses);
+  useEffect(() => {
+    const pressed = presses > pressesSeen.current;
+    pressesSeen.current = presses;
+    if (!pressed) return;
+    const popup = blurClosed.current || Boolean(document.querySelector(ON_BLUR));
+    blurClosed.current = false;
+    closePopups();
+    if (open && !popup && !conn && !none && !state.confirmNew && !document.querySelector(DIALOGS)) collapse();
+  }, [presses]);
+  // The conversation opens only once the view has its height: opened into a view still growing, it
+  // would be cut off. It waits for the view to be that tall, not for a time; a host that never grows
+  // has it opened after a second all the same.
+  const roomFirst = (then: () => void) => {
+    const ready = () => window.innerHeight >= most.current - 1;
+    if (ready()) {
+      then();
+      return;
+    }
+    grow.current(most.current);
+    const go = (anyway: boolean) => {
+      if (!anyway && !ready()) return;
+      window.removeEventListener('resize', resized);
+      window.clearTimeout(late);
+      grow.current(0);
+      then();
+    };
+    const resized = () => go(false);
+    window.addEventListener('resize', resized);
+    const late = window.setTimeout(() => go(true), 1000);
+  };
+  const connections = () => roomFirst(openConn);
+  const preview = previewOf(state);
+  const agent = state.agents.find(entry => entry.id === state.agent);
+  const badge = stateBadge(state);
+  const waitingItem = [...state.items]
+    .reverse()
+    .find((item): item is Approval | Of<'permission'> => (item.kind === 'approval' && item.answer === null) || (item.kind === 'permission' && item.answered === null));
+  const stopped = Boolean(state.agent) && !state.running;
+  const signIn = state.state === 'auth';
+  // A sign-in under way goes on on the connections page (a code to paste, a browser to come back
+  // from): closed, or in the conversation, the way back there stays in sight.
+  const login = conn ? null : (state.connect?.login ?? null);
+  // A turn that failed on its connection, with its ways on (sign in again, the connections, send it
+  // again): closed, it is the row over the box; open, the conversation shows it at its end.
+  const failed = !open && preview.kind === 'error' && preview.problem && state.connect ? { problem: preview.problem, connect: state.connect } : null;
+  const attention = state.dragging ? (
+    <ComposerHeaderRow>
+      <ComposerHeaderContent className="text-foreground">{strings.dropHint}</ComposerHeaderContent>
+    </ComposerHeaderRow>
+  ) : waitingItem ? (
+    <WaitingRow item={waitingItem} strings={strings} />
+  ) : login ? (
+    <ComposerHeaderRow>
+      <Badge variant="info" emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
+        {strings.connSigningIn}
+      </Badge>
+      <ComposerHeaderContent className="truncate text-foreground">{state.connect?.plans.find(plan => plan.id === login.id)?.name ?? login.id}</ComposerHeaderContent>
+      <ComposerHeaderActions>
+        <Button type="button" size="sm" variant="primary" icon={<KeyRound aria-hidden />} onClick={connections}>
+          {strings.connTitle}
+        </Button>
+      </ComposerHeaderActions>
+    </ComposerHeaderRow>
+  ) : stopped || signIn || (none && !conn) ? (
+    <ComposerHeaderRow>
+      <Badge variant={badge.variant} emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">
+        {badge.label}
+      </Badge>
+      <ComposerHeaderContent className="truncate text-foreground">{agent?.name ?? strings.noneFound}</ComposerHeaderContent>
+      <ComposerHeaderActions>
+        {stopped && (
+          <Button type="button" size="sm" variant="primary" onClick={() => post({ type: 'connect' })}>
+            {state.state === 'failed' ? strings.retry : strings.connect}
+          </Button>
+        )}
+        {none && !stopped && (
+          <Button type="button" size="sm" variant="primary" icon={<KeyRound aria-hidden />} onClick={connections}>
+            {strings.connTitle}
+          </Button>
+        )}
+      </ComposerHeaderActions>
+    </ComposerHeaderRow>
+  ) : failed ? (
+    <ComposerHeaderRow tone="destructive" className="flex-nowrap items-start">
+      <FailedGlyph aria-hidden className="mt-0.5" />
+      <ComposerHeaderContent className="flex min-w-0 flex-col">
+        <span className="line-clamp-2">{preview.detail}</span>
+        <ProblemWays problem={failed.problem} connect={failed.connect} busy={false} strings={strings} onConnections={connections} />
+      </ComposerHeaderContent>
+    </ComposerHeaderRow>
+  ) : null;
+  // Expand over a row that needs the user, which covers the line; open, Collapse is in the bar's top
+  // right, and a press on the bar's empty part collapses it too (AssistantBar).
+  const toggle = conn ? null : (
+    <Button type="button" variant="ghost" size="sm" icon={<Maximize2 />} onClick={() => roomFirst(() => setShown(true))}>
+      {strings.expand}
+    </Button>
+  );
+  const toggleRow = toggle && (
+    <ComposerHeaderRow className="justify-end">
+      <ComposerHeaderActions>{toggle}</ComposerHeaderActions>
+    </ComposerHeaderRow>
+  );
+  // Closed, the line floats over the message box (Mastra's overlay header), and a row that needs the
+  // user floats in front of it: the line stays in sight until the row has the room to be drawn. Open,
+  // the body is in the page's flow, with what needs the user as its last row, right above the box.
+  // The first header is the same element open or closed, and changes placement without Mastra's slide
+  // of its lower edge.
+  // The body is never taken down: closed, it waits unseen at the height it opens at, so it opens as
+  // it was left, scrolled to the end with every row in place, and a running turn's rows do not come
+  // in again. The fold over the box is as tall as the line closed and as the body open, and grows
+  // between them with Mastra's own motion (the header's tokens): the conversation rises from the box
+  // as the line gives way to it. The view keeps its height meanwhile where the host clips it.
+  const header = (
+    <>
+      <ComposerHeader open placement={open ? 'stacked' : 'overlay'} inert={!open && Boolean(attention)} style={open ? { transition: 'none' } : undefined}>
+        <div data-centre-fold className="centre-fold relative" style={{ height: open ? room : lineHeight }}>
+          <div
+            data-centre-body
+            data-open={open || undefined}
+            inert={!open}
+            aria-hidden={open ? undefined : true}
+            className="centre-fold-body absolute inset-x-0 bottom-0"
+            style={{ height: room }}
+          >
+            {body}
+          </div>
+          {!conn && (
+            <ComposerHeaderRow
+              data-centre-line
+              data-open={open || undefined}
+              inert={open}
+              aria-hidden={open ? true : undefined}
+              className="centre-fold-line absolute inset-x-0 bottom-0 flex-nowrap"
+            >
+              <ComposerHeaderContent className="min-w-0">
+                <PreviewLine line={preview} open={open} strings={strings} onExpand={() => roomFirst(() => setShown(true))} />
+              </ComposerHeaderContent>
+            </ComposerHeaderRow>
+          )}
+        </div>
+        {open && attention}
+      </ComposerHeader>
+      {!open && attention && (
+        <ComposerHeader placement="overlay" open>
+          {toggleRow}
+          {attention}
+        </ComposerHeader>
+      )}
+    </>
+  );
+  return (
+    <div className="flex h-dvh flex-col justify-end overflow-hidden">
+      <FilePreviewDialog file={state.filePreview ?? null} />
+      <div ref={measured} className="mx-auto w-full">
+        <AssistantComposer state={state} onConnections={connections} header={header} />
+      </div>
     </div>
   );
 }

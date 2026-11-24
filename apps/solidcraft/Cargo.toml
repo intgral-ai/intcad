@@ -22,8 +22,8 @@ profile = ["solidcraft-engine/profile"]
 
 # The workspace lints, except unsafe_code: denied, not forbidden, so that src/open_documents.rs
 # (macOS file-open events), src/native_crash.rs (Windows exception filter), src/native_crash_macos.rs
-# (macOS crash signal handler) and src/native_frame.rs (Windows resize border, taskbar icon) can
-# allow it: none has a safe API. Keep the rest in sync with [workspace.lints].
+# (macOS crash signal handler), src/native_frame.rs (Windows resize border, taskbar icon) and
+# src/assistant_clip.rs (the macOS Assistant view's superview) can allow it: none has a safe API. Keep the rest in sync with [workspace.lints].
 [lints.rust]
 unsafe_code = "deny"
 
@@ -100,11 +100,12 @@ solidcraft-3dx-client = { workspace = true }
 # The 3D mouse (src/space_mouse.rs), in the shared-device open mode so that a running 3DxWare
 # driver does not shut the app out.
 hidapi = { version = "2.6.7", default-features = false, features = ["macos-shared-device"] }
-# Files opened from Finder and the Dock (src/open_documents.rs), and the fullscreen title-bar
-# inset (src/main.rs); all already come with eframe and rfd.
+# Files opened from Finder and the Dock (src/open_documents.rs), the fullscreen title-bar inset
+# (src/main.rs) and the frame of the Assistant's view (src/assistant_clip.rs); all already come with
+# eframe, rfd and wry.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSResponder", "NSWindow", "NSWorkspace"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSArray", "NSNotification", "NSOperation", "NSProcessInfo", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSResponder", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSArray", "NSGeometry", "NSNotification", "NSOperation", "NSProcessInfo", "NSString", "NSURL", "objc2-core-foundation"] }
 block2 = "0.6"
 # Native crash capture (src/native_crash_macos.rs): the signal handler, the faulting module
 # (already in the tree through many crates).

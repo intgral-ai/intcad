@@ -38,6 +38,24 @@ pub fn set_problem(app: &mut SolveApp, problem: Problem) {
     app.agent_chat.web_problem = Some(problem);
 }
 
+/// The host shows only the foot of its view at the bottom centre of the window and takes presses
+/// there only (macOS): the panel then gives it a view as tall as the page may grow, and
+/// [`reveal`] says how much of it is shown.
+pub fn set_clips(app: &mut SolveApp, clips: bool) {
+    app.agent_chat.web_clips = clips;
+}
+
+/// With [`set_clips`], the height from the foot of the view [`placement`] gave that is shown and
+/// takes presses this frame, in points; `None`: all of it.
+pub fn reveal(app: &SolveApp) -> Option<f32> {
+    app.agent_chat.web_reveal
+}
+
+/// Whether the panel gave the host a bottom-centre placement this frame.
+pub fn centred_view(app: &SolveApp) -> bool {
+    app.agent_chat.web_centre.is_some()
+}
+
 /// The panel's Retry: ask the host to try to make the view again, keeping the conversation.
 pub fn request_retry(app: &mut SolveApp) {
     app.agent_chat.web_retry = true;
@@ -127,6 +145,11 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
     if app.agent_chat.gallery.is_some() {
         return None;
     }
+    // What is shown of it: a layer over the rest of it covers nothing the page shows there.
+    let shown = app
+        .agent_chat
+        .web_reveal
+        .map_or(rect, |height| egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - height), rect.right_bottom()));
     let covered = ctx.memory(|memory| {
         // A panel docked to the window's edge is under every floating layer; a floating panel
         // is under the layers that come after it.
@@ -135,7 +158,7 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
         for other in memory.layer_ids() {
             if other == layer {
                 above = true;
-            } else if above && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(rect)) {
+            } else if above && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(shown)) {
                 covered = true;
             }
         }
@@ -459,6 +482,8 @@ pub fn state(app: &mut SolveApp) -> String {
         ("minimize", "ui.agent_chat_minimize"),
         ("dockLeft", "ui.agent_chat_dock_left"),
         ("dockRight", "ui.agent_chat_dock_right"),
+        ("expand", "ui.expand"),
+        ("collapse", "ui.collapse"),
         ("addAgent", "ui.ai_add_agent"),
         ("settings", "ui.ai_settings"),
         ("switchAgent", "ui.ai_switch_tip"),
@@ -609,7 +634,7 @@ pub fn state(app: &mut SolveApp) -> String {
         tr("ui.ai_model").to_string()
     };
     strings.insert("modelEffort".into(), Value::from(model_effort));
-    json!({
+    let mut page = json!({
         "items": items,
         // A text file open from a file card: the start of its text, read when the card was clicked.
         "filePreview": chat.file_preview.as_ref().map(|file| json!({"name": file.name, "text": file.text, "markdown": file.markdown})),
@@ -638,6 +663,8 @@ pub fn state(app: &mut SolveApp) -> String {
         "selected": selected,
         "selection": context_json(&selection),
         "radius": radius,
+        // At the bottom centre of the window: the most height the page may take, in points.
+        "centre": chat.web_centre,
         "permissions": mode(app).id(),
         "skill": chat.skill.id(),
         "skills": skill::Skill::ALL.iter().map(|skill| json!({"id": skill.id(), "title": skill.title()})).collect::<Vec<_>>(),
@@ -668,8 +695,14 @@ pub fn state(app: &mut SolveApp) -> String {
         "dark": crate::theme::is_dark(),
         "strings": strings,
         "dfm": dfm,
-    })
-    .to_string()
+    });
+    // At the bottom centre: the primary presses in the app's window outside the page so far; the
+    // page collapses its conversation on a new one. Apart: the object above is as long as `json!`
+    // expands.
+    if let Some(fields) = page.as_object_mut() {
+        fields.insert("outsidePresses".into(), Value::from(chat.web_presses));
+    }
+    page.to_string()
 }
 
 /// One message from the page, as JSON `{"type": …}`. Only these are acted on, each checked
@@ -691,7 +724,8 @@ pub fn state(app: &mut SolveApp) -> String {
 /// `conn_cancel`, `conn_logout` (`id`), `conn_key` (`provider`, `key`), `conn_key_remove`
 /// (`provider`), `conn_custom` (`name`, `url`, `key`, `models`), `conn_custom_remove` (`id`),
 /// `conn_retry`. The panel: `close`, `minimize`,
-/// `side` (`left`); the page cannot move the Assistant to a window of its own. And `surface`
+/// `side` (`left`), `size` (`height`: how tall the page is at the bottom centre); the page
+/// cannot move the Assistant to a window of its own. And `surface`
 /// (`color`, `#rrggbb`: the page's own surface, for the frame around it), `copy` (`text`) and
 /// `open_link` (`url`, web addresses only). Anything else is refused with the reason.
 pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::result::Result<(), String> {
@@ -997,6 +1031,11 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
         "settings" => crate::prefs::open_at(app, crate::prefs::PAGE_ASSISTANT),
         "close" => app.agent_chat.open = false,
         "minimize" => app.preferences.agent_chat_minimized = true,
+        // At the bottom centre, the page is as tall as it says; the panel keeps it in its bounds.
+        "size" => {
+            let height = action.get("height").and_then(Value::as_f64).filter(|height| height.is_finite()).ok_or("size: no height")?;
+            app.agent_chat.web_height = Some(height.clamp(0.0, 100_000.0) as f32);
+        }
         "side" => {
             let left = action.get("left").and_then(Value::as_bool).ok_or("side: no left")?;
             app.preferences.agent_chat_side = if left { "left" } else { "right" }.into();
