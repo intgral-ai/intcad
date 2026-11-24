@@ -15,7 +15,7 @@ section: graphics
 priority: optional
 maintainer: ${SOLIDCRAFT_MAINTAINER}
 vendor: Intgral
-homepage: https://github.com/intgral-ai/intcad
+homepage: https://intgral-ai.github.io/intcad-releases/
 license: MIT OR Apache-2.0
 description: |-
   Open-source, independent parametric 3D CAD

@@ -208,7 +208,7 @@
 
             meta = {
               description = "Rust-native parametric 3D CAD app";
-              homepage = "https://github.com/intgral-ai/intcad";
+              homepage = "https://intgral-ai.github.io/intcad-releases/";
               # The app is MIT/Apache-2.0. The closure also carries GTK 3 (LGPL-2.1-or-later) and
               # WebKitGTK 4.1 (LGPL-2.1-or-later and BSD-2-Clause), dynamically linked; their
               # notice text is installed under share/doc/solidcraft.

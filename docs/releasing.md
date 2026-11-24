@@ -279,3 +279,72 @@ in `assets/platforms/macos/dmg/`; this foundation changes none of it. The script
 mounts the finished image and checks its layout, volume icon, bundle and local
 signature, then checks the CLI zip. A future signed/notarized distribution needs
 its own approval and real platform verification; an ad-hoc signature is not one.
+
+## Distribution repository
+
+Installers, release notes, checksums and signatures are published from this repository to the
+public repository **`intgral-ai/intcad-releases`**. This source repository is private; no client,
+package or public page may name it as a download or update source. The distribution repository
+holds no source, no build configuration and no history of this repository.
+
+`crates/ui-egui/src/update.rs` names it (`REPO`, `LATEST_API`, `RELEASES_PAGE`,
+`RELEASE_PREFIX`), `packaging/linux/package.sh` embeds its AppImage zsync feed, and the installer,
+AppStream, Snap, nfpm and Nix metadata point their public URLs at the guide it serves
+(`https://intgral-ai.github.io/intcad-releases/`).
+
+### Publishing a release
+
+`.github/workflows/publish-release.yml` is the only publisher. It is manual, it runs in the
+`release-signing` environment, and it never builds: it takes the package artifacts of one
+successful `release.yml` run.
+
+1. Build the candidate with `release.yml` at the reviewed tag.
+2. Run **Publish release** with the tag, that run's id, a notes file and (first) `draft: true`.
+3. The workflow refuses to continue unless:
+   - the tag equals `v<version>` in `Cargo.toml` and points at the checked-out commit;
+   - the package run succeeded at that same commit;
+   - every package name matches the version, every `build.json` names that commit, both checksum
+     lists are byte-identical and list exactly the files present;
+   - every unversioned name the update check resolves (`alias_for` in `release-verify.py`) exists
+     and is a byte copy of its versioned file;
+   - Linux, macOS and Windows packages are present;
+   - the checksum list is signed by the key in `packaging/publish/trusted-release-key.pub`.
+4. It writes `SHA256SUMS.txt`, `SHA256SUMS`, signs with minisign (`Intcad v<version>` as the
+   trusted comment) and verifies its own signature before uploading.
+5. It creates the release with `--target main`, uploads, then reads the release back and checks
+   every published asset's digest and the downloaded signature. A version or tag that already
+   exists is refused; a published asset is never replaced.
+
+The `release-signing` environment holds `RELEASE_APP_ID`, `RELEASE_APP_PRIVATE_KEY` (a GitHub App
+installed on `intcad-releases` only, Contents: read and write), `MINISIGN_SECRET_KEY` and, when the
+key has a passphrase, `MINISIGN_PASSWORD`. The environment must require a reviewer. Do not add a
+`secrets.` reference, a `gh release` call or a signing step to `release.yml`; `packaging/tests/nightly_test.py`
+exists to catch that.
+
+### Update signing
+
+The client verifies a minisign signature over `SHA256SUMS.txt`; the trusted comment must name the
+release tag (`Intcad v0.1.3`). A build with `PUBLIC_KEY` set in
+`crates/ui-egui/src/update/install.rs` refuses a release that has no `SHA256SUMS.txt.minisig`,
+that only carries the pre-0.1.3 `SHA256SUMS` name without a signature, or whose signature is for
+another version or another key. There is no unsigned fallback.
+
+`PUBLIC_KEY` and `packaging/publish/trusted-release-key.pub` are the same key; a unit test fails
+if they disagree. The key file is the single base64 line printed by `minisign -G`; while it says
+`NOT CONFIGURED`, signing is not enabled and the publisher refuses to run.
+
+Key custody (owner only; never an agent, a repository file, CI logs or a chat):
+
+1. On an offline machine, generate the key: `minisign -G -p intcad.pub -s intcad.key` (add a
+   passphrase unless you keep the key in a hardware-backed store).
+2. Put the base64 line of `intcad.pub` in `packaging/publish/trusted-release-key.pub` and the same
+   line as `PUBLIC_KEY = Some("<line>")` in `install.rs`, then run
+   `cargo test -p solidcraft-ui-egui the_trusted_key_and_the_published_key_are_the_same_file`;
+   that test fails if the two disagree or if the placeholder survives.
+3. Store `intcad.key` in the `release-signing` environment secret `MINISIGN_SECRET_KEY`, and keep
+   one offline backup outside GitHub. Record the public key and the date in the release notes.
+4. Rotation: generate a new pair, publish one release signed by both keys is **not** supported by
+   this client version: ship a client that trusts the new key first, then sign with it from the
+   next release. Revocation: remove the secret, publish a client with `PUBLIC_KEY = None` only if
+   the owner accepts unsigned updates; otherwise treat the key as compromised and rotate.
+5. Tests use their own key pair (`install_tests.rs`); the production key never enters a test.
