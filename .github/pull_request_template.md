@@ -12,6 +12,11 @@ Docs-only and bot PRs are exempt. -->
 
 ## Validation
 
+Use `.agents/skills/verify-intcad/SKILL.md` to select scenarios from the diff.
+For each affected behavior, give the checked commit, entry point, expected and observed result,
+and a link to the evidence. Name blocked or unverified paths and their reasons. For changes
+without a runtime effect, give the applicable check and its result.
+
 What did you run, and what were the results? Include expected and measured values for geometry changes.
 Say which checks were reused from the same worktree state and inputs, and which could not run.
 
