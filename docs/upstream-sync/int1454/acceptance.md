@@ -971,7 +971,10 @@ smlib). Two were **not listed**, and both were real defects of the port, not all
    were deleted, which is exactly CD-1's wording ("the five Intcad `format_pending` names are the
    same bytes as v0.44.1's `v51` files"). Re-measured: `solidcraft-io --lib design::` 87 passed,
    0 failed, exit `0`; `solidcraft-doc --lib` 874 passed, 0 failed, exit `0`;
-   `scripts/test-format-pending.sh` exit `0`.
+   `scripts/test-format-pending.sh` exit `0` on the host (`ok: pending format changes merge cleanly
+   and fold into v59, a drawing's into v2`). The same script inside the builder container exits
+   `128` (`fatal: not a git repository: .../.git/worktrees/int1454-kvl`) because the worktree's
+   `.git` file points at a host path the container does not mount; the host run is the evidence.
 2. `solidcraft-ui-egui::requested_menu_icons_have_artwork_and_match_manifest`
    — the audit's runtime list asks for `shield` (`crates/ui-egui/src/ui_kit/assistant.rs` paints
    it) while `assets/icons/ui/design/requested_icons.txt` did not list it. The artwork exists
@@ -994,3 +997,63 @@ a raised budget is proposed to the owner but not applied. The CI gate's terminal
 branch, the landed-SHA battery (K12 17 IDs, same-kernel before/after, B6, CD-1 both
 `open_newer_files` settings, platform/PP) and B3 remain open. `develop` was `6032271178` with no
 `solidcore/` entry and the `8ddce901` pin at the time of this entry.
+
+
+### 11.20 Independent final review of `3012b6400e` (GPT-6.2 Sol High): findings, verifications, open decisions
+
+A read-only review of the whole PR (`be9cb2c16..3012b6400e`) ran on `openai/gpt-6.2-sol#high`. It
+confirmed the 20 dropped allowlist entries all have local `ok` lines, that CD-1's registry writes 58
+and the five pending blobs equal `v51/` byte for byte, that the subtree keeps Apache-2.0/NOTICE, and
+that the small CI edits do not change grading. It also raised items I then verified against the tree:
+
+**Confirmed, introduced by this PR:**
+
+1. `tests/action_matrix/baseline.json` — measured from both blobs, per `(design, entity, action)`
+   on identities present in both: **68 actions move from pass to `!` (accepted failure)** and 426
+   from `!` to pass. The 68 cluster in `oracle/69-sm-tray` (12), `examples/chebyshev-motion-trace`
+   (8), `regressions/sheet-side-flange-corner` (7), and 16 other designs; by action they are
+   `face.draft_neutral` 23, `edge.fillet` 12, `face.extrude` 8, `face.press_pull` 8, `edge.chamfer`
+   7, `face.shell` 4, `curved.axis` 3 and 3 more. The ratchet's own text says a pass-to-fail entry
+   may be recorded "if that is intended … and say why in the pull request"; nothing here says why.
+   Whether these actions actually fail now is being measured with the matrix worker.
+2. `crates/kernel/src/thread_tests.rs` — the base ran a 48-turn cut
+   (`a_long_thread_cuts_without_a_deep_tree`, a #1250 regression guard). The head replaces it with a
+   6-turn test with a tighter analytic window **and** a 48-turn test marked
+   `#[ignore = "48 turns: about 15 minutes … (#14453)"]`. `scripts/ci/gate.py` requires
+   `not skipped`, and nextest neither lists nor runs ignored tests, so the gate never sees the
+   48-turn case: coverage that ran on the base is silently gone.
+3. `crates/kernel/tests/boolean_props.rs` — `translation_invariant` now accepts
+   `(Volume, OperandRefused) if off > 0.0`, i.e. a moved-operand refusal at any positive offset is
+   tolerated without comparing the moved result, for all three Boolean operations; the file also
+   gains an ignored 100,000 mm sphere/box reproducer. This is why `identity_on_grid`,
+   `scale_invariant` and `translation_invariant` left the allowlist, so "fixed" here means "the
+   assertion was relaxed", not "the kernel now holds the invariant".
+4. `crates/kernel/src/lib.rs` — new non-test `#[allow(clippy::panic)]` with an intentional
+   `panic_any` behind the environment-gated `diagnostics.crash_test`. The base had no such site in
+   this crate; `skills/solidcraft-crash-safety` limits exceptions to the app crate and
+   `crates/threedx-client`.
+
+**Raised but not supported by the tree (checked, no action):**
+
+- `xtask/mesh-decisions.txt` **shrank** 187 → 150 lines; `faces_near` replaces `faces_through` (a
+  rename of the same site), so "only shrinks" holds.
+- Direct `solidcore` dependencies went from 10 workspace crates at the base to 2 (`crates/geom`,
+  `crates/smlib`) — a tightening, not a loosening. `xtask/solidcore-seam.txt` does not exist at the
+  base either, so `AGENTS.md`'s citation is a pre-existing gap, not this PR's.
+- `crates/doc/build.rs`: 5 `unwrap`/`panic` sites at the base, 3 at the head. The new
+  `crates/format/build.rs` has none.
+- The `packaging/mastra` `--skills-root` hunks are develop's own `7d866f828f`, which this branch
+  needs because its base predates it; they keep the agent-staging check working rather than
+  removing it (the rejected removal is not present).
+
+**Open owner decisions** (none applied): (a) the 68 baseline marks — fix real regressions, or
+re-bless from measured results with a written reason; (b) the ignored 48-turn test — give it a lane
+that runs it, or record the skip; (c) `boolean_props` — revert the relaxation and keep
+`translation_invariant` on the allowlist, or accept the relaxation as upstream's; (d) the
+`crash_test` panic exception — drop it from this PR, move it to the app crate, or record it;
+(e) landing style — squash loses the `git subtree` second parent that CD-7's ancestry claim rests
+on; (f) out-of-plan feature hunks (`crates/engine` offset trim, `crates/render` photon caustics) —
+in this PR or separate.
+
+This entry corrects §11.19's `test-format-pending.sh` citation (the container run exited 128; the
+host run is the evidence) and records no merge, no re-bless and no source change.
