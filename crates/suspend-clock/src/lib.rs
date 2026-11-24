@@ -10,7 +10,7 @@ use std::time::Duration;
 mod tests;
 
 /// An elapsed clock with a fixed platform epoch, not relative to construction.
-/// A missing or backwards reading permanently invalidates this instance.
+/// A missing, zero or backwards reading permanently invalidates this instance.
 pub struct SuspendClock {
     source: fn() -> Option<Duration>,
     last: Mutex<Option<Duration>>,
@@ -38,7 +38,9 @@ impl SuspendClock {
         // mistake an older concurrent sample for a backward step.
         let mut last = self.last.lock().ok()?;
         let previous = (*last)?;
-        *last = source().filter(|sample| *sample >= previous);
+        // A zero reading is indistinguishable from an unwritten or stuck clock, so
+        // it cannot establish a usable epoch.
+        *last = source().filter(|sample| !sample.is_zero() && *sample >= previous);
         *last
     }
 }
