@@ -10,10 +10,10 @@ use crate::ui_kit::{Container, Surface};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COMMIT: &str = env!("SOLIDCRAFT_COMMIT");
 pub const BUILD_DATE: &str = env!("SOLIDCRAFT_BUILD_DATE");
-/// The user and developer guide (docs/book), published with the public distribution page: the
-/// source repository is private, so the guide is never linked there. The book is built and
-/// deployed with every release (docs/releasing.md, "Distribution repository").
-pub const DOCS_URL: &str = "https://intgral-ai.github.io/intcad-releases/";
+/// The user and developer guide (docs/book). It lives in the public source repository, which
+/// stays readable after the closed-source switch, so this link keeps working without a new
+/// guide site. Move it to the public guide when that is published (docs/releasing.md).
+pub const DOCS_URL: &str = "https://github.com/intgral-ai/intcad/blob/main/docs/book/src/SUMMARY.md";
 const ATTRIBUTION: &str = include_str!("../../../ATTRIBUTION.md");
 use solidcraft_engine::licences::{LICENSE_APACHE, LICENSE_MIT, NOTICE, THIRD_PARTY};
 /// What the Assistant's page holds that is not Intcad's own (Mastra's components, the npm

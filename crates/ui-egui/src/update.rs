@@ -527,13 +527,7 @@ impl Release {
                 is_release_url(&url).then(|| Asset { name, url, size: a.get("size").and_then(Value::as_u64).unwrap_or(0) })
             })
             .collect();
-        Ok(Release {
-            name: Some(s("name")).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| format!("Intcad {tag}")),
-            tag,
-            notes,
-            page,
-            assets,
-        })
+        Ok(Release { name: Some(s("name")).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| format!("Intcad {tag}")), tag, notes, page, assets })
     }
 
     /// The version without the `v`.
@@ -658,10 +652,13 @@ pub struct Updater {
     last_manual: f64,
     /// A release given by `SOLIDCRAFT_UPDATE_FEED` (a file), for tests and screenshots.
     feed: Option<PathBuf>,
+    /// An independent fixture key for native updater tests. Not present in application builds.
+    #[cfg(test)]
+    install_test_key: Option<&'static str>,
     /// The one-click update in progress (`install`).
-    job: Option<(Receiver<Result<install::Outcome, String>>, Arc<install::Progress>)>,
+    job: Option<(Receiver<Result<install::Outcome, install::Error>>, Arc<install::Progress>)>,
     /// The last one-click update's result.
-    pub installed: Option<Result<install::Outcome, String>>,
+    pub installed: Option<Result<install::Outcome, install::Error>>,
     /// A program for the host to start as SolidCraft exits (restart, installer).
     launch: Option<(PathBuf, Vec<String>)>,
 }
@@ -869,7 +866,13 @@ pub fn start_install(app: &mut SolveApp, ctx: &egui::Context) {
     {
         let ctx = ctx.clone();
         let staging = std::env::temp_dir().join("solidcraft-update");
-        let net = install::Net { get, download, feed };
+        let net = install::Net {
+            get,
+            download,
+            feed,
+            #[cfg(test)]
+            test_key: app.updater.install_test_key,
+        };
         let spawned = std::thread::Builder::new().name("update-install".into()).spawn(move || {
             let result = install::run(&release, &kind, &method, std::env::consts::ARCH, &net, &staging, &progress);
             let _ = tx.send(result);
@@ -877,7 +880,7 @@ pub fn start_install(app: &mut SolveApp, ctx: &egui::Context) {
         });
         if let Err(e) = spawned {
             app.updater.job = None;
-            app.updater.installed = Some(Err(e.to_string()));
+            app.updater.installed = Some(Err(install::Error::Other(e.to_string())));
         }
     }
     #[cfg(target_arch = "wasm32")]
@@ -896,12 +899,12 @@ fn poll_install(app: &mut SolveApp) {
     let result = match received {
         Ok(r) => r,
         Err(TryRecvError::Empty) => return,
-        Err(TryRecvError::Disconnected) => Err("the update stopped".into()),
+        Err(TryRecvError::Disconnected) => Err(install::Error::Other("the update stopped".into())),
     };
     app.updater.job = None;
     // Cancel already cleared the job in the UI; ignore a late "cancelled" result so Offer returns
     // without an error banner (#8908).
-    if matches!(&result, Err(e) if e == "cancelled" || e.contains("cancelled")) {
+    if matches!(&result, Err(install::Error::Cancelled)) {
         app.updater.installed = None;
         return;
     }
@@ -977,6 +980,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let managed = app.updater.managed_by().map(str::to_string);
     let arch = std::env::consts::ARCH;
     let t = Tokens::get();
+    let verification_failed = matches!(app.updater.installed, Some(Err(install::Error::Verification(_))));
     let one_click = install.is_some() && !matches!(app.updater.installed, Some(Err(_)));
     let downloading = app.updater.job.is_some();
     let state = match &app.updater.installed {
@@ -989,7 +993,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         (Some(install::Method::Msi), true) => crate::i18n::tr("update.install_msi"),
         (Some(install::Method::Dmg), true) => crate::i18n::tr("update.download_open"),
         (Some(_), true) => crate::i18n::tr("update.update_now"),
-        _ if kind.system_managed() => crate::i18n::tr("update.release_page"),
+        _ if kind.system_managed() || verification_failed => crate::i18n::tr("update.release_page"),
         _ => crate::i18n::tr("update.download"),
     };
     let download = if kind.system_managed() { crate::i18n::tr("update.release_page") } else { crate::i18n::tr("update.download") };
@@ -1031,7 +1035,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         ui.ctx().copy_text(cmd.clone());
                     }
                 });
-            } else if let Some(name) = asset.as_ref().filter(|_| app.updater.installed.as_ref().is_none_or(|r| r.is_err())) {
+            } else if let Some(name) = asset.as_ref().filter(|_| !verification_failed && app.updater.installed.as_ref().is_none_or(|r| r.is_err())) {
                 ui_kit::text(ui, &crate::i18n::format("update.file", &[("file", name)]), ui_kit::Text::Note("file"));
             }
             match (&state, &app.updater.installed, &app.updater.job) {
@@ -1061,8 +1065,15 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 (_, Some(Ok(install::Outcome::Opened(_))), _) => {
                     ui_kit::text(ui, crate::i18n::tr("update.dmg_opened"), ui_kit::Text::Report("dmg", false));
                 }
+                (_, Some(Err(install::Error::Verification(_))), _) => {
+                    ui_kit::text(ui, crate::i18n::tr("update.verification_failed"), ui_kit::Text::Report("failed", true));
+                }
                 (_, Some(Err(e)), _) => {
-                    ui_kit::text(ui, &crate::i18n::format("update.install_failed", &[("error", e)]), ui_kit::Text::Report("failed", true));
+                    ui_kit::text(
+                        ui,
+                        &crate::i18n::format("update.install_failed", &[("error", &e.to_string())]),
+                        ui_kit::Text::Report("failed", true),
+                    );
                 }
                 _ => {}
             }
@@ -1088,7 +1099,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let now = unix_now();
     match action {
         Some("download") => {
-            let url = release.download_url(&kind, arch).to_string();
+            // A failed signature or checksum must not become a direct, unverified package link.
+            let url = if verification_failed { RELEASES_PAGE } else { release.download_url(&kind, arch) }.to_string();
             ctx.open_url(egui::OpenUrl::new_tab(url));
             app.updater.open = false;
         }

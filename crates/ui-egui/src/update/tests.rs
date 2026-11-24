@@ -944,79 +944,94 @@ fn periodic_checks_refresh_the_offered_label() {
 
 #[test]
 fn install_selection_refreshes_the_button_and_progress_before_completion() {
+    let (mut h, _dir) = ready_to_install();
+    h.app.services.http_get = Some(Arc::new(install_feed));
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+    let finish_rx = std::sync::Mutex::new(finish_rx);
+    h.app.services.http_download = Some(Arc::new(move |_, _, _| {
+        started_tx.send(()).unwrap();
+        let _ = finish_rx.lock().unwrap().recv();
+        Err(FetchError::Failed("download stopped".into()))
+    }));
+    start_install(&mut h.app, &egui::Context::default());
+    started_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the signed release reaches the package download");
+    h.frames(2);
+    assert!(h.widget("Update to 999.1.0").is_some());
+    assert!(h.widget("Updating to 999.1.0.").is_some());
+    assert!(h.app.updater.installed.is_none());
+    finish_tx.send(()).unwrap();
+}
+
+fn ready_to_install() -> (crate::scenario::Harness, Scratch) {
     let dir = scratch();
     let target = dir.0.join("SolidCraft.AppImage");
-    let name = asset_name(&InstallKind::AppImage(target.clone()), std::env::consts::ARCH, "999.1.0").unwrap();
     let mut h = crate::scenario::Harness::new();
     h.app.preferences.check_updates = false;
     let mut shown = release();
     shown.tag = "v999.0.0".into();
     h.app.updater.release = Some(shown);
     h.app.updater.kind = Some(InstallKind::AppImage(target));
+    h.app.updater.managed = Some(None);
     h.app.updater.open = true;
-    h.app.services.http_get = Some(Arc::new(move |url| {
-        if url == LATEST_API {
-            return Ok(json!({"tag_name":"v999.1.0", "assets":[
-                {"name": name, "browser_download_url":format!("https://github.com/intgral-ai/intcad-releases/releases/download/v999.1.0/{name}")},
-                {"name": install::SUMS, "browser_download_url":"https://github.com/intgral-ai/intcad-releases/releases/download/v999.1.0/SHA256SUMS.txt"}
-            ]})
-            .to_string()
-            .into_bytes());
-        }
-        Ok(format!("{}  {name}\n", "a".repeat(64)).into_bytes())
-    }));
-    let (tx, rx) = std::sync::mpsc::channel();
-    let rx = std::sync::Mutex::new(rx);
-    h.app.services.http_download = Some(Arc::new(move |_, _, _| {
-        rx.lock().unwrap().recv().unwrap();
-        Err(FetchError::Failed("download stopped".into()))
-    }));
+    h.app.updater.install_test_key = Some(super::install_tests::TEST_KEY);
+    (h, dir)
+}
+
+fn install_feed(url: &str) -> Result<Vec<u8>, FetchError> {
+    const BASE: &str = "https://github.com/intgral-ai/intcad-releases/releases/download/v999.1.0/";
+    use super::install_tests::{UI_SUMS, ui_signature};
+    if url == LATEST_API {
+        let names = ["intcad-linux-x86_64.AppImage", "intcad-linux-aarch64.AppImage", install::SUMS, install::SUMS_SIG];
+        let assets = names.map(|name| json!({"name": name, "browser_download_url": format!("{BASE}{name}")}));
+        return Ok(json!({"tag_name": "v999.1.0", "assets": assets}).to_string().into_bytes());
+    }
+    match url.strip_prefix(BASE) {
+        Some(install::SUMS) => Ok(UI_SUMS.as_bytes().to_vec()),
+        Some(install::SUMS_SIG) => Ok(ui_signature().into_bytes()),
+        _ => Err(FetchError::Failed(format!("unexpected fixture URL: {url}"))),
+    }
+}
+
+#[test]
+fn a_verification_failure_does_not_offer_the_unverified_package() {
+    let (mut h, _dir) = ready_to_install();
+    h.app.services.http_get =
+        Some(Arc::new(|url| if url.ends_with(install::SUMS_SIG) { Ok(b"invalid signature".to_vec()) } else { install_feed(url) }));
+    h.app.services.http_download = Some(Arc::new(|_, _, _| panic!("the package must not be downloaded")));
     start_install(&mut h.app, &egui::Context::default());
     for _ in 0..500 {
         poll_install(&mut h.app);
-        if h.app.updater.release.as_ref().unwrap().version() == "999.1.0" {
+        if h.app.updater.job.is_none() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
+    assert!(matches!(h.app.updater.installed, Some(Err(install::Error::Verification(_)))));
     h.frames(2);
-    assert!(h.widget("Update to 999.1.0").is_some());
-    assert!(h.widget("Updating to 999.1.0.").is_some());
-    assert!(h.app.updater.installed.is_none());
-    tx.send(()).unwrap();
+    assert!(h.widget("Intcad could not verify this update. The update was not installed.").is_some());
+    assert!(h.widget("Download").is_none());
+    assert!(h.widget("Open release page").is_some());
 }
 
 #[test]
 fn cancel_download_leaves_downloading_immediately() {
     // Cancel must clear the job from the UI at once so the card leaves "Downloading" without
     // waiting for a stalled feed or checksum GET (#8908).
-    let dir = scratch();
-    let target = dir.0.join("SolidCraft.AppImage");
-    let name = asset_name(&InstallKind::AppImage(target.clone()), std::env::consts::ARCH, "999.1.0").unwrap();
-    let mut h = crate::scenario::Harness::new();
-    h.app.preferences.check_updates = false;
-    let mut shown = release();
-    shown.tag = "v999.0.0".into();
-    h.app.updater.release = Some(shown);
-    h.app.updater.kind = Some(InstallKind::AppImage(target));
-    h.app.updater.open = true;
+    let (mut h, _dir) = ready_to_install();
+    let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
     let (gate_tx, gate_rx) = std::sync::mpsc::channel();
     let gate_rx = std::sync::Mutex::new(gate_rx);
     h.app.services.http_get = Some(Arc::new(move |url| {
-        if url == LATEST_API {
-            return Ok(json!({"tag_name":"v999.1.0", "assets":[
-                {"name": name, "browser_download_url":format!("https://github.com/intgral-ai/intcad-releases/releases/download/v999.1.0/{name}")},
-                {"name": install::SUMS, "browser_download_url":"https://github.com/intgral-ai/intcad-releases/releases/download/v999.1.0/SHA256SUMS.txt"}
-            ]})
-            .to_string()
-            .into_bytes());
+        if url.ends_with(install::SUMS) {
+            waiting_tx.send(()).unwrap();
+            let _ = gate_rx.lock().unwrap().recv();
         }
-        // Stall checksum GET until the test ends so Cancel has to work before the body download.
-        let _ = gate_rx.lock().unwrap().recv();
-        Ok(format!("{}  {name}\n", "a".repeat(64)).into_bytes())
+        install_feed(url)
     }));
-    h.app.services.http_download = Some(Arc::new(|_, _, _| Err(FetchError::Failed("download must not start".into()))));
+    h.app.services.http_download = Some(Arc::new(|_, _, _| panic!("download must not start")));
     start_install(&mut h.app, &egui::Context::default());
+    waiting_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("the worker is inside the checksum GET");
     assert!(h.app.updater.job.is_some());
     h.frames(2);
     let cancel = h.widget("Cancel").expect("Cancel while Downloading");
