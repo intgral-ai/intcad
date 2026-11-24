@@ -949,3 +949,48 @@ acceptance all need the single landed SHA that does not exist yet.
 Commands and receipts: `kvl/kernel-suite.log`, `kvl/kernel-boolean.log`, `suite-*.log`,
 `full-*.log`, `kernel-rig-45284624556.json`, `rules2-*.log`, `pl-*.log`,
 `packaging-lint-89377829c7.log` under `~/.local/state/intcad-e2e/a6-pr209-receipts/`.
+
+
+### 11.19 Workspace-wide local measurement at `40eb677031`: two unlisted failures found and fixed
+
+The CI rust gate on this head died mid-step with no log and no artifact (§11.18), so the whole
+workspace was measured locally instead: `cargo test --workspace --profile ci --locked
+--no-fail-fast -- --test-threads=8` in the Ubuntu 24.04 builder container, exit nonzero,
+**17,153 passed, 15 failed** (log `workspace-tests-40eb677031/cargo-test.log`).
+
+Thirteen of the fifteen are the retained allowlist (2 CLI integration, 4 engine, 6 kernel, 1
+smlib). Two were **not listed**, and both were real defects of the port, not allowances:
+
+1. `solidcraft-io::design::tests::a_design_saved_at_format_51_with_its_pending_changes_saves_and_reopens`
+   — `assert_eq!(FORMAT, 58)` failed with `left: 59, right: 58`. `FORMATS.current()` is
+   `hand 21 + 1 + folded 36 + (pending? 1)`, so this build wrote **59**: `crates/doc/src/format/pending/`
+   still held five change files whose bytes are already the released `v51/` files in this tree —
+   `bridged-counterbore`, `fillet-turn`, `hole-direction-own-faces`,
+   `revolve-axis-origin-expressions`, `transferred-profile-frame` all have identical SHA-256 to
+   `crates/doc/src/format/v51/<name>.rs` — and the registry counted them twice. The pending copies
+   were deleted, which is exactly CD-1's wording ("the five Intcad `format_pending` names are the
+   same bytes as v0.44.1's `v51` files"). Re-measured: `solidcraft-io --lib design::` 87 passed,
+   0 failed, exit `0`; `solidcraft-doc --lib` 874 passed, 0 failed, exit `0`;
+   `scripts/test-format-pending.sh` exit `0`.
+2. `solidcraft-ui-egui::requested_menu_icons_have_artwork_and_match_manifest`
+   — the audit's runtime list asks for `shield` (`crates/ui-egui/src/ui_kit/assistant.rs` paints
+   it) while `assets/icons/ui/design/requested_icons.txt` did not list it. The artwork exists
+   (`assets/icons/ui/design/svg/flat/shield.svg`), and the audit records it as no placeholder.
+   Regenerated through the test's own switch (`UPDATE_ICON_MANIFEST=1`), +1 line. Re-measured:
+   `cargo test -p solidcraft-ui-egui --test icon_audit` 4 passed, 0 failed, exit `0`.
+   `cargo xtask lists` and `cargo xtask assets` (1060 files, all attributed) exit `0`.
+
+Both fixes are commit `0d2f76011e` on `prep/int1454-kvl`.
+
+**Disk is ruled out as the reason the CI gate died.** A full cold-ish workspace test build here
+needs `target/ci` **50.5 GiB** (48.1 GiB in `deps`, the largest single artifact 0.85 GiB, so it is
+many test binaries rather than one outlier). The same runner image frees to
+`free-disk: 89658 MiB -> 116839 MiB available on /` before Cargo restores its cache (#185's gate
+log, line 282), so ~114 GiB is available: the build fits.
+
+**Still open.** `build-tests` (`Build full-baseline archive`, `timeout-minutes: 60`) was cancelled
+at its limit on this branch while develop's warm-cache run took 27 minutes and #185's cold run 40;
+a raised budget is proposed to the owner but not applied. The CI gate's terminal result on this
+branch, the landed-SHA battery (K12 17 IDs, same-kernel before/after, B6, CD-1 both
+`open_newer_files` settings, platform/PP) and B3 remain open. `develop` was `6032271178` with no
+`solidcore/` entry and the `8ddce901` pin at the time of this entry.
