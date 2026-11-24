@@ -1264,8 +1264,13 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   `(13,13,13)`. The whole empty region still fails: **494 of 1300** baseline-empty pixels
   differ with the opaque `(13,13,13)`, concentrated in the child's top rows from `y=471`
   (e.g. `(319,471)` expected CAD `(28,28,28)`). Rows from `473` down are correct. This is
-  a real remaining defect, not a pass; a targeted top-extent fix and another measured run
-  are in progress.
+  a real remaining defect, not a pass.
+  **Second measured run** (binary `38390a1f41b55ad01a296e86ca1cf1e4c5a99cb41dde0126ca0bad0b981a29f1`
+  from `a58265778e`, same VM, geometry and starting state): both named corners pass, and the
+  empty-region mismatches fell from **494 to 31** of 1300. The remaining 31 are a 1-px band
+  along the **top-right rounded arc** (`(783,472)`, `(784,472)`, `(786,473)`, `(789,474)`,
+  `(792,476)` …), all still `(13,13,13)` where CAD should show: the arc's partially painted
+  pixels are inside the mask. Not a pass.
 - **#221 composer sizing — local browser fix reviewed, not landed.** `b002647acb` held the
   centred input at 14 px and the composer at 86 px for both agent modes in the same browser
   viewport. Independent Spec and Quality review approved; controller rerun had 12 passes and
