@@ -2866,3 +2866,37 @@ On that tree: `version = "0.1.3"`, `crates/doc/src/format/pending/` holds only R
 above the merged base, `test_gate.py` / `test_release_content.py` (skipped=11) /
 `test_release_candidate.py` all pass, and `scripts/test-format-pending.sh` reports the next fold is
 v52. The real rebase is therefore a mechanical repetition of a verified sequence, not a novel merge.
+
+## 23. Paid-authority integration PR: final description (ready to post)
+
+> **One integration PR carries the four remaining paid-authority pull requests.** Owner-approved
+> on 2026-11-24 with traceability kept: each original PR, its commits, its review and its tests
+> stay intact; this branch only combines them so the release pays for one full CI instead of four.
+>
+> **Members (merge commits, in this order).**
+>
+> | PR | Branch | Head merged | What it adds |
+> |---|---|---|---|
+> | #227 | `task/int1497-cli-authority` | `e62751e287` | CLI pays for its own work: real account authority, exactly-once settlement, nothing published after the deadline; rev4 300 s grant ceiling |
+> | #233 | `task/int1497-control-bound` | `4d14460262` | Five desktop paid entries declare a 280 s safe-stop bound that fits one lease |
+> | #235 | `task/int1497-monotonic-clock` | `e4edd2ffdf` | Windows and macOS count sleep toward authorization deadlines |
+> | #234 | `task/int1497-gui-bridge` | `a48a61dc62` | Charged Agent Chat bridge calls are admitted for a proved session and settle once |
+>
+> Base: `develop` after #214, #224, #238 and #239 have landed. `#232` is explicitly not in 0.1.3.
+> The branch head is re-merged with the final `develop` once, and `skills/solidcraft-crash-safety/SKILL.md`
+> is kept at its trimmed 3538 bytes (policy anchors intact), so `xtask skills` stays green.
+>
+> **Why batching.** `develop` requires `ci` with `strict_required_status_checks_policy: true`, and a
+> full-scope run measures ~2 hours (1:48:49, 1:53:33, 2:03:49 on recent runs), so four separate
+> merges cost ~8 hours of repeated CI.
+>
+> **Evidence on the composed tree.** Merge rehearsal of the four heads: no conflicts.
+> `cargo check -p solidcraft --profile ci --locked`: exit 0 (475 crates); also
+> `-p solidcraft-cli -p solidcraft-mcp -p solidcraft-account-native`: exit 0.
+> `cargo clippy … -D warnings`: exit 0. `cargo fmt --all --check`: clean.
+> `test_gate`, `test_release_content`, `test_package_contents`, `test_release_candidate`: pass.
+> `packaging/tests`: 152 tests, 0 failures (excluding the PowerShell-only icon test).
+> `xtask skills`, `xtask licences --check`, `xtask lists`, `xtask i18n --check`: pass.
+> One full `ci` run on the final head remains the merge gate.
+>
+> **Original PRs** stay open until this merges, then are closed with a pointer here.
