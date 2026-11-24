@@ -1278,9 +1278,11 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   looks like leftover run state rather than a product regression; the owner must decide
   whether the test's isolation is wrong or the runner state must be cleaned. Filed with
   the logs and the owner question as [#225](https://github.com/intgral-ai/intcad/issues/225).
-  The Release Manager now owns the fix: a regression test and a change in
-  `crates/engine/src/validation` so a report another writer committed before its state
-  record is adopted instead of reported as a mismatch (local branch `int225-ci-race`). Two other failures in that job are
+  The Release Manager owns the fix. Local branch `int225-ci-race`: the regression test
+  reproduced the exact CI error first, then `crates/engine/src/validation` adopts the
+  winning verifiable terminal report (and its state) when a writer published only the
+  report; a different terminal state still returns `REPORT_MISMATCH` (a guard test covers
+  that). Focused run: `55 passed, 3594 filtered out` on `validation::tests`. Two other failures in that job are
   listed known failures (SMLib variable fillet `Unsupported`, the dialog variable round
   status 1001). The `ci` verifier then failed with `rust: real job result is not success`
   and `rust: missing receipt`. Until `ci` is green at a reviewed `develop`, no release-gate
