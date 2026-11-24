@@ -137,7 +137,10 @@ class StagingConfig(unittest.TestCase):
             subprocess.run([sys.executable, "-I", HELPER, "inject"],
                            env={**os.environ, SNAPSHOT: snapshot.removeprefix("config=").rstrip("\n"),
                                 "GITHUB_ENV": str(env_file)}, check=True)
-            self.assertEqual(dict(line.split("=", 1) for line in env_file.read_text().splitlines()), CONFIG)
+            injected = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+            tuple_sha = __import__("staging_account_config").tuple_sha256(CONFIG)
+            self.assertEqual(injected, {**CONFIG, "ACCOUNT_CONFIG_SOURCE": "checked-in:staging",
+                                        "ACCOUNT_CONFIG_SHA256": tuple_sha})
 
     def test_snapshot_rejects_bad_committed_config_without_output(self):
         sentinel = "concealed-fixture-value"
@@ -333,9 +336,12 @@ class StagingWorkflow(unittest.TestCase):
                 steps = jobs[job]["steps"]
                 compile_step = next(i for i, step in enumerate(steps) if step.get("run", "").startswith(command))
                 inject = steps[compile_step - 1]
-                self.assertEqual(inject.get("run"), "python -I scripts/ci/staging_account_config.py inject")
-                self.assertEqual(inject["env"], snapshot_env)
-                self.assertEqual(inject["if"], "inputs.staging_account_config != ''")
+                self.assertEqual(inject["env"], {**snapshot_env,
+                                                 "PRODUCTION_ACCOUNT_CONFIG": "${{ inputs.production_account_config }}"})
+                self.assertEqual(inject["run"],
+                                 "python -I scripts/ci/staging_account_config.py inject-auto")
+                self.assertEqual(inject["if"],
+                                 "inputs.staging_account_config != '' || inputs.production_account_config != ''")
         join = jobs["macos"]
         self.assertFalse(set(join["env"]) & (set(CONFIG) | {SNAPSHOT}))
         uses_snapshot = [step for step in join["steps"] if SNAPSHOT in step.get("env", {})]
@@ -393,28 +399,41 @@ class StagingWorkflow(unittest.TestCase):
             }
             descriptor = directory / "build.json"
             command = [sys.executable, "-c", step["run"]]
-            for snapshot, fields in (("", expected), (json.dumps(CONFIG), {
-                **expected, "accountConfig": {"source": "checked-in:staging", "sourceRevision": sha,
-                                              "path": CONFIG_PATH, "values": CONFIG},
-            })):
-                result = subprocess.run(command, cwd=root, env={**env, SNAPSHOT: snapshot},
-                                        capture_output=True, text=True)
+            tuple_sha = __import__("staging_account_config").tuple_sha256(CONFIG)
+            for source, snapshot, fields in (
+                ("", "", expected),
+                ("checked-in:staging", json.dumps(CONFIG), {
+                    **expected, "accountConfig": {"source": "checked-in:staging", "sourceRevision": sha,
+                                                  "path": CONFIG_PATH, "values": CONFIG},
+                }),
+                ("environment:production", "", {
+                    **expected, "accountConfig": {"source": "environment:production",
+                                                  "sourceRevision": sha, "tupleSha256": tuple_sha},
+                }),
+            ):
+                result = subprocess.run(command, cwd=root, env={
+                    **env, SNAPSHOT: snapshot, "PRODUCTION_ACCOUNT_CONFIG": "",
+                    "ACCOUNT_CONFIG_SOURCE": source, "ACCOUNT_CONFIG_SHA256": tuple_sha if source else "",
+                }, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(json.loads(descriptor.read_text()), fields)
                 descriptor.unlink()
-            result = subprocess.run(command, cwd=root, env={**env, SNAPSHOT: "{}"},
+            result = subprocess.run(command, cwd=root, env={**env, SNAPSHOT: "{}",
+                                    "ACCOUNT_CONFIG_SOURCE": "checked-in:staging"},
                                     capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(descriptor.exists())
             result = subprocess.run([sys.executable, "-c", step["run"]], cwd=root,
-                                    env={**env, SNAPSHOT: json.dumps({**CONFIG, CLIENT: "client_Drift"})},
+                                    env={**env, SNAPSHOT: json.dumps({**CONFIG, CLIENT: "client_Drift"}),
+                                         "ACCOUNT_CONFIG_SOURCE": "checked-in:staging"},
                                     capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(descriptor.exists())
             # Ordinary runs must not read the committed staging config at all.
             new_sha = config_checkout(root, b"not json")
             result = subprocess.run([sys.executable, "-c", step["run"]], cwd=root,
-                                    env={**env, "GITHUB_SHA": new_sha, SNAPSHOT: ""},
+                                    env={**env, "GITHUB_SHA": new_sha, SNAPSHOT: "",
+                                         "ACCOUNT_CONFIG_SOURCE": ""},
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(descriptor.read_text()), {**expected, "sourceRevision": new_sha})

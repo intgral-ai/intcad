@@ -31,6 +31,43 @@ No production values are checked in. A local build, developer build or CI job wi
 variables builds an anonymous, offline desktop with the existing account refusals. The release
 builder must set all three together and record which values it used in release evidence.
 
+## Production packages
+
+The formal release gate (`release-gate.yml`) passes
+`production_account_config: ${{ vars.INTCAD_PRODUCTION_ACCOUNT_CONFIG }}` to
+`release.yml`. The variable is a protected repository variable holding one JSON object with
+exactly the three keys above and the same accepted forms as the staging tuple. It lives outside
+this repository's files and is never written to logs: `verify-production` prints only the
+tuple's SHA-256.
+
+The build fails closed instead of producing an anonymous candidate:
+
+- the release gate is refused when `production_account_config` is empty;
+- `release.yml` refuses production values from any caller other than the release gate, and
+  refuses a build that supplies both staging and production values;
+- the values are injected with `option_env!` before compile exactly as in staging.
+
+Package evidence (`build.json`, `accountConfig`) records
+`{"source":"environment:production","sourceRevision":"<checkout SHA>","tupleSha256":"<SHA>"}`
+instead of the values. The checkout SHA and the tuple SHA together answer, for any candidate,
+which account its bytes embed.
+
+## Verifying a candidate binary
+
+A staged build runs this after packaging, and a reviewer can run it on any extracted package:
+
+```sh
+INTCAD_WORKOS_PUBLIC_CLIENT_ID=... INTCAD_AUTHKIT_VERIFICATION_ORIGIN=... \
+INTCAD_PRODUCT_HTTPS_ORIGIN=... \
+python3 -I scripts/ci/verify_embedded_account.py <path-to-intcad-binary>
+```
+
+It reads the binary, requires all three exact literal values, and prints the tuple SHA-256 and
+the names of anything missing. Compare that SHA with the candidate's `build.json`; the
+production tuple's SHA is also printed by `scripts/ci/staging_account_config.py
+verify-production`. The command does not launch the desktop app, contact WorkOS or the product
+service, and never prints the values themselves.
+
 ## Before a staging package run
 
 Use **Staging desktop packages (nonpublishing)** (`staging-packages.yml`), not the ordinary

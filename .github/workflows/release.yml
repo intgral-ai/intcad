@@ -22,6 +22,10 @@ on:
         description: Validated public account snapshot from the staging wrapper
         type: string
         default: ""
+      production_account_config:
+        description: Validated public production account snapshot, from the release gate's protected variables
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -53,19 +57,36 @@ jobs:
       date: ${{ steps.v.outputs.date }}
       distribution: ${{ steps.v.outputs.distribution }}
     steps:
-      - id: staging-guard
-        name: Require the manual staging wrapper
-        # A missing output must not turn a staging dispatch into an ordinary build.
+      - id: account-config-guard
+        name: Require the right caller for a staged account configuration
+        # A missing or misdirected snapshot must never become an anonymous package silently,
+        # and the formal release gate must never build without production values.
         if: >-
-          inputs.staging_account_config != '' ||
-          github.workflow_ref == format('{0}/.github/workflows/staging-packages.yml@{1}', github.repository, github.ref)
+          inputs.staging_account_config != '' || inputs.production_account_config != '' ||
+          github.workflow_ref == format('{0}/.github/workflows/release-gate.yml@{1}', github.repository, github.ref)
         env:
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
           STAGING_WORKFLOW_REF: ${{ format('{0}/.github/workflows/staging-packages.yml@{1}', github.repository, github.ref) }}
+          RELEASE_GATE_WORKFLOW_REF: ${{ format('{0}/.github/workflows/release-gate.yml@{1}', github.repository, github.ref) }}
           HAS_STAGING_CONFIG: ${{ inputs.staging_account_config != '' && '1' || '0' }}
+          HAS_PRODUCTION_CONFIG: ${{ inputs.production_account_config != '' && '1' || '0' }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ "$CALLER_WORKFLOW_REF" != "$STAGING_WORKFLOW_REF" ] || [ "$HAS_STAGING_CONFIG" != 1 ]; then
-            echo '::error::Staging account configuration requires the manual staging wrapper and a snapshot'
+          if [ "$HAS_STAGING_CONFIG" = 1 ] && [ "$HAS_PRODUCTION_CONFIG" = 1 ]; then
+            echo '::error::a build takes either the staging or the production account configuration, never both'
+            exit 1
+          fi
+          if [ "$HAS_STAGING_CONFIG" = 1 ]; then
+            if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ "$CALLER_WORKFLOW_REF" != "$STAGING_WORKFLOW_REF" ]; then
+              echo '::error::Staging account configuration requires the manual staging wrapper and a snapshot'
+              exit 1
+            fi
+          fi
+          if [ "$HAS_PRODUCTION_CONFIG" = 1 ] && [ "$CALLER_WORKFLOW_REF" != "$RELEASE_GATE_WORKFLOW_REF" ]; then
+            echo '::error::Production account configuration is only accepted from the release gate'
+            exit 1
+          fi
+          if [ "$CALLER_WORKFLOW_REF" = "$RELEASE_GATE_WORKFLOW_REF" ] && [ "$HAS_PRODUCTION_CONFIG" != 1 ]; then
+            echo '::error::the release gate needs production_account_config from its protected variables; a candidate is never built with an anonymous account'
             exit 1
           fi
       - &checkout
@@ -79,6 +100,12 @@ jobs:
         env:
           STAGING_ACCOUNT_CONFIG: ${{ inputs.staging_account_config }}
         run: python -I scripts/ci/staging_account_config.py verify
+      - id: verify-production-config
+        name: Verify the production snapshot shape (values are never checked in)
+        if: inputs.production_account_config != ''
+        env:
+          PRODUCTION_ACCOUNT_CONFIG: ${{ inputs.production_account_config }}
+        run: python -I scripts/ci/staging_account_config.py verify-production
       - id: v
         name: Resolve checkout version (never a publication decision)
         run: |
@@ -154,11 +181,12 @@ jobs:
           key: release-linux-${{ matrix.arch }}
           save-if: false
       - &inject-staging-account
-        name: Inject public staging account configuration before compile
-        if: inputs.staging_account_config != ''
+        name: Inject public account configuration before compile
+        if: inputs.staging_account_config != '' || inputs.production_account_config != ''
         env:
           STAGING_ACCOUNT_CONFIG: ${{ inputs.staging_account_config }}
-        run: python -I scripts/ci/staging_account_config.py inject
+          PRODUCTION_ACCOUNT_CONFIG: ${{ inputs.production_account_config }}
+        run: python -I scripts/ci/staging_account_config.py inject-auto
       - name: Build and package (AppImage, deb, rpm, tar.gz)
         run: packaging/linux/package.sh
       - name: Check the packages (no desktop launch)
@@ -180,6 +208,12 @@ jobs:
           rpm -qlp dist/release/*.rpm | grep -E '/usr/bin/intcad$|THIRD-PARTY-LICENSES.txt'
           tar -tzf dist/release/*.tar.gz | grep -E '/bin/intcad$|THIRD-PARTY-LICENSES.txt'
           ldd target/release/intcad
+          # The configured account is literal bytes in the executable. A staged build proves
+          # here which tuple it embedded, without launching the app or copying the values to
+          # evidence beyond the tuple's SHA-256.
+          if [ -n "${ACCOUNT_CONFIG_SOURCE:-}" ]; then
+            python -I scripts/ci/verify_embedded_account.py target/release/intcad
+          fi
           # This runner has the web view's libraries (it built against them), so an AppImage
           # that starts here says nothing about a user's machine: the next step covers that.
           for appimage in dist/release/*.AppImage; do
@@ -250,16 +284,22 @@ jobs:
           data = dict(version=1, packageId=os.environ['PACKAGE_ID'], sourceRevision=sha,
                       target=os.environ['PACKAGE_TARGET'], contractDigest=contract_digest,
                       artifacts=[dict(name=p.name, sha256=digest(p)) for p in files])
-          snapshot = os.environ.get('STAGING_ACCOUNT_CONFIG')
-          if snapshot:
+          source = os.environ.get('ACCOUNT_CONFIG_SOURCE')
+          if source == 'checked-in:staging':
+              snapshot = os.environ.get('STAGING_ACCOUNT_CONFIG')
               sys.path.insert(0, str(Path('scripts/ci').resolve()))
               from staging_account_config import CONFIG_PATH, verify_snapshot
               try:
                   values = verify_snapshot(snapshot, sha)
               except ValueError as error:
                   raise SystemExit(str(error)) from None
-              data['accountConfig'] = dict(source='checked-in:staging', path=CONFIG_PATH,
+              data['accountConfig'] = dict(source=source, path=CONFIG_PATH,
                                            sourceRevision=sha, values=values)
+          elif source == 'environment:production':
+              # Public values only: the tuple's SHA proves which account was embedded without
+              # copying the values into evidence.
+              data['accountConfig'] = dict(source=source, sourceRevision=sha,
+                                           tupleSha256=os.environ.get('ACCOUNT_CONFIG_SHA256'))
           (directory / 'build.json').write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
 
           # The runtime requirement is decided from the package bytes themselves.
