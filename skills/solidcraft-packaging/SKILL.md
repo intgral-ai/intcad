@@ -8,7 +8,7 @@ description: "Use when preparing or shipping a SolidCraft release, changing inst
 A push to `main` or a tag is not a release; `docs/releasing.md` is the procedure, follow it when asked to prepare or ship one.
 
 ## desktop-only Mastra distribution exception
-The desktop TS companion (`packages/mastra-runtime/`) follows `docs/mastra-distribution.md` and `skills/solidcraft-ground-rules/SKILL.md`; host/core stay Rust/wasm, web has no Node/runtime. Cargo is not Node or rights clearance: #7 source audits and #14 installed checks stay required, and runtime jobs need `artifact`/`verified` with JSON status and exit 0.
+The desktop TS companion (`packages/mastra-runtime/`) follows `docs/mastra-distribution.md` and `skills/solidcraft-ground-rules/SKILL.md`; host/core stay Rust/wasm, web has no Node/runtime. Cargo is not npm/Node or rights clearance: #7 source audits and #14 installed checks stay required, and runtime jobs need `artifact`/`verified` with JSON status and exit 0.
 
 A release carries the built-in agent (`SOLIDCRAFT_WITH_MASTRA_AGENT=1`, `SOLIDCRAFT_DISTRIBUTION=mastra-agent`), built per runner from the pinned lock and Node, proved from installed bytes (`docs/mastra-packaging.md`). Legacy `mastra/` stays `=0`.
 
