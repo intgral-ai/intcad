@@ -415,8 +415,10 @@ handling and the notes path pass by inspection. `can_admins_bypass` handling is 
 field accepted with a warning, `false` accepted, `true` refused, three tests). Two items remain:
 the tag→SHA recheck still uses a **local** tag and a stale main checkout, so remote tag drift
 after checkout is missed; and the new "one-person release environment with a warning" weakens
-separation of duties unless the owner explicitly opts in. **Explicit owner decision required
-before using that exception.** Local Python gate/publish tests pass on the branch.
+separation of duties unless the owner explicitly opts in. **Owner decision (recorded): the
+exception is allowed only when an explicit repository/environment switch enables it; the
+default stays strict (independent reviewer, no self-review), and the warning must appear in
+the verified draft summary so it is auditable.** Local Python gate/publish tests pass on the branch.
 
 **Migration branch status for this path (`5ca2f08edb`, not yet a PR).** The production
 public key is now embedded at
