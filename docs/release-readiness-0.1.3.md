@@ -1312,7 +1312,8 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   terminal state to a report a worker may still replace (a provisional `passed` report that
   becomes `cancelled`). The fix was narrowed: adopt only a **cancelled** report when the
   cancellation marker exists, and a new guard test proves a provisional result report still
-  returns `REPORT_MISMATCH`. Re-running the focused tests and the CLI test is in progress. Two other failures in that job are
+  returns `REPORT_MISMATCH`. Pushed as `dc71fadad3`; focused run after the narrowing:
+  **57 passed**. A local run of the originating CLI test itself is in progress. Two other failures in that job are
   listed known failures (SMLib variable fillet `Unsupported`, the dialog variable round
   status 1001). The `ci` verifier then failed with `rust: real job result is not success`
   and `rust: missing receipt`. Until `ci` is green at a reviewed `develop`, no release-gate
