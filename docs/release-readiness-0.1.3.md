@@ -2696,3 +2696,9 @@ the regression gate, queued=0`. The `Build full-baseline archive` job succeeded,
 prerequisite for the shards, so the run has passed its longest build step and is in the execution
 fan-out. Expected completion is inside the normal window; no job has failed in either attempt of
 the branch.
+
+**#239's CI is green (`7db657fa61`).** The tag-push gate change passed the pull-request CI in
+affected mode, so its own implementation is validated; it is deliberately **not** merged yet,
+because merging it now would move `develop` and invalidate #214's nearly finished full run
+(19/38, archive done, shards running). Merge order stays **#214 → #224 → #239 → integration**, and
+#239 will do one `merge develop` + short re-run at its turn.
