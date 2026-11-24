@@ -10,6 +10,8 @@
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use super::{MAX_MESSAGE, MAX_MESSAGE_BYTES};
+
 /// One advertised value, with an optional human-readable group label.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +31,15 @@ pub struct ConfigOption {
     pub category: String,
     pub current_value: String,
     pub options: Vec<ConfigChoice>,
+}
+
+/// One slash command the agent advertises for its open session (`available_commands_update`).
+/// `name` is the agent's own, trimmed; `description` is its own words or empty.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableCommand {
+    pub name: String,
+    pub description: String,
 }
 
 /// Parse ACP select options as a bounded authoritative snapshot.
@@ -583,17 +594,35 @@ pub enum Incoming {
         session: String,
         options: Vec<ConfigOption>,
     },
+    /// The agent's slash commands for its session, replacing the previous list whole.
+    Commands {
+        session: String,
+        commands: Vec<AvailableCommand>,
+    },
     /// A request we don't serve (file system, terminal, …): answer "method not found".
     Unsupported {
         rpc: Value,
         method: String,
     },
-    /// Anything else (mode and command lists, usage): nothing to show.
+    /// Anything else (usage, unknown updates): nothing to show.
     Ignored,
 }
 
 /// The longest text kept from one tool call's output.
 const MAX_OUTPUT: usize = 2000;
+
+/// The longest command name kept: the page's send limit, so a selected name is always sendable.
+const MAX_COMMAND_NAME: usize = MAX_MESSAGE;
+/// The longest serialized command name kept: the page action's byte budget, with room for its
+/// JSON envelope (`{"type":"send","text":"…"}`).
+const MAX_COMMAND_NAME_BYTES: usize = MAX_MESSAGE_BYTES.saturating_sub(64);
+
+/// Whether a command name fits both budgets the page enforces: characters and the serialized
+/// bytes of the action that would send it. A name of four-byte code points passes a character
+/// cap but can still exceed the byte cap.
+fn command_name_fits(name: &str) -> bool {
+    name.chars().count() <= MAX_COMMAND_NAME && serde_json::to_string(name).is_ok_and(|quoted| quoted.len() <= MAX_COMMAND_NAME_BYTES)
+}
 
 fn content_text(c: &Value) -> Option<String> {
     // A content block, or a tool call content item wrapping one (`{type: "content", content}`).
@@ -814,6 +843,23 @@ fn update(u: &Value, session: &str) -> Incoming {
             ConfigParse::Snapshot(options) if !session.is_empty() => Incoming::ConfigOptions { session: session.into(), options },
             _ => Incoming::Ignored,
         },
+        Some("available_commands_update") if !session.is_empty() => {
+            let Some(list) = u.get("availableCommands").and_then(Value::as_array) else {
+                return Incoming::Ignored;
+            };
+            let commands = list
+                .iter()
+                .take(256)
+                .filter_map(|c| {
+                    let name = c.get("name")?.as_str()?.trim();
+                    (!name.is_empty() && command_name_fits(name)).then(|| AvailableCommand {
+                        name: name.to_string(),
+                        description: c.get("description").and_then(Value::as_str).unwrap_or("").chars().take(1024).collect(),
+                    })
+                })
+                .collect();
+            Incoming::Commands { session: session.into(), commands }
+        }
         Some("plan") => Incoming::Plan {
             session: session.to_string(),
             steps: u
@@ -1303,6 +1349,88 @@ mod tests {
         assert_eq!(config_options(&json!({"configOptions":[]})), ConfigParse::Snapshot(vec![]));
         let notification = json!({"sessionUpdate":"config_option_update","configOptions":[]});
         assert_eq!(update(&notification, "s"), Incoming::ConfigOptions { session: "s".into(), options: vec![] });
+    }
+
+    /// The built-in agent advertises its slash commands in one update after the session opens
+    /// (`agent-smoke.mjs` reads `skill/<name>` from it). It replaces the list whole; hostile
+    /// entries are dropped, the list is bounded, and an empty list is a real clear.
+    #[test]
+    fn advertised_slash_commands_parse_without_panicking_on_hostile_entries() {
+        let real = json!({"sessionUpdate": "available_commands_update", "availableCommands": [
+            {"name": "skill/solidcraft-modeling", "description": "Build a part"},
+            {"name": "  skill/solidcraft-editing  ", "description": 7},
+            {"name": "\t", "description": "blank name"},
+            {"description": "no name at all"},
+            {"name": "skill/plain"},
+            "not an object",
+            {"name": 3},
+        ]});
+        assert_eq!(
+            update(&real, "s"),
+            Incoming::Commands {
+                session: "s".into(),
+                commands: vec![
+                    AvailableCommand { name: "skill/solidcraft-modeling".into(), description: "Build a part".into() },
+                    AvailableCommand { name: "skill/solidcraft-editing".into(), description: String::new() },
+                    AvailableCommand { name: "skill/plain".into(), description: String::new() },
+                ],
+            }
+        );
+        let many: Vec<Value> = (0..300).map(|n| json!({"name": format!("skill/{n}")})).collect();
+        let Incoming::Commands { commands, .. } = update(&json!({"sessionUpdate": "available_commands_update", "availableCommands": many}), "s")
+        else {
+            panic!()
+        };
+        assert_eq!(commands.len(), 256, "an update is bounded");
+        assert_eq!(
+            update(&json!({"sessionUpdate": "available_commands_update", "availableCommands": []}), "s"),
+            Incoming::Commands { session: "s".into(), commands: vec![] },
+            "an empty list clears the menu"
+        );
+        for hostile in [
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": [{"name": "x"}]}),
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": []}),
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": "skill/x"}),
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": {}}),
+            json!({"sessionUpdate": "available_commands_update"}),
+        ] {
+            assert_eq!(update(&hostile, ""), Incoming::Ignored, "a list without a session belongs to no chat");
+        }
+        // With a session, a malformed or absent list is not an empty clear: the menu stays as it was.
+        for malformed in [
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": "skill/x"}),
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": {}}),
+            json!({"sessionUpdate": "available_commands_update"}),
+        ] {
+            assert_eq!(update(&malformed, "s"), Incoming::Ignored, "only an array is a command list");
+        }
+        // A name longer than a message could be sent is dropped rather than offered as a draft
+        // the send path would refuse.
+        let too_long: String = "x".repeat(MAX_COMMAND_NAME + 1);
+        let Incoming::Commands { commands, .. } =
+            update(&json!({"sessionUpdate": "available_commands_update", "availableCommands": [{"name": too_long}]}), "s")
+        else {
+            panic!()
+        };
+        assert!(commands.is_empty(), "an unsendable command is no command");
+        // Four-byte code points pass a character-only cap but can overflow the page's byte
+        // budget: such a name would make the send action too large, so it is dropped.
+        let emoji = "😀".repeat(MAX_COMMAND_NAME);
+        let Incoming::Commands { commands, .. } =
+            update(&json!({"sessionUpdate": "available_commands_update", "availableCommands": [{"name": emoji}]}), "s")
+        else {
+            panic!()
+        };
+        assert!(commands.is_empty(), "a name over the IPC byte budget is dropped");
+        // A four-byte name that fits both budgets is kept.
+        let emoji_ok = "😀".repeat(MAX_COMMAND_NAME / 4);
+        let Incoming::Commands { commands, .. } =
+            update(&json!({"sessionUpdate": "available_commands_update", "availableCommands": [{"name": emoji_ok.clone()}]}), "s")
+        else {
+            panic!()
+        };
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, emoji_ok);
     }
 
     #[test]

@@ -5,6 +5,9 @@
 //! parametric-CAD desktop: application bar, a toolbar of workspace tabs and panels, the browser
 //! on the left, the 3D viewport with an axis view and navigation bar, the command dialog on the
 //! right of the viewport, the command palette and a bottom or left-sidebar feature timeline.
+// The web-view state is one large `json!` value; the Assistant's menu fields and #221's
+// centred-composer fields together exceed the default macro recursion limit.
+#![recursion_limit = "256"]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 use crate::ui_kit::{Container, Surface};

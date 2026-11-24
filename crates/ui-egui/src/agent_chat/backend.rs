@@ -120,6 +120,14 @@ pub enum Event {
     /// The agent refused the model it was just sent, and says why.
     ModelRejected(String),
     ConfigOptions(Vec<ConfigOption>),
+    /// The agent opened a session with this id; state of the previous session no longer applies.
+    Session(String),
+    /// The slash commands the agent advertises, and the session they belong to, replacing the
+    /// list whole.
+    Commands {
+        session: String,
+        commands: Vec<super::acp::AvailableCommand>,
+    },
     ConfigOptionFinished {
         id: String,
         result: Result<Vec<ConfigOption>, String>,

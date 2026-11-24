@@ -47,6 +47,12 @@ export interface ConfigOption {
   options: { value: string; name: string; description: string; group: string | null }[];
 }
 
+/** A slash command the agent advertised for the open session; `name` is its own, unaltered. */
+export interface AvailableCommand {
+  name: string;
+  description: string;
+}
+
 export interface AuthMethod {
   id: string;
   label: string;
@@ -205,6 +211,8 @@ export interface AssistantState {
   customModels: boolean;
   config: ConfigOption[] | null;
   configPending: boolean;
+  /** The slash commands the agent advertised for this session, in the agent's own words. */
+  commands: AvailableCommand[];
   /** Lines about the agent worth saying: a model warning, the runtime, the sign-in. */
   notes: string[];
   /** The agent asks for a sign-in: how each of its methods is done. */

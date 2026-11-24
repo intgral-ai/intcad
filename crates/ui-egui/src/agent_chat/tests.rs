@@ -10890,6 +10890,75 @@ fn modern_snapshots_replace_provider_choices_and_ignore_legacy_updates() {
 }
 
 #[test]
+fn advertised_commands_fill_the_page_and_new_chat_clears_them() {
+    let (mut app, _script, _ctx) = app_with_script();
+    app.agent_chat.on_event(Event::Session("s1".into()));
+    app.agent_chat.on_event(Event::Commands {
+        session: "s1".into(),
+        commands: vec![
+            acp::AvailableCommand { name: "skill/solidcraft-modeling".into(), description: "Build a part".into() },
+            acp::AvailableCommand { name: "skill/solidcraft-editing".into(), description: String::new() },
+        ],
+    });
+    let state: Value = serde_json::from_str(&web::state(&mut app)).expect("the state is JSON");
+    assert_eq!(
+        state["commands"],
+        json!([
+            {"name": "skill/solidcraft-modeling", "description": "Build a part"},
+            {"name": "skill/solidcraft-editing", "description": ""},
+        ])
+    );
+    // Each update is the agent's whole list, not an addition to it.
+    app.agent_chat.on_event(Event::Commands {
+        session: "s1".into(),
+        commands: vec![acp::AvailableCommand { name: "skill/checking".into(), description: String::new() }],
+    });
+    assert_eq!(app.agent_chat.commands.len(), 1);
+    assert_eq!(app.agent_chat.commands[0].name, "skill/checking");
+    // An update from another session is not this chat's list.
+    app.agent_chat.on_event(Event::Commands {
+        session: "retired".into(),
+        commands: vec![acp::AvailableCommand { name: "skill/other".into(), description: String::new() }],
+    });
+    assert_eq!(app.agent_chat.commands[0].name, "skill/checking");
+    // A new chat starts the agent on another session: the retired one's commands go.
+    new_chat(&mut app);
+    assert!(app.agent_chat.commands.is_empty());
+    let state: Value = serde_json::from_str(&web::state(&mut app)).expect("the state is JSON");
+    assert_eq!(state["commands"], json!([]));
+}
+
+/// The sign-out snapshot and the retired session's late command update can arrive in one poll.
+/// The app has already retired the session by the time the second event is applied, so the
+/// update must not refill the menu, and the next session must start without it.
+#[test]
+fn a_retired_sessions_commands_cannot_fill_the_new_chats_menu() {
+    let (mut app, script, ctx) = app_with_script();
+    app.agent_chat.conn.active = true;
+    app.agent_chat.conn.snapshot = Some(conn_snapshot(|_| {}));
+    app.agent_chat.conn.session = connections::Session::Open;
+    app.agent_chat.state = Some(State::Ready);
+    app.agent_chat.session = Some("s1".into());
+    app.agent_chat.commands = vec![acp::AvailableCommand { name: "skill/before".into(), description: String::new() }];
+    script.report(Event::Connections(conn_snapshot(|_| {})));
+    script.report(Event::Commands {
+        session: "s1".into(),
+        commands: vec![acp::AvailableCommand { name: "skill/late".into(), description: String::new() }],
+    });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.session, None, "the sign-out retired the session");
+    assert!(app.agent_chat.commands.is_empty(), "the retired session's late list cannot refill the menu");
+
+    // Signing in opens s2: Ready does not bring back s1's list.
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    script.report(Event::Session("s2".into()));
+    script.report(Event::Ready { agent: "mastra".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.session.as_deref(), Some("s2"));
+    assert!(app.agent_chat.commands.is_empty(), "a new session starts with no commands until it advertises them");
+}
+
+#[test]
 fn modern_acknowledgements_stay_with_their_document_without_resuming_its_queue() {
     let (mut app, first, ctx) = app_with_script();
     app.agent_chat.running_id = "first-modern".into();

@@ -183,6 +183,9 @@ impl AcpBackend {
                                 out.push(Event::TurnEnded { reason: "cancelled".into() });
                             }
                             self.session = Some(s.to_string());
+                            // The panel retires the previous session's state with this id before
+                            // anything else the new session sends.
+                            out.push(Event::Session(s.to_string()));
                             match acp::config_options(&v) {
                                 acp::ConfigParse::Snapshot(options) => {
                                     self.modern_config = true;
@@ -306,7 +309,10 @@ impl AcpBackend {
             Incoming::ConfigOptions { session, options } if self.session.as_deref() == Some(session.as_str()) => {
                 out.push(Event::ConfigOptions(options))
             }
-            Incoming::ModeChanged(_) | Incoming::ModelChanged(_) | Incoming::ConfigOptions { .. } => {}
+            Incoming::Commands { session, commands } if self.session.as_deref() == Some(session.as_str()) => {
+                out.push(Event::Commands { session, commands })
+            }
+            Incoming::ModeChanged(_) | Incoming::ModelChanged(_) | Incoming::ConfigOptions { .. } | Incoming::Commands { .. } => {}
             Incoming::Unsupported { rpc, method } => {
                 self.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, &format!("Intcad does not serve `{method}`")));
             }
@@ -940,6 +946,41 @@ mod tests {
         backend.handle(Incoming::Reply { id: new_request, result: Ok(snapshot("s2", "smart")) }, &mut events);
         assert!(backend.config_pending.is_none());
         assert!(matches!(events.as_slice(), [Event::ConfigOptionFinished { result: Ok(options), .. }] if options[0].current_value == "smart"));
+        backend.shutdown(true);
+    }
+
+    /// The agent's advertised commands belong to the open session: a late update from a retired
+    /// one cannot repopulate the new chat's menu.
+    #[test]
+    fn available_commands_are_isolated_to_the_active_session() {
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut backend = AcpBackend::start(&["sh".into(), "-c".into(), "while IFS= read -r line; do :; done".into()], ctx).unwrap();
+        let mut events = Vec::new();
+        backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut events);
+        backend.handle(Incoming::Reply { id: 2, result: Ok(json!({"sessionId":"s1"})) }, &mut events);
+        assert_eq!(backend.session.as_deref(), Some("s1"));
+        events.clear();
+        let s1 = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"skill/solidcraft-modeling","description":"Build a part"}]}}}"#;
+        backend.handle(acp::parse(s1).unwrap(), &mut events);
+        assert!(
+            matches!(events.as_slice(), [Event::Commands { session, commands }] if session == "s1" && commands.len() == 1
+                && commands[0].name == "skill/solidcraft-modeling" && commands[0].description == "Build a part"),
+            "{events:?}"
+        );
+        ChatBackend::new_session(&mut backend);
+        let new_session_request = backend.next_id;
+        backend.handle(Incoming::Reply { id: new_session_request, result: Ok(json!({"sessionId":"s2"})) }, &mut events);
+        assert_eq!(backend.session.as_deref(), Some("s2"));
+        events.clear();
+        backend.handle(acp::parse(s1).unwrap(), &mut events);
+        assert!(events.is_empty(), "a retired session's commands are ignored");
+        let s2 = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s2","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"skill/editing"}]}}}"#;
+        backend.handle(acp::parse(s2).unwrap(), &mut events);
+        assert!(
+            matches!(events.as_slice(), [Event::Commands { session, commands }] if session == "s2" && commands.len() == 1
+                && commands[0].name == "skill/editing"),
+            "{events:?}"
+        );
         backend.shutdown(true);
     }
 

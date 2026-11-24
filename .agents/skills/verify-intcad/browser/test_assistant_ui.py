@@ -303,6 +303,137 @@ def test_stop_active_turn(assistant, route):
     assert actions(assistant) == []
 
 
+COMMANDS = [
+    {"name": "skill/solidcraft-modeling", "description": "Build a part"},
+    {"name": "skill/solidcraft-editing", "description": "Change a design"},
+]
+
+
+def test_slash_menu_offers_and_inserts_advertised_commands(assistant):
+    box = assistant.get_by_role("textbox", name="Message")
+    show(assistant, commands=COMMANDS)
+    box.fill("/")
+    modeling = assistant.get_by_role("option", name="skill/solidcraft-modeling")
+    editing = assistant.get_by_role("option", name="skill/solidcraft-editing")
+    expect(modeling).to_be_visible()
+    expect(editing).to_be_visible()
+
+    # Selecting a command writes its name, keeps focus, closes the menu and sends nothing.
+    modeling.click()
+    expect(box).to_have_value("skill/solidcraft-modeling")
+    expect(box).to_be_focused()
+    expect(modeling).to_have_count(0)
+    assert actions(assistant) == []
+
+    # With the menu closed Enter sends the draft.
+    box.press("Enter")
+    assert actions(assistant) == [{"type": "send", "text": "skill/solidcraft-modeling"}]
+
+    # Typing filters by the text after `/`, case-sensitively.
+    box.fill("/skill/solidcraft-m")
+    expect(modeling).to_be_visible()
+    expect(editing).to_have_count(0)
+
+    # Up/Down move the highlight; Enter chooses the highlighted one.
+    box.fill("/")
+    expect(modeling).to_have_attribute("aria-selected", "true")
+    box.press("ArrowDown")
+    expect(editing).to_have_attribute("aria-selected", "true")
+    expect(modeling).to_have_attribute("aria-selected", "false")
+    box.press("Enter")
+    assert actions(assistant) == []
+    expect(box).to_have_value("skill/solidcraft-editing")
+    expect(box).to_be_focused()
+    expect(editing).to_have_count(0)
+
+    # Escape closes the menu and keeps the draft; a slash with no match shows nothing.
+    box.fill("/")
+    expect(modeling).to_be_visible()
+    box.press("Escape")
+    expect(modeling).to_have_count(0)
+    expect(box).to_have_value("/")
+    assert actions(assistant) == []
+    box.fill("/no-such-command")
+    expect(modeling).to_have_count(0)
+    box.fill("not a command")
+    expect(modeling).to_have_count(0)
+
+
+@pytest.mark.parametrize("combo", ["Shift+Enter", "Control+Enter", "Control+Shift+Enter"])
+def test_every_enter_variant_selects_while_the_slash_menu_is_open(assistant, combo):
+    box = assistant.get_by_role("textbox", name="Message")
+    show(assistant, commands=COMMANDS)
+    box.fill("/")
+    expect(assistant.get_by_role("option", name="skill/solidcraft-modeling")).to_be_visible()
+    box.press(combo)
+    assert actions(assistant) == [], f"{combo} sent instead of selecting"
+    expect(box).to_have_value("skill/solidcraft-modeling")
+    expect(box).to_be_focused()
+
+
+def test_slash_menu_ignores_repeated_and_composing_enter(assistant):
+    box = assistant.get_by_role("textbox", name="Message")
+    show(assistant, commands=COMMANDS)
+    box.fill("/")
+    option = assistant.get_by_role("option", name="skill/solidcraft-modeling")
+    expect(option).to_be_visible()
+    box.press("Enter")
+    expect(box).to_have_value("skill/solidcraft-modeling")
+    assert actions(assistant) == []
+    # A held Enter repeats keydowns; a repeat must never send the inserted draft.
+    box.dispatch_event("keydown", {"key": "Enter", "repeat": True})
+    assert actions(assistant) == []
+    expect(box).to_have_value("skill/solidcraft-modeling")
+
+    # Enter during IME composition neither selects nor sends, and must not be consumed.
+    def press_composing_enter(repeat):
+        return box.evaluate(
+            """(el, repeat) => {
+                const event = new KeyboardEvent('keydown', {key: 'Enter', repeat, isComposing: true,
+                    bubbles: true, cancelable: true});
+                el.dispatchEvent(event);
+                return event.defaultPrevented;
+            }""",
+            repeat,
+        )
+
+    box.fill("/")
+    expect(option).to_be_visible()
+    assert press_composing_enter(False) is False, "a composing Enter must reach the IME"
+    assert press_composing_enter(True) is False, "a repeated composing Enter must reach the IME"
+    expect(box).to_have_value("/")
+    expect(option).to_be_visible()
+    assert actions(assistant) == []
+    # Escape and arrows during composition also leave the menu and highlight alone.
+    box.dispatch_event("keydown", {"key": "Escape", "isComposing": True})
+    expect(option).to_be_visible()
+    box.dispatch_event("keydown", {"key": "ArrowDown", "isComposing": True})
+    expect(option).to_have_attribute("aria-selected", "true")
+
+
+def test_slash_menu_options_are_arrow_only_and_keep_the_highlight_visible(assistant):
+    box = assistant.get_by_role("textbox", name="Message")
+    many = [{"name": f"skill/command-{n:02d}", "description": f"Command {n}"} for n in range(20)]
+    show(assistant, commands=many)
+    box.fill("/")
+    first = assistant.get_by_role("option", name="skill/command-00")
+    expect(first).to_be_visible()
+    # Arrow-only navigation: a focused textarea moves the highlight; the options are not Tab stops.
+    expect(first).to_have_attribute("tabindex", "-1")
+    for _ in range(15):
+        box.press("ArrowDown")
+    highlighted = assistant.get_by_role("option", name="skill/command-15")
+    expect(highlighted).to_have_attribute("aria-selected", "true")
+    # The highlighted row is scrolled into the list's viewport.
+    assert highlighted.evaluate(
+        """el => {
+            const list = el.closest('[role=listbox]').getBoundingClientRect();
+            const row = el.getBoundingClientRect();
+            return row.top >= list.top - 1 && row.bottom <= list.bottom + 1;
+        }"""
+    )
+
+
 @pytest.mark.parametrize("confirm", [False, True], ids=["cancel", "confirm"])
 def test_new_chat_confirmation(assistant, confirm):
     note = {"kind": "notice", "text": "Keep this machining note", "error": False}

@@ -76,8 +76,13 @@ pub use panel::{show, tip as panel_tip, toggle, toggle_shortcut};
 
 /// Most entries kept in the conversation; older ones are dropped.
 const MAX_ITEMS: usize = 2000;
+/// Longest message the page may send, in characters; a selected command name also fits it.
+/// Defined here, not in `web`, because the ACP parser is compiled for wasm too.
+pub(crate) const MAX_MESSAGE: usize = 100_000;
+/// Longest page action, in bytes: the web view's IPC payload bound.
+pub(crate) const MAX_MESSAGE_BYTES: usize = MAX_MESSAGE * 4;
 /// Longest message sent.
-const MAX_PROMPT: usize = 100_000;
+const MAX_PROMPT: usize = MAX_MESSAGE;
 /// Room kept in a message for the files' names and the words around their text.
 const FILE_NAMES_ROOM: usize = 2_000;
 /// How long a request waits for Allow or Deny before it is declined (the agent's MCP server gives
@@ -586,6 +591,10 @@ pub struct AgentChat {
     /// serves the next message. An agent takes it only after the reply anyway (Mastra Code queues
     /// it behind the turn), and waiting on it held the picker busy for the whole reply.
     config_next: Option<(String, String)>,
+    /// The slash commands the agent advertised for its open session ([`Event::Commands`]).
+    pub commands: Vec<acp::AvailableCommand>,
+    /// The session the running agent has open, as the backend named it (`None`: none, or retired).
+    session: Option<String>,
     /// An API endpoint's models, kept per endpoint (its base URL) for the next connection.
     models_cache: std::collections::HashMap<String, Vec<acp::ModelInfo>>,
     /// The running API agent's endpoint (empty for other agents).
@@ -711,6 +720,10 @@ impl AgentChat {
     }
 
     fn clear_config(&mut self) {
+        // The commands belong to the session that advertised them, so a new or reset chat
+        // starts with none until its agent says.
+        self.commands.clear();
+        self.session = None;
         if self.config_options.take().is_some() {
             self.models.clear();
             self.model.clear();
@@ -1105,6 +1118,16 @@ impl AgentChat {
             Event::ConfigOptions(options) => {
                 self.apply_config_snapshot(options);
             }
+            Event::Session(id) => {
+                // A new session's state starts empty; the old session's commands are not its.
+                self.commands.clear();
+                self.session = Some(id);
+            }
+            // A late update from a session retired in this same batch is not this chat's.
+            Event::Commands { session, commands } if self.session.as_deref() == Some(session.as_str()) => {
+                self.commands = commands;
+            }
+            Event::Commands { .. } => {}
             Event::ConfigOptionFinished { result, .. } => {
                 self.config_pending = false;
                 let typed = self.typed_model.take();
