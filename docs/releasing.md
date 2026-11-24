@@ -338,10 +338,14 @@ because some plans omit it), and a deployment branch policy that permits only
 `main` (no tags).
 
 A project with a single person cannot both dispatch and be forbidden to approve
-its own deployment. With exactly one reviewer and self-review allowed, the
-workflow accepts that shape and prints a warning: approval is then a deliberate
-checkpoint, not independent review. With two or more reviewers, self-review must
-be prevented. The workflow checks that `main` is protected and reads back the
+its own deployment. The default stays strict: with fewer than two reviewers, or
+with self-review allowed, admission fails unless the repository variable
+`RELEASE_SINGLE_OWNER=true` is set by the owner. An explicit `false` or an unset
+variable keeps the strict rule. When the exception applies, the workflow warns,
+and the verified draft's summary records `Approval: single-owner`, the enabling
+variable, the reviewer account and the dispatch actor, so the exception and who
+enabled it are auditable. With two or more reviewers, self-review must still be
+prevented. The workflow checks that `main` is protected and reads back the
 reviewer and branch policy before the sensitive job. For the public source, use
 `RELEASE_SOURCE_MODE=public` (the default) and either leave
 `RELEASE_SOURCE_REPO_ID` unset or set it to `1446384930`. Configure `private`
