@@ -2594,3 +2594,16 @@ unformatted merge. A `cargo clippy -D warnings` pass over the crates the paid PR
 empty on a push (lines 58-60) or guarded by an event test (95, 107-108, 212-213). With
 `HEAD_REF = github.ref_name = "v0.1.3"` on a tag push, the Beta branch is false and the gate
 requires exactly `('ci', 'kernel-rig', 'packages')`, which is the stable path.
+
+**`clippy -D warnings` passes on the composed final tree.** The pass that just finished:
+
+```
+cargo clippy -p solidcraft-account-native -p solidcraft-cli -p solidcraft-mcp \
+             -p solidcraft-ui-egui -p solidcraft-suspend-clock --profile ci --locked -- -D warnings
+→ exit 0, "Finished ci profile … in 50.17s"
+```
+
+Together with `cargo fmt --all --check` (clean) and the three `cargo check` runs (app, CLI/MCP/
+account-native, full workspace path), the composed tree now has: formatting, lint and type
+checking all green for every crate the release changes. That removes the cheapest ways the
+integration PR's single full CI could fail late.
