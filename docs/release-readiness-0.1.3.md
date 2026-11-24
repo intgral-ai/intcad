@@ -2114,3 +2114,27 @@ GET …/environments/staging
 So `staging-packages.yml`'s `environment: staging` job will be permitted once the workflow is
 dispatched from `main` after the promotion. `release-signing` is unchanged: `main` only, with
 `Huaiyuan-Jing`/`paipeline` required reviewers.
+
+**A full-scope CI is ~2 hours, not 45–60 minutes (measured).** Successful full-scope runs
+(`Native Linux selected regression gate`, which only runs the heavy measurement when the change
+plan scope is `full`):
+
+```
+develop f18a9aec27        1:48:49  success
+int223-slash-menu 2c02486d 1:53:33  success
+develop e8c4b1be2d        2:03:49  success
+fix/int-1508 8d8415d5      0:03:54  success   (affected scope: the heavy step is skipped)
+gate/derived-content bd34fec0 0:05:22 success (affected scope)
+```
+
+#214's job died at 58 minutes, i.e. **before** a normal completion, which is consistent with the
+runner loss diagnosed above. The promotion branch's own run (`release/v0.1.3 c929f797`, started
+16:41Z) is still inside that normal window at 1h52m, so it is slow, not stuck.
+
+**Consequence for the schedule.** Every merge into `develop` needs its own full CI because of the
+strict up-to-date rule, so the five remaining merges cost roughly **10 hours** of CI, plus the
+`main`-side `release-gate` (~2–3 hours for 14 package jobs and their installed checks). A same-day
+publication is therefore not achievable while keeping every gate. The only lever that does not
+weaken a gate is to batch the four stacked paid-authority PRs into one integration branch and let
+a single full CI run judge that tree (their individual reviews already exist); that is a process
+decision for the owner, not something the release manager may change alone.
