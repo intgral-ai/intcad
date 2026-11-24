@@ -2491,3 +2491,17 @@ distribution repository exists and is public (its `verify_repository` expects vi
 and the updater embeds a real Minisign public key rather than the earlier placeholder. The private
 key and its password remain environment secrets the owner already configured; the publisher is the
 only thing that can prove the pair matches, and it does so before creating the draft.
+
+**The composed final tree also compiles the CLI and MCP paths.** On the simulated final tree
+(`develop` + #214 + #224 + #239 + integration + both promotion commits, with the amended lock):
+
+```
+cargo check -p solidcraft-cli -p solidcraft-mcp -p solidcraft-account-native \
+            --profile ci --locked
+→ exit 0, "Checking solidcraft-cli v0.1.3 … solidcraft-mcp v0.1.3 … solidcraft-account-native v0.1.3"
+  Finished ci profile in 1m 16s
+```
+
+Together with the earlier `-p solidcraft` run (475 crates, exit 0), every binary the release gate
+builds has been type-checked on the exact composed tree, so #227's CLI authority and #233/#235's
+bound/clock changes do not break the tools they touch.
