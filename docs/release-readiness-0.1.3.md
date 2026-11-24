@@ -263,17 +263,29 @@ Historical proposal. Use §8.1 for current prerequisites, gate order and approva
 
 ### 8.1 Closed-source release addendum
 
-This adds Migration Agent deliveries and approval checkpoints to §8. It does not change the
-agreed feature scope in §13.1 or remove any required gate. In particular, the old Gate E
-sequencing in §10 describes the old feed, not permission to defer the migration test until
-publication. Only the final check against the real public release belongs after publication.
+**Final CTO decision: ship and verify v0.1.3 from the existing public development repo;
+move development only after release acceptance.** This replaces the pre-release freeze,
+PR migration and private-repo build plan. The scope in §13.1 and all product gates still
+apply. The historical Gate E text does not defer upgrade testing until publication.
+
+| Repository | Role |
+|---|---|
+| `intgral-ai/intcad` | Current public development and build repo: continue `main`, `develop`, active PRs and the v0.1.3 promotion branch. Do not publish the product Release here. Preserve source and historical releases. |
+| `intgral-ai/intcad-client` | Future independent private development repo. Initialization, remaining active PR migration and development cutover occur after release acceptance, not during 0.1.3. |
+| `intgral-ai/intcad-releases` | Public product distribution and update origin, without confidential source or evidence. |
+| `intcad-server` | Unchanged; retain the approved login and authorization service. |
+
+Keep the current GitHub-hosted runner environment unchanged. Do not introduce AWS runners
+or private CI costs as a release dependency. The Release Manager keeps a separate local-only
+migration ledger as the post-release handoff template; it is not a live freeze and must not
+be added to this public repository.
 
 #### Owner handoffs
 
 | Owner | Handoff required before freeze |
 |---|---|
 | Login Agent (INT-1497) | Name the approved integration PR and exact head, the approved PRD and staging test setup, and provide green Windows startup/resize evidence plus the authorization scenarios and expected results for Gate B. Own the client and service behavior, account setup, version admission, and revocation. |
-| Closed-source Migration Agent | Name the delivery PRs and heads, their dependencies and touched-file owners. Provide the URL and redirect inventory (feed, assets, Release Notes, prompts, website), supported updater/package mapping, exact signed bytes/signature and checksum names, approved public-key identity and custody/rotation plan, tested v0.1.2 migration path, package inventory and redistribution review, and private-CI/cross-repo publication evidence or authorized rehearsal plan. Own these implementations; the Release Manager does not build parallel versions. |
+| Closed-source Migration Agent | Deliver the public-safe PRs in `intgral-ai/intcad`: URL inventory, updater/package mapping, signing contract and approved key identity, tested v0.1.2 route, package/rights audit, and cross-repo publishing from the accepted public build. Keep credentials and internal audit files out of the public repo. Coordinate private-repo initialization and CI readiness after release. Own the implementation; the Release Manager does not build parallel versions. |
 | Feature owners and Release Manager | PP owns Assistant visual behavior, Tianwei owns Skills/agent changes, and the Release Manager tracks #223 to a reviewed owner and fix. Continue UI, packaging and isolated tests now. The Release Manager owns the integrated gate, artifact identity, package acceptance and the decision record. |
 
 Before each overlapping merge, compare reviewed heads against `develop` and each other, record
@@ -302,58 +314,71 @@ the integrations, not installed behavior. Verify them again against the final ch
 
 #### Execution and approval checklist
 
-- [ ] **Integrate features and migration.** Record each approved delivery PR and landed SHA,
-  including the existing merged foundations. Apply dependencies in the owners' agreed order;
-  rerun affected gates after integration. Keep the old merge and RC watchers stopped.
-  Classify changes before pushing: confidential integration and CI require an already authorized,
-  isolated private location outside the public fork network. No such location is confirmed yet.
-  If required before cutover and unavailable, freeze is BLOCKED; continue nonconfidential work.
+- [ ] **Continue current development and integrate in `intgral-ai/intcad`.** No branch or PR
+  transfer, no pre-release source freeze. Keep the active product PRs and owners; resolve the
+  reviewed integration dependencies on public `develop`. Bring in the Migration Agent's
+  independent distribution, update trust and license work only after review. Don't push
+  confidential code or internal material to the public fork, and leave the unsafe old RC
+  automation stopped.
   The designated signing owner must also confirm the production public-key identity and protected
-  signing environment before freeze. This preparatory approval does not authorize source cutover
-  or publishing; do not paste credentials or commit a private key.
-- [ ] **Freeze one candidate.** Record a reviewed `develop` snapshot and the candidate's full SHA.
+  signing environment before freeze. Do not paste credentials or commit a private key.
+- [ ] **Freeze one candidate.** Record a reviewed public `develop` snapshot and the candidate's full SHA.
   Prove the landed integration commits are ancestors of the tested checkout. Under the current
   promotion workflow, that checkout is the `release/v0.1.3` main-target PR merge SHA or the main
-  merge-group SHA, not a branch tip. Take accepted bytes from the `packages` job of that same
+  merge-group SHA, not a branch tip. For a promotion PR, record the head SHA carrying the
+  required GitHub check separately from the tested merge/group SHA that binds receipts and
+  packages. Take accepted bytes from the `packages` job of that same
   `release-gate` run, which calls `release.yml`. Pin the repository, workflow, run ID and attempt.
-  A private replacement route must demonstrate the same required gates and artifact binding
-  before it is used. Require the complete 14 package/evidence pairs from the
+  Use the current GitHub-hosted jobs. Require the complete 14 package/evidence pairs from the
   [stable release-gate target map](../.github/workflows/release-gate.yml).
   If a partial rerun cannot prove every package came from the pinned attempt, start a clean
-  eligible run; do not stitch together assets or receipts from attempts.
+  eligible run. Artifact API metadata alone does not record the attempt; in the historical
+  rehearsal, all 28 artifact IDs matched upload logs from the corresponding attempt's jobs.
   Verify `build.json`, `contents.json`, target and contract identity and every payload digest
   before assembly. Keep evidence namespaced and reject duplicate or missing payload names.
   Verify the signed checksum data and aliases against the assembled bytes. A run or artifact
   mismatch stops assembly; a changed revision requires a new candidate and new acceptance.
-- [ ] **Run quality gates and install the exact candidate.** Bind each row in §15.3 to that identity
-  and actual installer digest. Keep isolated staging/test-release fixtures separate from
+- [ ] **Run Required Checks, Geometry Matrix, Release Gate and three-platform acceptance.**
+  Use the existing GitHub-hosted runners for CI and cross-platform builds. Record all
+  required-check results on their correct PR heads and Geometry Matrix receipts at the
+  tested candidate merge SHA. Both identities belong in the acceptance record.
+  The public ruleset API currently reports strict `ci` on `develop` and strict `release-gate`
+  on `main`; recheck before integration and promotion. Record all 16 `action-matrix-*`
+  shards from `ci.yml`, the determinism job and the Release Gate's kernel-rig result at
+  the candidate checkout. Do not substitute a nightly report from another SHA. Bind
+  every real install/launch row to the exact artifact digest. Keep test fixtures separate from
   production. Do not create a public stable release to get pre-release test evidence. A
   nonpublishing diagnostic build does not substitute for a required `release-gate` result.
-- [ ] **Confirm distribution readiness.** With anonymous checks, prove the website and planned
+- [ ] **Verify remaining gates and distribution readiness.** Finish online authorization,
+  actual packaged runtime and rights checks, package hygiene and Minisign. Prove the public
+  source revision matches the accepted asset manifest and rehearse its publisher against an
+  approved nonproduction target. With anonymous checks, prove the website and planned
   distribution channel are reachable. Exercise staging or an authorized rehearsal that matches
   the reviewed production wiring, including cross-repo publishing and update rejection. Test the
-  exact candidate without relying on the old repository. Obtain the Migration Agent's cutover
-  and recovery instructions; check that the tested old-client route and any source-repo-hosted
-  web routes remain usable after cutover or have a verified replacement.
-- [ ] **Obtain separate CTO authorization for source isolation and visibility.** The CTO executes
-  or explicitly delegates this step only after the preceding checks. Do not push confidential
-  changes into the public fork network. Previously public source and license grants cannot be
-  withdrawn. No visibility change, fork detachment, historical Release deletion, history
-  rewrite or certificate purchase is authorized by this plan.
-- [ ] **Match the private revision to the accepted bytes.** After cutover, prove private CI can
-  check out the full candidate revision and that its reviewed workflow and provenance identify
-  the already accepted artifact set. Rerun the private CI/publisher checks as needed, but do not
-  substitute newly built bytes for the accepted set. A mismatch is NO-GO.
-- [ ] **Obtain final publication approval.** Record the CTO's separate approval for the pinned
+  exact new client without relying on the development repo for downloads or updates.
+  Verify the v0.1.2 route and recovery instructions before publication, including the approved
+  fallback for unchanged clients that cannot discover the new distribution origin.
+- [ ] **Obtain final publication approval.** Record the CTO's express approval for the pinned
   SHA, artifact digests, destination and version. Publish only those accepted assets to the
-  approved public distribution channel, not the source repository.
-- [ ] **Verify and hand off.** Without credentials or cached downloads, verify the public links and
-  asset hashes and install/launch the public bytes on all three OSes. Separately start from the
+  `intgral-ai/intcad-releases` repository, never the source repository.
+- [ ] **Verify and hand off.** Without credentials or cached downloads, fetch the published
+  checksum list and Minisign signature and verify them against the approved public key,
+  release tag and accepted manifest. Then install and launch the public bytes on all three
+  OSes. Separately start from the
   unchanged 0.1.2 packages and exercise each supported anonymous production upgrade route end
   to end: discovery, download, apply and restart, or the approved user-facing fallback where
   in-app update is unsupported. Also check that 0.1.3 uses the new origin for subsequent update
-  detection. Record results in §15.3. If a check fails, stop handoff and escalate to the CTO and
+  detection, signed update verification and installed-client online authorization. Record
+  results in §15.3. If a check fails, stop handoff and escalate to the CTO and
   owners; do not silently replace released bytes, re-tag, or delete the release.
+- [ ] **After release and production acceptance, hand off development.** Reconcile `main` and
+  `develop`, then pin both final migration SHAs. Refresh the ledger of remaining active PRs.
+  Migration Agent initializes private development and verifies permissions, protections and
+  basic CI. Owners migrate only their continuing branches and recreate PRs parent-first,
+  preserving stack edges and Linear traceability. AWS/long-term CI cost governance is post-release
+  work. Once all work is accounted for, obtain CTO approval for development cutover and public
+  repo archival. Do not detach the fork, change visibility, rewrite history or delete historical
+  releases. Archival does not revoke prior source or license grants.
 
 ## 9. Acceptance matrix for the candidate (not yet run)
 
@@ -417,7 +442,9 @@ is not evidence that the skill can be called.
 every built-in theme, font and control size, no unexpected background or clipping, the
 Assistant web view positioned correctly, panel resize and move, and a basic CAD operation on each.
 
-**Gate E has a sequencing constraint that cannot be engineered away.** The one-click path can only be
+**Historical Gate E (obsolete for 0.1.3).** Do not follow its checksum naming, discovery or
+publication-order instructions; §§8.1 and 15.3 define the current migration and fallback
+sequence. Its old constraint was that the one-click path can only be
 exercised against a release GitHub serves as `releases/latest`, and the client refuses a
 `prerelease` (it uses `releases/latest`, and `Release::parse` rejects `prerelease: true`). A local
 feed is possible (`SOLIDCRAFT_UPDATE_FEED`), but every asset URL in it must sit under
@@ -1060,7 +1087,8 @@ release manager runs by hand, in one command, with the refusal behaviour tested 
 
 ## 13. Decisions from the CTO (2026-11-23)
 
-Historical decisions. The current cutover and publication approvals are separate (§8.1).
+Historical decisions. The current plan is public integration and release, then migration
+after production acceptance, with separate publication and later cutover/archival approvals (§8.1).
 The earlier Mac and UI exception language is not an authorization to waive either gate.
 
 Recorded as given: **version 0.1.3**; **PP's UI must be in this release**; everything else is
@@ -1236,7 +1264,8 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
   draft, and an old session's late update cannot repopulate a new session. An empty list
   clears the current session's menu. Coordinate the composer and bundle with PP and the
   Rust state/event bridge with the Login Agent; leave authorization unchanged. No code
-  change or acceptance run for #223 yet.
+  change or acceptance run for #223 yet. Ownership and acceptance were requested on
+  [the existing issue](https://github.com/intgral-ai/intcad/issues/223#issuecomment-7121993793).
 - **RC provenance — BLOCKED.** `45248432170` attempt 2 built rehearsal SHA `14a6c95ae`, not
   a descendant of the current merged `develop` snapshot `6032271178`. Rehashing the cached
   Linux x64, Windows x64 and macOS payloads against their descriptors validates those
@@ -1307,7 +1336,11 @@ and dark themes. Existing login, slash-menu, update, and publication-approval ga
 **NO-GO.** No frozen candidate SHA, run/attempt or acceptance manifest is recorded. The
 `develop` snapshot is `6032271178140b356e4a7ed2e9bb0f1352d81048`. The Migration Agent has
 handed off local commit `5f7a3462075fc4a83b38d0ce97f4666d58c1fde1`, not a landed PR or a
-candidate. Baseline checkout
+candidate. The accepted candidate must come from `intgral-ai/intcad` and its existing
+GitHub-hosted CI. `intcad-client` status, initialization and CI readiness are deferred until
+after production acceptance and do not block v0.1.3. The migration ledger is kept only in
+the Release Manager's local state, never in this public repository.
+Baseline checkout
 evidence still has old `intgral-ai/intcad` release URLs in the updater fixtures and `PUBLIC_KEY`
 set to `None` in `crates/ui-egui/src/update/install.rs`. The baseline `release.yml` is a
 nonpublishing build, not proof of the new production signing or publication path.
@@ -1325,10 +1358,10 @@ downloaded (302,524,433 bytes), not copied from CI. Full digests and local locat
 `~/.local/state/intcad-release-readiness/v0.1.3/legacy-baseline.Nyw4DRC8/README.md`.
 This identifies the old installers only; no cutover, install or migration verdict follows.
 
-The Release Manager requested the two owner handoffs in their respective local sessions:
-Login Agent for Gate B and integration, Migration Agent for the isolated build location,
-distribution, signing, migration and rights evidence. Neither request is a cutover or
-publication authorization. Login handoff is pending; migration delivery review is below.
+The Release Manager notified the owners to continue in the existing repository and lifted
+the earlier push-pause request. The Login Agent owns Gate B and integration, and the Migration
+Agent owns distribution, signing, migration and rights evidence. Neither notice authorizes
+merging, publication or archival. Migration delivery review is below.
 
 Runtime scope for the current packaging integration is the built-in Mastra agent, including
 bundled Node and required Skills (`mastra-agent/`, #214). The legacy workflow runtime
@@ -1345,20 +1378,20 @@ smoke or green CI does not replace real installed-client acceptance.
 
 | Gate | Current verdict | Evidence required for PASS |
 |---|---|---|
-| Integration, build and package | BLOCKED | Landed PR map, successful immutable build and full verified artifact set from §8.1. #214's standalone and aggregate package verdicts must reject incomplete payloads. |
+| Integration, build and package | BLOCKED | Landed PR map in `intgral-ai/intcad`; Required Checks on their correct heads; Geometry Matrix and Release Gate receipts plus complete verified assets for the tested candidate merge SHA from §8.1. #214 must reject incomplete payloads. |
 | Linux install and launch | NOT TESTED | Clean supported Linux host; install and launch the accepted desktop package, exercise core CAD and record the actual bytes. Test AppImage update and the documented reinstall/package-manager path where applicable. |
 | Windows install and launch | NOT TESTED | Real Windows MSI install and launch; test the applicable portable path, plus window resize, Assistant and core CAD. |
 | macOS install and launch | NOT TESTED | Exact universal DMG; real Finder install and launch and the [macOS runbook](release-acceptance-macos-0.1.3.md), including native slice evidence. Rosetta or CI-only launch does not cover a missing native cell. |
 | Login, authorization and offline CAD | BLOCKED / NOT RUN | Gate B on all three installed clients: approved sign-in/session paths, denied anonymous or unauthorized controlled requests, version admission, revocation and late-write refusal, and ordinary offline CAD including save/export. #224's Windows failure is not a staging result. |
 | Mastra runtime, Skills and slash commands | BLOCKED / NOT RUN | Identify the exact approved runtime variant in each installer, observe it starting from the installed app and completing a real turn. Verify the required bundled Skills can be discovered and invoked and #223's slash menu lists and runs the commands. Earlier `mastra-agent/` evidence does not establish that the separate legacy `mastra/` workflow runtime shipped. |
 | Assistant UI | BLOCKED | Installed bottom-centre composer size, clipping, backing, focus and resize evidence on each OS. Use the visual plan and keep the reproduced backing and reported half-line clipping separate. |
-| Public distribution and new-client independence | BLOCKED | Confirm the destination (tentatively `intgral-ai/intcad-releases`, which returned 404 anonymously). Test anonymous website, release notes, prompts, API and asset links, including redirects. With the old source endpoints unavailable, the candidate must still discover and download updates and related resources. |
+| Public distribution and new-client independence | BLOCKED | `intgral-ai/intcad-releases` is the required destination; it returned 404 anonymously. Test anonymous website, release notes, prompts, API and asset links, including redirects. With the source endpoints unavailable to the candidate, it must still discover and download updates and related resources. |
 | Minisign acceptance and refusal | NOT TESTED | On installed supported auto-update paths, a valid signed payload verifies and applies with the approved embedded public key. Separately show that a wrong signature, absent signature and tampered installer each stop before the installer is launched or the existing install is modified. Record each refusal and the positive control. |
-| Published v0.1.2 migration | NOT TESTED | Start with the unchanged public 0.1.2 packages; exercise the actual supported old-to-new route under cutover conditions, with the old source repo no longer an available update origin. Include discovery or the explicitly approved user-facing fallback, install/restart, existing design and preference retention, and subsequent discovery from the new channel. Test distinct supported installation paths. An in-place local installer rehearsal or alias alone does not prove discovery. |
+| Published v0.1.2 migration | NOT TESTED | Start with unchanged public 0.1.2 packages. The public old repo may still serve historical assets after archival, but it will not serve 0.1.3. Prove the supported route under those conditions: discovery or approved fallback, install/restart, design and preference retention, and subsequent discovery in the new channel. An in-place local install alone does not prove discovery. |
 | Redistribution and notices | BLOCKED / NOT RUN | Approved shipped-file inventory covering Rust, npm/Node, runtime and assets; resolve applicable `needs-human` items. Inspect the actual packages for the applicable third-party license texts and copyright notices. A Cargo-only audit is insufficient. |
 | Package security and hygiene | NOT TESTED | Inspect and scan actual payloads and installed trees, including nested archives. No unapproved credentials, source, debug data, sourcemaps or internal docs. Any approved exception must identify the exact file and approval; missing coverage is not PASS. |
-| Private CI and cross-repo publication | BLOCKED / NOT RUN | Reviewed private-run evidence for checkout/build and an authorized nonproduction publishing rehearsal with scoped credentials; confirm failures deny publication, secrets are not logged, and the public destination receives only approved assets. Recheck private revision and artifact correspondence after the CTO-approved cutover. |
-| Production publication and anonymous handoff | NOT RUN | Two separate recorded CTO approvals (source cutover and final publication); then record fresh anonymous download/install/launch and the independent production 0.1.2 upgrade run (or approved fallback), plus new-client detection on the new channel. |
+| Cross-repo publication | BLOCKED / NOT RUN | Bind the exact `intgral-ai/intcad` candidate and accepted assets to an authorized nonproduction rehearsal of the public distribution workflow, with scoped credentials and fail-closed read-back. Private CI is post-release work. |
+| Production publication and anonymous handoff | NOT RUN | CTO publication approval; then fresh anonymous download/install/launch, independent production 0.1.2 upgrade or approved fallback, and new-client detection, signature and authorization checks. |
 
 **Approved deferrals:** Windows Authenticode, Apple Developer ID and notarization. These do not
 block on a certificate request and do not waive Minisign, real installation, or OS-policy
@@ -1378,8 +1411,8 @@ evidence. A real launch prevented by policy is blocked, not PASS.
 - **Provenance mismatch — BLOCKED:** the delivered publisher accepts a standalone
   `release.yml` run, but §8.1 requires the packages from the same stable `release-gate` run
   that was accepted. The publisher's handoff must bind the actual tested checkout, approved
-  run and attempt, and accepted artifact digests. The hardcoded source repository condition
-  also needs reconciliation with the approved private source location.
+  run and attempt, and accepted artifact digests. For this release the source workflow
+  belongs to `intgral-ai/intcad`; future private-repo support is a separate task.
 - **Independent standards review — CHANGES REQUIRED:** `publish-release.yml` mixes evidence
   into the flat checksum directory, reads a key file different from the client/test file, and
   permits a public release before full read-back. The publisher must separate staging and
@@ -1400,10 +1433,11 @@ evidence. A real launch prevented by policy is blocked, not PASS.
   endpoint and only accepts its release asset URLs. It expects `SHA256SUMS.txt`, while
   v0.1.2's public release serves `SHA256SUMS`; its production signing key is `None`,
   so it does not itself require Minisign. The Migration Agent proposes an official download
-  and in-place installation fallback after cutover. It is not approved or verified on
+  and in-place installation fallback when 0.1.3 is served from the new distribution repo.
+  It is not approved or verified on
   the exact old and candidate installers. The new candidate must enforce Minisign for
   its own in-app updates.
-- **Rights and private CI — BLOCKED:** the handoff raises shipped font and asset notices,
+- **Rights and publication rehearsal — BLOCKED:** the handoff raises shipped font and asset notices,
   agent dependency attribution and legacy workflow runtime licensing. It is a baseline
   audit, not legal clearance or a final installer inventory. A local worktree does not
-  prove an isolated hosted build or cross-repo publisher can run.
+  prove cross-repo publishing can run from `intgral-ai/intcad`. Private CI is not a v0.1.3 gate.
