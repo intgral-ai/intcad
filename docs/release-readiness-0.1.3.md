@@ -2975,3 +2975,20 @@ scripts/ci/test_package_contents.py      Ran 29 tests  OK
 So the pieces that decide whether the publisher may consume a run — event/mode binding, tag-on-main,
 manifest mode/ref, exact attempt, 14 pairs and the covered-wrapper producer side — are exercised on
 the tree that will actually merge.
+
+**The promotion commits are rehearsed on the exact final candidate.** Applied on `eade4198c2`
+(the Integration candidate, not on an approximation):
+
+```
+cherry-pick c929f797e1                 clean → version 0.1.3 + notes + folded format 51
+cargo metadata                         → Cargo.lock: exactly the two member lines (0.1.2 → 0.1.3)
+commit --amend                         → lock inside the version commit
+cherry-pick fa6582f8c9 cc4f68fdad      clean → widened notes, FreeBSD known limit
+cargo metadata --locked                OK
+version = "0.1.3";  pending format files: README.md only
+promotion tip for this candidate: 370759d51a
+```
+
+So once the Integration PR merges, the promotion branch is a three-commit replay that has already
+been executed against the same content (it will be re-applied to the post-merge `develop` SHA, which
+differs only by the merge commit itself).
