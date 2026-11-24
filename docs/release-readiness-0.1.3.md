@@ -2157,3 +2157,21 @@ integration PR. That is a process change, so it stays a proposal until the Build
 answers; the release manager will not collapse reviews on its own. #214 and #224 stay as separate
 merges either way, because they are the base of that tree and #224 carries the account wiring the
 gate depends on.
+
+**What is still green and what is still running (18:36Z).**
+
+```
+promotion run 45439992207 (release/v0.1.3 c929f797): 38 jobs, 37 completed, 0 bad,
+  only "Native Linux selected regression gate" still running (1h55m, inside the normal window)
+
+#224 run 45459270639 (dc1f8f8d59): VALIDATION_MODE=affected (log: "VALIDATION_MODE: affected"),
+  20 jobs, 13 completed, 0 bad; regression gate and archive running since 18:26
+  → the account PR's own CI is the affected variant, so it can finish well before two hours.
+
+#214 run 45447415365 (d4819c6a9d): 3 of 16 action-matrix shards still running;
+  its regression gate needs the rerun described above.
+```
+
+The critical path is therefore #214: the shards must finish before GitHub accepts
+`gh run rerun --failed`, and that job then re-executes the ~2 hour measurement. #224's affected
+CI can finish in the meantime but cannot merge until #214 lands and it rebases.
