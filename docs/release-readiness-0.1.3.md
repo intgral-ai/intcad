@@ -2475,3 +2475,19 @@ p.make_plan(meta, [], detect_inventory(...), event_name="push", full=True,
 (`full = full or event_name == "schedule" or not diff_complete`), so the tag-push run selects the
 whole suite instead of producing a blocked plan. The gate's `Select checks` step therefore works
 on the post-promotion path; the remaining risk is only time, not the plan.
+
+**Publication preconditions checked against the live repositories (19:05Z).**
+
+```
+source repo tags  v0.1.3*        → none
+intgral-ai/intcad-releases       → public, created 2026-11-24T07:11Z, 0 releases
+distribution tags v0.1.3*        → none
+crates/ui-egui/src/update/trusted-release-key.pub → RWQgCNgtnFd/wqGPboYE79JNUH99+0nCFziK2klQhHlr+K5NRtzGubfs (56 chars)
+crates/ui-egui/src/update/install.rs:32 → include_str!("trusted-release-key.pub")
+```
+
+So `publish-release`'s "refuse an existing draft, release or tag" cannot trip on leftovers, the
+distribution repository exists and is public (its `verify_repository` expects visibility public),
+and the updater embeds a real Minisign public key rather than the earlier placeholder. The private
+key and its password remain environment secrets the owner already configured; the publisher is the
+only thing that can prove the pair matches, and it does so before creating the draft.
