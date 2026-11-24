@@ -146,6 +146,26 @@ def bounded_command(command, timeout, what):
         return code, output.read(32 * 1024).decode(errors="replace")
 
 
+def agent_folders(exe):
+    """The packaged agent folders an installed program may have, as the app resolves them."""
+    exe = Path(exe).resolve()
+    here = exe.parent
+    return [here.parent / "lib" / "intcad" / "mastra-agent",       # Linux packages and AppImage
+            here.parent / "Resources" / "mastra-agent",            # macOS .app
+            here / "mastra-agent"]                                 # beside a Windows program
+
+
+def node_running(program):
+    """Whether a process runs this exact Node program. A cheap probe, not a full listing."""
+    if not Path(program).is_file():
+        return False
+    pgrep = shutil.which("pgrep")
+    if not pgrep:
+        return False
+    done = subprocess.run([pgrep, "-f", "--", str(program)], capture_output=True, text=True, check=False)
+    return done.returncode == 0
+
+
 def screen_picture(path, native):
     """Capture the isolated X11 or headless XWayland display."""
     if native.headless_wayland:
@@ -223,7 +243,7 @@ def connect_control(app, control, seconds):
     await_value(app, seconds, "the installed app did not answer the read-only control channel", connect)
 
 
-def exercise(app, control, native, seconds, capture):
+def exercise(app, control, native, seconds, capture, built_in_agent=False):
     def inspect(deadline):
         return result(control, "ui.inspect", deadline)
 
@@ -267,6 +287,50 @@ def exercise(app, control, native, seconds, capture):
     original = native.view_identity()
     print(f"ok: Assistant page ready and visible at {actual}", flush=True)
     capture()
+
+    if built_in_agent:
+        # The agent is found inside the package and started when its panel shows; what it tells
+        # the Connections page (its plans) arrives once it has answered. The other agents stay
+        # offered beside it: the package carries one, it does not take the others away.
+        def agent(deadline):
+            return result(control, "ui.agent_chat", deadline)
+
+        deadline = time.monotonic() + 60
+        state = {}
+        while time.monotonic() < deadline and peek_exit(app) is None:
+            state = agent(min(deadline, time.monotonic() + 15))
+            if (state.get("connect") or {}).get("plans"):
+                break
+            time.sleep(0.5)
+        agents = state.get("agents") or []
+        names = [entry.get("name") for entry in agents]
+        if not agents or agents[0].get("id") != "mastra":
+            raise ValueError(f"the built-in agent is not offered first ({names})")
+        if state.get("currentAgent") != "mastra":
+            raise ValueError(f"the built-in agent is not the conversation's agent ({state.get('currentAgent')})")
+        if not (state.get("connect") or {}).get("plans"):
+            raise ValueError("the built-in agent did not start out of the package or report its connections")
+        # Starting it again from a stopped state: the same app, the same package, a new session.
+        # The control channel's own word for Stop is `stop` (web.rs `disconnect` is the page's).
+        result(control, "ui.agent_chat", time.monotonic() + 15, {"stop": True})
+        state = agent(time.monotonic() + 15)
+        stopped = state.get("connect") or {}
+        # A stopped agent keeps the page's empty shape (its keys, no plans) but says nothing
+        # about a running conversation: no plan is signed in and nothing is connected.
+        if not (state.get("state") == "off" and not stopped.get("plans") and not stopped.get("connected")):
+            raise ValueError(f"a stopped agent reports no connections (state {state.get('state')}, "
+                             f"plans {len(stopped.get('plans') or [])}, connected {stopped.get('connected')})")
+        result(control, "ui.agent_chat", time.monotonic() + 15, {"connect": True})
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and peek_exit(app) is None:
+            state = agent(min(deadline, time.monotonic() + 15))
+            if (state.get("connect") or {}).get("plans"):
+                break
+            time.sleep(0.5)
+        if not (state.get("connect") or {}).get("plans"):
+            raise ValueError("the built-in agent did not start again after it stopped")
+        print("ok: the built-in agent started, stopped and started again", flush=True)
+
     native.close_page(actual, scale)
 
     def hidden(deadline):
@@ -814,6 +878,8 @@ def main():
     parser.add_argument("--port", type=int, default=17979)
     parser.add_argument("--wait", type=float, default=90, help="seconds to wait for the page")
     parser.add_argument("--screen", action="store_true", help="also capture the isolated display")
+    parser.add_argument("--built-in-agent", action="store_true",
+                        help="the package carries the built-in agent; prove it starts and stops")
     parser.add_argument("--run-with", help="unsupported on Linux; start only the installed executable")
     args = parser.parse_args()
     if not math.isfinite(args.wait) or not 0 < args.wait <= 600:
@@ -887,7 +953,14 @@ def main():
         await_value(app, 90, "no unique visible top-level window owned by the launched app",
                     lambda deadline: native.find_window(app.pid, timeout=min(5, remaining(deadline))))
         connect_control(app, control, 15)
-        exercise(app, control, native, args.wait, capture)
+        exercise(app, control, native, args.wait, capture, args.built_in_agent)
+        if args.built_in_agent:
+            # The app takes the agent with it: no copy of the packaged Node may outlive it.
+            leftovers = [str(folder) for folder in agent_folders(args.exe)
+                         if folder.is_dir() and node_running(folder / "node")]
+            if leftovers:
+                raise ValueError("the agent did not stop with the app (still running: "
+                                 + ", ".join(leftovers) + ")")
         if next((work / "crash").rglob("report.json"), None) is not None:
             raise ValueError("a crash report was written")
         if notes():

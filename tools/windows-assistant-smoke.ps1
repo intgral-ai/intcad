@@ -540,7 +540,9 @@ function RemainingMilliseconds([datetime]$until) {
 }
 
 function Call([string]$method, $params = @{}, [datetime]$until = [datetime]::UtcNow.AddSeconds(15)) {
-    if ($method -cnotin @('ui.inspect', 'ui.rects', 'ui.screenshot')) { throw 'smoke requires read-only observations' }
+    # `ui.agent_chat` is the one state-changing probe: a package's built-in agent is proven by
+    # stopping and restarting it. It never writes a design or reaches the network.
+    if ($method -cnotin @('ui.inspect', 'ui.rects', 'ui.screenshot', 'ui.agent_chat')) { throw 'smoke requires read-only observations' }
     $script:calls += 1
     $request = @{ id = $script:calls; method = $method; params = $params }
     if ($script:calls -eq 1) { $request.token = $script:token }
@@ -1086,6 +1088,35 @@ function WaitCleanExit($process, [scriptblock]$close) {
     if ($process.ExitCode -ne 0) { throw ('exit code 0x{0:x} after main window close' -f $process.ExitCode) }
 }
 
+# A release package carries the built-in agent: the installed app must offer it first, start it
+# out of the package, and start it again after it stopped. The other agents stay offered beside it.
+function CheckBuiltInAgent {
+    $state = Call 'ui.agent_chat'
+    $until = [datetime]::UtcNow.AddSeconds(60)
+    while (-not ($state.connect -and $state.connect.plans) -and [datetime]::UtcNow -lt $until) {
+        Start-Sleep -Milliseconds 500
+        $state = Call 'ui.agent_chat'
+    }
+    $agents = @($state.agents)
+    $names = @($agents | ForEach-Object { $_.name })
+    Check ([bool]$agents -and $agents[0].id -eq 'mastra') "the built-in agent is offered first ($($names -join ', '))"
+    Check ($state.currentAgent -eq 'mastra') "the built-in agent is the conversation's agent ($($state.currentAgent))"
+    Check ([bool]($state.connect -and $state.connect.plans)) 'the built-in agent started out of the package and reported its connections'
+    # The control channel's own word for Stop is `stop` (the page uses `disconnect`).
+    [void](Call 'ui.agent_chat' @{ stop = $true })
+    $state = Call 'ui.agent_chat'
+    $stopped = $state.connect
+    Check ($state.state -eq 'off' -and -not ($stopped -and $stopped.plans) -and -not ($stopped -and $stopped.connected)) `
+        "a stopped agent reports no connections (state $($state.state))"
+    [void](Call 'ui.agent_chat' @{ connect = $true })
+    $until = [datetime]::UtcNow.AddSeconds(60)
+    while (-not ($state.connect -and $state.connect.plans) -and [datetime]::UtcNow -lt $until) {
+        Start-Sleep -Milliseconds 500
+        $state = Call 'ui.agent_chat'
+    }
+    Check ([bool]($state.connect -and $state.connect.plans)) 'the built-in agent starts again after it stopped'
+}
+
 function Quit {
     $script:client.Dispose()
     $script:client = $null
@@ -1207,6 +1238,13 @@ try {
     Write-Host 'ok: the open Assistant reports current-view readiness and matches the visible native page'
     Shot $h '01-assistant-open'
     [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '01-app-frame-assistant-open.png') })
+    # A package carries the built-in agent beside the program; a build tree does not. Only a
+    # package's copy is asked for it, and `installed-check.ps1` requires the folder there.
+    if (Test-Path -LiteralPath (Join-Path (Split-Path $Exe -Parent) 'mastra-agent\agent.json')) {
+        CheckBuiltInAgent
+    } else {
+        Write-Host 'note: this program carries no built-in agent (a build tree, not a package)'
+    }
 
     # Do not submit a chat. A click in the message box lets the page take the keyboard;
     # a click in the 3D view must give the keyboard back.
