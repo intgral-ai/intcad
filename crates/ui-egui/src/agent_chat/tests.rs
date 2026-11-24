@@ -19306,20 +19306,20 @@ fn assistant_inspection_carries_the_marker_the_windows_smoke_reads() {
     let mut h = crate::scenario::Harness::new();
     web::set_host(&mut h.app, true);
     let inspect = |h: &mut crate::scenario::Harness| h.call("ui.inspect", json!({}))["result"]["assistant"].clone();
-    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "available"}));
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "available", "centred": false}));
     h.app.agent_chat.open = true;
     h.frames(3);
-    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": false, "host": "available"}), "no page has spoken yet");
+    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": false, "host": "available", "centred": false}), "no page has spoken yet");
     h.app.agent_chat.web_canvas = Some(crate::theme::Tokens::get().panel);
-    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": true, "host": "available"}), "the page said its surface");
+    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": true, "host": "available", "centred": false}), "the page said its surface");
     h.app.agent_chat.open = false;
     assert_eq!(
         inspect(&mut h),
-        json!({"open": false, "surface_ready": true, "host": "available"}),
+        json!({"open": false, "surface_ready": true, "host": "available", "centred": false}),
         "a closed page keeps the proof while its view lives"
     );
     web::set_problem(&mut h.app, web::Problem::Failed);
-    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "failed"}));
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "failed", "centred": false}));
     web::set_problem(&mut h.app, web::Problem::NativeWayland);
-    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "native_wayland"}));
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "native_wayland", "centred": false}));
 }

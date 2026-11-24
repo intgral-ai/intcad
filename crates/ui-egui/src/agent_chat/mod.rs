@@ -1252,7 +1252,11 @@ pub(crate) fn inspect(app: &SolveApp) -> Value {
     );
     #[cfg(target_arch = "wasm32")]
     let (host, surface_ready) = ("unavailable", false);
-    json!({"open": app.agent_chat.open, "surface_ready": surface_ready, "host": host})
+    #[cfg(not(target_arch = "wasm32"))]
+    let centred = app.agent_chat.web_centre.is_some();
+    #[cfg(target_arch = "wasm32")]
+    let centred = false;
+    json!({"open": app.agent_chat.open, "surface_ready": surface_ready, "host": host, "centred": centred})
 }
 
 /// What an event asks of the app.

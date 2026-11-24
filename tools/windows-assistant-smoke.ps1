@@ -1034,7 +1034,7 @@ function PageCloseComparisonReceipt($receipt) {
     'error'
 }
 
-function ClosePage($view) {
+function ClosePage($view, [switch]$ViaEntry) {
     $query = FindPageClose $view
     if ($query -is [Collections.IDictionary] -and $query.psbase.Keys.Count -eq 3 -and
         'matched' -cin $query.psbase.Keys -and 'empty' -cin $query.psbase.Keys -and 'candidates' -cin $query.psbase.Keys -and
@@ -1046,9 +1046,9 @@ function ClosePage($view) {
         catch { $receipt = 'error' }
         try { Write-Host "page Close UIA roots: $receipt" } catch { } # Preserve the primary refusal even if logging fails.
     }
-    if ($query.candidates -is [array] -and $query.candidates.Count -eq 0) {
-        # At the bottom centre (#221) the page shows Collapse instead of Close and the rail's
-        # Assistant entry is what closes it: follow the affordance the layout really offers.
+    if ($ViaEntry) {
+        # At the bottom centre (#221) the page shows Collapse instead of Close; the rail's
+        # Assistant entry is the affordance that closes it.
         ClickAssistantEntry ([datetime]::UtcNow.AddSeconds(20))
     } else {
         $point = PageClosePoint $view.Rect $query.candidates $query
@@ -1227,7 +1227,8 @@ try {
     Write-Host "ok: a click on the 3D view gives the frame the keyboard back ($(Name $focus))"
     Shot $h '03-after-click-on-3d-view'
 
-    ClosePage $view
+    $centredNow = [bool]((Call 'ui.inspect' @{}).assistant.centred)
+    ClosePage $view -ViaEntry:$centredNow
     Write-Host 'ok: the page Close (or the Assistant entry at the bottom centre) hid the native child and the app is still running'
     Shot $h '03a-page-closed'
     $until = [datetime]::UtcNow.AddSeconds(30)
