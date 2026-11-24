@@ -386,12 +386,21 @@ class Publish(unittest.TestCase):
         env = dict(name="release-signing", protection_rules=[reviewers], can_admins_bypass=False,
                    deployment_branch_policy=dict(protected_branches=False, custom_branch_policies=True))
         policies = [dict(name="main", type="branch")]
-        release.verify_environment(env, policies)
+        self.assertEqual(release.verify_environment(env, policies), "independent")
         # Some plans omit the field; only an explicit true is a bypass.
-        release.verify_environment({k: v for k, v in env.items() if k != "can_admins_bypass"}, policies)
+        self.assertEqual(release.verify_environment({k: v for k, v in env.items() if k != "can_admins_bypass"}, policies),
+                         "independent")
+        # One person: dispatch and approval cannot be split, so self-review must be allowed.
+        solo = env | {"protection_rules": [reviewers | {"prevent_self_review": False}]}
+        self.assertEqual(release.verify_environment(solo, policies), "single-owner")
+        # Two reviewers must still prevent self-review.
+        two = env | {"protection_rules": [reviewers | {"prevent_self_review": False,
+                                                       "reviewers": [{"type": "Team"}, {"type": "User"}]}]}
+        with self.assertRaises(ValueError):
+            release.verify_environment(two, policies)
         for metadata, rules in [
             (env | {"protection_rules": []}, policies),
-            (env | {"protection_rules": [reviewers | {"prevent_self_review": False}]}, policies),
+            (env | {"protection_rules": [reviewers | {"prevent_self_review": False, "reviewers": []}]}, policies),
             (env | {"can_admins_bypass": True}, policies),
             (env, [dict(name="main", type="tag")]),
             (env, policies + [dict(name="release/*", type="branch")]),
