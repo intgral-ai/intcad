@@ -1959,3 +1959,20 @@ run for its 14 package/evidence pairs, because `main` requires `release-gate` st
 #233 → #235 → #234, each rebased onto the tip of `develop` right after the previous squash
 merge lands. #233 and #235 are disjoint in files but still need separate cycles, because
 whichever merges second is stale again.
+
+**The paid-authority chain merges cleanly onto #224's head.** Measured in a throwaway
+worktree starting from `origin/task/int1497-v013-integration` (`9f664c828f`), merging in the
+planned order:
+
+| Step | Result |
+|---|---|
+| #227 `task/int1497-cli-authority` | clean |
+| #233 `task/int1497-control-bound` | clean |
+| #235 `task/int1497-monotonic-clock` | clean (auto-merges `apps/solidcraft/src/account.rs`) |
+| #234 `task/int1497-gui-bridge` | clean (auto-merges `apps/solidcraft/src/account.rs`) |
+
+No resolution work is needed, so the five extra merges cost CI cycles only, not conflict
+handling. On that composed tree, `scripts/ci/test_gate.py`, `test_release_content.py`
+(skipped=11), `test_package_contents.py`, `test_release_candidate.py` all pass, and
+`packaging/tests` ran **152 tests with 0 failures/0 errors** (excluding the PowerShell-only
+`windows_icon_test`).
