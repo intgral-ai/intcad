@@ -2816,3 +2816,14 @@ cargo run -p xtask -- licences --check → OK
 Pushed as `e65d647201`; new run **45511735739**. The lesson for the remaining skill edits (the
 integration branch's crash-safety trim): shortening must not drop policy anchors that
 `xtask licences` and `xtask skills` assert.
+
+**What "30 known failing" means for this release (checked, not glossed over).**
+`tests/KNOWN_FAILING_TESTS` carries 42 lines (entries plus comments); the gate reports 30 accepted
+known-failing tests and 3 listed ones that did not run in that shard. Every entry names its reason
+and an upstream reference, e.g. the variable fillet law with a corner (solidcore#430), the G2
+corner patch bulging past the box "as on C++", the setback corner ported from SMLib in
+solidcore#2310, mesh-based edge lookups "not taken", and two fixed-seed seam cases tracked in
+#117/#56. None of them are introduced by v0.1.3: `develop`'s own CI at `97236b5dd7` succeeded with
+the same list, and the one failure that was **not** on the list (the dropped `npm/Node` anchor) is
+fixed in `e65d647201`. The release report should state this set explicitly rather than call the
+suite "green".
