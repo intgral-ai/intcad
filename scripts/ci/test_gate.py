@@ -19,6 +19,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -761,7 +762,6 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
         return "\n".join(line[10:] for line in match[1].splitlines()) + "\n"
 
     def test_standalone_package_workflow_refuses_built_in_agent_without_node(self):
-        name = "intcad-0.1.3-linux-x86_64.tar.gz"
         entries = (
             "agent/main.mjs", "agent.json", "licenses/THIRD-PARTY-LICENSES.txt",
             "licenses/NODE-LICENSE.txt", "node_modules/@mastra/code-sdk/package.json",
@@ -778,24 +778,38 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             target.mkdir(parents=True)
             (root / "scripts").mkdir()
             (root / "scripts/ci").symlink_to(HERE, target_is_directory=True)
-            env = dict(os.environ, GITHUB_SHA=sha, PACKAGE_ID="release-linux-x86_64",
-                       PACKAGE_TARGET="x86_64-unknown-linux-gnu", SOLIDCRAFT_DISTRIBUTION="mastra-agent")
-            for has_node in (True, False):
-                with self.subTest(has_node=has_node):
-                    with tarfile.open(target / name, "w:gz") as archive:
-                        for entry in (*entries, *(("node",) if has_node else ())):
-                            info = tarfile.TarInfo("lib/intcad/mastra-agent/" + entry)
-                            info.size = 1
-                            archive.addfile(info, io.BytesIO(b"x"))
-                    result = subprocess.run([sys.executable, "-c", self.package_evidence_script()],
-                                            cwd=root, env=env, capture_output=True, text=True)
-                    report = json.loads((target / "contents.json").read_text())
-                    self.assertEqual(report["agents"][name]["missing"], [] if has_node else ["mastra-agent/node"])
-                    if has_node:
-                        self.assertEqual(result.returncode, 0, result.stderr)
-                    else:
-                        self.assertNotEqual(result.returncode, 0, "missing Node must fail the package job")
-                        self.assertIn("no Node program", result.stderr)
+            cases = (
+                ("release-linux-x86_64", "x86_64-unknown-linux-gnu", "intcad-0.1.3-linux-x86_64", ".tar.gz"),
+                ("release-linux-x86_64", "x86_64-unknown-linux-gnu", "intcad-0.1.3-beta.1-linux-x86_64", ".tar.gz"),
+                ("release-windows-x64", "x86_64-pc-windows-msvc", "intcad-0.1.3-beta.1-windows-x64-portable", ".zip"),
+            )
+            for package, triple, wrapper, extension in cases:
+                env = dict(os.environ, GITHUB_SHA=sha, PACKAGE_ID=package,
+                           PACKAGE_TARGET=triple, SOLIDCRAFT_DISTRIBUTION="mastra-agent")
+                name = wrapper + extension
+                path = target / name
+                for has_node in (True, False):
+                    with self.subTest(name=name, has_node=has_node):
+                        if extension == ".zip":
+                            with zipfile.ZipFile(path, "w") as archive:
+                                for entry in (*entries, *(("node.exe",) if has_node else ())):
+                                    archive.writestr(f"{wrapper}/mastra-agent/{entry}", b"x")
+                        else:
+                            with tarfile.open(path, "w:gz") as archive:
+                                for entry in (*entries, *(("node",) if has_node else ())):
+                                    info = tarfile.TarInfo(f"{wrapper}/lib/intcad/mastra-agent/{entry}")
+                                    info.size = 1
+                                    archive.addfile(info, io.BytesIO(b"x"))
+                        result = subprocess.run([sys.executable, "-c", self.package_evidence_script()],
+                                                cwd=root, env=env, capture_output=True, text=True)
+                        report = json.loads((target / "contents.json").read_text())
+                        self.assertEqual(report["agents"][name]["missing"], [] if has_node else ["mastra-agent/node"])
+                        if has_node:
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                        else:
+                            self.assertNotEqual(result.returncode, 0, "missing Node must fail the package job")
+                            self.assertIn("no Node program", result.stderr)
+                path.unlink()
 
     def test_package_descriptor_records_actual_bytes_checkout_target_and_contract(self):
         script = self.package_evidence_script()
@@ -839,7 +853,7 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads((target / "build.json").read_text())["contractDigest"],
-                             "sha256:" + hashlib.sha256(b"{}\n").hexdigest())
+                              "sha256:" + hashlib.sha256(b"{}\n").hexdigest())
             result = subprocess.run(command, cwd=root, env={**env, "GITHUB_SHA": "0" * 40}, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("sourceRevision mismatch", result.stderr)
@@ -847,6 +861,33 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0, "modified tracked bytes cannot be attributed to clean HEAD")
             self.assertIn("dirty", result.stderr)
+
+    def test_standalone_native_package_rejects_runtime_markers_and_unreadable_archive(self):
+        with tempfile.TemporaryDirectory(prefix="native-package-verdict-test-") as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "-q", "--allow-empty", "-m", "build source"], check=True)
+            sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            target = root / "dist/release"
+            target.mkdir(parents=True)
+            (root / "scripts").mkdir()
+            (root / "scripts/ci").symlink_to(HERE, target_is_directory=True)
+            env = dict(os.environ, GITHUB_SHA=sha, PACKAGE_ID="release-linux-x86_64",
+                       PACKAGE_TARGET="x86_64-unknown-linux-gnu", SOLIDCRAFT_DISTRIBUTION="native")
+            archive = target / "fixture.tar.gz"
+            command = [sys.executable, "-c", self.package_evidence_script()]
+            with tarfile.open(archive, "w:gz") as package:
+                entry = tarfile.TarInfo("lib/intcad/mastra-agent/node")
+                entry.size = 1
+                package.addfile(entry, io.BytesIO(b"x"))
+            result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("a native package carries a runtime marker or a Node", result.stderr)
+            archive.write_bytes(b"not a tar archive")
+            result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("an artifact not inspected", result.stderr)
 
     def test_intermediate_native_artifact_handoffs_are_bound_to_final_checkout(self):
         text = (ROOT / ".github/workflows/release.yml").read_text()

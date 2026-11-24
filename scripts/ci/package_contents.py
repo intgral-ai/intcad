@@ -219,7 +219,12 @@ AGENT_ROOTS = {
     "windows": ("mastra-agent",),
 }
 
-APP_WRAPPER = re.compile(r"^intcad-\d+\.\d+\.\d+(-(linux|macos|windows|freebsd|netbsd|openbsd)-|$)")
+# Release archives put the platform after the version, including any prerelease.
+# Keep recognising the original stable version-only root as well.
+APP_WRAPPER = re.compile(
+    r"^intcad-\d+\.\d+\.\d+(?:-(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*-)?"
+    r"(?:linux|macos|windows|freebsd|netbsd|openbsd)-|$)"
+)
 
 
 def platform_for(package_id):
