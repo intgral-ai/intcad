@@ -406,6 +406,16 @@ class Publish(unittest.TestCase):
         with self.assertRaises(ValueError):
             release.verify_environment(solo, policies)
         self.assertEqual(release.verify_environment(solo, policies, allow_single_owner=True), "single-owner")
+        # A team is several people and cannot use the one-person exception.
+        team = env | {"protection_rules": [reviewers | {
+            "prevent_self_review": False,
+            "reviewers": [{"type": "Team", "reviewer": {"slug": "devs"}}]}]}
+        with self.assertRaises(ValueError):
+            release.verify_environment(team, policies, allow_single_owner=True)
+        # The self-review flag must be stated, not inferred from its absence.
+        unstated = env | {"protection_rules": [reviewers | {"prevent_self_review": None}]}
+        with self.assertRaises(ValueError):
+            release.verify_environment(unstated, policies)
         # Two reviewers must still prevent self-review.
         two = env | {"protection_rules": [reviewers | {"prevent_self_review": False,
                                                        "reviewers": [{"type": "User", "reviewer": {"login": "a"}},
