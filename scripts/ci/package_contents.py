@@ -465,8 +465,10 @@ def names_rpm(path):
     listing = _run([tool, "-qp", "--qf", "[%{FILENAMES}\t%{FILEMODES}\t%{FILEFLAGS}\n]", str(path)])
     names = []
     for line in listing.splitlines():
-        name, _, rest = line.rpartition("\t")
-        mode, _, flags = rest.partition("\t")
+        fields = line.rsplit("\t", 2)
+        if len(fields) != 3:
+            continue
+        name, mode, flags = fields
         if not name or not mode.strip():
             continue
         try:
