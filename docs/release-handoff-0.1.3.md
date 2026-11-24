@@ -44,9 +44,15 @@ gate's accepted bytes, and signs `SHA256SUMS.txt`.
 Approval link: **not created yet** — it exists after `publish-release.yml` is dispatched
 with the frozen tag, `source_sha`, gate `run_id`, `run_attempt` and `notes_file`.
 
-Before dispatch, the owner must set, for the exact candidate, in the repository/environment:
-`RELEASE_AGENT_LEGAL_APPROVED` and `RELEASE_AGENT_INSTALLED_APPROVED` as
-`<source SHA>:<run ID>:<attempt>`.
+Before dispatch, for the exact candidate, an authorized human sets in the repository
+environment: `RELEASE_AGENT_LEGAL_APPROVED` and `RELEASE_AGENT_INSTALLED_APPROVED`,
+each `<source SHA>:<run ID>:<attempt>`. These must **not** be set in advance: they record
+the actual rights and installed-agent review of that candidate. The release manager posts
+the exact names, values, location and steps in INT-1503 and mentions `@p.paipeng.p` once
+the candidate and its acceptance evidence exist; PP or the CTO performs the review.
+
+The Minisign key, password, GitHub App and environment secrets are already configured;
+their live state is confirmed with the Migration Agent rather than requested again.
 
 ## Publication approval
 
