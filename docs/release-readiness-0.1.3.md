@@ -1510,6 +1510,25 @@ Open questions this does not settle: whether shipped `node_modules` documentatio
 modelling-skill `scripts/tests/` should be trimmed for size/policy, and whether every
 dependency text required by licence is present (that needs the legal audit, not a listing).
 
+**Deployed binary, Linux VM (`i3int`, 2026-11-24T05:21Z run):** the integration build
+finished (`release` profile, 36 m 10 s) and the E2E harness deployed that exact artifact
+(`solidcraft` SHA-256 `9ab6189e9514a1f859bfa5a1e83d34651b8f77bc1f6d947c61105af909771e28`,
+source `4ce096fc37`) into the Ubuntu guest and started it.
+
+| Step | Result |
+|---|---|
+| 1 build | PASS, artifact digest bound to the source commit |
+| 2 deploy/start from expected path | PASS, guest binary hash equals the artifact |
+| 3 open sample and see model | PASS, sample design opened, hover resolved a Plate edge |
+| 4 real drag rotates the model | PASS, pitch changed with the camera otherwise fixed |
+| 5 click a face selects it | PASS, `Plate` face selection recorded |
+| 6 open Assistant and a control responds | BLOCKED: harness looked for `titlebar:assistant`; #221 moved the entry to `rail:assistant` |
+| 7–8 resize / panel control | BLOCKED by step 6 |
+
+Step 6 is a stale harness control name, not a product failure: `accept.py` was patched locally
+to accept `rail:assistant` (falling back to `titlebar:assistant`) and the run is repeating.
+This is a **deployed binary in a VM**, not an installer and not candidate acceptance.
+
 Not yet run: any Rust build, package build, install, launch, or native UI check. This tree
 excludes #224 (login) and the Migration Agent's in-progress fixes, so it is a combination
 check, not the release scope. It is not pushed and does not authorize a merge.
