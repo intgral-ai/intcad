@@ -2777,3 +2777,12 @@ execution` step, which started 21:13Z and is now past the usual 1h48–2h04 wind
 240 minutes (01:13Z), so it has room, but this job has already failed once for infrastructure and
 once been cancelled, so a hang would be the third mode. The merge stays blocked until it reports
 success; nothing is bypassed.
+
+**Promotion PR #237 body corrected to the delivered scope and the real gate contract.** The old body
+still implied the pull-request `release-gate` produces the publisher's handoff, which §10/§13/§14
+disproved. The body now lists the CLI paid path, the declared bounds and the sleep-aware deadlines,
+the #238 Spec change, states that the PR gate's merge-ref SHA is synthetic and that the **stable tag
+push** on the promoted `main` commit is the formal handoff-producing gate, and records the
+acceptance scope (per-package account check, Gate B staging, macOS NOT TESTED). The required
+`Changes a default: no` line is preserved. A body edit does not restart CI (`ci.yml` triggers on
+opened/synchronize/reopened only).
