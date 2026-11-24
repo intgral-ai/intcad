@@ -2588,3 +2588,9 @@ tree exits 0, so the promotion will not fail the gate's `Format and repository c
 unformatted merge. A `cargo clippy -D warnings` pass over the crates the paid PRs touch
 (`solidcraft-account-native`, `solidcraft-cli`, `solidcraft-mcp`, `solidcraft-ui-egui`,
 `solidcraft-suspend-clock`) is running on the same tree; its result is recorded when it finishes.
+
+**No pull-request-only field leaks into the tag-push path.** Every `github.event.pull_request` /
+`github.base_ref` / `github.head_ref` use in `release-gate.yml` is either a plain env value that is
+empty on a push (lines 58-60) or guarded by an event test (95, 107-108, 212-213). With
+`HEAD_REF = github.ref_name = "v0.1.3"` on a tag push, the Beta branch is false and the gate
+requires exactly `('ci', 'kernel-rig', 'packages')`, which is the stable path.
