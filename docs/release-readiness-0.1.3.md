@@ -3581,3 +3581,40 @@ here:
   `continue-on-error: true` at `15b4436c54`; a failure there is recorded per platform as
   NOT VERIFIED. Gate B (`45566522319`) and the per-package embedded-account verification remain the
   blocking install acceptance. This is recorded in the handoff document's risk section.
+
+## 35. The tag gate's first real failure, and the stale offline smoke
+
+Tag gate `45566522104` (first run on `15b4436c54`) failed three package jobs:
+`packages / Snap x86_64`, `packages / Snap aarch64`, `packages / Flatpak aarch64`, at the
+`Open the Assistant on a network-isolated desktop` step:
+
+```
+snap desktop smoke failed: engine.execute failed:
+  {'error': 'the host has no commit authority for this controlled entry',
+   'errorDetails': {'code': 'AuthUnavailable', 'retry': 'never'}, 'id': 2, 'ok': False}
+```
+
+This is the product behaving as designed, not a platform fault:
+
+- `df937c12a2` (#240, integrating the paid-authority chain) added the refusal; the string is
+  **absent at `v0.1.2`** (`git grep` on the tag finds nothing).
+- A control-channel request is `EntryCategory::DirectControl`, a controlled entry that needs
+  account authority (`crates/ui-egui/src/control.rs`); a signed-out, offline host has none.
+- The probes still required `solid.box` to model and measure 6000 mm³, which needs that authority.
+
+The fix (`#241`, merged as `400b0017725b`) makes the probes assert the offline contract:
+
+- app starts, `ui.inspect` returns a usable viewport (`gpu`/`cpu`, positive size);
+- the Assistant page loads and the GPU frame is non-black (unchanged checks);
+- `engine.execute` **and** `document.inspect` must be refused with `AuthUnavailable`;
+- a controlled entry that executes, a different refusal code, or a refusal without the reason
+  fails the probe, so fail-closed is proven rather than assumed.
+
+**Coverage change, stated plainly:** the Snap/Flatpak offline probes no longer prove that
+modelling works in those packages; they prove the app runs without network and refuses control
+writes. Scripted modelling needs authority and is covered by the signed-in staging acceptance
+(Gate B) instead. This is recorded as a reduction, not as a passing gate.
+
+Re-promotion: `main = 400b0017725b` (merge of #241), `v0.1.3` moved to it, tag gate
+`45574641767` (attempt 1) and Gate B `45574642603` dispatched in parallel. The old run's
+artifacts are not used for acceptance.
