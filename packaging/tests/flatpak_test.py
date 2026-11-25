@@ -5,7 +5,10 @@ import importlib.util
 import io
 import itertools
 import json
+import os
 import struct
+import subprocess
+import tempfile
 import zlib
 from pathlib import Path
 import unittest
@@ -303,6 +306,52 @@ class DesktopProbe(unittest.TestCase):
         self.assertEqual(SMOKE.validate_assistant([page], "xwayland"), "page loaded")
         with self.assertRaises(ValueError):
             SMOKE.validate_assistant([page], "wayland")
+
+
+class SnapLaunch(unittest.TestCase):
+    def test_snap_rechecks_the_namespace_after_confinement_before_launch(self):
+        class CapturedLaunch(Exception):
+            pass
+
+        for expected, launch in ((os.readlink("/proc/self/ns/net"), True), ("net:[0]", False)):
+            with self.subTest(launch=launch), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                app = root / "usr/bin/intcad"
+                app.parent.mkdir(parents=True)
+                app.write_text('#!/bin/sh\nprintf "desktop launched: %s\\n" "$*"\n')
+                app.chmod(0o755)
+                with (
+                    patch.object(SNAP.Path, "is_dir", return_value=True),
+                    patch.object(SNAP.Path, "home", return_value=root),
+                    patch.object(SNAP.os, "readlink", return_value=expected),
+                    patch.object(SNAP.socket, "if_nameindex", return_value=[(1, "lo")]),
+                    patch.object(SNAP.socket, "socket") as socket,
+                    patch.object(SNAP.subprocess, "Popen", side_effect=CapturedLaunch) as start,
+                    self.assertRaises(CapturedLaunch),
+                ):
+                    socket.return_value.__enter__.return_value.connect_ex.return_value = 1
+                    SNAP.run_backend("x11", root)
+                command = start.call_args.args[0]
+                self.assertEqual(command[4:8], ["snap", "run", "--shell", "intcad"])
+                # Execute the exact confined launch body against a harmless stand-in desktop.
+                result = subprocess.run(["bash", *command[8:]], env=dict(os.environ, SNAP=tmp),
+                                        capture_output=True, text=True, timeout=5)
+                if launch:
+                    self.assertEqual(result.stdout, "desktop launched: --control 18839\n", result.stderr)
+                    self.assertEqual(result.returncode, 0)
+                else:
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("Snap network namespace changed", result.stderr)
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_snap_refuses_launch_when_the_starting_namespace_has_extra_links(self):
+        with (
+            patch.object(SNAP.socket, "if_nameindex", return_value=[(1, "lo"), (2, "eth0")]),
+            patch.object(SNAP.subprocess, "Popen") as start,
+            self.assertRaisesRegex(RuntimeError, "loopback-only network namespace"),
+        ):
+            SNAP.run_backend("x11", Path("."))
+        start.assert_not_called()
 
 
 if __name__ == "__main__":

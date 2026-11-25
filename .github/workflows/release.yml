@@ -662,9 +662,9 @@ jobs:
           sudo unshare -n -- bash -ec "ip link set lo up; links=\$(ip -o link); test \"\$(wc -l <<<\"\$links\")\" -eq 1; [[ \$links =~ ^[0-9]+:[[:blank:]]+lo: ]]; exec su $runner -s /bin/bash -c 'cd $work && HOME=$HOME XDG_RUNTIME_DIR=/run/user/$uid python3 packaging/linux/snap-smoke.py --backend x11 --out $temp/snap-offline'" 2>&1 | tee "$RUNNER_TEMP/snap-offline/smoke.log"
           status=${PIPESTATUS[0]}
           if [ "$status" -eq 0 ]; then
-            echo 'Snap offline desktop smoke PASS (network namespace, loopback only).' >>"$GITHUB_STEP_SUMMARY"
+            echo 'Snap offline desktop smoke PASS (loopback only rechecked after confinement; Assistant page NOT VERIFIED).' >>"$GITHUB_STEP_SUMMARY"
           else
-            echo 'Snap offline desktop smoke FAILED; see snap-offline-evidence. A strict snap may be moved back to the host network namespace by snapd.' >>"$GITHUB_STEP_SUMMARY"
+            echo 'Snap offline desktop smoke FAILED; see snap-offline-evidence. The probe refuses launch if its confined network namespace differs.' >>"$GITHUB_STEP_SUMMARY"
           fi
           exit "$status"
       - name: Keep the offline smoke evidence
