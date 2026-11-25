@@ -3006,3 +3006,18 @@ cargo check -p solidcraft-doc --profile ci --locked   →  rc=0
 The full suite is therefore re-run in a **dedicated worktree** (`/tmp/opencode/testrun` at
 `eade4198c2`, `crates/doc/src/format/pending/` intact, skill 3538) with its own target directory,
 and only that run counts as evidence. No branch switch happens there while it builds.
+
+**Disk incident: my scratch builds filled `/tmp`, which is a 31 GiB tmpfs.** The isolated full-test run
+died with `rustc-LLVM ERROR: IO failure on output stream: No space left on device` and
+`ld returned 135`, not a code error. Measured cause:
+
+```
+/tmp            tmpfs  31G  31G  0   100%
+/tmp/opencode/*-target   chain 914M, chain2 914M, endgame 5.3G, testrun 6.0G  (all mine)
+```
+
+Removed only my own regenerable targets and scratch worktrees (chain, chain2, endgame, testrun
+targets; integration2/order/order2/lockcheck/chain/chain2/mp3 worktrees). Other agents' directories
+in `/tmp/opencode` (paid-integration, gate-b-evidence, art, sec, …) were left untouched. `/tmp` is
+back to ~15 GiB free, and the suite is re-run with `CARGO_TARGET_DIR` on `/home` (521 GiB free), so
+a repeat is not possible. `/home` project usage itself stayed far under the 500 GiB budget.
