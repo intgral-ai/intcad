@@ -24,6 +24,9 @@ import zlib
 APP_ID = "ai.intgral.intcad"
 MAX_PIXELS = 16_000_000
 MAX_PNG_BYTES = 70_000_000
+# The authority layer's refusals for a controlled entry on a host with no account: no authority
+# at all, or no durable commit path for that entry. Both are fail-closed; nothing else counts.
+FAIL_CLOSED = frozenset({"AuthUnavailable", "UnsafeToStart"})
 SANDBOX_PROBE = r'''
 set -euo pipefail
 work=$(mktemp -d)
@@ -116,9 +119,11 @@ def validate_offline(stdout):
     """Check what this signed-out, offline desktop must do: run, and refuse control writes.
 
     The control channel is a controlled entry, so an app with no account authority must
-    answer `AuthUnavailable` to `engine.execute` and to `document.inspect`, and must not
-    commit anything. Modelling over the control channel needs authority and is covered by
-    the signed-in staging acceptance, not by this offline probe.
+    refuse `engine.execute` and `document.inspect` and must not commit anything. Both
+    fail-closed codes the authority layer uses are accepted (`AuthUnavailable` when there
+    is no authority, `UnsafeToStart` when there is no durable commit path); anything else,
+    and especially a successful reply, fails. Modelling over the control channel needs
+    authority and is covered by the signed-in staging acceptance, not by this offline probe.
     """
     replies = [json.loads(line) for line in stdout.splitlines()]
     if len(replies) != 3 or any(reply.get("id") != i for i, reply in enumerate(replies, 1)):
@@ -134,7 +139,7 @@ def validate_offline(stdout):
         raise ValueError("desktop did not create a usable viewport")
     for reply in controlled:
         details = reply.get("errorDetails") or {}
-        if reply.get("ok") is not False or details.get("code") != "AuthUnavailable":
+        if reply.get("ok") is not False or details.get("code") not in FAIL_CLOSED:
             raise ValueError(f"a controlled entry was not refused for a signed-out host: {reply}")
     return ui["renderer"]
 

@@ -23,8 +23,8 @@ def signed_out_replies():
         {"id": 1, "ok": True, "result": {"renderer": "gpu", "viewport": [250, 126, 1000, 700]}},
         {"id": 2, "ok": False, "error": "the host has no commit authority for this controlled entry",
          "errorDetails": {"code": "AuthUnavailable", "retry": "never"}},
-        {"id": 3, "ok": False, "error": "the host has no commit authority for this controlled entry",
-         "errorDetails": {"code": "AuthUnavailable", "retry": "never"}},
+        {"id": 3, "ok": False, "error": "this controlled entry needs a durable commit path that is not available yet",
+         "errorDetails": {"code": "UnsafeToStart", "retry": "never"}},
     ]
 
 
@@ -181,7 +181,12 @@ class DesktopProbe(unittest.TestCase):
         executed[1] = {"id": 2, "ok": True, "result": {"bodies": ["Body1"]}}
         with self.assertRaises(ValueError):
             SMOKE.validate_offline(output(executed))
-        # Nor may any other refusal stand in for the authority refusal.
+        # Both fail-closed codes count, in either position.
+        swapped = signed_out_replies()
+        swapped[1]["errorDetails"]["code"] = "UnsafeToStart"
+        swapped[2]["errorDetails"]["code"] = "AuthUnavailable"
+        self.assertEqual(SMOKE.validate_offline(output(swapped)), "gpu")
+        # Nor may any other refusal stand in for a fail-closed one.
         wrong_code = signed_out_replies()
         wrong_code[2]["errorDetails"]["code"] = "CapabilityDenied"
         with self.assertRaises(ValueError):
