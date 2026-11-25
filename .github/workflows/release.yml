@@ -255,6 +255,11 @@ jobs:
       # the Assistant opened (packaging/linux/installed-check.sh). The tarball has the same
       # program files as the AppImage and no launcher of its own; it is not installed here.
       - name: Install the packages on bare systems and open the Assistant
+        # Advisory by owner decision (2026-11-25): the installed-app UI check informs the release
+        # report and does not block it. A failing run is recorded as NOT VERIFIED for that platform;
+        # Gate B (staging installs and sign-in) and the per-package account check remain the
+        # blocking acceptance for installation.
+        continue-on-error: true
         env:
           EVIDENCE: ${{ runner.temp }}/installed-check
         run: |
