@@ -3074,3 +3074,33 @@ Conclusion recorded for the process: local equivalents are the **repository chec
 suites, compile/clippy and targeted tests**; the full suite is only meaningful with the CI
 environment and the known-failing guard, so the gate run remains the authority for it. The owner's
 "maximise local pre-checks" is therefore applied to everything that is environment-independent.
+
+## 25. #214 merged; Integration PR #240 opened
+
+```
+#214 e65d647201 → squash merged as ffca6b5194 (2026-11-25T01:58:27Z)
+develop 97236b5dd7 → ffca6b5194
+```
+
+The #214 run needed one rerun: attempt 1 finished `failure` only because
+`Action matrix (7/16)`'s artifact upload timed out after its test passed
+(`… test result: ok. 1 passed … 1425.91s` then `Failed to CreateArtifact … ETIMEDOUT`). `gh run rerun
+--failed` repeated only that shard and the aggregate; **attempt 2 = success**.
+
+**Integration PR #240** — https://github.com/intgral-ai/intcad/pull/240 — head `2f6543a0fb`, base
+`develop`, non-draft, CI run `45529654409` running. It merges the paid chain (`3c00b693e6`) and
+#239 (`7db657fa61`) onto `develop` (which now carries #214, #236, #238).
+
+Merging `develop` into the candidate produced the two packaging conflicts a second time; they were
+resolved with the **paid-chain side** (ours in that direction) because it already carries #214's
+content. The result was verified, not assumed:
+
+```
+git rev-parse HEAD^{tree} == git rev-parse eade4198c2^{tree}
+  → a7f09a09da7e15fe0a316c50eb6f58c793a450a7   (identical trees)
+```
+
+so every local result measured on the candidate — `fmt`, the nine `xtask` repository checks, the
+five contract/gate suites, `cargo check` and `clippy` — applies verbatim to #240. The
+`installed-check-inside.sh` agent block (14 lines) and the single `CheckBuiltInAgent` definition and
+call were re-verified on the pushed head.
