@@ -17,14 +17,14 @@ SNAP = importlib.util.module_from_spec(SNAP_SPEC)
 SNAP_SPEC.loader.exec_module(SNAP)
 
 
-def healthy_replies():
+def signed_out_replies():
+    """What the offline probe must see: the desktop runs, controlled entries are refused."""
     return [
         {"id": 1, "ok": True, "result": {"renderer": "gpu", "viewport": [250, 126, 1000, 700]}},
-        {"id": 2, "ok": True, "result": {"feature": 1, "bodies": ["Body1"]}},
-        {"id": 3, "ok": True, "result": {
-            "timeline": [{"error": None}],
-            "bodies": [{"volume_mm3": 20 * 30 * 10, "bbox": {"min": [0, 0, 0], "max": [30, 20, 10]}}],
-        }},
+        {"id": 2, "ok": False, "error": "the host has no commit authority for this controlled entry",
+         "errorDetails": {"code": "AuthUnavailable", "retry": "never"}},
+        {"id": 3, "ok": False, "error": "the host has no commit authority for this controlled entry",
+         "errorDetails": {"code": "AuthUnavailable", "retry": "never"}},
     ]
 
 
@@ -68,7 +68,7 @@ class Control:
     def readline(self):
         request = self.requests[-1]
         index = request["id"] - 1
-        reply = healthy_replies()[index] if index < 3 else {"id": request["id"], "ok": True, "result": {}}
+        reply = signed_out_replies()[index] if index < 3 else {"id": request["id"], "ok": True, "result": {}}
         if index == 0:
             reply["result"]["viewport"] = next(self.viewports)
         if request["method"] == "ui.home":
@@ -173,33 +173,41 @@ class DesktopProbe(unittest.TestCase):
         with self.assertRaises(ValueError):
             SMOKE.frame_statistics(truncated)
 
-    def test_ui_thread_and_independent_box_measurement_are_required(self):
-        replies = healthy_replies()
-        self.assertEqual(SMOKE.validate_replies(output(replies)), "gpu")
-        replies[2]["result"]["bodies"][0]["volume_mm3"] = 5900
+    def test_signed_out_desktop_runs_and_refuses_controlled_entries(self):
+        replies = signed_out_replies()
+        self.assertEqual(SMOKE.validate_offline(output(replies)), "gpu")
+        # A controlled entry that executed on a signed-out host is a security failure, not a pass.
+        executed = signed_out_replies()
+        executed[1] = {"id": 2, "ok": True, "result": {"bodies": ["Body1"]}}
         with self.assertRaises(ValueError):
-            SMOKE.validate_replies(output(replies))
+            SMOKE.validate_offline(output(executed))
+        # Nor may any other refusal stand in for the authority refusal.
+        wrong_code = signed_out_replies()
+        wrong_code[2]["errorDetails"]["code"] = "CapabilityDenied"
+        with self.assertRaises(ValueError):
+            SMOKE.validate_offline(output(wrong_code))
+        # A refusal without the details that name the reason is not proof either.
+        no_details = signed_out_replies()
+        no_details[1].pop("errorDetails")
+        with self.assertRaises(ValueError):
+            SMOKE.validate_offline(output(no_details))
 
     def test_cli_version_or_partial_control_output_is_not_desktop_success(self):
         with self.assertRaises(ValueError):
-            SMOKE.validate_replies("intcad-cli 0.3.0\n")
+            SMOKE.validate_offline("intcad-cli 0.3.0\n")
         with self.assertRaises(ValueError):
-            SMOKE.validate_replies(output(healthy_replies()[:1]))
+            SMOKE.validate_offline(output(signed_out_replies()[:1]))
+        with self.assertRaises(ValueError):
+            SMOKE.validate_offline(output(signed_out_replies()[:2]))
 
-    def test_startup_without_viewport_or_failed_feature_is_not_success(self):
-        for failure in ["viewport", "feature", "control", "bounds"]:
-            with self.subTest(failure=failure):
-                replies = healthy_replies()
-                if failure == "viewport":
-                    replies[0]["result"]["viewport"][2] = 0
-                elif failure == "feature":
-                    replies[2]["result"]["timeline"][0]["error"] = "operation failed"
-                elif failure == "control":
-                    replies[1] = {"id": 2, "ok": False, "error": "startup failure"}
-                else:
-                    replies[2]["result"]["bodies"][0]["bbox"]["max"][0] = 29
+    def test_startup_without_a_usable_viewport_is_not_success(self):
+        for renderer, width in [("gpu", 0), ("", 1000)]:
+            with self.subTest(renderer=renderer, width=width):
+                replies = signed_out_replies()
+                replies[0]["result"]["renderer"] = renderer
+                replies[0]["result"]["viewport"][2] = width
                 with self.assertRaises(ValueError):
-                    SMOKE.validate_replies(output(replies))
+                    SMOKE.validate_offline(output(replies))
 
     def test_flatpak_assistant_needs_an_open_panel_and_a_loaded_page(self):
         good = {"ok": True, "result": {"open": True, "webView": {"host": True, "page": True}}}
