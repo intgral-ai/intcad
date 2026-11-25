@@ -3173,3 +3173,21 @@ Its reminder that staging needs `RELEASE_AGENT_*` is not accurate: those variabl
 order is tag gate → per-package account checks and Gate B → owner sets both variables → dispatch.
 Their other half is right and is treated as a pre-dispatch check: if the values are missing or
 mismatched at dispatch, the publisher fails closed and cannot be repaired afterwards.
+
+**#240's `Native Linux Clippy` caught a real lint the earlier local clippy missed.** The job ran
+`cargo clippy --workspace --all-targets --profile ci -- -D warnings` and failed on
+
+```
+error: usage of the `unreachable!` macro
+  --> apps/solidcraft/src/account.rs:4761:22
+   |     _ => unreachable!(),
+note: the lint level is defined here
+  --> apps/solidcraft/src/main.rs:17:103
+   |  #![deny(… clippy::unreachable)]
+```
+
+The test came from #234 (`a68f3db8e3`). My earlier local `cargo clippy -p …` runs omitted
+`--all-targets`, so test code was never linted — a gap now closed: the fix replaces that arm with
+`_ => {}` (the loop only yields the three named losses), and the exact CI command is being run
+locally before the next push. The doomed run `45530068097` was cancelled so the runner time is not
+wasted.
