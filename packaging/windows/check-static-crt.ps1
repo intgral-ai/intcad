@@ -24,8 +24,14 @@ function Assert-StaticCrt($path) {
         $optionalSize = $reader.ReadUInt16()
         $null = $reader.ReadUInt16()
         $optStart = $stream.Position
-        if ($reader.ReadUInt16() -ne 0x020b) { throw 'Not a PE32+ image' }
-        $stream.Position = $optStart + 112
+        # The import directory is the second data directory. The directories start 96 bytes into
+        # a 32-bit optional header (PE32: the x86 package) and 112 bytes into a 64-bit one (PE32+).
+        $directories = switch ($reader.ReadUInt16()) {
+            0x010b { 96 }
+            0x020b { 112 }
+            default { throw 'Not a PE32 or PE32+ image' }
+        }
+        $stream.Position = $optStart + $directories
         $null = $reader.ReadUInt32()
         $null = $reader.ReadUInt32()
         $importRva = $reader.ReadUInt32()

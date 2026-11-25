@@ -79,29 +79,26 @@ for request in '{"id":2,"method":"engine.execute","params":{"command":"solid.box
   IFS= read -r -t 30 reply <&3
   printf '%s\n' "$reply"
 done
-# The Assistant: open the panel and wait for the app's own page to report in. The page is
-# carried inside the app, so this needs no network. Hide the start page first, as it covers
-# the workspace (and the panel) when it happens to be showing.
-printf '{"id":4,"method":"ui.home","params":{"open":false}}\n' >&3
+# Opening the panel is a controlled entry. Signed out it must be refused; the page is
+# carried inside the app but cannot be driven without account authority, so the probe
+# proves the refusal and then reads the bounded marker for the web runtime.
+printf '{"id":4,"method":"ui.agent_chat","params":{"open":true}}\n' >&3
 IFS= read -r -t 30 reply <&3
 printf '%s\n' "$reply"
-printf '{"id":5,"method":"ui.agent_chat","params":{"open":true}}\n' >&3
-IFS= read -r -t 30 reply <&3
-printf '%s\n' "$reply"
-id=6
+id=5
 deadline=$((SECONDS + 120))
 while :; do
-  printf '{"id":%d,"method":"ui.agent_chat","params":{}}\n' "$id" >&3
+  printf '{"id":%d,"method":"ui.inspect","params":{}}\n' "$id" >&3
   if ! IFS= read -r -t 30 reply <&3; then
-    echo "the Assistant state got no reply" >&2
+    echo "the Assistant marker got no reply" >&2
     exit 1
   fi
   printf '%s\n' "$reply"
-  if printf '%s' "$reply" | grep -Eq '"page"[[:space:]]*:[[:space:]]*true|"host"[[:space:]]*:[[:space:]]*false|"ok"[[:space:]]*:[[:space:]]*false'; then
+  if printf '%s' "$reply" | grep -Eq '"host"[[:space:]]*:[[:space:]]*"available"'; then
     break
   fi
   if ((SECONDS >= deadline)); then
-    echo "the Assistant page never loaded: $reply" >&2
+    echo "the Assistant web runtime is not reported: $reply" >&2
     exit 1
   fi
   sleep .25
@@ -228,6 +225,27 @@ def frame_statistics(png):
     return {"width": width, "height": height, "nonblack": nonblack, "pixels": width * height}
 
 
+def validate_signed_out_assistant(replies):
+    """A signed-out desktop cannot open the Assistant panel: the request is refused, and the
+    bounded marker still reports the web runtime. The page itself is NOT VERIFIED offline."""
+    if not replies:
+        raise ValueError("the Assistant open request returned no answer")
+    opening = replies[0]
+    details = opening.get("errorDetails") or {}
+    if opening.get("ok") is not False or details.get("code") not in FAIL_CLOSED:
+        raise ValueError(f"the Assistant panel opened without account authority: {opening}")
+    marker = None
+    for reply in replies[1:]:
+        if reply.get("ok") is not True:
+            continue
+        candidate = (reply.get("result") or {}).get("assistant") or {}
+        if candidate.get("host") == "available":
+            marker = candidate
+    if marker is None:
+        raise ValueError(f"the Assistant web runtime was not reported: {replies[1:]}")
+    return "web runtime available; page NOT VERIFIED offline"
+
+
 def validate_assistant(replies, backend):
     """The Assistant panel is open under this backend, with the state that backend promises.
 
@@ -289,7 +307,7 @@ def probe(gl_saved_four=False, backend="x11"):
     renderer = validate_offline("\n".join(json_lines[:3]))
     assistant = [json.loads(line) for line in json_lines[3:-1]]
     try:
-        assistant_mode = validate_assistant(assistant, backend)
+        assistant_mode = validate_signed_out_assistant(assistant)
     except ValueError as error:
         raise ValueError(f"{error}\n--- app log ---\n{result.stderr[-8000:]}") from error
     capture = json.loads(json_lines[-1])
