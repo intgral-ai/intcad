@@ -1,6 +1,7 @@
 """Exercise the real nightly decision script without GitHub or repository mutations."""
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -12,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import tomllib
 import unittest
 from unittest.mock import Mock, patch
 
@@ -573,6 +575,28 @@ print(refs[args[2]])
         result, output, _, _ = self.run_decision([[release("missing", "2026-01-01T00:00:00Z")]])
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(output, "")
+
+
+class EmbeddedFontNotices(unittest.TestCase):
+    def test_source_notice_matches_locked_egui_font_licences(self):
+        notice = (ROOT / "NOTICE").read_text()
+        packages = tomllib.loads((ROOT / "Cargo.lock").read_text())["package"]
+        versions = [pkg["version"] for pkg in packages if pkg["name"] == "epaint_default_fonts"]
+        self.assertEqual(versions, ["0.36.2"], "recheck the font licences when the dependency changes")
+        self.assertIn("Ubuntu-Light.ttf: Copyright 2011 Canonical Ltd.", notice)
+        self.assertIn("NotoEmoji-Regular.ttf: Copyright 2013 Google Inc. All Rights Reserved.", notice)
+        # Pinned text digests from epaint_default_fonts 0.36.2, with line endings
+        # normalized and surrounding whitespace stripped.
+        for font, digest in (
+            ("Ubuntu-Light.ttf", "52fdffecb23a020de527f68c516cac16dbbaf2dbb73fd9e29e2149703b881c82"),
+            ("Hack-Regular.ttf", "1b7cf37d5c48d3727717e5cce59235cce6a38df1c873c84b2481450460c8eed5"),
+            ("NotoEmoji-Regular.ttf", "9f6ffa4d4ceb839c1d12b830273c1d9f01cb0f5e2535f6143b8f7befdd5650d5"),
+            ("emoji-icon-font.ttf", "c655c7118399c1858e4c3e1bc425803b64589bbe6a81872fef3481f26bdb3408"),
+        ):
+            with self.subTest(font=font):
+                match = re.search(r"(?ms)^Licence for " + re.escape(font) + r"\n\n(.*?)(?=^End font licence\.$)", notice)
+                self.assertIsNotNone(match, f"{font}: full licence missing from packaged NOTICE")
+                self.assertEqual(hashlib.sha256(match[1].strip().encode("utf-8")).hexdigest(), digest)
 
 
 class ForkWorkflowSafety(unittest.TestCase):
