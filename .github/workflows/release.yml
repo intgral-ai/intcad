@@ -213,6 +213,11 @@ jobs:
       - name: Build and package (AppImage, deb, rpm, tar.gz)
         run: packaging/linux/package.sh
       - name: Check the packages (no desktop launch)
+        env:
+          # The account verifier reads the snapshot itself; the inject step only exports the
+          # three values, so the step input has to be passed here as well.
+          PRODUCTION_ACCOUNT_CONFIG: ${{ inputs.production_account_config }}
+          STAGING_ACCOUNT_CONFIG: ${{ inputs.staging_account_config }}
         run: |
           dpkg-deb --info dist/release/*.deb
           dpkg-deb --contents dist/release/*.deb | grep -E 'usr/bin/intcad$|usr/bin/intcad-cli$|metainfo|applications|THIRD-PARTY-LICENSES.txt'
