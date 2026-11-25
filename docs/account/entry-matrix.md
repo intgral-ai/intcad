@@ -19,6 +19,8 @@ The **rule** column is the authorization and billing classification. The **produ
 | CLI DFM | `apps/solidcraft-cli/src/validation.rs` | Same DFM rule as Review; refuse a mixed CLI request before running if its DFM check is not admitted. | **Intended for charged calls.** The production CLI supplies an unverified budget and no billing authority, so it refuses the whole DFM-containing request. |
 | Unknown source or command class | Native trust boundary | Deny by default; no interactive login window on a programmatic request. | **Implemented.** An unclassified entry is refused before dispatch. |
 
+On external control and external UI automation, the free methods are the protocol, inspection, view and picture methods (`auxiliary_method` in `crates/ui-egui/src/control.rs`) and the exact requests the installed-package checks send to a signed-out app (`package_check_request` there): `ui.agent_chat` with no field or with exactly one of `open`, `stop` or `connect` set to `true`; `ui.home` with no field or with only `open: false`; `app.quit` with only `force: true`. Any other field on those methods, such as `send`, makes the request a controlled one.
+
 Free MCP helpers and protocol reads are not charged. The forwarded route refuses `expect`, `check_parameters`, `body_topology`, and `inspect_design` with sketch or joint detail. Those calls need multiple controlled backend requests and cannot carry one parent admission across them.
 
 See [the desktop safe-stop bounds](control-safe-stop-bound.md) for the limits of the desktop admission and result cutoff; it does not interrupt work already in flight.

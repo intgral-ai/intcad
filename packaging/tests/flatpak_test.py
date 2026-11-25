@@ -28,6 +28,12 @@ def signed_out_replies():
     ]
 
 
+# What a signed-out desktop answers besides its read-only methods: the exact requests that
+# `package_check_request` lists in crates/ui-egui/src/control.rs. It refuses any other one.
+ANSWERED = [("ui.home", {"open": False}), ("ui.agent_chat", {"open": True}), ("ui.agent_chat", {}),
+            ("app.quit", {"force": True})]
+
+
 def output(replies):
     return "\n".join(json.dumps(reply) for reply in replies)
 
@@ -47,6 +53,7 @@ class Control:
     def __init__(self, viewports, page=True):
         self.viewports = iter(viewports)
         self.page = page
+        self.answered = list(ANSWERED)
         self.requests = []
         self.settimeout = Mock()
 
@@ -68,7 +75,12 @@ class Control:
     def readline(self):
         request = self.requests[-1]
         index = request["id"] - 1
-        reply = signed_out_replies()[index] if index < 3 else {"id": request["id"], "ok": True, "result": {}}
+        if index < 3:
+            reply = signed_out_replies()[index]
+        elif request["method"] == "ui.screenshot" or (request["method"], request["params"]) in self.answered:
+            reply = {"id": request["id"], "ok": True, "result": {}}
+        else:
+            return json.dumps(dict(signed_out_replies()[1], id=request["id"])) + "\n"
         if index == 0:
             reply["result"]["viewport"] = next(self.viewports)
         if request["method"] == "ui.home":
@@ -101,6 +113,14 @@ class SnapStartup(unittest.TestCase):
             "ui.inspect", "ui.inspect", "engine.execute", "document.inspect", "ui.home",
             "ui.agent_chat", "ui.agent_chat", "ui.screenshot", "app.quit"
         ])
+
+    def test_a_request_the_signed_out_desktop_refuses_fails_the_probe(self):
+        for request in ANSWERED:
+            with self.subTest(request=request):
+                control = Control([[250, 126, 1000, 700]])
+                control.answered.remove(request)
+                with self.assertRaisesRegex(ValueError, request[0] + " failed"):
+                    self.drive(control)
 
     def test_ready_startup_does_not_wait(self):
         control = Control([[250, 126, 1000, 700]])

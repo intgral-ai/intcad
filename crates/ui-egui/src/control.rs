@@ -164,6 +164,30 @@ fn auxiliary_method(method: &str) -> bool {
     )
 }
 
+/// The exact requests an installed-package check sends to a signed-out app (`packaging/`,
+/// `tools/windows-assistant-smoke.ps1`): read the Assistant's state, show its panel, stop or start
+/// the agent the package carries, read or put away the start page, and quit. Each is navigation,
+/// status or maintenance (`docs/account/entry-matrix.md`): a person does the same in the window
+/// for free, and none runs an Intcad operation. A request with any other field stays controlled:
+/// `ui.agent_chat` also sends messages and changes agents and preferences, and `ui.home` opens a
+/// sample.
+fn package_check_request(method: &str, params: &Value) -> bool {
+    let Some(fields) = params.as_object() else { return false };
+    let only = |key: &str, value: bool| fields.len() == 1 && fields.get(key) == Some(&Value::Bool(value));
+    match method {
+        "ui.agent_chat" => fields.is_empty() || only("open", true) || only("stop", true) || only("connect", true),
+        "ui.home" => fields.is_empty() || only("open", false),
+        "app.quit" => only("force", true),
+        _ => false,
+    }
+}
+
+/// Whether a direct control or UI automation request is one that no controlled entry bills.
+fn auxiliary_request(req: &ControlRequest) -> bool {
+    matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation)
+        && (auxiliary_method(&req.method) || package_check_request(&req.method, &req.params))
+}
+
 /// The exact screenshot camera helper: `view.apply` with one `camera` object or one named-view
 /// string and no other field. `view.apply` is transient view state (`s.camera`), never saved and
 /// never an undo step; it cannot carry a design mutation.
@@ -608,7 +632,7 @@ pub fn admit_control_request(req: &ControlRequest, budget: &BudgetTable, billing
     let Some(capability) = entry_capability(req.entry) else {
         return Admission::Refused(Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"));
     };
-    if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
+    if auxiliary_request(req) {
         return Admission::Allowed;
     }
     if let Some(refusal) = async_native_refusal(req) {
@@ -970,7 +994,7 @@ fn controlled_capture_refusal(req: &ControlRequest) -> Option<Refusal> {
     if free_entry(req.entry) || req.helper.is_some() {
         return None;
     }
-    if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
+    if auxiliary_request(req) {
         return None;
     }
     if matches!(req.method.as_str(), "ui.screenshot" | "ui.render") {
@@ -1283,7 +1307,7 @@ fn authority_snapshot_refusal(app: &mut SolveApp, req: &ControlRequest) -> Optio
     if free_entry(req.entry) || req.helper.is_some() {
         return None;
     }
-    if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
+    if auxiliary_request(req) {
         return None;
     }
     let Some(capability) = entry_capability(req.entry) else {
@@ -4114,7 +4138,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_out_control_can_inspect_only_the_bounded_assistant_marker() {
+    fn signed_out_control_reads_the_bounded_assistant_marker_and_cannot_send() {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         let ctx = egui::Context::default();
         let (mut inspect, _) = ControlRequest::trusted_control("ui.inspect", json!({}));
@@ -4122,10 +4146,101 @@ mod tests {
         assert_eq!(reply["ok"], true, "{reply}");
         assert_eq!(reply["result"]["assistant"], json!({"open": false, "surface_ready": false, "host": "unavailable", "centred": false}));
 
+        // Showing the panel is one of the installed checks' exact requests and is answered; the
+        // same method with a message to send is still a controlled request and is refused.
         let (mut open, _) = ControlRequest::trusted_control("ui.agent_chat", json!({"open": true}));
-        let Outcome::Done(reply) = handle(&mut app, &ctx, &mut open) else { panic!("a refused action must answer synchronously") };
+        let Outcome::Done(reply) = handle(&mut app, &ctx, &mut open) else { panic!("showing the panel must answer synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        let (mut send, _) = ControlRequest::trusted_control("ui.agent_chat", json!({"open": true, "send": "hello"}));
+        let Outcome::Done(reply) = handle(&mut app, &ctx, &mut send) else { panic!("a refused action must answer synchronously") };
         assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
-        assert!(!app.agent_chat.open);
+        assert!(app.agent_chat.items.is_empty(), "nothing was sent");
+    }
+
+    /// Every request the installed-package checks send after the app starts, in the words they
+    /// send them (packaging/assistant-check.py, packaging/linux/assistant-check.py,
+    /// packaging/linux/snap-smoke.py, packaging/linux/flatpak-smoke.py,
+    /// tools/windows-assistant-smoke.ps1). The checks run signed out and without a network.
+    fn installed_check_requests() -> Vec<(&'static str, Value)> {
+        vec![
+            ("ui.inspect", json!({})),
+            ("ui.rects", json!({})),
+            ("ui.home", json!({})),
+            ("ui.home", json!({"open": false})),
+            ("ui.agent_chat", json!({})),
+            ("ui.agent_chat", json!({"open": true})),
+            ("ui.agent_chat", json!({"stop": true})),
+            ("ui.agent_chat", json!({"connect": true})),
+            ("ui.screenshot", json!({"path": "frame.png"})),
+            ("app.quit", json!({"force": true})),
+        ]
+    }
+
+    #[test]
+    fn a_signed_out_app_admits_the_installed_checks_exact_requests_for_free() {
+        // A release build that nobody signed in to: the budget is installed, no commit authority.
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.install_budget(verified_budget());
+        assert!(!app.has_commit_authority());
+        for (method, params) in installed_check_requests() {
+            let (mut control, _rx) = ControlRequest::trusted_control(method, params.clone());
+            assert!(matches!(admit_once(&mut app, &mut control), Ok(Admission::Allowed)), "{method} {params}");
+            let (mut automation, _rx) = ControlRequest::trusted_external_ui(method, params.clone());
+            assert!(matches!(admit_once(&mut app, &mut automation), Ok(Admission::Allowed)), "{method} {params}");
+        }
+        // The same holds before any budget is installed.
+        let mut bare = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        for (method, params) in installed_check_requests() {
+            let (mut req, _rx) = ControlRequest::trusted_control(method, params.clone());
+            assert!(matches!(admit_once(&mut bare, &mut req), Ok(Admission::Allowed)), "{method} {params}");
+        }
+    }
+
+    #[test]
+    fn a_signed_out_app_still_refuses_everything_else_on_those_methods() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.install_budget(verified_budget());
+        for (method, params) in [
+            ("engine.execute", json!({"command":"solid.box","params":{"length":30,"width":20,"height":10}})),
+            ("document.inspect", json!({"measure": true})),
+            ("ui.agent_chat", json!({"send": "hello"})),
+            ("ui.agent_chat", json!({"open": true, "send": "hello"})),
+            ("ui.agent_chat", json!({"connect": true, "send": "hello"})),
+            ("ui.agent_chat", json!({"open": false})),
+            ("ui.agent_chat", json!({"stop": false})),
+            ("ui.agent_chat", json!({"connect": "true"})),
+            ("ui.agent_chat", json!({"open": true, "connect": true})),
+            ("ui.agent_chat", json!({"agent": "mastra"})),
+            ("ui.agent_chat", json!({"model": "any"})),
+            ("ui.agent_chat", json!({"permissions": "all"})),
+            ("ui.agent_chat", json!({"add_agent": {"name": "x", "kind": "custom", "command": "x"}})),
+            ("ui.agent_chat", json!({"connection": {"type": "conn_key"}})),
+            ("ui.agent_chat", json!({"attach": "/tmp/opencode/never-read.png"})),
+            ("ui.agent_chat", json!(["open"])),
+            ("ui.home", json!({"open": true})),
+            ("ui.home", json!({"sample": 0})),
+            ("ui.home", json!({"open": false, "sample": 0})),
+            ("app.quit", json!({})),
+            ("app.quit", json!({"force": false})),
+            ("app.quit", json!({"force": true, "save": true})),
+            ("ui.prefs", json!({})),
+            ("ui.click", json!({"x": 1, "y": 1})),
+        ] {
+            let (mut req, _rx) = ControlRequest::trusted_control(method, params.clone());
+            let refusal = admit_once(&mut app, &mut req).expect_err("a controlled request needs commit authority");
+            assert!(matches!(refusal.code, RefusalCode::AuthUnavailable | RefusalCode::UnsafeToStart), "{method} {params}: {:?}", refusal.code);
+            assert!(req.admission.is_none(), "{method} {params}: no admission was stored");
+        }
+    }
+
+    #[test]
+    fn an_installed_checks_request_is_never_billed_when_signed_in() {
+        let (mut app, admits, _releases) = app_with_billing();
+        for (method, params) in installed_check_requests() {
+            let (mut req, _rx) = ControlRequest::trusted_control(method, params.clone());
+            assert!(matches!(admit_once(&mut app, &mut req), Ok(Admission::Allowed)), "{method} {params}");
+        }
+        assert_eq!(admits.load(Ordering::Relaxed), 0, "navigation, status and quitting take no grant");
     }
 
     #[test]
