@@ -505,13 +505,12 @@ def test_centred_box_moves_sideways_from_its_empty_parts_only(page, site):
         page.keyboard.press("Escape")
     assert len(page.evaluate(MOVES)) == len(moves)
 
-    # Open, the bar's empty part: a press that goes sideways moves the box and leaves it open; a
-    # plain press there collapses it, as before.
+    # Open, the bar's empty part: a press that goes sideways moves the box and leaves it open.
     page.get_by_title("expand").first.click()
     body = page.locator("[data-centre-body]")
     expect(body).to_have_attribute("data-open", "true")
     page.wait_for_timeout(600)  # the conversation rises from the box
-    bar = page.locator("[data-centre-bar-collapse]").bounding_box()
+    bar = page.locator("[data-centre-bar-drag]").bounding_box()
     empty = (bar["x"] + bar["width"] * 0.6, bar["y"] + bar["height"] / 2)
     press_and_go(page, *empty, 80)
     assert page.evaluate(MOVES)[-1] == {"type": "move", "dx": 80, "done": True}
@@ -523,5 +522,15 @@ def test_centred_box_moves_sideways_from_its_empty_parts_only(page, site):
     press_and_go(page, held["x"] + held["width"] / 2, held["y"] + held["height"] / 2, 40)
     assert page.evaluate(MOVES)[-1] == {"type": "move", "dx": 40, "done": True}
     expect(body).to_have_attribute("data-open", "true")
+    # Only Collapse collapses it: not a plain click on the bar, not a press outside the page (its
+    # blur), which still closes a menu that is open.
     page.mouse.click(*empty)
+    page.wait_for_timeout(300)
+    expect(body).to_have_attribute("data-open", "true")
+    page.get_by_role("button", name="title").click()
+    expect(page.get_by_role("menu")).to_be_visible()
+    page.evaluate("window.dispatchEvent(new Event('blur'))")
+    expect(page.get_by_role("menu")).to_be_hidden()
+    expect(body).to_have_attribute("data-open", "true")
+    page.get_by_role("button", name="collapse").click()
     expect(body).not_to_have_attribute("data-open", "true")

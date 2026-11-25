@@ -522,10 +522,6 @@ pub struct AgentChat {
     pub(crate) web_clips: bool,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_reveal: Option<f32>,
-    /// Primary presses in the app's window, outside the page, while it is shown at the bottom
-    /// centre (`panel::centre`): the page collapses its conversation when the count goes up.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) web_presses: u64,
     /// How far the user moved the box at the bottom centre from the window's centre, in points, for
     /// this run only ([`web::act`], `move`); while a move is under way, where it started; and the
     /// least and most it may be in the last frame (`panel::centre`).
@@ -710,7 +706,6 @@ impl AgentChat {
             std::mem::swap(&mut self.web_centre, &mut other.web_centre);
             std::mem::swap(&mut self.web_clips, &mut other.web_clips);
             std::mem::swap(&mut self.web_reveal, &mut other.web_reveal);
-            std::mem::swap(&mut self.web_presses, &mut other.web_presses);
             std::mem::swap(&mut self.web_shift, &mut other.web_shift);
             std::mem::swap(&mut self.web_shift_from, &mut other.web_shift_from);
             std::mem::swap(&mut self.web_shift_room, &mut other.web_shift_room);

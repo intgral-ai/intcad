@@ -189,8 +189,6 @@ export interface AssistantState {
   radius: number;
   /** At the bottom centre of the window: the most height the page may take, in points; absent in the side panel. */
   centre?: number | null;
-  /** There: the primary presses in the app's window outside the page so far. Its conversation collapses on a new one. */
-  outsidePresses?: number;
   permissions: 'ask' | 'edits' | 'all';
   skill: string;
   skills: { id: string; title: string }[];

@@ -16664,50 +16664,6 @@ fn at_the_bottom_centre_the_user_moves_the_box_sideways_within_the_window() {
     assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"move","dx":"far"}"#).is_err());
 }
 
-/// At the bottom centre, while the conversation is open, a primary press that reaches the app (the
-/// page's native view takes its own) is outside the Assistant: the model, the rail. The page is
-/// told the count and collapses its opened conversation when it goes up; switching to another app
-/// is no press. With the box closed, or in the side panel, nothing is counted (INT-1500).
-#[test]
-fn at_the_bottom_centre_a_press_in_the_app_outside_the_view_is_told_to_the_page() {
-    let mut h = crate::scenario::Harness::new();
-    h.app.home.open = false;
-    h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
-    h.call("ui.agent_chat", json!({"open": true, "picker": false}));
-    web::set_host(&mut h.app, true);
-    h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
-    h.frames(3);
-    let presses = |h: &mut crate::scenario::Harness| {
-        serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["outsidePresses"].as_u64()
-    };
-    assert_eq!(presses(&mut h), Some(0), "nothing pressed yet");
-    // Closed, a press changes nothing on the page and is not told.
-    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the closed box");
-    h.frames(2);
-    let closed = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
-    click_at(&mut h, egui::pos2(closed.center().x, closed.top() - 200.0), egui::PointerButton::Primary);
-    assert_eq!(presses(&mut h), Some(0), "with the box closed a press is not told");
-    // Opened: the page asks for all the room it may take.
-    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":5000}"#).expect("the conversation opens");
-    h.frames(2);
-    let view = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
-    let model = egui::pos2(view.center().x, view.top() - 120.0);
-    let content = h.app.viewport.layout.clone().expect("the view's layout").content;
-    assert!(content.contains(model) && !view.contains(model), "a point on the model, above the page: {model:?} {view:?} {content:?}");
-    click_at(&mut h, model, egui::PointerButton::Primary);
-    assert_eq!(presses(&mut h), Some(1), "a press on the model");
-    click_at(&mut h, model, egui::PointerButton::Secondary);
-    assert_eq!(presses(&mut h), Some(1), "a secondary press is not counted");
-    let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
-    click_at(&mut h, egui::pos2(rail.center().x, rail.bottom() - 4.0), egui::PointerButton::Primary);
-    assert_eq!(presses(&mut h), Some(2), "a press on the rail");
-
-    h.call("ui.prefs", json!({"agent_chat_centre": false}));
-    h.frames(3);
-    click_at(&mut h, model, egui::PointerButton::Primary);
-    assert_eq!(presses(&mut h), Some(2), "in the side panel a press is not counted");
-}
-
 /// Files dropped on the host's web view are attached to the next message as files dropped on the
 /// panel are, and one that cannot be says why; while they are over the view the page is told.
 #[test]

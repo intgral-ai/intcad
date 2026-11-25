@@ -1528,18 +1528,16 @@ function AssistantBar({
       ))}
     </>
   );
-  // At the bottom centre the bar's empty part collapses the conversation, as Collapse does.
+  // At the bottom centre the bar's empty part drags the box; only Collapse collapses it.
   const centre = centred(state);
   return (
     <ChatShell.Bar className={centre ? 'relative' : undefined}>
       {/* Under the row: what is not a control (the gaps, the state badge) lets the press through to
-          it. Not a second tab stop: the bar's Collapse is the keyboard's way. */}
+          it, to drag the box. */}
       {centre && (
         <div
           aria-hidden
-          data-centre-bar-collapse
-          title={strings.collapse}
-          onClick={onCollapse}
+          data-centre-bar-drag
           className="absolute inset-0 cursor-grab rounded-lg transition-colors active:cursor-grabbing duration-fast ease-out-custom hover:bg-fill-subtle motion-reduce:transition-none"
         />
       )}
@@ -2911,8 +2909,6 @@ const POPUPS = [
 const OPEN = POPUPS.map(entry => entry.selector).join(', ');
 /** The popups a press outside the page closes. */
 const ON_BLUR = POPUPS.filter(entry => entry.blur).map(entry => entry.selector).join(', ');
-/** The dialogs, which keep the page as it is through a press outside it. */
-const DIALOGS = POPUPS.filter(entry => !entry.blur).map(entry => entry.selector).join(', ');
 const NATIVE_PORTALS = `${OPEN}, [role="tooltip"], [data-slot="alert-dialog-content"]`;
 
 /** A computed length we can use without guessing at unresolved units or expressions. */
@@ -3008,7 +3004,7 @@ function closePopups() {
 /** The headers over the message box: the line, a row that needs the user, the opened body. */
 const HEADERS = ':scope > [data-slot="composer"] > [data-slot="composer-header"]';
 /** The parts of the box at the bottom centre a press on moves it: no control, no words. */
-const EMPTY_OF_BOX = '[data-centre-bar-collapse], [data-slot^="composer-actions"]';
+const EMPTY_OF_BOX = '[data-centre-bar-drag], [data-slot^="composer-actions"]';
 /** The box's grip, which drags it from anywhere on it, its icon too. */
 const GRIP = '[data-centre-grip]';
 
@@ -3083,9 +3079,6 @@ function Centre({
     else setRoom(next);
   };
   useLayoutEffect(() => fitRoom.current(false));
-  // The page lost the focus with a popup open, which that closed: the press outside the page that
-  // the host tells of next is most likely the same press, and it only closes the popup.
-  const blurClosed = useRef(false);
   // The page tells the host how tall it is; the host keeps it within `centre`. While a popup is open
   // (model picker, mode menu, a dialog) the page asks for all the room there is, from the press that
   // opens it, so the popup has room when it appears.
@@ -3238,10 +3231,7 @@ function Centre({
     };
     // A press outside the page (the model, the window) closes its menus, as one inside would;
     // switching to another app to copy a key does not close the dialog it goes into.
-    const blur = () => {
-      blurClosed.current = Boolean(document.querySelector(ON_BLUR));
-      closePopups();
-    };
+    const blur = () => closePopups();
     // A mode picked from its menu closes the menu.
     const picked = (event: globalThis.MouseEvent) => {
       if ((event.target as Element | null)?.closest('[role="menuitemradio"]')) window.setTimeout(closePopups, 120);
@@ -3302,22 +3292,6 @@ function Centre({
       delete native.__assistantX11Unmasked;
     };
   }, []);
-  // A primary press in the app's window outside the page (the model, the rail, the toolbar, the
-  // browser), as the host counts them: not `blur`, which switching to another app fires too. It
-  // closes the page's popups and collapses the opened conversation, unless all it does is close a
-  // popup, or a dialog, the connections page (a sign-in may be under way there) or New chat's
-  // question is open.
-  const presses = state.outsidePresses ?? 0;
-  const pressesSeen = useRef(presses);
-  useEffect(() => {
-    const pressed = presses > pressesSeen.current;
-    pressesSeen.current = presses;
-    if (!pressed) return;
-    const popup = blurClosed.current || Boolean(document.querySelector(ON_BLUR));
-    blurClosed.current = false;
-    closePopups();
-    if (open && !popup && !conn && !none && !state.confirmNew && !document.querySelector(DIALOGS)) collapse();
-  }, [presses]);
   // A press on the grip or an empty part of the box (the gap in the message box's bottom row; open,
   // the bar's empty part) that goes sideways moves the box along the bottom of the window; the host keeps it
   // there. A press that does not go a few points keeps its meaning, and the click a move ends in is
