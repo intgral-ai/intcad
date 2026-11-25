@@ -48,8 +48,8 @@ REQUESTS = [
 ]
 
 
-def drive(app, port, frame):
-    """Connect to the app's control port, model the box, open the Assistant and capture a frame."""
+def drive(app, port, frame, backend):
+    """Connect to the app's control port, prove the refusals, read the Assistant marker and capture a frame."""
     deadline = time.monotonic() + 60
     while True:
         if app.poll() is not None:
@@ -126,30 +126,35 @@ def drive(app, port, frame):
 
         refused(REQUESTS[1])
         refused(REQUESTS[2])
-        # The Assistant: the start page covers the workspace, then the panel must load its page.
-        call({"id": 4, "method": "ui.home", "params": {"open": False}})
-        call({"id": 5, "method": "ui.agent_chat", "params": {"open": True}})
-        request_id = 6
+        # The Assistant: `--open-assistant` showed the panel, and the restricted ui.inspect
+        # marker is the only observation a signed-out host may make of it. A native Wayland
+        # window reports its documented diagnostic instead of a hosted page.
+        request_id = 4
+        markers = []
         deadline = time.monotonic() + 120
         while True:
-            state = call({"id": request_id, "method": "ui.agent_chat", "params": {}})["result"] or {}
-            web = state.get("webView") or {}
-            if state.get("open") is not True:
+            marker_reply = call({"id": request_id, "method": "ui.inspect", "params": {}})
+            state = marker_reply["result"] or {}
+            marker = state.get("assistant") or {}
+            markers.append(marker_reply)
+            if marker.get("open") is not True:
                 raise ValueError(f"the Assistant panel did not open: {state}")
-            if web.get("host") is False:
-                raise ValueError(f"the Assistant made no web view: {web}")
-            if web.get("host") is True and web.get("page") is True:
+            if marker.get("host") == "failed":
+                raise ValueError(f"the Assistant reported a failed web host: {marker}")
+            if backend in {"x11", "xwayland"} and marker.get("host") == "available" and marker.get("surface_ready") is True:
+                break
+            if backend == "wayland" and marker.get("host") == "native_wayland":
                 break
             if time.monotonic() >= deadline:
-                raise RuntimeError(f"the Assistant's page never loaded: {web}")
+                raise RuntimeError(f"the Assistant's page never loaded: {marker}")
             time.sleep(.25)
             request_id += 1
         capture = call({"id": request_id + 1, "method": "ui.screenshot", "params": {"path": str(frame)}})
-        call({"id": request_id + 2, "method": "app.quit", "params": {"force": True}})
+        mode = flatpak_smoke.validate_assistant(markers, backend)
     renderer = flatpak_smoke.validate_offline("".join(replies[:3]))
     if capture.get("ok") is not True or renderer != "gpu":
         raise ValueError(f"GPU frame capture failed: renderer={renderer}, {capture}")
-    return renderer, flatpak_smoke.frame_statistics(frame.read_bytes())
+    return renderer, flatpak_smoke.frame_statistics(frame.read_bytes()), mode
 
 
 def run_backend(backend, out):
@@ -185,12 +190,10 @@ def run_backend(backend, out):
             if probe.connect_ex(("127.0.0.1", PORTS[backend])) == 0:
                 raise RuntimeError(f"port {PORTS[backend]} is already in use (another SolidCraft?)")
         # Its own process group, so stopping it also stops the app under xvfb-run.
-        app = subprocess.Popen(prefix + ["/snap/bin/intcad", "--control", str(PORTS[backend])],
+        app = subprocess.Popen(prefix + ["/snap/bin/intcad", "--control", str(PORTS[backend]), "--open-assistant"],
                                env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
-            renderer, stats = drive(app, PORTS[backend], work / "frame.png")
-            # app.quit exits cleanly, so the next run doesn't report a crash.
-            app.wait(timeout=30)
+            renderer, stats, mode = drive(app, PORTS[backend], work / "frame.png", backend)
         finally:
             if app.poll() is None:
                 os.killpg(app.pid, signal.SIGTERM)
@@ -201,7 +204,7 @@ def run_backend(backend, out):
                 app.wait()
         shutil.copy(work / "frame.png", out / f"snap-{backend}.png")
         print(f"snap {backend}: PASS renderer={renderer}, controlled entries refused (signed out), "
-              f"Assistant page loaded, frame={stats}")
+              f"Assistant {mode} (marker), frame={stats}")
     except BaseException:
         log.flush()
         sys.stderr.write((work / "app.log").read_text(errors="replace")[-8000:])

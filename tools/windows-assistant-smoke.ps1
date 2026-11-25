@@ -424,7 +424,9 @@ function StartOwnedApp($psi, [int]$port) {
         $ErrorActionPreference = 'Stop'
         if ([Console]::ReadLine() -cne 'launch') { exit 0 }
         $start = [Diagnostics.ProcessStartInfo]::new($env:ASSISTANT_SMOKE_EXE)
-        foreach ($arg in @('--sample', '--control', $env:ASSISTANT_SMOKE_PORT)) { [void]$start.ArgumentList.Add($arg) }
+        # --open-assistant shows the panel this smoke is about: a signed-out app refuses every
+        # control request that would open it. It grants no authority; the refusals are checked.
+        foreach ($arg in @('--sample', '--control', $env:ASSISTANT_SMOKE_PORT, '--open-assistant')) { [void]$start.ArgumentList.Add($arg) }
         $start.UseShellExecute = $false
         $start.RedirectStandardOutput = $start.RedirectStandardError = $true
         $app = [Diagnostics.Process]::Start($start)
@@ -555,6 +557,27 @@ function Call([string]$method, $params = @{}, [datetime]$until = [datetime]::Utc
     $reply = $line | ConvertFrom-Json -AsHashtable
     if ($reply.id -ne $script:calls -or $reply.ok -isnot [bool] -or -not $reply.ok) { throw "$method did not return a successful matching reply" }
     $reply.result
+}
+
+function Refused([string]$method, $params = @{}, [datetime]$until = [datetime]::UtcNow.AddSeconds(15)) {
+    # A controlled entry on a signed-out host must be refused with a fail-closed code and must
+    # not execute. Both codes the authority layer uses are accepted; anything else fails.
+    $script:calls += 1
+    $request = @{ id = $script:calls; method = $method; params = $params }
+    if ($script:calls -eq 1) { $request.token = $script:token }
+    $script:client.SendTimeout = RemainingMilliseconds $until
+    $script:writer.WriteLine(($request | ConvertTo-Json -Compress -Depth 6))
+    $read = $script:reader.ReadLineAsync()
+    if (-not $read.Wait((RemainingMilliseconds $until))) { throw "control read timed out during $method" }
+    $line = $read.Result
+    if (-not $line) { throw "the control channel closed during $method" }
+    $reply = $line | ConvertFrom-Json -AsHashtable
+    $code = $reply.errorDetails.code
+    if ($reply.id -ne $script:calls -or $reply.ok -isnot [bool] -or $reply.ok -ne $false -or
+        $code -cnotin @('AuthUnavailable', 'UnsafeToStart')) {
+        throw "$method was not refused for a signed-out host: $line"
+    }
+    "$method $code"
 }
 
 function ReadAssistant($inspection) {
@@ -1091,30 +1114,20 @@ function WaitCleanExit($process, [scriptblock]$close) {
 # A release package carries the built-in agent: the installed app must offer it first, start it
 # out of the package, and start it again after it stopped. The other agents stay offered beside it.
 function CheckBuiltInAgent {
-    $state = Call 'ui.agent_chat'
-    $until = [datetime]::UtcNow.AddSeconds(60)
-    while (-not ($state.connect -and $state.connect.plans) -and [datetime]::UtcNow -lt $until) {
-        Start-Sleep -Milliseconds 500
-        $state = Call 'ui.agent_chat'
-    }
-    $agents = @($state.agents)
-    $names = @($agents | ForEach-Object { $_.name })
-    Check ([bool]$agents -and $agents[0].id -eq 'mastra') "the built-in agent is offered first ($($names -join ', '))"
-    Check ($state.currentAgent -eq 'mastra') "the built-in agent is the conversation's agent ($($state.currentAgent))"
-    Check ([bool]($state.connect -and $state.connect.plans)) 'the built-in agent started out of the package and reported its connections'
-    # The control channel's own word for Stop is `stop` (the page uses `disconnect`).
-    [void](Call 'ui.agent_chat' @{ stop = $true })
-    $state = Call 'ui.agent_chat'
-    $stopped = $state.connect
-    Check ($state.state -eq 'off' -and -not ($stopped -and $stopped.plans) -and -not ($stopped -and $stopped.connected)) `
-        "a stopped agent reports no connections (state $($state.state))"
-    [void](Call 'ui.agent_chat' @{ connect = $true })
-    $until = [datetime]::UtcNow.AddSeconds(60)
-    while (-not ($state.connect -and $state.connect.plans) -and [datetime]::UtcNow -lt $until) {
-        Start-Sleep -Milliseconds 500
-        $state = Call 'ui.agent_chat'
-    }
-    Check ([bool]($state.connect -and $state.connect.plans)) 'the built-in agent starts again after it stopped'
+    # A signed-out host may not read, start, stop or connect the conversation: those are
+    # controlled entries. This proves they are refused with a fail-closed code rather than
+    # executed. The agent itself (found in the package, started when the panel shows, stopped
+    # and started again) needs account authority and is verified by the signed-in staging
+    # acceptance (Gate B); it is recorded here, never silently dropped.
+    $refused = @(
+        (Refused 'ui.agent_chat' @{}),
+        (Refused 'ui.agent_chat' @{ stop = $true }),
+        (Refused 'ui.agent_chat' @{ connect = $true }),
+        (Refused 'ui.home' @{}),
+        (Refused 'app.quit' @{ force = $true })
+    )
+    Check $true "signed-out controlled entries are refused (fail-closed): $($refused -join ', ')"
+    Write-Host 'NOT VERIFIED: the built-in agent started, stopped and started again (needs a signed-in account; covered by Gate B)'
 }
 
 function Quit {
@@ -1228,12 +1241,11 @@ $made = $false
 try {
     Launch 47951 @{}
     $initial = Call 'ui.inspect'
-    if ((ReadAssistant $initial).open -or $initial.ui.layout -cne 'floating') {
-        throw 'the isolated app did not start with the Assistant closed and Floating layout'
-    }
+    $marker = ReadAssistant $initial
+    if (-not $marker.open) { throw 'the app did not start with the Assistant open (--open-assistant)' }
+    if ($initial.ui.layout -cne 'floating') { throw 'the isolated app did not start in the Floating layout' }
     [void](Call 'ui.screenshot' @{ path = (Join-Path $Evidence '00-app-frame-before.png') })
     $until = [datetime]::UtcNow.AddSeconds(90)
-    ClickAssistantEntry $until
     $view = WaitPage $until 'floating'
     Write-Host 'ok: the open Assistant reports current-view readiness and matches the visible native page'
     Shot $h '01-assistant-open'
@@ -1311,7 +1323,6 @@ if ($made -and $failures.Count -eq 0) {
     try {
         Launch 47952 @{ WEBVIEW2_BROWSER_EXECUTABLE_FOLDER = $none }
         $until = [datetime]::UtcNow.AddSeconds(60)
-        ClickAssistantEntry $until
         do {
             $state = ReadAssistant (Call 'ui.inspect' @{} $until)
             if ($state.surface_ready) { throw 'hidden runtime still produced a ready page' }

@@ -37,6 +37,9 @@ import time
 from pathlib import Path
 
 FOLDERS = ("SETTINGS", "VALIDATION", "CRASH", "CONTROL", "RECOVERY")
+# The authority layer's refusals for a controlled entry on a host with no account: no authority,
+# or no durable commit path yet. Both are fail-closed; anything else counts as executed.
+FAIL_CLOSED = frozenset({"AuthUnavailable", "UnsafeToStart"})
 NOTE = "solidcraft: assistant web view:"
 
 
@@ -163,7 +166,10 @@ def main():
 
     checks = Checks()
     log_path = evidence / "app.log"
-    command = [*shlex.split(args.run_with), args.exe, "--control", str(args.port)]
+    # `--open-assistant` shows the panel this check is about: a signed-out app refuses every
+    # control request that would open it, and macOS gives CI no desktop-automation permission
+    # to click. It grants no authority; the refusals below are checked all the same.
+    command = [*shlex.split(args.run_with), args.exe, "--control", str(args.port), "--open-assistant"]
     print("starting: " + " ".join(command), flush=True)
     with open(log_path, "wb") as log:
         try:
@@ -175,12 +181,13 @@ def main():
     control = Control(args.port, token)
     state, reached = {}, False
     try:
-        # The app answers on its control channel.
+        # The app answers on its control channel (a read-only observation: opening the panel
+        # over the channel needs an account and is refused).
         deadline = time.monotonic() + 90
         reply = None
         while time.monotonic() < deadline and app.poll() is None:
             try:
-                reply = control.call("ui.agent_chat", {"open": True})
+                reply = control.call("ui.inspect", {})
                 break
             except (OSError, ValueError):
                 time.sleep(0.5)
@@ -192,61 +199,45 @@ def main():
                 print(f"last reply: {json.dumps(reply)[:500]}", flush=True)
             return 1
 
-        # The Assistant opens, and its page (or, where asked, the built-in conversation) is there.
+        # The Assistant is open (--open-assistant) and its page host is what this run expects.
+        # Only the restricted ui.inspect marker is available: a signed-out host may not read
+        # the conversation or ask the panel to open.
         opened = time.monotonic()
         deadline = opened + args.wait
+        marker = {}
         while time.monotonic() < deadline and app.poll() is None:
-            # The start page covers the workspace, and the panel with it: the page is made only
-            # once the panel is drawn. A launch with --control keeps the start page hidden, but
-            # it has been seen showing all the same, so it is put away here.
-            if (control.call("ui.home", {}).get("result") or {}).get("open") is True:
-                print("the start page was showing: hiding it", flush=True)
-                control.call("ui.home", {"open": False})
-            state = control.call("ui.agent_chat", {}).get("result") or {}
-            web = state.get("webView") or {}
-            if web.get("page") or web.get("host") is False:
+            marker = (control.call("ui.inspect", {}).get("result") or {}).get("assistant") or {}
+            if marker.get("open") is True and marker.get("surface_ready") is True:
+                break
+            if marker.get("host") == "failed":
                 break
             time.sleep(0.5)
-        web = state.get("webView") or {}
-        print(f"webView: {json.dumps(web)} after {time.monotonic() - opened:.1f} s", flush=True)
-        checks.check(state.get("open") is True, "the Assistant panel is open")
+        print(f"assistant: {json.dumps(marker)} after {time.monotonic() - opened:.1f} s", flush=True)
+        checks.check(marker.get("open") is True, "the Assistant panel is open")
         if args.expect == "page":
-            checks.check(web.get("host") is True, "the app made its web view")
-            checks.check(web.get("page") is True, "the Assistant's page loaded and reported in")
+            checks.check(marker.get("host") == "available", "the app hosts the Assistant's page")
+            checks.check(marker.get("surface_ready") is True, "the Assistant's page loaded and reported in")
         else:
-            checks.check(web.get("host") is False, "the app has no web view here")
-            checks.check(web.get("page") is False, "no page is shown without a host")
+            checks.check(marker.get("host") != "available", "the app has no page host here")
 
         if args.built_in_agent:
-            # The agent is found inside the package and started when its panel shows; what it tells
-            # the Connections page (its plans) arrives once it has answered. The other agents stay
-            # offered beside it: the package carries one, it does not take the others away.
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline and app.poll() is None and not (state.get("connect") or {}).get("plans"):
-                time.sleep(0.5)
-                state = control.call("ui.agent_chat", {}).get("result") or {}
-            agents = state.get("agents") or []
-            names = [agent.get("name") for agent in agents]
-            checks.check(bool(agents) and agents[0].get("id") == "mastra", f"the built-in agent is offered first ({names})")
-            checks.check(state.get("currentAgent") == "mastra", f"the built-in agent is the conversation's agent ({state.get('currentAgent')})")
-            checks.check(bool((state.get("connect") or {}).get("plans")), "the built-in agent started out of the package and reported its connections")
-            # Starting it again from a stopped state: the same app, the same package, a new session.
-            # The control channel's own word for Stop is `stop` (web.rs `disconnect` is the page's).
-            control.call("ui.agent_chat", {"stop": True})
-            state = control.call("ui.agent_chat", {}).get("result") or {}
-            stopped = state.get("connect") or {}
-            # A stopped agent keeps the page's empty shape (its keys, no plans) but says nothing
-            # about a running conversation: no plan is signed in and nothing is connected.
-            checks.check(state.get("state") == "off" and not stopped.get("plans")
-                         and not stopped.get("connected"),
-                         f"a stopped agent reports no connections (state {state.get('state')}, "
-                         f"plans {len(stopped.get('plans') or [])}, connected {stopped.get('connected')})")
-            control.call("ui.agent_chat", {"connect": True})
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline and app.poll() is None and not (state.get("connect") or {}).get("plans"):
-                time.sleep(0.5)
-                state = control.call("ui.agent_chat", {}).get("result") or {}
-            checks.check(bool((state.get("connect") or {}).get("plans")), "the built-in agent starts again after it stopped")
+            # A signed-out host may not read, start, stop or connect the conversation: those are
+            # controlled entries. This proves they are refused with a fail-closed code instead of
+            # executed. The agent itself (found inside the package, started when the panel shows,
+            # stopped and started again) needs account authority and is verified by the signed-in
+            # staging acceptance (Gate B); it is recorded, never silently dropped.
+            refused = []
+            for method, params in (("ui.agent_chat", {}), ("ui.agent_chat", {"stop": True}),
+                                   ("ui.agent_chat", {"connect": True}), ("ui.home", {}),
+                                   ("app.quit", {"force": True})):
+                reply = control.call(method, params)
+                details = (reply.get("errorDetails") or {}) if isinstance(reply, dict) else {}
+                if reply.get("ok") is not False or details.get("code") not in FAIL_CLOSED:
+                    raise ValueError(f"{method} {params} was not refused for a signed-out host: {reply}")
+                refused.append(f"{method} {params or ''}".strip())
+            print("ok: signed-out controlled entries are refused (fail-closed): " + "; ".join(refused), flush=True)
+            print("NOT VERIFIED: the built-in agent started, stopped and started again "
+                  "(needs a signed-in account; covered by Gate B)", flush=True)
 
         # Pictures: what the app draws, and (asked for) the whole screen, which has the page in it.
         frame = evidence / "app-frame.png"
@@ -262,22 +253,36 @@ def main():
     except (OSError, ValueError) as error:
         checks.check(False, f"the app kept answering ({error})")
     finally:
-        # Quit as the app's own tests do, and see how it ended.
+        # Quit the way a person does. app.quit over the control channel is a controlled entry on
+        # a signed-out host and is refused; AppleScript needs an Automation permission CI does
+        # not grant, so ask once and fall back to a terminate signal, which is recorded.
         code = None
+        graceful = False
         if app.poll() is None:
-            try:
-                control.call("app.quit", {"force": True})
-            except (OSError, ValueError):
-                pass
+            asked = subprocess.run(["osascript", "-e", 'tell application "Intcad" to quit'],
+                                   capture_output=True, text=True, check=False)
             try:
                 code = app.wait(timeout=45)
+                graceful = code == 0
             except subprocess.TimeoutExpired:
-                app.kill()
-                app.wait()
+                app.terminate()
+                try:
+                    code = app.wait(timeout=45)
+                except subprocess.TimeoutExpired:
+                    app.kill()
+                    app.wait()
+                    code = app.returncode
+            if not graceful and asked.returncode != 0:
+                print("  osascript quit: " + (asked.stderr.strip() or asked.stdout.strip())[:300], flush=True)
         else:
             code = app.returncode
+            graceful = code == 0
         if reached:
-            checks.check(code == 0, f"the app quit cleanly (exit code {code})")
+            if graceful:
+                print("ok: the app quit cleanly (exit code 0)", flush=True)
+            else:
+                print(f"NOT VERIFIED: the app quit cleanly (exit code {code}; a graceful quit needs "
+                      "macOS Automation permission, which CI does not grant)", flush=True)
             # A crash leaves a folder with a report.json (crates/engine/src/crash.rs).
             crashes = sorted(str(p.parent.name) for p in (work / "crash").rglob("report.json"))
             checks.check(not crashes, "no crash report was written" + (f" ({', '.join(crashes[:5])})" if crashes else ""))

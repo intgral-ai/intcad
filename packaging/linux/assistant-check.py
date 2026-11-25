@@ -43,6 +43,9 @@ from pathlib import Path
 
 FOLDERS = ("SETTINGS", "VALIDATION", "CRASH", "CONTROL", "RECOVERY")
 NOTE = "solidcraft: assistant web view:"
+# The authority layer's refusals for a controlled entry on a host with no account: no authority,
+# or no durable commit path yet. Both are fail-closed; anything else counts as executed.
+FAIL_CLOSED = frozenset({"AuthUnavailable", "UnsafeToStart"})
 MAX_REPLY = 1024 * 1024
 
 
@@ -286,54 +289,37 @@ def exercise(app, control, native, seconds, capture, built_in_agent=False):
                     return actual, scale
         return None
 
-    open_from_entry()
+    # The panel was opened at launch (--open-assistant); no entry click, and no control request
+    # that would need an account. A launch with --control keeps the start page hidden, but it has
+    # been seen showing all the same: put it away with its own Back control, as before.
+    if inspect(time.monotonic() + 15).get("home") is True:
+        back = ui_rect(control, ("home:back",), time.monotonic() + 15, native.backing_scale)[0]
+        if not back:
+            raise ValueError("Home is showing with no native Back control")
+        click_rect(back)
     actual, scale = await_value(app, seconds, "no current-view readiness with matching visible native page", page)
     original = native.view_identity()
     print(f"ok: Assistant page ready and visible at {actual}", flush=True)
     capture()
 
     if built_in_agent:
-        # The agent is found inside the package and started when its panel shows; what it tells
-        # the Connections page (its plans) arrives once it has answered. The other agents stay
-        # offered beside it: the package carries one, it does not take the others away.
-        def agent(deadline):
-            return result(control, "ui.agent_chat", deadline)
-
-        deadline = time.monotonic() + 60
-        state = {}
-        while time.monotonic() < deadline and peek_exit(app) is None:
-            state = agent(min(deadline, time.monotonic() + 15))
-            if (state.get("connect") or {}).get("plans"):
-                break
-            time.sleep(0.5)
-        agents = state.get("agents") or []
-        names = [entry.get("name") for entry in agents]
-        if not agents or agents[0].get("id") != "mastra":
-            raise ValueError(f"the built-in agent is not offered first ({names})")
-        if state.get("currentAgent") != "mastra":
-            raise ValueError(f"the built-in agent is not the conversation's agent ({state.get('currentAgent')})")
-        if not (state.get("connect") or {}).get("plans"):
-            raise ValueError("the built-in agent did not start out of the package or report its connections")
-        # Starting it again from a stopped state: the same app, the same package, a new session.
-        # The control channel's own word for Stop is `stop` (web.rs `disconnect` is the page's).
-        result(control, "ui.agent_chat", time.monotonic() + 15, {"stop": True})
-        state = agent(time.monotonic() + 15)
-        stopped = state.get("connect") or {}
-        # A stopped agent keeps the page's empty shape (its keys, no plans) but says nothing
-        # about a running conversation: no plan is signed in and nothing is connected.
-        if not (state.get("state") == "off" and not stopped.get("plans") and not stopped.get("connected")):
-            raise ValueError(f"a stopped agent reports no connections (state {state.get('state')}, "
-                             f"plans {len(stopped.get('plans') or [])}, connected {stopped.get('connected')})")
-        result(control, "ui.agent_chat", time.monotonic() + 15, {"connect": True})
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline and peek_exit(app) is None:
-            state = agent(min(deadline, time.monotonic() + 15))
-            if (state.get("connect") or {}).get("plans"):
-                break
-            time.sleep(0.5)
-        if not (state.get("connect") or {}).get("plans"):
-            raise ValueError("the built-in agent did not start again after it stopped")
-        print("ok: the built-in agent started, stopped and started again", flush=True)
+        # A signed-out host may not read, start, stop or connect the conversation: those are
+        # controlled entries, and this proves they are refused with a fail-closed code rather
+        # than executed. The agent itself (found inside the package, started when the panel
+        # shows, stopped and started again) needs account authority and is verified by the
+        # signed-in staging acceptance (Gate B); it is recorded here, never silently dropped.
+        refused = []
+        for method, params in (("ui.agent_chat", {}), ("ui.agent_chat", {"open": True}),
+                               ("ui.agent_chat", {"stop": True}), ("ui.agent_chat", {"connect": True}),
+                               ("ui.home", {}), ("app.quit", {"force": True})):
+            reply = control.call(method, time.monotonic() + 15, params)
+            details = (reply.get("errorDetails") or {}) if isinstance(reply, dict) else {}
+            if reply.get("ok") is not False or details.get("code") not in FAIL_CLOSED:
+                raise ValueError(f"{method} {params} was not refused for a signed-out host: {reply}")
+            refused.append(f"{method} {params or ''}".strip())
+        print("ok: signed-out controlled entries are refused (fail-closed): " + "; ".join(refused), flush=True)
+        print("NOT VERIFIED: the built-in agent started, stopped and started again "
+              "(needs a signed-in account; covered by Gate B)", flush=True)
 
     # At the bottom centre (#221) the page's top-right control is Collapse, not Close; the
     # Assistant entry is the affordance that closes the panel, exactly as the Windows smoke

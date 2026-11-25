@@ -39,7 +39,10 @@ export SOLIDCRAFT_CONTROL_TOKEN
 # Its own process group: a release app runs the built-in agent as a child, and stopping the app
 # must stop it too. Without the group, `kill` ends only the app and the agent keeps the files in
 # "$work" busy for a moment, which the cleanup then cannot remove.
-setsid intcad --control 18837 >"$work/app.log" 2>&1 &
+# --open-assistant shows the panel the checks are about: a signed-out app refuses every
+# control request that would open it, and a click needs a desktop-automation permission CI
+# does not have. It grants no authority; the refusals below are checked all the same.
+setsid intcad --control 18837 --open-assistant >"$work/app.log" 2>&1 &
 app=$!
 cleanup() {
   kill -TERM -"$app" 2>/dev/null || kill "$app" 2>/dev/null || true
@@ -79,29 +82,29 @@ for request in '{"id":2,"method":"engine.execute","params":{"command":"solid.box
   IFS= read -r -t 30 reply <&3
   printf '%s\n' "$reply"
 done
-# The Assistant: open the panel and wait for the app's own page to report in. The page is
-# carried inside the app, so this needs no network. Hide the start page first, as it covers
-# the workspace (and the panel) when it happens to be showing.
-printf '{"id":4,"method":"ui.home","params":{"open":false}}\n' >&3
-IFS= read -r -t 30 reply <&3
-printf '%s\n' "$reply"
-printf '{"id":5,"method":"ui.agent_chat","params":{"open":true}}\n' >&3
-IFS= read -r -t 30 reply <&3
-printf '%s\n' "$reply"
-id=6
+# The Assistant: --open-assistant showed the panel, and this waits for the app's own page to
+# report in. The page is carried inside the app, so this needs no network. The restricted
+# ui.inspect marker is the only observation a signed-out host can make of it.
+id=4
 deadline=$((SECONDS + 120))
 while :; do
-  printf '{"id":%d,"method":"ui.agent_chat","params":{}}\n' "$id" >&3
+  printf '{"id":%d,"method":"ui.inspect","params":{}}\n' "$id" >&3
   if ! IFS= read -r -t 30 reply <&3; then
-    echo "the Assistant state got no reply" >&2
+    echo "the Assistant marker got no reply" >&2
     exit 1
   fi
   printf '%s\n' "$reply"
-  if printf '%s' "$reply" | grep -Eq '"page"[[:space:]]*:[[:space:]]*true|"host"[[:space:]]*:[[:space:]]*false|"ok"[[:space:]]*:[[:space:]]*false'; then
-    break
+  if printf '%s' "$reply" | grep -Eq '"open"[[:space:]]*:[[:space:]]*true'; then
+    if printf '%s' "$reply" | grep -Eq '"surface_ready"[[:space:]]*:[[:space:]]*true|"host"[[:space:]]*:[[:space:]]*"native_wayland"'; then
+      break
+    fi
+  fi
+  if printf '%s' "$reply" | grep -Eq '"host"[[:space:]]*:[[:space:]]*"failed"'; then
+    echo "the Assistant reported a failed web host: $reply" >&2
+    exit 1
   fi
   if ((SECONDS >= deadline)); then
-    echo "the Assistant page never loaded: $reply" >&2
+    echo "the Assistant opened no page: $reply" >&2
     exit 1
   fi
   sleep .25
@@ -229,29 +232,32 @@ def frame_statistics(png):
 
 
 def validate_assistant(replies, backend):
-    """The Assistant panel is open under this backend, with the state that backend promises.
+    """The Assistant panel is open and its page host is what this backend promises.
 
-    X11/XWayland must host the page. A native Wayland window has no X11 child window for
-    WebKitGTK, and the app says so (`webProblem: native-wayland`) instead of dropping the
-    conversation; that documented limitation is verified here, not counted as a page load.
+    Only the restricted `ui.inspect` marker is used, because a signed-out host may not read
+    the conversation. X11/XWayland must report the page host `available` and a ready surface.
+    A native Wayland window has no X11 child window for WebKitGTK; the marker says
+    `native_wayland` instead, and that documented limitation is verified here, not counted as
+    a page load.
     """
     if not replies:
-        raise ValueError("the Assistant returned no state")
+        raise ValueError("the Assistant returned no marker")
     for reply in replies:
         if reply.get("ok") is not True:
-            raise ValueError(f"the Assistant failed: {reply}")
+            raise ValueError(f"ui.inspect failed: {reply}")
     state = replies[-1].get("result") or {}
-    web = state.get("webView") or {}
-    if state.get("open") is not True:
-        raise ValueError(f"the Assistant panel did not open: {state}")
+    marker = state.get("assistant")
+    if not isinstance(marker, dict):
+        raise ValueError(f"ui.inspect has no Assistant marker: {state}")
+    if marker.get("open") is not True:
+        raise ValueError(f"the Assistant panel did not open: {marker}")
     if backend in {"x11", "xwayland"}:
-        if web.get("host") is True and web.get("page") is True:
+        if marker.get("host") == "available" and marker.get("surface_ready") is True:
             return "page loaded"
-        raise ValueError(f"the Assistant's page did not load: {web}, problem={state.get('webProblem')!r}")
-    if web.get("host") is False and state.get("webProblem") == "native-wayland":
+        raise ValueError(f"the Assistant's page did not load: {marker}")
+    if marker.get("host") == "native_wayland":
         return "native-Wayland diagnostic"
-    raise ValueError(f"native Wayland did not report its documented diagnostic: {web}, "
-                     f"problem={state.get('webProblem')!r}")
+    raise ValueError(f"native Wayland did not report its documented diagnostic: {marker}")
 
 
 def probe(gl_saved_four=False, backend="x11"):
@@ -282,8 +288,9 @@ def probe(gl_saved_four=False, backend="x11"):
     if not lines or lines[-1].startswith("{"):
         raise ValueError("invalid presented-frame response")
     json_lines = [line for line in lines if line.startswith("{")]
-    # ui.inspect, then the refused engine.execute and document.inspect; then the Assistant's
-    # replies; then the screenshot reply. The presented frame is the one line that is not JSON.
+    # ui.inspect, then the refused engine.execute and document.inspect; then the Assistant
+    # marker readings; then the screenshot reply. The presented frame is the one line that is
+    # not JSON.
     if len(json_lines) < 5 or len(lines[-1]) > ((MAX_PNG_BYTES + 2) // 3) * 4:
         raise ValueError("invalid presented-frame response")
     renderer = validate_offline("\n".join(json_lines[:3]))
@@ -302,7 +309,7 @@ def probe(gl_saved_four=False, backend="x11"):
         raise ValueError("forced GL did not apply the safe sample count")
     mode = "GL saved 4x" if gl_saved_four else "default backend"
     print(f"Flatpak desktop PASS: {mode}, renderer={renderer}, controlled entries refused "
-          f"(signed out), Assistant {assistant_mode}, frame={statistics}")
+          f"(signed out), Assistant {assistant_mode} (marker), frame={statistics}")
 
 
 def run_backend(backend):

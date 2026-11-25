@@ -1,6 +1,6 @@
 //! SolidCraft desktop app.
 //!
-//! Usage: `solidcraft [--control <port>] [--sample] [--crash-log] [--safe-mode] [design.sc | part.step]`
+//! Usage: `solidcraft [--control <port>] [--open-assistant] [--sample] [--crash-log] [--safe-mode] [design.sc | part.step]`
 //!
 //! `--safe-mode` (or `SOLIDCRAFT_SAFE_MODE=1`) starts with default settings, no recovery offer and
 //! the software renderer; see `startup` and docs/book/src/guide/troubleshooting.md.
@@ -13,6 +13,10 @@
 //! server: `{"id":1,"method":"engine.execute","params":{"command":"solid.box","params":{…}}}`.
 //! Without them the channel still opens, on the default port, unless Preferences turns it off.
 //! See `solidcraft_ui_egui::control` and docs/control-protocol.md.
+//!
+//! `--open-assistant` shows the Assistant panel at launch, also on a `--control` launch. It sets
+//! window state only: a signed-out app still refuses the controlled `ui.agent_chat`, `ui.home`
+//! and `app.quit` requests, and the page is observed through `ui.inspect`'s marker.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![deny(unsafe_code)]
@@ -1111,11 +1115,16 @@ fn main() -> eframe::Result {
     // `--theme-file PATH`: follow that theme file for this run without saving it (#7573).
     let mut theme_file: Option<String> = None;
     let mut max_file_size = None;
+    // `--open-assistant`: show the Assistant panel at launch, even when driven over the control
+    // channel. It is the same UI state the Settings preference asks for (#7009) and grants no
+    // authority: every controlled request is refused exactly as without it.
+    let mut open_assistant = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--control" => control_port = args.next().and_then(|p| p.parse().ok()),
             "--sample" => sample = true,
+            "--open-assistant" => open_assistant = true,
             "--theme-file" => theme_file = args.next(),
             "--max-file-size" => max_file_size = Some(args.next()),
             s if s.starts_with("--max-file-size=") => max_file_size = Some(s.strip_prefix("--max-file-size=").map(str::to_string)),
@@ -1139,7 +1148,7 @@ fn main() -> eframe::Result {
             }
             "--help" | "-h" => {
                 println!(
-                    "usage: solidcraft [--control PORT] [--sample] [--theme-file THEME.json] [--crash-log] [--safe-mode] [--max-file-size SIZE] [design.sc | part.step]"
+                    "usage: solidcraft [--control PORT] [--open-assistant] [--sample] [--theme-file THEME.json] [--crash-log] [--safe-mode] [--max-file-size SIZE] [design.sc | part.step]"
                 );
                 return Ok(());
             }
@@ -1440,6 +1449,13 @@ fn main() -> eframe::Result {
             };
             for f in &files {
                 app.open_path_async(f);
+            }
+            if open_assistant {
+                // The installed-package checks open the Assistant this way: a signed-out app
+                // refuses every control request that would open it, and clicking needs a
+                // desktop-automation permission CI does not have. Showing the panel is the same
+                // UI state the preference sets, and it commits nothing.
+                app.agent_chat.open = true;
             }
             // No file and no sample: the empty design takes Units of new designs (#1205).
             // An opened file and the sample part keep the units they were saved or built with.

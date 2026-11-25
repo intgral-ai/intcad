@@ -275,6 +275,13 @@ launch with `--control` or the variable behaves as it always did (the start page
 the window doesn't ask for the foreground), because a scripted launch expects that; the default
 channel changes neither for a normal launch.
 
+`--open-assistant` shows the Assistant panel at launch, including on a scripted `--control`
+launch; the Settings preference "open the panel at start" is not applied there on purpose. It
+only sets that window state: a signed-out app still refuses `ui.agent_chat`, `ui.home`,
+`app.quit` and every other controlled request, and nothing is committed. The installed-package
+checks use it because a desktop-automation click is not available on CI, while `ui.inspect`'s
+Assistant marker (`open`, `surface_ready`, `host`, `centred`) is.
+
 ### Finding the port
 
 Each app that opens its channel writes the port to a discovery file beside the token files,

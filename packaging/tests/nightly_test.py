@@ -114,13 +114,13 @@ class AssistantNativeSmoke(unittest.TestCase):
         self.native.close_window.assert_not_called()
 
     def test_readiness_must_survive_until_the_reopen_click(self):
-        self.state(False, False)
+        self.state(True, True)
         self.state(True, True)
         self.state(False, True)
         self.state(False, False)
         with self.assertRaisesRegex(ValueError, "retained.*readiness"):
             self.exercise()
-        self.native.click.assert_called_once()
+        self.native.click.assert_not_called()
 
     def test_exit_timeout_cannot_pass(self):
         self.state(False, False)
@@ -134,14 +134,15 @@ class AssistantNativeSmoke(unittest.TestCase):
         self.app.wait.assert_not_called()
 
     def test_observed_open_close_reopen_then_native_exit(self):
-        self.state(False, False)
+        # The panel is open at launch (--open-assistant): the first reading puts the start page
+        # away, the second is the page itself, and the only click is the reopen entry.
+        self.state(True, True)
         self.state(True, True)
         self.state(False, True)
         self.state(False, True)
         self.state(True, True)
         self.exercise()
-        self.assertEqual(self.native.click.call_args_list[0].args, (112, 13))
-        self.assertEqual(self.native.click.call_count, 2)
+        self.assertEqual([call.args for call in self.native.click.call_args_list], [(112, 13)])
         self.native.retained_hidden.assert_called_once()
         self.assertEqual(self.native.retained_hidden.call_args.args, (314,))
         self.native.close_window.assert_called_once_with()
@@ -156,44 +157,45 @@ class AssistantNativeSmoke(unittest.TestCase):
                     {"name": "rail:assistant", "x": 320, "y": 40, "width": 20, "height": 18},
                 ]
                 self.states.clear()
-                for opened, ready in ((False, False), (True, True), (False, True), (False, True), (True, True)):
+                for opened, ready in ((True, True), (True, True), (False, True), (False, True), (True, True)):
                     self.state(opened, ready)
                 self.native.click.reset_mock()
                 self.control.call.reset_mock()
                 self.exit_info = None
                 self.exercise()
-                self.assertEqual([call.args for call in self.native.click.call_args_list], [(412, 61)] * 2)
+                self.assertEqual([call.args for call in self.native.click.call_args_list], [(412, 61)])
                 snapshots = [call.args[2] for call in self.control.call.call_args_list if call.args[0] == "ui.rects"]
-                self.assertEqual(snapshots, [None, {"prefix": "agent_chat:web"}] * 2)
+                self.assertEqual(snapshots, [{"prefix": "agent_chat:web"}, None, {"prefix": "agent_chat:web"}])
                 self.rects[:2] = []
 
     def test_no_assistant_target_does_not_click_prefix_lookalike(self):
         self.rects[:] = [r for r in self.rects if r["name"] != "titlebar:assistant"]
         self.rects.append({"name": "rail:assistant-extra", "x": 320, "y": 40, "width": 20, "height": 18})
-        self.state(False, False)
+        self.state(True, True)
+        self.state(True, True)
+        self.state(False, True)
         with self.assertRaisesRegex(ValueError, "no native Assistant entry"):
             self.exercise()
         self.native.click.assert_not_called()
 
     def test_malformed_drawn_rail_geometry_does_not_fall_back_or_click(self):
         self.rects.append({"name": "rail:assistant", "x": 320, "y": 40, "width": "20", "height": 18})
-        self.state(False, False)
         self.state(True, True)
+        self.state(True, True)
+        self.state(False, True)
         with self.assertRaisesRegex(ValueError, "invalid rail:assistant rectangle"):
             self.exercise()
         self.native.click.assert_not_called()
 
     def test_initial_home_is_dismissed_by_native_click(self):
-        self.state(False, False)
+        self.state(True, True)
         self.states[0]["home"] = True
-        self.state(False, False)
-        self.states[1]["home"] = False
         self.state(True, True)
         self.state(False, True)
         self.state(False, True)
         self.state(True, True)
         self.exercise()
-        self.assertEqual([call.args for call in self.native.click.call_args_list], [(25, 13), (112, 13), (112, 13)])
+        self.assertEqual([call.args for call in self.native.click.call_args_list], [(25, 13), (112, 13)])
 
     def test_socket_uses_remaining_deadline_after_each_read(self):
         sock = Mock()

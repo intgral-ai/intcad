@@ -71,10 +71,10 @@ class Control:
         reply = signed_out_replies()[index] if index < 3 else {"id": request["id"], "ok": True, "result": {}}
         if index == 0:
             reply["result"]["viewport"] = next(self.viewports)
-        if request["method"] == "ui.home":
-            reply["result"] = {"open": False}
-        elif request["method"] == "ui.agent_chat":
-            reply["result"] = {"open": True, "webView": {"host": True, "page": self.page}}
+        if request["method"] == "ui.inspect" and index >= 3:
+            # The restricted marker: the panel is open, and the page is ready once `page` says so.
+            reply["result"] = {"assistant": {"open": True, "surface_ready": self.page,
+                                             "host": "available", "centred": True}}
         return json.dumps(reply) + "\n"
 
 
@@ -90,28 +90,30 @@ class SnapStartup(unittest.TestCase):
         with patch.object(SNAP.socket, "create_connection", return_value=control), \
                 patch.object(SNAP.time, "sleep"), \
                 patch.object(SNAP.time, "monotonic", side_effect=times, return_value=0):
-            return SNAP.drive(self.app, 18839, self.frame)
+            return SNAP.drive(self.app, 18839, self.frame, "x11")
 
     def test_control_opens_before_first_frame(self):
         control = Control([None, [250, 126, 1000, 700]])
-        renderer, statistics = self.drive(control)
+        renderer, statistics, mode = self.drive(control)
         self.assertEqual(renderer, "gpu")
+        self.assertEqual(mode, "page loaded")
         self.assertEqual(statistics["nonblack"], 4)
         self.assertEqual([request["method"] for request in control.requests], [
-            "ui.inspect", "ui.inspect", "engine.execute", "document.inspect", "ui.home",
-            "ui.agent_chat", "ui.agent_chat", "ui.screenshot", "app.quit"
+            "ui.inspect", "ui.inspect", "engine.execute", "document.inspect", "ui.inspect",
+            "ui.screenshot",
         ])
 
     def test_ready_startup_does_not_wait(self):
         control = Control([[250, 126, 1000, 700]])
         self.drive(control)
-        self.assertEqual(sum(r["method"] == "ui.inspect" for r in control.requests), 1)
+        # Two inspections: the readiness poll, then the Assistant marker.
+        self.assertEqual(sum(r["method"] == "ui.inspect" for r in control.requests), 2)
 
     def test_assistant_must_load_its_page(self):
         control = Control([[250, 126, 1000, 700]], page=False)
         with self.assertRaisesRegex(RuntimeError, "page"):
             self.drive(control, [0, 0, 0, 0, 200])
-        self.assertIn("ui.agent_chat", [r["method"] for r in control.requests])
+        self.assertGreaterEqual([r["method"] for r in control.requests].count("ui.inspect"), 2)
 
     def test_missing_first_frame_times_out_before_modelling(self):
         control = Control(itertools.repeat(None))
@@ -215,37 +217,40 @@ class DesktopProbe(unittest.TestCase):
                     SMOKE.validate_offline(output(replies))
 
     def test_flatpak_assistant_needs_an_open_panel_and_a_loaded_page(self):
-        good = {"ok": True, "result": {"open": True, "webView": {"host": True, "page": True}}}
+        good = {"ok": True, "result": {"assistant": {"open": True, "surface_ready": True,
+                                                     "host": "available", "centred": True}}}
         self.assertEqual(SMOKE.validate_assistant([good], "x11"), "page loaded")
         for state in [
             {"ok": False, "error": "no Assistant"},
-            {"ok": True, "result": {"open": False, "webView": {"host": True, "page": False}}},
-            {"ok": True, "result": {"open": True, "webView": {"host": False, "page": False}}},
-            {"ok": True, "result": {"open": True, "webView": {"host": True, "page": False}}},
-            {"ok": True, "result": {"open": True}},
+            {"ok": True, "result": {}},
+            {"ok": True, "result": {"assistant": {"open": False, "surface_ready": True,
+                                                  "host": "available", "centred": True}}},
+            {"ok": True, "result": {"assistant": {"open": True, "surface_ready": False,
+                                                  "host": "available", "centred": True}}},
+            {"ok": True, "result": {"assistant": {"open": True, "surface_ready": True,
+                                                  "host": "unavailable", "centred": True}}},
+            {"ok": True, "result": {"assistant": {"open": True, "surface_ready": True,
+                                                  "host": "failed", "centred": True}}},
         ]:
             with self.subTest(state=state), self.assertRaises(ValueError):
                 SMOKE.validate_assistant([state], "x11")
 
     def test_native_wayland_diagnostic_is_not_a_page_load(self):
-        diagnostic = {"ok": True, "result": {"open": True,
-                                             "webView": {"host": False, "page": False},
-                                             "webProblem": "native-wayland"}}
+        diagnostic = {"ok": True, "result": {"assistant": {"open": True, "surface_ready": False,
+                                                           "host": "native_wayland", "centred": True}}}
         self.assertEqual(SMOKE.validate_assistant([diagnostic], "wayland"),
                          "native-Wayland diagnostic")
         for backend in ("x11", "xwayland"):
             with self.assertRaises(ValueError):
                 SMOKE.validate_assistant([diagnostic], backend)
-        failed = {"ok": True, "result": {"open": True,
-                                         "webView": {"host": False, "page": False},
-                                         "webProblem": "failed"}}
+        failed = {"ok": True, "result": {"assistant": {"open": True, "surface_ready": False,
+                                                       "host": "failed", "centred": True}}}
         with self.assertRaises(ValueError):
             SMOKE.validate_assistant([failed], "wayland")
 
     def test_xwayland_requires_the_page_and_native_wayland_rejects_one(self):
-        page = {"ok": True, "result": {"open": True,
-                                       "webView": {"host": True, "page": True},
-                                       "webProblem": None}}
+        page = {"ok": True, "result": {"assistant": {"open": True, "surface_ready": True,
+                                                     "host": "available", "centred": True}}}
         self.assertEqual(SMOKE.validate_assistant([page], "xwayland"), "page loaded")
         with self.assertRaises(ValueError):
             SMOKE.validate_assistant([page], "wayland")
