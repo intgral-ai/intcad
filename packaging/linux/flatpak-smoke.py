@@ -112,24 +112,30 @@ printf '\n'
 '''
 
 
-def validate_replies(stdout):
+def validate_offline(stdout):
+    """Check what this signed-out, offline desktop must do: run, and refuse control writes.
+
+    The control channel is a controlled entry, so an app with no account authority must
+    answer `AuthUnavailable` to `engine.execute` and to `document.inspect`, and must not
+    commit anything. Modelling over the control channel needs authority and is covered by
+    the signed-in staging acceptance, not by this offline probe.
+    """
     replies = [json.loads(line) for line in stdout.splitlines()]
-    if len(replies) != 3 or any(reply.get("id") != i or reply.get("ok") is not True
-                                for i, reply in enumerate(replies, 1)):
+    if len(replies) != 3 or any(reply.get("id") != i for i, reply in enumerate(replies, 1)):
         raise ValueError(f"desktop control failed: {replies}")
-    ui = replies[0]["result"]
+    ui_reply, *controlled = replies
+    if ui_reply.get("ok") is not True:
+        raise ValueError(f"ui.inspect failed: {ui_reply}")
+    ui = ui_reply["result"]
     viewport = ui["viewport"]
     if (ui["renderer"] not in {"gpu", "cpu"} or len(viewport) != 4
             or not all(math.isfinite(value) for value in viewport)
             or viewport[2] <= 0 or viewport[3] <= 0):
         raise ValueError("desktop did not create a usable viewport")
-    document = replies[2]["result"]
-    bodies = document["bodies"]
-    if (len(bodies) != 1 or len(document["timeline"]) != 1
-            or document["timeline"][0]["error"] is not None
-            or not math.isclose(bodies[0]["volume_mm3"], 6000, rel_tol=0, abs_tol=1e-7)
-            or bodies[0]["bbox"] != {"min": [0, 0, 0], "max": [30, 20, 10]}):
-        raise ValueError(f"desktop modelling failed: {document}")
+    for reply in controlled:
+        details = reply.get("errorDetails") or {}
+        if reply.get("ok") is not False or details.get("code") != "AuthUnavailable":
+            raise ValueError(f"a controlled entry was not refused for a signed-out host: {reply}")
     return ui["renderer"]
 
 
@@ -271,11 +277,11 @@ def probe(gl_saved_four=False, backend="x11"):
     if not lines or lines[-1].startswith("{"):
         raise ValueError("invalid presented-frame response")
     json_lines = [line for line in lines if line.startswith("{")]
-    # ui.inspect, engine.execute, document.inspect; then the Assistant's replies; then the
-    # screenshot reply. The presented frame is the one line that is not JSON.
+    # ui.inspect, then the refused engine.execute and document.inspect; then the Assistant's
+    # replies; then the screenshot reply. The presented frame is the one line that is not JSON.
     if len(json_lines) < 5 or len(lines[-1]) > ((MAX_PNG_BYTES + 2) // 3) * 4:
         raise ValueError("invalid presented-frame response")
-    renderer = validate_replies("\n".join(json_lines[:3]))
+    renderer = validate_offline("\n".join(json_lines[:3]))
     assistant = [json.loads(line) for line in json_lines[3:-1]]
     try:
         assistant_mode = validate_assistant(assistant, backend)
@@ -290,8 +296,8 @@ def probe(gl_saved_four=False, backend="x11"):
     if gl_saved_four and "SolidCraft graphics: Gl, MSAA 1x (requested 4x)" not in result.stderr:
         raise ValueError("forced GL did not apply the safe sample count")
     mode = "GL saved 4x" if gl_saved_four else "default backend"
-    print(f"Flatpak desktop PASS: {mode}, renderer={renderer}, box=6000 mm³, "
-          f"Assistant {assistant_mode}, frame={statistics}")
+    print(f"Flatpak desktop PASS: {mode}, renderer={renderer}, controlled entries refused "
+          f"(signed out), Assistant {assistant_mode}, frame={statistics}")
 
 
 def run_backend(backend):

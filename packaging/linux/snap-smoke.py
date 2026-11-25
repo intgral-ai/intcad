@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Start the installed SolidCraft snap on headless X11 and Wayland, model a box and
-open the Assistant.
+"""Start the installed SolidCraft snap on headless X11 and Wayland and open the Assistant.
 
 Runs the confined app (`snap install --dangerous` first) with its normal plugs, drives it over
-the control channel from the host (snaps share the host's network namespace), checks a
-30x20x10 box measures 6000 mm³, opens the Assistant and requires its page to load
-(webView.host and webView.page true), checks the GPU drew a non-blank frame, and copies each
-frame to --out (default: the current directory) as snap-<backend>.png. Needs xvfb-run and
-weston. Reuses the frame checks of flatpak-smoke.py.
+the control channel from the host (snaps share the host's network namespace), requires a usable
+viewport and that every controlled entry is refused with `AuthUnavailable` while the host is
+signed out (nothing may be committed without account authority), opens the Assistant and
+requires its page to load (webView.host and webView.page true), checks the GPU drew a non-blank
+frame, and copies each frame to --out (default: the current directory) as snap-<backend>.png.
+Needs xvfb-run and weston. Reuses the frame checks of flatpak-smoke.py.
 
 The page is served by the app itself, so it needs no network; the update check is turned off
 with SOLIDCRAFT_UPDATE_CHECK=0. release.yml runs the X11 variant inside `sudo unshare -n` with
@@ -108,8 +108,23 @@ def drive(app, port, frame):
             replies.append(raw)
             return reply
 
-        call(REQUESTS[1])
-        call(REQUESTS[2])
+        def refused(request):
+            """A controlled entry on a signed-out host must be refused, not executed."""
+            io.write(json.dumps(request) + "\n")
+            io.flush()
+            raw = io.readline()
+            if not raw:
+                raise RuntimeError(f"the control connection closed at {request['method']}")
+            reply = json.loads(raw)
+            details = (reply.get("errorDetails") or {}) if isinstance(reply, dict) else {}
+            if (not isinstance(reply, dict) or reply.get("id") != request["id"]
+                    or reply.get("ok") is not False or details.get("code") != "AuthUnavailable"):
+                raise ValueError(f"{request['method']} was not refused for a signed-out host: {reply}")
+            replies.append(raw)
+            return reply
+
+        refused(REQUESTS[1])
+        refused(REQUESTS[2])
         # The Assistant: the start page covers the workspace, then the panel must load its page.
         call({"id": 4, "method": "ui.home", "params": {"open": False}})
         call({"id": 5, "method": "ui.agent_chat", "params": {"open": True}})
@@ -130,7 +145,7 @@ def drive(app, port, frame):
             request_id += 1
         capture = call({"id": request_id + 1, "method": "ui.screenshot", "params": {"path": str(frame)}})
         call({"id": request_id + 2, "method": "app.quit", "params": {"force": True}})
-    renderer = flatpak_smoke.validate_replies("".join(replies[:3]))
+    renderer = flatpak_smoke.validate_offline("".join(replies[:3]))
     if capture.get("ok") is not True or renderer != "gpu":
         raise ValueError(f"GPU frame capture failed: renderer={renderer}, {capture}")
     return renderer, flatpak_smoke.frame_statistics(frame.read_bytes())
@@ -184,7 +199,8 @@ def run_backend(backend, out):
                 os.killpg(app.pid, signal.SIGKILL)
                 app.wait()
         shutil.copy(work / "frame.png", out / f"snap-{backend}.png")
-        print(f"snap {backend}: PASS renderer={renderer}, box=6000 mm³, Assistant page loaded, frame={stats}")
+        print(f"snap {backend}: PASS renderer={renderer}, controlled entries refused (signed out), "
+              f"Assistant page loaded, frame={stats}")
     except BaseException:
         log.flush()
         sys.stderr.write((work / "app.log").read_text(errors="replace")[-8000:])
