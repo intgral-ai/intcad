@@ -3618,3 +3618,31 @@ writes. Scripted modelling needs authority and is covered by the signed-in stagi
 Re-promotion: `main = 400b0017725b` (merge of #241), `v0.1.3` moved to it, tag gate
 `45574641767` (attempt 1) and Gate B `45574642603` dispatched in parallel. The old run's
 artifacts are not used for acceptance.
+
+## 36. The second refusal code, and the final tag move
+
+The re-run's first Flatpak logs showed the two controlled entries are refused with **different**
+fail-closed codes, on both architectures:
+
+```
+id 2 engine.execute    → {'error': 'the host has no commit authority…', 'errorDetails': {'code': 'AuthUnavailable'}}
+id 3 document.inspect  → {'error': 'this controlled entry needs a durable commit path that is not available yet', 'errorDetails': {'code': 'UnsafeToStart'}}
+```
+
+`validate_offline` had required `AuthUnavailable` for both and would have failed again, so `#242`
+(merged as `3ef994d62cf6`) accepts exactly the two fail-closed codes, in either position, and still
+fails on a successful reply, on any other code (`CapabilityDenied` is tested as rejected), or on a
+refusal without the reason. Local: `flatpak_test.py` 16 tests OK, `nightly_test.py` 46 tests OK.
+
+Tag moves, for the record (both before any release; the publisher reads the live tag, and
+`require_remote_tag`/`require_producers` are consistent with the final target):
+
+| tag target | why |
+| --- | --- |
+| `15b4436c54` | first promotion (merge of #237) |
+| `400b0017725b` | offline probe rewritten to the signed-out contract (#241) |
+| `3ef994d62cf6` | both fail-closed refusal codes accepted (#242), **final** |
+
+Final state: `main = 3ef994d62cf6`, `v0.1.3 -> 3ef994d62cf6` (lightweight, object type `commit`),
+tag gate `45575709335` (attempt 1) and Gate B `45575709106` running in parallel. Runs `45566522104`
+and `45574641767` and their artifacts are void and are not cited.
