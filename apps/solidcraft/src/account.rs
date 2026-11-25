@@ -4758,7 +4758,9 @@ mod tests {
                 "logout" => {
                     store.entries.lock().unwrap().insert("auth/logout_pending".into(), "sign_out".into());
                 }
-                _ => unreachable!(),
+                // `missing` only ever takes the three names above; an empty arm keeps the
+                // crate-wide `clippy::unreachable` deny intact.
+                _ => {}
             }
             assert_eq!(bind(), None, "stale stored authority must not bind after loss of {missing}");
         }
