@@ -3485,3 +3485,26 @@ smoke uses — instead of clicking a control that is Collapse. The docked layout
 Close, and `close_page` keeps the five-second bounded re-observation. Verified locally before push:
 `py_compile` OK, `packaging/tests/nightly_test.py` 46 tests OK. The earlier run was cancelled so its
 runners serve this gate.
+
+## 32. Owner-approved advisory check, the guard it tripped, and the gate to rely on
+
+The owner made the installed-app UI check advisory on 2026-11-25 to prioritise shipping speed
+(`eb0abb4d33`). That tripped a real repository guard, not flakiness:
+
+```
+FAIL: test_package_failures_cannot_be_allowed_or_nightly_filtered
+  self.assertNotIn("continue-on-error", text)      packaging/tests/nightly_test.py:625
+```
+
+The guard exists so no package build, content check, `ldd` run or account check can become
+non-blocking. Deleting it would be a weakening, so `0c8b3fe9a3` narrows it instead: the release
+workflow may carry **exactly one** `continue-on-error`, inside the named
+`Install the packages on bare systems and open the Assistant` step. A second advisory step still
+fails the test (verified by injecting one: `FAILED (failures=1)`), and losing the marker on the
+named step also fails. Local: `nightly_test.py` 46 tests OK.
+
+The owner also approved skipping the PR `release-gate` (admin merge) because it proves a test-merge
+ref, not the merge commit, so it cannot feed the publisher. The formal evidence is the tag-push
+`release-gate`, which builds and checks the tagged merge commit and is the only `mode=tag` handoff
+`release_handoff.py` accepts. The skip is therefore a sequencing change, not a reduction of the
+release gate; the tag gate's 14 pairs, per-platform account tuple and Gate B remain blocking.
