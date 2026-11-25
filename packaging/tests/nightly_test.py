@@ -622,7 +622,16 @@ class ForkWorkflowSafety(unittest.TestCase):
 
     def test_package_failures_cannot_be_allowed_or_nightly_filtered(self):
         text = self.workflow("release")
-        self.assertNotIn("continue-on-error", text)
+        # No step may be allowed to fail, with one owner-approved exception: the installed-app UI
+        # check informs the release report and does not block it (2026-11-25). It must stay the
+        # only advisory step, and it must be advisory in exactly one place, so a package build,
+        # content check, ldd run or account check cannot quietly become advisory too.
+        self.assertEqual(text.count("continue-on-error"), 1)
+        advisory = re.search(
+            r"(?ms)^      - name: Install the packages on bare systems and open the Assistant\n"
+            r"(.*?)(?=^      - )", text)
+        self.assertIsNotNone(advisory, "the installed-app UI check step is missing")
+        self.assertRegex(advisory[1], r"(?m)^        continue-on-error: true$")
         self.assertNotIn("packaging/nightly.sh", text)
         self.assertNotIn("needs.version.outputs.build", text)
         self.assertNotRegex(text, r"(?m)^  release:")
