@@ -26,14 +26,14 @@ here is a publication authorization.
 | #229 — slash commands in the Assistant | `f18a9aec27` |
 | #236 — derived packages record their own artifact | `085675557d` |
 
-`develop` is `085675557d` and its full CI succeeded. Open, in merge order:
+`develop` is `97236b5dd7` (it also carries #236 and #238) and its full CI succeeded.
+Two merges remain, then the promotion:
 
-| PR | Head | State |
+| Merge | Head | State |
 |---|---|---|
-| #214 — packages carry the built-in agent | `318b87cc94` | full CI running; archive done, 16 shards + determinism + properties + regression gate in flight |
-| #224 — sign-in, verified sessions, paid Review | `dc1f8f8d59` | waits for the new `develop`; two-file `--theirs` resolution ready |
-| #239 — a stable tag push is the formal post-promotion gate | `7db657fa61` | affected CI running |
-| integration `/ #227 #233 #235 #234` | `91f00898f8` | single full CI after `develop` merge; four PRs stay open as review records |
+| #214 — packages carry the built-in agent | `e65d647201` | full CI running (17/20, 0 failures); it also restores the `npm/Node` policy anchor its gate run caught missing |
+| **one Integration PR**: #224 + #227 + #233 + #235 + #234 + #239 | candidate `eade4198c2` built and locally verified; will be re-based on the post-#214 `develop` and pushed as `integration/v0.1.3` | one full CI is the merge gate; the original PRs stay open as review records and are closed with a pointer afterwards |
+| promotion `release/v0.1.3` → `main` (#237) | three rehearsed commits: version 0.1.3 + notes + folded format 51, widened notes, FreeBSD known limit, with the two-line `Cargo.lock` refresh folded into the version commit | draft; runs the required `release-gate` once marked ready |
 
 The promotion PR **#237** (`release/v0.1.3` → `main`) is a draft and has not started the formal
 gate.
