@@ -1421,7 +1421,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         chat.picking = Some(true);
         return;
     };
-    let builtin = agents::is_builtin(app);
+    let builtin = agents::is_builtin_entry(app, &entry);
     // The built-in agent answers by itself. The execution choice is not offered with it, so one
     // an older version saved must not apply: nobody could change it back.
     let execution = if builtin { agents::Execution::Direct } else { app.preferences.chat_execution };
@@ -1585,7 +1585,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
 /// ([`connections::settle`]); every other agent opens its session by itself.
 #[cfg(not(target_arch = "wasm32"))]
 fn started_with(app: &mut SolveApp, ctx: &egui::Context, mut b: Box<dyn ChatBackend>, entry: &agents::Entry, execution: agents::Execution) {
-    let builtin = agents::is_builtin(app);
+    let builtin = agents::is_builtin_entry(app, entry);
     b.set_instructions(&app.preferences.agent_instructions);
     // The built-in agent is not what "the agent started last" means to a version without it:
     // what an older version saved there stays for that version to find.
@@ -1642,19 +1642,24 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.agent_chat.connect_at_start {
         return;
     }
-    // The built-in agent is the only one there is: nothing is looked for first.
+    // An agent the user started last may be one found on the computer, so that look has to finish
+    // before a launch can call it missing; the package's agent is there without a look.
     let builtin = agents::is_builtin(app);
-    if app.agent_chat.detection.is_none() && !builtin {
-        refresh(app, ctx);
+    let last = app.preferences.agent_last.clone();
+    let last_is_builtin = builtin && last == connections::AGENT_ID;
+    if app.agent_chat.detection.is_none() && (!builtin || (!last.is_empty() && !last_is_builtin)) {
+        if app.agent_chat.detecting.is_none() {
+            refresh(app, ctx);
+        }
         return;
     }
     app.agent_chat.connect_at_start = false;
     if app.agent_chat.state.is_some() || !app.preferences.agent_connect_at_start {
         return;
     }
-    // The agent an older version started last is not offered beside the built-in one, and is
-    // not missed either.
-    let last = if builtin { String::new() } else { app.preferences.agent_last.clone() };
+    // The agent a user started stays the one this launch starts, beside the built-in one too:
+    // `agent_last` is never the built-in agent's (it does not set it), so a value there names an
+    // agent the user chose, and it starts if it is found.
     if !last.is_empty() {
         if !agents::entries(app).iter().any(|e| e.id == last) {
             app.agent_chat.notice(trf("ui.agent_chat_last_missing", &[("agent", &last)]), true);
@@ -2609,7 +2614,10 @@ fn on_permission(app: &mut SolveApp, key: u64, title: String, kind: Option<&str>
     let agent = app.agent_chat.running_id.clone();
     let mode = agents::mode_for(&app.preferences, &agent);
     let remembered = agents::always_allowed(&app.preferences, &agent, &title);
-    let why = if acp::is_bridge_tool(&title, kind) {
+    // Judged by the backend that asked, not by the picker: changing the default while an
+    // external agent runs must not make its short tool names count as Intcad's.
+    let built_in = agents::builtin_running(app);
+    let why = if acp::bridge_tool(&title, kind, built_in) {
         Some("ui.ai_auto_ours")
     } else if remembered {
         Some("ui.ai_auto_remembered")
@@ -2916,16 +2924,29 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     }
     settings::poll_tests(&mut app.agent_chat);
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(rx) = &app.agent_chat.detecting
-        && let Ok(d) = rx.try_recv()
     {
-        for found in &d.found {
-            app.agent_chat.login_results.remove(found.id);
-            app.agent_chat.settings.tests.remove(found.id);
+        let detected = app.agent_chat.detecting.as_ref().map(std::sync::mpsc::Receiver::try_recv);
+        // A look whose worker is gone is finished with nothing found: a launch must not wait on
+        // a thread that will never answer.
+        let finished = match detected {
+            Some(Ok(d)) => Some(d),
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => None,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => Some(discover::Detection::default()),
+        };
+        if let Some(d) = finished {
+            for found in &d.found {
+                app.agent_chat.login_results.remove(found.id);
+                app.agent_chat.settings.tests.remove(found.id);
+            }
+            app.agent_chat.detection = Some(d);
+            app.agent_chat.detecting = None;
+            app.agent_chat.looked = true;
         }
-        app.agent_chat.detection = Some(d);
-        app.agent_chat.detecting = None;
-        app.agent_chat.looked = true;
+        // A look whose worker dies sends nothing; keep asking for frames while one is pending,
+        // so the branch above runs on an idle window rather than waiting for an unrelated event.
+        if app.agent_chat.detecting.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
     }
     // AI features turned off: nothing keeps running, nothing is looked for.
     if !shown(app) {
@@ -3080,7 +3101,9 @@ pub(super) fn look_on_open(app: &mut SolveApp, ctx: &egui::Context) {
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn start_builtin_when_shown(app: &mut SolveApp, ctx: &egui::Context) {
     // `None`: nothing was ever started in this conversation. Stopped, failed and ended are states.
-    if agents::is_builtin(app) && app.agent_chat.state.is_none() && !app.preferences.agent_chat_minimized {
+    // Only the conversation whose agent is the package's starts this way: an agent the user
+    // picked beside it is not started by opening the panel.
+    if agents::builtin_current(app) && app.agent_chat.state.is_none() && !app.preferences.agent_chat_minimized {
         connect(app, ctx);
     }
 }
@@ -3089,17 +3112,21 @@ pub(super) fn start_builtin_when_shown(app: &mut SolveApp, ctx: &egui::Context) 
 /// looks at once).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn refresh(app: &mut SolveApp, ctx: &egui::Context) {
-    // With the built-in agent nothing is looked for on the computer: every look comes through here.
-    if app.agent_chat.detecting.is_some() || agents::is_builtin(app) {
+    // The built-in agent is not looked for on the computer, but the agents found there are: they
+    // are offered beside it.
+    if app.agent_chat.detecting.is_some() {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    let ctx = ctx.clone();
+    let wake = ctx.clone();
     std::thread::spawn(move || {
         let _ = tx.send(discover::detect());
-        ctx.request_repaint();
+        wake.request_repaint();
     });
     app.agent_chat.detecting = Some(rx);
+    // Look again while the look is pending: a worker that dies without sending must not leave
+    // the launch waiting until the next unrelated event repaints the window.
+    ctx.request_repaint_after(std::time::Duration::from_millis(500));
 }
 
 /// Choose the model for this chat (the header's model picker): the agent switches to it, and it is
@@ -3622,7 +3649,8 @@ pub fn status(app: &SolveApp) -> Value {
     let items: Vec<Value> = c
         .items
         .iter()
-        .map(|i| match i {
+        .enumerate()
+        .map(|(index, i)| match i {
             Item::User { text, image, pictures, context, files } => json!({"user": text, "image": image, "pictures": pictures.len(), "files": files, "context": context.items.iter().map(|i| json!({"label": i.label, "detail": i.detail})).collect::<Vec<_>>(), "context_omitted": context.omitted}),
             Item::Agent { thought, text } => json!({"agent": text, "thought": thought}),
             Item::AgentRefs { text, refs } => json!({"agent": text, "objectRefs": refs.iter().map(|r| json!({"label": r.label, "kind": format!("{:?}", r.kind), "revision": r.revision})).collect::<Vec<_>>()}),
@@ -3634,9 +3662,9 @@ pub fn status(app: &SolveApp) -> Value {
                 json!({"skill": title, "version": version, "documentId": document_id, "revision": revision, "model": model, "selection": selection, "support": format!("{support:?}"), "terminal": terminal})
             }
             Item::Permission { title, options, answer, .. } => {
-                json!({"permission": title, "options": options.iter().map(|o| json!({"id": o.id, "name": o.name, "kind": o.kind})).collect::<Vec<_>>(), "answer": answer})
+                json!({"permission": title, "index": index, "options": options.iter().map(|o| json!({"id": o.id, "name": o.name, "kind": o.kind})).collect::<Vec<_>>(), "answer": answer})
             }
-            Item::Approval { title, answer, .. } => json!({"approval": title, "answer": answer}),
+            Item::Approval { id, title, answer, .. } => json!({"approval": title, "id": id, "answer": answer}),
             Item::Changes { steps, undone, .. } => json!({"changes": steps, "undone": undone}),
             Item::Notice { text, error } => json!({"notice": text, "error": error}),
             Item::Problem { kind, name, .. } => json!({"notice": kind.words(name), "error": true}),

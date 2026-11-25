@@ -942,7 +942,7 @@ fn resend(app: &mut SolveApp) {
 /// What the page and the control channel's status are told of the connections, while the
 /// built-in agent is the agent (`null` otherwise).
 pub(super) fn told_of(app: &SolveApp) -> Value {
-    if super::agents::is_builtin(app) { page(&app.agent_chat.conn) } else { Value::Null }
+    if super::agents::builtin_current(app) { page(&app.agent_chat.conn) } else { Value::Null }
 }
 
 /// The agent's snapshot with the plans named in the app's words, and what the app itself has to
@@ -1040,7 +1040,7 @@ pub(super) fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &
     if !ACTIONS.contains(&kind) {
         return Err(format!("unknown action {kind}"));
     }
-    if !super::agents::is_builtin(app) {
+    if !super::agents::builtin_current(app) {
         return Err(format!("{kind}: this agent has no connections"));
     }
     // What the last action could not do is no longer the news.

@@ -21,6 +21,10 @@ permissions:
   contents: read
   actions: read
 
+# What the release packages carry is not declared here: the gate reads `DISTRIBUTION` from
+# what the packages job observed in the built installers, so a declaration, an environment
+# flag or a file name cannot substitute for the bytes.
+
 concurrency:
   # Never cancel a running candidate from this gate.  The reusable ci/rig
   # workflows use their own caller/ref-scoped groups, so they do not collide

@@ -28,7 +28,8 @@
 .EXAMPLE
   pwsh packaging/windows/package.ps1 -Arch x64
   pwsh packaging/windows/package.ps1 -Arch x64 -WithMastra   # opt-in; fails closed until #15 approves
-  pwsh packaging/windows/package.ps1 -Arch x64 -WithMastraAgent   # opt-in, for a test package: the built-in agent's folder (docs/mastra-packaging.md)
+  pwsh packaging/windows/package.ps1 -Arch x64 -WithMastraAgent   # the built-in agent's folder, as a release package carries it (docs/mastra-packaging.md)
+  pwsh packaging/windows/package.ps1 -Arch x64 -WithMastraAgent:$false   # leave the agent out
   pwsh packaging/windows/package.ps1 -Arch arm64     # cross-compiled; needs the MSVC ARM64 build tools
   pwsh packaging/windows/package.ps1 -Arch x64 -Phase stage     # then sign target/windows-package/x64/*.exe
   pwsh packaging/windows/package.ps1 -Arch x64 -Phase package
@@ -119,12 +120,12 @@ if ($Phase -ne 'package') {
     New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'mastra') | Out-Null
     Write-Output 'the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)'
   }
-  # The built-in agent's folder (opt-in, for test packages): its own folder beside `mastra\`. The
-  # app starts the node.exe in it with agent\main.mjs when no environment variable names an agent.
+  # The built-in agent's folder (the release's default): its own folder beside `mastra\`. The app
+  # starts the node.exe in it with agent\main.mjs, and looks for it in the package first.
   # stage-agent.ps1 checks the folder before copying it; the staged tree is then looked through
   # for anything like a secret or a stored sign-in.
   if ($WithMastraAgent) {
-    if ($Arch -ne 'x64') { throw "the built-in agent's folder is built for Windows x64 only; drop -WithMastraAgent for $Arch" }
+    if ($Arch -ne 'x64') { throw "the built-in agent's folder is built for Windows x64 only; pass -WithMastraAgent:`$false for Windows $Arch" }
     Invoke-Native 'stage the built-in agent' { & (Join-Path $PSScriptRoot '..\mastra\stage-agent.ps1') -Target $Target -Dest (Join-Path $Stage 'mastra-agent') }
     Invoke-Native 'scan the staged package' { node (Join-Path $Root 'packages\mastra-runtime\scripts\agent-package.mjs') scan $Stage }
     # The agent as the packages will carry it, started and answering against stand-ins. On a

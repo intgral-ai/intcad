@@ -3,23 +3,29 @@
 
 The report is derived from the built artifact bytes, never from an environment
 flag, a package name or a hand-written success boolean. The release gate uses it
-to decide whether #14/#15 (the Mastra installed-runtime requirements) apply to
-this distribution:
+to decide which distribution the packages really are:
 
 - every canonical installer must have been inspected;
-- no artifact may contain ``mastra``, ``node_modules``, ``ee`` or a Node binary;
+- a ``native`` distribution may contain no ``mastra``, ``node_modules``, ``ee``
+  or Node binary at all;
+- a ``mastra-agent`` distribution carries the built-in agent in
+  ``mastra-agent/`` (its Node, entry, dependencies and licences) and may carry no
+  legacy ``mastra/`` runtime, no enterprise content and no other Node program;
+- a ``mastra`` distribution (the legacy workflow runtime) stays refused;
 - a package derived from the Linux binaries (Flatpak, Arch, Snap) must name the
   inspected Linux package and the same source digest.
 
 An artifact this runner cannot inspect is reported as ``unchecked`` and the gate
-refuses to treat the distribution as native.
+refuses to treat the distribution as proven.
 """
 
 import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -30,6 +36,23 @@ from pathlib import Path
 RUNTIME_COMPONENTS = frozenset(("mastra", "node_modules", "ee"))
 RUNTIME_BASENAMES = frozenset(("node", "node.exe"))
 IGNORED_SUFFIXES = (".zsync", ".sha256", ".blockmap", ".json")
+# The built-in agent lives in this folder; a release package that declares ``mastra-agent`` must
+# carry all of these inside it, whatever else it holds.
+AGENT_DIR = "mastra-agent"
+AGENT_REQUIRED = (
+    "mastra-agent/agent/main.mjs",
+    "mastra-agent/agent.json",
+    "mastra-agent/licenses/THIRD-PARTY-LICENSES.txt",
+    "mastra-agent/licenses/NODE-LICENSE.txt",
+    "mastra-agent/node_modules/@mastra/code-sdk/package.json",
+    "mastra-agent/node_modules/@agentclientprotocol/sdk/package.json",
+)
+# The only place a Node program is expected: the agent's own folder.
+# The modelling skills the agent installs at start: every skill is `<set>/<skill>/SKILL.md` under
+# the agent's `skills/`. A release package whose agent has none cannot do the job INT-1473 asks.
+AGENT_SKILL_SUFFIX = "/SKILL.md"
+# A universal macOS app carries one agent folder per CPU, named for the target.
+TARGET_SLICE = re.compile(r"^(aarch64|x86_64|i686|arm64|armv7)-(apple-darwin|unknown-linux-gnu|unknown-linux-musl|pc-windows-msvc)$")
 
 
 def digest(path):
@@ -57,7 +80,9 @@ def marker_entries(names):
             if part in RUNTIME_COMPONENTS:
                 if parts[index + 1:]:
                     hit = True
-                elif is_dir and not any(other != name and other.startswith(name + "/") for _, other in lowered):
+                elif is_dir or not any(other != name and other.startswith(name + "/") for _, other in lowered):
+                    # A directory with no child is the empty `mastra/` the Windows packages stage
+                    # for WiX; an archive may list it with or without a trailing slash.
                     continue
                 else:
                     hit = True
@@ -69,8 +94,290 @@ def marker_entries(names):
     return found
 
 
+# The stand-in the agent builder writes in place of Mastra's enterprise chunk, next to the other
+# `ee*` chunks in a `@mastra/core/dist/` folder. It is the only `ee` file a package may hold in
+# one such folder, and only one of them: a second is enterprise content the builder did not remove.
+STAND_IN = re.compile(r"(?:^|/)@mastra/core/dist/ee[.-][A-Za-z0-9_.-]+$", re.IGNORECASE)
+
+
+def stand_in_paths(names):
+    """The `ee-*` stand-ins a package may hold: one per agent folder.
+
+    The builder writes one stand-in per `@mastra/core` copy, and a universal app carries one copy
+    per CPU, so `mastra-agent/aarch64-apple-darwin/node_modules/...` and
+    `mastra-agent/x86_64-apple-darwin/node_modules/...` each hold their own. What is refused is a
+    *second* `ee-*` file under the same `@mastra/core/dist/`: that is enterprise content the
+    builder left behind, not the stand-in it wrote.
+    """
+    by_core = {}
+    for raw in names:
+        name = str(raw).replace("\\", "/").lstrip("./")
+        if not STAND_IN.search(name):
+            continue
+        core = name.rsplit("/@mastra/core/dist/", 1)[0]
+        by_core.setdefault(core, []).append(name)
+    allowed = set()
+    for core, found in by_core.items():
+        if len(found) == 1:
+            allowed.add(found[0])
+    return frozenset(allowed)
+
+
+# The two things a package may not carry, by where they are rather than by a word in a name:
+# Mastra's enterprise chunks (`ee-*.js` in a `@mastra/core/dist/` folder; the builder removes them
+# and writes one stand-in) and the legacy workflow runtime (a `mastra/` folder beside the app, not
+# a package's own `dist/mastra/` or the `mastra-agent/` folder this change adds).
+def forbidden_parts(entry, stand_ins=frozenset()):
+    """The forbidden components of one package entry, by path."""
+    text = str(entry.get("path", "")).replace("\\", "/").lstrip("./")
+    parts = [part for part in text.split("/") if part]
+    bad = []
+    for index in range(len(parts) - 3):
+        if (parts[index] == "@mastra" and parts[index + 1].lower() == "core"
+                and parts[index + 2].lower() == "dist"):
+            name = parts[-1].lower()
+            if name.startswith(("ee-", "ee.")) and text not in stand_ins:
+                bad.append(parts[-1])
+            break
+    if not any(part.lower() == "node_modules" for part in parts):
+        for part in parts:
+            if part == "mastra":
+                bad.append(part)
+                break
+    return bad
+
+
+def empty_legacy_folder(name, names):
+    """The Windows packages stage an empty ``mastra/`` so WiX has a directory to harvest; an empty
+    one is not a runtime."""
+    text = str(name).replace("\\", "/").rstrip("/")
+    parts = [part for part in text.split("/") if part]
+    if not parts or parts[-1] != "mastra":
+        return False
+    return not any(str(other).replace("\\", "/") != str(name).replace("\\", "/")
+                   and str(other).replace("\\", "/").startswith(text + "/") for other in names)
+
+
+def inside_agent(entry, stand_ins=(), roots=None):
+    """Whether a marker is the built-in agent's own Node or a package inside its folder, at the
+    place the app looks for it (`roots`)."""
+    parts = _parts(entry.get("path", ""))
+    return _agent_index(parts, roots) is not None and not forbidden_parts(entry, stand_ins)
+
+
+def inside_agent_markers_for(distribution, names, roots=None):
+    """The runtime markers of a source artifact, given the distribution it is recorded for."""
+    markers = marker_entries(names)
+    if distribution == "native":
+        return markers
+    stand_ins = stand_in_paths(names)
+    return [entry for entry in markers if not inside_agent(entry, stand_ins, roots)]
+
+
+def agent_markers(names, roots=None):
+    """What a ``mastra-agent`` package may not carry besides its own agent folder: a legacy
+    ``mastra/`` runtime, enterprise content, or a Node program outside the folder. Enterprise
+    content and the legacy runtime are refused inside the folder too.
+
+    Every entry is looked at, not only the runtime markers: an ``ee-`` file of Mastra's compiles
+    to a name `marker_entries` does not recognise on its own, and that is exactly the content the
+    licence forbids. One stand-in per `@mastra/core/dist/` folder is allowed, which a universal
+    app has one of per CPU.
+    """
+    stand_ins = stand_in_paths(names)
+    seen = set()
+    found = []
+    for name in names:
+        entry = {"name": str(name), "path": str(name)}
+        if entry["path"] in seen:
+            continue
+        seen.add(entry["path"])
+        if empty_legacy_folder(name, names):
+            continue
+        if forbidden_parts(entry, stand_ins) or (entry in marker_entries([name])
+                                                 and not inside_agent(entry, stand_ins, roots)):
+            found.append(entry)
+    return found
+
+
 def marker(path):
     return bool(marker_entries([path]))
+
+
+def _parts(name):
+    return [part for part in str(name).replace("\\", "/").split("/") if part and part != "."]
+
+
+# Where each platform's packager puts the agent: the app looks beside its own resources, so a
+# `mastra-agent/` folder anywhere else (an `extras/` tree, a stray copy) does not make a package
+# that can run one.
+AGENT_ROOTS = {
+    "linux": ("lib", "intcad", "mastra-agent"),
+    "macos": ("Contents", "Resources", "mastra-agent"),
+    # The MSI's file table names the install root (`PFiles64/Intcad/mastra-agent`); the portable
+    # archive has one wrapper folder.
+    "windows": ("mastra-agent",),
+}
+
+# Release archives put the platform after the version, including any prerelease.
+# Keep recognising the original stable version-only root as well.
+# As in release.yml, numeric identifiers cannot have leading zeroes.
+VERSION_NUMBER = r"(?:0|[1-9][0-9]*)"
+PRERELEASE_ID = rf"(?:{VERSION_NUMBER}|[0-9]*[a-z-][a-z0-9-]*)"
+APP_WRAPPER = re.compile(
+    rf"intcad-{VERSION_NUMBER}\.{VERSION_NUMBER}\.{VERSION_NUMBER}"
+    rf"(?:-{PRERELEASE_ID}(?:\.{PRERELEASE_ID})*)?"
+    r"-(?:linux|macos|windows|freebsd|netbsd|openbsd)-[A-Za-z0-9_-]+"
+)
+
+
+def platform_for(package_id):
+    if package_id.startswith("release-macos"):
+        return "macos"
+    if package_id.startswith("release-windows"):
+        return "windows"
+    if package_id.startswith(("release-linux", "release-flatpak", "release-arch", "release-snap",
+                              "release-appimage", "release-deb", "release-rpm")):
+        return "linux"
+    return None
+
+
+def roots_for(package_id):
+    """The platform whose install place the package uses, or ``None`` to accept any."""
+    platform = platform_for(package_id)
+    return None if platform is None else (platform, AGENT_ROOTS[platform])
+
+
+def _root_allowed(platform, parts, start):
+    """Whether the components before `start` are the product's own root for `platform`."""
+    before = [part.lower() for part in parts[:start]]
+    if platform == "macos":
+        # The app is `Intcad.app`; a bare `Contents/Resources` outside it is not what it loads.
+        return before == ["intcad.app"]
+    if platform == "windows":
+        if before == []:
+            return True
+        if len(before) == 1:
+            return before[0] == "intcad" or APP_WRAPPER.fullmatch(before[0]) is not None
+        return (len(before) == 2 and before[0] in ("pfiles64", "pfiles")
+                and before[1] == "intcad")
+    # linux: an FHS `usr`, the package's own wrapper folder, or a wrapper around that tree
+    # (`intcad-<version>/usr/lib/...`).
+    if before == []:
+        return True
+    if len(before) == 1:
+        return before[0] == "usr" or APP_WRAPPER.fullmatch(before[0]) is not None
+    return len(before) == 2 and APP_WRAPPER.fullmatch(before[0]) is not None and before[1] == "usr"
+
+
+def _agent_index(parts, roots):
+    """The index of `mastra-agent` in `parts` when it sits at the platform's install place."""
+    if roots is None:
+        return parts.index(AGENT_DIR) if AGENT_DIR in parts else None
+    platform, root = roots
+    size = len(root)
+    for start in range(len(parts) - size + 1):
+        if list(parts[start:start + size]) == list(root) and _root_allowed(platform, parts, start):
+            return start + size - 1
+    return None
+
+
+def agent_node(name, target=None, roots=None):
+    """Whether a package entry is the built-in agent's own Node program.
+
+    A universal macOS app carries one folder per slice (``mastra-agent/<triple>/node``), so the
+    program is directly in the agent folder or in the slice folder under it.
+    """
+    parts = _parts(name)
+    if not parts or parts[-1] not in RUNTIME_BASENAMES:
+        return False
+    index = _agent_index(parts, roots)
+    if index is None:
+        return False
+    between = parts[index + 1:-1]
+    return (not between) or (len(between) == 1 and TARGET_SLICE.match(between[0]) is not None)
+
+
+def agent_report(names, target=None, roots=None):
+    """What a package carries of the built-in agent, from its entry names.
+
+    ``present``: the folder is there at all, whatever is inside it (a damaged folder still makes
+    the app offer the agent and fail to start it). ``node``: its own Node program is there.
+    ``missing``: the files the agent needs that the package does not hold.
+    """
+    parts = [_parts(name) for name in names]
+    directories = [str(name).endswith(("/", "\\")) for name in names]
+    anchored = [(entry, is_dir) for entry, is_dir in zip(parts, directories)
+                if _agent_index(entry, roots) is not None]
+    present = bool(anchored)
+    files = [entry for entry, is_dir in anchored if not is_dir]
+    node = any(agent_node("/".join(entry), target, roots) for entry in files)
+    node_targets = sorted({
+        entry[_agent_index(entry, roots) + 1]
+        for entry in files
+        if agent_node("/".join(entry), target, roots)
+        and len(entry) > _agent_index(entry, roots) + 2
+    })
+    found = {}
+    skills = {}
+    nodes = set()
+
+    def place_of(entry):
+        index = _agent_index(entry, roots)
+        if index is None:
+            return None
+        rest = entry[index + 1:]
+        slice_ = ""
+        if rest and TARGET_SLICE.match(rest[0]):
+            slice_ = rest[0]
+            rest = rest[1:]
+        return ("/".join(entry[:index]), slice_), rest
+
+    # Every place the agent folder exists, even empty, is its own agent: a folder with nothing in
+    # it is incomplete, and two places may not split the required files between them.
+    with_keys = {where[0] for where in map(place_of, files) if where is not None}
+    places = {key[0] for key in with_keys}
+    for entry in parts:
+        where = place_of(entry)
+        if where is None:
+            continue
+        key = where[0]
+        if key in with_keys:
+            continue
+        if key[1] == "" and key[0] in places:
+            # The agent folder's own entry; its files live in the slice folders.
+            continue
+        found.setdefault(key, set())
+    for entry in files:
+        where = place_of(entry)
+        if where is None:
+            continue
+        key, rest = where
+        if agent_node("/".join(entry), target, roots):
+            nodes.add(key)
+        if not rest:
+            continue
+        found.setdefault(key, set()).add("/".join([AGENT_DIR] + rest))
+        # The agent's own `mastra-agent/skills/<set>/<skill>/SKILL.md`: exactly that shape, so a
+        # package's own skill file (a dependency's `node_modules/.../skills/x/y/SKILL.md`) is not
+        # counted as one of the agent's.
+        if len(rest) == 4 and rest[0] == "skills" and entry[-1] == "SKILL.md":
+            skills.setdefault(key, set()).add("/".join(rest[1:3]))
+    # A universal app carries one whole agent per CPU: each folder is checked on its own, so the
+    # Intel folder cannot consist of a Node and borrow the ARM folder's entry, deps and skills.
+    missing = []
+    for key in sorted(found):
+        have = found[key]
+        prefix = "" if not key[1] else key[1] + "/"
+        missing.extend(prefix + required for required in AGENT_REQUIRED if required not in have)
+        if key not in nodes:
+            missing.append(prefix + AGENT_DIR + "/node")
+        # INT-1473's work starts from the modelling skills; a slice that holds only some other
+        # set cannot do it, even when the other slice holds the modelling ones.
+        if not any(name.startswith("modelling-skills/") for name in skills.get(key, ())):
+            missing.append(prefix + AGENT_DIR + "/skills/modelling-skills/<skill>/SKILL.md")
+    return {"present": present, "node": node, "nodeTargets": node_targets,
+            "missing": missing, "skills": sorted({name for names in skills.values() for name in names})}
 
 
 def _walk(root):
@@ -78,8 +385,10 @@ def _walk(root):
     names = []
     for directory, dirnames, filenames in os.walk(root):
         for name in dirnames:
-            names.append(str((Path(directory) / name).relative_to(root)))
+            names.append(str((Path(directory) / name).relative_to(root)) + "/")
         for name in filenames:
+            if (Path(directory) / name).is_symlink():
+                continue
             names.append(str((Path(directory) / name).relative_to(root)))
     return names
 
@@ -95,37 +404,95 @@ def _lines(text):
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def _tar_members(path):
+    """Names from a tar, with a trailing slash on directories."""
+    mode = ("r:gz" if path.name.lower().endswith((".tar.gz", ".tgz"))
+            else "r:xz" if path.name.lower().endswith((".tar.xz", ".txz")) else "r:")
+    with tarfile.open(path, mode) as archive:
+        names = []
+        for member in archive.getmembers():
+            if member.name == "." or not (member.isfile() or member.isdir()):
+                continue
+            names.append(member.name + ("/" if member.isdir() and not member.name.endswith("/") else ""))
+        return names
+
+
 def names_tar(path):
     name = path.name.lower()
     if name.endswith(".tar.zst") or name.endswith(".tzst"):
-        return [line for line in _lines(_run(["tar", "--zstd", "-tf", str(path)])) if line != "."]
-    mode = "r:gz" if name.endswith((".tar.gz", ".tgz")) else "r:xz" if name.endswith((".tar.xz", ".txz")) else "r:"
-    with tarfile.open(path, mode) as archive:
-        return [member.name for member in archive.getmembers() if member.name != "."]
+        # Python's tarfile does not read zstd on every Python the runners use. Decompress with
+        # the tool the job installs, and read the plain tar so directories keep their type.
+        with tempfile.TemporaryDirectory(prefix="contents-tar-") as directory:
+            plain = Path(directory) / "package.tar"
+            zstd = shutil.which("zstd")
+            if zstd:
+                with plain.open("wb") as out:
+                    result = subprocess.run([zstd, "-dc", str(path)], stdout=out, stderr=subprocess.PIPE)
+                if result.returncode != 0:
+                    raise OSError((result.stderr or b"zstd failed").decode("utf-8", "replace")[:200])
+                return _tar_members(plain)
+            bsdtar = shutil.which("bsdtar")
+            if not bsdtar:
+                raise OSError("neither zstd nor bsdtar is available")
+            extracted = Path(directory) / "tree"
+            extracted.mkdir()
+            _run([bsdtar, "-xf", str(path), "-C", str(extracted)])
+            return _walk(extracted)
+    return _tar_members(path)
 
 
 def names_zip(path):
+    names = []
     with zipfile.ZipFile(path) as archive:
-        return [item.filename for item in archive.infolist() if item.filename]
+        for item in archive.infolist():
+            if not item.filename:
+                continue
+            if (item.external_attr >> 16) & 0o170000 == 0o120000:
+                continue  # a symlink, not the file it points at
+            names.append(item.filename + ("/" if item.is_dir() and not item.filename.endswith("/") else ""))
+    return names
 
 
 def names_deb(path):
     tool = shutil.which("dpkg-deb")
     if not tool:
         raise OSError("dpkg-deb is unavailable")
-    names = []
-    for line in _lines(_run([tool, "-c", str(path)])):
-        fields = line.split()
-        if len(fields) >= 6:
-            names.append(fields[-1].lstrip("./"))
-    return names
+    with tempfile.TemporaryDirectory(prefix="contents-deb-") as directory:
+        plain = Path(directory) / "fsys.tar"
+        with plain.open("wb") as out:
+            result = subprocess.run([tool, "--fsys-tarfile", str(path)], stdout=out, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            raise OSError((result.stderr or b"dpkg-deb failed").decode("utf-8", "replace")[:200])
+        return _tar_members(plain)
 
 
 def names_rpm(path):
     tool = shutil.which("rpm")
     if not tool:
         raise OSError("rpm is unavailable")
-    return [line.lstrip("./") for line in _lines(_run([tool, "-qlp", str(path)])) if line]
+    # Tab-separated, so a name with spaces stays one field; the mode says what each entry is.
+    listing = _run([tool, "-qp", "--qf", "[%{FILENAMES}\t%{FILEMODES}\t%{FILEFLAGS}\n]", str(path)])
+    names = []
+    for line in listing.splitlines():
+        fields = line.rsplit("\t", 2)
+        if len(fields) != 3:
+            continue
+        name, mode, flags = fields
+        if not name or not mode.strip():
+            continue
+        try:
+            kind = int(mode.strip())
+            attributes = int(flags.strip() or "0")
+        except ValueError:
+            continue
+        # RPMFILE_GHOST: the file is declared but carries no payload.
+        if attributes & 64 or stat.S_ISLNK(kind) or not (stat.S_ISDIR(kind) or stat.S_ISREG(kind)):
+            continue
+        name = name.lstrip("./")
+        names.append(name + ("/" if stat.S_ISDIR(kind) and not name.endswith("/") else ""))
+    if not names:
+        raise OSError("rpm listed no files")
+    return names
 
 
 def names_snap(path):
@@ -133,10 +500,14 @@ def names_snap(path):
     if not tool:
         raise OSError("unsquashfs is unavailable")
     names = []
-    for line in _lines(_run([tool, "-l", str(path)])):
-        token = line.split()[-1] if line.split() else ""
-        if token and token != "squashfs-root" and not token.startswith("Parallel"):
-            names.append(token.split("squashfs-root/", 1)[-1])
+    for line in _lines(_run([tool, "-ll", str(path)])):
+        if "squashfs-root/" not in line:
+            continue
+        mode = line.lstrip()[:1]
+        if mode not in ("-", "d"):
+            continue
+        token = line.split("squashfs-root/", 1)[-1]
+        names.append(token + ("/" if mode == "d" and not token.endswith("/") else ""))
     return names
 
 
@@ -168,23 +539,88 @@ def names_dmg(path):
             subprocess.run([tool, "detach", str(mount)], capture_output=True, text=True)
 
 
-def names_msi(path):
-    seven = shutil.which("7z") or shutil.which("7za")
-    if seven:
-        names = []
-        for line in _lines(_run([seven, "l", "-slt", str(path)])):
-            if line.startswith("Path = "):
-                value = line[len("Path = "):].strip()
-                if value:
-                    names.append(value)
-        if names:
-            return names
-    tool = shutil.which("msiexec") or shutil.which("msiexec.exe")
+# The Flatpak bundle is an OSTree commit, which Python cannot read; the flatpak job installs the
+# bundle it has just built (`flatpak install --user --reinstall`, inside flatpak-bundle.sh) and its
+# smoke runs against it, so the installed tree is these bytes. The artifact's digest is recorded
+# beside the listing, and its absence is a failure, not a pass.
+FLATPAK_APP_ID = "ai.intgral.intcad"
+
+
+def names_flatpak(path):
+    tool = shutil.which("flatpak")
     if not tool:
-        raise OSError("neither 7z nor msiexec is available")
-    with tempfile.TemporaryDirectory(prefix="contents-msi-") as directory:
-        _run([tool, "/a", str(path), "/qn", "TARGETDIR=" + directory])
-        return _walk(directory)
+        raise OSError("flatpak is unavailable")
+    # Install these bytes before listing them: the ref is removed first and installed from this
+    # file, so the tree cannot be a stale or different bundle. The runtime the bundle names is
+    # already installed by the job that built and smoked it; `--noninteractive` refuses rather
+    # than waits if it is not.
+    # Remove any deployment first: `--reinstall` of the same commit can still be refused as
+    # "already installed" by some Flatpak versions, and the point is to read these bytes.
+    subprocess.run([tool, "uninstall", "--user", "-y", "--noninteractive", FLATPAK_APP_ID],
+                   capture_output=True, text=True)
+    installed = _run([tool, "install", "--user", "-y", "--noninteractive",
+                      str(Path(path).resolve())], timeout=900)
+    # The exact ref the install reported names the app, its architecture and its branch: a bundle
+    # of another app (or another branch of this one) cannot be attested by this deployment.
+    found = re.search(r"\bapp/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)", installed)
+    if found is None:
+        raise OSError("flatpak install did not name the app it installed")
+    if found.group(1) != FLATPAK_APP_ID:
+        raise OSError("the bundle is not " + FLATPAK_APP_ID + ": " + found.group(1))
+    ref = "app/" + "/".join(found.groups())
+    try:
+        location = _run([tool, "info", "--user", "--show-location", ref]).strip()
+    except OSError as error:
+        raise OSError("the app is not installed from a bundle: " + str(error)) from error
+    root = Path(location) if location else None
+    if root is None or not root.is_dir():
+        raise OSError("the app is not installed from a bundle")
+    # `--show-location` names the deployment; the app's own tree is its `files/` folder.
+    payload = root / "files"
+    if payload.is_dir():
+        root = payload
+    names = _walk(root)
+    if not names:
+        raise OSError("the installed app carries no files")
+    return names
+
+
+def names_msi(path):
+    # `msiexec /a` extracts the installed tree, which is what the gate must judge. 7-Zip's view of
+    # an MSI can be the compound document's own streams rather than the files it installs, so it
+    # is only the fallback on a machine without msiexec (the Linux runners).
+    tool = shutil.which("msiexec") or shutil.which("msiexec.exe")
+    if tool:
+        # A short root on Windows: the agent's node_modules paths are long, and the admin image
+        # must not fail on the 260-character limit because of a deep %TEMP% folder.
+        base = (os.environ.get("SystemDrive", "C:") + os.sep) if os.name == "nt" else None
+        try:
+            with tempfile.TemporaryDirectory(prefix="ci-", dir=base) as directory:
+                _run([tool, "/a", str(path), "/qn", "TARGETDIR=" + directory])
+                names = _walk(directory)
+                if names:
+                    return names
+        except OSError:
+            # An image for another CPU can be refused on this runner; the 7-Zip view is the
+            # remaining, machine-readable listing.
+            pass
+    seven = shutil.which("7z") or shutil.which("7za")
+    if not seven:
+        raise OSError("neither msiexec nor 7z is available")
+    names = []
+    current = None
+    for line in _lines(_run([seven, "l", "-slt", str(path)])):
+        if line.startswith("Path = "):
+            current = line[len("Path = "):].strip()
+        elif line.startswith("Folder = ") and current:
+            folder = line[len("Folder = "):].strip() == "+"
+            names.append(current + ("/" if folder and not current.endswith("/") else ""))
+            current = None
+    # 7-Zip can list the compound document's own streams; only paths are installed files.
+    names = [name for name in names if "/" in name or "\\" in name]
+    if not names:
+        raise OSError("7z listed no installed files in the MSI")
+    return names
 
 
 def inspect(path):
@@ -205,6 +641,8 @@ def inspect(path):
         return "dmg", names_dmg(path)
     if name.endswith(".msi"):
         return "msi", names_msi(path)
+    if name.endswith(".flatpak"):
+        return "flatpak", names_flatpak(path)
     raise OSError("no content inspector for this artifact")
 
 
@@ -212,13 +650,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package-id", required=True)
     parser.add_argument("--source-revision", required=True)
-    parser.add_argument("--distribution", default="native", choices=("native", "mastra"))
+    parser.add_argument("--distribution", default="native", choices=("native", "mastra", "mastra-agent"))
     parser.add_argument("--out", required=True)
     parser.add_argument("--derived-from")
     parser.add_argument("--source-artifact")
     parser.add_argument("artifacts", nargs="*")
     args = parser.parse_args()
 
+    roots = roots_for(args.package_id)
     report = {
         "schemaVersion": 1,
         "packageId": args.package_id,
@@ -228,6 +667,8 @@ def main():
         "ignored": [],
         "unchecked": [],
         "markers": [],
+        "agentMarkers": [],
+        "agent": None,
         "derivedFrom": args.derived_from,
         "sourceArtifact": None,
         "sourceSha256": None,
@@ -241,15 +682,11 @@ def main():
             raise SystemExit("source artifact is missing: " + str(source))
         report["sourceArtifact"] = source.name
         report["sourceSha256"] = digest(source)
-        try:
-            _, names = inspect(source)
-        except Exception as error:  # noqa: BLE001 - any failure is unverified content
-            report["unchecked"].append({"name": source.name, "reason": str(error)})
-        else:
-            report["markers"].extend(marker_entries(names))
-        # The derived package itself must be covered: either inspected directly when
-        # this runner has a reader for its format, or recorded as covered by the
-        # inspected source package. A digest with neither is not evidence.
+        # The repack's own bytes are what a person installs: they are inspected and recorded like
+        # any other artifact, and the gate binds them to this report by digest. A wrapper no
+        # runner can read (a squashfs Flatpak or Snap, a zstd Arch package) is still recorded, as
+        # covered by the inspected source tarball it was repacked from, so its bytes cannot go
+        # unjudged while a digest with neither inspection nor coverage stays refused.
         for value in args.artifacts:
             path = Path(value)
             if not path.is_file():
@@ -264,7 +701,25 @@ def main():
                                           "entries": 0, "coveredBy": args.derived_from})
                 continue
             report["checked"].append({"name": path.name, "sha256": digest(path), "format": kind, "entries": len(names)})
-            report["markers"].extend(marker_entries(names))
+            report["markers"].extend(inside_agent_markers_for(args.distribution, names, roots))
+            report["agentMarkers"].extend(agent_markers(names, roots))
+            report.setdefault("agents", {})[path.name] = agent_report(names, roots=roots)
+        # And the source tarball it was built from: the same agent, from the bytes that were
+        # already inspected when the Linux package was made.
+        try:
+            _, names = inspect(source)
+        except Exception as error:  # noqa: BLE001 - any failure is unverified content
+            report["unchecked"].append({"name": source.name, "reason": str(error)})
+        else:
+            # The source tarball carries the same agent the derived package will. Its folder is a
+            # marker only for a native distribution; for `mastra-agent` it is the point, and a Node
+            # outside it stays a marker either way.
+            report["markers"].extend(inside_agent_markers_for(args.distribution, names, roots))
+            report["agentMarkers"].extend(agent_markers(names, roots))
+            found = agent_report(names, roots=roots)
+            report.setdefault("agents", {}).setdefault(source.name, found)
+            if found["present"] and report["agent"] is None:
+                report["agent"] = found
     else:
         for value in args.artifacts:
             path = Path(value)
@@ -279,7 +734,19 @@ def main():
                 report["unchecked"].append({"name": path.name, "reason": str(error)})
                 continue
             report["checked"].append({"name": path.name, "sha256": digest(path), "format": kind, "entries": len(names)})
-            report["markers"].extend(marker_entries(names))
+            # A `mastra-agent` package carries the agent's own Node and node_modules by design;
+            # everything else that looks like a runtime, and every Node program outside the
+            # agent's folder, is still a marker.
+            stand_ins = stand_in_paths(names)
+            report["markers"].extend(marker_entries(names) if args.distribution == "native" else [
+                entry for entry in marker_entries(names) if not inside_agent(entry, stand_ins, roots)])
+            report["agentMarkers"].extend(agent_markers(names, roots))
+            # Every artifact is recorded, not only the first: the gate refuses a set whose
+            # artifacts disagree, so a correct zip cannot hide a broken MSI beside it.
+            found = agent_report(names, roots=roots)
+            report.setdefault("agents", {})[path.name] = found
+            if report["agent"] is None and found["present"]:
+                report["agent"] = found
 
         # A standalone app executable is one binary, not an install tree. Its bytes are
         # a subset of the MSI/zip payload built from the same stage; the covering
@@ -293,6 +760,10 @@ def main():
                     path = next(p for p in map(Path, args.artifacts) if p.name == item["name"])
                     report["checked"].append({"name": path.name, "sha256": digest(path), "format": "covered",
                                               "entries": 0, "coveredBy": covered})
+                    # One binary, a subset of the covering package's bytes: it has no folder of its
+                    # own to inspect, so its verdict is the covering package's.
+                    if covered in report.get("agents", {}):
+                        report["agents"][path.name] = dict(report["agents"][covered], coveredBy=covered)
                 else:
                     still_unchecked.append(item)
             report["unchecked"] = still_unchecked

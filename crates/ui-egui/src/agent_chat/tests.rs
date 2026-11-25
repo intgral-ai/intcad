@@ -8239,6 +8239,29 @@ fn agent_login_refresh_returns_to_unverified_discovery() {
     assert!(!app.agent_chat.settings.tests.contains_key("qwen"));
 }
 
+/// A look at the computer whose worker is gone must finish, not leave the launch waiting for an
+/// answer that will never come.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_discovery_whose_worker_gone_finishes_with_nothing_found() {
+    let (mut app, _keys, ctx) = app_with_builtin();
+    app.preferences.agent_last = "claude".into();
+    app.preferences.agent_connect_at_start = true;
+    app.agent_chat.connect_at_start = true;
+    let (tx, rx) = channel();
+    app.agent_chat.detecting = Some(rx);
+    drop(tx);
+    poll(&mut app, &ctx);
+    assert!(app.agent_chat.detecting.is_none(), "the look is finished");
+    assert!(app.agent_chat.detection.is_some(), "with nothing found");
+    // And the launch proceeds: `claude` is not among what was found, so it is reported missing
+    // instead of waiting for an answer that will never come.
+    assert!(!app.agent_chat.connect_at_start, "the launch did not stay waiting");
+    let said: Vec<String> =
+        app.agent_chat.items.iter().filter_map(|item| if let Item::Notice { text, .. } = item { Some(text.clone()) } else { None }).collect();
+    assert!(said.iter().any(|text| text.contains("claude")), "{said:?}");
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_sign_in_proven_in_one_tab_holds_in_every_tab() {
@@ -16600,7 +16623,7 @@ const BUILTIN_KEY: &str = "sk-builtin-7f2b9456-never-shown";
 const CUSTOM_KEY: &str = "sk-custom-25e93d10-never-shown";
 
 fn builtin_agent() -> agents::Builtin {
-    agents::Builtin { program: "/opt/intcad/mastra-agent".into(), args: Vec::new(), data: None }
+    agents::Builtin { program: "/opt/intcad/mastra-agent".into(), args: Vec::new(), packaged: true, data: None }
 }
 
 /// A snapshot as the built-in agent sends it: its five plans, all signed out, and its five keys,
@@ -16715,12 +16738,12 @@ fn conn_act(app: &mut SolveApp, ctx: &egui::Context, action: Value) -> std::resu
     web::act(app, ctx, &action.to_string())
 }
 
-/// A1: with the built-in agent the agent list is that agent alone, whatever was found on the
-/// computer or added before; nothing is looked for; nothing is offered to install; and the page
-/// is told the connections. Without it, all of that is as it was.
+/// A1: with the built-in agent the agent list shows it first and keeps the agents found on the
+/// computer and the ones the user added beside it; nothing to install is dropped, and the page is
+/// told the connections. Without it, all of that is as it was.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn with_the_built_in_agent_the_list_is_that_agent_alone() {
+fn with_the_built_in_agent_the_list_starts_with_it_and_keeps_the_others() {
     let mut h = app_with_cover_and_base();
     let known = discover::KNOWN.iter().find(|known| known.id == "goose").expect("a known agent");
     h.app.agent_chat.detection = Some(discover::Detection {
@@ -16753,38 +16776,49 @@ fn with_the_built_in_agent_the_list_is_that_agent_alone() {
 
     h.app.builtin_agent = Some(builtin_agent());
     let state = page_state(&mut h.app);
-    assert_eq!(state["agents"], json!([{"id": "mastra", "name": "Mastra", "detail": "mastra-agent", "hint": null}]));
-    assert_eq!(state["agent"], "mastra");
-    assert_eq!(state["missing"], json!([]), "nothing to install beside it");
+    // The built-in agent is offered first; the agents found and added stay beside it.
+    assert_eq!(state["agents"].as_array().map(Vec::len), Some(3), "{}", state["agents"]);
+    assert_eq!(state["agents"][0], json!({"id": "mastra", "name": "Mastra", "detail": "mastra-agent", "hint": null}));
+    assert_eq!(state["agent"], "custom-1", "the agent the user set as default is still the one");
+    assert_eq!(state["missing"].as_array().map(Vec::len), Some(1), "an agent that is not installed is still offered for install");
     assert_eq!(state["detecting"], false);
-    assert!(state["connect"].is_object(), "the page is told the connections: {}", state["connect"]);
-    assert_eq!(state["connect"]["connected"], false);
+    assert_eq!(state["connect"], Value::Null, "the chosen agent has no connections page");
     let told = status(&h.app);
-    assert_eq!(told["agents"].as_array().map(Vec::len), Some(1));
-    assert_eq!((&told["agents"][0]["id"], &told["currentAgent"]), (&json!("mastra"), &json!("mastra")));
-    assert_eq!(agents::entries(&h.app).len(), 1);
-    // No look at the computer starts, whoever asks for one.
+    assert_eq!(told["agents"].as_array().map(Vec::len), Some(3));
+    assert_eq!((&told["agents"][0]["id"], &told["currentAgent"]), (&json!("mastra"), &json!("custom-1")));
+    assert_eq!(agents::entries(&h.app).len(), 3);
+    // Picking an agent of before works, and so does picking the built-in one again: its page is
+    // the one that is told the connections.
     let ctx = h.ctx.clone();
-    refresh(&mut h.app, &ctx);
-    conn_act(&mut h.app, &ctx, json!({"type": "refresh"})).expect("a listed action");
-    h.call("ui.agent_chat", json!({"refresh": true}));
-    assert!(h.app.agent_chat.detecting.is_none(), "nothing is looked for on the computer");
-    // An agent of before cannot be picked.
-    assert!(conn_act(&mut h.app, &ctx, json!({"type": "agent", "id": "custom-1"})).is_err());
-    assert!(h.call("ui.agent_chat", json!({"agent": "claude"}))["ok"] == json!(false));
+    conn_act(&mut h.app, &ctx, json!({"type": "agent", "id": "claude"})).expect("a listed agent");
+    assert_eq!(h.app.agent_chat.agent_id.as_deref(), Some("claude"));
+    assert!(h.call("ui.agent_chat", json!({"agent": "mastra"}))["ok"] == json!(true));
+    assert_eq!(agents::current(&h.app).map(|entry| entry.id).as_deref(), Some("mastra"));
+    let state = page_state(&mut h.app);
+    assert!(state["connect"].is_object(), "the built-in agent's page: {}", state["connect"]);
 }
 
-/// A1: Settings shows no list of agents and no execution choice beside the built-in agent; the
-/// rest of the Assistant page stays. Without it both are there.
+/// A1: Settings keeps the agent list beside the agent the package carries: the list, Add and
+/// Refresh are the way to see and add the other agents, so a package that ships one does not take
+/// them away. The execution choice appears once there is another agent for it to run; with the
+/// package's agent alone there is nothing for it to choose.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn with_the_built_in_agent_settings_has_no_agent_list_and_no_execution_choice() {
-    let drawn = |builtin: bool| {
+fn with_the_built_in_agent_settings_still_lists_agents_and_offers_the_execution_choice() {
+    let drawn = |builtin: bool, other: bool| {
         let mut h = crate::scenario::Harness::new();
         h.app.home.open = false;
         h.app.agent_chat.detection = Some(Default::default());
         if builtin {
             h.app.builtin_agent = Some(builtin_agent());
+        }
+        if other {
+            h.app.preferences.agents.push(agents::AgentConfig {
+                id: "custom-1".into(),
+                name: "Mine".into(),
+                command: "mine --acp".into(),
+                ..Default::default()
+            });
         }
         crate::scenario::clear_handles();
         h.call("ui.resize", json!({"width": 1600, "height": 4000}));
@@ -16803,8 +16837,9 @@ fn with_the_built_in_agent_settings_has_no_agent_list_and_no_execution_choice() 
         assert!(h.app.agent_chat.detecting.is_none(), "drawing the page started no look");
         (section("agents"), execution)
     };
-    assert_eq!(drawn(false), (true, true), "without the built-in agent both are shown");
-    assert_eq!(drawn(true), (false, false), "with it neither is");
+    assert_eq!(drawn(false, false), (true, true), "without the built-in agent both are shown");
+    assert_eq!(drawn(true, false), (true, false), "with it the list stays; nothing else runs, so no execution choice");
+    assert_eq!(drawn(true, true), (true, true), "another agent beside it brings the execution choice back");
 }
 
 /// A2: preferences an older version wrote (other agents, a default and a last agent, per-agent
@@ -16851,15 +16886,23 @@ fn preferences_of_an_older_version_load_beside_the_built_in_agent_and_are_not_re
     expected["mastra_custom"] = json!([]);
     assert_eq!(kept(&app), expected, "what is saved back is what was loaded");
 
-    // The launch: connect at start neither waits for a look at the computer nor misses the
-    // agent started last, and the saved execution choice does not stop the built-in agent.
+    // The launch: the agent the user started last is the one it tries, beside the package's own
+    // agent. `claude` is not installed here, so the launch says so rather than quietly starting
+    // Mastra instead: a start the user did not ask for is not a fallback.
     begin(&mut app);
     poll(&mut app, &ctx);
-    assert!(app.agent_chat.detecting.is_none() && !app.agent_chat.connect_at_start);
+    // The look at the computer comes first: the agent started last may be one it finds. The
+    // launch waits for the answer instead of calling `claude` missing before the look returns.
+    assert!(app.agent_chat.connect_at_start, "the launch waits for the look");
+    assert!(app.agent_chat.detecting.is_some(), "the look is running");
+    // The look returns having found nothing this machine has.
+    app.agent_chat.detecting = None;
+    app.agent_chat.detection = Some(Default::default());
+    poll(&mut app, &ctx);
+    assert!(!app.agent_chat.connect_at_start);
     let said: Vec<String> =
         app.agent_chat.items.iter().filter_map(|item| if let Item::Notice { text, .. } = item { Some(text.clone()) } else { None }).collect();
-    assert!(!said.iter().any(|text| text == tr("ui.mastra_acp_tasks_unavailable") || text.contains("claude")), "{said:?}");
-    // The program named here does not exist, so the start itself fails, as a start does.
+    assert!(said.iter().any(|text| text.contains("claude")), "the agent started last is looked for: {said:?}");
     assert_eq!(app.agent_chat.state(), State::Failed);
     assert_eq!(kept(&app), expected, "a start that failed rewrote nothing");
 
@@ -17022,7 +17065,7 @@ fn connect_starts_the_built_in_agent_with_its_folder_and_its_keys_and_no_session
     let program = fake_agent_program(&dir, "mastra-agent", &snapshot);
 
     let (mut app, keys, ctx) = app_with_builtin();
-    app.builtin_agent = Some(agents::Builtin { program: program.clone(), args: Vec::new(), data: Some(data.clone()) });
+    app.builtin_agent = Some(agents::Builtin { program: program.clone(), args: Vec::new(), packaged: true, data: Some(data.clone()) });
     app.preferences.chat_execution = agents::Execution::Mastra;
     keys.set("mastra/key/openai", BUILTIN_KEY).unwrap();
     connect(&mut app, &ctx);
@@ -17059,7 +17102,7 @@ fn the_built_in_agent_is_not_started_without_its_data_folder() {
     std::fs::write(dir.join("settings"), b"not a folder").unwrap();
     for data in [Some(dir.join("settings").join("mastra")), None] {
         let (mut app, _keys, ctx) = app_with_builtin();
-        app.builtin_agent = Some(agents::Builtin { program: program.clone(), args: Vec::new(), data: data.clone() });
+        app.builtin_agent = Some(agents::Builtin { program: program.clone(), args: Vec::new(), packaged: true, data: data.clone() });
         app.preferences.chat_execution = agents::Execution::Mastra;
         connect(&mut app, &ctx);
         assert_eq!(app.agent_chat.state(), State::Failed, "{data:?}");
@@ -17092,7 +17135,7 @@ fn showing_the_assistant_starts_the_built_in_agent_once_and_no_other_agent() {
     };
     let mut h = crate::scenario::Harness::new();
     h.app.home.open = false;
-    h.app.builtin_agent = Some(agents::Builtin { program, args: Vec::new(), data: Some(dir.join("settings").join("mastra")) });
+    h.app.builtin_agent = Some(agents::Builtin { program, args: Vec::new(), packaged: true, data: Some(dir.join("settings").join("mastra")) });
     h.frames(3);
     assert!(h.app.agent_chat.state.is_none() && starts("mastra-agent") == 0, "closed, the panel starts nothing");
     h.call("ui.agent_chat", json!({"open": true, "minimized": true}));
@@ -17134,7 +17177,7 @@ fn showing_the_assistant_starts_the_built_in_agent_once_and_no_other_agent() {
     // A start that failed is not tried again by itself: Retry is the user's.
     let mut h = crate::scenario::Harness::new();
     h.app.home.open = false;
-    h.app.builtin_agent = Some(agents::Builtin { program: dir.join("no-such-program"), args: Vec::new(), data: None });
+    h.app.builtin_agent = Some(agents::Builtin { program: dir.join("no-such-program"), args: Vec::new(), packaged: true, data: None });
     h.call("ui.agent_chat", json!({"open": true}));
     h.frames(3);
     assert_eq!(h.app.agent_chat.state(), State::Failed);

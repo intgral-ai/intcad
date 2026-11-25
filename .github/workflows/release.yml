@@ -31,14 +31,17 @@ env:
   CARGO_INCREMENTAL: 0
   # Release packages bind a real reviewed revision; source/Nix builds use the unbound sentinel.
   SOLIDCRAFT_RELEASE: "1"
-  # The Mastra runtime remains unapproved (DQ-7/#15). Ordinary release packaging must keep its
-  # previous contents; bundling the workflow is opt-in and needs an explicit owner decision on the
-  # release default (DQ-7/DQ-4) plus approved artifacts for every target.
+  # The legacy Mastra workflow runtime (the `mastra/` folder, its own ACP protocol and receipt)
+  # stays unapproved (DQ-7/#15): no release package carries it.
   SOLIDCRAFT_WITH_MASTRA: "0"
-  # The native release path. `package_contents.py` must still prove from the built
-  # installer bytes that no Mastra runtime, Node sidecar or old runtime dependency
-  # was bundled before the gate can mark #14/#15 not applicable.
-  SOLIDCRAFT_DISTRIBUTION: "native"
+  # The release carries the built-in agent in every supported package: Mastra Code's SDK, its
+  # pinned Node, its dependencies and the modelling skills, staged from the same reviewed lock on
+  # each platform's own runner. `package_contents.py` proves it from the built installer bytes.
+  SOLIDCRAFT_WITH_MASTRA_AGENT: "1"
+  SOLIDCRAFT_DISTRIBUTION: "mastra-agent"
+  # The agent's build uses exactly the pinned Node and npm the test packages use (.nvmrc).
+  NODE_VERSION: "22.23.4"
+  NPM_VERSION: "11.19.0"
 
 jobs:
   version:
@@ -102,9 +105,26 @@ jobs:
       NFPM_VERSION: 2.47.0
       PACKAGE_ID: release-linux-${{ matrix.arch }}
       PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+      # The built-in agent is built for x86_64 Linux; aarch64 packages stay native and say so.
+      SOLIDCRAFT_WITH_MASTRA_AGENT: ${{ matrix.arch == 'x86_64' && '1' || '0' }}
+      SOLIDCRAFT_DISTRIBUTION: ${{ matrix.arch == 'x86_64' && 'mastra-agent' || 'native' }}
     steps:
       - *checkout
       - run: scripts/ci/build-jobs.sh
+      - name: Set up the pinned Node for the built-in agent
+        if: matrix.arch == 'x86_64'
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build the built-in agent's folder and run it against stand-ins
+        if: matrix.arch == 'x86_64'
+        run: |
+          npm install -g "npm@${{ env.NPM_VERSION }}"
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target x86_64-unknown-linux-gnu --out "$RUNNER_TEMP/mastra-agent"
+          # Run a copy, so that the folder that is packaged is the one that was built.
+          cp -R "$RUNNER_TEMP/mastra-agent" "$RUNNER_TEMP/mastra-agent-run"
+          node packages/mastra-runtime/scripts/agent-smoke.mjs "$RUNNER_TEMP/mastra-agent-run"
+          echo "SOLIDCRAFT_MASTRA_AGENT_DIR=$RUNNER_TEMP/mastra-agent" >>"$GITHUB_ENV"
       - name: Install packaging tools
         run: |
           for attempt in 1 2 3; do
@@ -229,8 +249,82 @@ jobs:
               if len(sources) != 1:
                   raise SystemExit('derived package needs exactly one source Linux tarball')
               command += ['--derived-from', 'release-linux-' + arch, '--source-artifact', str(sources[0])]
+          # The repack's own artifacts are inspected as well: the source tarball is what it was
+          # built from, not what a person installs.
           command += [str(p) for p in files]
           subprocess.run(command, check=True)
+          # The evidence's own verdict in the job log, so it can be read without downloading
+          # the artifact (the artifact holds the same file); printing before judging means a
+          # failing job still shows what it recorded.
+          data = json.loads((directory / 'contents.json').read_text())
+          agent = data.get('agent') or {}
+          verdicts = data.get('agents') or {}
+          print('contents-evidence:', json.dumps({
+              'packageId': data.get('packageId'),
+              'distribution': data.get('distribution'),
+              'artifacts': [item.get('name') for item in data.get('checked') or []],
+              'agent': {
+                  'present': agent.get('present'),
+                  'node': agent.get('node'),
+                  'nodeTargets': agent.get('nodeTargets'),
+                  'skills': agent.get('skills'),
+                  'missing': agent.get('missing'),
+              },
+              'perArtifact': {name: {
+                  'present': (carried or {}).get('present'),
+                  'node': (carried or {}).get('node'),
+                  'missing': (carried or {}).get('missing'),
+                  'skills': len((carried or {}).get('skills') or []),
+              } for name, carried in verdicts.items()},
+              'markers': [item.get('path') for item in (data.get('markers') or [])[:5]],
+              'markerCount': len(data.get('markers') or []),
+              'agentMarkers': [item.get('path') for item in (data.get('agentMarkers') or [])[:5]],
+              'agentMarkerCount': len(data.get('agentMarkers') or []),
+              'unchecked': [item.get('name') for item in data.get('unchecked') or []],
+          }, sort_keys=True))
+          # And each job fails here if its own package does not carry what its distribution
+          # promises: every inspected artifact must have a verdict, one of the app's own
+          # artifacts must carry the agent, and its bytes must be complete.
+          sys.path.insert(0, 'scripts/ci')
+          import release_content as release
+          carries = []
+          if os.environ.get('SOLIDCRAFT_DISTRIBUTION') == 'mastra-agent':
+              inspected = {item.get('name') for item in data.get('checked') or []}
+              for name in sorted(inspected - set(verdicts)):
+                  carries.append(str(name) + ': inspected without an agent verdict')
+              # Only verdicts for artifacts this job inspected count: a source tarball recorded
+              # beside a repack cannot vouch for the repack's own bytes.
+              source = data.get('sourceArtifact')
+              app_artifacts = [name for name in inspected
+                               if name != source
+                               and name in verdicts
+                               and not release.carries_no_agent(name, data.get('packageId'))
+                               and not (verdicts[name] or {}).get('coveredBy')]
+              for name in sorted(app_artifacts):
+                  problem = release.agent_problem(verdicts[name])
+                  if problem:
+                      carries.append(name + ': ' + problem)
+              if not any((verdicts[name] or {}).get('present') for name in app_artifacts):
+                  carries.append('no artifact of the package carries the agent')
+              # A universal app carries one whole agent per CPU.
+              if str(data.get('packageId', '')).startswith('release-macos'):
+                  for name in sorted(app_artifacts):
+                      got = set((verdicts[name] or {}).get('nodeTargets') or [])
+                      absent = [slice_ for slice_ in ('aarch64-apple-darwin', 'x86_64-apple-darwin')
+                                if slice_ not in got]
+                      if absent:
+                          carries.append(name + ': no Node for ' + ', '.join(absent))
+          else:
+              # A native package proves it carries none.
+              if any((carried or {}).get('present') for carried in verdicts.values()):
+                  carries.append('a native package carries the agent')
+          # Both distributions: nothing unread, and no runtime marker or Node beside the agent.
+          if data.get('markers') or data.get('agentMarkers'):
+              carries.append('a runtime marker or a Node outside the agent')
+          if data.get('unchecked'):
+              carries.append('an artifact not inspected')
+          if carries:
+              raise SystemExit('package contents do not match the distribution: ' + '; '.join(carries))
       - &upload-package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -239,6 +333,8 @@ jobs:
           if-no-files-found: error
       - &upload-evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # A job that fails its own evidence still uploads the report that says why.
+        if: always()
         with:
           name: package-evidence-${{ env.PACKAGE_ID }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: |
@@ -262,6 +358,8 @@ jobs:
       SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
       PACKAGE_ID: release-flatpak-${{ matrix.arch }}
       PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+      # A derived package carries what the Linux tarball it is built from carries.
+      SOLIDCRAFT_DISTRIBUTION: ${{ matrix.arch == 'x86_64' && 'mastra-agent' || 'native' }}
       # aarch64's runtime GL under Xvfb needs the software driver; x86_64 passes without it.
       SOLIDCRAFT_SMOKE_SOFTWARE_GL: ${{ matrix.arch == 'aarch64' && '1' || '0' }}
     steps:
@@ -279,7 +377,9 @@ jobs:
             echo "apt-get update attempt $attempt failed or timed out" >&2
             sleep 10
           done
-          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common xvfb xauth weston xwayland dbus-x11
+          # elfutils: flatpak-builder strips the ELF files the package carries, and the built-in
+          # agent brings many more of them than the app alone did.
+          sudo apt-get install -y --no-install-recommends flatpak flatpak-builder librsvg2-common elfutils xvfb xauth weston xwayland dbus-x11
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build and smoke-test the Flatpak in its network-denying sandbox
         # The existing manifest grants no network. Its desktop smoke stays inside
@@ -302,13 +402,14 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
       PACKAGE_ID: release-arch-${{ matrix.arch }}
       PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+      SOLIDCRAFT_DISTRIBUTION: ${{ matrix.arch == 'x86_64' && 'mastra-agent' || 'native' }}
     steps:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-linux-${{ matrix.arch }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: dist/linux
-      - name: Install libarchive (bsdtar) for .PKGINFO/.MTREE
+      - name: Install libarchive (bsdtar) and zstd for .PKGINFO/.MTREE and the built package
         run: |
           for attempt in 1 2 3; do
             timeout 180 sudo apt-get update \
@@ -317,7 +418,7 @@ jobs:
             echo "apt-get update attempt $attempt failed or timed out" >&2
             sleep 10
           done
-          sudo apt-get install -y --no-install-recommends libarchive-tools
+          sudo apt-get install -y --no-install-recommends libarchive-tools zstd
       - id: pkgver
         name: Arch version
         env:
@@ -353,13 +454,27 @@ jobs:
         env:
           PKG: dist/release/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
         run: packaging/linux/arch-depends.sh "$PKG" gtk3 webkit2gtk-4.1
+      # The arch-package action's PKGBUILD copies only bin/ and share/, so the agent's own folder
+      # (lib/intcad/mastra-agent, installed under usr/lib) never reaches the package. Put it there
+      # from the same tarball the package was built from, and keep .MTREE honest.
+      - name: The package carries the built-in agent
+        if: matrix.arch == 'x86_64'
+        env:
+          PKG: dist/release/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
+          TARBALL: dist/linux/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.tar.gz
+        run: packaging/linux/arch-agent.sh "$PKG" "$TARBALL"
       - name: Check the package
         env:
           PKG: dist/release/intcad-${{ env.VERSION }}-linux-${{ matrix.arch }}.pkg.tar.zst
+          ARCH: ${{ matrix.arch }}
         run: |
           # Each path on its own: an alternation passes as soon as one of them is there.
           listing="$(tar --zstd -tf "$PKG")"
-          for path in usr/bin/intcad usr/bin/intcad-cli usr/share/applications/ai.intgral.intcad.desktop; do
+          paths=(usr/bin/intcad usr/bin/intcad-cli usr/share/applications/ai.intgral.intcad.desktop)
+          if [ "$ARCH" = x86_64 ]; then
+            paths+=(usr/lib/intcad/mastra-agent/node usr/lib/intcad/mastra-agent/agent/main.mjs)
+          fi
+          for path in "${paths[@]}"; do
             grep -qxF "$path" <<<"$listing" || { echo "::error::$path is not in the package"; exit 1; }
           done
           info="$(mktemp)"
@@ -389,6 +504,7 @@ jobs:
       SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
       PACKAGE_ID: release-snap-${{ matrix.arch }}
       PACKAGE_TARGET: ${{ matrix.arch }}-unknown-linux-gnu
+      SOLIDCRAFT_DISTRIBUTION: ${{ matrix.arch == 'x86_64' && 'mastra-agent' || 'native' }}
     steps:
       - *checkout
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -436,7 +552,8 @@ jobs:
             echo "apt-get update attempt $attempt failed or timed out" >&2
             sleep 10
           done
-          sudo apt-get install -y --no-install-recommends xvfb xauth iproute2
+          # squashfs-tools lists the built .snap, which is a squashfs image.
+          sudo apt-get install -y --no-install-recommends xvfb xauth iproute2 squashfs-tools
           mkdir -p "$RUNNER_TEMP/snap-offline"
           set +e
           runner=$(id -un)
@@ -473,6 +590,7 @@ jobs:
       SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
       PACKAGE_ID: release-freebsd-x86_64
       PACKAGE_TARGET: x86_64-unknown-freebsd
+      SOLIDCRAFT_DISTRIBUTION: "native"
     steps:
       - *checkout
       - name: Build and package in a FreeBSD VM (tar.gz)
@@ -545,8 +663,42 @@ jobs:
       SOLIDCRAFT_BUILD_DATE: ${{ needs.version.outputs.date }}
       PACKAGE_ID: release-macos
       PACKAGE_TARGET: universal-apple-darwin
+      SOLIDCRAFT_WITH_MASTRA_AGENT: "1"
+      SOLIDCRAFT_DISTRIBUTION: "mastra-agent"
     steps:
       - *checkout
+      - name: Set up the pinned Node for the built-in agent
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build the built-in agent's folder for each half of the universal app
+        run: |
+          set -euo pipefail
+          npm install -g "npm@${{ env.NPM_VERSION }}"
+          # This runner is Apple silicon: its own Node builds the arm64 folder. The Intel folder's
+          # Node comes from the same pinned release, checked against nodejs.org's checksums, so the
+          # folder carries an x86_64 Node rather than this machine's.
+          for arch in arm64 x64; do
+            name="node-v${{ env.NODE_VERSION }}-darwin-$arch.tar.xz"
+            curl -fsSL -o "$RUNNER_TEMP/$name" "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/$name"
+          done
+          curl -fsSL -o "$RUNNER_TEMP/SHASUMS256.txt" "https://nodejs.org/dist/v${{ env.NODE_VERSION }}/SHASUMS256.txt"
+          (cd "$RUNNER_TEMP" && grep -E 'node-v${{ env.NODE_VERSION }}-darwin-(arm64|x64).tar.xz$' SHASUMS256.txt | shasum -a 256 -c -)
+          mkdir -p "$RUNNER_TEMP/node-arm64" "$RUNNER_TEMP/node-x64"
+          tar -xJf "$RUNNER_TEMP/node-v${{ env.NODE_VERSION }}-darwin-arm64.tar.xz" -C "$RUNNER_TEMP/node-arm64" --strip-components 1
+          tar -xJf "$RUNNER_TEMP/node-v${{ env.NODE_VERSION }}-darwin-x64.tar.xz" -C "$RUNNER_TEMP/node-x64" --strip-components 1
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target aarch64-apple-darwin \
+            --out "$RUNNER_TEMP/mastra-agent/aarch64-apple-darwin" --node "$RUNNER_TEMP/node-arm64/bin/node"
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target x86_64-apple-darwin \
+            --out "$RUNNER_TEMP/mastra-agent/x86_64-apple-darwin" --node "$RUNNER_TEMP/node-x64/bin/node"
+          # The arm64 folder is this machine's own: it is started against stand-ins. The Intel one
+          # is checked (whole, its target, its licences, no secret); running it needs an Intel Mac.
+          cp -R "$RUNNER_TEMP/mastra-agent/aarch64-apple-darwin" "$RUNNER_TEMP/mastra-agent-run"
+          node packages/mastra-runtime/scripts/agent-smoke.mjs "$RUNNER_TEMP/mastra-agent-run"
+          {
+            echo "SOLIDCRAFT_MASTRA_AGENT_DIR_AARCH64=$RUNNER_TEMP/mastra-agent/aarch64-apple-darwin"
+            echo "SOLIDCRAFT_MASTRA_AGENT_DIR_X86_64=$RUNNER_TEMP/mastra-agent/x86_64-apple-darwin"
+          } >>"$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: macos-bin-aarch64-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
@@ -599,8 +751,27 @@ jobs:
       SOLIDCRAFT_VERSION: ${{ needs.version.outputs.version }}
       PACKAGE_ID: release-windows-${{ matrix.arch }}
       PACKAGE_TARGET: ${{ matrix.target }}
+      # The built-in agent is built for x64 Windows; x86 and arm64 packages stay native.
+      SOLIDCRAFT_WITH_MASTRA_AGENT: ${{ matrix.arch == 'x64' && '1' || '0' }}
+      SOLIDCRAFT_DISTRIBUTION: ${{ matrix.arch == 'x64' && 'mastra-agent' || 'native' }}
     steps:
       - *checkout
+      - name: Set up the pinned Node for the built-in agent
+        if: matrix.arch == 'x64'
+        uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Build the built-in agent's folder and run it against stand-ins
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          npm install -g "npm@${{ env.NPM_VERSION }}"
+          $out = Join-Path $env:RUNNER_TEMP 'mastra-agent'
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target ${{ matrix.target }} --out $out
+          $run = Join-Path $env:RUNNER_TEMP 'mastra-agent-run'
+          Copy-Item -Recurse $out $run
+          node packages/mastra-runtime/scripts/agent-smoke.mjs $run
+          "SOLIDCRAFT_MASTRA_AGENT_DIR=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: icons-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
@@ -651,6 +822,7 @@ jobs:
       TRUNK_VERSION: 0.21.14
       PACKAGE_ID: release-web
       PACKAGE_TARGET: wasm32-unknown-unknown
+      SOLIDCRAFT_DISTRIBUTION: "native"
     steps:
       - *checkout
       - run: scripts/ci/build-jobs.sh
