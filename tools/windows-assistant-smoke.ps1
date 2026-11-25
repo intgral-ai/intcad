@@ -468,6 +468,43 @@ function StartOwnedApp($psi, [int]$port) {
     $script:p = $appProcess
 }
 
+function Connect-Control([int]$port) {
+    # Only connect to a listener owned by this process, not a stale/other occupant of the port.
+    # The app writes the port's token file when that server is ready to serve; waiting for it
+    # keeps the first request from meeting a socket that is still being set up.
+    $deadline = [datetime]::UtcNow.AddSeconds(180)
+    $control = Join-Path (Split-Path $script:settings) 'control'
+    $tokenFile = Join-Path $control "$port.token"
+    while ([datetime]::UtcNow -lt $deadline -and -not $script:p.HasExited) {
+        if (-not (Test-Path -LiteralPath $tokenFile)) { Start-Sleep -Milliseconds 100; continue }
+        $listener = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+        if ($listener.Count -eq 0) { Start-Sleep -Milliseconds 100; continue }
+        if ($listener.Count -ne 1 -or $listener[0].OwningProcess -ne $script:p.Id) {
+            throw "control port $port does not belong to the launched process"
+        }
+        $written = Get-Content -LiteralPath $tokenFile -Raw -ErrorAction SilentlyContinue
+        if ($null -eq $written -or $written.Trim() -cne $script:token) {
+            throw "control port $port wrote a token this check did not set"
+        }
+        $client = [Net.Sockets.TcpClient]::new()
+        try {
+            [void]$client.ConnectAsync('127.0.0.1', $port).Wait((RemainingMilliseconds $deadline))
+            if ($client.Connected) {
+                $script:client = $client
+                $stream = $client.GetStream()
+                $script:writer = New-Object System.IO.StreamWriter($stream)
+                $script:writer.AutoFlush = $true
+                $script:reader = New-Object System.IO.StreamReader($stream)
+                return
+            }
+        } finally {
+            if (-not $script:client) { $client.Dispose() }
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    throw "no control channel (exited: $($script:p.HasExited))"
+}
+
 function Launch([int]$port, [hashtable]$extra) {
     $profile = Join-Path $root "$port"
     $script:settings = Join-Path $profile 'settings'
@@ -504,27 +541,8 @@ function Launch([int]$port, [hashtable]$extra) {
     }
     if ($script:h -eq [IntPtr]::Zero) { throw "no window (exited: $($script:p.HasExited))" }
     Write-Host "window: '$([AssistantWin]::Text($script:h))' class '$([AssistantWin]::Class($script:h))'"
-    # Only connect to a listener owned by this process, not a stale/other occupant of the port.
-    while (-not $script:client -and [datetime]::UtcNow -lt $deadline -and -not $script:p.HasExited) {
-        $listener = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
-        if ($listener.Count -gt 0) {
-            if ($listener.Count -ne 1 -or $listener[0].OwningProcess -ne $script:p.Id) {
-                throw "control port $port does not belong to the launched process"
-            }
-            $client = [Net.Sockets.TcpClient]::new()
-            try {
-                [void]$client.ConnectAsync('127.0.0.1', $port).Wait((RemainingMilliseconds $deadline))
-                if ($client.Connected) { $script:client = $client }
-            } finally {
-                if (-not $script:client) { $client.Dispose() }
-            }
-        } else { Start-Sleep -Milliseconds 200 }
-    }
-    if (-not $script:client) { throw "no control channel (exited: $($script:p.HasExited))" }
-    $stream = $script:client.GetStream()
-    $script:writer = New-Object System.IO.StreamWriter($stream)
-    $script:writer.AutoFlush = $true
-    $script:reader = New-Object System.IO.StreamReader($stream)
+    $script:port = $port
+    Connect-Control $port
     $sw = [AssistantWin]::GetSystemMetrics(0); $sh = [AssistantWin]::GetSystemMetrics(1)
     Write-Host "screen: $sw x $sh"
     if ($sw -lt 1000 -or $sh -lt 740) { throw 'BLOCKED: the desktop is too small for the 960 x 600 smoke window and margins' }
@@ -542,18 +560,34 @@ function RemainingMilliseconds([datetime]$until) {
 }
 
 function Call([string]$method, $params = @{}, [datetime]$until = [datetime]::UtcNow.AddSeconds(15)) {
-    # `ui.agent_chat` is the one state-changing probe: a package's built-in agent is proven by
-    # stopping and restarting it. It never writes a design or reaches the network.
-    if ($method -cnotin @('ui.inspect', 'ui.rects', 'ui.screenshot', 'ui.agent_chat')) { throw 'smoke requires read-only observations' }
+    # Read-only observations only: a signed-out app refuses the requests that would open or
+    # change the Assistant, so this smoke never sends them.
+    if ($method -cnotin @('ui.inspect', 'ui.rects', 'ui.screenshot')) { throw 'smoke requires read-only observations' }
     $script:calls += 1
     $request = @{ id = $script:calls; method = $method; params = $params }
     if ($script:calls -eq 1) { $request.token = $script:token }
-    $script:client.SendTimeout = RemainingMilliseconds $until
-    $script:writer.WriteLine(($request | ConvertTo-Json -Compress -Depth 6))
-    $read = $script:reader.ReadLineAsync()
-    if (-not $read.Wait((RemainingMilliseconds $until))) { throw "control read timed out during $method" }
-    $line = $read.Result
-    if (-not $line) { throw "the control channel closed during $method" }
+    $json = $request | ConvertTo-Json -Compress -Depth 6
+    $line = $null
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $script:client.SendTimeout = RemainingMilliseconds $until
+        $script:writer.WriteLine($json)
+        try {
+            $read = $script:reader.ReadLineAsync()
+            if (-not $read.Wait((RemainingMilliseconds $until))) { throw "control read timed out during $method" }
+            $line = $read.Result
+            if (-not $line) { throw "the control channel closed during $method" }
+            break
+        } catch {
+            # The first request can meet the control server while the window is still starting
+            # (Windows resets that connection). Reconnect once and send the same request again;
+            # any later fault, or a second fault, fails the check.
+            if ($attempt -eq 2 -or $script:calls -ne 1) { throw }
+            Write-Host 'control connection reset while the app was still starting; reconnecting once'
+            $script:client.Dispose()
+            $script:client = $null
+            Connect-Control $script:port
+        }
+    }
     $reply = $line | ConvertFrom-Json -AsHashtable
     if ($reply.id -ne $script:calls -or $reply.ok -isnot [bool] -or -not $reply.ok) { throw "$method did not return a successful matching reply" }
     $reply.result
