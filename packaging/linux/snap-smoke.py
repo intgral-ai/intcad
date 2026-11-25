@@ -1,21 +1,10 @@
 #!/usr/bin/env python3
-"""Start the installed SolidCraft snap on headless X11 and Wayland and open the Assistant.
+"""Check the installed snap's desktop, signed-out refusals and Assistant runtime.
 
-Runs the confined app (`snap install --dangerous` first) with its normal plugs, drives it over
-the control channel from the host (snaps share the host's network namespace), requires a usable
-viewport and that every controlled entry is refused with `AuthUnavailable` while the host is
-signed out (nothing may be committed without account authority), opens the Assistant and
-requires its page to load (webView.host and webView.page true), checks the GPU drew a non-blank
-frame, and copies each frame to --out (default: the current directory) as snap-<backend>.png.
-Needs xvfb-run and weston. Reuses the frame checks of flatpak-smoke.py.
-
-The page is served by the app itself, so it needs no network; the update check is turned off
-with SOLIDCRAFT_UPDATE_CHECK=0. release.yml runs the X11 variant inside `sudo unshare -n` with
-only loopback, after proving the namespace has a single link; that keeps the release policy that
-no network-enabled desktop is started. A strict snap can still be moved back to the host network
-namespace by snapd; the control connection then fails and the job reports the failure rather than
-passing. The release job also checks that the gnome extension provides libgtk-3.so.0 and
-libwebkit2gtk-4.1.so.0.
+Run in a private network namespace with only loopback, as in release.yml.
+The confined shell runs after Snap's command chain. It must still be in that
+namespace before it execs the desktop. It doesn't open the Assistant page.
+Requires xvfb-run or Weston and copies frames to --out as snap-<backend>.png.
 """
 import argparse
 import importlib.util
@@ -49,7 +38,7 @@ REQUESTS = [
 
 
 def drive(app, port, frame):
-    """Connect to the app's control port, model the box, open the Assistant and capture a frame."""
+    """Check the control refusals and runtime marker, and capture a frame."""
     deadline = time.monotonic() + 60
     while True:
         if app.poll() is not None:
@@ -162,6 +151,9 @@ def drive(app, port, frame):
 
 
 def run_backend(backend, out):
+    if [name for _, name in socket.if_nameindex()] != ["lo"]:
+        raise RuntimeError("Snap smoke requires a loopback-only network namespace")
+    netns = os.readlink("/proc/self/ns/net")
     runtime = Path(f"/run/user/{os.getuid()}")
     if not runtime.is_dir():
         raise RuntimeError(f"{runtime} is missing: snaps expect the login session's runtime directory")
@@ -193,9 +185,15 @@ def run_backend(backend, out):
         with socket.socket() as probe:
             if probe.connect_ex(("127.0.0.1", PORTS[backend])) == 0:
                 raise RuntimeError(f"port {PORTS[backend]} is already in use (another SolidCraft?)")
+        # Keep the normal Snap profile and command chain, but check the
+        # namespace after confinement, in the process that execs the desktop.
+        launch = 'actual=$(readlink /proc/self/ns/net); if [ "$actual" != "$1" ]; then ' \
+                 'echo "Snap network namespace changed; refusing desktop launch" >&2; exit 1; fi; ' \
+                 'shift; exec "$SNAP/usr/bin/intcad" "$@"'
         # Its own process group, so stopping it also stops the app under xvfb-run.
-        app = subprocess.Popen(prefix + ["/snap/bin/intcad", "--control", str(PORTS[backend])],
-                               env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        app = subprocess.Popen(prefix + ["snap", "run", "--shell", "intcad", "-ec", launch,
+                                         "intcad-offline", netns, "--control", str(PORTS[backend])],
+                                env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             renderer, stats = drive(app, PORTS[backend], work / "frame.png")
             # The controlled quit is refused while signed out; the finally block stops the app.

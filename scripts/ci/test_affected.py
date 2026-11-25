@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -783,6 +784,57 @@ class ForkWorkflowContract(unittest.TestCase):
         self.assertIn("Full baseline", self.job("property-tests"))
         self.assertIn("inputs.cross_compile", self.job("riscv64-gates"))
         self.assertIn("riscv64-gates", self.job("ci"))
+
+    def test_riscv_cross_dependencies_are_isolated_from_runner_packages(self):
+        job = self.job("riscv64-gates")
+        # Runner-image amd64 elfutils can be at a different security revision from
+        # Ubuntu Ports. Keep the dpkg transaction in its own pinned build environment.
+        self.assertRegex(job, r"(?m)^    container: ubuntu:24\.04@sha256:[a-f0-9]{64}$")
+        self.assertLess(job.index("python3:amd64"), job.index("dpkg --add-architecture riscv64"))
+        self.assertIn("libwebkit2gtk-4.1-dev:riscv64", job)
+        self.assertIn("cargo check --all-targets --locked --target riscv64gc-unknown-linux-gnu", job)
+        self.assertNotIn("continue-on-error", job)
+
+    def test_riscv_does_not_install_after_partial_index_refresh(self):
+        body = self.job("riscv64-gates").split("          update_apt() {", 1)[1]
+        install = body.split("      - uses:", 1)[0]
+        command = textwrap.dedent("          update_apt() {" + install)
+        # A partial refresh only exits nonzero in strict mode. Simulate it
+        # at both boundaries, without any change to system files or packages.
+        fixture = r"""
+foreign=0
+sleep() { :; }
+timeout() { shift; "$@"; }
+sed() { :; }
+dpkg() { foreign=1; }
+apt-get() {
+    if [[ $1 == install ]]; then
+        if [[ $foreign == 1 || $FAIL_REFRESH == native ]]; then
+            echo 'unexpected install'; return 42
+        fi
+        echo 'installed native dependencies'; return 0
+    fi
+    if [[ $foreign == 0 && $FAIL_REFRESH == foreign ]]; then
+        echo 'refreshed native indexes'; return 0
+    fi
+    echo 'attempted partial refresh'
+    [[ " $* " != *" APT::Update::Error-Mode=any "* ]]
+}
+"""
+        for boundary, prefix in (
+            ("native", []),
+            ("foreign", ["refreshed native indexes", "installed native dependencies"]),
+        ):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temp:
+                sandboxed = command.replace("/etc/apt/sources.list.d/", '"$APT_FIXTURE_DIR"/')
+                result = subprocess.run(
+                    ["bash", "-euo", "pipefail", "-c", fixture + sandboxed],
+                    env=dict(os.environ, FAIL_REFRESH=boundary, APT_FIXTURE_DIR=temp),
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.stdout.splitlines(), prefix + ["attempted partial refresh"] * 3,
+                                 result.stderr)
+                self.assertEqual(result.returncode, 1)
 
 
 class NativeBaselineWorkflow(unittest.TestCase):

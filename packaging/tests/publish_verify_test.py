@@ -1,10 +1,12 @@
 """Release signing may consume only the exact evidence set accepted by the stable gate."""
+from contextlib import chdir
 import hashlib
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from zipfile import ZipFile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts/ci"))
@@ -167,6 +169,43 @@ class Publish(unittest.TestCase):
         # Same job names from a different workflow are not the gate.
         with self.assertRaises(ValueError):
             release.verify_execution(run | {"path": ".github/workflows/other.yml"}, jobs, 42, 2)
+
+    def test_publisher_admission_requires_a_tag_handoff(self):
+        for manifest in ({"mode": "candidate"}, {}):
+            with self.subTest(manifest=manifest), tempfile.TemporaryDirectory(dir=self.root) as tmp, chdir(tmp):
+                def download_manifest(repo, record, target, expected):
+                    target.mkdir()
+                    (target / "stable-release-handoff.json").write_text(json.dumps(manifest))
+
+                with (
+                    patch.object(release, "selection", return_value=("owner/source", 7, 42, 2, SHA, V, DIGEST)),
+                    patch.object(release, "require_producers"),
+                    patch.object(release, "frozen_notes"),
+                    patch.object(release, "trusted_key"),
+                    patch.object(release, "git"),
+                    patch.object(release, "run_artifacts"),
+                    patch.object(release, "artifact_index", return_value={release.manifest_name(2): {}}),
+                    patch.object(release, "check_environment", return_value={}),
+                    patch.object(release, "download_artifact", side_effect=download_manifest),
+                    patch.object(release, "live_execution", side_effect=AssertionError("unexpected live run check")),
+                    self.assertRaisesRegex(ValueError, "requires a tag-push handoff"),
+                ):
+                    release.prepare({"NOTES_PATH": "docs/release-notes-0.1.3.md"})
+
+    def test_publisher_recheck_requires_a_tag_handoff(self):
+        candidate = dict(source="owner/source", repositoryId=7, runId=42, runAttempt=2,
+                         sourceRevision=SHA, version=V)
+        work = self.root / "release-work"
+        work.mkdir()
+        for fields in ({"mode": "candidate"}, {}):
+            with self.subTest(fields=fields), chdir(self.root):
+                (work / "candidate.json").write_text(json.dumps(candidate | fields))
+                with (
+                    patch.object(release, "authorize", return_value=("owner/source", 7)),
+                    patch.object(release, "live_execution", side_effect=AssertionError("unexpected live run check")),
+                    self.assertRaisesRegex(ValueError, "requires a tag-push handoff"),
+                ):
+                    release.confirm({"TAG": "v0.1.3"})
 
     def test_a_coordinated_rehash_still_fails_against_the_gate_handoff(self):
         # The attacker rewrites a package and both descriptors consistently, but the

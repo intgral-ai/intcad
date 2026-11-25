@@ -821,8 +821,52 @@ jobs:
     name: Compile RISC-V (manual)
     if: inputs.cross_compile
     runs-on: ubuntu-24.04
+    # Ubuntu Ports and the runner's native archive can publish different
+    # revisions of Multi-Arch: same libraries. Do not mix runner packages
+    # with the cross sysroot or pin the latter to an older security revision.
+    container: ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 30
     steps:
+      - name: Install cross-compilation dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          update_apt() {
+            for attempt in 1 2 3; do
+              if timeout 180 apt-get update \
+                -o APT::Update::Error-Mode=any \
+                -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+                -o Acquire::ForceIPv4=true; then
+                return 0
+              fi
+              echo "apt-get update attempt $attempt failed or timed out" >&2
+              if [ "$attempt" -lt 3 ]; then sleep 10; fi
+            done
+            return 1
+          }
+          update_apt
+          # Install a runnable Python before adding the foreign architecture:
+          # APT can otherwise select RISC-V Python to configure GLib.
+          apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config python3:amd64 zstd
+          sed -i '/^Architectures:/d; /^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          cat >/etc/apt/sources.list.d/riscv64.sources <<'EOF'
+          Types: deb
+          URIs: http://ports.ubuntu.com/ubuntu-ports
+          Suites: noble noble-updates noble-backports noble-security
+          Components: main restricted universe multiverse
+          Architectures: riscv64
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          dpkg --add-architecture riscv64
+          update_apt
+          apt-get install -y --no-install-recommends \
+            gcc-riscv64-linux-gnu g++-riscv64-linux-gnu python3:amd64 \
+            libasound2-dev:riscv64 libxkbcommon-dev:riscv64 libwayland-dev:riscv64 \
+            libx11-dev:riscv64 libxrandr-dev:riscv64 libxi-dev:riscv64 libgl1-mesa-dev:riscv64 \
+            libgtk-3-dev:riscv64 libwebkit2gtk-4.1-dev:riscv64
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -841,26 +885,6 @@ jobs:
         with:
           key: riscv64
           save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
-      - name: Install cross-compilation dependencies
-        run: |
-          sudo sed -i '/^Architectures:/d; /^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
-          sudo tee /etc/apt/sources.list.d/riscv64.sources >/dev/null <<'EOF'
-          Types: deb
-          URIs: http://ports.ubuntu.com/ubuntu-ports
-          Suites: noble noble-updates noble-backports noble-security
-          Components: main restricted universe multiverse
-          Architectures: riscv64
-          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-          EOF
-          sudo dpkg --add-architecture riscv64
-          for attempt in 1 2 3; do
-            timeout 180 sudo apt-get update \
-              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
-              -o Acquire::ForceIPv4=true && break
-            echo "apt-get update attempt $attempt failed or timed out" >&2
-            sleep 10
-          done
-          sudo apt-get install -y gcc-riscv64-linux-gnu g++-riscv64-linux-gnu libasound2-dev:riscv64 libxkbcommon-dev:riscv64 libwayland-dev:riscv64 libx11-dev:riscv64 libxrandr-dev:riscv64 libxi-dev:riscv64 libgl1-mesa-dev:riscv64 libgtk-3-dev:riscv64 libwebkit2gtk-4.1-dev:riscv64
       - name: Cargo check on RISC-V
         env:
           CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
