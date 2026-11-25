@@ -23,6 +23,7 @@ use crate::prelude::*;
 use crate::tess::uv::{self, Domain};
 use solidcore_record::Vec3;
 use solidcore_record::brep::{Budget, Curve, Curve2, Surface, check_curve, check_curve2, check_interval, check_surface};
+use std::collections::HashSet;
 
 /// Why no pcurves: the records are malformed or out of bounds (`Invalid`), no pcurve within
 /// the tolerance was found or the geometry is not supported (`Failed`), or the fit would exceed
@@ -98,7 +99,7 @@ pub fn pcurves_within(
         for (u, pc) in l.iter().zip(pcs) {
             fitted.push((pc?, u.forward));
         }
-        on.close(&mut fitted, tolerance)?;
+        on.close(&mut fitted, (loops.len() == 1).then_some(l.as_slice()), tolerance)?;
         out.push(fitted.into_iter().map(|(c, _)| c).collect());
     }
     Ok(out)
@@ -540,11 +541,11 @@ impl On {
 
     /// The loop's uses moved by whole periods so each starts where the one before it ends (in
     /// loop order and direction), then all together into the surface's base period where the
-    /// loop's lowest point allows. Where uses meet at a pole (within `tol`) the periodic
+    /// loop's seam or lowest point allows. Where uses meet at a pole (within `tol`) the periodic
     /// parameter is free: there the offsets that turn the loop counter-clockwise in (u, v) (a
     /// face boundary seen from the natural normal) by more than rounding are taken, else the
     /// nearest. A seam used twice from pole to pole thus encloses its face, never nothing.
-    fn close(&self, uses: &mut [(Curve2, bool)], tol: f64) -> Result<()> {
+    fn close(&self, uses: &mut [(Curve2, bool)], single_loop: Option<&[EdgeUse<'_>]>, tol: f64) -> Result<()> {
         let n = uses.len();
         let mut ends = Vec::with_capacity(n);
         for (c, fwd) in uses.iter() {
@@ -620,8 +621,56 @@ impl On {
                 }
             }
             let lo = self.dom.range.get(d).copied().flatten().map_or(0.0, |(a, b)| a.min(b));
-            let low = uses.iter().zip(&shift).flat_map(|((c, _), s)| points(c).into_iter().map(move |q| q[d] + s)).fold(f64::INFINITY, f64::min);
-            let base = if low.is_finite() { ((low - lo) / period + 1e-9).floor() * period } else { 0.0 };
+            let bounds = |c: &Curve2, s: f64| {
+                points(c).into_iter().map(|q| q[d] + s).fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| (a.min(x), b.max(x)))
+            };
+            let (low, high) = uses
+                .iter()
+                .zip(&shift)
+                .map(|((c, _), s)| bounds(c, *s))
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), (c, d)| (a.min(c), b.max(d)));
+            let fallback = if low.is_finite() { ((low - lo) / period + 1e-9).floor() * period } else { 0.0 };
+            let base = single_loop
+                .zip(self.face.and_then(|f| f.get(d).copied()))
+                .and_then(|(edges, [a, b])| {
+                    let epsilon = period * 1e-9;
+                    let same = |x: f64, y: f64| (x - y).abs() <= epsilon;
+                    let (a, b) = (a.min(b), a.max(b));
+                    if !period.is_finite() || a < 0.0 || !same(a, lo) || !same(b - a, period) {
+                        return None;
+                    }
+                    let (first, last) = ends
+                        .iter()
+                        .zip(&shift)
+                        .flat_map(|((s, e), by)| [s[d] + by, e[d] + by])
+                        .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| (a.min(x), b.max(x)));
+                    let base = ((first - a) / period).round() * period;
+                    if !same(base - fallback, period)
+                        || !same(first - base, a)
+                        || !same(last - base, b)
+                        || low - base >= a - epsilon
+                        || low - base <= a - period / 2.0
+                        || high - base >= b + period / 2.0
+                    {
+                        return None;
+                    }
+                    // Both seam uses anchor a single loop. A lower control coefficient alone
+                    // must not jump it forward a turn. Returning to this nonnegative chart
+                    // cannot increase the magnitude of the shifted coefficients.
+                    let mut lower = HashSet::new();
+                    let mut upper = HashSet::new();
+                    for ((edge, (curve, _)), by) in edges.iter().zip(uses.iter()).zip(&shift) {
+                        let (u, v) = bounds(curve, by - base);
+                        if same(u, a) && same(v, a) {
+                            lower.insert((edge.edge, edge.forward));
+                        }
+                        if same(u, b) && same(v, b) {
+                            upper.insert((edge.edge, !edge.forward));
+                        }
+                    }
+                    lower.iter().any(|edge| upper.contains(edge)).then_some(base)
+                })
+                .unwrap_or(fallback);
             for (((c, _), s), (st, en)) in uses.iter_mut().zip(&shift).zip(ends.iter_mut()) {
                 let by = s - base;
                 if by != 0.0 {
