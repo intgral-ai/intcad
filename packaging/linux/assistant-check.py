@@ -273,8 +273,12 @@ def exercise(app, control, native, seconds, capture, built_in_agent=False):
 
         click_rect(await_value(app, seconds, "Home did not dismiss or no native Assistant entry was drawn", button))
 
+    last_state = {}
+
     def page(deadline):
-        if assistant(inspect(deadline)) == (True, True, "available"):
+        nonlocal last_state
+        last_state = inspect(deadline)
+        if assistant(last_state) == (True, True, "available"):
             rect, scale = ui_rect(control, ("agent_chat:web",), deadline, native.backing_scale)
             if rect:
                 actual = native.page(rect, timeout=min(5, remaining(deadline)))
@@ -331,7 +335,18 @@ def exercise(app, control, native, seconds, capture, built_in_agent=False):
             raise ValueError("the built-in agent did not start again after it stopped")
         print("ok: the built-in agent started, stopped and started again", flush=True)
 
-    native.close_page(actual, scale)
+    # At the bottom centre (#221) the page's top-right control is Collapse, not Close; the
+    # Assistant entry is the affordance that closes the panel, exactly as the Windows smoke
+    # uses it. The docked layout still has a real Close in the page.
+    centred = (last_state.get("assistant") or {}).get("centred") is True
+    if centred:
+        entry = ui_rect(control, ("rail:assistant", "titlebar:assistant"),
+                        time.monotonic() + 15, native.backing_scale)[0]
+        if not entry:
+            raise ValueError("the centred Assistant has no native entry to close it")
+        click_rect(entry)
+    else:
+        native.close_page(actual, scale)
 
     def hidden(deadline):
         opened, ready, host = assistant(inspect(deadline))
@@ -672,17 +687,37 @@ class X11:
             raise ValueError("native input hit is covered or outside the owned window")
 
     def close_page(self, bounds, scale):
-        left, _, right, _ = bounds
         # App.tsx: Close is the last control in ChatShell.Bar. The checked-in
         # page has a centered <=44rem/48rem column, 12/16px side padding,
         # and a 28px button centered in a 32px row with 8px vertical padding.
         # Limit the hit to widths where the column is not capped. Its Close
         # center is 26px from the right at this width.
-        width = (right - left) / scale
-        if not 200 <= width <= 700:
-            raise Blocked("the native Assistant page has no verified Close hit for this width")
-        self.guarded_click((right - left - round(26 * scale), round(24 * scale)),
-                           self.page_window, page_bounds=bounds)
+        #
+        # A page can still settle its native size after it first reports ready
+        # (observed on a slower aarch64 runner). Re-observe the live child and
+        # click only refreshed coordinates; a page that keeps moving past the
+        # bound still fails, so a stale hit is never sent.
+        deadline = time.monotonic() + 5
+        current = tuple(bounds)
+        while True:
+            left, _, right, _ = current
+            width = (right - left) / scale
+            if not 200 <= width <= 700:
+                raise Blocked("the native Assistant page has no verified Close hit for this width")
+            try:
+                self.guarded_click((right - left - round(26 * scale), round(24 * scale)),
+                                   self.page_window, page_bounds=current)
+                return
+            except ValueError as error:
+                if "page Close geometry moved or is stale" not in str(error):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise ValueError("page Close geometry kept moving; refusing a stale hit") from error
+                live = self.geometry(self.page_window)
+                if live is None:
+                    raise ValueError("page Close lost the owned view") from error
+                current = tuple(live)
+                time.sleep(0.05)
 
     def close_window(self):
         self.owner_bounds()

@@ -344,7 +344,7 @@ class AssistantNativeSmoke(unittest.TestCase):
         kill_group.assert_not_called()
         self.app.wait.assert_not_called()
 
-    def test_hit_recomputes_frame_origin_after_grab_and_rejects_stale_page(self):
+    def test_hit_recomputes_frame_origin_after_grab_and_refreshes_a_moved_page(self):
         desktop = object.__new__(self.smoke.X11)
         desktop.dpy, desktop.root, desktop.owner, desktop.page_window = 123, 1, 2, 3
         state = {"grabbed": False}
@@ -359,9 +359,10 @@ class AssistantNativeSmoke(unittest.TestCase):
         desktop.click(40, 50)
         desktop.motion.assert_called_once_with(123, 0, 140, 150, 0)
         desktop.motion.reset_mock()
-        with self.assertRaisesRegex(ValueError, "stale|moved"):
-            desktop.close_page((440, 220, 760, 790), 1)
-        desktop.motion.assert_not_called()
+        # The page moved since the observation: the Close hit is re-derived from the live
+        # child and only then sent; the stale coordinates are never clicked.
+        desktop.close_page((440, 220, 760, 790), 1)
+        desktop.motion.assert_called_once_with(123, 0, 744, 254, 0)
 
     def test_frame_coordinates_outside_live_screen_never_send_input(self):
         desktop = object.__new__(self.smoke.X11)
