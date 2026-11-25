@@ -524,6 +524,7 @@ pub fn state(app: &mut SolveApp) -> String {
         ("withNext", "ui.agent_chat_web_with_next"),
         ("latest", "ui.agent_chat_web_latest"),
         ("turnLabel", "ui.agent_chat_web_turn"),
+        ("moveBox", "ui.agent_chat_web_move"),
         ("reviewTitle", "ui.agent_chat_review_title"),
         ("reviewAccept", "ui.agent_chat_review_accept"),
         ("reviewReject", "ui.agent_chat_review_reject"),

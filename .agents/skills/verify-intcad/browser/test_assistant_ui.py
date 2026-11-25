@@ -473,6 +473,22 @@ def test_centred_box_moves_sideways_from_its_empty_parts_only(page, site):
     row = page.locator('[data-slot="composer-actions"]').bounding_box()
     lead = page.locator('[data-slot="composer-actions-start"]').bounding_box()
     gap = (lead["x"] + lead["width"] + 12, row["y"] + row["height"] / 2)
+    # The grip says the box can be dragged: Mastra's drag handle at the box's top right corner, the
+    # end of the closed line. The gap, which drags as well, shows the same cursor.
+    grip = page.get_by_role("button", name="moveBox")
+    expect(grip).to_be_visible()
+    assert grip.evaluate("e => getComputedStyle(e).cursor") == "grab"
+    assert page.locator('[data-slot="composer-actions"]').evaluate("e => getComputedStyle(e).cursor") == "grab"
+    held = grip.bounding_box()
+    box = page.locator("[data-centre-line]").bounding_box()
+    assert held["x"] + held["width"] > box["x"] + box["width"] - 24 and held["y"] < row["y"], (held, box)
+    on_grip = (held["x"] + held["width"] / 2, held["y"] + held["height"] / 2)
+    # A plain click on the grip moves nothing; a press that goes sideways drags from it.
+    grip.click()
+    assert page.evaluate(MOVES) == []
+    press_and_go(page, *on_grip, -50)
+    assert page.evaluate(MOVES)[-1] == {"type": "move", "dx": -50, "done": True}
+    page.evaluate("window.assistantFixture.actions.length = 0")
     # A press in the gap of the message box's bottom row that stays put moves nothing.
     page.mouse.click(*gap)
     press_and_go(page, *gap, 2)
@@ -499,6 +515,13 @@ def test_centred_box_moves_sideways_from_its_empty_parts_only(page, site):
     empty = (bar["x"] + bar["width"] * 0.6, bar["y"] + bar["height"] / 2)
     press_and_go(page, *empty, 80)
     assert page.evaluate(MOVES)[-1] == {"type": "move", "dx": 80, "done": True}
+    expect(body).to_have_attribute("data-open", "true")
+    # Open, the grip is the bar's last button, and drags.
+    expect(grip).to_be_visible()
+    held = grip.bounding_box()
+    assert held["y"] + held["height"] <= bar["y"] + bar["height"] and held["x"] > bar["x"] + bar["width"] * 0.8, (held, bar)
+    press_and_go(page, held["x"] + held["width"] / 2, held["y"] + held["height"] / 2, 40)
+    assert page.evaluate(MOVES)[-1] == {"type": "move", "dx": 40, "done": True}
     expect(body).to_have_attribute("data-open", "true")
     page.mouse.click(*empty)
     expect(body).not_to_have_attribute("data-open", "true")

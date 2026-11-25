@@ -11,6 +11,7 @@ import {
   Ellipsis,
   FileImage,
   FileText,
+  GripVertical,
   Hammer,
   KeyRound,
   Map as MapIcon,
@@ -1372,7 +1373,7 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
               }
             }}
           />
-          <ComposerActions className={centre ? 'flex-nowrap' : undefined}>
+          <ComposerActions className={centre ? 'flex-nowrap cursor-grab active:cursor-grabbing' : undefined}>
             <ComposerActionsStart className="gap-1">
               <DropdownMenu>
                 <DropdownMenu.Trigger variant="ghost" size="icon-sm" aria-label={strings.add} tooltip={strings.add}>
@@ -1539,7 +1540,7 @@ function AssistantBar({
           data-centre-bar-collapse
           title={strings.collapse}
           onClick={onCollapse}
-          className="absolute inset-0 cursor-pointer rounded-lg transition-colors duration-fast ease-out-custom hover:bg-fill-subtle motion-reduce:transition-none"
+          className="absolute inset-0 cursor-grab rounded-lg transition-colors active:cursor-grabbing duration-fast ease-out-custom hover:bg-fill-subtle motion-reduce:transition-none"
         />
       )}
       <ChatShell.Column className={cn('flex-row items-center justify-between gap-2 py-2', centre && 'pointer-events-none relative [&_button]:pointer-events-auto')}>
@@ -1661,9 +1662,12 @@ function AssistantBar({
           {/* At the bottom centre the right rail's Assistant button shows and hides it: in the close
               button's place is Collapse, back to the message box. */}
           {centre ? (
-            <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.collapse} tooltip={strings.collapse} onClick={onCollapse}>
-              <Minimize2 />
-            </Button>
+            <>
+              <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.collapse} tooltip={strings.collapse} onClick={onCollapse}>
+                <Minimize2 />
+              </Button>
+              <Grip strings={strings} />
+            </>
           ) : (
             <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.close} tooltip={strings.close} onClick={() => post({ type: 'close' })}>
               <X />
@@ -2816,6 +2820,24 @@ function PreviewLine({ line, open, strings, onExpand }: { line: Line; open: bool
   );
 }
 
+/** The grip the box at the bottom centre is dragged by, at its top right corner (the closed line's
+ *  end, the open bar's end), as Mastra's MetricsCard.DragHandle draws one. A click does nothing. */
+function Grip({ strings }: { strings: Strings }) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      data-centre-grip
+      className="shrink-0 cursor-grab active:cursor-grabbing"
+      aria-label={strings.moveBox}
+      tooltip={strings.moveBox}
+    >
+      <GripVertical />
+    </Button>
+  );
+}
+
 /** The model picker's header (Mastra's `header` slot): the connection the model runs on, and the way to sign in or add one. */
 function PickerConnection({ via, strings, onConnections }: { via: Connection | null | undefined; strings: Strings; onConnections: () => void }) {
   const account = via && 'account' in via && via.account ? via.account : null;
@@ -2987,6 +3009,8 @@ function closePopups() {
 const HEADERS = ':scope > [data-slot="composer"] > [data-slot="composer-header"]';
 /** The parts of the box at the bottom centre a press on moves it: no control, no words. */
 const EMPTY_OF_BOX = '[data-centre-bar-collapse], [data-slot^="composer-actions"]';
+/** The box's grip, which drags it from anywhere on it, its icon too. */
+const GRIP = '[data-centre-grip]';
 
 /** Where a header over the message box ends at the top once its opening transition is over. */
 function topOf(header: Element) {
@@ -3294,8 +3318,8 @@ function Centre({
     closePopups();
     if (open && !popup && !conn && !none && !state.confirmNew && !document.querySelector(DIALOGS)) collapse();
   }, [presses]);
-  // A press on an empty part of the box (the gap in the message box's bottom row; open, the bar's
-  // empty part) that goes sideways moves the box along the bottom of the window; the host keeps it
+  // A press on the grip or an empty part of the box (the gap in the message box's bottom row; open,
+  // the bar's empty part) that goes sideways moves the box along the bottom of the window; the host keeps it
   // there. A press that does not go a few points keeps its meaning, and the click a move ends in is
   // not one. Screen units, as the view moves under the pointer meanwhile.
   useEffect(() => {
@@ -3304,9 +3328,11 @@ function Centre({
     let press: { id: number; x: number; dx: number; moving: boolean } | null = null;
     const swallow = (event: Event) => event.stopPropagation();
     const down = (event: PointerEvent) => {
-      if (event.button !== 0 || !(event.target instanceof Element) || !event.target.matches(EMPTY_OF_BOX)) return;
+      if (event.button !== 0 || !(event.target instanceof Element)) return;
+      const at = event.target.closest(GRIP) ?? (event.target.matches(EMPTY_OF_BOX) ? event.target : null);
+      if (!at) return;
       press = { id: event.pointerId, x: event.screenX, dx: 0, moving: false };
-      event.target.setPointerCapture(event.pointerId);
+      at.setPointerCapture(event.pointerId);
     };
     const move = (event: PointerEvent) => {
       if (press?.id !== event.pointerId) return;
@@ -3466,6 +3492,7 @@ function Centre({
               <ComposerHeaderContent className="min-w-0">
                 <PreviewLine line={preview} open={open} strings={strings} onExpand={() => roomFirst(() => setShown(true))} />
               </ComposerHeaderContent>
+              <Grip strings={strings} />
             </ComposerHeaderRow>
           )}
         </div>

@@ -244,7 +244,7 @@ export type StringKey =
   | 'setupBody' | 'openSettings' | 'model' | 'queuedStopped' | 'sendNow' | 'sendNowTip' | 'edit'
   | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'modelRefine' | 'modelFilter' | 'modelEffort' | 'revalidate' | 'dropHint' | 'removeChip'
   | 'openPicture' | 'selectedNow'
-  | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel'
+  | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel' | 'moveBox'
   | 'reviewTitle' | 'reviewAccept' | 'reviewReject' | 'reviewMade' | 'reviewChanged' | 'reviewRemoved'
   | 'reviewAccepted' | 'reviewRejected' | 'reviewMore'
   | 'dfmCheckTitle' | 'dfmRunning' | 'dfmDone' | 'dfmCancelled' | 'dfmError' | 'dfmNotChecked'
