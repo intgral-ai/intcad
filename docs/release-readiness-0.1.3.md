@@ -3201,3 +3201,7 @@ cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
 
 Pushed as `b0f4ed7413`; new Packaging lint `45531670739` and CI `45531670633` started on that head.
 The previous run (`45530068097`) was cancelled so its doomed runner time was not wasted.
+
+**Packaging lint is green on `b0f4ed7413`** (run `45531670739`, both jobs success), so the clippy fix
+and the release-content fixture fix together leave #240 with a clean lint. CI run `45531670633` is at
+13/20 with no failures at 02:21Z.
