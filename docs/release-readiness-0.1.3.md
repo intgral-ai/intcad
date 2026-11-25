@@ -3380,3 +3380,19 @@ confirmed the check step now receives `PRODUCTION_ACCOUNT_CONFIG` and `STAGING_A
 account variables in `release.yml`. `verify_embedded_account.py` appears once (Linux check step), so
 macOS/Windows need no equivalent change — their binaries are covered by the acceptance script
 instead. `develop` keeps the unfixed step until the planned `main → develop` reconciliation.
+
+**The snapshot fix was verified at runtime for both callers.** Using fixture binaries that embed each
+tuple, with exactly the environment the fixed step now provides:
+
+```
+PRODUCTION_ACCOUNT_CONFIG=<repo variable> ACCOUNT_CONFIG_SOURCE=environment:production
+  verify_embedded_account.py <binary> --expect-tuple-sha256 89abe5c9…f41bb
+  → embedded account tuple: 89abe5c94fb1fbaa608e0763224f4c9e241fee7087c3bd6ee4da96c3a75f41bb; all three values present
+
+STAGING_ACCOUNT_CONFIG=<committed staging config> ACCOUNT_CONFIG_SOURCE=checked-in:staging
+  verify_embedded_account.py <binary>
+  → embedded account tuple: c62d9ee0b7b95b73d7e082c63a8110d6301e06645cc3d90227c5aadefd76bd35; all three values present
+```
+
+So the failing step now behaves correctly for the production gate and for Gate B's staging build, and
+it still refuses a binary without the tuple (verified earlier).
