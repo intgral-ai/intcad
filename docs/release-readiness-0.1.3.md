@@ -3311,3 +3311,18 @@ is mixed: the publisher will consume only the tag-run handoff (`mode=tag`).
 Remaining acceleration is real but smaller: **Gate B staging runs in parallel with the tag gate.**
 Both are dispatched within a minute of the merge, and the 14-pair acceptance starts as soon as the tag
 gate's package jobs finish.
+
+**Migration Agent's code-level check of the candidate-mode path, and the decisive counter-evidence.**
+It confirmed, on `df937c12`/`5a7b5ac0`: `verify_manifest` accepts `mode=candidate` only with
+`ref == ""`; `verify_execution(mode=candidate)` accepts `pull_request`/`merge_group` and checks run
+id/attempt/path plus every `GATE_JOBS` entry in the same attempt; `selection(resolve_tag=True)`
+requires the tag to name the dispatched source SHA and that SHA to be on protected `main`;
+`require_producers` compares `scripts`, `.github/workflows`, `packaging`, `tools`; `verify_agent_review`
+needs both variables equal to `<sha>:<run>:<attempt>`.
+
+The path therefore needs the merge commit to equal the gate's SHA. Our measurement on #226 shows it
+does not (`e57d4ecf58…` gate vs `e6ba5b1bfd…` merge), so the tag-push gate stays the source of the
+handoff. It also noted that `docs/releasing.md:313-324` still says a PR handoff can never satisfy the
+publisher, which contradicts the code now that a merge commit can be on `main`; that is a
+**docs-only** correction with no gate impact, and it will be filed after publication so `main` is not
+touched before dispatch.
