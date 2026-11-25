@@ -3205,3 +3205,35 @@ The previous run (`45530068097`) was cancelled so its doomed runner time was not
 **Packaging lint is green on `b0f4ed7413`** (run `45531670739`, both jobs success), so the clippy fix
 and the release-content fixture fix together leave #240 with a clean lint. CI run `45531670633` is at
 13/20 with no failures at 02:21Z.
+
+## 26. #240 merged; #237 rebased and marked ready; the required gate is running
+
+```
+#240 b0f4ed7413 → squash merged as df937c12a2 (develop)
+develop = df937c12a2   (agent packaging + #236 + #238 + paid chain + tag-push gate)
+release/v0.1.3 rebuilt on df937c12a2 as 5a7b5ac0a0:
+  c7df271044  0.1.3 version, notes, folded format 51, Cargo.lock refreshed (the two member lines)
+  b8215a7045  notes describe the CLI paid path, declared bounds, sleep-aware deadlines
+  5a7b5ac0a0  notes name the FreeBSD account limit
+checks before push: cargo metadata --locked OK, test_gate/test_release_content/test_release_candidate OK,
+test-format-pending OK, pending format files = README only
+#237 marked ready → Release gate run 45545336763 (event=pull_request, head 5a7b5ac0a0)
+```
+
+**Acceleration under measurement (no gate weakened).** For this head GitHub reports
+`merge_commit_sha = 05b5c0df78a47c98e09456ace5f0ba19971b8398` (the test merge of
+`base 9219342da2` and `head 5a7b5ac0a0`). `main` is frozen at `9219342da2`, so if the gate's own
+`GITHUB_SHA` equals that commit and the merge creates exactly it, the **formal run has already
+tested the commit that lands on `main`** — the reuse condition the owner allowed. Verification plan,
+executed only with evidence:
+
+1. read the gate run's artifacts and extract its `GITHUB_SHA` (artifact names carry it, and the
+   handoff manifest records `sourceRevision`);
+2. compare with `pulls/237.merge_commit_sha`;
+3. merge #237 with a merge commit (not squash) and assert `main`'s new tip equals that SHA;
+4. if all three hold, the publisher may consume this `mode=candidate` handoff; otherwise the
+   tag-push gate from §13/§14 runs as designed (the fallback costs ~2 h, nothing is skipped).
+
+**Gate B runs in parallel** with whatever post-merge gate is needed: once #237 is on `main`,
+`Staging desktop packages (nonpublishing)` becomes dispatchable and its three-platform build starts
+immediately, not after the production gate finishes.
