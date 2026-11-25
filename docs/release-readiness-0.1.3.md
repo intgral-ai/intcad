@@ -3191,3 +3191,13 @@ The test came from #234 (`a68f3db8e3`). My earlier local `cargo clippy -p …` r
 `_ => {}` (the loop only yields the three named losses), and the exact CI command is being run
 locally before the next push. The doomed run `45530068097` was cancelled so the runner time is not
 wasted.
+
+**The clippy fix is pushed and the exact CI clippy command is green locally.**
+
+```
+cargo clippy --workspace --all-targets --profile ci --locked -- -D warnings
+→ exit 0, "Finished ci profile … in 2m 03s"
+```
+
+Pushed as `b0f4ed7413`; new Packaging lint `45531670739` and CI `45531670633` started on that head.
+The previous run (`45530068097`) was cancelled so its doomed runner time was not wasted.
