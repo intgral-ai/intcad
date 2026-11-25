@@ -3237,3 +3237,41 @@ executed only with evidence:
 **Gate B runs in parallel** with whatever post-merge gate is needed: once #237 is on `main`,
 `Staging desktop packages (nonpublishing)` becomes dispatchable and its three-platform build starts
 immediately, not after the production gate finishes.
+
+## 27. Owner approved the reuse path; the identity is measured on the live gate
+
+Evidence from run `45545336763` (the required `release-gate` on #237, still building packages):
+
+```
+artifact name   kernel-rig-plan-05b5c0df78a47c98e09456ace5f0ba19971b8398
+plan.json       scope=full  releaseRequired=true
+                sourceRevision = 05b5c0df78a47c98e09456ace5f0ba19971b8398
+pulls/237       merge_commit_sha = 05b5c0df78a47c98e09456ace5f0ba19971b8398
+                base = 9219342da2 (main, frozen)
+                head = 5a7b5ac0a0 (release/v0.1.3)
+```
+
+So the formal run is testing **exactly the commit GitHub will create on a merge commit**, with `main`
+frozen. Owner approved executing on this: merge #237 with a merge commit, assert `main`'s new tip is
+that SHA, tag it, and let the publisher consume this `mode=candidate` handoff. That is a formal run
+on the real `main` commit, not a shortcut: every publisher check still applies (tag on main,
+producer trees, exact run/attempt, 14 pairs, signing approval). If the assertion fails after the
+merge, the tag-push gate from §13 runs instead.
+
+**Prepared for the moment the gate turns green:**
+
+- `/tmp/opencode/accept-14.sh <run> <sha> <dir>` — downloads all pairs, asserts 14 `build.json`
+  files whose `sourceRevision` is the gate SHA, then extracts the packaged binaries (Linux tar and
+  deb, Windows MSI, macOS dmg and CLI zip) and verifies the production tuple
+  `89abe5c9…f41bb` in each; anything unextractable is reported NOT VERIFIED.
+- Gate B dispatch: `gh workflow run staging-packages.yml --repo intgral-ai/intcad --ref main`
+  (three platforms, staging tuple) — starts in parallel with the remaining post-merge work.
+- Owner action after acceptance: set `RELEASE_AGENT_LEGAL_APPROVED` and
+  `RELEASE_AGENT_INSTALLED_APPROVED` to
+  `05b5c0df78a47c98e09456ace5f0ba19971b8398:45545336763:1`, then the publisher dispatch below.
+
+```
+gh workflow run publish-release.yml --repo intgral-ai/intcad --ref main \
+  -f tag=v0.1.3 -f source_sha=05b5c0df78a47c98e09456ace5f0ba19971b8398 \
+  -f run_id=45545336763 -f run_attempt=1 -f notes_file=docs/release-notes-0.1.3.md
+```
