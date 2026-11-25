@@ -3104,3 +3104,35 @@ so every local result measured on the candidate — `fmt`, the nine `xtask` repo
 five contract/gate suites, `cargo check` and `clippy` — applies verbatim to #240. The
 `installed-check-inside.sh` agent block (14 lines) and the single `CheckBuiltInAgent` definition and
 call were re-verified on the pushed head.
+
+**#240's `lint` failure was a test fixture gap, fixed in one commit (`7c43a99b01`).** The packaging
+lint installs PyYAML, so it runs the 11 workflow-wiring tests my local runs had been skipping
+(`skipped=11` was a local artefact, not a clean result — worth remembering). With PyYAML present the
+failure reproduced exactly:
+
+```
+test_staging_evidence_hashes_the_package_and_revalidates_the_same_snapshot
+  step stderr: ModuleNotFoundError: No module named 'release_content'
+  → then: package contents do not match the distribution: an artifact not inspected
+```
+
+Two causes, both in the test, not in product code:
+
+1. the fixture copied only `staging_account_config.py` and `package_contents.py` into its temporary
+   `scripts/ci`, while the merged package-evidence step now also imports `release_content`
+   (#239's agent verdict);
+2. the fixture's artifact was `b"abc"`, which cannot be inspected, so the step's own content verdict
+   refused it. It now writes a real, minimal `tar.gz` (fixed bytes, deterministic digest
+   `f9e928f2…f8e7`) and `expected` carries that digest.
+
+Verified with the PyYAML interpreter and `-I`, i.e. the way lint runs it:
+
+```
+scripts/ci/test_release_content.py   Ran 50 tests  OK      (no skips)
+scripts/ci/test_gate.py              OK
+scripts/ci/test_release_candidate.py OK
+packaging/tests/{nightly,apprun,flatpak,web_channels}_test.py  OK
+```
+
+Pushed as `7c43a99b01`; Packaging lint run `45530068223` and CI run `45530068097` restarted on that
+head (the earlier run was only minutes old, so nothing meaningful was lost).
