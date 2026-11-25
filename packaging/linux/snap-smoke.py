@@ -198,8 +198,7 @@ def run_backend(backend, out):
                                env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             renderer, stats = drive(app, PORTS[backend], work / "frame.png")
-            # app.quit exits cleanly, so the next run doesn't report a crash.
-            app.wait(timeout=30)
+            # The controlled quit is refused while signed out; the finally block stops the app.
         finally:
             if app.poll() is None:
                 os.killpg(app.pid, signal.SIGTERM)
@@ -210,7 +209,7 @@ def run_backend(backend, out):
                 app.wait()
         shutil.copy(work / "frame.png", out / f"snap-{backend}.png")
         print(f"snap {backend}: PASS renderer={renderer}, controlled entries refused (signed out), "
-              f"Assistant page loaded, frame={stats}")
+              f"Assistant web runtime reported, page NOT VERIFIED offline, frame={stats}")
     except BaseException:
         log.flush()
         sys.stderr.write((work / "app.log").read_text(errors="replace")[-8000:])
