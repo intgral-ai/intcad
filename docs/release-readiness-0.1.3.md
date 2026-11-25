@@ -3159,3 +3159,17 @@ scripts/test-format-pending.sh       ok: … fold into v52
 
 So `finalize.sh` will replay a sequence already executed against the same tree once #240's squash
 lands; only the base commit differs.
+
+**Independent verification by the Migration Agent, and one correction to its sequencing note.** The
+agent checked #240's head (`7c43a99b01`) read-only: #239's commit is an ancestor, every tag-gate
+invariant is present exactly once, `release_candidate.context()` returns `release-gate` for a push,
+the packages job is gated by `verify == 'true'`, and all Python suites pass (test_gate 74,
+test_package_contents 29, test_release_content 50, test_release_candidate 14, publish_verify 32,
+nightly 46; actionlint clean; the PowerShell-only test NOT RUN locally).
+
+Its reminder that staging needs `RELEASE_AGENT_*` is not accurate: those variables are read only by
+`publish-release.yml:79-80` (documented at `docs/releasing.md:334`), and their required value is
+`<tag commit SHA>:<tag-gate run>:<attempt>`, which cannot exist before the tag gate. The correct
+order is tag gate → per-package account checks and Gate B → owner sets both variables → dispatch.
+Their other half is right and is treated as a pre-dispatch check: if the values are missing or
+mismatched at dispatch, the publisher fails closed and cannot be repaired afterwards.
