@@ -2,6 +2,7 @@
 """Tests for the native-package content decision (#14/#15 applicability)."""
 
 import base64
+import hashlib
 import itertools
 import json
 import os
@@ -81,15 +82,17 @@ class WindowsAssistantSmokeWorkflow(unittest.TestCase):
 class UniversalAccountReadback(unittest.TestCase):
     X86 = 0x01000007
     ARM = 0x0100000C
+    MARKER = b"INTCAD_ACCOUNT_CONFIG_V1\0"
 
-    def check_binary(self, arches, *, bad_offset=False, competing=False, fat64=False, staging=None):
+    def check_binary(self, arches, *, bad_offset=False, competing=False, fat64=False, staging=None, tail=b"\x1e"):
         entry = struct.Struct(">IIQQII" if fat64 else ">IIIII")
         header = bytearray(struct.pack(">II", 0xCAFEBABF if fat64 else 0xCAFEBABE, len(arches)))
         offset = len(header) + len(arches) * entry.size
         payload = bytearray()
         for cpu, values in arches:
             thin = struct.pack("<IIIIIIII", 0xFEEDFACF, cpu, 0, 2, 0, 0, 0, 0)
-            thin += b"\0".join(value.encode() for value in values.values())
+            if values is not None:
+                thin += self.MARKER + b"".join(values[key].encode() + b"\0" for key in CONFIG) + tail
             start = offset + len(payload) + (1_000_000 if bad_offset else 0)
             fields = (cpu, 0, start, len(thin), 0)
             header.extend(entry.pack(*(fields + (0,) if fat64 else fields)))
@@ -112,15 +115,26 @@ class UniversalAccountReadback(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("x86_64", result.stdout)
             self.assertIn("arm64", result.stdout)
-        wrong = {**CONFIG, CLIENT: "client_Wrong123"}
-        for arches, absent in (([(self.X86, wrong), (self.ARM, CONFIG)], "x86_64"),
-                               ([(self.X86, CONFIG), (self.ARM, wrong)], "arm64")):
-            with self.subTest(absent=absent):
-                result = self.check_binary(arches)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(f"{absent}: {CLIENT}", result.stderr)
-                for value in (*CONFIG.values(), wrong[CLIENT]):
-                    self.assertNotIn(value, result.stdout + result.stderr)
+        for key in CONFIG:
+            wrong = {**CONFIG, key: CONFIG[key] + "Extra"}
+            for arches, absent in (([(self.X86, wrong), (self.ARM, CONFIG)], "x86_64"),
+                                   ([(self.X86, CONFIG), (self.ARM, wrong)], "arm64")):
+                with self.subTest(field=key, absent=absent):
+                    result = self.check_binary(arches)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"{absent}: {key}", result.stderr)
+                    for value in (*CONFIG.values(), wrong[key]):
+                        self.assertNotIn(value, result.stdout + result.stderr)
+
+    def test_anonymous_slice_does_not_get_credit_for_another_slice(self):
+        result = self.check_binary([(self.X86, CONFIG), (self.ARM, None)])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("arm64: missing account record", result.stderr)
+
+    def test_record_must_end_immediately_after_the_third_field(self):
+        result = self.check_binary([(self.X86, CONFIG), (self.ARM, CONFIG)], tail=b"extra\0\x1e")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid account record terminator", result.stderr)
 
     def test_missing_duplicate_or_truncated_slices_do_not_pass(self):
         for arches, malformed in (([(self.X86, CONFIG)], False),
@@ -469,7 +483,8 @@ class StagingWorkflow(unittest.TestCase):
                     recorded = github_env.read_text()
                     if expected:
                         self.assertIn(f"ACCOUNT_CONFIG_SOURCE={expected}\n", recorded)
-                        self.assertRegex(recorded, r"ACCOUNT_CONFIG_SHA256=[a-f0-9]{64}\n")
+                        digest = hashlib.sha256(json.dumps(CONFIG, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                        self.assertIn(f"ACCOUNT_CONFIG_SHA256={digest}\n", recorded)
                         for value in CONFIG.values():
                             self.assertNotIn(value, recorded)
                     else:
