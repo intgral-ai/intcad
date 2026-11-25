@@ -789,10 +789,30 @@ class ForkWorkflowContract(unittest.TestCase):
         # Runner-image amd64 elfutils can be at a different security revision from
         # Ubuntu Ports. Keep the dpkg transaction in its own pinned build environment.
         self.assertRegex(job, r"(?m)^    container: ubuntu:24\.04@sha256:[a-f0-9]{64}$")
-        self.assertIn("python3:amd64", job)
+        self.assertLess(job.index("python3:amd64"), job.index("dpkg --add-architecture riscv64"))
         self.assertIn("libwebkit2gtk-4.1-dev:riscv64", job)
         self.assertIn("cargo check --all-targets --locked --target riscv64gc-unknown-linux-gnu", job)
         self.assertNotIn("continue-on-error", job)
+
+    def test_riscv_does_not_install_after_partial_index_refresh(self):
+        body = self.job("riscv64-gates").split("          update_apt() {", 1)[1]
+        install = body.split("      - uses:", 1)[0]
+        command = "update_apt() {" + install
+        # A partial refresh only exits nonzero in strict mode. Simulate it
+        # without running APT or changing any system packages.
+        fixture = """
+sleep() { :; }
+timeout() { shift; "$@"; }
+apt-get() {
+    if [[ $1 == install ]]; then echo 'started install'; return 42; fi
+    echo 'attempted refresh'
+    [[ " $* " != *" APT::Update::Error-Mode=any "* ]]
+}
+"""
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fixture + command],
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.stdout.splitlines(), ["attempted refresh"] * 3)
+        self.assertEqual(result.returncode, 1)
 
 
 class NativeBaselineWorkflow(unittest.TestCase):
