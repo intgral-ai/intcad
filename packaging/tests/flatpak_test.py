@@ -209,6 +209,16 @@ class DesktopProbe(unittest.TestCase):
         with self.assertRaises(ValueError):
             SMOKE.validate_offline(output(no_details))
 
+    def test_native_wayland_reports_its_diagnostic_and_no_page(self):
+        replies = [
+            {"id": 4, "ok": False, "error": "the host has no commit authority for this controlled entry",
+             "errorDetails": {"code": "AuthUnavailable", "retry": "never"}},
+            {"id": 5, "ok": True, "result": {"assistant": {"open": False, "surface_ready": False,
+                                                           "host": "native_wayland", "centred": False}}},
+        ]
+        self.assertEqual(SMOKE.validate_signed_out_assistant(replies),
+                         "native-Wayland diagnostic; page NOT VERIFIED offline")
+
     def test_cli_version_or_partial_control_output_is_not_desktop_success(self):
         with self.assertRaises(ValueError):
             SMOKE.validate_offline("intcad-cli 0.3.0\n")

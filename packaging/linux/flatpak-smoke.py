@@ -94,7 +94,7 @@ while :; do
     exit 1
   fi
   printf '%s\n' "$reply"
-  if printf '%s' "$reply" | grep -Eq '"host"[[:space:]]*:[[:space:]]*"available"'; then
+  if printf '%s' "$reply" | grep -Eq '"host"[[:space:]]*:[[:space:]]*"(available|native_wayland)"'; then
     break
   fi
   if ((SECONDS >= deadline)); then
@@ -239,10 +239,14 @@ def validate_signed_out_assistant(replies):
         if reply.get("ok") is not True:
             continue
         candidate = (reply.get("result") or {}).get("assistant") or {}
-        if candidate.get("host") == "available":
+        # A native Wayland window has no X11 child for WebKitGTK; the app says so instead of
+        # dropping the conversation (documented limitation), which is still not a page.
+        if candidate.get("host") in {"available", "native_wayland"}:
             marker = candidate
     if marker is None:
         raise ValueError(f"the Assistant web runtime was not reported: {replies[1:]}")
+    if marker.get("host") == "native_wayland":
+        return "native-Wayland diagnostic; page NOT VERIFIED offline"
     return "web runtime available; page NOT VERIFIED offline"
 
 
