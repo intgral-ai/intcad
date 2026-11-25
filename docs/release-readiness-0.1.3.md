@@ -3534,3 +3534,30 @@ release-integrity control the owner previously required to stay disabled, so it 
 Sequence therefore stays: PR gate on `0c8b3fe9a3` (run `45565928939`) → merge commit → `v0.1.3` on
 the real tip → tag gate. Only the advisory UI check and the narrowed guard changed the cost of a
 gate, not the requirement to run one.
+
+## 33. Promoted, tagged and dispatched (2026-11-25 07:14Z)
+
+The main ruleset gained an admin bypass actor (`RepositoryRole` 5, `always`), so the owner-approved
+skip became possible and the promotion ran:
+
+```
+release/v0.1.3  0c8b3fe9a3
+main            15b4436c54   Merge pull request #237 from intgral-ai/release/v0.1.3
+                             parents 9219342da2 0c8b3fe9a3
+v0.1.3          15b4436c54   new tag on the remote
+tag gate        45566522104   event=push, branch v0.1.3   (formal evidence; mode=tag handoff)
+Gate B          45566522319   event=workflow_dispatch, branch main
+```
+
+The merged tree was asserted before tagging: `staging-packages.yml`, `publish-release.yml`, the
+`tags: ["v*"]` trigger and the advisory installed-app step are all present at `15b4436c54`.
+
+The production account configuration the tag gate embeds comes from the repository variable
+`INTCAD_PRODUCTION_ACCOUNT_CONFIG` (`updated_at 2026-11-24T17:36:27Z`). Parsed with the repository's
+own `parse_snapshot`/`tuple_sha256`, it yields
+`89abe5c94fb1fbaa608e0763224f4c9e241fee7087c3bd6ee4da96c3a75f41bb`, which matches the tuple the
+acceptance run expects, so the tagged build and the acceptance check agree on what is embedded.
+
+Publication still requires: tag gate green (it produces the only consumable `mode=tag` handoff),
+14 pairs accepted at `15b4436c54`, Gate B recorded, and the owner's `RELEASE_AGENT_*` values
+(`<tag SHA>:<tag run>:<attempt>`).
