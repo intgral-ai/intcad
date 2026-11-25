@@ -1,7 +1,7 @@
 """Prove a built binary embeds the reviewed public account tuple.
 
-Check for each exact value in the executable, separately in both supported Mach-O slices
-for a universal macOS app. Print only the tuple digest, architecture and field names.
+Check a bound account record in both universal Mach-O slices, or search for the values
+in other executables. Print only the tuple digest, architecture and field names.
 """
 
 import argparse
@@ -15,6 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from staging_account_config import KEYS, PRODUCTION_SNAPSHOT_ENV, SNAPSHOT_ENV, parse_snapshot, tuple_sha256, verify_snapshot
+
+MACOS_ACCOUNT_RECORD = b"INTCAD_ACCOUNT_CONFIG_V1\0"
 
 
 def macho_slices(binary: mmap.mmap) -> dict[str, tuple[int, int]]:
@@ -43,6 +45,23 @@ def macho_slices(binary: mmap.mmap) -> dict[str, tuple[int, int]]:
     return slices
 
 
+def verify_macos_record(binary: mmap.mmap, start: int, end: int, arch: str, values: dict[str, str]) -> None:
+    marker = binary.find(MACOS_ACCOUNT_RECORD, start, end)
+    if marker < 0:
+        raise ValueError(f"{arch}: missing account record")
+    pos = marker + len(MACOS_ACCOUNT_RECORD)
+    if binary.find(MACOS_ACCOUNT_RECORD, pos, end) >= 0:
+        raise ValueError(f"{arch}: more than one account record")
+    for key in KEYS:
+        field = values[key].encode() + b"\0"
+        limit = pos + len(field)
+        if limit > end or binary[pos:limit] != field:
+            raise ValueError(f"{arch}: {key} does not match the account record")
+        pos = limit
+    if pos >= end or binary[pos] != 0x1E:
+        raise ValueError(f"{arch}: invalid account record terminator")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -61,18 +80,17 @@ def main() -> None:
         values = (verify_snapshot(snapshot, os.environ.get("GITHUB_SHA", ""))
                   if args.macho_universal and env_name == SNAPSHOT_ENV else parse_snapshot(snapshot, env_name))
         with args.binary.open("rb") as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as binary:
-            slices = macho_slices(binary) if args.macho_universal else {"": (0, len(binary))}
-            missing = [
-                f"{arch}: {key}" if arch else key
-                for arch, (start, end) in slices.items() for key in KEYS
-                if binary.find(values[key].encode(), start, end) < 0
-            ]
+            if args.macho_universal:
+                slices = macho_slices(binary)
+                for arch, (start, end) in slices.items():
+                    verify_macos_record(binary, start, end, arch, values)
+            else:
+                missing = [key for key in KEYS if binary.find(values[key].encode()) < 0]
+                if missing:
+                    raise ValueError(f"{args.binary} does not embed the configured account: missing {', '.join(missing)}")
             size = len(binary)
     except (OSError, ValueError) as error:
         raise SystemExit(str(error)) from None
-
-    if missing:
-        raise SystemExit(f"{args.binary} does not embed the configured account: missing {', '.join(missing)}")
 
     digest = tuple_sha256(values)
     if args.expect_tuple_sha256 and args.expect_tuple_sha256 != digest:
