@@ -3326,3 +3326,15 @@ handoff. It also noted that `docs/releasing.md:313-324` still says a PR handoff 
 publisher, which contradicts the code now that a merge commit can be on `main`; that is a
 **docs-only** correction with no gate impact, and it will be filed after publication so `main` is not
 touched before dispatch.
+
+**The replaced PRs are closed with pointers, as the owner required.** #224, #227, #233, #235, #234 and
+#239 were closed after #240 merged (`df937c12a2`), each with a comment naming #240 and the squash
+commit, so their reviews and test records stay readable. #214, #236 and #238 were merged normally.
+Open release work is now only #237 (the promotion PR).
+
+**CTO decision received: the closed-source migration is paused.** No `intcad-client`/platform repo is
+created, no source or active PR moves, the repository is not frozen, CI is untouched and no AWS runner
+is deployed. The Migration Agent will run a read-only post-release verification of the published
+release (asset set, aliases, both checksum lists, Minisign signature and trusted comment, anonymous
+download) and will hand a `main → develop` reconciliation and the `docs/releasing.md` correction
+after publication. The Release Manager keeps tag, publisher dispatch and signing approval.
