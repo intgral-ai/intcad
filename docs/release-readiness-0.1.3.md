@@ -3338,3 +3338,38 @@ is deployed. The Migration Agent will run a read-only post-release verification 
 release (asset set, aliases, both checksum lists, Minisign signature and trusted comment, anonymous
 download) and will hand a `main → develop` reconciliation and the `docs/releasing.md` correction
 after publication. The Release Manager keeps tag, publisher dispatch and signing approval.
+
+## 28. The gate caught a real wiring bug: the package check never received the account snapshot
+
+Run `45545336763` failed on `packages / Linux aarch64` after every package had been built. The exact
+line was buried at the end of the step:
+
+```
+2026-11-25T04:39:49.7256833Z invalid JSON in STAGING_ACCOUNT_CONFIG
+2026-11-25T04:39:49.7310424Z ##[error]Process completed with exit code 1.
+```
+
+Cause: the `Check the packages (no desktop launch)` step runs
+`python -I scripts/ci/verify_embedded_account.py target/release/intcad`, and that script reads
+`PRODUCTION_ACCOUNT_CONFIG` (or `STAGING_ACCOUNT_CONFIG`). The inject step only writes the three
+values plus `ACCOUNT_CONFIG_SOURCE`/`ACCOUNT_CONFIG_SHA256` to `GITHUB_ENV`, so the verifier fell
+back to an empty staging snapshot and refused. Reproduced locally with only the injected variables:
+
+```
+env -u PRODUCTION_ACCOUNT_CONFIG -u STAGING_ACCOUNT_CONFIG INTCAD_…=… python3 -I verify_embedded_account.py bin
+→ invalid JSON in STAGING_ACCOUNT_CONFIG   (rc=1)
+```
+
+**Fix (one step, both inputs)** on the promotion branch `167f81b75e`:
+
+```yaml
+      - name: Check the packages (no desktop launch)
+        env:
+          PRODUCTION_ACCOUNT_CONFIG: ${{ inputs.production_account_config }}
+          STAGING_ACCOUNT_CONFIG: ${{ inputs.staging_account_config }}
+```
+
+This is also what makes Gate B work: the staging call injects the staging tuple and the check step now
+receives it. The old gate run was cancelled; #237 was marked draft and ready again so the gate runs on
+the fixed head (`45549791786`). `develop` still carries the unfixed step; the fix reaches it through
+the planned `main → develop` reconciliation (or a follow-up PR if that is dropped).
