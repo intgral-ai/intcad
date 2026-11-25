@@ -22,9 +22,12 @@ mod acp_client;
 pub mod agents;
 #[cfg(not(target_arch = "wasm32"))]
 mod api_client;
+pub mod ask_here;
 pub mod attach;
 pub mod backend;
+pub mod connections;
 pub mod context;
+pub(crate) mod dfm_runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod discover;
 pub mod gate;
@@ -45,6 +48,8 @@ mod panel;
 pub mod paste;
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
+pub mod read_file;
+pub mod review;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod runtime_client;
 pub mod settings;
@@ -66,13 +71,18 @@ use crate::i18n::{format as trf, tr};
 use crate::{ControlRequest, SolveApp};
 use backend::{ChatBackend, Event, PermissionOption, PromptPart, ToolStatus};
 
-pub(crate) use panel::{left_inset, owns_keyboard_input, tool_space};
+pub(crate) use panel::{centre_preferred, centred, left_inset, owns_keyboard_input, tool_space};
 pub use panel::{show, tip as panel_tip, toggle, toggle_shortcut};
 
 /// Most entries kept in the conversation; older ones are dropped.
 const MAX_ITEMS: usize = 2000;
+/// Longest message the page may send, in characters; a selected command name also fits it.
+/// Defined here, not in `web`, because the ACP parser is compiled for wasm too.
+pub(crate) const MAX_MESSAGE: usize = 100_000;
+/// Longest page action, in bytes: the web view's IPC payload bound.
+pub(crate) const MAX_MESSAGE_BYTES: usize = MAX_MESSAGE * 4;
 /// Longest message sent.
-const MAX_PROMPT: usize = 100_000;
+const MAX_PROMPT: usize = MAX_MESSAGE;
 /// Room kept in a message for the files' names and the words around their text.
 const FILE_NAMES_ROOM: usize = 2_000;
 /// How long a request waits for Allow or Deny before it is declined (the agent's MCP server gives
@@ -84,6 +94,10 @@ const VIEW_IMAGE: (u32, u32) = (960, 600);
 const MAX_PICTURE_BYTES: usize = 4 << 20;
 /// A tool call's arguments kept for its card, at most this big (as JSON text).
 const MAX_TOOL_INPUT: usize = 64 << 10;
+/// How many pictures handed back by tool calls are kept, the newest ones.
+const MAX_TOOL_PICTURES: usize = 16;
+/// How many files read by tool calls keep a card, the newest ones.
+const MAX_TOOL_FILES: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -228,6 +242,15 @@ impl std::fmt::Debug for Picture {
     }
 }
 
+/// A text file open in the panel: its name, the start of its text, and whether that is drawn as
+/// Markdown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilePreview {
+    pub name: String,
+    pub text: String,
+    pub markdown: bool,
+}
+
 /// The viewer: the pictures of one message, and the one shown.
 #[derive(Clone, Debug)]
 pub struct Gallery {
@@ -303,10 +326,23 @@ pub enum Item {
         text: String,
         error: bool,
     },
+    /// A turn the built-in agent's connection refused: why, whose connection and its name. The
+    /// sentence is [`connections::TurnKind::words`], and the page offers the way out by the kind.
+    Problem {
+        kind: connections::TurnKind,
+        prefix: String,
+        name: String,
+    },
+    /// A turn whose changes ran on a copy of the design: what it would do, Accept and Reject
+    /// ([`review`]).
+    Review(review::Card),
 }
 
 /// The message being answered: what undo and the limits need.
 struct Turn {
+    /// This conversation's identity for the message; an accepted preview refers to it after the
+    /// reply has ended.
+    id: u64,
     /// Deferred requests stop being valid when this turn ends or its tab is left.
     active: Arc<std::sync::atomic::AtomicBool>,
     /// The design and the undo depth before it.
@@ -390,6 +426,19 @@ pub struct AgentChat {
     pub input: String,
     /// The viewer, open on one message's pictures.
     gallery: Option<Gallery>,
+    /// The pictures tool calls handed back (files the agent read), by the call's id, oldest
+    /// first. Only the newest [`MAX_TOOL_PICTURES`] are kept: an older call keeps its line.
+    tool_pictures: Vec<(String, Picture)>,
+    /// The folder the agent was started in: its own files are those inside it.
+    work_dir: Option<std::path::PathBuf>,
+    /// The project folder the built-in agent's next session is handed ([`handed_project`]), with
+    /// the shown design's path and the Files panel's folder it was worked out from.
+    project: Option<(Option<String>, Option<std::path::PathBuf>, Option<std::path::PathBuf>)>,
+    /// The files tool calls read that get a card ([`read_file`]), by the call's id, oldest first;
+    /// the newest [`MAX_TOOL_FILES`] are kept.
+    tool_files: Vec<(String, std::path::PathBuf, read_file::Act)>,
+    /// A text file open in the panel, from one of those cards.
+    file_preview: Option<FilePreview>,
     state: Option<State>,
     agent: String,
     images: bool,
@@ -405,6 +454,8 @@ pub struct AgentChat {
     pub(crate) task: Option<task_runtime::Runtime>,
     /// Send a picture of the view with the next message.
     pub attach_view: bool,
+    /// Ask Here: the box beside a pick in the model ([`ask_here`]).
+    pub ask_box: ask_here::AskBox,
     /// How many things the current selection is by clicks, kept while the selection and the design
     /// stay as they are: (the selection, the design's address, the count).
     selected_count: Option<(Vec<solidcraft_engine::Sel>, usize, usize)>,
@@ -458,6 +509,23 @@ pub struct AgentChat {
     /// Files are being dragged over the host's web view ([`web::dragging`]).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_drag: bool,
+    /// The height the page asked for at the bottom centre of the window, in points ([`web::act`],
+    /// `size`), and while it is shown there, the most it may take (`panel::centre`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_height: Option<f32>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_centre: Option<f32>,
+    /// The host keeps its view at the bottom centre as tall as `web_centre` and shows and takes
+    /// presses in only its foot, `web_reveal` tall ([`web::set_clips`], macOS): the view never
+    /// changes size as the page grows, so no frame shows the page's old picture at its new top.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_clips: bool,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_reveal: Option<f32>,
+    /// Primary presses in the app's window, outside the page, while it is shown at the bottom
+    /// centre (`panel::centre`): the page collapses its conversation when the count goes up.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_presses: u64,
     /// A pointer press in the transcript owns keys just like a focused text editor.
     keyboard_owned: bool,
     /// Unreserved sheet space, shared by the actual dock and its drag preview.
@@ -497,6 +565,10 @@ pub struct AgentChat {
     pub connection_auth: Option<bool>,
     /// The running backend hands turns to a Mastra workflow, so [`Event::Ready`] is not a sign-in.
     mastra: bool,
+    /// The built-in agent's connections, while it is the running agent ([`connections`]).
+    pub(crate) conn: connections::Conn,
+    /// The popped-out chat window was given its saved place (it is open); see `panel::window_builder`.
+    pub(crate) window_placed: bool,
     /// The agent's own modes, and the current one.
     modes: Vec<(String, String)>,
     mode: String,
@@ -514,12 +586,25 @@ pub struct AgentChat {
     typed_model: Option<String>,
     pub config_options: Option<Vec<acp::ConfigOption>>,
     pub config_pending: bool,
+    /// A listed choice (a model) picked while the agent replies or while another change is on its
+    /// way: shown as chosen at once and sent once the agent is free ([`send_held_config`]), so it
+    /// serves the next message. An agent takes it only after the reply anyway (Mastra Code queues
+    /// it behind the turn), and waiting on it held the picker busy for the whole reply.
+    config_next: Option<(String, String)>,
+    /// The slash commands the agent advertised for its open session ([`Event::Commands`]).
+    pub commands: Vec<acp::AvailableCommand>,
+    /// The session the running agent has open, as the backend named it (`None`: none, or retired).
+    session: Option<String>,
     /// An API endpoint's models, kept per endpoint (its base URL) for the next connection.
     models_cache: std::collections::HashMap<String, Vec<acp::ModelInfo>>,
     /// The running API agent's endpoint (empty for other agents).
     running_endpoint: String,
     backend: Option<Box<dyn ChatBackend>>,
     turn: Option<Turn>,
+    /// The next message's identity, for the automatic DFM check's commit keys.
+    next_turn: u64,
+    /// Automatic DFM checks: the host seam and the round de-duplication (PIL-305).
+    pub(crate) dfm: dfm_runtime::HostDfm,
     /// The design as the agent last saw it: at the end of its last turn that it answered or worked
     /// in. The next message tells it when the design is no longer that one (#10854).
     seen: Option<Arc<solidcraft_engine::doc::Document>>,
@@ -528,10 +613,18 @@ pub struct AgentChat {
     turn_warning: Option<String>,
     held: Vec<Held>,
     next_approval: u64,
+    /// The turn's copy of the design, while its changes are previewed ([`review`]).
+    pub(crate) preview: Option<review::Preview>,
+    /// The last preview's id.
+    next_preview: u64,
+    /// What became of the last previewed changes, for the agent's next message.
+    review_note: Option<String>,
     /// The chat's control endpoint: the port, and its requests.
     pub tools_port: Option<u16>,
     tools_rx: Option<Receiver<ControlRequest>>,
     tools_tx: Option<Sender<ControlRequest>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) bridge_admission: Option<Receiver<ControlRequest>>,
     /// Settings → AI: the Add agent dialog and connection tests.
     pub settings: settings::State,
     /// Latest authentication evidence from a connection test or a chat, per agent; never saved.
@@ -588,6 +681,7 @@ impl AgentChat {
         std::mem::swap(&mut self.settings, &mut other.settings);
         std::mem::swap(&mut self.control_starter, &mut other.control_starter);
         std::mem::swap(&mut self.models_cache, &mut other.models_cache);
+        std::mem::swap(&mut self.window_placed, &mut other.window_placed);
         std::mem::swap(&mut self.connect_at_start, &mut other.connect_at_start);
         // A sign-in proven in one tab holds for that agent in every tab (#9293).
         std::mem::swap(&mut self.login_results, &mut other.login_results);
@@ -597,8 +691,14 @@ impl AgentChat {
             std::mem::swap(&mut self.detecting, &mut other.detecting);
             // The web view is the window's, whichever design its conversation is about.
             std::mem::swap(&mut self.web_host, &mut other.web_host);
+            std::mem::swap(&mut self.web_problem, &mut other.web_problem);
             std::mem::swap(&mut self.web_canvas, &mut other.web_canvas);
             std::mem::swap(&mut self.web_drag, &mut other.web_drag);
+            std::mem::swap(&mut self.web_height, &mut other.web_height);
+            std::mem::swap(&mut self.web_centre, &mut other.web_centre);
+            std::mem::swap(&mut self.web_clips, &mut other.web_clips);
+            std::mem::swap(&mut self.web_reveal, &mut other.web_reveal);
+            std::mem::swap(&mut self.web_presses, &mut other.web_presses);
         }
         // Hit regions must be measured again for the incoming conversation.
         self.panel_rect = None;
@@ -615,12 +715,18 @@ impl AgentChat {
         self.runtime_version = None;
         self.connection_auth = None;
         self.mastra = false;
+        // The next agent says what is connected itself; nothing of this one's word is kept.
+        self.conn = connections::Conn::default();
         if self.state.is_some() {
             self.state = Some(State::Off);
         }
     }
 
     fn clear_config(&mut self) {
+        // The commands belong to the session that advertised them, so a new or reset chat
+        // starts with none until its agent says.
+        self.commands.clear();
+        self.session = None;
         if self.config_options.take().is_some() {
             self.models.clear();
             self.model.clear();
@@ -630,9 +736,16 @@ impl AgentChat {
         }
         self.config_pending = false;
         self.typed_model = None;
+        self.config_next = None;
     }
 
-    fn apply_config_snapshot(&mut self, options: Vec<acp::ConfigOption>) {
+    fn apply_config_snapshot(&mut self, mut options: Vec<acp::ConfigOption>) {
+        // A choice still to be sent stays the one shown.
+        if let Some((id, value)) = &self.config_next
+            && let Some(option) = options.iter_mut().find(|option| option.id == *id)
+        {
+            option.current_value = value.clone();
+        }
         self.config_options = Some(options.clone());
         let model = options.iter().find(|o| o.category == "model");
         self.models = model
@@ -720,6 +833,30 @@ impl AgentChat {
         {
             pictures.push(Picture::shared(Arc::new(png), "", true));
         }
+    }
+    /// A read that has finished keeps a card for its file, when that is one of the agent's own
+    /// files that has one ([`read_file`]). A call that handed a picture back has that card instead.
+    fn keep_read_file(&mut self, id: &str) {
+        let file = self.items.iter().rev().find_map(|item| match item {
+            Item::Tool { id: shown, kind, status, input, .. } if shown == id => {
+                Some(read_file::named(kind, *status == Some(ToolStatus::Completed), input.as_ref()).map(str::to_string))
+            }
+            _ => None,
+        });
+        let Some(Some(path)) = file else { return };
+        let Some((file, act)) = self.work_dir.as_deref().and_then(|work| read_file::resolve(work, &path)) else { return };
+        self.tool_files.retain(|(shown, ..)| shown != id);
+        self.tool_files.push((id.to_string(), file, act));
+        let over = self.tool_files.len().saturating_sub(MAX_TOOL_FILES);
+        self.tool_files.drain(..over);
+    }
+    /// The file a tool call read that has a card, and what a click on it does. A call with a
+    /// picture has none: the picture is its card.
+    pub(crate) fn read_file_of(&self, id: &str) -> Option<(&std::path::Path, read_file::Act)> {
+        if self.tool_pictures.iter().any(|(call, _)| call == id) {
+            return None;
+        }
+        self.tool_files.iter().find(|(call, ..)| call == id).map(|(_, file, act)| (file.as_path(), *act))
     }
     /// Say that the agent refused a model, and in its words why.
     fn model_refused(&mut self, model: &str, error: &str) {
@@ -853,6 +990,9 @@ impl AgentChat {
                 self.images = images;
                 self.state = Some(State::Ready);
                 self.picking = Some(false);
+                if self.conn.active {
+                    self.conn.session = connections::Session::Open;
+                }
                 // Keep the mode across a new chat.
                 if self.config_options.is_none()
                     && let Some(m) = self.restore_mode.take()
@@ -898,7 +1038,25 @@ impl AgentChat {
                         *o = output;
                     }
                 } else {
-                    self.push(Item::Tool { id, title: title.unwrap_or_default(), kind: kind.unwrap_or_default(), status, input, output });
+                    self.push(Item::Tool { id: id.clone(), title: title.unwrap_or_default(), kind: kind.unwrap_or_default(), status, input, output });
+                }
+                self.keep_read_file(&id);
+            }
+            Event::ToolPicture { id, bytes } => {
+                // Named as the first line of the call's result names the file: "<path> (<n> bytes, <type>)".
+                let line = self.items.iter().rev().find_map(|item| match item {
+                    Item::Tool { id: shown, output, .. } if *shown == id => {
+                        Some(output.as_deref().unwrap_or_default().lines().next().unwrap_or_default().to_string())
+                    }
+                    _ => None,
+                });
+                if let Some(line) = line.filter(|_| bytes.len() <= MAX_PICTURE_BYTES) {
+                    let path = line.rsplit_once(" (").map_or(line.as_str(), |(path, _)| path);
+                    let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_string();
+                    self.tool_pictures.retain(|(shown, _)| *shown != id);
+                    self.tool_pictures.push((id, Picture::new(bytes, name)));
+                    let over = self.tool_pictures.len().saturating_sub(MAX_TOOL_PICTURES);
+                    self.tool_pictures.drain(..over);
                 }
             }
             Event::Plan(entries) => {
@@ -963,6 +1121,16 @@ impl AgentChat {
             Event::ConfigOptions(options) => {
                 self.apply_config_snapshot(options);
             }
+            Event::Session(id) => {
+                // A new session's state starts empty; the old session's commands are not its.
+                self.commands.clear();
+                self.session = Some(id);
+            }
+            // A late update from a session retired in this same batch is not this chat's.
+            Event::Commands { session, commands } if self.session.as_deref() == Some(session.as_str()) => {
+                self.commands = commands;
+            }
+            Event::Commands { .. } => {}
             Event::ConfigOptionFinished { result, .. } => {
                 self.config_pending = false;
                 let typed = self.typed_model.take();
@@ -977,7 +1145,12 @@ impl AgentChat {
             }
             Event::AuthRequired { methods } => {
                 self.clear_config();
-                self.auth = methods;
+                // The built-in agent's sign-ins are its connections: its own methods are not offered.
+                self.auth = if self.conn.active { Vec::new() } else { methods };
+                if self.conn.active {
+                    self.conn.session = connections::Session::None;
+                    self.conn.refused = true;
+                }
                 self.state = Some(State::NeedsAuth);
                 self.picking = Some(false);
                 // What was asked goes again once the login is done.
@@ -986,6 +1159,32 @@ impl AgentChat {
                 }
             }
             Event::AuthStatus(s) => self.auth_status = Some(s),
+            Event::Connections(snapshot) => self.conn.take_in(snapshot),
+            Event::ConnectionsFailed { what, code } => {
+                // Without the first snapshot the agent cannot be used: starting has failed. Later
+                // refusals change nothing here (a second sign-in while one is under way, say).
+                if what == connections::What::Setup && self.conn.snapshot.is_none() {
+                    self.notice(trf("ui.agent_chat_failed_start", &[("error", &format!("{} ({code})", what.method()))]), true);
+                    self.state = Some(State::Failed);
+                } else {
+                    // The page waits for an answer to what it asked (a key dialog, the address
+                    // form): it is told that this did not work. Never in the agent's words.
+                    self.conn.error = Some(connections::REFUSED);
+                    log::debug!("the agent refused {} ({code})", what.method());
+                }
+            }
+            Event::TurnProblem(problem) => {
+                // The agent's `auth` is a plan's sign-in or a key: the connection says which.
+                let problem = problem.as_told(self.conn.snapshot.as_ref());
+                if problem.kind.sentence().is_some() {
+                    let name = match &self.conn.snapshot {
+                        Some(snapshot) => snapshot.name_of(&problem.prefix),
+                        None => connections::AGENT_NAME.to_string(),
+                    };
+                    self.conn.keep(&problem);
+                    self.push(Item::Problem { kind: problem.kind, prefix: problem.prefix, name });
+                }
+            }
             Event::TurnEnded { reason } => {
                 if self.state() == State::Busy {
                     self.state = Some(State::Ready);
@@ -1014,6 +1213,7 @@ impl AgentChat {
             }
             Event::Exited { tail } => {
                 self.clear_config();
+                self.conn = connections::Conn::default();
                 if self.mastra {
                     self.runtime = Some(RuntimeStatus::Stopped);
                 }
@@ -1035,6 +1235,30 @@ impl AgentChat {
         }
         None
     }
+}
+
+/// Bounded, read-only evidence for the desktop control channel.
+pub(crate) fn inspect(app: &SolveApp) -> Value {
+    #[cfg(not(target_arch = "wasm32"))]
+    let (host, surface_ready) = (
+        match app.agent_chat.web_problem {
+            Some(web::Problem::NativeWayland) => "native_wayland",
+            Some(web::Problem::Failed) => "failed",
+            None if app.agent_chat.web_host => "available",
+            None => "unavailable",
+        },
+        // A view can only say its surface colour once its page runs. The colour stays
+        // after the page is hidden, so a closed page still reports a proven surface;
+        // a missing runtime or a failed build never said one.
+        app.agent_chat.web_host && app.agent_chat.web_problem.is_none() && app.agent_chat.web_canvas.is_some(),
+    );
+    #[cfg(target_arch = "wasm32")]
+    let (host, surface_ready) = ("unavailable", false);
+    #[cfg(not(target_arch = "wasm32"))]
+    let centred = app.agent_chat.web_centre.is_some();
+    #[cfg(target_arch = "wasm32")]
+    let centred = false;
+    json!({"open": app.agent_chat.open, "surface_ready": surface_ready, "host": host, "centred": centred})
 }
 
 /// What an event asks of the app.
@@ -1064,6 +1288,19 @@ pub(crate) enum AssistantMark {
     NeedsAuth,
     Stopped,
     Waiting(usize),
+}
+
+impl From<AssistantMark> for crate::ui_kit::AssistantEntryState {
+    fn from(mark: AssistantMark) -> Self {
+        match mark {
+            AssistantMark::Quiet => Self::Quiet,
+            AssistantMark::Ready => Self::Ready,
+            AssistantMark::Busy => Self::Busy,
+            AssistantMark::NeedsAuth => Self::NeedsAuth,
+            AssistantMark::Stopped => Self::Stopped,
+            AssistantMark::Waiting(count) => Self::Waiting(count),
+        }
+    }
 }
 
 fn assistant_mark_for(state: State, login: &str, configured: bool, waiting: usize, stopped: bool, failed: bool) -> AssistantMark {
@@ -1138,6 +1375,36 @@ pub(crate) fn find_cli() -> Option<std::path::PathBuf> {
         .or_else(|| discover::find_in("intcad-cli", &discover::search_dirs()))
 }
 
+/// The project folder the built-in agent may work in (INT-1473): the Files panel's folder, when it
+/// is the project the shown design belongs to (the nearest folder at or above the design that
+/// holds `.intcad/project.toml`). A design in no project, a panel on another folder or on none,
+/// hands over nothing, and the agent works as it did before.
+pub(crate) fn handed_project(design: Option<&str>, files_root: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    let root = files_root?;
+    let project = solidcraft_engine::project::Project::locate(std::path::Path::new(design?))?;
+    let same = |a: &std::path::Path, b: &std::path::Path| match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    };
+    same(&project, root).then_some(project)
+}
+
+/// Keep the backend's project ([`ChatBackend::set_project`]) on what the window shows now. Worked
+/// out again only when the design or the Files panel's folder changes.
+fn follow_project(app: &mut SolveApp) {
+    let (design, files) = (app.session.path.clone(), app.file_tree.root().map(std::path::Path::to_path_buf));
+    let chat = &mut app.agent_chat;
+    let stale = chat.project.as_ref().is_none_or(|(d, f, _)| *d != design || *f != files);
+    if stale {
+        let root = handed_project(design.as_deref(), files.as_deref());
+        chat.project = Some((design, files, root));
+    }
+    let root = chat.project.as_ref().and_then(|(_, _, root)| root.clone());
+    if let Some(backend) = chat.backend.as_mut() {
+        backend.set_project(root.as_deref());
+    }
+}
+
 /// The agent's working folder: an empty folder of SolidCraft's own, so an agent's own file tools
 /// (where it has them) see nothing of the user's.
 fn working_dir() -> std::path::PathBuf {
@@ -1181,7 +1448,10 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         chat.picking = Some(true);
         return;
     };
-    let execution = app.preferences.chat_execution;
+    let builtin = agents::is_builtin_entry(app, &entry);
+    // The built-in agent answers by itself. The execution choice is not offered with it, so one
+    // an older version saved must not apply: nobody could change it back.
+    let execution = if builtin { agents::Execution::Direct } else { app.preferences.chat_execution };
     // ACP tasks exist in HostAi, but this panel cannot yet show the agent's sign-in methods or
     // answer its permission requests. Do not offer a Mastra workflow on an ACP agent until that
     // wiring lands; direct chat with the same agent keeps working.
@@ -1223,6 +1493,12 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     } else {
         None
     };
+    let bridge_scope_check = app.commit_scope.as_ref().filter(|scope| app.has_commit_authority() && scope.is_provable()).and_then(|scope| {
+        let account = app.commit_account.as_ref()?;
+        // Without worker-backed durability, even a live identity cannot open the paid lane.
+        account.bridge_journal()?;
+        account.bridge_scope_check(scope)
+    });
     let chat = &mut app.agent_chat;
     if chat.tools_port.is_none()
         && let Some(start) = chat.control_starter.as_mut()
@@ -1249,6 +1525,7 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     chat.tools_available = Some(bridge.is_some());
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
+    chat.work_dir = Some(start.cwd.clone());
     let started: Result<Box<dyn ChatBackend>, String> = match (execution, entry.kind) {
         (agents::Execution::Mastra, agents::Kind::Acp) => Err(tr("ui.mastra_acp_tasks_unavailable").to_string()),
         (agents::Execution::Mastra, agents::Kind::Api | agents::Kind::Anthropic) => (|| -> Result<Box<dyn ChatBackend>, String> {
@@ -1282,6 +1559,9 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
                 workflow_id,
                 bridge,
                 tools,
+                // Only the installed, provable desktop authority can bind charged bridge tools.
+                // Without it the bridge retains its closed MCP authority.
+                bridge_scope_check,
                 instructions,
                 connection_auth: Arc::new(std::sync::Mutex::new(None)),
                 frozen_binding: Arc::new(std::sync::Mutex::new(None)),
@@ -1300,6 +1580,16 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             mastra_backend::MastraBackend::start(config, launch, host_ai, ids, admission).map(|b| Box::new(b) as Box<dyn ChatBackend>)
         })(),
         (agents::Execution::Direct, agents::Kind::Acp) if entry.argv.is_empty() => Err(tr("ui.agent_chat_none_found").to_string()),
+        (agents::Execution::Direct, agents::Kind::Acp) if builtin => {
+            // Made when the agent first starts, not when the app does: a run that never opens
+            // the Assistant leaves no folder behind. Without the folder the agent is not started:
+            // it would keep its sign-ins in, and read the agent files of, the user's own home.
+            let data = app.builtin_agent.as_ref().and_then(|found| found.data.clone());
+            match data.filter(|folder| std::fs::create_dir_all(folder).is_ok()) {
+                Some(folder) => acp_client::AcpBackend::start_builtin(&entry.argv, start, &folder).map(|b| Box::new(b) as Box<dyn ChatBackend>),
+                None => Err(tr("ui.agent_chat_no_data_folder").to_string()),
+            }
+        }
         (agents::Execution::Direct, agents::Kind::Acp) => {
             acp_client::AcpBackend::start(&entry.argv, start).map(|b| Box::new(b) as Box<dyn ChatBackend>)
         }
@@ -1318,38 +1608,53 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         },
     };
     match started {
-        Ok(mut b) => {
-            b.set_instructions(&app.preferences.agent_instructions);
-            app.preferences.agent_last = entry.id.clone();
-            chat.backend = Some(b);
-            chat.argv = entry.argv.clone();
-            chat.running_id = entry.id.clone();
-            chat.mastra = execution == agents::Execution::Mastra;
-            chat.runtime = chat.mastra.then_some(RuntimeStatus::Starting);
-            chat.runtime_version = None;
-            chat.connection_auth = None;
-            chat.modes.clear();
-            chat.mode.clear();
-            chat.models.clear();
-            chat.model.clear();
-            chat.models_note = None;
-            chat.model_revert = None;
-            chat.running_endpoint = if entry.kind.is_api() && !chat.mastra { entry.base_url.clone() } else { String::new() };
-            // An endpoint's models from the last time, until the new list arrives.
-            if let Some(list) = chat.models_cache.get(&chat.running_endpoint) {
-                chat.models = list.clone();
-                chat.model = entry.model.clone();
-            }
-            chat.state = Some(State::Starting);
-            chat.auth.clear();
-            chat.auth_status = None;
-            chat.agent.clear();
-        }
+        Ok(b) => started_with(app, ctx, b, &entry, execution),
         Err(e) => {
             chat.notice(trf("ui.agent_chat_failed_start", &[("error", &e)]), true);
             chat.state = Some(State::Failed);
         }
     }
+}
+
+/// The agent's process is up: the conversation starts on it. The built-in agent is handed its
+/// keys and custom addresses first and gets its session once it says something is connected
+/// ([`connections::settle`]); every other agent opens its session by itself.
+#[cfg(not(target_arch = "wasm32"))]
+fn started_with(app: &mut SolveApp, ctx: &egui::Context, mut b: Box<dyn ChatBackend>, entry: &agents::Entry, execution: agents::Execution) {
+    let builtin = agents::is_builtin_entry(app, entry);
+    b.set_instructions(&app.preferences.agent_instructions);
+    // The built-in agent is not what "the agent started last" means to a version without it:
+    // what an older version saved there stays for that version to find.
+    if !builtin {
+        app.preferences.agent_last = entry.id.clone();
+    }
+    let chat = &mut app.agent_chat;
+    chat.backend = Some(b);
+    chat.argv = entry.argv.clone();
+    chat.running_id = entry.id.clone();
+    chat.mastra = execution == agents::Execution::Mastra;
+    chat.runtime = chat.mastra.then_some(RuntimeStatus::Starting);
+    chat.runtime_version = None;
+    chat.connection_auth = None;
+    chat.modes.clear();
+    chat.mode.clear();
+    chat.models.clear();
+    chat.model.clear();
+    chat.models_note = None;
+    chat.model_revert = None;
+    chat.running_endpoint = if entry.kind.is_api() && !chat.mastra { entry.base_url.clone() } else { String::new() };
+    // An endpoint's models from the last time, until the new list arrives.
+    if let Some(list) = chat.models_cache.get(&chat.running_endpoint) {
+        chat.models = list.clone();
+        chat.model = entry.model.clone();
+    }
+    chat.state = Some(State::Starting);
+    chat.auth.clear();
+    chat.auth_status = None;
+    chat.agent.clear();
+    chat.conn = connections::Conn::default();
+    chat.conn.active = builtin;
+    connections::begin_setup(app, ctx);
 }
 
 /// The launch, once the window is up (the desktop host; not for runs driven over `--control`):
@@ -1373,15 +1678,24 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
     if !app.agent_chat.connect_at_start {
         return;
     }
-    if app.agent_chat.detection.is_none() {
-        refresh(app, ctx);
+    // An agent the user started last may be one found on the computer, so that look has to finish
+    // before a launch can call it missing; the package's agent is there without a look.
+    let builtin = agents::is_builtin(app);
+    let last = app.preferences.agent_last.clone();
+    let last_is_builtin = builtin && last == connections::AGENT_ID;
+    if app.agent_chat.detection.is_none() && (!builtin || (!last.is_empty() && !last_is_builtin)) {
+        if app.agent_chat.detecting.is_none() {
+            refresh(app, ctx);
+        }
         return;
     }
     app.agent_chat.connect_at_start = false;
     if app.agent_chat.state.is_some() || !app.preferences.agent_connect_at_start {
         return;
     }
-    let last = app.preferences.agent_last.clone();
+    // The agent a user started stays the one this launch starts, beside the built-in one too:
+    // `agent_last` is never the built-in agent's (it does not set it), so a value there names an
+    // agent the user chose, and it starts if it is found.
     if !last.is_empty() {
         if !agents::entries(app).iter().any(|e| e.id == last) {
             app.agent_chat.notice(trf("ui.agent_chat_last_missing", &[("agent", &last)]), true);
@@ -1397,6 +1711,176 @@ fn connect_at_start(app: &mut SolveApp, ctx: &egui::Context) {
 pub fn disconnect(app: &mut SolveApp) {
     crate::edit_in_place::forget_after_turn(app);
     app.agent_chat.disconnect_document(&mut app.session, false);
+}
+
+/// Read the project's `ci.toml` automatic-check switch.
+#[allow(dead_code)]
+pub(crate) fn set_dfm_auto_enabled(app: &mut SolveApp, enabled: bool) {
+    app.agent_chat.dfm.set_auto_enabled(enabled);
+}
+
+/// Re-read the open design's project switch. Call it when the document or the project settings
+/// change; the automatic-check path never reads the project itself.
+pub(crate) fn refresh_dfm_auto(app: &mut SolveApp) {
+    let enabled = app
+        .session
+        .path
+        .as_deref()
+        .and_then(|path| solidcraft_engine::project::Project::of(std::path::Path::new(path)).ok().flatten())
+        .is_some_and(|project| project.ci().enabled);
+    app.agent_chat.dfm.set_auto_enabled(enabled);
+}
+
+/// Refuse before minting or admitting anything. The account snapshot can rule out eligibility,
+/// not authorize execution. No verified Assistant DFM execution scope exists: neither the
+/// turn's authority nor the Review panel's stop bound covers a separate Assistant check.
+fn assistant_dfm_refusal(app: &SolveApp) -> solidcraft_engine::entitlement::RefusalCode {
+    use solidcraft_engine::entitlement::RefusalCode;
+
+    let account = app.account.view();
+    if let Some(code) = account.tool_blocked {
+        return code;
+    }
+    if !account.signed_in {
+        return RefusalCode::AuthRequired;
+    }
+    if account.no_credits() {
+        return RefusalCode::CreditsExhausted;
+    }
+    RefusalCode::UnsafeToStart
+}
+
+/// A decided automatic trigger is not permission to run the ordinary CAD command.
+fn submit_dfm(app: &SolveApp, trigger: dfm_runtime::Trigger) -> bool {
+    log::debug!("Assistant DFM not started after {trigger:?}: {:?}", assistant_dfm_refusal(app));
+    false
+}
+
+/// A manual Assistant trigger, separate from the ordinary CAD command.
+#[allow(dead_code)]
+pub(crate) fn run_dfm(app: &mut SolveApp) -> bool {
+    let stamp = app.session.document_stamp();
+    match app.agent_chat.dfm.manual(&stamp.document_id, stamp.revision) {
+        Some(trigger) => submit_dfm(app, trigger),
+        None => false,
+    }
+}
+
+/// Cancel the live check (the result, if it still commits, can never take `latest` back).
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub(crate) fn cancel_dfm(app: &mut SolveApp) -> bool {
+    let _ = app;
+    solidcraft_engine::dfm::service::cancel()
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+pub(crate) fn cancel_dfm(_app: &mut SolveApp) -> bool {
+    false
+}
+
+/// The live check's `(run_id, document_id)`, if one is running.
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
+pub(crate) fn running_dfm(app: &SolveApp) -> Option<String> {
+    let _ = app;
+    solidcraft_engine::dfm::service::status().active_run
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+pub(crate) fn running_dfm(_app: &SolveApp) -> Option<String> {
+    None
+}
+
+/// What the live check's service reports, for the Review panel: whether it runs, the last run it
+/// finished, that run's outcome, and the last error. The browser build has no worker, so it is
+/// idle with nothing finished.
+pub(crate) struct DfmState {
+    pub running: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn dfm_state() -> DfmState {
+    DfmState { running: solidcraft_engine::dfm::service::status().running }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn dfm_state() -> DfmState {
+    DfmState { running: false }
+}
+
+/// Put a ready attachment on the next message and open the Assistant, so the person sees the chip
+/// they dropped there. A full message is refused with its reason, as a dropped file is.
+pub(crate) fn attach_ready(app: &mut SolveApp, file: attach::Attachment) -> Result<(), String> {
+    if app.agent_chat.files() >= attach::MAX_FILES {
+        return Err(trf("ui.agent_chat_files_max", &[("max", &attach::MAX_FILES.to_string())]));
+    }
+    app.agent_chat.add_file(file);
+    app.agent_chat.open = true;
+    Ok(())
+}
+
+/// Say something in the conversation's own notices.
+pub(crate) fn notify(app: &mut SolveApp, text: impl Into<String>, error: bool) {
+    app.agent_chat.notice(text, error);
+}
+
+/// Read every attached DFM report again by the run it names, so a message states the report the
+/// person chose to send, not whichever check ran last. The report as it was attached stays the
+/// fallback when the project no longer holds that run; the person is told which reports came from
+/// the copy rather than from the project, and the newest report never stands in for one of them.
+fn resolve_reports(app: &mut SolveApp) -> Vec<String> {
+    let runs: Vec<String> = app.agent_chat.attachments.iter().filter_map(|file| file.report_run().map(str::to_string)).collect();
+    let mut warnings = Vec::new();
+    for run in runs {
+        let card = crate::dfm_chat::refresh_run(app, Some(&run));
+        if card.status == "error" || card.run_id != run || card.run_id.is_empty() {
+            warnings.push(trf("ui.dfm_review_send_unreadable", &[("run", &run)]));
+            continue;
+        }
+        let context = serde_json::to_string(&crate::dfm_chat::model_context(&card)).unwrap_or_default();
+        for file in app.agent_chat.attachments.iter_mut() {
+            if let attach::Content::DfmReport { run_id, model_version, candidate_digest, context: held, .. } = &mut file.content
+                && *run_id == run
+            {
+                *held = Arc::new(context.clone());
+                *model_version = card.model_version.clone();
+                *candidate_digest = card.candidate_digest.clone();
+            }
+        }
+    }
+    warnings
+}
+
+/// PIL-300's accept path calls this after `review::accept` applied the preview and committed it.
+///
+/// This is the one adapter for the half of PIL-305 that waits for PIL-300 to merge. On develop
+/// there is no `review` module, so nothing calls it yet; when that branch lands, add this call to
+/// the success branch of `crates/ui-egui/src/agent_chat/review.rs::accept` (after the apply and
+/// before returning `Ok`):
+///
+/// ```ignore
+/// crate::agent_chat::preview_accepted(app, id);
+/// ```
+#[allow(dead_code)]
+pub(crate) fn preview_accepted(app: &mut SolveApp, preview: u64) {
+    // The design or its project settings may have changed since the switch was last read.
+    refresh_dfm_auto(app);
+    let stamp = app.session.document_stamp();
+    if let Some(trigger) = app.agent_chat.dfm.on_preview_accepted(&stamp.document_id, &format!("preview-{preview}"), stamp.revision) {
+        submit_dfm(app, trigger);
+    }
+}
+
+/// A rejected preview, a failed accept, or an accept refused because the design changed meanwhile.
+/// It commits nothing, so it runs nothing; the adapter exists so the accept path has one place to
+/// report both outcomes.
+#[allow(dead_code)]
+pub(crate) fn preview_not_committed(app: &mut SolveApp, preview: u64) {
+    let stamp = app.session.document_stamp();
+    app.agent_chat.dfm.on_preview_not_committed(&stamp.document_id, &format!("preview-{preview}"));
 }
 
 /// The app is quitting: end the agent and its helpers before the window goes.
@@ -1475,6 +1959,7 @@ pub(crate) fn leave_document(app: &mut SolveApp) {
     let chat = &mut app.agent_chat;
     chat.steering = false;
     chat.last = None;
+    chat.conn.kept = None;
     // A prompt waiting for startup or sign-in has not reached the backend yet. Keep it
     // with the explicit queue so a late Ready event cannot send it on returning to the tab.
     if let Some((text, image, at, files)) = chat.queued.take() {
@@ -1611,49 +2096,85 @@ pub fn remove_picked(app: &mut SolveApp, at: usize) {
 /// Send what the user typed: now if the agent is ready, queued behind the running message if it
 /// is working, else once it is ready (starting it if needed).
 pub fn send(app: &mut SolveApp, ctx: &egui::Context, text: String) {
-    // A message waits for its files: the words go back in the box until they are read.
-    if !app.agent_chat.loading.is_empty() {
+    let _ = send_with(app, ctx, text, None);
+}
+
+/// [`send`], with `only` as the message's whole context when given (Ask Here: exactly the
+/// selection, no files, no picture of the view), instead of what was picked, the files on the
+/// next message and, with Attach selection and Attach view, what is selected and the view.
+/// `Err`: why nothing went (Ask Here keeps its box open with the words).
+pub(crate) fn send_with(app: &mut SolveApp, ctx: &egui::Context, text: String, only: Option<Context>) -> Result<(), String> {
+    let asked = only.is_some();
+    // The agent's previewed changes wait for Accept or Reject before it gets another message.
+    if review::waiting(&app.agent_chat) && app.agent_chat.state() != State::Busy {
+        let why = tr("ui.agent_chat_review_first").to_string();
+        if asked {
+            return Err(why);
+        }
         if app.agent_chat.input.trim().is_empty() {
             app.agent_chat.input = text;
         }
-        app.agent_chat.notice(tr("ui.agent_chat_files_loading"), false);
-        return;
+        app.agent_chat.notice(why.clone(), false);
+        return Err(why);
+    }
+    // A message waits for its files: the words go back in the box until they are read.
+    if !asked && !app.agent_chat.loading.is_empty() {
+        if app.agent_chat.input.trim().is_empty() {
+            app.agent_chat.input = text;
+        }
+        let why = tr("ui.agent_chat_files_loading").to_string();
+        app.agent_chat.notice(why.clone(), false);
+        return Err(why);
     }
     let text: String = text.chars().take(MAX_PROMPT).collect();
     // Files alone make a message.
-    if text.trim().is_empty() && app.agent_chat.attachments.is_empty() {
-        return;
+    if text.trim().is_empty() && (asked || app.agent_chat.attachments.is_empty()) {
+        return Err(String::new());
+    }
+    // An attached DFM report is read at send time: the newest check never stands in for the run
+    // the person dropped in. A report the project no longer holds is sent from the copy taken
+    // when it was attached, and the person is told so.
+    for warning in resolve_reports(app) {
+        app.agent_chat.notice(warning, true);
     }
     let text = if text.trim().is_empty() { String::new() } else { text };
-    let image = app.agent_chat.attach_view && app.agent_chat.images;
+    let image = !asked && app.agent_chat.attach_view && app.agent_chat.images;
     // The selection is read now, when the user sends, not when a queued message finally goes.
     // What was picked goes first, then what is selected (without what was picked twice).
-    let mut context = std::mem::take(&mut app.agent_chat.picked_context);
-    app.agent_chat.picked.clear();
-    if app.preferences.agent_chat_attach_selection {
-        let mut selected = context::describe_selection(&mut app.session);
-        selected.items.retain(|i| !context.items.contains(i));
-        context.merge(selected);
-    }
+    let context = match only {
+        Some(only) => only,
+        None => {
+            let mut context = std::mem::take(&mut app.agent_chat.picked_context);
+            app.agent_chat.picked.clear();
+            if app.preferences.agent_chat_attach_selection {
+                let mut selected = context::describe_selection(&mut app.session);
+                selected.items.retain(|i| !context.items.contains(i));
+                context.merge(selected);
+            }
+            context
+        }
+    };
     if app.agent_chat.state() == State::Busy {
         let chat = &mut app.agent_chat;
         if chat.pending.len() >= MAX_PENDING {
             // The files stay on the chips for when there is room.
-            chat.notice(tr("ui.agent_chat_queue_full"), false);
-        } else {
-            let files = std::mem::take(&mut chat.attachments);
-            chat.pending.push(Pending { text, image, context, files });
+            let why = tr("ui.agent_chat_queue_full").to_string();
+            chat.notice(why.clone(), false);
+            return Err(why);
         }
-        return;
+        let files = if asked { Vec::new() } else { std::mem::take(&mut chat.attachments) };
+        chat.pending.push(Pending { text, image, context, files });
+        return Ok(());
     }
-    let files = std::mem::take(&mut app.agent_chat.attachments);
+    let files = if asked { Vec::new() } else { std::mem::take(&mut app.agent_chat.attachments) };
     // Messages left waiting by Stop go first, in one prompt with this one.
     if !app.agent_chat.pending.is_empty() {
         app.agent_chat.pending.push(Pending { text, image, context, files });
         send_queue(app, ctx, false);
-        return;
+        return Ok(());
     }
     submit(app, ctx, text, image, context, files, false);
+    Ok(())
 }
 
 /// Put `text` in the conversation and send it with its files (`interrupted`: the agent is told it
@@ -1675,6 +2196,8 @@ fn submit(app: &mut SolveApp, ctx: &egui::Context, text: String, image: bool, co
         context: context.clone(),
         files: files.iter().filter(|f| !f.is_picture()).map(|f| f.name.clone()).collect(),
     });
+    // A new message takes the place of one kept from a failed turn: that one is not sent again.
+    app.agent_chat.conn.kept = None;
     // The message's place in the conversation: its picture is kept there when it is taken.
     let at = app.agent_chat.items.len().checked_sub(1);
     // The agent gets the selection as text after the message; the conversation shows chips.
@@ -1733,6 +2256,8 @@ pub fn send_now(app: &mut SolveApp, ctx: &egui::Context) {
         app.agent_chat.steering = true;
         app.agent_chat.stopped = false;
         interrupt(app);
+    } else if review::waiting(&app.agent_chat) {
+        app.agent_chat.notice(tr("ui.agent_chat_review_first"), false);
     } else {
         send_queue(app, ctx, false);
     }
@@ -1749,8 +2274,12 @@ pub fn new_chat(app: &mut SolveApp) {
     decline_all(app, "the chat was cleared");
     end_turn(app);
     let chat = &mut app.agent_chat;
+    review::forget(chat);
     chat.confirm_new = false;
     chat.items.clear();
+    chat.tool_pictures.clear();
+    chat.tool_files.clear();
+    chat.file_preview = None;
     chat.turn_warning = None;
     chat.gallery = None;
     chat.picked.clear();
@@ -1767,6 +2296,7 @@ pub fn new_chat(app: &mut SolveApp) {
     chat.seen = None;
     chat.discard_end = running;
     chat.model_revert = None;
+    chat.conn.kept = None;
     if matches!(chat.state(), State::Ready | State::Busy) {
         chat.restore_mode = Some(chat.mode.clone()).filter(|m| !m.is_empty());
         chat.state = Some(State::Starting);
@@ -1774,6 +2304,9 @@ pub fn new_chat(app: &mut SolveApp) {
             // Instructions edited since the last session apply from this one on.
             b.set_instructions(&app.preferences.agent_instructions);
             b.new_session();
+        }
+        if chat.conn.active {
+            chat.conn.session = connections::Session::Opening;
         }
     }
     chat.clear_config();
@@ -1798,7 +2331,8 @@ pub fn remove_pending(app: &mut SolveApp, index: usize) {
 fn after_turn(app: &mut SolveApp, ctx: &egui::Context) {
     let reason = app.agent_chat.ended.take().unwrap_or_default();
     let steering = std::mem::take(&mut app.agent_chat.steering);
-    if app.agent_chat.state() != State::Ready || app.agent_chat.pending.is_empty() {
+    // Queued messages wait for Send while the turn's changes wait for Accept or Reject.
+    if app.agent_chat.state() != State::Ready || app.agent_chat.pending.is_empty() || review::waiting(&app.agent_chat) {
         return;
     }
     if steering && !matches!(reason.as_str(), "auth" | "error") {
@@ -1832,11 +2366,12 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     }
     let (pictures, documents) = (app.agent_chat.images, app.agent_chat.documents);
     let changed = app.agent_chat.seen.as_deref().and_then(|seen| changed_note(seen, &app.session.doc));
+    let reviewed = app.agent_chat.review_note.take();
     #[cfg(not(target_arch = "wasm32"))]
     let skill_note = skill.prompt_note().map(|note| task_runtime::prompt_note(skill, note));
     #[cfg(target_arch = "wasm32")]
     let skill_note = skill.prompt_note();
-    let notes: Vec<&str> = skill_note.iter().map(String::as_str).chain(note).chain(changed.as_deref()).collect();
+    let notes: Vec<&str> = skill_note.iter().map(String::as_str).chain(reviewed.as_deref()).chain(note).chain(changed.as_deref()).collect();
     let lead = if notes.is_empty() { text.clone() } else { format!("{}\n\n{text}", notes.join("\n")) };
     // The whole message stays within the cap: the files' text gets what the words leave.
     let budget = MAX_PROMPT.saturating_sub(lead.chars().count() + FILE_NAMES_ROOM);
@@ -1857,7 +2392,10 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     let first_line = text.lines().find(|l| !l.trim().is_empty()).or_else(|| files.first().map(|f| f.name.as_str())).unwrap_or("");
     let label: String = first_line.chars().take(48).collect();
     app.agent_chat.turn_warning = None;
+    app.agent_chat.next_turn = app.agent_chat.next_turn.wrapping_add(1);
+    let turn_id = app.agent_chat.next_turn;
     app.agent_chat.turn = Some(Turn {
+        id: turn_id,
         active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         start_doc: app.session.doc.clone(),
         start_undo: app.session.undo.len(),
@@ -1871,6 +2409,7 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
         edit_requested: requests_edit(&text),
     });
     app.agent_chat.last = Some((text, image, at, files));
+    app.agent_chat.conn.kept = None;
     app.agent_chat.state = Some(State::Busy);
     app.agent_chat.stopped = false;
     app.agent_chat.steering = false;
@@ -1918,6 +2457,10 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
             end_turn(app);
             return;
         }
+    }
+    // A plain chat turn may run on a copy of the design, for the user to accept or reject.
+    if skill == skill::Skill::Plain {
+        review::begin(app);
     }
     let active = app.agent_chat.turn.as_ref().map(|turn| Arc::clone(&turn.active));
     if let Some(b) = app.agent_chat.backend.as_mut() {
@@ -2098,7 +2641,10 @@ fn on_permission(app: &mut SolveApp, key: u64, title: String, kind: Option<&str>
     let agent = app.agent_chat.running_id.clone();
     let mode = agents::mode_for(&app.preferences, &agent);
     let remembered = agents::always_allowed(&app.preferences, &agent, &title);
-    let why = if acp::is_bridge_tool(&title, kind) {
+    // Judged by the backend that asked, not by the picker: changing the default while an
+    // external agent runs must not make its short tool names count as Intcad's.
+    let built_in = agents::builtin_running(app);
+    let why = if acp::bridge_tool(&title, kind, built_in) {
         Some("ui.ai_auto_ours")
     } else if remembered {
         Some("ui.ai_auto_remembered")
@@ -2124,7 +2670,7 @@ fn on_permission(app: &mut SolveApp, key: u64, title: String, kind: Option<&str>
 fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
     let chat = &mut app.agent_chat;
     let Some(i) = chat.held.iter().position(|h| h.id == id) else { return };
-    let mut h = chat.held.remove(i);
+    let h = chat.held.remove(i);
     for item in &mut chat.items {
         if let Item::Approval { id: x, answer, .. } = item
             && *x == id
@@ -2133,12 +2679,7 @@ fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
         }
     }
     if allow {
-        match crate::execution_guard::admit(app, &mut h.req) {
-            Ok(()) => app.control_held.push_back(h.req),
-            Err(error) => {
-                let _ = h.req.reply.send(crate::execution_guard::refusal_json(&error));
-            }
-        }
+        hand_over(app, h.req);
     } else {
         let mut reply = json!({"ok": false, "error": format!("not run: {why}")});
         // The held request owns its trusted revocation flag. Metadata only selects the carrier;
@@ -2151,6 +2692,57 @@ fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
             reply["errorDetails"]["message"] = reply["error"].clone();
         }
         let _ = h.req.reply.send(reply);
+    }
+}
+
+/// Run an admitted request of the agent's: on the turn's copy of the design while its changes are
+/// previewed ([`review`]), otherwise in the window's queue, as the control channel runs requests.
+fn hand_over(app: &mut SolveApp, mut req: ControlRequest) {
+    if review::running(&app.agent_chat) {
+        match review::route(&req.method, &req.params) {
+            Some(true) => {
+                // The preview runs a real agent request on a copy, but its commit happens later
+                // on Accept, outside any typed admission/commit path. Controlled entries are
+                // refused here pending Task 8/9; ordinary GUI preview cad still runs.
+                if !crate::control::free_entry(req.entry) {
+                    let _ = req.reply.send(crate::control::async_controlled_refusal(&req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
+                    return;
+                }
+                if let Err(refusal) = crate::control::admit_once(app, &mut req) {
+                    let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+                    return;
+                }
+                review::hand_over(app, req);
+                return;
+            }
+            None => {
+                let _ = req.reply.send(review::refusal());
+                return;
+            }
+            Some(false) => {}
+        }
+    }
+    match crate::execution_guard::admit(app, &mut req) {
+        Ok(()) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if req.entry() == solidcraft_engine::entitlement::EntryCategory::GuiBridgeMcp
+                && req.helper.is_none()
+                && app.commit_account.as_ref().is_some_and(|account| account.bridge_journal().is_some())
+            {
+                crate::control::queue_bridge_admission(app, req);
+                return;
+            }
+            // The queue and every later seam carry this one typed admission; none may take it
+            // again on resumption.
+            if let Err(refusal) = crate::control::admit_once(app, &mut req) {
+                let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+                return;
+            }
+            app.control_held.push_back(req);
+        }
+        Err(error) => {
+            let _ = req.reply.send(crate::execution_guard::refusal_json(&error));
+        }
     }
 }
 
@@ -2176,6 +2768,7 @@ fn requests_edit(text: &str) -> bool {
 fn end_turn(app: &mut SolveApp) {
     decline_all(app, "the message ended");
     finish_turn(&mut app.agent_chat, &mut app.session);
+    review::settle(app);
 }
 
 fn finish_turn(chat: &mut AgentChat, session: &mut solidcraft_engine::Session) {
@@ -2204,6 +2797,7 @@ fn finish_turn(chat: &mut AgentChat, session: &mut solidcraft_engine::Session) {
         let doc = session.doc.clone();
         chat.push(Item::Changes { steps, doc, undone: false });
     }
+    review::end(chat);
 }
 
 /// Merge the undo steps made since `start_doc` (at depth `start_undo`) into one, labelled `label`;
@@ -2242,6 +2836,21 @@ pub fn undo_changes(app: &mut SolveApp, index: usize) {
 
 /// The requests the agent's tools sent through the chat's endpoint: each one passes the gate.
 fn pump_tools(app: &mut SolveApp) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(rx) = app.agent_chat.bridge_admission.take() {
+        match rx.try_recv() {
+            Ok(mut req) => {
+                if req.refuse_cancelled_chat() {
+                    crate::control::release_unstarted(app, &mut req);
+                } else {
+                    app.control_held.push_back(req);
+                }
+                app.agent_chat.bridge_admission = Some(rx);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => app.agent_chat.bridge_admission = Some(rx),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
+    }
     let Some(rx) = app.agent_chat.tools_rx.take() else { return };
     let configured = app.preferences.agent_chat_turn_limit;
     let limit = if configured == 0 { u32::MAX } else { configured.clamp(1, 1000) };
@@ -2249,6 +2858,9 @@ fn pump_tools(app: &mut SolveApp) {
         let refuse = |req: ControlRequest, e: String| {
             let _ = req.reply.send(json!({"ok": false, "error": e}));
         };
+        // One spelling from here on: the id the gate judges, "Always allow" remembers and the
+        // engine runs are the registered one, whatever `command`/`id` and casing arrived.
+        gate::canonicalize(&req.method, &mut req.params);
         // Anatomy is read-only for the whole turn: a write request never reaches the gate.
         let skill = app.agent_chat.skill_binding.as_ref().map_or(app.agent_chat.skill, |binding| binding.skill);
         if skill.read_only() && matches!(gate::request(&req.method, &req.params, 0), gate::Verdict::Run { change: true } | gate::Verdict::Ask(_)) {
@@ -2258,6 +2870,7 @@ fn pump_tools(app: &mut SolveApp) {
             continue;
         }
         let undo_len = app.session.undo.len();
+        let previewing = review::running(&app.agent_chat);
         let Some(turn) = app.agent_chat.turn.as_mut() else {
             refuse(req, "the agent chat has no message in progress".into());
             continue;
@@ -2279,7 +2892,13 @@ fn pump_tools(app: &mut SolveApp) {
         let mode = agents::mode_for(&app.preferences, &app.agent_chat.running_id);
         let tool = gate::tool_key(&req.method, &req.params);
         let always = agents::always_allowed(&app.preferences, &app.agent_chat.running_id, &tool);
-        let verdict = match gate::request(&req.method, &req.params, undo_left) {
+        let raw = gate::request(&req.method, &req.params, undo_left);
+        // On a copy, files and new designs would act on the open design or on nothing: refused.
+        if matches!(raw, gate::Verdict::Ask(_)) && previewing {
+            let _ = req.reply.send(review::refusal());
+            continue;
+        }
+        let verdict = match raw {
             gate::Verdict::Ask(_) if mode == agents::Mode::All || always => gate::Verdict::Run { change: true },
             gate::Verdict::Run { change: true } if mode == agents::Mode::Ask && !always => {
                 gate::Verdict::Ask(gate::describe(&req.method, &req.params))
@@ -2300,12 +2919,7 @@ fn pump_tools(app: &mut SolveApp) {
                     }
                     turn.changes += 1;
                 }
-                match crate::execution_guard::admit(app, &mut req) {
-                    Ok(()) => app.control_held.push_back(req),
-                    Err(error) => {
-                        let _ = req.reply.send(crate::execution_guard::refusal_json(&error));
-                    }
-                }
+                hand_over(app, req);
             }
             gate::Verdict::Ask(title) => {
                 let chat = &mut app.agent_chat;
@@ -2379,16 +2993,29 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     }
     settings::poll_tests(&mut app.agent_chat);
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(rx) = &app.agent_chat.detecting
-        && let Ok(d) = rx.try_recv()
     {
-        for found in &d.found {
-            app.agent_chat.login_results.remove(found.id);
-            app.agent_chat.settings.tests.remove(found.id);
+        let detected = app.agent_chat.detecting.as_ref().map(std::sync::mpsc::Receiver::try_recv);
+        // A look whose worker is gone is finished with nothing found: a launch must not wait on
+        // a thread that will never answer.
+        let finished = match detected {
+            Some(Ok(d)) => Some(d),
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) | None => None,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => Some(discover::Detection::default()),
+        };
+        if let Some(d) = finished {
+            for found in &d.found {
+                app.agent_chat.login_results.remove(found.id);
+                app.agent_chat.settings.tests.remove(found.id);
+            }
+            app.agent_chat.detection = Some(d);
+            app.agent_chat.detecting = None;
+            app.agent_chat.looked = true;
         }
-        app.agent_chat.detection = Some(d);
-        app.agent_chat.detecting = None;
-        app.agent_chat.looked = true;
+        // A look whose worker dies sends nothing; keep asking for frames while one is pending,
+        // so the branch above runs on an idle window rather than waiting for an unrelated event.
+        if app.agent_chat.detecting.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
     }
     // AI features turned off: nothing keeps running, nothing is looked for.
     if !shown(app) {
@@ -2408,6 +3035,8 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(backend) = app.agent_chat.backend.as_mut() {
         backend.set_document(&stamp.document_id, stamp.revision);
     }
+    follow_project(app);
+    connections::poll(app, ctx);
     let events = app.agent_chat.backend.as_mut().map(|b| b.poll()).unwrap_or_default();
     for e in events {
         let ready = matches!(e, Event::Ready { .. });
@@ -2421,8 +3050,19 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         let refused = if matches!(e, Event::ModelRejected(_)) { app.agent_chat.model_revert.as_ref().map(|r| r.saved.clone()) } else { None };
         match app.agent_chat.on_event(e) {
             Some(Outcome::TurnEnd) => {
+                // Read the round's commit state before the turn is consumed; its final model is
+                // what an automatic check uses, and a reply that changed nothing runs nothing.
+                let ended = app.agent_chat.turn.as_ref().map(|turn| (turn.id, turn.changes > 0 && !Arc::ptr_eq(&app.session.doc, &turn.start_doc)));
+                let pending = app.control_job.is_some() || !app.control_held.is_empty();
                 app.agent_chat.attach_anatomy_refs(&mut app.session);
                 end_turn(app);
+                // A model picked during the reply goes before a queued message.
+                send_held_config(app);
+                if let Some((turn, changed)) = ended {
+                    refresh_dfm_auto(app);
+                    let stamp = app.session.document_stamp();
+                    app.agent_chat.dfm.on_turn_end(&stamp.document_id, &format!("turn-{turn}"), stamp.revision, changed, pending);
+                }
                 #[cfg(not(target_arch = "wasm32"))]
                 task_runtime::on_turn_end(app);
                 after_turn(app, ctx);
@@ -2435,6 +3075,9 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
             Some(Outcome::Permission { key, title, kind, options }) => on_permission(app, key, title, kind.as_deref(), options),
             None => {}
         }
+        // What the built-in agent just said may open its session, or end the conversation's
+        // readiness: settled before anything below acts on a session being ready.
+        connections::settle(app);
         if let Some(model) = confirmed_model {
             app.preferences.agent_models.insert(app.agent_chat.running_id.clone(), model.clone());
             if let Some(a) = app.preferences.agents.iter_mut().find(|a| a.id == app.agent_chat.running_id && a.kind.is_api()) {
@@ -2453,7 +3096,12 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         if ready {
             apply_saved_model(app);
         }
-        if (ready || configured) && !app.agent_chat.config_pending {
+        // A session of the built-in agent that opened while nothing is connected takes no message.
+        let usable = !app.agent_chat.conn.active || app.agent_chat.state() == State::Ready;
+        if configured {
+            send_held_config(app);
+        }
+        if (ready || configured) && !app.agent_chat.config_pending && usable {
             if app.agent_chat.config_options.is_some()
                 && let Some(mode) = app.agent_chat.restore_mode.take()
                 && mode != app.agent_chat.mode
@@ -2473,9 +3121,34 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         settings::poll_listing(app, ctx);
         connect_at_start(app, ctx);
     }
+    review::poll(app, ctx);
+    review::settle(app);
+    // The page only exists in a desktop host's web view.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        web::adopt_model_check(app);
+        web::poll_running_checks(app);
+    }
     pump_tools(app);
+    // One place decides what automatic checks see: the live model and whether the window still
+    // has work in flight. A person's edit or undo only makes the old report stale; it starts
+    // nothing by itself.
+    {
+        let stamp = app.session.document_stamp();
+        let idle = app.control_job.is_none() && app.control_held.is_empty() && !app.agent.busy();
+        if let Some(trigger) = app.agent_chat.dfm.observe(&stamp.document_id, stamp.revision, idle) {
+            submit_dfm(app, trigger);
+        }
+        // A person's edit makes the old report stale and stops its check; it starts nothing.
+        #[cfg(not(target_arch = "wasm32"))]
+        solidcraft_engine::dfm::service::cancel_if_stale(&mut app.session);
+    }
     if !app.agent_chat.held.is_empty() || app.agent_chat.state() == State::Busy {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if app.agent_chat.bridge_admission.is_some() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
     }
 }
 
@@ -2493,20 +3166,40 @@ pub(super) fn look_on_open(app: &mut SolveApp, ctx: &egui::Context) {
     }
 }
 
+/// The panel is shown this frame (open, and not folded to its strip): the built-in agent starts
+/// by itself, because the Connections page has its rows from what the agent first says, and a
+/// conversation that is off would show an empty page. Once per conversation: one whose agent
+/// was stopped, could not start or ended is left as it is, for Connect, Retry or the next
+/// message to start. No other agent starts this way.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn start_builtin_when_shown(app: &mut SolveApp, ctx: &egui::Context) {
+    // `None`: nothing was ever started in this conversation. Stopped, failed and ended are states.
+    // Only the conversation whose agent is the package's starts this way: an agent the user
+    // picked beside it is not started by opening the panel.
+    if agents::builtin_current(app) && app.agent_chat.state.is_none() && !app.preferences.agent_chat_minimized {
+        connect(app, ctx);
+    }
+}
+
 /// Look for installed agents in the background (cached until the panel opens again; Refresh
 /// looks at once).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn refresh(app: &mut SolveApp, ctx: &egui::Context) {
+    // The built-in agent is not looked for on the computer, but the agents found there are: they
+    // are offered beside it.
     if app.agent_chat.detecting.is_some() {
         return;
     }
     let (tx, rx) = std::sync::mpsc::channel();
-    let ctx = ctx.clone();
+    let wake = ctx.clone();
     std::thread::spawn(move || {
         let _ = tx.send(discover::detect());
-        ctx.request_repaint();
+        wake.request_repaint();
     });
     app.agent_chat.detecting = Some(rx);
+    // Look again while the look is pending: a worker that dies without sending must not leave
+    // the launch waiting until the next unrelated event repaints the window.
+    ctx.request_repaint_after(std::time::Duration::from_millis(500));
 }
 
 /// Choose the model for this chat (the header's model picker): the agent switches to it, and it is
@@ -2766,10 +3459,21 @@ fn set_config_option_checked(app: &mut SolveApp, id: &str, value: &str, listed_o
     let Some(option) = app.agent_chat.config_options.as_ref().and_then(|xs| xs.iter().find(|x| x.id == id)) else {
         return false;
     };
-    if app.agent_chat.config_pending
-        || !matches!(app.agent_chat.state(), State::Ready | State::Busy)
-        || (listed_only && !option.options.iter().any(|x| x.value == value))
-    {
+    if !matches!(app.agent_chat.state(), State::Ready | State::Busy) || (listed_only && !option.options.iter().any(|x| x.value == value)) {
+        return false;
+    }
+    // While the agent replies, or while another change is on its way, a listed choice is held and
+    // shown as chosen; it goes once the agent is free, before a queued message. A typed model waits
+    // for no one: the agent may refuse it, so it is one request at a time.
+    if listed_only && (app.agent_chat.state() == State::Busy || app.agent_chat.config_pending) {
+        let chat = &mut app.agent_chat;
+        chat.config_next = Some((id.to_string(), value.to_string()));
+        if let Some(options) = chat.config_options.take() {
+            chat.apply_config_snapshot(options);
+        }
+        return true;
+    }
+    if app.agent_chat.config_pending {
         return false;
     }
     let Some(b) = app.agent_chat.backend.as_mut() else { return false };
@@ -2778,13 +3482,25 @@ fn set_config_option_checked(app: &mut SolveApp, id: &str, value: &str, listed_o
     true
 }
 
+/// Sends the choice held while the agent replied ([`AgentChat::config_next`]), once it is free.
+fn send_held_config(app: &mut SolveApp) {
+    if app.agent_chat.state() != State::Ready || app.agent_chat.config_pending {
+        return;
+    }
+    if let Some((id, value)) = app.agent_chat.config_next.take() {
+        set_config_option_checked(app, &id, &value, true);
+    }
+}
+
 /// `ui.agent_chat` on the control channel (tests and screenshots): `enabled`, `command`,
 /// `connect_at_start` and `open_at_start` (the launch preferences), `instructions` (the custom
 /// instructions, #8220), `open`,
 /// `side`, `minimized`, `width`, `refresh`, `connect`, `stop`, `attach` (a file's path, for the
 /// next message), `remove_file` (index), `send`, `attach_view`, `attach_selection`, `pick`,
 /// `permission` (an option id, or `"cancel"`), `approve` (`true`/`false`, the oldest held
-/// request), `cancel` (Stop), `send_now` (steer: stop, then send the queue), `remove_pending` (index), `undo` (the newest message's changes); returns the panel's state.
+/// request), `cancel` (Stop), `send_now` (steer: stop, then send the queue), `remove_pending` (index), `undo` (the newest message's changes),
+/// `connection` (one `conn_*` action of the built-in agent's Connections page, as the page posts
+/// it); returns the panel's state.
 pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Value, String> {
     if let Some(e) = p.get("features").and_then(Value::as_bool) {
         app.preferences.ai_features = e;
@@ -2797,6 +3513,9 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
     }
     if let Some(b) = p.get("open_at_start").and_then(Value::as_bool) {
         app.preferences.agent_chat_open_at_start = b;
+    }
+    if let Some(b) = p.get("preview_changes").and_then(Value::as_bool) {
+        app.preferences.agent_chat_preview = b;
     }
     if let Some(text) = p.get("instructions") {
         let Some(text) = text.as_str() else { return Err("instructions must be text".into()) };
@@ -2939,8 +3658,21 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
             connect(app, ctx);
         }
     }
+    // One action of the built-in agent's Connections page (`conn_*`), as the page posts it: it
+    // goes through the page's own check and is refused with the page's own reason.
+    if let Some(action) = p.get("connection") {
+        let kind = action.get("type").and_then(Value::as_str).ok_or("no type")?;
+        connections::act(app, ctx, kind, action)?;
+    }
     if let Some(text) = p.get("send").and_then(Value::as_str) {
         send(app, ctx, text.to_string());
+    }
+    // Ask Here: open the box beside the pick, or send a message with exactly the selection.
+    if p.get("ask_here").and_then(Value::as_bool) == Some(true) {
+        ask_here::open(app)?;
+    }
+    if let Some(text) = p.get("ask").and_then(Value::as_str) {
+        ask_here::submit(app, ctx, text)?;
     }
     if let Some(o) = p.get("permission").and_then(Value::as_str) {
         let Some(n) = app.agent_chat.items.iter().rposition(|i| matches!(i, Item::Permission { answer: None, .. })) else {
@@ -2968,6 +3700,16 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
     if let Some(n) = p.get("remove_pending").and_then(Value::as_u64) {
         remove_pending(app, n as usize);
     }
+    if let Some(a) = p.get("review") {
+        let Some(id) = app.agent_chat.preview.as_ref().filter(|p| p.phase == review::Phase::Review).map(|p| p.id) else {
+            return Err("no previewed changes are waiting".into());
+        };
+        match a.as_str() {
+            Some("accept") => review::accept(app, id)?,
+            Some("reject") => review::reject(app, id),
+            _ => return Err("review must be \"accept\" or \"reject\"".into()),
+        }
+    }
     if p.get("undo").and_then(Value::as_bool) == Some(true) {
         let Some(n) = app.agent_chat.items.iter().rposition(|i| matches!(i, Item::Changes { .. })) else { return Err("no changes to undo".into()) };
         undo_changes(app, n);
@@ -2980,7 +3722,8 @@ pub fn status(app: &SolveApp) -> Value {
     let items: Vec<Value> = c
         .items
         .iter()
-        .map(|i| match i {
+        .enumerate()
+        .map(|(index, i)| match i {
             Item::User { text, image, pictures, context, files } => json!({"user": text, "image": image, "pictures": pictures.len(), "files": files, "context": context.items.iter().map(|i| json!({"label": i.label, "detail": i.detail})).collect::<Vec<_>>(), "context_omitted": context.omitted}),
             Item::Agent { thought, text } => json!({"agent": text, "thought": thought}),
             Item::AgentRefs { text, refs } => json!({"agent": text, "objectRefs": refs.iter().map(|r| json!({"label": r.label, "kind": format!("{:?}", r.kind), "revision": r.revision})).collect::<Vec<_>>()}),
@@ -2992,11 +3735,17 @@ pub fn status(app: &SolveApp) -> Value {
                 json!({"skill": title, "version": version, "documentId": document_id, "revision": revision, "model": model, "selection": selection, "support": format!("{support:?}"), "terminal": terminal})
             }
             Item::Permission { title, options, answer, .. } => {
-                json!({"permission": title, "options": options.iter().map(|o| json!({"id": o.id, "name": o.name, "kind": o.kind})).collect::<Vec<_>>(), "answer": answer})
+                json!({"permission": title, "index": index, "options": options.iter().map(|o| json!({"id": o.id, "name": o.name, "kind": o.kind})).collect::<Vec<_>>(), "answer": answer})
             }
-            Item::Approval { title, answer, .. } => json!({"approval": title, "answer": answer}),
+            Item::Approval { id, title, answer, .. } => json!({"approval": title, "id": id, "answer": answer}),
             Item::Changes { steps, undone, .. } => json!({"changes": steps, "undone": undone}),
             Item::Notice { text, error } => json!({"notice": text, "error": error}),
+            Item::Problem { kind, name, .. } => json!({"notice": kind.words(name), "error": true}),
+            Item::Review(card) => json!({"review": card.id, "steps": card.words, "more": card.more,
+                "made": card.made.iter().map(|b| json!({"name": b.name, "volume": b.after})).collect::<Vec<_>>(),
+                "changed": card.changed.iter().map(|b| json!({"name": b.name, "before": b.before, "after": b.after})).collect::<Vec<_>>(),
+                "removed": card.removed.iter().map(|b| json!({"name": b.name, "volume": b.before})).collect::<Vec<_>>(),
+                "outcome": format!("{:?}", card.outcome)}),
         })
         .collect();
     #[cfg(not(target_arch = "wasm32"))]
@@ -3076,9 +3825,20 @@ pub fn status(app: &SolveApp) -> Value {
                 None => serde_json::Value::Null,
             },
         );
+        // The built-in agent's connections, as the page is told them; never a key.
+        state.insert("connect".into(), connections::told_of(app));
+        state.insert("previewChanges".into(), json!(app.preferences.agent_chat_preview));
+        state.insert("askHere".into(), json!({"open": c.ask_box.open, "text": c.ask_box.text}));
+        state.insert(
+            "preview".into(),
+            json!(c.preview.as_ref().map(|p| json!({"id": p.id, "phase": format!("{:?}", p.phase), "steps": p.steps, "busy_ms": p.busy_ms,
+                "computing": review::computing(c).map(|(since, what)| json!({"what": what, "ms": (crate::now_ms() - since).max(0.0)}))}))),
+        );
     }
     state
 }
 
+#[cfg(test)]
+mod account_tests;
 #[cfg(test)]
 mod tests;

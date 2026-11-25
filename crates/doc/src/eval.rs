@@ -4644,6 +4644,7 @@ fn sheet_hole_cut(
         let tool = &tool.body;
         // Square across the panels it meets, a flat cut-out; along them into a rim, a bore.
         let done = match prism {
+            Some(prism @ more::PrimitivePrism::Countersink { .. }) => more::sheet_countersink_cut(f, st, *prism)?.unwrap_or_default(),
             Some(prism) => match more::sheet_drill(f, st, *prism)? {
                 Some(more::Drill::Across) => more::sheet_primitive_cut(f, st, tool, *prism, Operation::Cut, true, &mut parted)?,
                 Some(more::Drill::Along) => more::sheet_bore_cut(f, st, *prism)?.unwrap_or_default(),
@@ -4854,11 +4855,15 @@ fn hole_tools_and_prisms(
             let rp = Plane::new(*position, up.any_perp(), up).ok_or_else(|| DocError::Invalid("hole axis".into()))?;
             let pts = [Vec2::new(rc, 0.0), Vec2::new(r_end, -len), Vec2::new(0.0, -len), Vec2::new(0.0, top), Vec2::new(rc, top)];
             let region = Region2 { outer: solidcore_record::Loop2::polygon(&pts), holes: vec![] };
-            tools.extend(
-                kernel::revolve(&rp, &[region], Vec2::ZERO, Vec2::Y, std::f64::consts::TAU)?
-                    .into_iter()
-                    .map(|tool| (crate::lineage::part_tool(tool, "csink"), None)),
-            );
+            let cone = kernel::revolve(&rp, &[region], Vec2::ZERO, Vec2::Y, std::f64::consts::TAU)?
+                .pop()
+                .ok_or_else(|| DocError::Invalid("hole tool".into()))?;
+            // The cone carries a record a sheet panel can keep (see
+            // `more::sheet_countersink_cut`). The bore below still cuts the through hole.
+            tools.push((
+                crate::lineage::part_tool(cone, "csink"),
+                Some(more::PrimitivePrism::Countersink { base: *position, axis: dir, radius: rc, hole_radius: r, angle: 2.0 * half }),
+            ));
             tools.extend(bore(tip_angle.as_ref())?);
         }
     }

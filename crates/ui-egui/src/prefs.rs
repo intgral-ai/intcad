@@ -1049,6 +1049,9 @@ macro_rules! preference_settings {
 preference_settings! {
     /// Units of new designs.
     default_units: String = "mm".into(), PAGE_DESIGN;
+    /// A new design starts a project folder (name and location asked for); off keeps a design
+    /// file with no project beside it.
+    new_design_makes_project: bool = true, PAGE_DESIGN => check_tr("prefs.new_design_project.label");
     /// Mouse mapping: `fusion`, `solidworks` or `inventor`.
     nav: String = "fusion".into(), PAGE_NAVIGATION;
     /// Opt in to rotation through both poles with roll, without the Shift axis-snap spring.
@@ -1327,6 +1330,15 @@ preference_settings! {
     /// A thin bar along the window's bottom edge: what is being edited, the open sketch's state
     /// and the design's units (#7243). Off by default.
     status_bar: bool = false, PAGE_LAYOUT;
+    /// A rail along the window's right edge with the Assistant's button, Files, then Review,
+    /// Simulation and Autocomplete; an item opens its panel beside the rail. Off: no rail and
+    /// the Assistant's button in the application bar, as before the rail was added.
+    right_rail: bool = true, PAGE_LAYOUT;
+    /// The rail item whose panel is open (`files`, `review`, `simulation` or `autocomplete`);
+    /// empty, or anything else, for none.
+    right_rail_open: String = String::new();
+    /// That panel's width, which the user drags at its left edge.
+    right_rail_width: f32 = crate::right_rail::DEFAULT_PANEL;
     /// The selection's length, area or distance in the view's bottom right corner (#7000). Off by
     /// default.
     quick_measure: bool = false, PAGE_GRAPHICS;
@@ -1523,6 +1535,10 @@ preference_settings! {
     /// so the window stays live while they run (#1989, [`crate::control_job`]). Off: they run on
     /// the window thread, and the window waits for each, as before (the default).
     agent_off_thread: bool = false, PAGE_ASSISTANT;
+    /// The agent chat's design changes run on a copy of the design, shown over it, and wait for
+    /// Accept or Reject ([`crate::agent_chat::review`]). Off: they change the open design as they
+    /// come, as before (the default).
+    agent_chat_preview: bool = false, PAGE_ASSISTANT;
     /// Let AI agents connect: the localhost control channel (MCP) opens on the default port at
     /// start-up, unless `--control`/`SOLIDCRAFT_CONTROL_PORT` name one. Read at start-up.
     agent_control: bool = true, PAGE_ASSISTANT;
@@ -1552,6 +1568,14 @@ preference_settings! {
     agent_chat_side: String = "right".into(), PAGE_ASSISTANT;
     agent_chat_width: f32 = 380.0, PAGE_ASSISTANT;
     agent_chat_minimized: bool = false, PAGE_ASSISTANT;
+    /// Where the host shows the Assistant's page: at the bottom of the window, centred, as one
+    /// message box with the conversation opened above it. Off: the side panel, as before.
+    agent_chat_centre: bool = true, PAGE_ASSISTANT;
+    /// Whether the chat is in its own window instead of the side panel, and that window's place
+    /// and size as the system last reported them (`[x, y, width, height]`, points; `x` can be
+    /// negative or past the main screen when the window sits on another one).
+    agent_chat_popped: bool = false, PAGE_ASSISTANT;
+    agent_chat_window: Option<[f32; 4]> = None, PAGE_ASSISTANT;
     /// Whether what is selected in the design is written into each message (Attach selection),
     /// so the agent knows what "this" means without asking the app. Off: the agent is sent the
     /// selection only when it reads it through the app's tools, as before this was a setting.
@@ -1572,6 +1596,10 @@ preference_settings! {
     mastra_workflow_id: String = String::new(), PAGE_ASSISTANT;
     /// How to start the Mastra runtime: its command line (empty: not configured).
     mastra_runtime_command: String = String::new(), PAGE_ASSISTANT;
+    /// The custom addresses the built-in agent is handed (the Assistant's Connections page adds
+    /// and removes them). A key is never here: it lives in the system keychain. No page reset
+    /// discards them, as none discards the agents the user added.
+    mastra_custom: Vec<crate::agent_chat::connections::CustomAddress> = Vec::new();
 
     // ---- Sketch / selection modifier bindings (classic defaults; alternate mapping is opt-in) ----
     /// Modifier that suppresses sketch auto-snap while drawing or dragging a sketch point.
@@ -3472,15 +3500,17 @@ fn looks_like_theme(text: &str) -> bool {
 /// Ctrl/Cmd+V on the Appearance page with a theme file's text on the clipboard imports it, like
 /// Import… with a file (#8226). Called before the global Copy and Paste shortcuts, which would
 /// otherwise paste copied components; the paste is taken out of the input once it is a theme's.
-pub fn take_theme_paste(app: &mut SolveApp, ctx: &egui::Context) {
+/// Returns whether the paste was claimed, including a theme-looking text that fails to import:
+/// that still owns the paste so no other clipboard shortcut pastes it instead.
+pub fn take_theme_paste(app: &mut SolveApp, ctx: &egui::Context) -> bool {
     if !app.prefs_window.open || app.prefs_window.section != PAGE_APPEARANCE {
-        return;
+        return false;
     }
     let Some(text) = ctx.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None })) else {
-        return;
+        return false;
     };
     if !looks_like_theme(&text) {
-        return;
+        return false;
     }
     ctx.input_mut(|i| {
         i.events.retain(|e| {
@@ -3488,6 +3518,7 @@ pub fn take_theme_paste(app: &mut SolveApp, ctx: &egui::Context) {
         })
     });
     import_theme_text(app, Ok(text));
+    true
 }
 
 /// Files dropped on the theme Import tile are themes to import, not designs to open (#8226).
@@ -6152,6 +6183,7 @@ mod tests {
             ("viewport_background", json!([255, 255, 255]), PAGE_APPEARANCE),
             ("view_confirm_corner", json!(true), PAGE_LAYOUT),
             ("status_bar", json!(true), PAGE_LAYOUT),
+            ("right_rail", json!(false), PAGE_LAYOUT),
             ("browser_eye_left", json!(true), PAGE_LAYOUT),
             ("browser_components_open", json!(true), PAGE_LAYOUT),
             ("browser_rows_start_closed", json!(true), PAGE_LAYOUT),
@@ -11185,8 +11217,8 @@ mod perspective_fov_tests {
         h.frames(2);
         let distance = h.app.cam.distance;
         let mut raw = |method: &str, params: serde_json::Value| {
-            let (req, _rx) = crate::control::ControlRequest::new(method, params);
-            match crate::control::handle(&mut h.app, &h.ctx, &req) {
+            let (mut req, _rx) = crate::control::ControlRequest::trusted_gui(method, params);
+            match crate::control::handle(&mut h.app, &h.ctx, &mut req) {
                 crate::control::Outcome::Done(v) => v,
                 _ => serde_json::Value::Null,
             }

@@ -222,7 +222,10 @@ fn send_repair(app: &mut SolveApp, prompt: String) {
         // The backend already ended the turn; start a fresh host turn.
         let active = Arc::new(AtomicBool::new(true));
         let stamp = app.session.document_stamp();
+        app.agent_chat.next_turn = app.agent_chat.next_turn.wrapping_add(1);
+        let turn_id = app.agent_chat.next_turn;
         app.agent_chat.turn = Some(super::Turn {
+            id: turn_id,
             active: Arc::clone(&active),
             start_doc: app.session.doc.clone(),
             start_undo: app.session.undo.len(),
@@ -316,8 +319,39 @@ mod tests {
     use crate::agent_chat::backend::{ChatBackend, Event, PromptPart};
     use crate::agent_chat::{Item, State, Turn, skill};
     use crate::control::{ControlRequest, Outcome};
+    use solidcraft_engine::entitlement::{
+        BillingPort, BillingResult, BudgetTable, Capability, EntryCategory, Grant, GrantId, MonotonicInstant, OperationId, Refusal, RefusalCode,
+    };
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A local test double at the billing boundary. It grants only inside this test module; no
+    /// production path installs it, and the platform budget below is test-only evidence.
+    #[derive(Default)]
+    struct TaskBilling {
+        admits: usize,
+    }
+
+    impl BillingPort for TaskBilling {
+        fn admit(&mut self, operation: &OperationId, capability: Capability, _entry: EntryCategory) -> Result<Grant, Refusal> {
+            self.admits = self.admits.saturating_add(1);
+            Ok(Grant::from_server(GrantId::new(format!("grant_test_{}", operation.as_str())), capability, MonotonicInstant::from_millis(60_000)))
+        }
+
+        fn commit(&mut self, _operation: &OperationId, result: BillingResult) -> Result<BillingResult, Refusal> {
+            Ok(result)
+        }
+
+        fn release(&mut self, _operation: &OperationId, _reason: RefusalCode) -> Result<(), Refusal> {
+            Ok(())
+        }
+    }
+
+    fn verified_budget() -> BudgetTable {
+        let mut budget = BudgetTable::unverified_default();
+        budget.set_verified(Capability::Harness, EntryCategory::Mastra, std::time::Duration::from_secs(30));
+        budget
+    }
 
     fn bracket() -> solidcraft_engine::Session {
         let mut s = solidcraft_engine::Session::default();
@@ -337,9 +371,12 @@ mod tests {
 
     fn start(app: &mut SolveApp) -> (Arc<AtomicBool>, skill::Binding) {
         app.session = bracket();
+        app.install_billing(Box::<TaskBilling>::default(), verified_budget());
+        crate::control::test_support::TestAuthority::new("test-account", "test-installation", "test-session").install(app);
         let active = Arc::new(AtomicBool::new(true));
         let stamp = app.session.document_stamp();
         app.agent_chat.turn = Some(Turn {
+            id: 1,
             active: Arc::clone(&active),
             start_doc: app.session.doc.clone(),
             start_undo: app.session.undo.len(),
@@ -377,9 +414,9 @@ mod tests {
     }
 
     fn call(app: &mut SolveApp, active: &Arc<AtomicBool>, method: &str, params: Value) -> Value {
-        let (mut req, _receiver) = ControlRequest::new(method, params);
+        let (mut req, _receiver) = ControlRequest::trusted_mastra(method, params);
         req.chat_turn = Some(Arc::clone(active));
-        match crate::control::handle(app, &egui::Context::default(), &req) {
+        match crate::control::handle(app, &egui::Context::default(), &mut req) {
             Outcome::Done(value) => value,
             Outcome::Screenshot { .. } => panic!("a CAD request did not answer with a value"),
         }

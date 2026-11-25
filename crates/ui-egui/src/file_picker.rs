@@ -47,6 +47,15 @@ impl SolveApp {
         self.begin_picker(future, Box::new(complete));
     }
 
+    /// Ask for a folder (New Project's location). Without a host dialog, the answer is a cancel.
+    pub(crate) fn pick_folder(&mut self, complete: impl FnOnce(&mut SolveApp, Option<String>) + 'static) {
+        if self.file_picker_busy() {
+            return;
+        }
+        let future = self.services.pick_folder.as_ref().map(|pick| pick());
+        self.begin_picker(future, Box::new(complete));
+    }
+
     /// Ask for one file of a kind (`label`, `extensions`), with the host's dialog for it, or the
     /// Open dialog where the host has none. (The agent chat asks for its files; the web build has
     /// no chat.)
@@ -406,10 +415,12 @@ mod tests {
         h.app.pick_open(|_, _| {});
         let (tx, rx) = std::sync::mpsc::channel();
         h.app.control_rx = Some(rx);
-        let (command, reply) =
-            crate::control::ControlRequest::new("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
-        let (resize, resized) = crate::control::ControlRequest::new("ui.resize", json!({"width":1200,"height":800}));
-        let (home, shown) = crate::control::ControlRequest::new("ui.home", json!({"open":true}));
+        let (command, reply) = crate::control::ControlRequest::trusted_gui(
+            "engine.execute",
+            json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}),
+        );
+        let (resize, resized) = crate::control::ControlRequest::trusted_gui("ui.resize", json!({"width":1200,"height":800}));
+        let (home, shown) = crate::control::ControlRequest::trusted_gui("ui.home", json!({"open":true}));
         tx.send(command).unwrap();
         tx.send(resize).unwrap();
         tx.send(home).unwrap();

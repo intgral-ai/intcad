@@ -4,6 +4,7 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -64,6 +65,10 @@ pub struct RunJob {
 pub struct RunControl {
     pub(super) clock: Arc<dyn Clock>,
     pub(super) deadline_ms: u64,
+    /// A controlled check's own safe-stop bound, already measured by its host. Ordinary free
+    /// validation leaves it `None` and keeps the execution deadline. When present, the earlier
+    /// of the two stops the run.
+    pub(super) stop_at_ms: Option<u64>,
     pub(super) cancel_path: PathBuf,
 }
 
@@ -73,9 +78,27 @@ impl RunControl {
         self.cancel_path.is_file()
     }
 
-    /// Has the execution deadline passed?
+    /// The effective stop instant: the controlled safe-stop bound when one was measured, otherwise
+    /// the execution deadline.
+    pub fn stop_at_ms(&self) -> u64 {
+        match self.stop_at_ms {
+            Some(stop) => stop.min(self.deadline_ms),
+            None => self.deadline_ms,
+        }
+    }
+
+    /// Has the effective execution deadline passed?
     pub fn timed_out(&self) -> bool {
-        self.clock.now_ms() >= self.deadline_ms
+        self.clock.now_ms() >= self.stop_at_ms()
+    }
+
+    /// Whether a measured upper bound fits before the effective safe stop (the earlier of the
+    /// controlled stop and the execution deadline). A controlled host calls this before starting
+    /// the job; an unverified bound is never sent here as a zero duration.
+    pub fn fits_before_deadline(&self, upper_bound: Duration) -> bool {
+        let now = self.clock.now_ms();
+        let bound = u64::try_from(upper_bound.as_millis()).unwrap_or(u64::MAX);
+        now.saturating_add(bound) <= self.stop_at_ms()
     }
 }
 
@@ -164,6 +187,7 @@ impl Runner for LocalRunner {
                 "parameters.required" => parameter_check(session.as_mut(), requirement),
                 "geometry.exact" => geometry_check(session.as_mut(), requirement),
                 "dfm.sheet" => dfm_sheet_check(session.as_ref(), requirement),
+                "dfm.sheet.flat_overlap" => dfm_flat_overlap_check(session.as_ref(), requirement),
                 other => CheckOutcome {
                     check_id: requirement.check_id.clone(),
                     state: CheckState::Unsupported,
@@ -536,6 +560,72 @@ fn dfm_sheet_check(session: Option<&Session>, check: &super::profile::CheckRequi
     }
 }
 
+/// The App's own flat self-overlap check over every sheet of the run. One check keeps the
+/// geometric conclusion in one place; each sheet carries its own pieces, areas and outlines.
+fn dfm_flat_overlap_check(session: Option<&Session>, check: &super::profile::CheckRequirement) -> CheckOutcome {
+    let parameters = match crate::dfm::validate_flat_parameters(&check.parameters) {
+        Ok(parameters) => parameters,
+        Err(error) => return error_check(check, ValidationError::invalid_request(error.to_string())),
+    };
+    let Some(session) = session else {
+        return not_run(check, "native.rebuild did not produce a session");
+    };
+    let state = session.model.state();
+    let mut sheets = Vec::new();
+    let mut failed = false;
+    let mut unsupported = false;
+    for reference in &parameters.sheets {
+        let Some(sheet) = state.sheets.get(reference.sheet).filter(|sheet| sheet.body == reference.body) else {
+            return error_check(
+                check,
+                ValidationError::invalid_request(format!("sheet {} is not `{}` in the evaluated model", reference.sheet, reference.body)),
+            );
+        };
+        let observations = match crate::dfm::flat_no_overlap(sheet) {
+            Ok(observations) => observations,
+            Err(error) => return error_check(check, ValidationError::invalid_request(error.to_string())),
+        };
+        let mut values = Vec::with_capacity(observations.len());
+        for observation in &observations {
+            failed |= observation.state == crate::dfm::FlatOverlapState::Failed;
+            unsupported |= observation.state == crate::dfm::FlatOverlapState::Unsupported;
+            let mut value = serde_json::to_value(observation).unwrap_or(Value::Null);
+            // The flat point is drawing evidence; the folded anchor is what the viewport marks.
+            // A pair's first piece names the panel whose fold maps the flat point back to the model.
+            if let Some(anchor) = crate::dfm::overlap_anchor(sheet, observation) {
+                value["anchor"] = json!([anchor.x, anchor.y, anchor.z]);
+            }
+            values.push(value);
+        }
+        sheets.push(json!({
+            "sheet": reference.sheet,
+            "body": reference.body,
+            "observations": values,
+        }));
+    }
+    let actual = json!({
+        "toleranceMm2": parameters.tolerance_mm2,
+        "sheets": sheets,
+    });
+    let check_state = if failed {
+        CheckState::Failed
+    } else if unsupported {
+        CheckState::Unsupported
+    } else {
+        CheckState::Passed
+    };
+    CheckOutcome {
+        check_id: check.check_id.clone(),
+        state: check_state,
+        expected: json!({
+            "rule": crate::dfm::FLAT_NO_OVERLAP_RULE,
+            "toleranceMm2": parameters.tolerance_mm2,
+        }),
+        actual: actual.clone(),
+        evidence: vec![evidence_json(&actual)],
+    }
+}
+
 fn error_check(check: &super::profile::CheckRequirement, error: ValidationError) -> CheckOutcome {
     let actual = json!({"error": error.to_string()});
     CheckOutcome {
@@ -565,7 +655,9 @@ struct Workspace {
 
 impl Workspace {
     fn extract(run_id: &str, files: &[solidcraft_io::candidate::CandidateFile]) -> Result<Self, String> {
-        let base = solidcraft_io::vfs::temp_dir();
+        // Runner scratch lives in the app's data area (never beside the user's design); the
+        // system temporary folder is only a fallback when no data folder can be resolved.
+        let base = crate::recovery::data_dir().map(|dir| dir.join("validation-work")).unwrap_or_else(solidcraft_io::vfs::temp_dir);
         let root = base.join(format!("solidcraft-validation-{run_id}-{}", std::process::id()));
         // A previous crashed run must not leak inputs into this one.
         let _ = fs::remove_dir_all(&root);

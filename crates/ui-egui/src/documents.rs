@@ -418,6 +418,67 @@ pub(crate) fn reuse_path(app: &mut SolveApp, path: &str) -> Result<bool, String>
     Ok(true)
 }
 
+/// The tab index of the open design saved at `path` (the shown design too); `None` when no
+/// tab has that file.
+pub(crate) fn index_at(app: &SolveApp, path: &str) -> Option<usize> {
+    let matches = |s: &Session| s.path.as_deref().is_some_and(|p| same_path(p, path));
+    if matches(&app.session) {
+        return Some(app.docs.active);
+    }
+    app.docs.slots.iter().position(|s| s.as_ref().is_some_and(|s| matches(&s.session)))
+}
+
+/// A file or folder inside the tree was renamed or moved: every open design at `from`, or below
+/// it, takes its new path. The tab, the design's name on save and its file all follow; unsaved
+/// edits stay unsaved. Answers how many designs moved.
+pub(crate) fn retarget_paths(app: &mut SolveApp, from: &std::path::Path, to: &std::path::Path) -> usize {
+    let moved = |path: &str| -> Option<String> {
+        let path = std::path::Path::new(path);
+        if path == from {
+            return Some(to.to_string_lossy().into_owned());
+        }
+        path.strip_prefix(from).ok().map(|rest| to.join(rest).to_string_lossy().into_owned())
+    };
+    let mut moved_count = 0;
+    let mut rewrite = |session: &mut Session| {
+        let Some(path) = session.path.clone() else { return };
+        let Some(new_path) = moved(&path) else { return };
+        // The engine owns the design's name and its file: a borrowed name follows the file, a
+        // name the person chose stays. The unsaved edits are kept.
+        session.follow_file_move(&path, &new_path);
+        moved_count += 1;
+    };
+    rewrite(&mut app.session);
+    for slot in app.docs.slots.iter_mut().flatten() {
+        rewrite(&mut slot.session);
+    }
+    for path in &mut app.preferences.open_designs {
+        if let Some(new_path) = moved(path) {
+            *path = new_path;
+        }
+    }
+    moved_count
+}
+
+/// Close every tab whose file is one of `paths` (or inside one of them), as after a delete.
+pub(crate) fn close_paths(app: &mut SolveApp, paths: &[String]) {
+    for _ in 0..MAX_OPEN {
+        let found = (0..app.docs.count()).find(|i| {
+            let session = if *i == app.docs.active || app.docs.slots.is_empty() {
+                &app.session
+            } else {
+                match app.docs.slots.get(*i).and_then(Option::as_ref) {
+                    Some(slot) => &slot.session,
+                    None => return false,
+                }
+            };
+            session.path.as_deref().is_some_and(|path| paths.iter().any(|deleted| std::path::Path::new(path).starts_with(deleted)))
+        });
+        let Some(index) = found else { break };
+        close(app, index, true);
+    }
+}
+
 pub(crate) fn same_path(a: &str, b: &str) -> bool {
     if a == b {
         return true;
@@ -537,6 +598,10 @@ pub fn saved(app: &mut SolveApp, p: &Value) -> Result<Value, String> {
 /// here used to leave it in millimetres.
 pub fn new_design(app: &mut SolveApp) {
     if app.file_picker_busy() {
+        return;
+    }
+    if app.preferences.new_design_makes_project && app.services.pick_folder.is_some() {
+        crate::new_project::open(app);
         return;
     }
     app.home.open = false;
@@ -2133,5 +2198,51 @@ mod tests {
         crate::dialogs::cancel(&mut h.app);
         assert!(h.app.dialog.is_none());
         assert_eq!((h.app.session.doc.features.len(), h.app.session.doc.marker), (features, None), "Cancel puts the history back");
+    }
+
+    /// The New Design preference: on (with a folder picker) asks for a project; off keeps the
+    /// pathless design it has always made, and so does a host that cannot ask for a folder.
+    #[test]
+    fn a_new_design_asks_for_a_project_only_when_the_preference_is_on() {
+        let mut a = app();
+        a.preferences.new_design_makes_project = true;
+        a.services.pick_folder = Some(Box::new(|| Box::pin(std::future::pending())));
+        new_design(&mut a);
+        assert!(a.new_project.is_some(), "the project window is open");
+        assert_eq!(a.docs.count(), 1, "the window replaces the new tab");
+
+        let mut a = app();
+        a.preferences.new_design_makes_project = false;
+        a.services.pick_folder = Some(Box::new(|| Box::pin(std::future::pending())));
+        a.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        new_design(&mut a);
+        assert!(a.new_project.is_none(), "the preference is off");
+        assert_eq!(a.docs.count(), 2, "a pathless new design is made");
+
+        let mut a = app();
+        a.preferences.new_design_makes_project = true;
+        a.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        new_design(&mut a);
+        assert!(a.new_project.is_none(), "a host without a folder dialog cannot ask");
+        assert_eq!(a.docs.count(), 2);
+    }
+
+    /// Cancelling the folder choice keeps the window open and writes nothing: no design, no
+    /// `.intcad` folder.
+    #[test]
+    fn a_cancelled_folder_choice_leaves_no_file_and_no_project() {
+        let mut h = crate::scenario::Harness::new();
+        let target = h.dir.join("chosen");
+        std::fs::create_dir_all(&target).unwrap();
+        h.app.preferences.new_design_makes_project = true;
+        h.app.last_project_folder = Some(target.to_string_lossy().into_owned());
+        h.app.services.pick_folder = Some(Box::new(|| Box::pin(std::future::ready(None))));
+        new_design(&mut h.app);
+        assert!(h.app.new_project.is_some());
+        crate::new_project::choose_folder(&mut h.app);
+        h.frames(2);
+        let dialog = h.app.new_project.as_ref().expect("the window stays open");
+        assert_eq!(dialog.folder, target.to_string_lossy());
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 0, "the cancelled choice wrote nothing");
     }
 }

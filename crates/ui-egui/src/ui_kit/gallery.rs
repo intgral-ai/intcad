@@ -1468,6 +1468,9 @@ const ELEMENTS: &[Element] = &[
     element!("cell_editor", |ui, s| {
         cell_editor(ui, ui.id().with("cell"), &mut s.value, "Expression", true);
     }),
+    element!("single_line", |ui, s| {
+        single_line(ui, &mut s.value, ui.id().with("ask_here"), "Ask about the selection", 64, 240.0);
+    }),
     element!("color_field", |ui, _| {
         color_field(ui, &mut [120, 150, 180]);
     }),
@@ -1532,6 +1535,12 @@ const ELEMENTS: &[Element] = &[
         for open in [true, false] {
             let (rect, _) = ui.allocate_exact_size(vec2(t.form_close_size, t.form_close_size), egui::Sense::hover());
             ui.push_id(open, |ui| disclosure_button_at(ui, rect, open, crate::i18n::tr_label(if open { "Collapse" } else { "Expand" })));
+        }
+    }),
+    element!("disclosure_label_button", |ui, _| {
+        for expanded in [true, false] {
+            let label = crate::i18n::tr_label(if expanded { "Collapse" } else { "Expand" });
+            ui.push_id(expanded, |ui| disclosure_label_button(ui, label, expanded));
         }
     }),
     element!("panel_disclosure_button_at", |ui, _| {

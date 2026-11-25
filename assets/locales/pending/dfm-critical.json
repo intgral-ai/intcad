@@ -1,0 +1,20 @@
+{
+  "en": {
+    "cmd.project.critical_set": "Declare Critical Dimensions"
+  },
+  "ar": {
+    "cmd.project.critical_set": "إعلان الأبعاد الحرجة"
+  },
+  "he": {
+    "cmd.project.critical_set": "הצהרת מידות קריטיות"
+  },
+  "ja": {
+    "cmd.project.critical_set": "重要寸法を宣言"
+  },
+  "vi": {
+    "cmd.project.critical_set": "Khai báo kích thước quan trọng"
+  },
+  "zh": {
+    "cmd.project.critical_set": "声明关键尺寸"
+  }
+}

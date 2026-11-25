@@ -32,9 +32,11 @@ import sys
 FULL_PREFIXES = (".cargo/", ".config/", "scripts/")
 FULL_FILES = ("Cargo.toml", "Cargo.lock", ".github/workflows/ci.yml")
 # Changes here affect no code: documentation, packaging, the other workflows and GitHub settings,
-# and the GitHub bots' scripts (tested in the repository checks). Root *.md files too, unless
+# and the GitHub bots' scripts (tested in the repository checks). The repo-only verification
+# skill and its driver do not change a Cargo build. Root *.md files too, unless
 # embedded (below).
-IGNORED_PREFIXES = ("docs/", "packaging/", "attribution/", "assets/locales/pending/", "assets/platforms/", ".github/", "scripts/claim/", "scripts/triage/", "scripts/ci/")
+IGNORED_PREFIXES = ("docs/", "packaging/", "attribution/", "assets/locales/pending/", "assets/platforms/", ".github/",
+                    ".agents/skills/verify-intcad/", "scripts/claim/", "scripts/triage/", "scripts/ci/")
 IGNORED_FILES = ("vendor/README.md", ".gitignore", ".npmrc")
 # Root files that a crate embeds (include_str!), so they are not ignorable documentation.
 EMBEDDED = {

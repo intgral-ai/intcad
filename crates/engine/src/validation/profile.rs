@@ -131,6 +131,12 @@ pub fn task_profile(
     Ok(profile)
 }
 
+/// Whether a resolved profile contains DFM work. Ordinary free validation never runs these; a
+/// controlled host must carry a verified safe stop and a durable operation identity.
+pub fn has_dfm_check(profile: &CheckProfile) -> bool {
+    profile.checks.iter().any(|check| check.kind.starts_with("dfm.") || check.check_id.starts_with("dfm."))
+}
+
 /// Check a complete profile's shape, ordering, bounds and mandatory requirements.
 pub fn validate_profile(profile: &CheckProfile) -> Result<(), ValidationError> {
     if profile.schema_version != "1.0" {
@@ -204,6 +210,10 @@ fn validate_check_parameters(check: &CheckRequirement) -> Result<(), ValidationE
         }
         "dfm.sheet" => {
             crate::dfm::validate_parameters(&check.parameters).map_err(|error| invalid(format!("dfm.sheet: {error}")))?;
+            Ok(())
+        }
+        "dfm.sheet.flat_overlap" => {
+            crate::dfm::validate_flat_parameters(&check.parameters).map_err(|error| invalid(format!("dfm.sheet.flat_overlap: {error}")))?;
             Ok(())
         }
         "geometry.exact" => {

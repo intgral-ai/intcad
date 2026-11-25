@@ -265,14 +265,39 @@ fn begin_ahead(
     Some((Work::Ahead { commands, doc: app.session.doc.clone(), revision: app.session.revision, tries, kept }, rx, steps))
 }
 
+/// A copy answered on a worker cannot carry typed admission into a durable commit gate yet.
+/// Refuse a controlled entry before starting the worker or taking a grant; free GUI and browser
+/// work still answers on the copy.
+fn admit_copy_path(app: &mut SolveApp, req: &mut ControlRequest) -> bool {
+    if !crate::control::free_entry(req.entry) {
+        crate::control::release_unstarted(app, req);
+        let _ = req.reply.send(crate::control::async_controlled_refusal(req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
+        return false;
+    }
+    match crate::control::admit_once(app, req) {
+        Ok(_) => true,
+        Err(refusal) => {
+            let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+            false
+        }
+    }
+}
+
 impl SolveApp {
     /// Both immediate and deferred completion are only cache warming: the original admission
     /// must still match on the owner before installing kept results or touching history.
     pub(crate) fn finish_control_ahead(&mut self, ctx: &egui::Context, req: ControlRequest, kept: Arc<KeptResults>) {
+        let mut req = req;
         if req.refuse_cancelled_chat() {
+            crate::control::release_unstarted(self, &mut req);
+            return;
+        }
+        if let Err(refusal) = crate::control::admit_once(self, &mut req) {
+            let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
             return;
         }
         if let Err(error) = crate::execution_guard::check_application(self, &req) {
+            crate::control::release_unstarted(self, &mut req);
             let _ = req.reply.send(crate::execution_guard::refusal_json(&error));
             return;
         }
@@ -386,6 +411,7 @@ impl SolveApp {
             .as_ref()
             .map(|j| (j.started, j.steps.as_ref().map_or_else(|| j.label.clone(), |s| s.shown())))
             .or_else(|| self.agent.computing())
+            .or_else(|| crate::agent_chat::review::computing(&self.agent_chat))
     }
 
     /// Stop waiting for the agent's design change that is computing: it is answered as stopped
@@ -393,14 +419,25 @@ impl SolveApp {
     /// behind it go on.
     pub fn stop_agent_command(&mut self) {
         let stopped = match self.control_job.take() {
-            Some(job) => {
+            Some(mut job) => {
+                // The job never reached the dispatch boundary; its admission is unused.
+                crate::control::release_unstarted(self, &mut job.req);
                 let response = crate::control::stopped_command_response(&job.req.method, &job.req.params, job.req.guarded.is_some(), &job.label);
                 Some((job.req.reply, response))
             }
-            None => self.agent.stop(),
+            None => self.agent.stop().map(|(reply, response, mut reissue)| {
+                crate::control::release_reissue_unstarted(self, &mut reissue, solidcraft_engine::entitlement::RefusalCode::UnsafeToStart);
+                (reply, response)
+            }),
         };
-        if let Some((reply, response)) = stopped {
-            let _ = reply.send(response);
+        match stopped {
+            Some((reply, response)) => {
+                let _ = reply.send(response);
+            }
+            // The agent chat's request computing on its copy of the design (preview, then accept).
+            None => {
+                crate::agent_chat::review::stop(&mut self.agent_chat);
+            }
         }
     }
 
@@ -424,6 +461,9 @@ impl SolveApp {
         if self.control_answering.len() < MAX_ANSWERING
             && let Some((id, params)) = reading(&req)
         {
+            if !admit_copy_path(self, &mut req) {
+                return None;
+            }
             return self.answer_on_a_copy(req, id, params);
         }
         // A snapshot freezes and writes a large artifact: answer on a copy even when the general
@@ -433,6 +473,9 @@ impl SolveApp {
             && let Some((command, params)) = executed(&req.params)
             && spec_id(command) == Some("document.snapshot.capture")
         {
+            if !admit_copy_path(self, &mut req) {
+                return None;
+            }
             return self.answer_on_a_copy(req, "document.snapshot.capture", params);
         }
         if !self.preferences.agent_off_thread {
@@ -444,10 +487,19 @@ impl SolveApp {
             && let Some((command, params)) = executed(&req.params)
             && let Some(id) = spec_id(command).filter(|id| ANSWERED_ON_A_COPY.contains(id))
         {
+            if !admit_copy_path(self, &mut req) {
+                return None;
+            }
             return self.answer_on_a_copy(req, id, params);
         }
         let commands = ahead_commands(&req.method, &req.params);
         let Some(first) = commands.first().map(|(c, _)| c.clone()) else { return Some(req) };
+        // Computing ahead is only cache warming for the real dispatch, which resolves this same
+        // typed admission; refuse a controlled entry without authority before any worker starts.
+        if let Err(refusal) = crate::control::admit_once(self, &mut req) {
+            let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+            return None;
+        }
         let Some((work, rx, steps)) = begin_ahead(self, &req, commands, 0) else { return Some(req) };
         let job = ControlJob { label: label(self, &first), req, work, done: rx, started: crate::now_ms(), steps: Some(steps) };
         if within_wait(self, &job.done).is_some() {
@@ -515,6 +567,10 @@ impl SolveApp {
         if job.req.refuse_cancelled_chat() {
             return;
         }
+        if !crate::control::free_entry(job.req.entry) && job.req.admission.is_none() {
+            let _ = job.req.reply.send(crate::control::async_controlled_refusal(&job.req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
+            return;
+        }
         if let Err(error) = crate::execution_guard::check_application(self, &job.req) {
             let _ = job.req.reply.send(crate::execution_guard::refusal_json(&error));
             return;
@@ -539,7 +595,8 @@ impl SolveApp {
             let mut i = 0;
             while i < self.control_answering.len() {
                 if self.control_answering.get(i).is_some_and(|job| job.req.refuse_cancelled_chat()) {
-                    self.control_answering.remove(i);
+                    let mut job = self.control_answering.remove(i);
+                    crate::control::release_unstarted(self, &mut job.req);
                     continue;
                 }
                 match self.control_answering.get(i).and_then(ControlJob::poll) {
@@ -552,13 +609,15 @@ impl SolveApp {
             }
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
-        let Some(job) = self.control_job.take() else { return };
+        let Some(mut job) = self.control_job.take() else { return };
         if job.req.refuse_cancelled_chat() {
+            crate::control::release_unstarted(self, &mut job.req);
             return;
         }
         // A guarded request never waits for a new base or uses legacy Arc ancestry to decide
         // its target. In particular, leaving and returning cannot revive its original token.
         if let Err(error) = crate::execution_guard::check_application(self, &job.req) {
+            crate::control::release_unstarted(self, &mut job.req);
             let _ = job.req.reply.send(crate::execution_guard::refusal_json(&error));
             return;
         }
@@ -567,6 +626,7 @@ impl SolveApp {
         // are for the design shown, don't wait for it.
         let left = matches!(&job.work, Work::Ahead { doc, .. } if !shows_design(&self.session, doc));
         if left {
+            crate::control::release_unstarted(self, &mut job.req);
             let _ = job.req.reply.send(design_replaced(&job.label));
             return;
         }
@@ -580,10 +640,14 @@ impl SolveApp {
             self.control_held.push_front(job.req);
             return;
         }
-        let Work::Ahead { commands, doc, revision, tries, kept } = job.work else { return };
+        let Work::Ahead { commands, doc, revision, tries, kept } = job.work else {
+            crate::control::release_unstarted(self, &mut job.req);
+            return;
+        };
         let s = &self.session;
         let same = Arc::ptr_eq(&s.doc, &doc);
         if !shows_design(s, &doc) {
+            crate::control::release_unstarted(self, &mut job.req);
             let _ = job.req.reply.send(design_replaced(&job.label));
             return;
         }
@@ -660,7 +724,7 @@ mod tests {
         let store = dir.join("candidates");
         solidcraft_engine::cmd::set_candidate_store(Some(store.clone()));
         let stamp = h.app.session.document_stamp();
-        let (req, rx) = crate::control::ControlRequest::new(
+        let (req, rx) = crate::control::ControlRequest::trusted_gui(
             "engine.execute",
             json!({"command":"document.snapshot.capture","params":{},
                 "expectedDocument":{"documentId":stamp.document_id,"revision":stamp.revision.to_string()}}),

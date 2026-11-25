@@ -19,6 +19,8 @@ pub mod cosmetic_threads;
 pub mod crash;
 pub mod dfm;
 pub mod easyprint;
+pub mod entitlement;
+pub mod factory_data;
 pub mod frames;
 pub mod fuzz;
 pub mod licences;
@@ -26,6 +28,7 @@ pub mod occurrences;
 pub mod panels;
 pub mod params;
 pub mod product_scene;
+pub mod project;
 pub mod recovery;
 pub mod render_jobs;
 pub mod render_lights;
@@ -53,8 +56,8 @@ use solidcraft_doc::{Document, Model, ModelState};
 
 pub use cmd::settings::{MAX_PROFILE_NAME, profile_name};
 pub use cmd::{
-    Addition, CommandInfo, CommandSpec, OpenSteps, addition, auto_operation, command_specs, dimension_roles, extrude_reach, find_command,
-    resolve_design_links, shown_scope, standard_view,
+    Addition, CommandInfo, CommandSpec, OpenSteps, WINDOW_COMMANDS, addition, auto_operation, command_specs, dimension_roles, extrude_reach,
+    find_command, resolve_command_id, resolve_design_links, shown_scope, standard_view,
 };
 pub use solidcraft_doc as doc;
 pub use solidcraft_doc::Visibility;
@@ -76,6 +79,8 @@ pub enum EngineError {
     Panel(#[from] panels::PanelError),
     #[error("unknown command `{0}`{hint}", hint = cmd::did_you_mean(.0))]
     UnknownCommand(String),
+    #[error("unknown command `{0}`{hint}", hint = cmd::describe_suggestions(.0))]
+    UnknownCommandDescription(String),
     #[error("`{0}` is not available right now: {1}")]
     Disabled(String, String),
     #[error("invalid parameters for `{cmd}`: {msg}")]

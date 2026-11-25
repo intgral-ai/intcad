@@ -44,7 +44,8 @@ mod profiling;
 mod recipe;
 mod render;
 mod spatial;
-mod validation;
+
+use solidcraft_cli::{account, validation};
 
 use std::process::ExitCode;
 
@@ -213,7 +214,8 @@ fn main() -> ExitCode {
         }
         // Hidden, for the kill-mid-save test: save a large design over and over.
         Some("save-stress") => cmd_save_stress(&args[1..]),
-        Some("validate") => validation::run(&args[1..]),
+        // Measured entries land separately; this build must not guess a safe-stop bound.
+        Some("validate") => validation::run(&args[1..], &solidcraft_engine::entitlement::BudgetTable::unverified_default()),
         // Hidden: time recomputes after parameter edits (docs/perf.md).
         Some("bench-edit") => cmd_bench_edit(&args[1..]),
         Some("bench-open") => cmd_bench_open(&args[1..]),
@@ -871,7 +873,7 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
     }
     // How calls that break a command's parameter contract are treated, headless or bridged.
     let param_check = parse_param_check("mcp", args)?;
-    let backend: Box<dyn solidcraft_mcp::Backend> = match (flag(args, "--connect"), flag(args, "--in")) {
+    let (backend, route): (Box<dyn solidcraft_mcp::Backend>, account::McpRoute) = match (flag(args, "--connect"), flag(args, "--in")) {
         (Some(_), Some(_)) => return Err("mcp: use either --connect or --in, not both".into()),
         (Some(addr), None) => {
             let Some(port) = addr.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()).filter(|p| *p != 0) else {
@@ -885,21 +887,21 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
                      (or SOLIDCRAFT_CONTROL_PORT={port}), tool calls connect once it runs"
                 );
             }
-            Box::new(remote)
+            (Box::new(remote), account::McpRoute::GuiBridge)
         }
         (None, Some(path)) => {
             let mut headless = solidcraft_mcp::Headless::new(load_checked(path, param_check)?);
             if render_gpu {
                 headless.session.register_render_job_host(solidcraft_gpu::path::host().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
             }
-            Box::new(headless)
+            (Box::new(headless), account::McpRoute::Headless)
         }
         (None, None) => {
             let auto = !args.iter().any(|a| a == "--headless");
             if auto && let Some(port) = discover_app() {
                 solidcraft_engine::note!("solidcraft mcp: bridged to the running app at 127.0.0.1:{port} (--headless starts a session of its own)");
                 let remote = solidcraft_mcp::Remote::new(&format!("127.0.0.1:{port}"), flag(args, "--token")).with_param_check(param_check);
-                return serve_mcp(Box::new(remote), scope);
+                return serve_mcp(Box::new(remote), scope, account::McpRoute::GuiBridge);
             }
             let mut headless = solidcraft_mcp::Headless::default();
             headless.session.param_check = param_check;
@@ -908,19 +910,31 @@ fn cmd_mcp(args: &[String]) -> Result<(), String> {
             }
             if auto {
                 // The app may start after the agent: look for it again until there is work here.
-                Box::new(solidcraft_mcp::Auto::new(headless, Box::new(discover_app), flag(args, "--token")))
+                // Treat the automatic backend as bridged because it may switch to the app after
+                // this account decision; a local charge must not race an app-side settlement.
+                (Box::new(solidcraft_mcp::Auto::new(headless, Box::new(discover_app), flag(args, "--token"))), account::McpRoute::GuiBridge)
             } else {
-                Box::new(headless)
+                (Box::new(headless), account::McpRoute::Headless)
             }
         }
     };
-    serve_mcp(backend, scope)
+    serve_mcp(backend, scope, route)
 }
 
-fn serve_mcp(backend: Box<dyn solidcraft_mcp::Backend>, scope: Option<solidcraft_engine::io::vfs::PathScope>) -> Result<(), String> {
+fn serve_mcp(
+    backend: Box<dyn solidcraft_mcp::Backend>,
+    scope: Option<solidcraft_engine::io::vfs::PathScope>,
+    route: account::McpRoute,
+) -> Result<(), String> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    solidcraft_mcp::Server::new(backend).with_path_scope(scope).serve(stdin.lock(), stdout.lock()).map_err(|e| e.to_string())
+    let account = match route {
+        account::McpRoute::Headless => account::McpAccount::configured(),
+        account::McpRoute::GuiBridge => account::McpAccount::closed(),
+    };
+    // Measured entries land separately; a live session is not a safe-stop measurement.
+    let budget = solidcraft_engine::entitlement::BudgetTable::unverified_default();
+    account::compose_mcp_server(backend, scope, account, route, budget).serve(stdin.lock(), stdout.lock()).map_err(|e| e.to_string())
 }
 
 /// The port of the running desktop app: the one its discovery file names, if something listens

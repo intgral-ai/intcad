@@ -225,7 +225,9 @@ pub fn validate_skill_snapshot(port: &ValidationPort, request: SkillValidationRe
     }
     let profile = port.register_profile(request.profile)?;
     let submitted = port.submit_for(request.candidate, &profile, &request.request_id, "skill")?;
-    port.pump()?;
+    // The skill path is free and non-DFM; it must not execute a DFM or controlled job that
+    // another entry queued in the same store.
+    port.pump_free()?;
     let result = port.report(&submitted.run_id)?;
     let report = result.report;
     let checks: Vec<SkillCheck> = report

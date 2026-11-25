@@ -29,6 +29,10 @@ on:
         description: "Also check RISC-V"
         type: boolean
         default: false
+      raw_matrix_evidence:
+        description: "Collect the nightly raw geometry evidence (not needed by ordinary full runs)"
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       concurrency_namespace:
@@ -41,6 +45,9 @@ on:
         type: boolean
         default: false
       cross_compile:
+        type: boolean
+        default: false
+      raw_matrix_evidence:
         type: boolean
         default: false
 
@@ -74,7 +81,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - id: select
         env:
           VALIDATION_MODE: ${{ inputs.validation_mode || 'affected' }}
@@ -105,7 +112,7 @@ jobs:
           name: selection-plan
           path: selection
       - run: scripts/ci/build-jobs.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -146,7 +153,7 @@ jobs:
           name: selection-plan
           path: selection
       - run: scripts/ci/build-jobs.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       # ubuntu-24.04 hosted images ship Google Chrome; the harness fails when
       # it cannot find a browser instead of skipping the check.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -197,7 +204,7 @@ jobs:
         with:
           name: selection-plan
           path: selection
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: artifact-policy
@@ -223,9 +230,15 @@ jobs:
       - run: scripts/ci/build-jobs.sh
       - name: Native build dependencies
         run: |
-          sudo apt-get update
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
           sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -264,9 +277,15 @@ jobs:
       - run: scripts/ci/build-jobs.sh
       - name: Native build dependencies
         run: |
-          sudo apt-get update
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
           sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: contract-rust
@@ -413,10 +432,16 @@ jobs:
         run: bash scripts/ci/free-disk.sh
       - name: Software Vulkan and native build dependencies
         run: |
-          sudo apt-get update
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
           sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
       - run: scripts/ci/build-jobs.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: native-tests
@@ -454,7 +479,7 @@ jobs:
           name: selection-plan
           path: selection
       - run: scripts/ci/build-jobs.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -484,7 +509,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - run: cargo install cargo-deny --version 0.20.2 --locked
       - if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         run: cargo deny --locked check --warn unmaintained advisories bans sources
@@ -506,9 +531,15 @@ jobs:
       - run: scripts/ci/build-jobs.sh
       - name: Native build dependencies
         run: |
-          sudo apt-get update
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
           sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: native-tests
@@ -580,16 +611,28 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: nextest-archive
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ inputs.raw_matrix_evidence }}
+        with:
+          name: selection-plan
+          path: selection
+      # The nightly raw verifier consumes this evidence. Keep the real
+      # list/run argv, process exit code, selection and JUnit report together.
       - name: Run one shard of the matrix
         timeout-minutes: 240
         env:
           SHARD: ${{ matrix.shard }}
           OUT: ${{ github.workspace }}/action-matrix
           ACTION_MATRIX_ACTION_TIMEOUT: "1800"
+          RAW_MATRIX_EVIDENCE: ${{ inputs.raw_matrix_evidence }}
         run: |
           mkdir -p "$OUT"
           export ACTION_MATRIX_SHARD="$SHARD/16" ACTION_MATRIX_RESULTS="$OUT/results-$SHARD.json" ACTION_MATRIX_TIMINGS="$OUT/timings-$SHARD.jsonl" ACTION_MATRIX_WORKDIR="$OUT/raw-$SHARD"
-          cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --success-output final --run-ignored only -E 'binary(action_matrix) & test(=action_matrix_shard)' --test-threads 2
+          if [ "$RAW_MATRIX_EVIDENCE" = "true" ]; then
+            python3 -I scripts/ci/raw_matrix.py run --plan selection/plan.json --shard "$SHARD" --out "$OUT" --evidence
+          else
+            python3 -I scripts/ci/raw_matrix.py run --shard "$SHARD" --out "$OUT"
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -605,6 +648,7 @@ jobs:
     timeout-minutes: 150
     env:
       ACTION_MATRIX_ACTION_TIMEOUT: "1800"
+      OUT: ${{ github.workspace }}/action-matrix-determinism
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -615,7 +659,28 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: nextest-archive
-      - run: cargo nextest run --archive-file tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite --profile ci --success-output final --run-ignored only -E 'binary(action_matrix) & test(=action_matrix_determinism)' --test-threads 2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ inputs.raw_matrix_evidence }}
+        with:
+          name: selection-plan
+          path: selection
+      # Determinism is a separate unit of raw evidence; shard artifacts cannot replace it.
+      - env:
+          RAW_MATRIX_EVIDENCE: ${{ inputs.raw_matrix_evidence }}
+        run: |
+          mkdir -p "$OUT"
+          if [ "$RAW_MATRIX_EVIDENCE" = "true" ]; then
+            python3 -I scripts/ci/raw_matrix.py run --plan selection/plan.json --shard determinism --out "$OUT" --evidence
+          else
+            python3 -I scripts/ci/raw_matrix.py run --shard determinism --out "$OUT"
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() && inputs.raw_matrix_evidence }}
+        with:
+          name: action-matrix-determinism
+          path: action-matrix-determinism
+          if-no-files-found: error
+          retention-days: 14
 
   doc-tests:
     name: Doc tests
@@ -630,9 +695,15 @@ jobs:
       - run: scripts/ci/build-jobs.sh
       - name: Native build dependencies
         run: |
-          sudo apt-get update
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
           sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libxkbcommon-dev libgtk-3-dev libwebkit2gtk-4.1-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: doc-tests
@@ -656,9 +727,15 @@ jobs:
       - run: scripts/ci/build-jobs.sh
       - name: Software Vulkan and native build dependencies
         run: |
-          sudo apt-get update
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
           sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 libasound2-dev libudev-dev libxkbcommon-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: oracle
@@ -686,7 +763,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - name: Record actual runner image
         run: '"ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion" | Out-File runner-image.txt'
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -712,7 +789,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
       - name: Record actual runner image
         run: '"ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion" | Out-File runner-image.txt'
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -757,7 +834,7 @@ jobs:
           path: craft-fonts
           persist-credentials: false
       - run: scripts/ci/build-jobs.sh
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: riscv64gc-unknown-linux-gnu
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -776,7 +853,13 @@ jobs:
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
           EOF
           sudo dpkg --add-architecture riscv64
-          sudo apt-get update
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
           sudo apt-get install -y gcc-riscv64-linux-gnu g++-riscv64-linux-gnu libasound2-dev:riscv64 libxkbcommon-dev:riscv64 libwayland-dev:riscv64 libx11-dev:riscv64 libxrandr-dev:riscv64 libxi-dev:riscv64 libgl1-mesa-dev:riscv64 libgtk-3-dev:riscv64 libwebkit2gtk-4.1-dev:riscv64
       - name: Cargo check on RISC-V
         env:

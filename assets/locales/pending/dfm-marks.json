@@ -1,0 +1,42 @@
+{
+  "ar": {
+    "ui.dfm_mark_advisory": "مراجعة",
+    "ui.dfm_mark_dimmed": "معلومات",
+    "ui.dfm_mark_failed": "فشل"
+  },
+  "de": {
+    "ui.dfm_mark_advisory": "Prüfen",
+    "ui.dfm_mark_dimmed": "Hinweis",
+    "ui.dfm_mark_failed": "Fehlgeschlagen"
+  },
+  "en": {
+    "ui.dfm_mark_advisory": "Review",
+    "ui.dfm_mark_dimmed": "Info",
+    "ui.dfm_mark_failed": "Failed"
+  },
+  "he": {
+    "ui.dfm_mark_advisory": "סקירה",
+    "ui.dfm_mark_dimmed": "מידע",
+    "ui.dfm_mark_failed": "נכשל"
+  },
+  "ja": {
+    "ui.dfm_mark_advisory": "要確認",
+    "ui.dfm_mark_dimmed": "情報",
+    "ui.dfm_mark_failed": "不合格"
+  },
+  "ko": {
+    "ui.dfm_mark_advisory": "확인 필요",
+    "ui.dfm_mark_dimmed": "정보",
+    "ui.dfm_mark_failed": "실패"
+  },
+  "vi": {
+    "ui.dfm_mark_advisory": "Cần xem lại",
+    "ui.dfm_mark_dimmed": "Thông tin",
+    "ui.dfm_mark_failed": "Không đạt"
+  },
+  "zh": {
+    "ui.dfm_mark_advisory": "需复核",
+    "ui.dfm_mark_dimmed": "信息",
+    "ui.dfm_mark_failed": "不合格"
+  }
+}

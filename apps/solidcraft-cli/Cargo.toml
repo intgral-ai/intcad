@@ -24,8 +24,11 @@ profile = ["solidcraft-engine/profile"]
 [dependencies]
 solidcore-record = { workspace = true }
 solidcraft-engine = { workspace = true }
+solidcraft-account-native = { workspace = true }
 solidcraft-gpu = { workspace = true }
 solidcraft-mcp = { workspace = true }
+solidcraft-suspend-clock = { workspace = true }
+getrandom = "0.3"
 log = { workspace = true }
 serde_json = { workspace = true }
 

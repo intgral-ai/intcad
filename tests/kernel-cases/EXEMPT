@@ -53,6 +53,10 @@ component.replace_with_link       component links
 component.show_history            the History bar: which features it lists
 component.unlock                  component locking
 component.update_links            component links
+dfm.cancel                        the manual DFM run's cancel, not geometry: dfm::run_tests::a_cancelled_run_keeps_the_previous_record_and_gives_a_reason
+dfm.check                         the manual DFM entry and its saved report, not geometry: dfm::service_tests::a_manual_check_without_ai_writes_a_report_that_inspect_reopens
+dfm.override                      a project's DFM number override, not geometry: control::tests::assistant_writes_to_project_settings_and_overrides_are_refused
+dfm.status                        the manual DFM run's status, not geometry: dfm::service_tests::a_manual_check_without_ai_writes_a_report_that_inspect_reopens
 diagnostics.crash_report          crash reports
 diagnostics.crash_reports         crash reports
 diagnostics.crash_reports.clear   crash reports
@@ -91,6 +95,7 @@ inspect.analysis                  display analysis: which one is on
 inspect.colored_components        display: component colours
 inspect.compare_picture           display analysis: a picture compared with the outline
 inspect.curvature_map             display analysis: shading
+inspect.dfm                       the manual DFM run's saved report, not geometry: dfm::service_tests::a_manual_check_without_ai_writes_a_report_that_inspect_reopens
 inspect.environment_map           display analysis: shading
 inspect.silhouette                display analysis: outline
 inspect.zebra                     display analysis: shading
@@ -146,6 +151,13 @@ pointcloud.delete                 point clouds: points drawn, never a body
 pointcloud.edit                   point clouds: points drawn, never a body
 pointcloud.insert                 point clouds: points drawn, never a body
 pointcloud.list                   point clouds: points drawn, never a body
+project.attach                    a project folder beside a saved design, not geometry: project::tests::attach_keeps_the_design_and_puts_the_project_beside_it
+project.ci_set                    project check settings, not geometry: control::tests::assistant_writes_to_project_settings_and_overrides_are_refused
+project.create                    a project folder and its templates, not geometry: project::tests::a_created_project_reopens_with_the_same_identity_and_settings
+project.critical_set              project critical hole-to-hole dimensions, not geometry: project::tests::critical_dimensions_save_reopen_and_change_the_frozen_digest
+project.data_set                  a project's DFM data selection, not geometry: project::tests::a_copied_project_reads_its_own_data_copy_and_another_tier
+project.inspect                   reading a project folder, not geometry: cmd::project::attach_tests::attach_uses_the_open_designs_path_and_inspect_finds_the_project
+project.settings_set              project settings, not geometry: control::tests::assistant_writes_to_project_settings_and_overrides_are_refused
 render.aging.describe             rendering: images, cameras, stages
 render.backends                   rendering: images, cameras, stages
 render.batch                      rendering: images, cameras, stages
@@ -310,6 +322,7 @@ timeline.inspect                  a listing of the timeline
 timeline.play                     plays the history back in the view: no new geometry
 timeline.rename                   a feature name
 timeline.rename_group             a group name
+ui.ask_here                       the Ask Here box and its turn on a copy, not geometry: agent_chat::tests::ask_here_with_previews_on_runs_the_turn_on_a_copy
 ui.assistant                      the view: camera, layout, display
 view.ambient_occlusion            the view: camera, layout, display
 view.angle_readout                the view: camera, layout, display
