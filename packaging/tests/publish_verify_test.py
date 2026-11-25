@@ -133,6 +133,26 @@ class Publish(unittest.TestCase):
             with self.subTest(rows=rows), self.assertRaises(ValueError):
                 release.artifact_index(rows, names)
 
+    def test_tag_push_is_formal_and_dispatch_is_diagnostic(self):
+        sha = SHA
+        run = dict(id=42, run_attempt=1, path=".github/workflows/release-gate.yml", event="push",
+                   conclusion="success", status="completed", head_branch="v0.1.3", head_sha=sha)
+        jobs = [dict(name=name, run_id=42, run_attempt=1, conclusion="success", status="completed")
+                for name in release.GATE_JOBS]
+        # A stable tag pushed on main is the formal post-promotion gate.
+        release.verify_execution(run, jobs, 42, 1, mode="tag", sha=sha, tag="v0.1.3")
+        # A manual dispatch can never stand in, in either mode.
+        for mode in ("tag", "candidate"):
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                release.verify_execution(run | {"event": "workflow_dispatch", "head_branch": "main"},
+                                         jobs, 42, 1, mode=mode, sha=sha, tag="v0.1.3")
+        # An omitted branch field is not accepted: the preflight tag proved GitHub
+        # reports the tag name there.
+        for change in ({"head_branch": None}, {"head_branch": ""}, {"head_branch": "v0.1.4"},
+                       {"head_branch": "main"}, {"head_sha": "b" * 40}, {"run_attempt": 2}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                release.verify_execution(run | change, jobs, 42, 1, mode="tag", sha=sha, tag="v0.1.3")
+
     def test_gate_attempt_uses_real_jobs_not_pr_head(self):
         run = dict(id=42, run_attempt=2, path=".github/workflows/release-gate.yml", event="pull_request",
                    conclusion="success", status="completed", head_sha="b" * 40)
@@ -239,6 +259,21 @@ class Publish(unittest.TestCase):
         with self.assertRaises(ValueError):
             release.verify_manifest(manifest, 12, 42, 2, SHA, V, DIGEST, swapped)
 
+    def test_a_tag_handoff_names_the_tag_and_a_candidate_does_not(self):
+        rows = [dict(id=i, name=name, digest=DIGEST, expired=False)
+                for i, name in enumerate(release.pair_names(2), 1)]
+        accepted = release.artifact_index(rows, release.pair_names(2))
+        described = release.make_manifest(12, 42, 2, SHA, V, DIGEST, "native", accepted, self.index,
+                                          mode="tag", ref=f"refs/tags/v{V}")
+        self.assertEqual(release.verify_manifest(described, 12, 42, 2, SHA, V, DIGEST, accepted), self.index)
+        for change in ({"ref": "refs/heads/main"}, {"ref": f"refs/tags/v{V}-rc.1"},
+                       {"mode": "post-promotion"}):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                release.verify_manifest(described | change, 12, 42, 2, SHA, V, DIGEST, accepted)
+        self.assertEqual(
+            release.verify_manifest(release.make_manifest(12, 42, 2, SHA, V, DIGEST, "native", accepted, self.index),
+                                    12, 42, 2, SHA, V, DIGEST, accepted), self.index)
+
     def test_authorization_requires_configured_private_nonfork_repository(self):
         repo = dict(id=12, full_name="intgral-ai/intcad-client", visibility="private", private=True, fork=False)
         release.verify_repository(repo, "12", "private")
@@ -335,6 +370,17 @@ class Publish(unittest.TestCase):
             with self.subTest(change=change), self.assertRaisesRegex(ValueError, message):
                 release.verify_remote_tag(**(ok | change))
 
+    def test_a_deleted_remote_tag_is_refused(self):
+        import subprocess
+        from unittest import mock
+
+        def gone(*args, token=None):
+            raise subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 404")
+
+        with mock.patch.object(release, "api", side_effect=gone):
+            with self.assertRaisesRegex(ValueError, "does not exist on the source"):
+                release.remote_tag_commit("intgral-ai/intcad", "v0.1.3")
+
     def test_tag_must_still_name_the_frozen_sha_before_every_upload(self):
         import subprocess
         root = self.root / "tagrepo"
@@ -392,6 +438,14 @@ class Publish(unittest.TestCase):
         group = dict(action="checks_requested", merge_group={"base_ref": "refs/heads/main"})
         self.assertTrue(release.gate_candidate("merge_group", group, 12, V))
         self.assertFalse(release.gate_candidate("merge_group", group, 12, V + "-beta.1"))
+        # The post-promotion gate is exactly the stable tag push on the promoted commit.
+        tag = dict(ref=f"refs/tags/v{V}", repository={"id": 12})
+        self.assertTrue(release.gate_candidate("push", tag, 12, V))
+        for payload in (tag | {"ref": "refs/heads/main"}, tag | {"ref": f"refs/tags/v{V}-preflight"},
+                        tag | {"ref": f"refs/tags/v{V}.1"}, tag | {"repository": {"id": 13}},
+                        dict(ref=f"refs/tags/v{V}"), tag | {"ref": "refs/tags/v9.9.9"}):
+            with self.subTest(payload=payload):
+                self.assertFalse(release.gate_candidate("push", payload, 12, V))
 
     def test_environment_requires_authorized_reviewers_and_only_exact_main_branch(self):
         reviewers = dict(type="required_reviewers", prevent_self_review=True,

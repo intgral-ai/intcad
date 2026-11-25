@@ -4,6 +4,7 @@
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
@@ -64,6 +65,10 @@ pub struct RunJob {
 pub struct RunControl {
     pub(super) clock: Arc<dyn Clock>,
     pub(super) deadline_ms: u64,
+    /// A controlled check's own safe-stop bound, already measured by its host. Ordinary free
+    /// validation leaves it `None` and keeps the execution deadline. When present, the earlier
+    /// of the two stops the run.
+    pub(super) stop_at_ms: Option<u64>,
     pub(super) cancel_path: PathBuf,
 }
 
@@ -73,9 +78,27 @@ impl RunControl {
         self.cancel_path.is_file()
     }
 
-    /// Has the execution deadline passed?
+    /// The effective stop instant: the controlled safe-stop bound when one was measured, otherwise
+    /// the execution deadline.
+    pub fn stop_at_ms(&self) -> u64 {
+        match self.stop_at_ms {
+            Some(stop) => stop.min(self.deadline_ms),
+            None => self.deadline_ms,
+        }
+    }
+
+    /// Has the effective execution deadline passed?
     pub fn timed_out(&self) -> bool {
-        self.clock.now_ms() >= self.deadline_ms
+        self.clock.now_ms() >= self.stop_at_ms()
+    }
+
+    /// Whether a measured upper bound fits before the effective safe stop (the earlier of the
+    /// controlled stop and the execution deadline). A controlled host calls this before starting
+    /// the job; an unverified bound is never sent here as a zero duration.
+    pub fn fits_before_deadline(&self, upper_bound: Duration) -> bool {
+        let now = self.clock.now_ms();
+        let bound = u64::try_from(upper_bound.as_millis()).unwrap_or(u64::MAX);
+        now.saturating_add(bound) <= self.stop_at_ms()
     }
 }
 

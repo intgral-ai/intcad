@@ -938,10 +938,12 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
         text = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertIn("ref: ${{ github.sha }}", text)
         # These are native build inputs, not a staged runtime or installed test.
-        self.assertEqual(text.count("name: icons-${{ github.sha }}"), 2)
-        self.assertIn("name: macos-bin-${{ matrix.arch }}-${{ github.sha }}", text)
-        self.assertIn("name: macos-bin-aarch64-${{ github.sha }}", text)
-        self.assertIn("name: macos-bin-x86_64-${{ github.sha }}", text)
+        # The staging workflow wiring test separately checks the prefix expression.
+        names = text.replace("name: ${{ env.ARTIFACT_PREFIX }}", "name: ")
+        self.assertEqual(names.count("name: icons-${{ github.sha }}"), 2)
+        self.assertIn("name: macos-bin-${{ matrix.arch }}-${{ github.sha }}", names)
+        self.assertIn("name: macos-bin-aarch64-${{ github.sha }}", names)
+        self.assertIn("name: macos-bin-x86_64-${{ github.sha }}", names)
 
     def test_every_actual_package_build_result_is_required_without_allowing_skips(self):
         text = (ROOT / ".github/workflows/release.yml").read_text().split("\n  package-builds:\n", 1)[1]

@@ -14,6 +14,12 @@ on:
     branches: [main]
   merge_group:
     types: [checks_requested]
+  push:
+    # A stable tag is the formal post-promotion gate: the PR gate runs on the synthetic
+    # merge ref, which never becomes a main commit, so the promoted commit is gated by
+    # the maintainer's tag instead. Branch pushes stay out so merges do not start the
+    # full matrix.
+    tags: ["v*"]
   workflow_dispatch:
   workflow_call:
 
@@ -54,6 +60,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           MERGE_BASE: ${{ github.event.merge_group.base_ref }}
           MERGE_HEAD: ${{ github.event.merge_group.head_ref }}
+          REF: ${{ github.ref }}
         run: python3 -I scripts/ci/release_candidate.py --out "$GITHUB_OUTPUT"
 
   ci:
@@ -81,6 +88,10 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       gate_bound: true
+      # The candidate must embed the production account tuple, so the installed app can sign
+      # in. The values live in a protected repository variable, never in this repository's
+      # files; an unset variable fails the build closed instead of shipping an anonymous app.
+      production_account_config: ${{ vars.INTCAD_PRODUCTION_ACCOUNT_CONFIG }}
       beta_three_platforms: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.') }}
 
   beta-gate:
@@ -358,7 +369,10 @@ jobs:
           PY
       - name: Attest package pairs accepted by the formal stable gate
         id: handoff
-        if: success() && needs.candidate.outputs.context == 'release-gate' && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
+        if: >-
+          success() && needs.candidate.outputs.context == 'release-gate'
+          && (github.event_name == 'pull_request' || github.event_name == 'merge_group'
+              || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')))
         env:
           GH_TOKEN: ${{ github.token }}
           DISTRIBUTION: ${{ needs.packages.outputs.distribution }}

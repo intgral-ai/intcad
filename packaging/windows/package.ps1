@@ -96,6 +96,10 @@ foreach ($check in @(@('intcad.exe', 2), @('intcad-cli.exe', 3))) {
   $h = Get-PeHeader (Join-Path $CheckDir $check[0])
   if ($h.Machine -ne $Machine) { throw "$($check[0]) is for machine 0x$('{0:X}' -f $h.Machine), expected 0x$('{0:X}' -f $Machine) ($Arch)" }
   if ($h.Subsystem -ne $check[1]) { throw "$($check[0]) has PE subsystem $($h.Subsystem), expected $($check[1])" }
+  # The package claims the C runtime is linked statically, so a build whose
+  # +crt-static silently failed must not ship: it would need a VC++
+  # redistributable the package does not install.
+  & (Join-Path $PSScriptRoot 'check-static-crt.ps1') -Path (Join-Path $CheckDir $check[0])
   Write-Output "ok $($check[0]): $Arch, PE subsystem $($h.Subsystem)"
 }
 & (Join-Path $PSScriptRoot 'check-icon.ps1') -Path (Join-Path $CheckDir 'intcad.exe')

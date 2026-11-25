@@ -317,7 +317,7 @@ impl Harness {
             self.app.control_rx = Some(rx);
             tx
         });
-        let (req, rx) = ControlRequest::new(method, params);
+        let (req, rx) = ControlRequest::trusted_gui(method, params);
         if tx.send(req).is_err() {
             return (json!({"ok": false, "error": "the request queue is closed"}), 0);
         }
@@ -341,8 +341,8 @@ impl Harness {
         {
             self.size = egui::vec2(w as f32, h as f32);
         }
-        let (req, _rx) = ControlRequest::new(method, params);
-        let out = match handle(&mut self.app, &self.ctx, &req) {
+        let (mut req, _rx) = ControlRequest::trusted_gui(method, params);
+        let out = match handle(&mut self.app, &self.ctx, &mut req) {
             Outcome::Done(v) => v,
             Outcome::Screenshot { .. } => json!({"ok": true, "result": null}),
         };

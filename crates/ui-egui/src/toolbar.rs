@@ -528,7 +528,19 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         // The version links to its release notes; measured here so Report a bug leaves it room.
         let version =
             ui.painter().layout_no_wrap(format!("v{}", crate::update::current_version()), FontId::proportional(t.font_small), t.app_bar_text);
-        let (report, report_label) = report_rect(r, captions, tabs_start, label_width, version.size().x, app.header);
+        // The account chip is part of the shared right cluster: reserve its width, or hide it
+        // before it can cover Report a bug, the version link or a narrow tab strip.
+        let chip_width = crate::account::status_chip_width(ui, app);
+        let chip_reserve = chip_width.map_or(0.0, |width| width + 10.0);
+        let chip_fits = chip_width.is_some()
+            && r.width() >= 900.0
+            && r.right() - (captions + chip_reserve) - 28.0 - CLUSTER_BUTTONS - 8.0 - tabs_start >= TABS_KEPT
+            && (app.header.version != VersionPlace::Header || version_room(r, captions + chip_reserve, tabs_start, version.size().x).is_some());
+        // The File menu is the compact fallback when the caption chip has no room. It opens the
+        // same account menu, so sign-in, browser, sign-out and switch stay identical.
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("sc_account_compact"), chip_width.is_some() && !chip_fits));
+        let inset = captions + if chip_fits { chip_reserve } else { 0.0 };
+        let (report, report_label) = report_rect(r, inset, tabs_start, label_width, version.size().x, app.header);
         // Settings' left edge; command search, when the bar holds it, sits just before it and
         // moves the assistant button and the end of the document tabs left by its width.
         let gear_left = report.left() - 68.0;
@@ -613,9 +625,9 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         if gresp.backing_on_hover_text(prefs_tip).clicked() {
             crate::prefs::open_at(app, 0);
         }
-        if app.header.version == VersionPlace::Header && version_room(r, captions, tabs_start, version.size().x).is_some() {
+        if app.header.version == VersionPlace::Header && version_room(r, inset, tabs_start, version.size().x).is_some() {
             let galley = version;
-            let vrect = Align2::RIGHT_CENTER.anchor_size(pos2(r.right() - 12.0 - captions, r.center().y), galley.size());
+            let vrect = Align2::RIGHT_CENTER.anchor_size(pos2(r.right() - 12.0 - inset, r.center().y), galley.size());
             let vresp = ui.interact(
                 vrect.expand2(vec2(2.0, 4.0)).intersect(Rect::everything_right_of(report.right())),
                 ui.id().with("sc_version_link"),
@@ -628,9 +640,21 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
             ui.painter().galley(vrect.min, galley, t.app_bar_text);
             crate::scenario::publish_handle("titlebar:version", vrect.center());
+            crate::scenario::publish_rect("titlebar:version", vrect);
             if vresp.clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(url));
             }
+        }
+        let chip_slot = if chip_fits {
+            chip_width.map(|width| {
+                let right = r.right() - captions - 4.0;
+                Rect::from_min_size(pos2(right - width, r.center().y - 9.0), vec2(width, 18.0))
+            })
+        } else {
+            None
+        };
+        if let Some(slot) = chip_slot {
+            crate::account::status_chip(app, ui, slot);
         }
         if app.custom_titlebar {
             crate::titlebar::caption_buttons(app, ui, r);
@@ -745,6 +769,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     let mut close = false;
+    let compact_account = ctx.data(|d| d.get_temp::<bool>(egui::Id::new("sc_account_compact")).unwrap_or(false));
     let resp = Container::new(ctx, Surface::Popup)
         .area(egui::Id::new("sc_file_area"))
         .fixed_pos(pos2(ctx.data(|d| d.get_temp::<f32>(egui::Id::new("sc_file_menu_x"))).unwrap_or(100.0), APP_BAR_HEIGHT))
@@ -759,6 +784,15 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     crate::context_menu::list_row(ui, &crate::context_menu::Item::action(label, label, icon).key(key).on_if(enabled)).is_some()
                 };
                 let item = |ui: &mut egui::Ui, label: &str, key: &str, icon: &str| item_if(ui, label, key, icon, true);
+                // Without room for the caption chip, the File menu keeps the permanent account
+                // entry. It comes first so a short window still shows it; it opens the same
+                // shared menu, so every account action stays in one place.
+                if compact_account {
+                    if crate::account::compact_menu_entry(app, ui) {
+                        close = true;
+                    }
+                    ui.separator();
+                }
                 // Insert, Save and Export act on the design, which Home hides.
                 let shown = design_shown(app);
                 if item(ui, app.tr("ui.new_design"), "Ctrl+N", "new") {
@@ -894,7 +928,11 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
             });
         });
     let just_opened = ctx.data(|d| d.get_temp::<u64>(egui::Id::new("sc_file_menu_opened"))) == Some(ctx.cumulative_pass_nr());
-    if close || (!just_opened && resp.response.clicked_elsewhere()) {
+    // The compact account row opens a popup with secondary controls (copy feedback and the manual
+    // address). Only a current click inside that child keeps this custom parent alive; an explicit
+    // File action or a click elsewhere always closes it.
+    let keep_open = crate::ui_kit::Menu::keeps_parent_open(ctx);
+    if close || (!just_opened && resp.response.clicked_elsewhere() && !keep_open) {
         ctx.data_mut(|d| d.insert_temp(id, false));
     }
 }
@@ -4407,6 +4445,28 @@ mod header_report_tests {
             let report = crate::scenario::handle_at("titlebar:report").expect("the report button is drawn");
             // Its click area starts where the report button ends, so a click on that button reaches the report.
             assert!(version.x > report.x, "width {width}");
+        }
+    }
+
+    #[test]
+    fn the_account_status_chip_never_covers_report_or_version() {
+        for width in [700.0, 900.0, 1200.0, 1600.0] {
+            let mut h = crate::scenario::Harness::new();
+            h.app.home.open = false;
+            h.app.custom_titlebar = true;
+            h.app.account = crate::account::State::with_port(crate::account::tests::signed_in_unknown_port());
+            h.call("ui.resize", json!({"width":width,"height":720}));
+            h.frames(3);
+            let Some(chip) = crate::scenario::rect_of("titlebar:account_status") else {
+                assert!(width < 900.0, "the chip should appear at {width}");
+                continue;
+            };
+            let report = crate::scenario::rect_of("titlebar:report").expect("the report button is drawn");
+            assert!(!chip.intersects(report), "width {width}: {chip:?} overlaps {report:?}");
+            if let Some(version) = crate::scenario::rect_of("titlebar:version") {
+                assert!(chip.left() >= version.right() + 1.0, "width {width}: {chip:?} overlaps {version:?}");
+            }
+            assert!(chip.right() <= width - crate::titlebar::WIDTH - 2.0, "width {width}: {chip:?} runs under the window buttons");
         }
     }
 

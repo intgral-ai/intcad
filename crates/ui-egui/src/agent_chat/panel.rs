@@ -839,7 +839,7 @@ fn dock_drag(app: &mut SolveApp, ui: &egui::Ui, drag: &egui::Response, left: boo
 /// The desktop panel when the host has no web view: what happened, and what to install or change
 /// (Retry only where a view can be made; a native Wayland window needs the setting instead).
 /// Deliberately not a conversation: the conversation has one interface, the page.
-#[cfg(all(not(target_arch = "wasm32"), not(test)))]
+#[cfg(not(target_arch = "wasm32"))]
 fn unavailable(app: &mut SolveApp, ui: &mut egui::Ui) {
     let problem = app.agent_chat.web_problem.unwrap_or(web::Problem::Failed);
     let (title, body, settings, page, retry) = match problem {
@@ -881,7 +881,35 @@ fn unavailable(app: &mut SolveApp, ui: &mut egui::Ui) {
                 crate::prefs::open_at(app, page);
             }
         });
+        crate::account::show_product_prompt(app, ui, crate::account::PromptContext::Chat);
     });
+}
+
+/// Whether the production native shell shows its own product-account prompt above the web view.
+/// It reads the cached account snapshot only; no port call happens on a paint pass.
+#[cfg(not(target_arch = "wasm32"))]
+fn web_sign_in_needed(app: &SolveApp) -> bool {
+    app.account.is_installed() && app.account.view().product_sign_in_required()
+}
+
+/// Reserve a visible strip above the native web view for the local sign-in prompt. The web view
+/// is placed below this strip, so the prompt cannot be hidden underneath it.
+#[cfg(not(target_arch = "wasm32"))]
+fn web_sign_in_strip(app: &mut SolveApp, ui: &mut egui::Ui, rect: &mut Rect) {
+    if !web_sign_in_needed(app) || rect.height() <= 0.0 {
+        return;
+    }
+    let t = Tokens::get();
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(vec2(t.space_12, t.space_6)))
+            .layout(egui::Layout::top_down(egui::Align::Min))
+            .id_salt("sc_agent_chat_sign_in"),
+    );
+    child.set_clip_rect(child.clip_rect().intersect(*rect));
+    if crate::account::show_product_prompt(app, &mut child, crate::account::PromptContext::Chat) {
+        rect.min.y = (child.min_rect().bottom() + t.space_6).min(rect.max.y);
+    }
 }
 
 fn body(app: &mut SolveApp, ui: &mut egui::Ui, left: bool) {
@@ -892,7 +920,10 @@ fn body(app: &mut SolveApp, ui: &mut egui::Ui, left: bool) {
         if app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
             refresh(app, ui.ctx());
         }
+        // The page owns the conversation and its model sign-in. The product account is the
+        // app's own entry, so it stays above the page and never becomes model authentication.
         let mut rect = ui.available_rect_before_wrap();
+        web_sign_in_strip(app, ui, &mut rect);
         ui.allocate_rect(rect, Sense::hover());
         // Floating, the strip at the panel's inner edge stays the app's: it is what one drags to
         // make the panel wider, and a native view over it would take the drag.
@@ -911,24 +942,22 @@ fn body(app: &mut SolveApp, ui: &mut egui::Ui, left: bool) {
         crate::scenario::publish_rect("agent_chat:web", rect);
         return;
     }
-    // A desktop host that could not make its view says why and offers Retry: there is no second
-    // conversation in the desktop app. The old egui panel stays for the browser build, where the
-    // host has no view, and for the tests that exercise it.
-    #[cfg(all(not(target_arch = "wasm32"), not(test)))]
-    {
-        unavailable(app, ui);
+    // Native tests without a host problem can still exercise the old egui conversation.
+    #[cfg(all(not(target_arch = "wasm32"), test))]
+    if app.agent_chat.web_problem.is_none() {
+        header(app, ui, left);
+        ui_kit::assistant_controls(ui, |ui| switcher(app, ui));
+        desktop_body(app, ui);
+        return;
     }
-    #[cfg(any(target_arch = "wasm32", test))]
+    // A desktop host that could not make its view says why and offers Retry: there is no second
+    // conversation in the desktop app.
+    #[cfg(not(target_arch = "wasm32"))]
+    unavailable(app, ui);
+    #[cfg(target_arch = "wasm32")]
     {
         header(app, ui, left);
-        #[cfg(not(target_arch = "wasm32"))]
-        ui_kit::assistant_controls(ui, |ui| switcher(app, ui));
-        #[cfg(target_arch = "wasm32")]
-        {
-            ui.label(tr("ui.agent_chat_desktop_only"));
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        desktop_body(app, ui);
+        ui.label(tr("ui.agent_chat_desktop_only"));
     }
 }
 
@@ -963,6 +992,10 @@ fn desktop_body(app: &mut SolveApp, ui: &mut egui::Ui) {
         .max_height(ui.available_height() / 3.0)
         .auto_shrink([false, true])
         .show(ui, |ui| picker(app, ui));
+    // The product account is separate from the selected agent/model's own authentication.
+    if crate::account::show_product_prompt(app, ui, crate::account::PromptContext::Chat) {
+        ui.add_space(crate::theme::Tokens::get().space_8);
+    }
     if state == State::NeedsAuth {
         inset(ui, |ui| auth_box(app, ui));
     }
@@ -2861,5 +2894,24 @@ mod tests {
                 assert!(!a.shrink(0.5).intersects(b.shrink(0.5)), "picker overlap: {a:?} {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn production_web_shell_reserves_a_visible_sign_in_prompt_for_a_signed_out_desktop() {
+        let mut app = crate::test_support::sample_app();
+        assert!(!web_sign_in_needed(&app), "no installed port needs no prompt");
+        app.account = crate::account::State::with_port(Box::new(crate::account::tests::FakeAccountPort::signed_out(Default::default())));
+        assert!(web_sign_in_needed(&app));
+        let ctx = crate::fonts::test_context();
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 400.0))), ..Default::default() };
+        crate::scenario::clear_handles();
+        let mut rect = egui::Rect::from_min_max(egui::pos2(20.0, 20.0), egui::pos2(580.0, 380.0));
+        let mut output = crate::test_support::frame(&ctx, input, |ui| {
+            web_sign_in_strip(&mut app, ui, &mut rect);
+        });
+        output.textures_delta.clear();
+        assert!(crate::scenario::handle_at("agent_chat:sign_in").is_some(), "the production prompt is not reachable");
+        assert!(rect.top() > 20.0, "the web view was not placed below the prompt");
+        assert!(rect.bottom() <= 380.0 && rect.height() > 0.0, "the web view lost its visible area: {rect:?}");
     }
 }
