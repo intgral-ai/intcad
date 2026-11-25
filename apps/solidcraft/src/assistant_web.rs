@@ -579,6 +579,11 @@ impl AssistantWeb {
             }
             self.placed = Some(at);
         }
+        // The page's pointer travel (`move`) comes in screen units, which WebKit does not scale with
+        // the page's zoom.
+        if let Some(view) = &self.view {
+            web::set_zoom(solve, page_zoom(view, at) as f32);
+        }
         // Behind a view that is not seen through: the page's own surface, once the page said it.
         if !SEE_THROUGH
             && self.backed != Some(backing)

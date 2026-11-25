@@ -49,6 +49,12 @@ pub fn reveal(app: &SolveApp) -> Option<f32> {
     app.agent_chat.web_reveal
 }
 
+/// The page's zoom: one of its points is this many of the screen units the page's pointer reports
+/// (`screenX`), which the page's `move` is given in.
+pub fn set_zoom(app: &mut SolveApp, zoom: f32) {
+    app.agent_chat.web_zoom = Some(zoom).filter(|zoom| zoom.is_finite() && *zoom > 0.0);
+}
+
 /// Whether the panel gave the host a bottom-centre placement this frame.
 pub fn centred_view(app: &SolveApp) -> bool {
     app.agent_chat.web_centre.is_some()
@@ -1032,6 +1038,17 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
         "size" => {
             let height = action.get("height").and_then(Value::as_f64).filter(|height| height.is_finite()).ok_or("size: no height")?;
             app.agent_chat.web_height = Some(height.clamp(0.0, 100_000.0) as f32);
+        }
+        // There, the user moves the box sideways: `dx` is the pointer's travel since the press, in
+        // screen units, and `done` ends the move. The panel keeps the box in the room there is.
+        "move" => {
+            let dx = action.get("dx").and_then(Value::as_f64).filter(|dx| dx.is_finite()).ok_or("move: no dx")?;
+            let chat = &mut app.agent_chat;
+            let from = *chat.web_shift_from.get_or_insert(chat.web_shift);
+            chat.web_shift = from + dx.clamp(-100_000.0, 100_000.0) as f32 / chat.web_zoom.unwrap_or(1.0);
+            if action.get("done").and_then(Value::as_bool) == Some(true) {
+                chat.web_shift_from = None;
+            }
         }
         "side" => {
             let left = action.get("left").and_then(Value::as_bool).ok_or("side: no left")?;

@@ -309,6 +309,8 @@ export type Action =
   | { type: 'minimize' }
   /** At the bottom centre: how tall the page wants to be, in points (the host keeps it within `centre`). */
   | { type: 'size'; height: number }
+  /** There: the user moves the box sideways; the pointer's travel since the press, in screen units (`screenX`). */
+  | { type: 'move'; dx: number; done?: boolean }
   | { type: 'side'; left: boolean }
   | { type: 'surface'; color: string }
   | { type: 'copy'; text: string }

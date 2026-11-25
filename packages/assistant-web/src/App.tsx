@@ -2985,6 +2985,8 @@ function closePopups() {
 
 /** The headers over the message box: the line, a row that needs the user, the opened body. */
 const HEADERS = ':scope > [data-slot="composer"] > [data-slot="composer-header"]';
+/** The parts of the box at the bottom centre a press on moves it: no control, no words. */
+const EMPTY_OF_BOX = '[data-centre-bar-collapse], [data-slot^="composer-actions"]';
 
 /** Where a header over the message box ends at the top once its opening transition is over. */
 function topOf(header: Element) {
@@ -3292,6 +3294,47 @@ function Centre({
     closePopups();
     if (open && !popup && !conn && !none && !state.confirmNew && !document.querySelector(DIALOGS)) collapse();
   }, [presses]);
+  // A press on an empty part of the box (the gap in the message box's bottom row; open, the bar's
+  // empty part) that goes sideways moves the box along the bottom of the window; the host keeps it
+  // there. A press that does not go a few points keeps its meaning, and the click a move ends in is
+  // not one. Screen units, as the view moves under the pointer meanwhile.
+  useEffect(() => {
+    const element = measured.current;
+    if (!element) return;
+    let press: { id: number; x: number; dx: number; moving: boolean } | null = null;
+    const swallow = (event: Event) => event.stopPropagation();
+    const down = (event: PointerEvent) => {
+      if (event.button !== 0 || !(event.target instanceof Element) || !event.target.matches(EMPTY_OF_BOX)) return;
+      press = { id: event.pointerId, x: event.screenX, dx: 0, moving: false };
+      event.target.setPointerCapture(event.pointerId);
+    };
+    const move = (event: PointerEvent) => {
+      if (press?.id !== event.pointerId) return;
+      press.dx = event.screenX - press.x;
+      if (!press.moving && Math.abs(press.dx) < 4) return;
+      press.moving = true;
+      post({ type: 'move', dx: press.dx });
+    };
+    const up = (event: PointerEvent) => {
+      if (press?.id !== event.pointerId) return;
+      const { dx, moving } = press;
+      press = null;
+      if (!moving) return;
+      post({ type: 'move', dx, done: true });
+      window.addEventListener('click', swallow, { capture: true, once: true });
+      window.setTimeout(() => window.removeEventListener('click', swallow, { capture: true }));
+    };
+    element.addEventListener('pointerdown', down);
+    element.addEventListener('pointermove', move);
+    element.addEventListener('pointerup', up);
+    element.addEventListener('pointercancel', up);
+    return () => {
+      element.removeEventListener('pointerdown', down);
+      element.removeEventListener('pointermove', move);
+      element.removeEventListener('pointerup', up);
+      element.removeEventListener('pointercancel', up);
+    };
+  }, []);
   // The conversation opens only once the view has its height: opened into a view still growing, it
   // would be cut off. It waits for the view to be that tall, not for a time; a host that never grows
   // has it opened after a second all the same.

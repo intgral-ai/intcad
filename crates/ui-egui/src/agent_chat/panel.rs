@@ -297,7 +297,14 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
     app.agent_chat.web_centre = Some(most);
     let width = CENTRE_WIDTH.min(bounds.width().max(0.0));
     let height = app.agent_chat.web_height.unwrap_or(CENTRE_HEIGHT).min(most);
-    let left = crate::shell::within(window.center().x - width / 2.0, bounds.left(), bounds.right() - width);
+    // Where the user moved it along the bottom (`web::act`, `move`), kept in the room there is: a
+    // move past an edge, or a narrower window, gives up what does not fit, so the box comes back with
+    // the pointer and stays in sight. Never moved, it stays centred on the window.
+    let centred = window.center().x - width / 2.0;
+    let left = crate::shell::within(centred + app.agent_chat.web_shift, bounds.left(), bounds.right() - width);
+    if app.agent_chat.web_shift != 0.0 {
+        app.agent_chat.web_shift = left - centred;
+    }
     let rect = Rect::from_min_size(pos2(left, bounds.bottom() - height), vec2(width, height));
     if !rect.is_positive() {
         app.agent_chat.panel_rect = None;

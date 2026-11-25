@@ -16588,6 +16588,68 @@ fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the
     );
 }
 
+/// At the bottom centre the user moves the box sideways (the page's `move`, from a press on an
+/// empty part of it): it follows the pointer's travel since the press, only sideways, stays where
+/// it was dropped, never leaves the window or goes under the rail, and comes back into the room a
+/// narrower window leaves. Until it is moved it is centred on the window.
+#[test]
+fn at_the_bottom_centre_the_user_moves_the_box_sideways_within_the_window() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
+    h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    h.app.ui.show_navigation_bar = false;
+    web::set_host(&mut h.app, true);
+    h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the page says how tall it is");
+    h.frames(3);
+    let place = || crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let act = |h: &mut crate::scenario::Harness, message: &str| {
+        web::act(&mut h.app, &h.ctx, message).expect("the page moves the box");
+        h.frames(2);
+    };
+    let start = place();
+    assert!((start.center().x - h.ctx.content_rect().center().x).abs() < 1.0, "never moved, centred on the window: {start:?}");
+
+    act(&mut h, r#"{"type":"move","dx":-80}"#);
+    act(&mut h, r#"{"type":"move","dx":-200}"#);
+    let moved = place();
+    assert!((moved.left() - (start.left() - 200.0)).abs() < 0.5, "with the pointer's travel since the press: {moved:?} from {start:?}");
+    assert_eq!((moved.top(), moved.size()), (start.top(), start.size()), "only sideways");
+    act(&mut h, r#"{"type":"move","dx":-200,"done":true}"#);
+    h.call("ui.resize", json!({"width": 1601.0, "height": 1000.0}));
+    h.frames(2);
+    assert!((place().left() - moved.left()).abs() < 1.0, "it stays where it was dropped: {:?} {moved:?}", place());
+    // A zoomed page's travel is in screen units: two of them a point.
+    web::set_zoom(&mut h.app, 2.0);
+    act(&mut h, r#"{"type":"move","dx":100,"done":true}"#);
+    assert!((place().left() - (moved.left() + 50.0)).abs() < 1.0, "screen units over the zoom: {:?} {moved:?}", place());
+    web::set_zoom(&mut h.app, 1.0);
+
+    // Past the window's left edge it stops there, and a move back starts from the edge.
+    act(&mut h, r#"{"type":"move","dx":-5000}"#);
+    let edge = place();
+    act(&mut h, r#"{"type":"move","dx":-90000,"done":true}"#);
+    assert_eq!(place(), edge, "no further than the window's edge: {edge:?}");
+    assert!(edge.left() >= h.ctx.content_rect().left(), "inside the window: {edge:?}");
+    act(&mut h, r#"{"type":"move","dx":30,"done":true}"#);
+    assert!((place().left() - (edge.left() + 30.0)).abs() < 0.5, "back from the edge with the pointer: {:?} {edge:?}", place());
+
+    // Right, never under the rail, and a narrower window keeps it in the room left.
+    act(&mut h, r#"{"type":"move","dx":90000,"done":true}"#);
+    let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
+    assert!(place().right() < rail.left() && place().right() > rail.left() - 40.0, "up to the rail: {:?} {rail:?}", place());
+    h.call("ui.resize", json!({"width": 1100.0, "height": 700.0}));
+    h.frames(3);
+    let narrow = place();
+    let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
+    assert!(narrow.right() < rail.left() && narrow.left() >= h.ctx.content_rect().left(), "in the narrower window: {narrow:?} {rail:?}");
+    assert_eq!(narrow.size(), start.size(), "the same box");
+
+    assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"move"}"#).is_err(), "a move without its travel is refused");
+    assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"move","dx":"far"}"#).is_err());
+}
+
 /// At the bottom centre, while the conversation is open, a primary press that reaches the app (the
 /// page's native view takes its own) is outside the Assistant: the model, the rail. The page is
 /// told the count and collapses its opened conversation when it goes up; switching to another app

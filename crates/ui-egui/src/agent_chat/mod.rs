@@ -526,6 +526,16 @@ pub struct AgentChat {
     /// centre (`panel::centre`): the page collapses its conversation when the count goes up.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_presses: u64,
+    /// How far the user moved the box at the bottom centre from the window's centre, in points, for
+    /// this run only ([`web::act`], `move`; `panel::centre` keeps it in the room there is), and
+    /// while a move is under way, where it started.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_shift: f32,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_shift_from: Option<f32>,
+    /// How many of the pointer's screen units the page's point is ([`web::set_zoom`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_zoom: Option<f32>,
     /// A pointer press in the transcript owns keys just like a focused text editor.
     keyboard_owned: bool,
     /// Unreserved sheet space, shared by the actual dock and its drag preview.
@@ -699,6 +709,9 @@ impl AgentChat {
             std::mem::swap(&mut self.web_clips, &mut other.web_clips);
             std::mem::swap(&mut self.web_reveal, &mut other.web_reveal);
             std::mem::swap(&mut self.web_presses, &mut other.web_presses);
+            std::mem::swap(&mut self.web_shift, &mut other.web_shift);
+            std::mem::swap(&mut self.web_shift_from, &mut other.web_shift_from);
+            std::mem::swap(&mut self.web_zoom, &mut other.web_zoom);
         }
         // Hit regions must be measured again for the incoming conversation.
         self.panel_rect = None;
