@@ -1,6 +1,8 @@
 """Fast failure-path checks for the desktop Flatpak and snap process probes."""
 import base64
+from contextlib import redirect_stdout
 import importlib.util
+import io
 import itertools
 import json
 import struct
@@ -236,6 +238,18 @@ class DesktopProbe(unittest.TestCase):
                     patch.object(SMOKE.subprocess, "run", return_value=Mock(returncode=0, stdout=stdout, stderr="")), \
                     self.assertRaisesRegex(ValueError, "Assistant.*host"):
                 SMOKE.probe(backend=backend)
+
+    def test_offline_summary_does_not_claim_modelling_or_page_load(self):
+        stdout = io.StringIO()
+        with (
+            patch.object(SMOKE.shutil, "which", return_value="/fixture/tool"),
+            patch.object(SMOKE.subprocess, "run"),
+            redirect_stdout(stdout),
+        ):
+            SMOKE.run_backend("x11")
+        self.assertIn("signed-out refusals", stdout.getvalue())
+        self.assertIn("page NOT VERIFIED", stdout.getvalue())
+        self.assertNotIn("modelling", stdout.getvalue())
 
     def test_cli_version_or_partial_control_output_is_not_desktop_success(self):
         with self.assertRaises(ValueError):

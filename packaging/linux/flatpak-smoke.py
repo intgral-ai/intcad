@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Exercise desktop startup, modelling and the Assistant in the installed Flatpak.
+"""Check desktop startup, signed-out refusals and the Assistant runtime in the installed Flatpak.
 
 Uses the app's normal sandbox permissions. The control client runs inside that
 sandbox, so this does not grant host network access or save Flatpak overrides.
 Each headless backend has private runtime/configuration directories and a bus.
-The Assistant's page is served by the app itself, so opening it needs no network.
+The signed-out check does not verify Assistant page loading.
 """
 import argparse
 import base64
@@ -373,7 +373,8 @@ def run_backend(backend):
                     native_command = [sys.executable, str(Path(__file__).resolve()), "--probe",
                                       "--probe-backend", "wayland"]
                     subprocess.run(native_command, env=native, check=True, timeout=300)
-                print(f"{backend}: default sandbox desktop startup, modelling and Assistant PASS")
+                print(f"{backend}: sandbox startup, signed-out refusals and Assistant backend PASS; "
+                      "page NOT VERIFIED offline")
             finally:
                 if compositor:
                     compositor.terminate()
