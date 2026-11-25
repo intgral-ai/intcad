@@ -266,12 +266,17 @@ jobs:
           deb=(dist/release/intcad-*.deb)
           rpm=(dist/release/intcad-*.rpm)
           appimage=(dist/release/intcad-*.AppImage)
-          packaging/linux/installed-check.sh ubuntu:22.04 "${deb[0]}" x11
-          packaging/linux/installed-check.sh ubuntu:24.04 "${deb[0]}" x11
-          packaging/linux/installed-check.sh ubuntu:24.04 "${deb[0]}" wayland
-          packaging/linux/installed-check.sh debian:13 "${deb[0]}" x11
-          packaging/linux/installed-check.sh fedora:44 "${rpm[0]}" x11
-          packaging/linux/installed-check.sh ubuntu:24.04 "${appimage[0]}" x11
+          # Every check runs and prints its own ok/FAIL/BLOCKED lines, and the step fails if any
+          # did not pass. The Wayland run is last: its BLOCKED (exit 2) used to end the step
+          # before the Debian, Fedora and AppImage checks started.
+          status=0
+          packaging/linux/installed-check.sh ubuntu:22.04 "${deb[0]}" x11 || status=1
+          packaging/linux/installed-check.sh ubuntu:24.04 "${deb[0]}" x11 || status=1
+          packaging/linux/installed-check.sh debian:13 "${deb[0]}" x11 || status=1
+          packaging/linux/installed-check.sh fedora:44 "${rpm[0]}" x11 || status=1
+          packaging/linux/installed-check.sh ubuntu:24.04 "${appimage[0]}" x11 || status=1
+          packaging/linux/installed-check.sh ubuntu:24.04 "${deb[0]}" wayland || status=1
+          exit "$status"
       - name: Keep the installed checks' logs and pictures
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
