@@ -3042,3 +3042,17 @@ run 3: ok. 1 passed   finished in 0.01s
 runner, which is the authoritative result. Recorded rather than hidden: a perf budget test can fail
 under a loaded host, so a local full-suite run must be executed without competing jobs to be
 trustworthy.
+
+**#214 shard 7/16 failed on artifact upload, not on its test.** Run 45511735739, job
+`138874186850`:
+
+```
+steps: "Run actions/download-artifact" = skipped
+       "Run actions/upload-artifact"   = failure
+log:   00:35:19  test result: ok. 1 passed; 0 failed; … finished in 1425.91s
+       00:37:35  ##[error]Failed to CreateArtifact: Unable to make request: ETIMEDOUT
+```
+
+The shard's assertion passed (one long test, 23.8 min) and the **artifact upload timed out**. That is
+the infrastructure failure class the owner's rules cover: wait for the run to leave `in_progress`,
+then `gh run rerun <id> --failed` so only that shard repeats and the 35+ successful jobs are kept.
