@@ -3056,3 +3056,21 @@ log:   00:35:19  test result: ok. 1 passed; 0 failed; … finished in 1425.91s
 The shard's assertion passed (one long test, 23.8 min) and the **artifact upload timed out**. That is
 the infrastructure failure class the owner's rules cover: wait for the run to leave `in_progress`,
 then `gh run rerun <id> --failed` so only that shard repeats and the 35+ successful jobs are kept.
+
+**A bare local `cargo xtask test` is not equivalent to the gate.** The isolated run finished with
+808 passed / 13 failed and flagged 12 binaries. The extra failures are environment-shaped, not
+release-shaped:
+
+- GPU path tests (`solidcraft_gpu`, ~20 `path::tests::gpu_*`) need the CI's software-Vulkan setup
+  (`SOLIDCRAFT_GPU=software`, `WGPU_BACKEND=vulkan`, `SOLIDCRAFT_REQUIRE_GPU=1`);
+- `ui-egui test scenarios`, `agent_chat::*` window tests and `right_rail` need a display/session the
+  host does not provide;
+- the fillet/setback/G2/native names in the list are the accepted known-failing set (the local run
+  does not apply `tests/KNOWN_FAILING_TESTS`);
+- one genuine flake: `geom::tests::a_long_helical_tangent_chain_is_found_quickly`, which passes 3/3
+  alone.
+
+Conclusion recorded for the process: local equivalents are the **repository checks, the fast
+suites, compile/clippy and targeted tests**; the full suite is only meaningful with the CI
+environment and the known-failing guard, so the gate run remains the authority for it. The owner's
+"maximise local pre-checks" is therefore applied to everything that is environment-independent.
