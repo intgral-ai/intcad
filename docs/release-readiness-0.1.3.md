@@ -3561,3 +3561,23 @@ acceptance run expects, so the tagged build and the acceptance check agree on wh
 Publication still requires: tag gate green (it produces the only consumable `mode=tag` handoff),
 14 pairs accepted at `15b4436c54`, Gate B recorded, and the owner's `RELEASE_AGENT_*` values
 (`<tag SHA>:<tag run>:<attempt>`).
+
+## 34. What may and may not be cited as evidence
+
+Confirmed by read-only cross-check from the Migration Agent (INT-1481) and independently re-read
+here:
+
+- `refs/tags/v0.1.3` is a lightweight tag whose object type is `commit` and whose SHA is
+  `15b4436c5410`, i.e. exactly `main`'s tip, the merge commit of #237 (parents `9219342da2`,
+  `0c8b3fe9a3`). Tag gate `45566522104` is `event=push`, `head_branch=v0.1.3`,
+  `head_sha=15b4436c5410`, `attempt=1`.
+- **The PR gate is not evidence for `0c8b3fe9a3`.** The only `release-gate` check run on that head
+  is `139042613637` (run `45565928939`, created 07:09:22Z), which this release cancelled on purpose
+  to free runners; GitHub records it as `completed failure`. No successful required-check run exists
+  on the promoted head. The only authorising evidence for this release is the tag gate
+  `45566522104`, which is what the publisher contract consumes (`mode=tag`). This is a deliberate
+  owner-approved sequencing decision, not a claim that the PR gate passed.
+- **A green tag gate does not mean the installed-app UI check passed.** That step is
+  `continue-on-error: true` at `15b4436c54`; a failure there is recorded per platform as
+  NOT VERIFIED. Gate B (`45566522319`) and the per-package embedded-account verification remain the
+  blocking install acceptance. This is recorded in the handoff document's risk section.
