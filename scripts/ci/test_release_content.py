@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for the native-package content decision (#14/#15 applicability)."""
 
+import base64
 import itertools
 import json
 import os
@@ -393,10 +394,14 @@ class StagingWorkflow(unittest.TestCase):
             sha = config_checkout(root, json.dumps(CONFIG).encode())
             directory = root / "dist/release"
             directory.mkdir(parents=True)
-            (directory / "fixture.tar.gz").write_bytes(b"abc")
+            # A real, inspectable archive: the package-evidence step judges the built bytes
+            # through release_content, so a placeholder blob would be "not inspected".
+            (directory / "fixture.tar.gz").write_bytes(
+                base64.b64decode("H4sIAAAAAAAC/+3RMQrCQBAF0Kk9hSeQWQy5TwoDaeMGcnw32oT0CsH3mj/85hczTmtd5setrjW+JZu+697ZHDOz7O6tL1n6e1wzfmB51mFu8/Gfxs//LwEAAAAAAAAAAMCpvACQNW+CACgAAA=="))
+
             scripts = root / "scripts/ci"
             scripts.mkdir(parents=True)
-            for source in (HELPER, HERE / "package_contents.py"):
+            for source in (HELPER, HERE / "release_content.py", HERE / "package_contents.py"):
                 shutil.copyfile(source, scripts / source.name)
             env = {**os.environ, "GITHUB_SHA": sha, "PACKAGE_ID": "release-macos",
                    "PACKAGE_TARGET": "universal-apple-darwin"}
@@ -404,7 +409,7 @@ class StagingWorkflow(unittest.TestCase):
                 "version": 1, "packageId": "release-macos", "sourceRevision": sha,
                 "target": "universal-apple-darwin", "contractDigest": None,
                 "artifacts": [{"name": "fixture.tar.gz",
-                               "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"}],
+                               "sha256": "f9e928f22757d899d5b89a120796cf4a1c82a3df7a809da4c05fd7fbfb00f8e7"}],
             }
             descriptor = directory / "build.json"
             command = [sys.executable, "-c", step["run"]]
