@@ -2679,38 +2679,38 @@ fn show(s: &mut Session, p: &Value) -> Result<Value> {
     json_of(SHOW, StressShowResult { shown: shown.to_string(), param_warnings: Vec::new() })
 }
 
-/// The dry run's prediction, in numbers and words.
+/// The dry run's prediction, in numbers and words. The words are of the numbers given: the approval
+/// card words the same numbers in the user's language.
 fn predicted(planned: &[forecast::Planned]) -> Option<StressPredicted> {
     let (likely, most) = forecast::before_meshing(planned, &forecast::finer_fits)?;
+    let figures = |t: forecast::Totals| StressPredictedMost {
+        nodes: t.nodes.round() as u64,
+        memory_gb: round_to(t.bytes / 1.0e9, 3),
+        seconds: round_to(t.seconds, 0),
+        runs: t.runs,
+    };
+    let (likely, most) = (figures(likely), most.map(figures));
+    let words = |f: &StressPredictedMost| (about_count(f.nodes as f64), about_bytes(f.memory_gb * 1.0e9), about_time(f.seconds));
     let what = if likely.runs == 1 { "one run".to_string() } else { format!("{} runs", likely.runs) };
-    let third = most.map_or(String::new(), |m| {
+    let third = most.as_ref().map_or(String::new(), |m| {
+        let (nodes, memory, time) = words(m);
         format!(
-            "; with a third, finer mesh, solved when the peak is still moving after the second: up to about {} nodes, about {} of \
-             memory and about {} for {} runs",
-            about_count(m.nodes),
-            about_bytes(m.bytes),
-            about_time(m.seconds),
+            "; with a third, finer mesh, solved when the peak is still moving after the second: up to about {nodes} nodes, about {memory} of \
+             memory and about {time} for {} runs",
             m.runs
         )
     });
+    let (nodes, memory, time) = words(&likely);
     Some(StressPredicted {
-        nodes: likely.nodes.round() as u64,
-        memory_gb: round_to(likely.bytes / 1.0e9, 2),
-        seconds: round_to(likely.seconds, 0),
+        nodes: likely.nodes,
+        memory_gb: likely.memory_gb,
+        seconds: likely.seconds,
         runs: likely.runs,
-        most: most.map(|m| StressPredictedMost {
-            nodes: m.nodes.round() as u64,
-            memory_gb: round_to(m.bytes / 1.0e9, 2),
-            seconds: round_to(m.seconds, 0),
-            runs: m.runs,
-        }),
+        most,
         line: format!(
-            "From the part's size, before meshing: about {} nodes, about {} of memory, and about {} for {what} to mesh and solve{third}. Small \
-             holes, fillets and bends can make the mesh several times larger; each run counts its nodes after meshing and refuses a \
-             mesh this computer cannot solve",
-            about_count(likely.nodes),
-            about_bytes(likely.bytes),
-            about_time(likely.seconds)
+            "From the part's size, before meshing: about {nodes} nodes, about {memory} of memory, and about {time} for {what} to mesh and \
+             solve{third}. Small holes, fillets and bends can make the mesh several times larger; each run counts its nodes after meshing and \
+             refuses a mesh this computer cannot solve"
         ),
     })
 }

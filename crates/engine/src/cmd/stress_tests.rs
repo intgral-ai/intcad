@@ -2692,6 +2692,32 @@ fn a13_times_read_as_roughly_as_they_are_known() {
     assert_eq!(about_time(f64::NAN), "?");
 }
 
+/// A13: the dry run's sentence words the figures it gives, which the card words again in the user's
+/// language, so the two say the same.
+/// Input: a solid run of 100 to 2,000,000 nodes, 2 % apart, alone and with the mesh check's second
+/// mesh. Before this the sentence worded the figures before they were rounded: V-6's bar said
+/// 1.5 min for 3 runs (104.6 s) where the card said 2 min (105 s).
+/// Pass: the sentence has the words of `nodes`, `memory_gb` and `seconds`, and of `most`'s.
+#[test]
+fn a13_the_dry_runs_sentence_words_the_figures_it_gives() {
+    let mut nodes = 100.0;
+    while nodes < 2.0e6 {
+        let first = forecast::Planned { elements: Elements::Solid, h: 1.5, section: 6.0, nodes, level: 0 };
+        let second = forecast::Planned { h: 1.0, nodes: nodes * 3.0, level: 1, ..first.clone() };
+        let third = forecast::Planned { h: 1.0 / 1.5, nodes: nodes * 9.0, level: 2, ..first.clone() };
+        for planned in [vec![first.clone()], vec![first, second, third]] {
+            let p = predicted(&planned).unwrap_or_else(|| panic!("{nodes} nodes: no prediction"));
+            let most = p.most.as_ref().map(|m| (m.nodes, m.memory_gb, m.seconds));
+            for (n, gb, s) in [Some((p.nodes, p.memory_gb, p.seconds)), most].into_iter().flatten() {
+                for words in [about_count(n as f64), about_bytes(gb * 1.0e9), about_time(s)] {
+                    assert!(p.line.contains(&format!("about {words} ")), "{words}: {}", p.line);
+                }
+            }
+        }
+        nodes *= 1.02;
+    }
+}
+
 /// A13 (V-A13), real: a run publishes the nodes it counted after meshing, for the card the user
 /// allowed it from, and the count is near the dry run's prediction.
 /// Input: R2's plate at 1.5 mm as solids, mesh check off: a dry run, then the run. Real: the app's

@@ -870,6 +870,46 @@ mod tests {
         assert_eq!(counted_line(&shells), "Meshed, run 2 of 2 (shells): 2\u{2009}839 nodes. The solver needs about 3.2 GB; under a second left.");
     }
 
+    /// A13: the card and the dry run's own sentence, which the agent reads, say the same.
+    /// Input: a 100 x 20 x 20 mm bar, held at one end and pulled at the other, as solids with the
+    /// mesh check on, at 1 to 8 mm in steps of 0.1. Real: the app's modelling and its dry run.
+    /// Action: `predicted_line`. Pass: every memory and time the card names is in the sentence.
+    #[test]
+    fn the_approval_card_says_what_the_dry_runs_sentence_says() {
+        let mut s = solidcraft_engine::Session::default();
+        s.execute("solid.box", &json!({"length": 100, "width": 20, "height": 20, "body_name": "Bar"})).unwrap();
+        let faces = s.execute("model.faces", &json!({"body": "Bar"})).unwrap();
+        let end = |sign: f64| {
+            let faces = faces["faces"].as_array().into_iter().flatten();
+            let mut facing = faces.filter(|f| f["plane_normal"][0].as_f64().is_some_and(|n| n * sign > 0.99));
+            facing.find_map(|f| f["index"].as_u64()).unwrap_or_else(|| panic!("no end face facing {sign} X"))
+        };
+        let (root, tip) = (end(-1.0), end(1.0));
+        let mut wrong = Vec::new();
+        for tenths in 10..=80 {
+            let r = s
+                .execute(
+                    "inspect.stress_estimate",
+                    &json!({"loads": [{"face": tip, "force": [800, 0, 0]}], "supports": [{"face": root}], "material": "6061-T6", "elements": "solid",
+                            "mesh_size": f64::from(tenths) / 10.0, "dry_run": true}),
+                )
+                .unwrap();
+            let sentence = r["predicted"]["line"].as_str().unwrap_or_default().to_string();
+            let p = &r["predicted"];
+            let card = predicted_line(&r).unwrap_or_else(|| panic!("{r}"));
+            for f in [Some(p), p.get("most")].into_iter().flatten() {
+                let (gb, seconds) = (f["memory_gb"].as_f64().unwrap_or(f64::NAN), f["seconds"].as_f64().unwrap_or(f64::NAN));
+                for words in [memory_words(gb * 1.0e9), time_words(seconds)] {
+                    assert!(card.contains(&words), "the card says {words}: {card}");
+                    if !sentence.contains(&words) {
+                        wrong.push(format!("{tenths} tenths: the card says {words}; {sentence}"));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{} differ: {}", wrong.len(), wrong[0]);
+    }
+
     #[test]
     fn the_legend_words_say_estimate_and_never_pass_or_fail() {
         let en = crate::i18n::Locale::for_language("en");
