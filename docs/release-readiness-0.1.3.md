@@ -3275,3 +3275,21 @@ gh workflow run publish-release.yml --repo intgral-ai/intcad --ref main \
   -f tag=v0.1.3 -f source_sha=05b5c0df78a47c98e09456ace5f0ba19971b8398 \
   -f run_id=45545336763 -f run_attempt=1 -f notes_file=docs/release-notes-0.1.3.md
 ```
+
+**Honest risk on the reuse path: GitHub's merge commit may not be the tested merge-ref commit.**
+The API reports `merge_commit_sha` for an open PR as the *test merge* commit (`05b5c0df78…`), which is
+what the gate checked out. GitHub's actual merge commit is created at merge time with its own message
+("Merge pull request #237 from …") and committer stamp, so its SHA can differ even when the tree and
+parents are identical. Historical evidence in this repository points that way: the v0.1.0 gate's SHA
+(`b32a88b2…`) is a separate object from the merge commit that landed (`3e6183cfae`).
+
+Therefore the plan is executed as: merge #237 with a **merge commit**, then **assert** whether
+`main`'s tip equals `05b5c0df78…`.
+
+- If it does, the formal run already covers the promoted commit and the publisher consumes its
+  `mode=candidate` handoff — roughly 2 hours saved.
+- If it does not (the likely case), tag the **actual** `main` tip and run the tag-push gate exactly as
+  designed. Nothing is skipped; the attempt costs only the merge, which is required anyway.
+
+The same assertion decides which run id/attempt and which SHA the owner writes into
+`RELEASE_AGENT_*`, so no evidence can be mixed across the two paths.
