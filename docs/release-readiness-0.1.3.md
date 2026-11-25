@@ -3443,3 +3443,9 @@ step yet; if it passes there, the difference is platform timing, and the fix sho
 settle** in the checker (re-read the child geometry until it is stable, then click with that fresh
 value) rather than removing the staleness rule. The Login Agent owns that file and was asked for the
 minimal change.
+
+**Fix pushed: `fffee6891a`; new required gate `45557510166`.** The checker now re-observes the native
+child within a 5 s bound before sending the Close hit, keeping the grab-time equality check and the hit
+test, and still refusing a page that keeps moving. Verified locally (`py_compile` OK,
+`packaging/tests/nightly_test.py` 46 tests OK). The previous run was cancelled so its runners serve the
+new gate; the new run is the only evidence that can merge #237.
