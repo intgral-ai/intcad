@@ -3476,3 +3476,12 @@ This is why the step has never passed in any gate run, on either architecture; x
 fail the same way. The Login Agent (owner of both the page and the checker) was asked to choose between
 asserting collapse semantics in the centre layout, switching layout before Close, or exposing a Close in
 the centre layout.
+
+**Fix for the centre-layout Close applied and pushed: `8be62db713`; gate `45561823438`.** The check
+now reads `assistant.centred` from the last `ui.inspect` (the field exists in
+`crates/ui-egui/src/control.rs:2640` → `agent_chat::inspect`, which emits `centred`) and, in the centre
+layout, closes the panel through the rail/titlebar Assistant entry — the same affordance the Windows
+smoke uses — instead of clicking a control that is Collapse. The docked layout still clicks the page
+Close, and `close_page` keeps the five-second bounded re-observation. Verified locally before push:
+`py_compile` OK, `packaging/tests/nightly_test.py` 46 tests OK. The earlier run was cancelled so its
+runners serve this gate.
