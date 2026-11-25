@@ -3420,3 +3420,26 @@ apt: libxtst6      dnf: libXtst        (added to display_tools)
 The old run was cancelled and #237 was drafted/readied again, so gate run `45553980512` runs on
 `ea99242e04`. Note for the `main → develop` reconciliation: develop now needs three follow-ups
 (`npm/Node` is already there; the account snapshot env and this library belong with it).
+
+## 30. Third gate failure: the aarch64 installed check rejects a page that moved
+
+Run `45553980512` (head `ea99242e04`, after the snapshot and libXtst fixes) reaches the installed
+check on the aarch64 `.deb` in `ubuntu:22.04` and fails there:
+
+```
+ok: Assistant page ready and visible at [540, 806, 1060, 946]
+ok: captured app-frame.png
+ok: captured screen.png with import
+FAIL: page Close geometry moved or is stale        (assistant-check.py:634-635)
+```
+
+`page()` returns the live child geometry, `capture()` then takes screenshots (~1–2 s), and
+`close_page(bounds, scale)` clicks Close while `guarded_click` insists the page is still exactly where
+it was observed. A late layout/settle on the aarch64 software-rendered runner makes the two differ.
+
+This is the first time the check reached this step on aarch64 (the two earlier runs died before it), so
+there is no earlier green to compare. Discriminator in flight: the x86_64 job has not reached the same
+step yet; if it passes there, the difference is platform timing, and the fix should be a **bounded
+settle** in the checker (re-read the child geometry until it is stable, then click with that fresh
+value) rather than removing the staleness rule. The Login Agent owns that file and was asked for the
+minimal change.
