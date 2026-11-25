@@ -3373,3 +3373,10 @@ This is also what makes Gate B work: the staging call injects the staging tuple 
 receives it. The old gate run was cancelled; #237 was marked draft and ready again so the gate runs on
 the fixed head (`45549791786`). `develop` still carries the unfixed step; the fix reaches it through
 the planned `main → develop` reconciliation (or a follow-up PR if that is dropped).
+
+**The snapshot fix is complete for both callers.** Login Agent re-read `167f81b75e` read-only and
+confirmed the check step now receives `PRODUCTION_ACCOUNT_CONFIG` and `STAGING_ACCOUNT_CONFIG`, that
+`inject-auto`/`package-evidence` keep their env, and that `git grep` finds no other consumer of the
+account variables in `release.yml`. `verify_embedded_account.py` appears once (Linux check step), so
+macOS/Windows need no equivalent change — their binaries are covered by the acceptance script
+instead. `develop` keeps the unfixed step until the planned `main → develop` reconciliation.
