@@ -3021,3 +3021,24 @@ targets; integration2/order/order2/lockcheck/chain/chain2/mp3 worktrees). Other 
 in `/tmp/opencode` (paid-integration, gate-b-evidence, art, sec, …) were left untouched. `/tmp` is
 back to ~15 GiB free, and the suite is re-run with `CARGO_TARGET_DIR` on `/home` (521 GiB free), so
 a repeat is not possible. `/home` project usage itself stayed far under the 500 GiB budget.
+
+**The isolated local suite's one failure is a load-sensitive performance assertion, not a code
+regression.** The suite ran while 19 CI jobs and other builds shared the host:
+
+```
+failures: tests::a_long_helical_tangent_chain_is_found_quickly
+  "fastest 0.002 s and 0.064 s, limit 0.032 s"   (crates/geom/src/tests.rs:292)
+```
+
+Re-run alone on the same tree, three times:
+
+```
+run 1: ok. 1 passed   finished in 0.02s
+run 2: ok. 1 passed   finished in 0.01s
+run 3: ok. 1 passed   finished in 0.01s
+```
+
+`crates/geom` is untouched by every PR in this release, and CI runs the same suite on its own
+runner, which is the authoritative result. Recorded rather than hidden: a perf budget test can fail
+under a loaded host, so a local full-suite run must be executed without competing jobs to be
+trustworthy.
