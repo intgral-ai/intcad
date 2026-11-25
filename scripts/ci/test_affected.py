@@ -11,6 +11,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -797,22 +798,43 @@ class ForkWorkflowContract(unittest.TestCase):
     def test_riscv_does_not_install_after_partial_index_refresh(self):
         body = self.job("riscv64-gates").split("          update_apt() {", 1)[1]
         install = body.split("      - uses:", 1)[0]
-        command = "update_apt() {" + install
+        command = textwrap.dedent("          update_apt() {" + install)
         # A partial refresh only exits nonzero in strict mode. Simulate it
-        # without running APT or changing any system packages.
-        fixture = """
+        # at both boundaries, without any change to system files or packages.
+        fixture = r"""
+foreign=0
 sleep() { :; }
 timeout() { shift; "$@"; }
+sed() { :; }
+dpkg() { foreign=1; }
 apt-get() {
-    if [[ $1 == install ]]; then echo 'started install'; return 42; fi
-    echo 'attempted refresh'
+    if [[ $1 == install ]]; then
+        if [[ $foreign == 1 || $FAIL_REFRESH == native ]]; then
+            echo 'unexpected install'; return 42
+        fi
+        echo 'installed native dependencies'; return 0
+    fi
+    if [[ $foreign == 0 && $FAIL_REFRESH == foreign ]]; then
+        echo 'refreshed native indexes'; return 0
+    fi
+    echo 'attempted partial refresh'
     [[ " $* " != *" APT::Update::Error-Mode=any "* ]]
 }
 """
-        result = subprocess.run(["bash", "-euo", "pipefail", "-c", fixture + command],
-                                capture_output=True, text=True, timeout=5)
-        self.assertEqual(result.stdout.splitlines(), ["attempted refresh"] * 3)
-        self.assertEqual(result.returncode, 1)
+        for boundary, prefix in (
+            ("native", []),
+            ("foreign", ["refreshed native indexes", "installed native dependencies"]),
+        ):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as temp:
+                sandboxed = command.replace("/etc/apt/sources.list.d/", '"$APT_FIXTURE_DIR"/')
+                result = subprocess.run(
+                    ["bash", "-euo", "pipefail", "-c", fixture + sandboxed],
+                    env=dict(os.environ, FAIL_REFRESH=boundary, APT_FIXTURE_DIR=temp),
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.stdout.splitlines(), prefix + ["attempted partial refresh"] * 3,
+                                 result.stderr)
+                self.assertEqual(result.returncode, 1)
 
 
 class NativeBaselineWorkflow(unittest.TestCase):
