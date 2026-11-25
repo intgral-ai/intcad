@@ -225,7 +225,7 @@ def frame_statistics(png):
     return {"width": width, "height": height, "nonblack": nonblack, "pixels": width * height}
 
 
-def validate_signed_out_assistant(replies):
+def validate_signed_out_assistant(replies, backend):
     """A signed-out desktop cannot open the Assistant panel: the request is refused, and the
     bounded marker still reports the web runtime. The page itself is NOT VERIFIED offline."""
     if not replies:
@@ -234,18 +234,15 @@ def validate_signed_out_assistant(replies):
     details = opening.get("errorDetails") or {}
     if opening.get("ok") is not False or details.get("code") not in FAIL_CLOSED:
         raise ValueError(f"the Assistant panel opened without account authority: {opening}")
-    marker = None
-    for reply in replies[1:]:
-        if reply.get("ok") is not True:
-            continue
-        candidate = (reply.get("result") or {}).get("assistant") or {}
-        # A native Wayland window has no X11 child for WebKitGTK; the app says so instead of
-        # dropping the conversation (documented limitation), which is still not a page.
-        if candidate.get("host") in {"available", "native_wayland"}:
-            marker = candidate
-    if marker is None:
-        raise ValueError(f"the Assistant web runtime was not reported: {replies[1:]}")
-    if marker.get("host") == "native_wayland":
+    # Native Wayland has no X11 child for WebKitGTK. Its diagnostic is not
+    # interchangeable with the available host required under X11/XWayland.
+    expected = {"x11": "available", "xwayland": "available", "wayland": "native_wayland"}.get(backend)
+    observation = replies[-1]
+    marker = (observation.get("result") or {}).get("assistant") or {}
+    host = marker.get("host")
+    if expected is None or observation.get("ok") is not True or host != expected:
+        raise ValueError(f"Assistant {backend} host: expected {expected!r}, got {host!r}")
+    if host == "native_wayland":
         return "native-Wayland diagnostic; page NOT VERIFIED offline"
     return "web runtime available; page NOT VERIFIED offline"
 
@@ -311,7 +308,7 @@ def probe(gl_saved_four=False, backend="x11"):
     renderer = validate_offline("\n".join(json_lines[:3]))
     assistant = [json.loads(line) for line in json_lines[3:-1]]
     try:
-        assistant_mode = validate_signed_out_assistant(assistant)
+        assistant_mode = validate_signed_out_assistant(assistant, backend)
     except ValueError as error:
         raise ValueError(f"{error}\n--- app log ---\n{result.stderr[-8000:]}") from error
     capture = json.loads(json_lines[-1])

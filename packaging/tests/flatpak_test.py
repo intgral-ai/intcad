@@ -1,4 +1,5 @@
 """Fast failure-path checks for the desktop Flatpak and snap process probes."""
+import base64
 import importlib.util
 import itertools
 import json
@@ -216,8 +217,25 @@ class DesktopProbe(unittest.TestCase):
             {"id": 5, "ok": True, "result": {"assistant": {"open": False, "surface_ready": False,
                                                            "host": "native_wayland", "centred": False}}},
         ]
-        self.assertEqual(SMOKE.validate_signed_out_assistant(replies),
+        self.assertEqual(SMOKE.validate_signed_out_assistant(replies, "wayland"),
                          "native-Wayland diagnostic; page NOT VERIFIED offline")
+
+    def test_live_probe_rejects_a_marker_from_the_wrong_backend(self):
+        frame = rgba_png(2, 2, (b"\x00\xff\x00\x00\xff\x00\xff\x00\xff") * 2)
+        for backend, host in (("x11", "native_wayland"), ("xwayland", "native_wayland"),
+                              ("wayland", "available")):
+            replies = signed_out_replies() + [
+                {"id": 4, "ok": False, "errorDetails": {"code": "AuthUnavailable"}},
+                {"id": 5, "ok": True, "result": {"assistant": {
+                    "open": False, "surface_ready": False, "host": host, "centred": False,
+                }}},
+                {"id": 6, "ok": True, "result": {"width": 2, "height": 2}},
+            ]
+            stdout = output(replies) + "\n" + base64.b64encode(frame).decode("ascii")
+            with self.subTest(backend=backend, host=host), \
+                    patch.object(SMOKE.subprocess, "run", return_value=Mock(returncode=0, stdout=stdout, stderr="")), \
+                    self.assertRaisesRegex(ValueError, "Assistant.*host"):
+                SMOKE.probe(backend=backend)
 
     def test_cli_version_or_partial_control_output_is_not_desktop_success(self):
         with self.assertRaises(ValueError):

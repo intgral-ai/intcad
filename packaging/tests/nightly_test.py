@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -675,6 +676,30 @@ class ForkWorkflowSafety(unittest.TestCase):
         self.assertLess(windows.index("New-NetFirewallRule"), windows.index("windows-assistant-smoke.ps1') -Exe"))
         self.assertIn("$env:SOLIDCRAFT_UPDATE_CHECK = '0'", windows)
         self.assertNotRegex(text, r"windows-assistant-smoke\.ps1")
+
+    def test_snap_smoke_does_not_launch_when_isolation_precheck_fails(self):
+        launch = next(line.strip() for line in self.workflow("release").splitlines()
+                      if "sudo unshare -n" in line and "snap-smoke.py" in line)
+        shell, flags, command, *_ = shlex.split(launch)[4:]
+        # shlex splits the command but leaves dollar escapes inside double quotes.
+        precheck, separator, _ = command.replace(r"\$", "$").partition("exec su ")
+        self.assertTrue(separator, "test must intercept the real launch")
+        loopback = r'printf "%s\n" "1: lo: <UP>"'
+        cases = [
+            ("setup failed", 1, loopback, False),
+            ("extra interface", 0, r'printf "%s\n" "1: lo: <UP>" "2: eth0: <UP>"', False),
+            ("listing failed", 0, loopback + "; return 1", False),
+            ("empty listing", 0, "return 0", False),
+            ("wrong interface", 0, r'printf "%s\n" "2: eth0: <UP>"', False),
+            ("loopback only", 0, loopback, True),
+        ]
+        for name, setup_status, action, permitted in cases:
+            with self.subTest(case=name):
+                fake_ip = f'ip() {{ if [ "$1" = -o ]; then {action}; else return {setup_status}; fi; }}'
+                run = subprocess.run([shell, flags, fake_ip + "\n" + precheck + "echo launched"],
+                                     capture_output=True, text=True, timeout=5)
+                self.assertEqual("launched" in run.stdout, permitted, run.stderr)
+                self.assertEqual(run.returncode == 0, permitted, run.stderr)
 
     def test_build_only_tokens_and_fork_integration_lints_are_read_only(self):
         for name in ("packaging-lint", "lists"):
