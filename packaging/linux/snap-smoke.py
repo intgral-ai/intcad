@@ -118,7 +118,8 @@ def drive(app, port, frame):
             reply = json.loads(raw)
             details = (reply.get("errorDetails") or {}) if isinstance(reply, dict) else {}
             if (not isinstance(reply, dict) or reply.get("id") != request["id"]
-                    or reply.get("ok") is not False or details.get("code") != "AuthUnavailable"):
+                    or reply.get("ok") is not False
+                    or details.get("code") not in flatpak_smoke.FAIL_CLOSED):
                 raise ValueError(f"{request['method']} was not refused for a signed-out host: {reply}")
             replies.append(raw)
             return reply
