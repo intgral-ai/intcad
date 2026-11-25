@@ -44,9 +44,10 @@ def rgba_png(width, height, rows):
 
 class Control:
     """A control connection whose first frame can arrive after the port opens."""
-    def __init__(self, viewports, page=True):
+    def __init__(self, viewports, page=True, host="available"):
         self.viewports = iter(viewports)
         self.page = page
+        self.host = host
         self.requests = []
         self.settimeout = Mock()
 
@@ -67,14 +68,20 @@ class Control:
 
     def readline(self):
         request = self.requests[-1]
-        index = request["id"] - 1
-        reply = signed_out_replies()[index] if index < 3 else {"id": request["id"], "ok": True, "result": {}}
-        if index == 0:
-            reply["result"]["viewport"] = next(self.viewports)
-        if request["method"] == "ui.home":
-            reply["result"] = {"open": False}
-        elif request["method"] == "ui.agent_chat":
-            reply["result"] = {"open": True, "webView": {"host": True, "page": self.page}}
+        method = request["method"]
+        if method == "ui.inspect":
+            viewport = next(self.viewports, [250, 126, 1000, 700])
+            reply = {"id": request["id"], "ok": True, "result": {
+                "renderer": "gpu",
+                "viewport": viewport,
+                "assistant": {"open": False, "surface_ready": False, "host": self.host, "centred": False},
+            }}
+        elif method == "ui.screenshot":
+            reply = {"id": request["id"], "ok": True, "result": {}}
+        else:
+            reply = {"id": request["id"], "ok": False,
+                     "error": "the host has no commit authority for this controlled entry",
+                     "errorDetails": {"code": "AuthUnavailable", "retry": "never"}}
         return json.dumps(reply) + "\n"
 
 
@@ -98,20 +105,25 @@ class SnapStartup(unittest.TestCase):
         self.assertEqual(renderer, "gpu")
         self.assertEqual(statistics["nonblack"], 4)
         self.assertEqual([request["method"] for request in control.requests], [
-            "ui.inspect", "ui.inspect", "engine.execute", "document.inspect", "ui.home",
-            "ui.agent_chat", "ui.agent_chat", "ui.screenshot", "app.quit"
+            "ui.inspect", "ui.inspect", "engine.execute", "document.inspect",
+            "ui.agent_chat", "ui.inspect", "ui.screenshot"
         ])
 
     def test_ready_startup_does_not_wait(self):
         control = Control([[250, 126, 1000, 700]])
         self.drive(control)
-        self.assertEqual(sum(r["method"] == "ui.inspect" for r in control.requests), 1)
+        first_model = [r["method"] for r in control.requests].index("engine.execute")
+        self.assertEqual(sum(r["method"] == "ui.inspect" for r in control.requests[:first_model]), 1)
 
-    def test_assistant_must_load_its_page(self):
-        control = Control([[250, 126, 1000, 700]], page=False)
-        with self.assertRaisesRegex(RuntimeError, "page"):
-            self.drive(control, [0, 0, 0, 0, 200])
+    def test_signed_out_assistant_open_is_refused_and_marker_reported(self):
+        control = Control([[250, 126, 1000, 700]])
+        self.drive(control)
         self.assertIn("ui.agent_chat", [r["method"] for r in control.requests])
+
+    def test_assistant_web_runtime_must_be_reported(self):
+        control = Control([[250, 126, 1000, 700]], host="unavailable")
+        with self.assertRaisesRegex(RuntimeError, "web runtime"):
+            self.drive(control, [0, 0, 0, 0, 0, 0, 200])
 
     def test_missing_first_frame_times_out_before_modelling(self):
         control = Control(itertools.repeat(None))

@@ -126,26 +126,35 @@ def drive(app, port, frame):
 
         refused(REQUESTS[1])
         refused(REQUESTS[2])
-        # The Assistant: the start page covers the workspace, then the panel must load its page.
-        call({"id": 4, "method": "ui.home", "params": {"open": False}})
-        call({"id": 5, "method": "ui.agent_chat", "params": {"open": True}})
-        request_id = 6
+        # Opening the panel is a controlled entry: signed out it must be refused, and the
+        # Assistant's retained page cannot be driven without account authority. Prove the
+        # refusal, then read the bounded marker: the web runtime must be available.
+        request_id = 4
+        try:
+            io.write(json.dumps({"id": request_id, "method": "ui.agent_chat", "params": {"open": True}}) + "\n")
+            io.flush()
+            raw = io.readline()
+            opening = json.loads(raw)
+        except (OSError, ValueError) as error:
+            raise ValueError(f"the Assistant open request got no answer: {error}") from None
+        details = (opening.get("errorDetails") or {}) if isinstance(opening, dict) else {}
+        if opening.get("ok") is not False or details.get("code") not in flatpak_smoke.FAIL_CLOSED:
+            raise ValueError(f"the Assistant panel opened without account authority: {opening}")
+        replies.append(raw)
+        request_id += 1
         deadline = time.monotonic() + 120
+        marker = None
         while True:
-            state = call({"id": request_id, "method": "ui.agent_chat", "params": {}})["result"] or {}
-            web = state.get("webView") or {}
-            if state.get("open") is not True:
-                raise ValueError(f"the Assistant panel did not open: {state}")
-            if web.get("host") is False:
-                raise ValueError(f"the Assistant made no web view: {web}")
-            if web.get("host") is True and web.get("page") is True:
+            reply = call({"id": request_id, "method": "ui.inspect", "params": {}})
+            marker = ((reply.get("result") or {}).get("assistant")) or {}
+            if marker.get("host") == "available":
                 break
             if time.monotonic() >= deadline:
-                raise RuntimeError(f"the Assistant's page never loaded: {web}")
+                raise RuntimeError(f"the Assistant web runtime is not reported: {marker}")
             time.sleep(.25)
             request_id += 1
+        print("page NOT VERIFIED offline: the Assistant page needs account authority to open", flush=True)
         capture = call({"id": request_id + 1, "method": "ui.screenshot", "params": {"path": str(frame)}})
-        call({"id": request_id + 2, "method": "app.quit", "params": {"force": True}})
     renderer = flatpak_smoke.validate_offline("".join(replies[:3]))
     if capture.get("ok") is not True or renderer != "gpu":
         raise ValueError(f"GPU frame capture failed: renderer={renderer}, {capture}")

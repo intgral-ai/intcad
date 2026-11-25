@@ -180,6 +180,11 @@ def screen_picture(path, native):
     return tool[0]
 
 
+# The authority layer refuses a controlled entry on a host with no account with one
+# of these codes; nothing else is a refusal.
+FAIL_CLOSED = frozenset({"AuthUnavailable", "UnsafeToStart"})
+
+
 def result(control, method, deadline, params=None):
     reply = control.call(method, deadline, params)
     if reply.get("ok") is not True or not isinstance(reply.get("result"), dict):
@@ -293,47 +298,21 @@ def exercise(app, control, native, seconds, capture, built_in_agent=False):
     capture()
 
     if built_in_agent:
-        # The agent is found inside the package and started when its panel shows; what it tells
-        # the Connections page (its plans) arrives once it has answered. The other agents stay
-        # offered beside it: the package carries one, it does not take the others away.
-        def agent(deadline):
-            return result(control, "ui.agent_chat", deadline)
+        # The installed agent's files are checked by the package checks. Its control entries are
+        # controlled: while signed out they must be refused fail-closed, and its conversation
+        # cannot be read here. Starting it belongs to the signed-in acceptance (Gate B).
+        def refused(params):
+            reply = control.call("ui.agent_chat", time.monotonic() + 15, params)
+            details = reply.get("errorDetails") or {}
+            if reply.get("ok") is not False or details.get("code") not in FAIL_CLOSED:
+                raise ValueError(f"an agent control entry was not refused fail-closed: {reply}")
+            return reply
 
-        deadline = time.monotonic() + 60
-        state = {}
-        while time.monotonic() < deadline and peek_exit(app) is None:
-            state = agent(min(deadline, time.monotonic() + 15))
-            if (state.get("connect") or {}).get("plans"):
-                break
-            time.sleep(0.5)
-        agents = state.get("agents") or []
-        names = [entry.get("name") for entry in agents]
-        if not agents or agents[0].get("id") != "mastra":
-            raise ValueError(f"the built-in agent is not offered first ({names})")
-        if state.get("currentAgent") != "mastra":
-            raise ValueError(f"the built-in agent is not the conversation's agent ({state.get('currentAgent')})")
-        if not (state.get("connect") or {}).get("plans"):
-            raise ValueError("the built-in agent did not start out of the package or report its connections")
-        # Starting it again from a stopped state: the same app, the same package, a new session.
-        # The control channel's own word for Stop is `stop` (web.rs `disconnect` is the page's).
-        result(control, "ui.agent_chat", time.monotonic() + 15, {"stop": True})
-        state = agent(time.monotonic() + 15)
-        stopped = state.get("connect") or {}
-        # A stopped agent keeps the page's empty shape (its keys, no plans) but says nothing
-        # about a running conversation: no plan is signed in and nothing is connected.
-        if not (state.get("state") == "off" and not stopped.get("plans") and not stopped.get("connected")):
-            raise ValueError(f"a stopped agent reports no connections (state {state.get('state')}, "
-                             f"plans {len(stopped.get('plans') or [])}, connected {stopped.get('connected')})")
-        result(control, "ui.agent_chat", time.monotonic() + 15, {"connect": True})
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline and peek_exit(app) is None:
-            state = agent(min(deadline, time.monotonic() + 15))
-            if (state.get("connect") or {}).get("plans"):
-                break
-            time.sleep(0.5)
-        if not (state.get("connect") or {}).get("plans"):
-            raise ValueError("the built-in agent did not start again after it stopped")
-        print("ok: the built-in agent started, stopped and started again", flush=True)
+        for params in ({"open": True}, {}, {"stop": True}, {"connect": True}):
+            refused(params)
+        print("ok: the built-in agent control entries are refused while signed out", flush=True)
+        print("NOT VERIFIED: the built-in agent starts, reports connections and starts again "
+              "(needs account authority)", flush=True)
 
     # At the bottom centre (#221) the page's top-right control is Collapse, not Close; the
     # Assistant entry is the affordance that closes the panel, exactly as the Windows smoke
