@@ -784,6 +784,16 @@ class ForkWorkflowContract(unittest.TestCase):
         self.assertIn("inputs.cross_compile", self.job("riscv64-gates"))
         self.assertIn("riscv64-gates", self.job("ci"))
 
+    def test_riscv_cross_dependencies_are_isolated_from_runner_packages(self):
+        job = self.job("riscv64-gates")
+        # Runner-image amd64 elfutils can be at a different security revision from
+        # Ubuntu Ports. Keep the dpkg transaction in its own pinned build environment.
+        self.assertRegex(job, r"(?m)^    container: ubuntu:24\.04@sha256:[a-f0-9]{64}$")
+        self.assertIn("python3:amd64", job)
+        self.assertIn("libwebkit2gtk-4.1-dev:riscv64", job)
+        self.assertIn("cargo check --all-targets --locked --target riscv64gc-unknown-linux-gnu", job)
+        self.assertNotIn("continue-on-error", job)
+
 
 class NativeBaselineWorkflow(unittest.TestCase):
     """Exercise the raw runner's exit boundary, separately from reviewed regression grading."""
