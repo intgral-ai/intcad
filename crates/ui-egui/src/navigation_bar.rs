@@ -121,13 +121,16 @@ pub enum Position {
     Right,
 }
 
-/// The edge of the 3D view the bar sits on (#8183): the bottom, or the top, under the ribbon.
+/// Where the bar sits (#8183): stood upright at the bottom left of the 3D view (the default, so the
+/// bottom centre is the Assistant's), or along the view's bottom or top, under the ribbon, at
+/// `Position`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Edge {
-    #[default]
     Bottom,
     Top,
+    #[default]
+    Left,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
