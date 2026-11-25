@@ -808,9 +808,18 @@ jobs:
           name: ${{ env.ARTIFACT_PREFIX }}macos-bin-x86_64-${{ github.sha }}${{ inputs.gate_bound && format('-a{0}', github.run_attempt) || '' }}
           path: target/x86_64-apple-darwin/release
       - name: Join, package and mount-check (no credential signing)
+        env:
+          STAGING_ACCOUNT_CONFIG: ${{ inputs.staging_account_config }}
+          PRODUCTION_ACCOUNT_CONFIG: ${{ inputs.production_account_config }}
         run: |
+          set -euo pipefail
           chmod +x target/*-apple-darwin/release/intcad target/*-apple-darwin/release/intcad-cli
           packaging/macos/package.sh --arch universal --skip-build
+          if [ -n "${STAGING_ACCOUNT_CONFIG}${PRODUCTION_ACCOUNT_CONFIG}" ]; then
+            # Both mounted slices passed with this snapshot. Only now bind its
+            # identity in this job for the package-evidence step.
+            python -I scripts/ci/staging_account_config.py record-evidence
+          fi
       # The app as a user gets it: copied out of the disk image, started, the Assistant opened
       # (packaging/assistant-check.py). The app is started without the network, in a sandbox
       # that leaves only this machine's own address (packaging/macos/no-network.sb). This

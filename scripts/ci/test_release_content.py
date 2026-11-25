@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,73 @@ class WindowsAssistantSmokeWorkflow(unittest.TestCase):
                          "scripts/e2e/windows_assistant_uia.py"):
                 with self.subTest(event=event, path=path):
                     self.assertIn(path, events[event]["paths"])
+
+
+class UniversalAccountReadback(unittest.TestCase):
+    X86 = 0x01000007
+    ARM = 0x0100000C
+
+    def check_binary(self, arches, *, bad_offset=False, competing=False, fat64=False, staging=None):
+        entry = struct.Struct(">IIQQII" if fat64 else ">IIIII")
+        header = bytearray(struct.pack(">II", 0xCAFEBABF if fat64 else 0xCAFEBABE, len(arches)))
+        offset = len(header) + len(arches) * entry.size
+        payload = bytearray()
+        for cpu, values in arches:
+            thin = struct.pack("<IIIIIIII", 0xFEEDFACF, cpu, 0, 2, 0, 0, 0, 0)
+            thin += b"\0".join(value.encode() for value in values.values())
+            start = offset + len(payload) + (1_000_000 if bad_offset else 0)
+            fields = (cpu, 0, start, len(thin), 0)
+            header.extend(entry.pack(*(fields + (0,) if fat64 else fields)))
+            payload.extend(thin)
+        env = dict(os.environ, PRODUCTION_ACCOUNT_CONFIG=json.dumps(CONFIG),
+                   STAGING_ACCOUNT_CONFIG=json.dumps(CONFIG) if competing else "")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            if staging is not None:
+                env.update(PRODUCTION_ACCOUNT_CONFIG="", STAGING_ACCOUNT_CONFIG=json.dumps(staging),
+                           GITHUB_SHA=config_checkout(root, json.dumps(CONFIG).encode()))
+            binary = root / "Intcad"
+            binary.write_bytes(header + payload)
+            return subprocess.run([sys.executable, "-I", HERE / "verify_embedded_account.py",
+                                   "--macho-universal", binary], cwd=root, env=env, capture_output=True, text=True)
+
+    def test_exact_tuple_is_required_in_both_macos_slices(self):
+        for fat64 in (False, True):
+            result = self.check_binary([(self.X86, CONFIG), (self.ARM, CONFIG)], fat64=fat64)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("x86_64", result.stdout)
+            self.assertIn("arm64", result.stdout)
+        wrong = {**CONFIG, CLIENT: "client_Wrong123"}
+        for arches, absent in (([(self.X86, wrong), (self.ARM, CONFIG)], "x86_64"),
+                               ([(self.X86, CONFIG), (self.ARM, wrong)], "arm64")):
+            with self.subTest(absent=absent):
+                result = self.check_binary(arches)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"{absent}: {CLIENT}", result.stderr)
+                for value in (*CONFIG.values(), wrong[CLIENT]):
+                    self.assertNotIn(value, result.stdout + result.stderr)
+
+    def test_missing_duplicate_or_truncated_slices_do_not_pass(self):
+        for arches, malformed in (([(self.X86, CONFIG)], False),
+                                  ([(self.ARM, CONFIG), (self.ARM, CONFIG)], False),
+                                  ([(self.X86, CONFIG), (self.ARM, CONFIG)], True)):
+            with self.subTest(arches=[arch for arch, _ in arches], malformed=malformed):
+                result = self.check_binary(arches, bad_offset=malformed)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Mach-O", result.stderr)
+
+    def test_conflicting_snapshot_modes_do_not_pass(self):
+        result = self.check_binary([(self.X86, CONFIG), (self.ARM, CONFIG)], competing=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("exactly one account snapshot", result.stderr)
+
+    def test_staging_requires_the_same_committed_tuple_even_if_both_slices_match(self):
+        result = self.check_binary([(self.X86, CONFIG), (self.ARM, CONFIG)], staging=CONFIG)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        wrong = {**CONFIG, CLIENT: "client_Wrong123"}
+        result = self.check_binary([(self.X86, wrong), (self.ARM, wrong)], staging=wrong)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match committed configuration", result.stderr)
 
 
 class StagingConfig(unittest.TestCase):
@@ -336,7 +404,7 @@ class StagingWorkflow(unittest.TestCase):
                                         capture_output=True)
                 self.assertEqual(result.returncode, expected, result.stderr)
 
-    def test_snapshot_is_injected_before_compile_but_not_in_the_macos_join(self):
+    def test_snapshot_is_injected_before_compile_and_provided_to_the_macos_package_check(self):
         jobs = workflow("release.yml")["jobs"]
         snapshot_env = {SNAPSHOT: "${{ inputs.staging_account_config }}"}
         for job, command in {"linux": "packaging/linux/package.sh",
@@ -355,10 +423,57 @@ class StagingWorkflow(unittest.TestCase):
         join = jobs["macos"]
         self.assertFalse(set(join["env"]) & (set(CONFIG) | {SNAPSHOT}))
         uses_snapshot = [step for step in join["steps"] if SNAPSHOT in step.get("env", {})]
-        self.assertEqual(len(uses_snapshot), 1)
-        self.assertEqual(uses_snapshot[0]["env"], snapshot_env)
-        self.assertIn("build.json", uses_snapshot[0]["run"])
-        self.assertTrue(any("--arch universal --skip-build" in step.get("run", "") for step in join["steps"]))
+        self.assertEqual(len(uses_snapshot), 2)
+        package, evidence = uses_snapshot
+        self.assertEqual(package["env"], {**snapshot_env,
+                                          "PRODUCTION_ACCOUNT_CONFIG": "${{ inputs.production_account_config }}"})
+        self.assertIn("--arch universal --skip-build", package["run"])
+        self.assertEqual(evidence["env"], snapshot_env)
+        self.assertIn("build.json", evidence["run"])
+
+    def test_macos_job_records_account_identity_only_after_packaging_succeeds(self):
+        package = next(step for step in workflow("release.yml")["jobs"]["macos"]["steps"]
+                       if "--arch universal --skip-build" in step.get("run", ""))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sha = config_checkout(root, json.dumps(CONFIG).encode())
+            scripts = root / "scripts/ci"
+            scripts.mkdir(parents=True)
+            shutil.copyfile(HELPER, scripts / HELPER.name)
+            platform = root / "packaging/macos"
+            platform.mkdir(parents=True)
+            (platform / "package.sh").write_text('#!/bin/sh\nexit "$PACKAGE_RESULT"\n')
+            (platform / "package.sh").chmod(0o700)
+            target = root / "target/x86_64-apple-darwin/release"
+            target.mkdir(parents=True)
+            for name in ("intcad", "intcad-cli"):
+                (target / name).touch()
+            github_env = root / "github-env"
+            (root / "python").symlink_to(sys.executable)
+            env = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}",
+                   "GITHUB_ENV": str(github_env), "GITHUB_SHA": sha}
+            for mode, snapshot, package_result, expected in (
+                ("production", "PRODUCTION_ACCOUNT_CONFIG", "1", None),
+                ("production", "PRODUCTION_ACCOUNT_CONFIG", "0", "environment:production"),
+                ("staging", SNAPSHOT, "0", "checked-in:staging"),
+                ("nightly", "", "0", None),
+            ):
+                with self.subTest(mode=mode, package_result=package_result):
+                    github_env.write_text("")
+                    result = subprocess.run(["bash", "-c", package["run"]], cwd=root,
+                                            env={**env, SNAPSHOT: "", "PRODUCTION_ACCOUNT_CONFIG": "",
+                                                 snapshot or SNAPSHOT: json.dumps(CONFIG) if snapshot else "",
+                                                 "PACKAGE_RESULT": package_result},
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode, int(package_result), result.stderr)
+                    recorded = github_env.read_text()
+                    if expected:
+                        self.assertIn(f"ACCOUNT_CONFIG_SOURCE={expected}\n", recorded)
+                        self.assertRegex(recorded, r"ACCOUNT_CONFIG_SHA256=[a-f0-9]{64}\n")
+                        for value in CONFIG.values():
+                            self.assertNotIn(value, recorded)
+                    else:
+                        self.assertEqual(recorded, "")
 
     def test_staging_artifacts_are_prefixed_and_keep_ordinary_labels(self):
         release = workflow("release.yml")
@@ -387,7 +502,7 @@ class StagingWorkflow(unittest.TestCase):
 
     def test_staging_evidence_hashes_the_package_and_revalidates_the_same_snapshot(self):
         job = workflow("release.yml")["jobs"]["macos"]
-        step = next((step for step in job["steps"] if SNAPSHOT in step.get("env", {})), None)
+        step = next((step for step in job["steps"] if "build.json" in step.get("run", "")), None)
         self.assertIsNotNone(step, "missing staging evidence input")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -349,11 +349,16 @@ impl DesktopAccountConfig {
 /// MCP, a design file or a server response, and a missing or malformed value fails closed before
 /// any request or browser launch. Local builds normally have none of them.
 pub fn trusted_desktop_config() -> Option<DesktopAccountConfig> {
-    config_from_build_values(
+    let values = (
         option_env!("INTCAD_WORKOS_PUBLIC_CLIENT_ID"),
         option_env!("INTCAD_AUTHKIT_VERIFICATION_ORIGIN"),
         option_env!("INTCAD_PRODUCT_HTTPS_ORIGIN"),
-    )
+    );
+    // Keep the actual constructor inputs readable in both packaged Mach-O slices.
+    // LTO otherwise folds the Intel client ID into several immediate stores.
+    #[cfg(target_os = "macos")]
+    let values = std::hint::black_box(values);
+    config_from_build_values(values.0, values.1, values.2)
 }
 
 fn config_from_build_values(client: Option<&str>, authkit: Option<&str>, product: Option<&str>) -> Option<DesktopAccountConfig> {
