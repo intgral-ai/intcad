@@ -3136,3 +3136,26 @@ packaging/tests/{nightly,apprun,flatpak,web_channels}_test.py  OK
 
 Pushed as `7c43a99b01`; Packaging lint run `45530068223` and CI run `45530068097` restarted on that
 head (the earlier run was only minutes old, so nothing meaningful was lost).
+
+**#240's Packaging lint is green on `7c43a99b01`, and the promotion replay is rehearsed on that
+exact head.**
+
+```
+Packaging lint 45530068223: success   (the fixture fix removed both causes)
+CI 45530068097: in progress, 13/20, 0 failures at 02:11Z
+```
+
+Promotion rehearsal on `7c43a99b01` itself (not on the older candidate):
+
+```
+cherry-pick 9bbf839f35  clean   (version 0.1.3 + notes + folded format 51, lock folded in)
+cherry-pick 0d072f7b32  clean   (widened notes)
+cherry-pick 370759d51a  clean   (FreeBSD known limit)
+cargo metadata --locked  OK
+version = "0.1.3";  pending format files: README.md only
+test_release_content.py (PyYAML, -I)  OK
+scripts/test-format-pending.sh       ok: … fold into v52
+```
+
+So `finalize.sh` will replay a sequence already executed against the same tree once #240's squash
+lands; only the base commit differs.
