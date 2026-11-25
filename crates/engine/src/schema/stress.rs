@@ -468,10 +468,23 @@ pub struct StressPredicted {
     pub memory_gb: f64,
     /// Every run meshed and solved, seconds (measured on one computer; others differ).
     pub seconds: f64,
-    /// How many runs: each kind of elements, and the mesh check's finer run.
+    /// How many runs: each kind of elements, and the mesh check's second mesh when it fits.
     pub runs: usize,
+    /// The same with the mesh check's third mesh, when it may follow: it is solved when it fits and
+    /// the peak the summary leads with is still moving after the second.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub most: Option<StressPredictedMost>,
     /// The same in words.
     pub line: String,
+}
+
+/// The most a run of this setup is predicted to take ([`StressPredicted::most`]).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StressPredictedMost {
+    pub nodes: u64,
+    pub memory_gb: f64,
+    pub seconds: f64,
+    pub runs: usize,
 }
 
 /// What `inspect.stress_estimate` returns.

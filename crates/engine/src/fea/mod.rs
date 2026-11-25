@@ -605,9 +605,11 @@ pub struct Forecast {
     pub document_id: String,
     /// Moves on with every forecast published: a card takes only those after it was allowed.
     pub seq: u64,
-    /// The run that counted its nodes (from 1) of `runs`.
+    /// The run that counted its nodes (from 1) of `runs` likely, or of `runs_most` when the mesh
+    /// check's third mesh follows (known only once the second is solved).
     pub run: usize,
     pub runs: usize,
+    pub runs_most: usize,
     pub elements: Elements,
     /// The nodes it counted (the mid-surface's for shells).
     pub nodes: usize,
@@ -615,6 +617,8 @@ pub struct Forecast {
     pub bytes: f64,
     /// Its solve and every later run, predicted, seconds.
     pub seconds_left: f64,
+    /// The same with the third mesh when it may follow; otherwise `seconds_left`.
+    pub seconds_most: f64,
 }
 
 static PROGRESS: Mutex<Option<Progress>> = Mutex::new(None);

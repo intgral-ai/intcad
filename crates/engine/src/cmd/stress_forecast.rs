@@ -116,8 +116,8 @@ pub(crate) struct Planned {
     pub section: f64,
     /// Its nodes, from the part's size.
     pub nodes: f64,
-    /// The mesh check's finer run: made only when its gate lets it, on the first run's nodes.
-    pub finer: bool,
+    /// Which of the mesh check's meshes it is: 0 a first mesh, 1 the second, 2 the third ([`Reach`]).
+    pub level: u32,
 }
 
 impl Planned {
@@ -126,79 +126,143 @@ impl Planned {
     }
 }
 
+/// How many of the mesh check's finer meshes follow the first, as predicted: `likely` of them, and
+/// `most` when the third may follow too. The second is made when its gate lets it, on the first's
+/// nodes. The third is made when its gate lets it, on the second's nodes, and the lead peak moved
+/// by more than [`super::THIRD_MESH_PERCENT`] (A6), which is not known until the second is solved.
+/// Until a mesh is counted its nodes are a prediction, so these are predictions and no bounds: a
+/// part with small curved features can mesh past the second's gate (the 1.5 mm bracket as solids).
+/// The estimate reads this computer's limit once, after its first solve; a forecast reads it when it
+/// is made, so memory freed or taken in between can open or close a gate the forecast judged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Reach {
+    pub likely: u32,
+    pub most: u32,
+}
+
+/// The third mesh may follow when the gate lets this share of the second's predicted nodes through:
+/// a first mesh counted far over its prediction lifts the second's too high (R2's plate at 2.1 mm:
+/// 105,000 predicted from the first's count, about 80,000 real, the gate at 93,000). Once the second
+/// is counted, its own nodes decide.
+const MAY_BE: f64 = 0.7;
+
 /// The runs an estimate may make, in order, with their nodes from the part's size: each kind of
-/// elements at its size `h`, and after the first, when `mesh_check` is on, the mesh check's finer
-/// run at `h` / [`MESH_CHECK_RATIO`]. Empty when the part's size says nothing.
+/// elements at its size `h`, and after the first, when `mesh_check` is on, the mesh check's second
+/// and third meshes at `h` / [`MESH_CHECK_RATIO`] each time. Empty when the part's size says nothing.
 pub(crate) fn planned(runs: &[(Elements, f64, f64)], mesh_check: bool, volume: Option<f64>, area: f64, thickness: f64) -> Vec<Planned> {
     let mut out = Vec::new();
     for (i, &(elements, h, section)) in runs.iter().enumerate() {
         let Some(nodes) = nodes_before_meshing(elements, h, volume, area, thickness) else { return Vec::new() };
-        out.push(Planned { elements, h, section, nodes, finer: false });
+        out.push(Planned { elements, h, section, nodes, level: 0 });
         if i == 0 && mesh_check {
-            let fine_h = h / MESH_CHECK_RATIO;
-            let Some(fine) = nodes_before_meshing(elements, fine_h, volume, area, thickness) else { return Vec::new() };
-            out.push(Planned { elements, h: fine_h, section, nodes: fine, finer: true });
+            let mut fine_h = h;
+            for level in 1..=2 {
+                fine_h /= MESH_CHECK_RATIO;
+                let Some(fine) = nodes_before_meshing(elements, fine_h, volume, area, thickness) else { return Vec::new() };
+                out.push(Planned { elements, h: fine_h, section, nodes: fine, level });
+            }
         }
     }
     out
 }
 
-/// Whether the mesh check's finer run, after a first run of `nodes`, fits this computer's limit:
-/// the run's own gate ([`mesh_check_gate`]).
+/// Whether the mesh check's next finer mesh, after one of `nodes`, fits this computer's limit now: the
+/// gate the estimate itself uses for its second and its third ([`mesh_check_gate`]).
 pub(crate) fn finer_fits(nodes: f64, elements: Elements) -> bool {
     mesh_check_gate(nodes.max(0.0).round() as usize, elements, super::finer_limit_here()).is_none()
 }
 
-/// The runs made, with the finer run when `finer` (its gate's answer) says so.
-fn made(runs: &[Planned], finer: bool) -> impl Iterator<Item = (usize, &Planned)> {
-    runs.iter().enumerate().filter(move |(_, r)| finer || !r.finer)
+/// The runs made when the mesh check goes up to mesh `level`.
+fn made(runs: &[Planned], level: u32) -> impl Iterator<Item = (usize, &Planned)> {
+    runs.iter().enumerate().filter(move |(_, r)| r.level <= level)
 }
 
-/// The estimate before meshing: the largest run's nodes, the most memory a run needs, the seconds
-/// of every run together, and how many runs; the finer run counts when `fits` lets it on the first
-/// run's predicted nodes. `None` without runs.
-pub(crate) fn before_meshing(runs: &[Planned], fits: &dyn Fn(f64, Elements) -> bool) -> Option<(f64, f64, f64, usize)> {
-    let first = runs.first()?;
-    let finer = fits(first.nodes, first.elements);
-    let (mut nodes, mut bytes, mut total, mut count) = (0.0f64, 0.0f64, 0.0, 0);
-    for (_, r) in made(runs, finer) {
-        nodes = nodes.max(r.nodes);
-        bytes = bytes.max(memory(r.nodes, r.elements, r.layers()));
-        let (m, s) = seconds(r.nodes, r.elements, r.layers());
-        total += m + s;
-        count += 1;
+/// How far the mesh check goes after a first mesh of `nodes` nodes, by `fits` ([`finer_fits`]).
+pub(crate) fn reach_after_first(runs: &[Planned], nodes: f64, fits: &dyn Fn(f64, Elements) -> bool) -> Reach {
+    let none = Reach { likely: 0, most: 0 };
+    let (Some(first), Some(second)) = (runs.first(), runs.iter().find(|r| r.level == 1)) else { return none };
+    if !fits(nodes, first.elements) {
+        return none;
     }
-    Some((nodes, bytes, total, count))
+    let scale = if first.nodes > 0.0 { nodes / first.nodes } else { 1.0 };
+    reach_after_second(runs, second.nodes * scale * MAY_BE, fits)
 }
 
-/// The estimate once run `k` (from 0, in `runs`) has meshed with `counted` nodes, `finer` saying
-/// whether the mesh check's finer run is made: this run's place among those made, its memory, and
-/// the seconds left (its solve, then each later run made, meshed and solved, their nodes from the
-/// part's size scaled by how far this run's count was from its own).
-pub(crate) fn after_meshing(runs: &[Planned], k: usize, counted: usize, finer: bool, document_id: &str) -> Option<Forecast> {
+/// The same once the second mesh is made, of `nodes` nodes.
+pub(crate) fn reach_after_second(runs: &[Planned], nodes: f64, fits: &dyn Fn(f64, Elements) -> bool) -> Reach {
+    let third = runs.iter().find(|r| r.level == 2).is_some_and(|r| fits(nodes, r.elements));
+    Reach { likely: 1, most: if third { 2 } else { 1 } }
+}
+
+/// What a set of runs takes together.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Totals {
+    /// The largest run's nodes.
+    pub nodes: f64,
+    /// The most memory one solve needs, bytes.
+    pub bytes: f64,
+    /// Every run meshed and solved, seconds.
+    pub seconds: f64,
+    pub runs: usize,
+}
+
+fn totals(runs: &[Planned], level: u32) -> Totals {
+    let mut t = Totals { nodes: 0.0, bytes: 0.0, seconds: 0.0, runs: 0 };
+    for (_, r) in made(runs, level) {
+        t.nodes = t.nodes.max(r.nodes);
+        t.bytes = t.bytes.max(memory(r.nodes, r.elements, r.layers()));
+        let (m, s) = seconds(r.nodes, r.elements, r.layers());
+        t.seconds += m + s;
+        t.runs += 1;
+    }
+    t
+}
+
+/// The estimate before meshing: what the runs likely made take, and what they take with the third
+/// mesh when it may follow. The mesh check's gates read the part's predicted nodes (`fits`).
+/// `None` without runs.
+pub(crate) fn before_meshing(runs: &[Planned], fits: &dyn Fn(f64, Elements) -> bool) -> Option<(Totals, Option<Totals>)> {
+    let first = runs.first()?;
+    let reach = reach_after_first(runs, first.nodes, fits);
+    Some((totals(runs, reach.likely), (reach.most > reach.likely).then(|| totals(runs, reach.most))))
+}
+
+/// The estimate once run `k` (from 0, in `runs`) has meshed with `counted` nodes, `reach` saying how
+/// far the mesh check goes: this run's place among those made, its memory, and the seconds left
+/// (its solve, then each later run made, meshed and solved, their nodes from the part's size scaled
+/// by how far this run's count was from its own), likely and with the third mesh when it may follow.
+pub(crate) fn after_meshing(runs: &[Planned], k: usize, counted: usize, reach: Reach, document_id: &str) -> Option<Forecast> {
     let run = runs.get(k)?;
     let n = counted as f64;
     let scale = if run.nodes > 0.0 { n / run.nodes } else { 1.0 };
     let (_, solve) = seconds(n, run.elements, run.layers());
-    let made: Vec<(usize, &Planned)> = made(runs, finer || run.finer).collect();
-    let place = made.iter().position(|(i, _)| *i == k)?;
-    let later: f64 = made
-        .iter()
-        .skip(place + 1)
-        .map(|(_, r)| {
-            let (m, s) = seconds(r.nodes * scale, r.elements, r.layers());
-            m + s
-        })
-        .sum();
+    // This run's place, the runs and the seconds left when the mesh check goes up to mesh `level`.
+    let up_to = |level: u32| {
+        let made: Vec<(usize, &Planned)> = made(runs, level.max(run.level)).collect();
+        let place = made.iter().position(|(i, _)| *i == k)?;
+        let later: f64 = made
+            .iter()
+            .skip(place + 1)
+            .map(|(_, r)| {
+                let (m, s) = seconds(r.nodes * scale, r.elements, r.layers());
+                m + s
+            })
+            .sum();
+        Some((place + 1, made.len(), solve + later))
+    };
+    let (place, likely, seconds_left) = up_to(reach.likely)?;
+    let (_, most, seconds_most) = up_to(reach.most.max(reach.likely))?;
     Some(Forecast {
         document_id: document_id.to_string(),
         seq: 0,
-        run: place + 1,
-        runs: made.len(),
+        run: place,
+        runs: likely,
+        runs_most: most,
         elements: run.elements,
         nodes: counted,
         bytes: memory(n, run.elements, run.layers()),
-        seconds_left: solve + later,
+        seconds_left,
+        seconds_most,
     })
 }
 
@@ -208,28 +272,33 @@ pub(crate) fn which(runs: &[Planned], elements: Elements, h: f64) -> Option<usiz
 }
 
 /// Follows an estimate's runs as each counts its nodes after meshing, and publishes the forecast
-/// ([`fea::set_forecast`]). The first run's count decides the mesh check's finer run with the same
-/// gate the run uses (`fits`), so the card counts the runs that are made.
+/// ([`fea::set_forecast`]). Each count judges the next finer mesh by the gate the estimate uses
+/// (`fits`; see [`Reach`] for how the two can differ), and a run after the mesh check's says how many
+/// of those were made.
 pub(crate) struct Tracker<'a> {
     pub runs: &'a [Planned],
     pub document_id: String,
     pub fits: &'a dyn Fn(f64, Elements) -> bool,
-    finer: std::cell::Cell<Option<bool>>,
+    /// The finest of the mesh check's meshes counted so far.
+    finest: std::cell::Cell<u32>,
 }
 
 impl<'a> Tracker<'a> {
     pub fn new(runs: &'a [Planned], document_id: String, fits: &'a dyn Fn(f64, Elements) -> bool) -> Self {
-        Tracker { runs, document_id, fits, finer: std::cell::Cell::new(None) }
+        Tracker { runs, document_id, fits, finest: std::cell::Cell::new(0) }
     }
 
     /// A run of `elements` at `h` mm has meshed with `nodes` nodes.
     pub fn counted(&self, elements: Elements, h: f64, nodes: usize) {
-        let Some(k) = which(self.runs, elements, h) else { return };
-        if k == 0 {
-            self.finer.set(Some((self.fits)(nodes as f64, elements)));
-        }
-        let finer = self.finer.get().unwrap_or_else(|| self.runs.first().is_some_and(|r| (self.fits)(r.nodes, r.elements)));
-        if let Some(f) = after_meshing(self.runs, k, nodes, finer, &self.document_id) {
+        let Some((k, run)) = which(self.runs, elements, h).and_then(|k| Some((k, self.runs.get(k)?))) else { return };
+        self.finest.set(self.finest.get().max(run.level));
+        let reach = match (k, run.level) {
+            (0, _) => reach_after_first(self.runs, nodes as f64, self.fits),
+            (_, 1) => reach_after_second(self.runs, nodes as f64, self.fits),
+            // The third, or another kind of elements: what was made is known.
+            _ => Reach { likely: self.finest.get(), most: self.finest.get() },
+        };
+        if let Some(f) = after_meshing(self.runs, k, nodes, reach, &self.document_id) {
             fea::set_forecast(f);
         }
     }

@@ -16,7 +16,7 @@ use crate::fea::{
 use crate::params::bad;
 use crate::schema::stress::{
     StrainComponents, StressAlong, StressComponents, StressEquilibrium, StressEstimateParams, StressEstimateResult, StressMeshCheck, StressPeak,
-    StressPredicted, StressProbe, StressProbeRun, StressPrograms, StressRun, StressSettling, StressShowParams, StressShowResult,
+    StressPredicted, StressPredictedMost, StressProbe, StressProbeRun, StressPrograms, StressRun, StressSettling, StressShowParams, StressShowResult,
     StressSupportReaction,
 };
 use crate::schema::{TypedContract, output_schema_for};
@@ -2681,20 +2681,36 @@ fn show(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The dry run's prediction, in numbers and words.
 fn predicted(planned: &[forecast::Planned]) -> Option<StressPredicted> {
-    let (nodes, bytes, seconds, runs) = forecast::before_meshing(planned, &forecast::finer_fits)?;
-    let what = if runs == 1 { "one run".to_string() } else { format!("{runs} runs") };
+    let (likely, most) = forecast::before_meshing(planned, &forecast::finer_fits)?;
+    let what = if likely.runs == 1 { "one run".to_string() } else { format!("{} runs", likely.runs) };
+    let third = most.map_or(String::new(), |m| {
+        format!(
+            "; with a third, finer mesh, solved when the peak is still moving after the second: up to about {} nodes, about {} of \
+             memory and about {} for {} runs",
+            about_count(m.nodes),
+            about_bytes(m.bytes),
+            about_time(m.seconds),
+            m.runs
+        )
+    });
     Some(StressPredicted {
-        nodes: nodes.round() as u64,
-        memory_gb: round_to(bytes / 1.0e9, 2),
-        seconds: round_to(seconds, 0),
-        runs,
+        nodes: likely.nodes.round() as u64,
+        memory_gb: round_to(likely.bytes / 1.0e9, 2),
+        seconds: round_to(likely.seconds, 0),
+        runs: likely.runs,
+        most: most.map(|m| StressPredictedMost {
+            nodes: m.nodes.round() as u64,
+            memory_gb: round_to(m.bytes / 1.0e9, 2),
+            seconds: round_to(m.seconds, 0),
+            runs: m.runs,
+        }),
         line: format!(
-            "From the part's size, before meshing: about {} nodes, about {} of memory, and about {} for {what} to mesh and solve. Small \
+            "From the part's size, before meshing: about {} nodes, about {} of memory, and about {} for {what} to mesh and solve{third}. Small \
              holes, fillets and bends can make the mesh several times larger; each run counts its nodes after meshing and refuses a \
              mesh this computer cannot solve",
-            about_count(nodes),
-            about_bytes(bytes),
-            about_time(seconds)
+            about_count(likely.nodes),
+            about_bytes(likely.bytes),
+            about_time(likely.seconds)
         ),
     })
 }
