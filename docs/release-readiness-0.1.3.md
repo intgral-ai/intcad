@@ -3449,3 +3449,30 @@ child within a 5 s bound before sending the Close hit, keeping the grab-time equ
 test, and still refusing a page that keeps moving. Verified locally (`py_compile` OK,
 `packaging/tests/nightly_test.py` 46 tests OK). The previous run was cancelled so its runners serve the
 new gate; the new run is the only evidence that can merge #237.
+
+## 31. The installed check's Close assertion does not match the centre layout (#221)
+
+With the bounded re-observation in place the geometry assertion passes, and the aarch64 check then
+fails later:
+
+```
+FAIL: page Close did not hide the retained native page while the app stayed live   (~90 s timeout)
+```
+
+Evidence from the downloaded `installed-check-linux-aarch64-a1` artifacts: the screenshot shows the
+Assistant at the bottom centre with a "No agent found ›" status row and **no × control**, and
+`packages/assistant-web/src/App.tsx:1662-1672` renders
+
+```
+{centre ? <Collapse …> : <Close … onClose>}
+```
+
+i.e. in the centre layout the control in the Close position is **Collapse**, not Close (#221). The
+checker still clicks "the last control, 26 px from the right, 24 px from the top" and then expects the
+retained native page to be *hidden*, which is the floating-layout Close behaviour. Collapse keeps the
+compact status row readable, so the page need not become unmapped.
+
+This is why the step has never passed in any gate run, on either architecture; x86_64 is expected to
+fail the same way. The Login Agent (owner of both the page and the checker) was asked to choose between
+asserting collapse semantics in the centre layout, switching layout before Close, or exposing a Close in
+the centre layout.
