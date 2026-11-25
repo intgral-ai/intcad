@@ -3396,3 +3396,27 @@ STAGING_ACCOUNT_CONFIG=<committed staging config> ACCOUNT_CONFIG_SOURCE=checked-
 
 So the failing step now behaves correctly for the production gate and for Gate B's staging build, and
 it still refuses a binary without the tuple (verified earlier).
+
+## 29. Second gate failure: the installed check lacked the XTEST library
+
+With the snapshot fix in place, run `45549791786` passed the account check ("embedded account tuple:
+89abe5c9…f41bb; binary bytes: 1001094040; all three values present") and then failed the installed
+check on aarch64:
+
+```
+BLOCKED: X11/XTEST system capability unavailable: libXtst.so.6: cannot open shared object file
+##[error]Process completed with exit code 2.
+```
+
+`packaging/linux/assistant-check.py` (the new Linux checker from #224) loads `libX11.so.6` and
+`libXtst.so.6` through `ctypes`, and `installed-check-inside.sh` installed `xvfb`, `openbox`,
+`imagemagick`, Mesa and fonts but **not** the XTEST library. Fixed on the promotion branch
+`ea99242e04`:
+
+```
+apt: libxtst6      dnf: libXtst        (added to display_tools)
+```
+
+The old run was cancelled and #237 was drafted/readied again, so gate run `45553980512` runs on
+`ea99242e04`. Note for the `main → develop` reconciliation: develop now needs three follow-ups
+(`npm/Node` is already there; the account snapshot env and this library belong with it).
