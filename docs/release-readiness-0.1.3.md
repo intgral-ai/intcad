@@ -3293,3 +3293,21 @@ Therefore the plan is executed as: merge #237 with a **merge commit**, then **as
 
 The same assertion decides which run id/attempt and which SHA the owner writes into
 `RELEASE_AGENT_*`, so no evidence can be mixed across the two paths.
+
+**Decision-grade measurement: the reuse path is not available in this repository.** The open PR's
+`merge_commit_sha` equals the test-merge commit the gate checks out, but GitHub's actual merge commit
+is a different object. Measured on the only merge-commit merge in the recent history (#226):
+
+```
+#226 gate GITHUB_SHA (selection-plan.json sourceRevision) = e57d4ecf58e7be4454cf9ea0117595bf05e111cf
+#226 actual merge commit on main                          = e6ba5b1bfd4ca06833c4ed836cf84e30d520cb67
+equal = false
+```
+
+So after merging #237 the assertion "main tip == 05b5c0df78…" will fail, and the **tag-push gate is
+required** exactly as designed. The attempt costs nothing (the merge is needed anyway) and no evidence
+is mixed: the publisher will consume only the tag-run handoff (`mode=tag`).
+
+Remaining acceleration is real but smaller: **Gate B staging runs in parallel with the tag gate.**
+Both are dispatched within a minute of the merge, and the 14-pair acceptance starts as soon as the tag
+gate's package jobs finish.
