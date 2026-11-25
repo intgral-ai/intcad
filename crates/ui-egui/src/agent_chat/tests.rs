@@ -16591,7 +16591,7 @@ fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the
 /// At the bottom centre the user moves the box sideways (the page's `move`, from a press on an
 /// empty part of it): it follows the pointer's travel since the press, only sideways, stays where
 /// it was dropped, never leaves the window or goes under the rail, and comes back into the room a
-/// narrower window leaves. Until it is moved it is centred on the window.
+/// narrower window leaves for as long as it is narrow. Until it is moved it is centred on the window.
 #[test]
 fn at_the_bottom_centre_the_user_moves_the_box_sideways_within_the_window() {
     let mut h = crate::scenario::Harness::new();
@@ -16638,13 +16638,27 @@ fn at_the_bottom_centre_the_user_moves_the_box_sideways_within_the_window() {
     // Right, never under the rail, and a narrower window keeps it in the room left.
     act(&mut h, r#"{"type":"move","dx":90000,"done":true}"#);
     let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
-    assert!(place().right() < rail.left() && place().right() > rail.left() - 40.0, "up to the rail: {:?} {rail:?}", place());
+    let dropped = place();
+    assert!(dropped.right() < rail.left() && dropped.right() > rail.left() - 40.0, "up to the rail: {dropped:?} {rail:?}");
     h.call("ui.resize", json!({"width": 1100.0, "height": 700.0}));
     h.frames(3);
     let narrow = place();
     let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
     assert!(narrow.right() < rail.left() && narrow.left() >= h.ctx.content_rect().left(), "in the narrower window: {narrow:?} {rail:?}");
     assert_eq!(narrow.size(), start.size(), "the same box");
+    // Only for as long as the window is narrow: as wide as it was again, it is where it was dropped.
+    h.call("ui.resize", json!({"width": 1601.0, "height": 1000.0}));
+    h.frames(3);
+    assert!((place().left() - dropped.left()).abs() < 0.5, "back where it was dropped: {:?} {dropped:?}", place());
+    // Dropped past the edge of a narrow window, it keeps where it stopped, not the edge of a wider one.
+    let offset = |h: &crate::scenario::Harness| place().center().x - h.ctx.content_rect().center().x;
+    h.call("ui.resize", json!({"width": 1100.0, "height": 700.0}));
+    h.frames(3);
+    act(&mut h, r#"{"type":"move","dx":90000,"done":true}"#);
+    let stopped = offset(&h);
+    h.call("ui.resize", json!({"width": 1601.0, "height": 1000.0}));
+    h.frames(3);
+    assert!((offset(&h) - stopped).abs() < 0.5 && place().right() < dropped.right() - 100.0, "where it stopped: {:?} {stopped}", place());
 
     assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"move"}"#).is_err(), "a move without its travel is refused");
     assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"move","dx":"far"}"#).is_err());

@@ -3328,11 +3328,13 @@ function Centre({
     element.addEventListener('pointermove', move);
     element.addEventListener('pointerup', up);
     element.addEventListener('pointercancel', up);
+    element.addEventListener('lostpointercapture', up);
     return () => {
       element.removeEventListener('pointerdown', down);
       element.removeEventListener('pointermove', move);
       element.removeEventListener('pointerup', up);
       element.removeEventListener('pointercancel', up);
+      element.removeEventListener('lostpointercapture', up);
     };
   }, []);
   // The conversation opens only once the view has its height: opened into a view still growing, it

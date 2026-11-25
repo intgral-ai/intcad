@@ -1040,12 +1040,15 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             app.agent_chat.web_height = Some(height.clamp(0.0, 100_000.0) as f32);
         }
         // There, the user moves the box sideways: `dx` is the pointer's travel since the press, in
-        // screen units, and `done` ends the move. The panel keeps the box in the room there is.
+        // screen units, and `done` ends the move. It starts where the box is shown and stops at the
+        // edges of the room there is, so a move back from an edge starts at once.
         "move" => {
             let dx = action.get("dx").and_then(Value::as_f64).filter(|dx| dx.is_finite()).ok_or("move: no dx")?;
             let chat = &mut app.agent_chat;
-            let from = *chat.web_shift_from.get_or_insert(chat.web_shift);
-            chat.web_shift = from + dx.clamp(-100_000.0, 100_000.0) as f32 / chat.web_zoom.unwrap_or(1.0);
+            let (least, most) = chat.web_shift_room.unwrap_or((-100_000.0, 100_000.0));
+            let within = |shift: f32| crate::shell::within(shift, least, most);
+            let from = *chat.web_shift_from.get_or_insert(within(chat.web_shift));
+            chat.web_shift = within(from + dx.clamp(-100_000.0, 100_000.0) as f32 / chat.web_zoom.unwrap_or(1.0));
             if action.get("done").and_then(Value::as_bool) == Some(true) {
                 chat.web_shift_from = None;
             }

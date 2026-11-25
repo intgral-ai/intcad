@@ -580,7 +580,7 @@ impl AssistantWeb {
             self.placed = Some(at);
         }
         // The page's pointer travel (`move`) comes in screen units, which WebKit does not scale with
-        // the page's zoom.
+        // the page's zoom (seen on macOS; WebView2 on Windows was not checked).
         if let Some(view) = &self.view {
             web::set_zoom(solve, page_zoom(view, at) as f32);
         }
