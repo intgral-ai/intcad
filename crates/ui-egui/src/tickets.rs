@@ -45,7 +45,8 @@ pub struct State {
     path: Option<String>,
     /// The store's write count when the tickets were read.
     seen: Option<u64>,
-    /// The design revision the freshness was read at.
+    /// The design revision the freshness was read at (the browser build reads none).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     stamp: Option<(String, u64)>,
 }
 
