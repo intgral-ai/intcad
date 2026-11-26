@@ -42,6 +42,7 @@
  * This control must fail because the server does not see the response close.
  * `--only "early-rejection control"` runs both cancellation cases with a nonexistent
  * session for the prompt, so an ACP error arrives before the awaited event.
+ * `--only "I1 12 MiB"` runs a separate stress probe through the pinned SDK and model stub.
  *
  * Nothing of the person running it is used. The agent gets a new, empty data folder
  * (`MASTRA_APP_DATA_DIR`), which is also where Mastra keeps plan sign-ins, and the agent's entry
@@ -179,6 +180,11 @@ export function modelService({ keep = () => {}, status = () => 200 } = {}) {
       };
       const messages = wanted.messages ?? [];
       const last = messages[messages.length - 1] ?? {};
+      // A large attachment can trigger Mastra's observer before the actual reply.
+      // Give the SDK the structured response that it expects for that request.
+      if (last.role === "user" && textOf(last).startsWith("## New Message History to Observe")) {
+        return say("<observations>\n* 🟡 (12:00) User sent the synthetic attachment fixture.\n</observations>");
+      }
       // A change the plan gate held (agent/plan.mjs): do as the real model did, record the plan
       // with `task_write`, then make the same call again. Mastra Code puts a message of its own
       // after the task tool's result (`<current-task-list …>`, or `<task-list-update …>` when a list
@@ -626,13 +632,12 @@ async function main(args) {
   // INT-1513: a picture and a PDF attached to a message reach the model as parts of the user's
   // message (agent/agent.mjs, `filesOf`); the next message brings none of its own.
   const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-  const pdfBytes = Buffer.alloc(12 * 1024 * 1024, 0x20);
-  pdfBytes.write(`%PDF-1.4\n% ${MARK}\n`);
-  pdfBytes.write("\n%%EOF\n", pdfBytes.length - 7);
-  const pdf = pdfBytes.toString("base64");
-  await run("I1 a picture and a PDF reach the model with the message", {}, async ({ out, agent, service, sessionId, prompt }) => {
-    const lastUser = () => {
-      const user = (service.seen.bodies.at(-1)?.messages ?? []).findLast((message) => message.role === "user");
+  const attachmentCase = (pdfBytes) => async ({ out, agent, service, sessionId, prompt }) => {
+    const pdf = pdfBytes.toString("base64");
+    const lastUser = (text) => {
+      const body = service.seen.bodies.findLast((body) => body.stream && body.messages?.at(-1)?.role === "user" &&
+        textOf(body.messages.at(-1)) === text);
+      const user = body?.messages.at(-1);
       return Array.isArray(user?.content) ? user.content : [{ type: "text", text: user?.content }];
     };
     const before = service.seen.requests;
@@ -644,15 +649,22 @@ async function main(args) {
         { type: "resource", resource: { uri: "file:///brief%20one.pdf", mimeType: "application/pdf", blob: pdf } },
       ],
     });
-    const parts = lastUser();
+    const parts = lastUser("what is in these?");
     Object.assign(out, { stop: reply.stopReason, askedStandIn: service.seen.requests > before, parts: parts.map((part) => part.type) });
     out.picture = parts.some((part) => part.image_url?.url === `data:image/png;base64,${png}`);
     out.document = parts.some((part) => part.file?.file_data === `data:application/pdf;base64,${pdf}` && part.file?.filename === "brief one.pdf");
     out.documentBytes = out.document ? pdfBytes.length : 0;
     out.next = await prompt("and now?");
-    out.nextParts = lastUser().map((part) => part.type);
+    out.nextParts = lastUser("and now?").map((part) => part.type);
     return out.stop === "end_turn" && out.askedStandIn && out.picture && out.document && out.next.stop === "end_turn" && out.nextParts.every((type) => type === "text");
-  });
+  };
+  const tinyPdf = `%PDF-1.4\n% ${MARK}\n%%EOF\n`;
+  await run("I1 a picture and a PDF reach the model with the message", {}, attachmentCase(Buffer.from(tinyPdf)));
+  if (only === "I1 12 MiB") {
+    const largePdf = Buffer.alloc(12 * 1024 * 1024, 0x20);
+    largePdf.write(tinyPdf);
+    await run("I1 12 MiB PDF stress probe", {}, attachmentCase(largePdf));
+  }
 
   await run("a command after a permission request", {}, async ({ out, prompt, marker }) => {
     const turn = Object.assign(out, await prompt(`run the command: echo ${MARK} > allowed-command.txt`));
