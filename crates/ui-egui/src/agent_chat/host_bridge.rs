@@ -366,18 +366,18 @@ pub(crate) fn serve_acp_cad(
     (Err(error), !free)
 }
 
-/// Refusals the host made before any work: the document cannot have changed.
+/// Refusals the host made before any work: the document cannot have changed. The host's charged
+/// refusal keeps `code: OP_REFUSED` and puts the reason in `reason`; a guard refusal puts its own
+/// code in `code`.
 fn proven_no_design_effect(result: &Value) -> bool {
     if result.get("noEffect").and_then(Value::as_bool) == Some(true) {
         return true;
     }
-    let code = result
-        .pointer("/structuredContent/errorDetails/code")
-        .or_else(|| result.pointer("/structuredContent/errorDetails/reason"))
-        .or_else(|| result.pointer("/errorDetails/code"))
-        .and_then(Value::as_str);
+    let details = result.pointer("/structuredContent/errorDetails").or_else(|| result.pointer("/errorDetails"));
+    let reason = details.and_then(|details| details.get("reason")).and_then(Value::as_str);
+    let code = details.and_then(|details| details.get("code")).and_then(Value::as_str).filter(|code| *code != "OP_REFUSED");
     matches!(
-        code,
+        reason.or(code),
         Some(
             "STALE_DOCUMENT"
                 | "INVALID_REQUEST"
@@ -689,5 +689,18 @@ mod tests {
         let (execute, batch) = guarded_capabilities();
         assert!(execute && batch, "the existing MCP execute/batch tools carry expectedDocument");
         assert_eq!(capability_argument().as_deref(), Some("--bridge-capabilities=execute,batch"));
+    }
+
+    /// The host's charged refusal keeps `code: OP_REFUSED` and names the cause in `reason`. It
+    /// proves no effect just as a guard's own `STALE_DOCUMENT` code does.
+    #[test]
+    fn a_host_refusal_proves_no_design_effect() {
+        let refused = json!({"content":[{"type":"text","text":"no"}],"isError":true,
+            "structuredContent":{"error":"no authority","errorDetails":{"code":"OP_REFUSED","reason":"AUTH_UNAVAILABLE"}}});
+        assert!(proven_no_design_effect(&refused));
+        let stale = json!({"isError":true,"structuredContent":{"error":"changed","errorDetails":{"code":"STALE_DOCUMENT"}}});
+        assert!(proven_no_design_effect(&stale));
+        assert!(!proven_no_design_effect(&json!({"isError":true,"structuredContent":{"code":"OP_OUTCOME_UNKNOWN"}})));
+        assert!(!proven_no_design_effect(&json!({"isError":false,"structuredContent":{"result":{}}})));
     }
 }

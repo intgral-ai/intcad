@@ -18035,6 +18035,55 @@ fn a_turn_with_a_desktop_edit_is_not_sent_again_by_itself() {
     assert_eq!(script.prompts().len(), 1, "the message was not sent again by itself");
 }
 
+/// An auth-required event is another path that could send a kept message again. It must not
+/// after a turn that may have edited the design.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_auth_required_event_does_not_send_an_edited_turn_again() {
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    script.set_bridge_effect(true);
+    script.report(Event::AuthRequired { methods: Vec::new() });
+    poll(&mut app, &ctx);
+    assert!(app.agent_chat.queued.is_none(), "an edit is not queued for a later sign-in");
+    assert_eq!(script.prompts().len(), 1);
+    // Without an effect the same event still keeps the message.
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    script.set_bridge_effect(false);
+    script.report(Event::AuthRequired { methods: Vec::new() });
+    poll(&mut app, &ctx);
+    assert!(app.agent_chat.queued.is_some(), "a no-effect turn keeps its retry");
+}
+
+/// Only the built-in package takes the private route. An added ACP agent whose command splits
+/// into two words is still an ordinary agent and keeps its listener and MCP bridge.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_added_two_word_agent_is_not_the_packaged_route() {
+    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.builtin_agent = Some(agents::Builtin {
+        program: "/opt/intcad/mastra-agent/node".into(),
+        args: vec!["/opt/intcad/mastra-agent/agent/main.mjs".into()],
+        packaged: true,
+        data: None,
+    });
+    app.preferences.agents = vec![agents::AgentConfig {
+        id: "custom-1".into(),
+        name: "Mine".into(),
+        command: "npx agent".into(),
+        kind: agents::Kind::Acp,
+        ..Default::default()
+    }];
+    let entries = agents::entries(&app);
+    let builtin = entries.first().expect("the built-in entry");
+    assert_eq!(builtin.argv.len(), 2);
+    assert!(super::packaged_chat_route(&app, builtin, agents::Execution::Direct), "the package takes the private route");
+    let added = entries.iter().find(|entry| entry.id == "custom-1").expect("the added agent");
+    assert_eq!((added.kind, added.argv.len()), (agents::Kind::Acp, 2));
+    assert!(!super::packaged_chat_route(&app, added, agents::Execution::Direct), "an added agent never does");
+}
+
 /// The control: a turn proven to have had no effect is still sent again once its plan is back.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]

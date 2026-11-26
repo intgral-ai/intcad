@@ -1156,8 +1156,9 @@ impl AgentChat {
                 }
                 self.state = Some(State::NeedsAuth);
                 self.picking = Some(false);
-                // What was asked goes again once the login is done.
-                if !self.stopped && self.queued.is_none() {
+                // What was asked goes again once the login is done, unless this turn may already
+                // have changed the design: a fresh turn would mint a second operation.
+                if !self.stopped && self.queued.is_none() && !self.backend.as_ref().is_some_and(|backend| backend.turn_had_bridge_effect()) {
                     self.queued = self.last.take();
                 }
             }
@@ -1504,10 +1505,9 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     let bridge_scope_check = desktop_bridge_scope_check(app);
     // The packaged Agent reaches this window over its own stdio. Its queue needs neither the
     // loopback endpoint nor the external CLI, so a missing listener does not disable its tools.
-    let packaged_route = execution == agents::Execution::Direct
-        && entry.kind == agents::Kind::Acp
-        && entry.argv.len() == 2
-        && app.builtin_agent.as_ref().is_some_and(|found| found.packaged);
+    // Only the built-in entry may take this route: an added ACP agent with a two-word command is
+    // still an ordinary agent and keeps its listener and MCP bridge.
+    let packaged_route = packaged_chat_route(app, &entry, execution);
     let chat = &mut app.agent_chat;
     if !packaged_route
         && chat.tools_port.is_none()
@@ -1521,11 +1521,13 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         }
     }
     let cli = find_cli();
-    if packaged_route && chat.tools_tx.is_none() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        chat.tools_tx = Some(tx);
-        chat.tools_rx = Some(rx);
-    } else if !packaged_route && chat.tools_port.is_none() {
+    if packaged_route {
+        if chat.tools_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            chat.tools_tx = Some(tx);
+            chat.tools_rx = Some(rx);
+        }
+    } else if chat.tools_port.is_none() {
         chat.notice(tr("ui.agent_chat_no_control"), true);
     } else if cli.is_none() {
         chat.notice(tr("ui.agent_chat_no_cli"), true);
@@ -1640,6 +1642,18 @@ fn desktop_bridge_scope_check(app: &SolveApp) -> Option<solidcraft_engine::entit
     // Without worker-backed durability, even a live identity cannot open the paid lane.
     account.bridge_journal()?;
     account.bridge_scope_check(scope)
+}
+
+/// The packaged Agent's private route: the built-in entry, a direct ACP session, and the
+/// package's own two-part program. An agent the user added never takes it, even when its command
+/// happens to split into two words; such an agent keeps its listener and MCP bridge.
+#[cfg(not(target_arch = "wasm32"))]
+fn packaged_chat_route(app: &SolveApp, entry: &agents::Entry, execution: agents::Execution) -> bool {
+    agents::is_builtin_entry(app, entry)
+        && execution == agents::Execution::Direct
+        && entry.kind == agents::Kind::Acp
+        && entry.argv.len() == 2
+        && app.builtin_agent.as_ref().is_some_and(|found| found.packaged)
 }
 
 /// The agent's process is up: the conversation starts on it. The built-in agent is handed its
