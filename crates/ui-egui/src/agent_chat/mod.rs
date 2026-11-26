@@ -1521,13 +1521,11 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         }
     }
     let cli = find_cli();
-    if packaged_route {
-        if chat.tools_tx.is_none() {
-            let (tx, rx) = std::sync::mpsc::channel();
-            chat.tools_tx = Some(tx);
-            chat.tools_rx = Some(rx);
-        }
-    } else if chat.tools_port.is_none() {
+    if packaged_route && chat.tools_tx.is_none() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        chat.tools_tx = Some(tx);
+        chat.tools_rx = Some(rx);
+    } else if !packaged_route && chat.tools_port.is_none() {
         chat.notice(tr("ui.agent_chat_no_control"), true);
     } else if cli.is_none() {
         chat.notice(tr("ui.agent_chat_no_cli"), true);

@@ -478,7 +478,7 @@ fn host_agent_parameter_edit_is_admitted_and_settled_once() {
 
     let after = app.session.document_stamp();
     assert_eq!(after.document_id, before.document_id);
-    assert_eq!(after.revision, before.revision + 1);
+    assert_eq!(after.revision, before.revision + 1, "before={before:?} after={after:?} undo={}", app.session.undo.len());
     let readback = app.session.execute("parameters.list", &json!({"filter":"user"})).expect("independent readback");
     let matches: Vec<_> = readback["parameters"].as_array().unwrap().iter().filter(|param| param["name"] == NAME).collect();
     assert_eq!(matches.len(), 1, "{readback}");
@@ -487,7 +487,7 @@ fn host_agent_parameter_edit_is_admitted_and_settled_once() {
     assert!(requests.try_recv().is_err(), "no second desktop command");
     assert_eq!(bridge.minted_operations(), 1);
     let accounts = accounts.lock().unwrap();
-    assert_eq!(accounts.begun, [operation.clone()]);
+    assert_eq!(accounts.begun, std::slice::from_ref(&operation));
     assert_eq!(accounts.finalized, [(operation.clone(), BillingResult::Succeeded)]);
     assert_eq!(journal().unwrap().load(&operation).unwrap().unwrap().status, OperationStatus::Charged);
 }
@@ -599,7 +599,7 @@ fn packaged_acp_edit_is_admitted_and_committed_once() {
     assert!(reply["result"].is_object() && reply["result"]["isError"] != true, "{reply}");
     let after = app.session.document_stamp();
     assert_eq!(after.document_id, before.document_id);
-    assert_eq!(after.revision, before.revision + 1);
+    assert_eq!(after.revision, before.revision + 1, "before={before:?} after={after:?} undo={}", app.session.undo.len());
     let readback = app.session.execute("parameters.list", &json!({"filter":"user"})).unwrap();
     let matches: Vec<_> = readback["parameters"].as_array().unwrap().iter().filter(|param| param["name"] == "int1481_acceptance_marker").collect();
     assert_eq!(matches.len(), 1, "{readback}");

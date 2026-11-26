@@ -209,7 +209,7 @@ impl ChatBackend {
             if matches!(method, "engine.execute" | "engine.batch" | "document.inspect" | "document.revision")
                 && !envelope.contains_key("expectedDocument")
             {
-                envelope.insert("expectedDocument".into(), crate::execution_guard::stamp_json(stamp));
+                envelope.insert("expectedDocument".into(), json!({"documentId": stamp.document_id, "revision": stamp.revision.to_string()}));
             }
             if let Some(scope) = solidcraft_engine::io::vfs::current_scope() {
                 envelope.insert("allow_paths".into(), json!(scope.roots().iter().map(|root| root.to_string_lossy()).collect::<Vec<_>>()));
