@@ -1,11 +1,13 @@
-//! The host side of the project's part tickets: what a Tickets view reads, the person's steps it
-//! calls, Start's message, the note every message carries and the check bound to a ticket.
+//! The host side of the project's part tickets: the state the tickets view of the Assistant's page
+//! is told ([`page_state`]), the person's steps its buttons ask for ([`receive`]), Start's message, the
+//! note every message carries and the check bound to a ticket.
 //!
 //! The tickets are the project's own (`solidcraft_engine::project::tickets`). The agent drafts
 //! them and asks for a ticket's check through the `ticket.*` commands; a person confirms a draft,
-//! starts a confirmed ticket and marks a ticket done through the functions here, which a view's
-//! buttons call and no command reaches. (The view itself is not built: the egui drawing was
-//! rejected on 2026-11-26 for a page made of Mastra's components.)
+//! starts a confirmed ticket, marks a ticket done, and creates, edits or deletes one of their own
+//! through the functions here, which the view's buttons call and no command reaches. Each such step
+//! names the revision the person saw, and the store refuses it when the ticket has changed since.
+//! The view's messages come in on its own channel ([`receive`]); the Assistant's view refuses them.
 //! Start sends the Assistant one message about that ticket, with its chip, and while a ticket is
 //! in progress every message carries it in full and the others by id, title and state ([`note`]).
 //! When the agent asks for the check, the app runs the Review panel's own DFM check (the same
@@ -128,16 +130,37 @@ fn apply(app: &mut SolveApp, step: impl FnOnce(&std::path::Path) -> Result<Ticke
     }
 }
 
-/// Confirm: a person's step on a draft.
+/// Confirm: a person's step on a draft they saw at revision `seen`.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn confirm(app: &mut SolveApp, id: &str) {
-    apply(app, |root| tickets::confirm(root, id));
+pub fn confirm(app: &mut SolveApp, id: &str, seen: u64) {
+    apply(app, |root| tickets::confirm(root, id, seen));
 }
 
-/// Done: a person's step on a ticket waiting for confirmation.
+/// Done: a person's step on a ticket waiting for confirmation, seen at revision `seen`.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn done(app: &mut SolveApp, id: &str) {
-    apply(app, |root| tickets::done(root, id));
+pub fn done(app: &mut SolveApp, id: &str, seen: u64) {
+    apply(app, |root| tickets::done(root, id, seen));
+}
+
+/// New ticket: a person's own ticket, confirmed from the start.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn create(app: &mut SolveApp, draft: tickets::Draft) -> Option<Ticket> {
+    apply(app, |root| tickets::create(root, draft))
+}
+
+/// Edit: a person changes the words of a draft or a confirmed ticket seen at revision `seen`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn edit(app: &mut SolveApp, id: &str, seen: u64, edit: tickets::Edit) {
+    apply(app, |root| tickets::edit(root, id, seen, edit));
+}
+
+/// Delete: a person removes a draft or a confirmed ticket seen at revision `seen`; its page closes.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn delete(app: &mut SolveApp, id: &str, seen: u64) {
+    if apply(app, |root| tickets::delete(root, id, seen)).is_some() && app.tickets.selected.as_deref() == Some(id) {
+        app.tickets.selected = None;
+        app.tickets.record.clear();
+    }
 }
 
 /// Run check (dev-agent's addition, 2026-11-26): the person asks for the check of the ticket in
@@ -147,15 +170,15 @@ pub fn ask_check(app: &mut SolveApp, id: &str) {
     apply(app, |root| tickets::ask_check(root, id, tickets::Actor::Person, None));
 }
 
-/// Start: the ticket goes in progress and the Assistant gets one message to work on it alone,
-/// with the ticket's chip. Only one ticket is worked on at a time.
+/// Start: the ticket (seen at revision `seen`) goes in progress and the Assistant gets one message
+/// to work on it alone, with the ticket's chip. Only one ticket is worked on at a time.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn start(app: &mut SolveApp, ctx: &egui::Context, id: &str) {
+pub fn start(app: &mut SolveApp, ctx: &egui::Context, id: &str, seen: u64) {
     if let Some(other) = current(app).filter(|ticket| ticket.id != id) {
         app.tickets.error = Some(trf("ui.tickets_one_at_a_time", &[("id", &other.id)]));
         return;
     }
-    let Some(ticket) = apply(app, |root| tickets::start(root, id)) else { return };
+    let Some(ticket) = apply(app, |root| tickets::start(root, id, seen)) else { return };
     let chip = crate::agent_chat::attach::Attachment {
         id: 0,
         name: format!("{} · {}", ticket.id, ticket.title.chars().take(40).collect::<String>()),
@@ -327,6 +350,186 @@ pub fn tick(app: &mut SolveApp) {
 
 #[cfg(target_arch = "wasm32")]
 pub fn tick(_app: &mut SolveApp) {}
+
+/// The tickets view's state as JSON (`TicketsState` in packages/assistant-web/src/host.ts): the
+/// project's tickets as the store keeps them, the open ticket and its record, each bound run's
+/// freshness now, the last refusal, and the view's words in the app's language. The page draws
+/// the tickets view instead of the conversation when it is pushed this.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn page_state(app: &mut SolveApp) -> String {
+    let _language = crate::i18n::scope(&app.preferences.language);
+    let project = root(app).is_some();
+    refresh(app);
+    if app.tickets.selected.as_ref().is_some_and(|id| !app.tickets.tickets.iter().any(|ticket| &ticket.id == id)) {
+        app.tickets.selected = None;
+        app.tickets.record.clear();
+    }
+    let tickets = &app.tickets;
+    serde_json::json!({
+        "view": "tickets",
+        "dark": crate::theme::is_dark(),
+        "language": app.preferences.language,
+        "strings": page_strings(),
+        "project": project,
+        "tickets": tickets.tickets,
+        "selected": tickets.selected,
+        "record": tickets.record,
+        "freshness": tickets.freshness,
+        "error": tickets.error,
+    })
+    .to_string()
+}
+
+/// The longest list of requirement lines the page may send; the store's own limit is lower.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_SENT_LINES: usize = 64;
+
+/// The most a message from the tickets view may hold.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+
+/// One message from the tickets view's own web view, as JSON. Only the tickets view's requests are
+/// taken here ([`act`]); the Assistant's view has no way to them (its `web::act` refuses them).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn receive(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> Result<(), String> {
+    let _language = crate::i18n::scope(&app.preferences.language);
+    if message.len() > MAX_MESSAGE_BYTES {
+        return Err("message too long".into());
+    }
+    let action: serde_json::Value = serde_json::from_str(message).map_err(|error| format!("not JSON: {error}"))?;
+    let kind = action.get("type").and_then(serde_json::Value::as_str).ok_or("no type")?;
+    if !kind.starts_with("ticket_") {
+        return Err(format!("unknown action {kind}"));
+    }
+    act(app, ctx, kind, &action)?;
+    ctx.request_repaint();
+    Ok(())
+}
+
+/// A message of the tickets view, `{"type": "ticket_…"}` ([`receive`]):
+/// `ticket_open` (`id`) and `ticket_close` choose the open ticket; `ticket_confirm`,
+/// `ticket_start` and `ticket_done` (`id`, `revision`) are a person's steps; `ticket_create`
+/// (`title`, `text`, `requirements`), `ticket_edit` (`id`, `revision`, `title`, `text`,
+/// `requirements`) and `ticket_delete` (`id`, `revision`) a person's own changes. The store checks
+/// each step against the ticket's state and the revision the person saw; a refusal is the view's
+/// error. Anything else is refused with the reason.
+#[cfg(not(target_arch = "wasm32"))]
+fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &serde_json::Value) -> Result<(), String> {
+    use serde_json::Value;
+    let text = |name: &str| action.get(name).and_then(Value::as_str);
+    let id = || text("id").map(str::trim).filter(|id| tickets::number(id).is_some()).ok_or(format!("{kind}: no ticket id"));
+    let seen = || action.get("revision").and_then(Value::as_u64).ok_or(format!("{kind}: no revision"));
+    let words = || -> Result<(String, String, Vec<String>), String> {
+        let title = text("title").ok_or(format!("{kind}: no title"))?.to_string();
+        let body = text("text").unwrap_or_default().to_string();
+        let lines = match action.get("requirements") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(lines)) if lines.len() <= MAX_SENT_LINES => {
+                lines.iter().map(|line| line.as_str().map(str::to_string).ok_or(format!("{kind}: a requirement line is not text"))).collect::<Result<_, _>>()?
+            }
+            Some(_) => return Err(format!("{kind}: requirements must be at most {MAX_SENT_LINES} lines of text")),
+        };
+        Ok((title, body, lines))
+    };
+    match kind {
+        "ticket_open" => {
+            app.tickets.selected = Some(id()?.to_string());
+            app.tickets.error = None;
+            // The open ticket's record is read with the tickets.
+            app.tickets.seen = None;
+            refresh(app);
+        }
+        "ticket_close" => {
+            app.tickets.selected = None;
+            app.tickets.record.clear();
+            app.tickets.error = None;
+        }
+        "ticket_confirm" => confirm(app, id()?, seen()?),
+        "ticket_start" => start(app, ctx, id()?, seen()?),
+        "ticket_done" => done(app, id()?, seen()?),
+        "ticket_create" => {
+            let (title, text, requirements) = words()?;
+            create(app, tickets::Draft { title, text, requirements, parent: None, part: None });
+        }
+        "ticket_edit" => {
+            let (title, text, requirements) = words()?;
+            edit(app, id()?, seen()?, tickets::Edit { title, text, requirements });
+        }
+        "ticket_delete" => delete(app, id()?, seen()?),
+        other => return Err(format!("unknown action {other}")),
+    }
+    Ok(())
+}
+
+/// The tickets view's words, by the names the page gives them (`TicketStringKey` in
+/// packages/assistant-web/src/host.ts; a test keeps the two equal).
+#[cfg(not(target_arch = "wasm32"))]
+fn page_strings() -> serde_json::Map<String, serde_json::Value> {
+    [
+        ("title", "ui.tickets_title"),
+        ("newTicket", "ui.tickets_new"),
+        ("empty", "ui.tickets_empty"),
+        ("noProject", "ui.tickets_no_project"),
+        ("previous", "ui.tickets_previous"),
+        ("next", "ui.tickets_next"),
+        ("more", "ui.tickets_more"),
+        ("stateDraft", "ui.tickets_state_draft"),
+        ("stateConfirmed", "ui.tickets_state_confirmed"),
+        ("stateInProgress", "ui.tickets_state_in_progress"),
+        ("stateWaiting", "ui.tickets_state_waiting"),
+        ("stateDone", "ui.tickets_state_done"),
+        ("stateBlocked", "ui.tickets_state_blocked"),
+        ("properties", "ui.tickets_properties"),
+        ("part", "ui.tickets_part"),
+        ("noPart", "ui.tickets_no_part"),
+        ("check", "ui.tickets_check"),
+        ("noCheck", "ui.tickets_no_check"),
+        ("checkAsked", "ui.tickets_check_asked"),
+        ("checkRunning", "ui.tickets_check_running"),
+        ("checkRefused", "ui.tickets_check_refused"),
+        // The run's own words: the DFM check's names for its outcome and counts.
+        ("checkTitle", "ui.dfm_check.title"),
+        ("checkDone", "ui.dfm_check.done"),
+        ("checkStale", "ui.dfm_check.stale"),
+        ("failed", "ui.dfm_check.failed"),
+        ("advisory", "ui.dfm_check.advisory"),
+        ("checked", "ui.dfm_check.checked"),
+        ("notCovered", "ui.dfm_check.not_covered"),
+        ("requirements", "ui.tickets_requirements"),
+        ("activity", "ui.tickets_activity"),
+        ("actorPerson", "ui.tickets_actor_person"),
+        ("actorAgent", "ui.tickets_actor_agent"),
+        ("actorApp", "ui.tickets_actor_app"),
+        ("didDrafted", "ui.tickets_did_drafted"),
+        ("didCreated", "ui.tickets_did_created"),
+        ("didEdited", "ui.tickets_did_edited"),
+        ("didConfirmed", "ui.tickets_did_confirmed"),
+        ("didStarted", "ui.tickets_did_started"),
+        ("didCheckAsked", "ui.tickets_did_check_asked"),
+        ("didCheckStarted", "ui.tickets_did_check_started"),
+        ("didCheckRan", "ui.tickets_did_check_ran"),
+        ("didCheckRefused", "ui.tickets_did_check_refused"),
+        ("didBlocked", "ui.tickets_did_blocked"),
+        ("didUnblocked", "ui.tickets_did_unblocked"),
+        ("didDone", "ui.tickets_did_done"),
+        ("confirm", "ui.tickets_confirm"),
+        ("start", "ui.tickets_start"),
+        ("done", "ui.tickets_done"),
+        ("edit", "ui.edit"),
+        ("delete", "ui.delete"),
+        ("save", "ui.save"),
+        ("cancel", "ui.cancel"),
+        ("create", "ui.tickets_create"),
+        ("editTitle", "ui.tickets_edit_title"),
+        ("fieldTitle", "ui.tickets_field_title"),
+        ("fieldText", "ui.tickets_field_text"),
+        ("fieldLines", "ui.tickets_field_lines"),
+        ("deleteAsk", "ui.tickets_delete_ask"),
+    ]
+    .into_iter()
+    .map(|(name, key)| (name.to_string(), serde_json::Value::from(tr(key))))
+    .collect()
+}
 
 #[cfg(test)]
 #[path = "tickets_tests.rs"]

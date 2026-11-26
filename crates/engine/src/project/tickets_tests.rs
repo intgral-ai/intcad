@@ -42,6 +42,11 @@ fn bracket() -> Draft {
     }
 }
 
+/// The revision a person sees now.
+fn seen(root: &std::path::Path, id: &str) -> u64 {
+    load(root, id).unwrap().revision
+}
+
 fn ran(run: &str) -> RunResult {
     RunResult {
         run: run.into(),
@@ -79,16 +84,16 @@ fn a_ticket_goes_from_draft_to_done_only_by_the_allowed_moves_and_each_step_is_r
     let id = draft(&root, bracket(), Actor::Agent).unwrap().id;
 
     // A draft cannot be started, asked for its check, or done.
-    for refused in [start(&root, &id).err(), ask_check(&root, &id, Actor::Agent, None).err(), done(&root, &id).err()] {
+    for refused in [start(&root, &id, seen(&root, &id)).err(), ask_check(&root, &id, Actor::Agent, None).err(), done(&root, &id, seen(&root, &id)).err()] {
         assert!(matches!(refused, Some(TicketError::Refused(_))), "{refused:?}");
     }
     assert_eq!(load(&root, &id).unwrap().revision, 1, "a refused move changes nothing");
 
-    assert_eq!(confirm(&root, &id).unwrap().state, State::Confirmed);
-    assert!(confirm(&root, &id).is_err(), "a confirmed ticket is not confirmed again");
-    assert_eq!(start(&root, &id).unwrap().state, State::InProgress);
+    assert_eq!(confirm(&root, &id, seen(&root, &id)).unwrap().state, State::Confirmed);
+    assert!(confirm(&root, &id, seen(&root, &id)).is_err(), "a confirmed ticket is not confirmed again");
+    assert_eq!(start(&root, &id, seen(&root, &id)).unwrap().state, State::InProgress);
     // Done before the check has run is refused.
-    assert!(done(&root, &id).is_err());
+    assert!(done(&root, &id, seen(&root, &id)).is_err());
     let asked = ask_check(&root, &id, Actor::Agent, Some("Holes moved to 40 mm".into())).unwrap();
     assert_eq!((asked.state, asked.check.as_ref().map(|c| c.state)), (State::InProgress, Some(CheckState::Asked)));
     check_started(&root, &id, "run-1").unwrap();
@@ -96,7 +101,7 @@ fn a_ticket_goes_from_draft_to_done_only_by_the_allowed_moves_and_each_step_is_r
     assert_eq!(waiting.state, State::Waiting);
     let check = waiting.check.clone().unwrap();
     assert_eq!((check.run.as_deref(), check.outcome.as_deref(), check.freshness.as_deref()), (Some("run-1"), Some("complete"), Some("current")));
-    let finished = done(&root, &id).unwrap();
+    let finished = done(&root, &id, seen(&root, &id)).unwrap();
     assert_eq!((finished.state, finished.revision), (State::Done, 7));
 
     let record = events(&root, Some(&id)).unwrap();
@@ -128,17 +133,17 @@ fn a_refused_check_keeps_the_ticket_in_progress_with_the_reason_and_blocking_nee
     let scratch = Scratch::new("refused");
     let (_, root) = project(&scratch);
     let id = draft(&root, bracket(), Actor::Agent).unwrap().id;
-    confirm(&root, &id).unwrap();
-    start(&root, &id).unwrap();
+    confirm(&root, &id, seen(&root, &id)).unwrap();
+    start(&root, &id, seen(&root, &id)).unwrap();
     ask_check(&root, &id, Actor::Agent, None).unwrap();
     let refused = check_refused(&root, &id, "AUTH_UNAVAILABLE: no host billing authority").unwrap();
     assert_eq!(refused.state, State::InProgress);
     assert_eq!(refused.check.as_ref().map(|c| c.state), Some(CheckState::Refused));
-    assert!(done(&root, &id).is_err(), "no run, no done");
+    assert!(done(&root, &id, seen(&root, &id)).is_err(), "no run, no done");
     assert!(block(&root, &id, "  ").is_err(), "a block needs its reason");
     let blocked = block(&root, &id, "Which flange height? requirements.md has none").unwrap();
     assert_eq!((blocked.state, blocked.blocked.as_deref()), (State::Blocked, Some("Which flange height? requirements.md has none")));
-    assert_eq!(start(&root, &id).unwrap().state, State::InProgress, "a person starts a blocked ticket again");
+    assert_eq!(start(&root, &id, seen(&root, &id)).unwrap().state, State::InProgress, "a person starts a blocked ticket again");
 }
 
 #[test]
@@ -172,20 +177,29 @@ fn the_agents_commands_draft_and_ask_for_the_check_but_cannot_confirm_or_finish(
     assert_eq!(part["ticket"]["parent"], "T-1");
     assert_eq!(run(&mut s, "ticket.list", json!({}))["tickets"].as_array().map(Vec::len), Some(2));
 
-    // No command confirms, starts or finishes; update refuses those words.
-    for missing in ["ticket.confirm", "ticket.done", "ticket.start", "ticket.complete"] {
+    // No command confirms, starts or finishes, nor creates, edits or deletes as a person does: the
+    // agent's commands are these four, and update refuses those words.
+    let mut commands: Vec<&str> = crate::cmd::command_specs().iter().map(|spec| spec.id).filter(|id| id.starts_with("ticket.")).collect();
+    commands.sort_unstable();
+    assert_eq!(commands, ["ticket.draft", "ticket.inspect", "ticket.list", "ticket.update"]);
+    for missing in ["ticket.confirm", "ticket.done", "ticket.start", "ticket.complete", "ticket.create", "ticket.edit", "ticket.delete"] {
         assert!(crate::cmd::find_command(missing).is_none(), "{missing} must not exist");
     }
     for action in ["confirm", "done", "start"] {
         let error = s.execute("ticket.update", &json!({"id": "T-2", "action": action})).unwrap_err().to_string();
         assert!(error.contains("only a person"), "{action}: {error}");
     }
+    for action in ["create", "edit", "delete"] {
+        let error = s.execute("ticket.update", &json!({"id": "T-2", "action": action, "reason": "x"})).unwrap_err().to_string();
+        assert!(error.contains("is not an action"), "{action}: {error}");
+    }
+    assert_eq!(load(&root, "T-2").unwrap().revision, 1, "nothing the agent asked for changed the draft");
     // A draft is not worked on: asking for its check is refused.
     let error = s.execute("ticket.update", &json!({"id": "T-2", "action": "check"})).unwrap_err().to_string();
     assert!(error.contains("T-2 is draft"), "{error}");
 
-    confirm(&root, "T-2").unwrap();
-    start(&root, "T-2").unwrap();
+    confirm(&root, "T-2", seen(&root, "T-2")).unwrap();
+    start(&root, "T-2", seen(&root, "T-2")).unwrap();
     let asked = run(&mut s, "ticket.update", json!({"id": "T-2", "action": "check", "reason": "Lid flange added"}));
     assert_eq!(asked["ticket"]["check"]["state"], "asked");
     let inspected = run(&mut s, "ticket.inspect", json!({"id": "T-2"}));
@@ -193,6 +207,56 @@ fn the_agents_commands_draft_and_ask_for_the_check_but_cannot_confirm_or_finish(
     assert_eq!(actions, ["drafted", "confirmed", "started", "check_asked"]);
     // The commands are no undo steps: the design's history is untouched.
     assert!(s.undo.is_empty());
+}
+
+#[test]
+fn a_person_creates_confirmed_tickets_and_edits_or_deletes_only_what_nobody_started() {
+    let scratch = Scratch::new("person");
+    let (_, root) = project(&scratch);
+    let top = create(&root, Draft { title: "Enclosure".into(), ..Draft::default() }).unwrap();
+    assert_eq!((top.id.as_str(), top.parent.as_deref(), top.state, top.revision), ("T-1", None, State::Confirmed, 1));
+    let id = draft(&root, bracket(), Actor::Agent).unwrap().id;
+    assert_eq!(load(&root, &id).unwrap().parent.as_deref(), Some("T-1"));
+
+    // An edit names the revision the person saw; the draft stays a draft.
+    let lines = vec!["Thickness 2 mm".to_string(), String::new(), "Bend radius ≥ 2 mm".to_string()];
+    let edited = edit(&root, &id, 1, Edit { title: "Bracket, 2 mm".into(), text: "  ".into(), requirements: lines }).unwrap();
+    assert_eq!((edited.title.as_str(), edited.text.as_str(), edited.state, edited.revision), ("Bracket, 2 mm", "", State::Draft, 2));
+    assert_eq!(edited.requirements, ["Thickness 2 mm", "Bend radius ≥ 2 mm"], "empty lines are dropped");
+    assert_eq!(edited.part, bracket().part, "an edit keeps the part");
+
+    // A step on what the person no longer sees is refused, and changes nothing.
+    let stale = [
+        confirm(&root, &id, 1).err(),
+        edit(&root, &id, 1, Edit { title: "Other".into(), ..Edit::default() }).err(),
+        delete(&root, &id, 1).err(),
+    ];
+    for refused in stale {
+        assert!(matches!(&refused, Some(TicketError::Refused(why)) if why.contains("changed since you saw it")), "{refused:?}");
+    }
+    assert_eq!(load(&root, &id).unwrap().revision, 2);
+    assert!(matches!(edit(&root, &id, 2, Edit::default()), Err(TicketError::Invalid(_))), "a title is needed");
+
+    // Once started, a ticket is neither edited nor deleted.
+    confirm(&root, &id, 2).unwrap();
+    start(&root, &id, 3).unwrap();
+    assert!(matches!(edit(&root, &id, 4, Edit { title: "Late".into(), ..Edit::default() }), Err(TicketError::Refused(_))));
+    assert!(matches!(delete(&root, &id, 4), Err(TicketError::Refused(_))));
+    // The top ticket is not deleted while tickets are under it.
+    let refused = delete(&root, "T-1", 1).unwrap_err().to_string();
+    assert!(refused.contains("has tickets under it (T-2)"), "{refused}");
+
+    // A deleted ticket's file goes, its record stays, and its id is never given again.
+    let last = draft(&root, Draft { title: "Lid".into(), ..Draft::default() }, Actor::Agent).unwrap().id;
+    assert_eq!(last, "T-3");
+    delete(&root, &last, 1).unwrap();
+    assert!(matches!(load(&root, &last), Err(TicketError::NoSuchTicket(_))));
+    let record = events(&root, Some("T-3")).unwrap();
+    let gone = record.last().unwrap();
+    assert_eq!((gone.action.as_str(), gone.actor, gone.from, gone.to, gone.revision), ("deleted", Actor::Person, Some(State::Draft), None, 2));
+    assert_eq!(draft(&root, Draft { title: "Lid again".into(), ..Draft::default() }, Actor::Agent).unwrap().id, "T-4");
+    let actions: Vec<(String, Actor)> = events(&root, None).unwrap().into_iter().map(|e| (format!("{} {}", e.ticket, e.action), e.actor)).collect();
+    assert_eq!(&actions[..3], [("T-1 created".to_string(), Actor::Person), ("T-2 drafted".to_string(), Actor::Agent), ("T-2 edited".to_string(), Actor::Person)]);
 }
 
 #[test]
