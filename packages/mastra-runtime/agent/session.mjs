@@ -147,6 +147,7 @@ export function sessionBuilder(sdk) {
         initialState: { projectPath: own.folder, yolo: false, permissionRules: permissionRules(host.project) },
         ...(host.instructions ? { hostInstructions: host.instructions } : {}),
         mcpServers: Object.fromEntries(servers),
+        ...(sdk.cad ? { extraTools: sdk.cad.tools(request) } : {}),
         // ACP clients can answer permission requests, but have no free-text tool response method.
         // Intcad's: no `request_access` either. Its card names no folder, and after three clicks
         // any folder of the computer was open to the file tools (INT-1473: files only in the project).

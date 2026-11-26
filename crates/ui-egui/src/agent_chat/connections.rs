@@ -852,6 +852,10 @@ pub(super) fn begin_setup(_app: &mut SolveApp, _ctx: &egui::Context) {}
 /// is set up again, and this one's is set up now.
 fn changed(app: &mut SolveApp, ctx: &egui::Context) {
     app.builtin_changes = app.builtin_changes.wrapping_add(1);
+    // A key or address is a provider change: the turn's desktop tool authority does not survive it.
+    if let Some(backend) = app.agent_chat.backend.as_mut() {
+        backend.retire_bridge_authority();
+    }
     begin_setup(app, ctx);
 }
 
@@ -889,6 +893,10 @@ pub(super) fn settle(app: &mut SolveApp) {
     if std::mem::take(&mut app.agent_chat.conn.plans_changed) {
         app.builtin_changes = app.builtin_changes.wrapping_add(1);
         app.agent_chat.conn.set_up_at = app.builtin_changes;
+        // A plan signed in or out: a CAD call already in flight may no longer draw on it.
+        if let Some(backend) = app.agent_chat.backend.as_mut() {
+            backend.retire_bridge_authority();
+        }
     }
     let chat = &mut app.agent_chat;
     if !chat.conn.active || chat.backend.is_none() {
