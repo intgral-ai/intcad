@@ -454,6 +454,7 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
   const updates: Json[] = [];
   let model = "openai/gpt-5";
   let invalidated = 0;
+  let provider = async (_input: Json): Promise<void> => { throw new RequestError(-32603, "401 Unauthorized: token expired"); };
   const entry = {
     models: [] as Json[],
     controller: {
@@ -465,7 +466,10 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
         { id: "openai/gpt-image-2", hasApiKey: true },
       ],
     },
-    session: { model: { get: () => model, switch: async (next: string) => void (model = next) } },
+    session: {
+      model: { get: () => model, switch: async (next: string) => void (model = next) },
+      sendMessage: (input: Json) => provider(input),
+    },
   };
   class Base {
     connection = { sessionUpdate: async (update: Json) => void updates.push(update) };
@@ -480,7 +484,8 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
       return [{ id: "model", currentValue: model, options: listed }, { id: "mode", currentValue: "build", options: [] }];
     }
     async prompt(): Promise<Json> {
-      throw new RequestError(-32603, "401 Unauthorized: token expired");
+      await entry.session.sendMessage({ content: "" });
+      return { stopReason: "end_turn" };
     }
     async newSession(): Promise<Json> {
       // As Mastra Code does: the model in use is listed though nothing connected serves it.
@@ -532,10 +537,8 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
 
   // A turn asked for on that model reaches no provider: the Assistant is told to have another model picked.
   let asked = 0;
-  const prompt = Base.prototype.prompt;
-  Base.prototype.prompt = async () => {
+  provider = async (_input: Json) => {
     asked += 1;
-    return {};
   };
   await assert.rejects(agent.prompt({ sessionId: "s1" }), (error: Json) => {
     assert.deepEqual(error.data, { intcad: { kind: "model", prefix: "openai" } });
@@ -550,7 +553,6 @@ test("the agent answers the connection methods, refuses unknown ones, orders the
   });
   assert.equal(asked, 0);
   model = "openai/gpt-5";
-  Base.prototype.prompt = prompt;
 
   // After a sign-out the session does move, to the newest model it may use (the one case the PRD names).
   await agent.refreshSessions({ signedOut: true });
@@ -572,7 +574,7 @@ test("a session's model list older than its keys is worked out again before a tu
     }
   }
   const updates: Json[] = [];
-  let keyThere = false;
+  let keyThere = true;
   let unreadable = false;
   let invalidated = 0;
   let asked = 0;
@@ -590,22 +592,31 @@ test("a session's model list older than its keys is worked out again before a tu
         ];
       },
     },
-    session: { model: { get: () => "deepseek/deepseek-chat", switch: async () => assert.fail("nobody chose another model") } },
+    session: {
+      model: { get: () => "deepseek/deepseek-chat", switch: async () => assert.fail("nobody chose another model") },
+      sendMessage: async (_input: Json) => void (asked += 1),
+    },
   };
   class Base {
     connection = { sessionUpdate: async (update: Json) => void updates.push(update) };
     sessions = new Map([["s1", entry]]);
+    async newSession() {
+      return { sessionId: "s1" };
+    }
     configOptions(of: Json) {
       return [{ id: "model", currentValue: of.session.model.get(), options: of.models.map((item: Json) => ({ value: item.modelId, name: item.name })) }];
     }
     async prompt(): Promise<Json> {
-      asked += 1;
+      await entry.session.sendMessage({ content: "" });
       return { stopReason: "end_turn" };
     }
   }
   const { connections } = world();
   const Agent = intcadAgent({ Base, RequestError, connections, dates: () => new Map(DATES), reloadSignIns: () => {} });
   const agent = new Agent();
+  await agent.newSession({});
+  keyThere = false;
+  entry.usable = ["openai/gpt-5"];
   const refusedForTheModel = (error: Json) => {
     assert.deepEqual(error.data, { intcad: { kind: "model", prefix: "deepseek" } });
     return error.code === -32603;
@@ -633,7 +644,7 @@ test("a session's model list older than its keys is worked out again before a tu
   assert.deepEqual({ asked, invalidated, told: updates.length }, { asked: 2, invalidated: 3, told: 1 });
 });
 
-test("a message's pictures and PDFs go to the model with that message only, and not to a model that reads none (INT-1513)", async () => {
+async function attachmentAgent() {
   class RequestError extends Error {
     code: number;
     data: unknown;
@@ -644,9 +655,12 @@ test("a message's pictures and PDFs go to the model with that message only, and 
     }
   }
   const sent: Json[] = [];
-  let model = "anthropic/claude-sonnet-4-5";
+  const vision = "anthropic/claude-sonnet-4-5";
+  const textOnly = "deepseek/deepseek-v4-pro";
+  let model = vision;
+  const list = async () => [vision, textOnly].map((id) => ({ id, hasApiKey: true }));
   const entry: Json = {
-    controller: { listAvailableModels: async () => ["anthropic/claude-sonnet-4-5", "deepseek/deepseek-v4-pro"].map((id) => ({ id, hasApiKey: true })) },
+    controller: { listAvailableModels: list },
     session: { model: { get: () => model, switch: async () => {} }, sendMessage: async (input: Json) => void sent.push(input) },
     queue: Promise.resolve(),
     turns: new Set<Json>(),
@@ -690,18 +704,28 @@ test("a message's pictures and PDFs go to the model with that message only, and 
     }
   }
   const { connections } = world();
-  const takesAttachments = (id: string) => (id === "deepseek/deepseek-v4-pro" ? false : undefined);
+  const takesAttachments = (id: string) => (id === textOnly ? false : undefined);
   const Agent = intcadAgent({ Base, RequestError, connections, dates: () => new Map(DATES), reloadSignIns: () => {}, takesAttachments });
   const agent = new Agent();
+  await agent.newSession({});
+  return { agent, entry, sent, list, vision, textOnly, select: (id: string) => { model = id; } };
+}
+
+const picture = (data: string) => ({ type: "image", mimeType: "image/png", data });
+const pdf = { type: "resource", resource: { uri: "file:///work/brief%20one.pdf", mimeType: "application/pdf", blob: "JVBERi0=" } };
+const attachmentRefusal = (error: Json) => {
+  assert.deepEqual(error.data, { intcad: { kind: "attachments", prefix: "deepseek" } });
+  return error.code === -32603;
+};
+
+test("a message's pictures and PDFs go with its words, without leaking files into later messages (INT-1513)", async () => {
+  const { agent, sent } = await attachmentAgent();
 
   // The app sends pictures and PDFs only to an agent that says it takes them.
   const init = await agent.initialize({});
   assert.deepEqual(init.agentCapabilities, { loadSession: false, mcpCapabilities: { http: true, sse: false }, promptCapabilities: { image: true, embeddedContext: true } });
   assert.deepEqual(init.authMethods, []);
-  await agent.newSession({});
 
-  const picture = (data: string) => ({ type: "image", mimeType: "image/png", data });
-  const pdf = { type: "resource", resource: { uri: "file:///work/brief%20one.pdf", mimeType: "application/pdf", blob: "JVBERi0=" } };
   const note = { type: "resource", resource: { uri: "file:///work/note.txt", mimeType: "text/plain", text: "a note" } };
   // The picture and the PDF go as files with the words; a text document stays with the words.
   assert.deepEqual(await agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "what is this?" }, picture("AAAA"), pdf, note] }), { stopReason: "end_turn" });
@@ -722,23 +746,67 @@ test("a message's pictures and PDFs go to the model with that message only, and 
   await agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "words only" }] });
   assert.deepEqual(sent.splice(0), [{ content: "words only" }]);
 
-  // A model the catalog says reads no pictures: refused before any provider is asked, with a word
-  // the Assistant has a sentence for. Words alone still go.
-  model = "deepseek/deepseek-v4-pro";
-  await assert.rejects(agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "and this?" }, pdf] }), (error: Json) => {
-    assert.deepEqual(error.data, { intcad: { kind: "attachments", prefix: "deepseek" } });
-    return error.code === -32603;
-  });
+});
+
+test("refused files do not enter history or prevent a later text-only turn", async () => {
+  const { agent, sent, select, textOnly } = await attachmentAgent();
+  select(textOnly);
+  await assert.rejects(agent.prompt({ sessionId: "s1", prompt: [picture("ONE"), picture("TWO"), pdf] }), attachmentRefusal);
   assert.equal(sent.length, 0);
   assert.deepEqual(await agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "words only" }] }), { stopReason: "end_turn" });
   assert.deepEqual(sent.splice(0), [{ content: "words only" }]);
 });
 
-test("a message's files are not sent to a model the catalog lists as reading none, nor anything but pictures to DeepSeek (INT-1513)", () => {
+test("a queued model switch is honored when checking the prompt's attachments", async () => {
+  const { agent, entry, sent, select, textOnly, vision } = await attachmentAgent();
+  entry.queue = entry.queue.then(() => select(textOnly));
+  await assert.rejects(agent.prompt({ sessionId: "s1", prompt: [picture("NOW")] }), attachmentRefusal);
+  assert.equal(sent.length, 0);
+  entry.queue = entry.queue.then(() => select(vision));
+  assert.deepEqual(await agent.prompt({ sessionId: "s1", prompt: [picture("NOW")] }), { stopReason: "end_turn" });
+  assert.equal(sent.length, 1);
+});
+
+test("a text-only follow-up cannot resend retained pictures to an incompatible model", async () => {
+  const { agent, sent, select, textOnly, vision } = await attachmentAgent();
+  await agent.prompt({ sessionId: "s1", prompt: [picture("OLD")] });
+  select(textOnly);
+  const followUp = { sessionId: "s1", prompt: [{ type: "text", text: "and now?" }] };
+  await assert.rejects(agent.prompt(followUp), attachmentRefusal);
+  assert.equal(sent.length, 1, "no call that would include the earlier picture");
+  select(vision);
+  assert.deepEqual(await agent.prompt(followUp), { stopReason: "end_turn" });
+  assert.deepEqual(sent.at(-1), { content: "and now?" });
+});
+
+test("Stop acknowledges a prompt held in model refresh without dispatching it afterwards", async () => {
+  const { agent, entry, sent, list } = await attachmentAgent();
+  entry.usable = ["openai/other"];
+  const refreshStarted = Promise.withResolvers<void>();
+  const refreshed = Promise.withResolvers<void>();
+  entry.controller.listAvailableModels = async () => {
+    refreshStarted.resolve();
+    await refreshed.promise;
+    return list();
+  };
+  const pending = agent.prompt({ sessionId: "s1", prompt: [picture("STOP")] });
+  await refreshStarted.promise;
+  await agent.cancel({ sessionId: "s1" });
+  const result = await Promise.race([pending, new Promise((done) => setImmediate(() => done("still waiting")))]);
+  refreshed.resolve();
+  await pending;
+  assert.deepEqual(result, { stopReason: "cancelled" });
+  assert.equal(sent.length, 0);
+  await agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "after Stop" }] });
+  assert.deepEqual(sent, [{ content: "after Stop" }]);
+});
+
+test("attachment capability accounts for the MIME type and chosen adapter (INT-1513)", () => {
   const registry = { models: { deepseek: ["deepseek-v4-pro", "deepseek-v4-flash"], anthropic: ["claude-sonnet-4-5"] } };
   // As Mastra's `modelSupportsAttachments`: no also for a model it does not know.
   const supports = (id: string) => ["deepseek/deepseek-v4-flash", "anthropic/claude-sonnet-4-5"].includes(id);
-  const reads = attachmentReader(registry, supports);
+  let xaiOAuth = true;
+  const reads = attachmentReader(registry, supports, (provider: string) => provider === "xai" && xaiOAuth);
   const [picture, pdf] = [[{ mediaType: "image/png" }], [{ mediaType: "application/pdf" }]];
   assert.equal(reads("deepseek/deepseek-v4-pro", picture), false);
   assert.equal(reads("deepseek/deepseek-v4-flash", picture), true);
@@ -746,6 +814,11 @@ test("a message's files are not sent to a model the catalog lists as reading non
   assert.equal(reads("anthropic/claude-sonnet-4-5", pdf), true);
   assert.equal(reads("anthropic/claude-sonnet-9", picture), undefined, "newer than the catalog: sent, and the provider answers");
   assert.equal(reads("mastracode/stand-in/hello-1", pdf), undefined, "a custom address");
+  assert.equal(reads("xai/grok-vision", pdf), false, "the xAI OAuth chat adapter cannot encode a PDF");
+  assert.equal(reads("xai/grok-vision", picture), undefined, "pictures are not refused by that adapter");
+  xaiOAuth = false;
+  assert.equal(reads("xai/grok-vision", pdf), undefined, "the OAuth restriction does not get applied to the key route");
+  assert.equal(reads("mastracode/stand-in/hello-1", [{ mediaType: "application/zip" }]), false, "the desktop only sends pictures and PDFs");
 });
 
 // ---- The session builder (session.mjs): Mastra Code's ACP session, without a vector store ---------

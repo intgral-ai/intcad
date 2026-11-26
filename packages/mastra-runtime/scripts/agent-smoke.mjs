@@ -110,7 +110,7 @@ function mcpServer(log) {
 
 // ---- The stand-in model service -----------------------------------------------------------------
 
-const textOf = (message) => (typeof message?.content === "string" ? message.content : Array.isArray(message?.content) ? message.content.map((part) => part?.text ?? "").join("\n") : "");
+const textOf = (message) => (typeof message?.content === "string" ? message.content : Array.isArray(message?.content) ? message.content.flatMap((part) => typeof part?.text === "string" ? [part.text] : []).join("\n") : "");
 
 /**
  * An OpenAI-compatible service. What it answers follows the last message of the request:
@@ -555,9 +555,9 @@ async function main(args) {
       const alone = snapshot.keys.every((key) => !key.saved) && snapshot.plans.every((plan) => plan.state === "out") && inUse.startsWith("mastracode/stand-in/");
       if (!alone) throw new Error(`not alone with the stand-in (keys saved: ${snapshot.keys.filter((key) => key.saved).length}, plans signed in: ${snapshot.plans.filter((plan) => plan.state !== "out").length}, model in use: ${inUse || "none"}); nothing was sent`);
       let nextCadTurn = 0;
-      const send = (text) => agent.call("session/prompt", {
+      const send = (text, attachments = []) => agent.call("session/prompt", {
         sessionId: earlyRejection ? `${session.sessionId}-missing` : session.sessionId,
-        prompt: [{ type: "text", text }],
+        prompt: [{ type: "text", text }, ...attachments],
         ...(cadBridge ? { _meta: { intcad: { cadTurn: `smoke-turn-${++nextCadTurn}` } } } : {}),
       });
       const sendUntil = async (text, wanted, from) => {
@@ -573,9 +573,9 @@ async function main(args) {
           waitingForEvent.abort();
         }
       };
-      const prompt = async (text) => {
+      const prompt = async (text, attachments) => {
         const [from, before] = [agent.notes.length, service.seen.requests];
-        const reply = await send(text);
+        const reply = await send(text, attachments);
         return { stop: reply.stopReason, askedStandIn: service.seen.requests > before, ...turnOf(agent.notes, from) };
       };
       const before = listing(project);
@@ -626,7 +626,10 @@ async function main(args) {
   // INT-1513: a picture and a PDF attached to a message reach the model as parts of the user's
   // message (agent/agent.mjs, `filesOf`); the next message brings none of its own.
   const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-  const pdf = Buffer.from(`%PDF-1.4\n% ${MARK}\n%%EOF\n`).toString("base64");
+  const pdfBytes = Buffer.alloc(12 * 1024 * 1024, 0x20);
+  pdfBytes.write(`%PDF-1.4\n% ${MARK}\n`);
+  pdfBytes.write("\n%%EOF\n", pdfBytes.length - 7);
+  const pdf = pdfBytes.toString("base64");
   await run("I1 a picture and a PDF reach the model with the message", {}, async ({ out, agent, service, sessionId, prompt }) => {
     const lastUser = () => {
       const user = (service.seen.bodies.at(-1)?.messages ?? []).findLast((message) => message.role === "user");
@@ -645,6 +648,7 @@ async function main(args) {
     Object.assign(out, { stop: reply.stopReason, askedStandIn: service.seen.requests > before, parts: parts.map((part) => part.type) });
     out.picture = parts.some((part) => part.image_url?.url === `data:image/png;base64,${png}`);
     out.document = parts.some((part) => part.file?.file_data === `data:application/pdf;base64,${pdf}` && part.file?.filename === "brief one.pdf");
+    out.documentBytes = out.document ? pdfBytes.length : 0;
     out.next = await prompt("and now?");
     out.nextParts = lastUser().map((part) => part.type);
     return out.stop === "end_turn" && out.askedStandIn && out.picture && out.document && out.next.stop === "end_turn" && out.nextParts.every((type) => type === "text");
@@ -673,16 +677,19 @@ async function main(args) {
     }],
   };
   const cadEdit = (args) => `call intcad-app_set_parameter with ${JSON.stringify(args)}`;
-  await run("packaged ACP calls the desktop over its own stdio", {
+  await run("packaged ACP sends attachments and calls the desktop over its own stdio", {
     app: { handed: false },
     cadBridge: desktopBridge,
     hostTool: (params) => {
       desktopCalls.push(params);
       return { content: [{ type: "text", text: MARK }], structuredContent: { marker: MARK } };
     },
-  }, async ({ out, prompt, sessionId }) => {
+  }, async ({ out, prompt, sessionId, service }) => {
     const args = { name: "int1481_acceptance_marker", expression: "13 mm" };
-    const turn = Object.assign(out, await prompt(cadEdit(args)));
+    const turn = Object.assign(out, await prompt(cadEdit(args), [{ type: "image", mimeType: "image/png", data: png }]));
+    const hasPicture = (message) => message.role === "user" && Array.isArray(message.content) &&
+      message.content.some((part) => part.image_url?.url === `data:image/png;base64,${png}`);
+    out.picture = service.seen.bodies.some((body) => body.messages?.some(hasPicture));
     const received = desktopCalls[0];
     out.desktopSawCalls = desktopCalls.length;
     out.exactCall = desktopCalls.length === 1 && received.sessionId === sessionId &&
@@ -690,12 +697,19 @@ async function main(args) {
       Object.keys(received.arguments ?? {}).length === 2 &&
       received.arguments.name === args.name && received.arguments.expression === args.expression;
     if (turn.stop !== "end_turn" || !turn.askedStandIn || turn.asked !== 1 ||
-        !out.exactCall || !turn.answer.includes(MARK)) return false;
-    const second = await prompt(cadEdit({ ...args, expression: "14 mm" }));
+        !out.exactCall || !out.picture || !turn.answer.includes(MARK)) return false;
+    const before = service.seen.bodies.length;
+    const secondText = cadEdit({ ...args, expression: "14 mm" });
+    const second = await prompt(secondText);
+    // The SDK also makes an asynchronous title request; select the actual streamed reply.
+    const conversation = service.seen.bodies.slice(before).find((body) =>
+      body.stream && body.messages?.at(-1)?.role === "user" && textOf(body.messages.at(-1)) === secondText);
+    const users = conversation?.messages?.filter((message) => message.role === "user") ?? [];
+    out.pictureRetainedOnlyInHistory = users.length > 1 && users.slice(0, -1).some(hasPicture) && !hasPicture(users.at(-1));
     out.secondTurnDistinct = desktopCalls.length === 2 && desktopCalls[1].sessionId === sessionId &&
       desktopCalls[1].turn === "smoke-turn-2" && desktopCalls[1].arguments?.expression === "14 mm";
     return second.stop === "end_turn" && second.askedStandIn && second.asked === 1 &&
-      out.secondTurnDistinct && second.answer.includes(MARK);
+      out.secondTurnDistinct && out.pictureRetainedOnlyInHistory && second.answer.includes(MARK);
   });
   let declinedRequests = 0;
   await run("packaged ACP does not forward a declined desktop CAD tool", {

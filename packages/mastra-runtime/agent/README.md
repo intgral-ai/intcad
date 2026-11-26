@@ -114,10 +114,15 @@ A `session/prompt` that fails carries
 `initialize` declares `promptCapabilities.image` and `embeddedContext`, so the app sends a message's
 pictures (`image` blocks) and PDFs (`resource` blocks with a `blob`). Mastra Code's own prompt handler
 refuses both; `agent.mjs` takes them out and hands them to the session's `sendMessage` as files of
-that turn's message (INT-1513). A turn with such files on a model that cannot read them
-(`attachmentReader` in `models.mjs`: the shipped catalog lists it as reading no attachments, or a
-PDF to DeepSeek, whose adapter drops it) is refused with kind `attachments` before any provider is
-asked.
+that turn's message (INT-1513). Just before submission, it checks the effective model and adapter
+against the message and any attachment types submitted in the session. The SDK can replay those
+files on a text-only follow-up. DeepSeek and xAI's OAuth chat adapter cannot take PDFs.
+An incompatible turn is refused with kind `attachments` before a provider is asked. Stop also
+applies during model refresh or while a prompt is waiting in the SDK queue.
+
+The desktop preflights the complete encoded prompt, including the JSON-RPC envelope and newline.
+A built-in prompt is limited to 18 MiB, enough for one 12 MiB PDF and ordinary text. It is refused
+locally if it does not fit; agent-to-desktop limits do not change.
 
 ### The note and the project (INT-1473)
 

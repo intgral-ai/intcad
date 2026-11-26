@@ -117,7 +117,7 @@ try {
 const dates = releaseDates(registry);
 const keyEnv = id => [registry.providers?.[id]?.apiKeyEnvVar ?? []].flat();
 // Which models a message's pictures and documents are not sent to (models.mjs).
-const takesAttachments = attachmentReader(registry, modelSupportsAttachments);
+const takesAttachments = attachmentReader(registry, modelSupportsAttachments, id => gateway.getGlobalAuthStorage().get(id)?.type === 'oauth');
 
 // A key reaches Mastra through this process's environment, and only the app puts one there
 // (`_intcad/connections/setup`). One that happens to be in the environment the app was started from

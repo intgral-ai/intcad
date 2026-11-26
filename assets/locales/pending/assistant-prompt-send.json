@@ -1,0 +1,7 @@
+{
+  "en": {
+    "ui.agent_chat_prompt_send_failed": "The message could not be sent to the agent.",
+    "ui.agent_chat_prompt_send_full": "The agent’s send queue is full. Wait a moment and try again.",
+    "ui.agent_chat_prompt_too_large": "This message is too large to send. Remove an attachment or shorten the message and try again."
+  }
+}

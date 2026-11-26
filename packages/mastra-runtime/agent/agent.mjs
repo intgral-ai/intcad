@@ -62,6 +62,7 @@ const turnFiles = new AsyncLocalStorage();
 export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns, cad, takesAttachments = () => undefined }) {
   return class IntcadAgent extends Base {
     #gate;
+    #prompts = new Map();
 
     /**
      * The app's `execute` with a command that only reads runs without a card (reads.mjs), and in a
@@ -136,11 +137,37 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       // Code's own `sendMessage` of the user's words, and with no other: a turn cancelled before
       // it sends leaves nothing for the next one.
       if (typeof session?.sendMessage === 'function') {
+        // Keep only MIME types, not a second copy of the session's files. The SDK can replay a
+        // submitted attachment from its history, including after an interrupted answer.
+        const history = new Set();
         const send = session.sendMessage.bind(session);
-        session.sendMessage = input => {
+        session.sendMessage = async input => {
           const turn = turnFiles.getStore();
-          const files = turn?.files ?? [];
-          if (turn) turn.files = [];
+          if (turn?.entry !== entry || turn.submitted) return send(input);
+          const { signal, sessionId, files } = turn;
+          // The SDK queues model selection and prompts together. Check only now, when a
+          // preceding selection has run; if refresh yields, read the model again afterwards.
+          let model;
+          let usable;
+          do {
+            signal.throwIfAborted();
+            model = session.model.get() ?? '';
+            usable = !entry.usable?.length || entry.usable.includes(model) ||
+              await this.#usableNow(sessionId, entry, model, signal);
+          } while (model !== (session.model.get() ?? ''));
+          signal.throwIfAborted();
+          turn.model = model;
+          if (!usable) {
+            throw new RequestError(INTERNAL, `no connection serves ${model}`, { intcad: { kind: 'model', prefix: connections.prefixOf(model, { known: true }) } });
+          }
+          const types = new Set([...history, ...files.map(file => file.mediaType)]);
+          if (types.size && takesAttachments(model, Array.from(types, mediaType => ({ mediaType }))) === false) {
+            throw new RequestError(INTERNAL, `${model} cannot read the pictures or documents in this chat`, { intcad: { kind: 'attachments', prefix: connections.prefixOf(model) } });
+          }
+          this.#gate.prompted(sessionId);
+          turn.submitted = true;
+          turn.files = [];
+          for (const file of files) history.add(file.mediaType);
           return send(files.length ? { ...input, files } : input);
         };
       }
@@ -189,8 +216,9 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
      * its model and the user picks: the newest model may be one that is paid for by use, and nobody
      * chose it.
      */
-    async #settle(entry, move) {
+    async #settle(entry, move, signal) {
       const catalog = await entry.controller.listAvailableModels();
+      if (signal?.aborted) return;
       // Mastra's live catalog knows models that came out after the registry file it ships with.
       let learned = false;
       for (const model of catalog) {
@@ -213,15 +241,28 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
      * worked out once more: whether the model can be used now. If it can, the app is told the new
      * list. A list that cannot be worked out leaves the turn refused as before.
      */
-    async #usableNow(sessionId, entry, model) {
+    async #usableNow(sessionId, entry, model, signal) {
+      let abort;
+      const cancelled = new Promise((_, reject) => {
+        abort = () => reject(signal.reason);
+        signal.addEventListener('abort', abort, { once: true });
+      });
+      try {
+        return await Promise.race([this.#refreshForPrompt(sessionId, entry, model, signal), cancelled]);
+      } finally {
+        signal.removeEventListener('abort', abort);
+      }
+    }
+
+    async #refreshForPrompt(sessionId, entry, model, signal) {
       try {
         entry.controller.invalidateAvailableModelsCache?.();
-        await this.#settle(entry, false);
+        await this.#settle(entry, false, signal);
       } catch (error) {
         process.stderr.write(`[intcad] could not check the models of a session again: ${error}\n`);
         return false;
       }
-      if (!entry.usable?.includes(model)) return false;
+      if (signal.aborted || !entry.usable?.includes(model)) return false;
       try {
         await this.connection.sessionUpdate({ sessionId, update: { sessionUpdate: 'config_option_update', configOptions: this.configOptions(entry) } });
       } catch (error) {
@@ -236,31 +277,38 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
      * Its pictures and documents go to the model as files (`filesOf`).
      */
     async prompt(request) {
-      const entry = this.sessions.get(request.sessionId);
-      // A session is not moved off a model nothing serves by itself (see #settle), so a turn can be
-      // asked for on one. No provider is asked: the Assistant says to pick another model.
-      const using = entry?.session.model.get() ?? '';
-      if (entry?.usable?.length && !entry.usable.includes(using) && !(await this.#usableNow(request.sessionId, entry, using))) {
-        throw new RequestError(INTERNAL, `no connection serves ${using}`, { intcad: { kind: 'model', prefix: connections.prefixOf(using, { known: true }) } });
-      }
+      const { sessionId } = request;
+      const entry = this.sessions.get(sessionId);
+      const controller = new AbortController();
+      const prompts = this.#prompts.get(sessionId) ?? new Set();
+      this.#prompts.set(sessionId, prompts);
+      prompts.add(controller);
       const { rest, files } = filesOf(request.prompt);
-      // A model that cannot read them is not sent them: the Assistant says so instead.
-      if (files.length && takesAttachments(using, files) === false) {
-        throw new RequestError(INTERNAL, `${using} reads no pictures or documents`, { intcad: { kind: 'attachments', prefix: connections.prefixOf(using) } });
-      }
-      this.#gate.prompted(request.sessionId);
+      const turn = { entry, sessionId, files, signal: controller.signal, submitted: false };
       try {
         const sent = files.length ? { ...request, prompt: rest } : request;
-        return await turnFiles.run({ files }, () => (cad ? cad.prompt(sent, entry, () => super.prompt(sent)) : super.prompt(sent)));
+        return await turnFiles.run(turn, () => (cad ? cad.prompt(sent, entry, () => super.prompt(sent)) : super.prompt(sent)));
       } catch (error) {
-        const model = entry?.session.model.get() ?? '';
+        if (controller.signal.aborted) return { stopReason: 'cancelled' };
+        if (error instanceof RequestError && error.data?.intcad) throw error;
+        const model = turn.model ?? entry?.session.model.get() ?? '';
         const prefix = connections.prefixOf(model);
         const message = error instanceof Error ? error.message : String(error);
         const kind = classifyFailure(`${message} ${typeof error?.data === 'string' ? error.data : ''}`);
         if (kind === 'auth') connections.expired(prefix);
         const data = error?.data && typeof error.data === 'object' ? { ...error.data } : {};
         throw new RequestError(typeof error?.code === 'number' ? error.code : INTERNAL, message, { ...data, intcad: { kind, prefix } });
+      } finally {
+        prompts.delete(controller);
+        if (!prompts.size) this.#prompts.delete(sessionId);
       }
+    }
+
+    async cancel(notification) {
+      // Record Stop even before the SDK's queued callback or this wrapper's refresh completes.
+      // The SDK still owns interruption of an already submitted message and its pending tools.
+      for (const controller of this.#prompts.get(notification.sessionId) ?? []) controller.abort();
+      await super.cancel(notification);
     }
 
     /**
