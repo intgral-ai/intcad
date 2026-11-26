@@ -1,9 +1,12 @@
 """Test the recorder using local project fixtures and a stub of the control channel."""
 
 import importlib
+import json
 from pathlib import Path
+import socket
 import sys
 import tempfile
+from threading import Thread
 import unittest
 from unittest.mock import patch
 
@@ -72,6 +75,74 @@ class NextStepRecordingTests(unittest.TestCase):
                 stub = ControlStub(wrong=wrong)
                 with self.assertRaises(RuntimeError):
                     self.demo.record_suggestion(stub.call, stub.wait)
+
+    def test_take_writes_the_rendered_and_landed_evidence_under_its_output(self):
+        client, server = socket.socketpair()
+        self.addCleanup(client.close)
+        self.addCleanup(server.close)
+        stub = ControlStub()
+        saved = []
+        problems = []
+
+        def serve():
+            with server, server.makefile("rw") as wire:
+                for line in wire:
+                    req = json.loads(line)
+                    method, params = req["method"], req["params"]
+                    try:
+                        if req["id"] == 1:
+                            self.assertEqual(req["token"], "synthetic-run-token")
+                        if method == "ui.home":
+                            result = None
+                        elif method == "ui.agent_chat" and params:
+                            self.assertNotIn("send", params)
+                            self.assertNotIn("add_agent", params)
+                            self.assertEqual(params.get("agent", "claude"), "claude")
+                            result = None
+                        elif method == "engine.execute" and params["command"] in ("solid.box", "file.save_as"):
+                            if params["command"] == "file.save_as":
+                                saved.append(params["params"]["path"])
+                            result = None
+                        elif method == "ui.agent_chat" and not req.get("token") and not saved:
+                            result = {"agents": [{"id": "claude", "found": True}], "state": "ready"}
+                        else:
+                            result = stub.call(method, params)
+                        reply = {"id": req["id"], "ok": True, "result": result}
+                    except Exception as e:
+                        problems.append(str(e))
+                        reply = {"id": req["id"], "ok": False, "error": "unexpected recorder call"}
+                    wire.write(json.dumps(reply) + "\n")
+                    wire.flush()
+
+        def recorder(argv, **kwargs):
+            self.assertIn(f"location={self.run_root / 'raw.mkv'}", argv)
+            (self.run_root / "raw.mkv").write_bytes(b"synthetic recording")
+            return FinishedRecorder()
+
+        worker = Thread(target=serve, daemon=True)
+        worker.start()
+        with patch.dict("os.environ", {"PROJECT_TEMPLATE": str(self.template), "DISPLAY": ":71"}):
+            with patch.object(self.demo.socket, "create_connection", return_value=client):
+                with patch.object(self.demo.subprocess, "Popen", side_effect=recorder):
+                    with patch.object(self.demo.time, "sleep", return_value=None):
+                        self.demo.record(9491, "synthetic-run-token", self.run_root, "bracket")
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(problems, [])
+        self.assertEqual(saved, [str(self.run_root / "project" / "recorded-design.sc")])
+        events = [json.loads(line) for line in (self.run_root / "events.jsonl").read_text().splitlines()]
+        self.assertEqual([row["kind"] for row in events], ["ghost", "accepted"])
+        self.assertEqual(events[1]["undo_added"], 1)
+
+
+class FinishedRecorder:
+    returncode = 0
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout):
+        return self.returncode
 
 
 class ControlStub:
