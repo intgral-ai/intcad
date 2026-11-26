@@ -724,7 +724,7 @@ pub fn state(app: &mut SolveApp) -> String {
 /// (`provider`), `conn_custom` (`name`, `url`, `key`, `models`), `conn_custom_remove` (`id`),
 /// `conn_retry`. The panel: `close`, `minimize`,
 /// `side` (`left`), `size` (`height`: how tall the page is at the bottom centre), `suggestion`
-/// (`accept`: Tab or Esc on the next-step suggestion over the message box); the page
+/// (`id`, `accept`: Tab or Esc on the identified next-step suggestion over the message box); the page
 /// cannot move the Assistant to a window of its own. And `surface`
 /// (`color`, `#rrggbb`: the page's own surface, for the frame around it), `copy` (`text`) and
 /// `open_link` (`url`, web addresses only). Anything else is refused with the reason.
@@ -1032,7 +1032,11 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
         "close" => app.agent_chat.open = false,
         "minimize" => app.preferences.agent_chat_minimized = true,
         // Tab or Esc in the empty message box, with a next-step suggestion over it.
-        "suggestion" => super::predict::from_page(app, action.get("accept").and_then(Value::as_bool).ok_or("suggestion: no accept")?),
+        "suggestion" => super::predict::from_page(
+            app,
+            text("id").and_then(|id| id.parse().ok()).ok_or("suggestion: no id")?,
+            action.get("accept").and_then(Value::as_bool).ok_or("suggestion: no accept")?,
+        ),
         // At the bottom centre, the page is as tall as it says; the panel keeps it in its bounds.
         "size" => {
             let height = action.get("height").and_then(Value::as_f64).filter(|height| height.is_finite()).ok_or("size: no height")?;

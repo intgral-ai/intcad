@@ -603,7 +603,10 @@ Test cases for 17–19 are in `autocomplete-tests.md`, with what was measured.
   has an account; the use count on Tab and the stop bound (AC-23, AC-22) wait too.
 - Claude Code writes a transcript of every guessing session to disk (in the app's own work folder under
   `~/.claude/projects`), as it does for the chat's.
-- Codex has not been run (M3), and nothing proves yet that its guessing session reaches no MCP server.
+- Codex prediction is disabled (M3). An empty ACP `mcpServers` list means Intcad adds no servers;
+  it does not disable the adapter's inherited MCP configuration. The documented Codex ACP 2.2.2
+  sandbox modes do not establish no-MCP and no-write-tool isolation across configurations. Normal
+  Codex chat is unchanged.
 - Suggestions do not follow the user across design tabs: a new tab's chat starts disconnected.
 - API endpoints, Mastra workflows, the built-in agent and other ACP agents make no suggestions.
 - Where the Assistant is not at the bottom centre, the History chip is the line; History on the

@@ -451,7 +451,7 @@ fn g13_every_listed_command_draws_a_ghost() {
         let (mut app, _chat, _guesser, _ctx) = setup(true);
         app.session = base.scratch();
         let steps = ghost::allowed(vec![(command.to_string(), params)], false).unwrap();
-        let work = ghost::start(&mut app, steps, 0.0, || {});
+        let work = ghost::start(&mut app, steps, || {});
         match work.poll(0.0) {
             Some(Ok(drawn)) => assert_eq!(drawn.steps.len(), 1),
             Some(Err(why)) => panic!("{command}: {why:?}"),
@@ -575,6 +575,7 @@ fn g19_a_slow_ghost_is_given_up_without_stopping_the_users_own_work() {
         std::thread::yield_now();
     }
     std::thread::sleep(std::time::Duration::from_millis(5));
+    app.agent_chat.predict.work.as_mut().unwrap().expire_at_input_time(2.0);
     frame(&mut app, &ctx, 5.0, vec![]);
     withdrawn(&mut app, &chat, &was, "too slow");
     // The worker has let go of its counter once it ended.
@@ -650,6 +651,130 @@ fn g21_an_answer_that_cannot_be_read_is_withdrawn() {
 }
 
 // ---- C. Ghost and Tab ------------------------------------------------------------------------------
+
+/// Querying a new overlay does not make it the scene the viewport has already applied.
+#[test]
+fn review_fix_tab_refuses_a_ghost_when_the_applied_scene_is_for_another_ghost() {
+    let (mut app, _chat, guesser, ctx) = plate();
+    ghost_drawn(&mut app, &ctx, &guesser);
+    let _ = ctx.run_ui(egui::RawInput::default(), |ui| crate::preview::update(&mut app, ui.ctx()));
+    assert!(app.preview.active);
+    let old = app.agent_chat.predict.ghost.take().unwrap();
+    app.agent_chat.predict.shown.as_mut().unwrap().id = 999;
+    app.agent_chat.predict.ghost = Some(Ghost::new(999, old.drawn));
+    assert!(crate::agent_chat::review::overlay(&mut app).is_some());
+    let was = before(&mut app);
+    assert_eq!(page(&app)["ready"], false, "the old scene is still applied");
+    frame(&mut app, &ctx, 3.0, vec![key(egui::Key::Tab)]);
+    assert_eq!(app.session.document_stamp(), was.stamp);
+}
+
+#[test]
+fn review_fix_repeated_tab_cannot_accept_a_ghost_that_arrived_while_held() {
+    let (mut app, _chat, guesser, ctx) = plate();
+    line(&mut app, &ctx, &guesser, 0.0, HOLES);
+    let was = before(&mut app);
+    frame(&mut app, &ctx, 1.8, vec![key(egui::Key::Tab)]);
+    answer_commands(&mut app, &ctx, &guesser, 2.0, &holes());
+    // egui marks the second press as a repeat because there was no release.
+    frame(&mut app, &ctx, 3.0, vec![key(egui::Key::Tab)]);
+    assert_eq!(app.session.document_stamp(), was.stamp);
+}
+
+#[test]
+fn review_fix_modified_tab_cannot_accept_the_visible_ghost() {
+    for modifiers in [egui::Modifiers::SHIFT, egui::Modifiers::ALT] {
+        let (mut app, _chat, guesser, ctx) = plate();
+        ghost_drawn(&mut app, &ctx, &guesser);
+        let was = before(&mut app);
+        let mut tab = key(egui::Key::Tab);
+        if let egui::Event::Key { modifiers: m, .. } = &mut tab {
+            *m = modifiers;
+        }
+        frame(&mut app, &ctx, 3.0, vec![tab]);
+        assert_eq!(app.session.document_stamp(), was.stamp, "{modifiers:?}");
+    }
+}
+
+#[test]
+fn review_fix_disabled_prediction_cannot_land_from_any_entry_point_before_the_next_frame() {
+    for route in ["tab", "click", "page"] {
+        let (mut app, _chat, guesser, ctx) = plate();
+        ghost_drawn(&mut app, &ctx, &guesser);
+        let was = before(&mut app);
+        app.preferences.agent_next_step = false;
+        match route {
+            "page" => page_act(&mut app, &ctx, 1, true),
+            "click" => {
+                app.agent_chat.predict.clicked = Some(1);
+                frame(&mut app, &ctx, 3.0, vec![]);
+            }
+            _ => frame(&mut app, &ctx, 3.0, vec![key(egui::Key::Tab)]),
+        }
+        assert_eq!(app.session.document_stamp(), was.stamp, "{route}");
+        assert_eq!(app.session.undo.len(), was.undo, "{route}");
+    }
+}
+
+#[test]
+fn review_fix_busy_chat_cannot_land_from_either_key_route_before_the_next_frame() {
+    for web in [false, true] {
+        let (mut app, chat, guesser, ctx) = plate();
+        ghost_drawn(&mut app, &ctx, &guesser);
+        let was = before(&mut app);
+        crate::agent_chat::send(&mut app, &ctx, "now a lid".into());
+        assert_eq!(chat.prompts().len(), 1);
+        if web {
+            page_act(&mut app, &ctx, 1, true);
+        } else {
+            frame(&mut app, &ctx, 3.0, vec![key(egui::Key::Tab)]);
+        }
+        assert_eq!(app.session.document_stamp(), was.stamp, "{web}");
+    }
+}
+
+#[test]
+fn review_fix_first_reply_while_chat_starts_cannot_bill_for_commands_or_show_a_line() {
+    let (mut app, chat, guesser, ctx) = plate();
+    asked(&mut app, &ctx, &guesser);
+    guesser.answer(HOLES);
+    crate::agent_chat::send(&mut app, &ctx, "now a lid".into());
+    assert_eq!(chat.prompts().len(), 1);
+    frame(&mut app, &ctx, 6.0, vec![]);
+    assert_eq!(guesser.prompts().len(), 1, "{:?}", guesser.calls());
+    assert!(app.agent_chat.predict.shown().is_none());
+}
+
+fn page_act(app: &mut SolveApp, ctx: &egui::Context, id: u64, accept: bool) {
+    app.agent_chat.open = true;
+    app.agent_chat.web_host = true;
+    crate::agent_chat::web::act(app, ctx, &json!({"type": "suggestion", "id": id.to_string(), "accept": accept}).to_string()).unwrap();
+}
+
+#[test]
+fn review_fix_web_action_for_a_previous_guess_cannot_accept_the_current_ghost() {
+    let (mut app, _chat, guesser, ctx) = plate();
+    ghost_drawn(&mut app, &ctx, &guesser);
+    assert_eq!(page(&app)["ready"], true);
+    let was = before(&mut app);
+    page_act(&mut app, &ctx, 999, true);
+    assert_eq!(app.session.document_stamp(), was.stamp);
+    page_act(&mut app, &ctx, 1, true);
+    assert_eq!(outcome(&app, 0), "accepted");
+}
+
+#[test]
+fn review_fix_completion_queued_at_the_cutoff_cannot_become_a_ghost() {
+    let (mut app, chat, guesser, ctx) = plate();
+    ghost_drawn(&mut app, &ctx, &guesser);
+    let drawn = app.agent_chat.predict.ghost.take().unwrap().drawn;
+    let was = before(&mut app);
+    let (work, tx) = Work::held(2.0);
+    tx.send((work.deadline(), Ok(drawn))).unwrap();
+    app.agent_chat.predict.work = Some(work);
+    frame(&mut app, &ctx, 5.1, vec![]);
+    withdrawn(&mut app, &chat, &was, "too slow");
+}
 
 /// G22: the ghost is drawn over the design and the design does not move; it is not a chat preview,
 /// and nothing else is asked while it is there.
@@ -746,7 +871,7 @@ fn g25_tab_before_the_ghost_does_nothing() {
     answer_commands(&mut app, &ctx, &guesser, 2.0, &holes());
     assert_eq!(app.session.document_stamp(), was.stamp, "the early Tab was not kept for later");
     assert_eq!(status(&app)["state"], "ghost");
-    frame(&mut app, &ctx, 3.0, vec![key(egui::Key::Tab)]);
+    frame(&mut app, &ctx, 3.0, vec![release(egui::Key::Tab), key(egui::Key::Tab)]);
     assert_eq!(outcome(&app, 0), "accepted");
     assert!(chat.calls().is_empty());
 }
@@ -1016,26 +1141,19 @@ fn g41_lean_on_a_plan_is_a_switch_in_the_code_and_off() {
     }
 }
 
-/// G42: Codex is asked both questions, in sessions like its chat's but with the guessing note and no
-/// bridge to the design.
-#[cfg(unix)]
+/// G42: no background process or prompt for Codex until its tool isolation is verified.
 #[test]
-fn g42_codex_is_asked_both_questions() {
-    let init = r#"{"agentInfo":{"name":"@agentclientprotocol/codex-acp","title":"Codex","version":"1.0.0"}}"#;
-    let (dir, argv) = signed_in("codex", init, "", &[""]);
-    let ctx = crate::fonts::test_context();
-    let mut b = start_backend(&argv, &ctx, None).unwrap();
-    poll_until(b.as_mut(), &dir, &|d| !sent(d, "session/new").is_empty());
-    let params = sent(&dir, "session/new")[0]["params"].clone();
-    assert_eq!(params["_meta"]["systemPrompt"]["append"], crate::agent_chat::acp::system_note(SESSION_NOTE));
-    assert_eq!(params["mcpServers"], json!([]));
-    assert!(!lean(&params), "{params}");
-    b.shutdown(true);
-    let _ = std::fs::remove_dir_all(&dir);
-    let (mut app, _chat, guesser, ctx) = plate();
-    app.agent_chat.running_id = CODEX.into();
-    ghost_drawn(&mut app, &ctx, &guesser);
-    assert_eq!(guesser.prompts().len(), 2);
+fn review_fix_g42_codex_prediction_is_unavailable_but_chat_works() {
+    let (mut app, chat, guesser, ctx) = plate();
+    app.agent_chat.running_id = "codex".into();
+    for t in [0.0, 5.0, 60.0] {
+        frame(&mut app, &ctx, t, vec![]);
+    }
+    assert!(guesser.prompts().is_empty());
+    assert!(app.agent_chat.predict.backend.is_none());
+    assert_eq!(status(&app)["state"], "no agent");
+    crate::agent_chat::send(&mut app, &ctx, "now a lid".into());
+    assert_eq!(chat.prompts().len(), 1);
 }
 
 /// G43: any other agent, an API endpoint or a Mastra workflow is asked nothing, and the line says so.
@@ -1282,7 +1400,7 @@ fn g36_the_page_is_told_the_line_and_whether_its_ghost_is_drawn() {
     guesser.answer(HOLES);
     frame(&mut app, &ctx, 6.0, vec![]);
     let text = "Drill four 5 mm through holes near the corners of Plate · A plate is usually screwed down.";
-    assert_eq!(page(&app), json!({"label": "Next step", "text": text, "guess": true, "ready": false}));
+    assert_eq!(page(&app), json!({"label": "Next step", "text": text, "guess": true, "ready": false, "id": "1"}));
     guesser.ready();
     frame(&mut app, &ctx, 6.1, vec![]);
     answer_commands(&mut app, &ctx, &guesser, 6.2, &holes());
@@ -1294,15 +1412,15 @@ fn g36_the_page_is_told_the_line_and_whether_its_ghost_is_drawn() {
         assert_eq!(page(&app)["label"], "下一步（Tab）");
     }
     // Esc and Tab in the page's empty box.
-    from_page(&mut app, true);
+    page_act(&mut app, &ctx, 1, true);
     assert_eq!(outcome(&app, 0), "accepted");
     let (mut app, _chat, guesser, ctx) = plate();
     line(&mut app, &ctx, &guesser, 0.0, HOLES);
     let was = before(&mut app);
-    from_page(&mut app, true);
+    page_act(&mut app, &ctx, 1, true);
     assert_eq!(app.session.document_stamp(), was.stamp, "no ghost yet: nothing");
     assert!(app.agent_chat.predict.shown().is_some());
-    from_page(&mut app, false);
+    page_act(&mut app, &ctx, 1, false);
     assert_eq!(outcome(&app, 0), "dismissed");
     assert_eq!(app.agent_chat.predict.dismissed.len(), 1);
 }
@@ -1436,7 +1554,7 @@ fn g55_every_listed_sheet_command_draws_a_ghost() {
         let (mut app, ..) = setup(true);
         app.session = session;
         let steps = ghost::allowed(vec![(command.to_string(), params)], true).unwrap();
-        match ghost::start(&mut app, steps, 0.0, || {}).poll(0.0) {
+        match ghost::start(&mut app, steps, || {}).poll(0.0) {
             Some(Ok(drawn)) => assert_eq!(drawn.steps.len(), 1),
             Some(Err(why)) => panic!("{command}: {why:?}"),
             None => panic!("{command}: not done"),
@@ -1548,7 +1666,7 @@ fn g59_tab_and_esc_are_the_render_workspaces_own() {
         });
         assert!(left, "{k:?} is not used up");
         // The page's keys in its message box do nothing either.
-        from_page(&mut app, k == egui::Key::Tab);
+        page_act(&mut app, &ctx, 1, k == egui::Key::Tab);
         assert!(!app.esc_handled && app.agent_chat.predict.ghost.is_some(), "{k:?}: {}", status(&app));
         assert_eq!(app.session.document_stamp(), was.stamp, "{k:?}: nothing landed");
     }
@@ -1556,7 +1674,7 @@ fn g59_tab_and_esc_are_the_render_workspaces_own() {
     frame(&mut app, &ctx, 4.0, vec![]);
     assert_eq!(status(&app)["state"], "ghost");
     assert!(app.agent_chat.predict.dismissed.is_empty());
-    frame(&mut app, &ctx, 4.1, vec![key(egui::Key::Tab)]);
+    frame(&mut app, &ctx, 4.1, vec![release(egui::Key::Tab), key(egui::Key::Tab)]);
     assert_eq!(outcome(&app, 0), "accepted");
 }
 

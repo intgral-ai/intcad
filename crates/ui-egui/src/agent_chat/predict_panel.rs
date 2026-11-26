@@ -44,6 +44,7 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, area: Rect) -> Option<
     let mut child = ui.new_child(UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
     let response = crate::ui_kit::checkbox(&mut child, tr("ui.next_step_setting"), &mut app.preferences.agent_next_step);
     crate::scenario::publish_handle("rail:autocomplete:switch", response.rect.center());
+    crate::ui_kit::status_line(&mut child, tr("ui.next_step_cost"), crate::ui_kit::StatusTone::Dim);
     child.add_space(t.space_8);
     let rows = rows(app);
     if rows.is_empty() {

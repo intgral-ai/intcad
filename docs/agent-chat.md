@@ -797,7 +797,9 @@ Off by default. Turn on **Suggest the next step after a pause** under Preference
 Panel, or in the right rail's **Autocomplete** panel (search finds it as predict, autocomplete or
 suggest). Each suggestion asks your own agent twice, with the design's recent History and geometry,
 the selection and your messages in this chat, and uses your agent's plan or credits. For now only
-**Claude Code** and **Codex** make suggestions. Signed in with a plan, at most 20 suggestions an
+**Claude Code** makes suggestions. **Codex** is still available for normal chat, but Intcad does
+not start background suggestions with it until it can verify that the session cannot reach the
+user's MCP servers or write tools. Signed in with a plan, at most 20 suggestions an
 hour are asked for (**Suggestions an hour on a plan** changes it); with an API key there is no limit.
 
 When the agent is connected and idle and you stop for a moment after an edit (1.5 seconds by
@@ -808,14 +810,14 @@ commands of that step; the app runs them on a copy of the design and draws the r
 **ghost**: material added in green, removed in red. Numbers the design, its parameters, the
 selection, your messages or the project's notes do not give are said to be **guessed**.
 
-- **Tab** puts exactly the drawn ghost into the design as one undo step, and the next suggestion is
+- A fresh press of **Tab**, without modifiers, puts exactly the drawn ghost into the design as one undo step, and the next suggestion is
   asked for at once. Before the ghost is drawn Tab does nothing. Nothing is sent to the chat and
   there is no card, whether or not **Preview the agent's changes before they apply** is on: the
   ghost was the preview.
 - **Esc** turns it down: it goes, and that step is not offered again.
 - Another key, typing or an edit takes it away too. Orbiting, panning, zooming and clicking in the
-  model do not, and a first answer that arrives late is still shown if the design and the selection
-  have not changed since it was asked.
+  model do not. A late first answer is shown only if the design and selection still match and
+  the Assistant is still free to ask for commands.
 - Tab and Esc are the suggestion's in the view, and in the message box while nothing is typed
   there. In a text field, a dialog, the Ask Here box, the Render workspace, with words in the message
   box, or while the agent works or waits for an answer, they are that place's own.
@@ -834,9 +836,7 @@ the step and the reason, and to name things as you see them (no internal ids suc
 Each suggestion is asked for in a session of its own, opened ahead and closed after it, that has none
 of Intcad's tools. What the agent
 asks to run there is declined, and on Claude Code your own MCP servers are not loaded in it and every
-MCP tool is off, so a suggestion cannot change the design before Tab. Codex has no such switch that
-the app knows of: an MCP server you set up in Codex yourself, and allowed there without asking,
-could still be called. Signed in with an API key, a
+MCP tool is off, so a suggestion cannot change the design before Tab. Signed in with an API key, a
 Claude Code session for a question has no other tools and none of the user's own setup either;
 with a plan it is the agent's own session, less those.
 

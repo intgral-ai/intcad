@@ -456,7 +456,7 @@ def test_new_chat_confirmation(assistant, confirm):
 # Next-step suggestions (INT-1458, docs/design/autocomplete-tests.md G34 to G36).
 
 SUGGESTION = {"label": "Next step", "text": "Drill four 5 mm holes (guessed: 5, position) \u00b7 It has no fixings.",
-              "guess": True, "ready": True}
+              "guess": True, "ready": True, "id": "42"}
 
 
 @pytest.mark.parametrize(("key", "accept"), [("Tab", True), ("Escape", False)])
@@ -468,8 +468,18 @@ def test_suggestion_takes_tab_and_escape_in_an_empty_box(assistant, key, accept)
         box.focus()
         actions(assistant)
         box.press(key)
-        assert actions(assistant) == [{"type": "suggestion", "accept": accept}]
+        assert actions(assistant) == [{"type": "suggestion", "accept": accept, "id": "42"}]
         expect(box).to_be_focused()
+
+
+def test_suggestion_tab_before_it_is_ready_never_queues_acceptance(assistant):
+    box = assistant.get_by_role("textbox", name="Message")
+    show(assistant, centre=600, suggestion={**SUGGESTION, "ready": False})
+    box.focus()
+    actions(assistant)
+    box.press("Tab")
+    assert actions(assistant) == []
+    expect(box).to_be_focused()
 
 
 @pytest.mark.parametrize("key", ["Tab", "Escape"])
@@ -500,6 +510,17 @@ def test_suggestion_leaves_a_composing_key_alone(assistant, key):
     box.evaluate("""(box, key) => box.dispatchEvent(
         new KeyboardEvent('keydown', { key, isComposing: true, bubbles: true, cancelable: true }))""", key)
     assert [a for a in actions(assistant) if a["type"] == "suggestion"] == []
+
+
+@pytest.mark.parametrize("modifier", ["repeat", "shiftKey", "altKey"])
+def test_suggestion_ignores_held_or_modified_tab(assistant, modifier):
+    box = assistant.get_by_role("textbox", name="Message")
+    show(assistant, centre=600, suggestion=SUGGESTION)
+    box.focus()
+    actions(assistant)
+    box.evaluate("""(box, modifier) => box.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', [modifier]: true, bubbles: true, cancelable: true }))""", modifier)
+    assert actions(assistant) == []
 
 
 def test_suggestion_shows_on_the_line_over_the_box(assistant):

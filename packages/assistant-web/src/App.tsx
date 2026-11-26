@@ -1237,7 +1237,10 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
     const suggested = state.suggestion?.guess === true && text.trim() === '' && !busy && state.waiting === 0 && !composing;
     if (suggested && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && (event.key === 'Tab' || event.key === 'Escape')) {
       event.preventDefault();
-      if (!event.repeat) post({ type: 'suggestion', accept: event.key === 'Tab' });
+      const accept = event.key === 'Tab';
+      if (!event.repeat && state.suggestion?.id && (!accept || state.suggestion.ready)) {
+        post({ type: 'suggestion', accept, id: state.suggestion.id });
+      }
       return;
     }
     // A held Enter repeats keydowns; a repeat must never send the draft it just inserted. A

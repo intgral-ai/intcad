@@ -268,7 +268,7 @@ pub struct Predictor {
     /// The chip was drawn last frame (Tab is taken only for a guess the user can see), and was
     /// clicked.
     pub(crate) drawn: bool,
-    clicked: bool,
+    clicked: Option<u64>,
     /// A text field had the focus last frame.
     typing: bool,
     /// Pointer presses lately (where, input time), for the demo pointer's click ripple.
@@ -569,7 +569,7 @@ pub fn page(app: &SolveApp) -> Value {
         return Value::Null;
     }
     let p = &app.agent_chat.predict;
-    if let Some(g) = p.line() {
+    if let Some(g) = p.line().filter(|_| available(app)) {
         let mut text = g.step.clone();
         let guessed = guessed_words(&g.marks);
         if !guessed.is_empty() {
@@ -580,20 +580,21 @@ pub fn page(app: &SolveApp) -> Value {
             text.push_str(&g.reason);
         }
         // The key is named once it does something.
-        let ready = p.ghost.is_some();
-        return json!({"label": tr(if ready { "ui.next_step_label_tab" } else { "ui.next_step_label" }), "text": text, "guess": true, "ready": ready});
+        let ready = ready_to_land(app);
+        return json!({"label": tr(if ready { "ui.next_step_label_tab" } else { "ui.next_step_label" }),
+            "text": text, "guess": true, "ready": ready, "id": g.id.to_string()});
     }
     status_words(app).map_or(Value::Null, |text| json!({"label": null, "text": text, "guess": false, "ready": false}))
 }
 
 /// The page's Tab and Esc in its empty message box, as the view's own.
-pub fn from_page(app: &mut SolveApp, accept: bool) {
-    if !app.agent_chat.predict.active() || app.dialog.is_some() || app.agent_chat.ask_box.open || crate::render_workspace::active(app) {
+pub fn from_page(app: &mut SolveApp, id: u64, accept: bool) {
+    if !available(app) || !app.agent_chat.open || !app.agent_chat.web_host || !app.agent_chat.predict.line().is_some_and(|g| g.id == id) {
         return;
     }
     if !accept {
         turn_down(app);
-    } else if app.agent_chat.predict.ghost.as_ref().is_some_and(|g| g.on_screen) {
+    } else {
         land(app);
     }
 }
@@ -635,7 +636,7 @@ pub fn chip(app: &SolveApp) -> Option<(String, Option<String>, bool)> {
         return None;
     }
     let p = &app.agent_chat.predict;
-    if let Some(g) = p.line() {
+    if let Some(g) = p.line().filter(|_| available(app)) {
         let (n, cost) = p.billed();
         let cost = cost.map_or_else(|| tr("ui.next_step_cost_unreported").to_string(), dollars);
         let tip = trf("ui.next_step_tip", &[("step", &g.step), ("reason", &g.reason), ("n", &n.to_string()), ("cost", &cost)]);
@@ -677,9 +678,12 @@ pub(crate) fn paint_ghost(app: &mut SolveApp, ui: &egui::Ui, painter: &egui::Pai
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
+        let clicked = response.clicked_by(egui::PointerButton::Primary) && ready_to_land(app);
         let p = &mut app.agent_chat.predict;
         p.drawn = true;
-        p.clicked |= response.clicked();
+        if clicked {
+            p.clicked = p.shown.as_ref().map(|g| g.id);
+        }
     }
     rect.right()
 }
@@ -693,6 +697,20 @@ fn user_acted(input: &egui::InputState, ours: bool) -> bool {
         egui::Event::Key { pressed, .. } => *pressed,
         egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Copy | egui::Event::Cut => true,
         _ => false,
+    })
+}
+
+/// egui's consume_key includes repeats and matches Shift and Alt permissively.
+fn consume_plain_press(ctx: &egui::Context, key: egui::Key) -> bool {
+    ctx.input_mut(|input| {
+        let mut consumed = false;
+        input.events.retain(|event| {
+            let matches = matches!(event, egui::Event::Key { key: k, pressed: true, repeat: false, modifiers, .. }
+                if *k == key && *modifiers == egui::Modifiers::NONE);
+            consumed |= matches;
+            !matches
+        });
+        consumed
     })
 }
 
@@ -710,18 +728,16 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     let typed = std::mem::replace(&mut app.agent_chat.predict.typing, typing) && ctx.input(|i| i.key_pressed(egui::Key::Escape));
     let free = !typing && !typed && app.dialog.is_none() && !app.agent_chat.ask_box.open && !crate::render_workspace::active(app);
     let mut handled = false;
-    if free && app.agent_chat.predict.active() {
-        let ready = app.agent_chat.predict.ghost.as_ref().is_some_and(|g| g.on_screen);
-        let shown = app.agent_chat.predict.line().is_some() && (visible || ready || in_page(app));
-        if shown && (clicked || ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Tab))) {
+    if free && available(app) && app.agent_chat.predict.active() {
+        let shown = app.agent_chat.predict.line().is_some() && (visible || ready_to_land(app) || in_page(app));
+        let click_matches = clicked.is_some_and(|id| app.agent_chat.predict.shown.as_ref().is_some_and(|g| g.id == id));
+        if shown && (click_matches || consume_plain_press(ctx, egui::Key::Tab)) {
             // egui read the Tab already to move keyboard focus to the next widget: it stays put.
             ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
             // Before the ghost is drawn Tab is used up and does nothing: nothing unseen lands.
-            if ready {
-                land(app);
-            }
+            land(app);
             handled = true;
-        } else if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        } else if consume_plain_press(ctx, egui::Key::Escape) {
             app.esc_handled = true;
             turn_down(app);
             handled = true;
@@ -753,13 +769,11 @@ fn turn_down(app: &mut SolveApp) {
 /// Tab or a click on a drawn ghost: its steps go into the design as one undo step. Nothing is sent
 /// to the agent, and there is no card: the ghost was the preview.
 fn land(app: &mut SolveApp) {
-    let p = &mut app.agent_chat.predict;
-    let (Some(g), Some(ghost)) = (p.shown.take(), p.ghost.take()) else { return };
-    // No longer allowed since it was drawn: nothing new goes into the design by it.
-    if !p.account.allows() {
-        p.set_outcome(g.id, "not authorised");
+    if !ready_to_land(app) {
         return;
     }
+    let p = &mut app.agent_chat.predict;
+    let (Some(g), Some(ghost)) = (p.shown.take(), p.ghost.take()) else { return };
     match ghost::land(app, &ghost.drawn, &g.step) {
         Ok(()) => {
             let p = &mut app.agent_chat.predict;
@@ -776,31 +790,46 @@ fn land(app: &mut SolveApp) {
     }
 }
 
+fn ready_to_land(app: &SolveApp) -> bool {
+    let p = &app.agent_chat.predict;
+    available(app)
+        && p.ghost.as_ref().is_some_and(|ghost| {
+            p.shown.as_ref().is_some_and(|guess| guess.id == ghost.id) && crate::preview::review_scene_visible(app, ghost.scene_key(app.session.uid))
+        })
+}
+
 /// The chat's agent is connected, idle and an ACP agent, the chip has somewhere to go, and nothing
 /// else holds the user: no turn, preview, dialog, tool, sketch or Ask Here box. Only in plain chat:
 /// a skill's turn does not run as a preview, and Tab's must.
 fn may_ask(app: &SolveApp) -> bool {
+    available(app) && (strip_shown(app) || in_page(app))
+}
+
+fn chat_holds_view(app: &SolveApp) -> bool {
     let chat = &app.agent_chat;
-    chat.state() == State::Ready
+    chat.state() != State::Ready || chat.turn.is_some() || chat.preview.is_some() || !chat.pending.is_empty() || chat.queued.is_some()
+}
+
+pub(super) fn available(app: &SolveApp) -> bool {
+    let chat = &app.agent_chat;
+    app.preferences.agent_next_step
+        && supported(app)
+        && !chat_holds_view(app)
         && chat.skill == super::skill::Skill::Plain
-        && chat.turn.is_none()
-        && chat.preview.is_none()
         && !chat.ask_box.open
-        && chat.pending.is_empty()
-        && chat.queued.is_none()
         && app.dialog.is_none()
         && app.tool.is_none()
         && app.session.active_sketch.is_none()
         && !app.home.open
+        && !crate::render_workspace::active(app)
         && chat.predict.account.allows()
-        && (strip_shown(app) || in_page(app))
 }
 
-/// The chat runs an agent suggestions are made with: Claude Code or Codex, over ACP.
+/// Codex chat stays available; the adapter has no verified isolation for background prediction.
 fn supported(app: &SolveApp) -> bool {
     let chat = &app.agent_chat;
     let acp = !chat.argv.is_empty() && !chat.mastra && chat.running_endpoint.is_empty();
-    acp && (chat.predict.any_agent || [CLAUDE_CODE, CODEX].contains(&chat.running_id.as_str()))
+    acp && chat.running_id != CODEX && (chat.predict.any_agent || chat.running_id == CLAUDE_CODE)
 }
 
 fn pause(app: &SolveApp) -> f64 {
@@ -825,8 +854,7 @@ fn wake_in(app: &SolveApp, now: f64) -> Option<f64> {
         return (left > 0.0).then_some(left);
     }
     if let Some(work) = &p.work {
-        let left = work.started + ghost::TIME_LIMIT_S - now;
-        return Some(left.max(0.05));
+        return Some(work.remaining().max(0.05));
     }
     let waiting = p.ask.is_none() && p.shown.is_none() && p.seen.as_ref().is_some_and(|k| !p.was_asked(k)) && p.link.live() && may_ask(app);
     // Once the pause is over, the guessing session's own answer wakes the window.
@@ -838,7 +866,7 @@ fn wake_in(app: &SolveApp, now: f64) -> Option<f64> {
 /// typed).
 pub(crate) fn step(app: &mut SolveApp, ctx: &egui::Context, now: f64, acted: bool) {
     if !app.preferences.agent_next_step || !app.agent_chat.state().running() || app.home.open || !supported(app) {
-        if app.agent_chat.predict.link != Link::None || app.agent_chat.predict.shown.is_some() || app.agent_chat.predict.ask.is_some() {
+        if app.agent_chat.predict.link != Link::None || app.agent_chat.predict.active() || app.agent_chat.predict.work.is_some() {
             app.agent_chat.predict.stop();
         }
         app.agent_chat.predict.seen = None;
@@ -848,7 +876,7 @@ pub(crate) fn step(app: &mut SolveApp, ctx: &egui::Context, now: f64, acted: boo
     let selection = app.session.selection.clone();
     {
         // The agent works, or its preview is on the copy: the view is the chat's.
-        let chats = app.agent_chat.turn.is_some() || app.agent_chat.preview.is_some() || app.agent_chat.queued.is_some();
+        let chats = chat_holds_view(app);
         let pause = pause(app);
         let p = &mut app.agent_chat.predict;
         let edited = p.seen.as_ref() != Some(&key);
@@ -863,7 +891,11 @@ pub(crate) fn step(app: &mut SolveApp, ctx: &egui::Context, now: f64, acted: boo
             if std::mem::take(&mut p.at_once) {
                 p.last_action = now - pause;
             }
-        } else if p.shown.is_some() && (acted || chats) {
+        } else if app.session.active_sketch.is_some() && p.active() {
+            p.withdraw("stale");
+        } else if !p.account.allows() && p.active() {
+            p.withdraw("not authorised");
+        } else if (acted && p.shown.is_some()) || (chats && p.active()) {
             p.withdraw("dismissed");
         }
         p.seen_selection = selection.clone();
@@ -1196,12 +1228,12 @@ fn session_ready(p: &mut Predictor) {
         p.link = Link::Fresh;
         p.opened_choice = p.choice.clone();
     }
-    send_question(p);
 }
 
 /// What the guessing session said. `key` and `selection`: the design and selection now, which a
 /// late answer must still match to be shown.
 fn poll(app: &mut SolveApp, ctx: &egui::Context, now: f64, key: &Key, selection: &[solidcraft_engine::Sel]) {
+    let may_send = may_ask(app);
     let choice = app.preferences.agent_next_step_model.clone();
     let mut ended: Option<String> = None;
     let p = &mut app.agent_chat.predict;
@@ -1293,6 +1325,12 @@ fn poll(app: &mut SolveApp, ctx: &egui::Context, now: f64, key: &Key, selection:
     if let Some(u) = p.backend.as_mut().and_then(|b| b.take_usage()) {
         p.note_usage(u);
     }
+    // A request waiting for a fresh session must also respect the current UI state.
+    if may_send {
+        send_question(p);
+    } else if p.ask.as_ref().is_some_and(|ask| !ask.sent) {
+        p.withdraw("dismissed");
+    }
     // An answer that never comes is given up, and a session for a shown step that never opens.
     if let Some(ask) = p.ask.as_ref()
         && (ask.sent || ask.kind == Kind::Commands)
@@ -1354,14 +1392,17 @@ fn elapsed_ms(start: f64, now: f64) -> u64 {
 /// run on a copy, if the design and selection are still the ones it was asked about, even when the
 /// user did other things meanwhile.
 fn end_question(app: &mut SolveApp, ctx: &egui::Context, now: f64, reason: &str, key: &Key, selection: &[solidcraft_engine::Sel]) {
+    let may_continue = may_ask(app);
     let p = &mut app.agent_chat.predict;
     let Some(ask) = p.ask.take() else { return };
     let ms = elapsed_ms(ask.started, now);
     let reply_chars = ask.reply.chars().count();
     if ask.kind == Kind::Commands {
         p.finish_commands(ask.id, ms, reply_chars);
-        if !ask.dropped {
-            end_commands(app, ctx, now, reason, &ask, key);
+        if !ask.dropped && may_continue {
+            end_commands(app, ctx, reason, &ask, key);
+        } else if !ask.dropped {
+            p.withdraw("dismissed");
         }
         return;
     }
@@ -1386,6 +1427,10 @@ fn end_question(app: &mut SolveApp, ctx: &egui::Context, now: f64, reason: &str,
         p.finish_log(ask.id, Some(ms), "stale", reply_chars);
         return;
     }
+    if !may_continue {
+        p.finish_log(ask.id, Some(ms), "dismissed", reply_chars);
+        return;
+    }
     if p.dismissed.iter().any(|d| same_step(d, &step)) {
         p.finish_log(ask.id, Some(ms), Refused::Repeat.outcome(), reply_chars);
         return;
@@ -1402,7 +1447,7 @@ fn end_question(app: &mut SolveApp, ctx: &egui::Context, now: f64, reason: &str,
 }
 
 /// The answer to the question for commands: they run on a copy if they may.
-fn end_commands(app: &mut SolveApp, ctx: &egui::Context, now: f64, reason: &str, ask: &Ask, key: &Key) {
+fn end_commands(app: &mut SolveApp, ctx: &egui::Context, reason: &str, ask: &Ask, key: &Key) {
     let p = &mut app.agent_chat.predict;
     let Some(step) = p.shown.as_ref().filter(|g| g.id == ask.id).map(|g| g.step.clone()) else { return };
     if ask.key != *key {
@@ -1416,7 +1461,7 @@ fn end_commands(app: &mut SolveApp, ctx: &egui::Context, now: f64, reason: &str,
     match steps {
         Ok(steps) => {
             let wake = ctx.clone();
-            let work = ghost::start(app, steps, now, move || wake.request_repaint());
+            let work = ghost::start(app, steps, move || wake.request_repaint());
             app.agent_chat.predict.work = Some(work);
         }
         Err(why) => p.refuse(why),
@@ -1799,7 +1844,7 @@ pub fn status(app: &SolveApp) -> Value {
         "failed": failed,
         "failures": p.failures,
         "shown": p.shown,
-        "ghost": p.ghost.as_ref().map(Ghost::status),
+        "ghost": p.ghost.as_ref().map(|ghost| ghost.status(ready_to_land(app))),
         "hourUsed": p.hour.len(),
         "perHour": hourly(app),
         "keySignIn": p.backend.as_ref().is_some_and(|b| b.key_sign_in()),

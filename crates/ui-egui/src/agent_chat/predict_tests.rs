@@ -114,7 +114,7 @@ pub(super) fn frame(app: &mut SolveApp, ctx: &egui::Context, t: f64, events: Vec
     let raw = egui::RawInput { time: Some(t), events, ..Default::default() };
     let _ = ctx.run_ui(raw, |ui| {
         tick(app, ui.ctx());
-        let _ = crate::agent_chat::review::overlay(app);
+        crate::preview::update(app, ui.ctx());
         let painter = ui.painter().clone();
         let _ = paint_ghost(app, ui, &painter, 10.0, ROW);
     });
@@ -122,6 +122,10 @@ pub(super) fn frame(app: &mut SolveApp, ctx: &egui::Context, t: f64, events: Vec
 
 pub(super) fn key(k: egui::Key) -> egui::Event {
     egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+}
+
+pub(super) fn release(k: egui::Key) -> egui::Event {
+    egui::Event::Key { key: k, physical_key: None, pressed: false, repeat: false, modifiers: egui::Modifiers::NONE }
 }
 
 pub(super) fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
@@ -879,7 +883,7 @@ fn g79_the_built_in_agent_beside_another_is_not_taken_for_it() {
     // No program is there, so nothing starts: what is checked is how it would have been started.
     let missing = "/nonexistent/intcad-g79-agent";
     for (running, carried, as_builtin) in
-        [(CLAUDE_CODE, true, false), (CODEX, true, false), (crate::agent_chat::connections::AGENT_ID, true, true), (CLAUDE_CODE, false, false)]
+        [(CLAUDE_CODE, true, false), (crate::agent_chat::connections::AGENT_ID, true, true), (CLAUDE_CODE, false, false)]
     {
         let (mut app, _chat, _guesser, ctx) = setup(true);
         app.agent_chat.argv = vec![missing.into()];

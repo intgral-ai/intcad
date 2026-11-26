@@ -6,7 +6,7 @@
 //! What the agent answers is data. Only commands on a list of modelling commands run, at most
 //! [`MAX_COMMANDS`], and only on the copy ([`Session::scratch`]): the open design does not move
 //! before Tab. A suggestion whose commands are not all on the list, fail, change nothing, open a
-//! body, repeat the last step or take longer than [`TIME_LIMIT_S`] is withdrawn.
+//! body, repeat the last step or take longer than [`TIME_LIMIT`] is withdrawn.
 //!
 //! The copy has a stop token of its own. Every copy of a design shares the design's token on
 //! purpose (`Session::stop_token`), so stopping a slow ghost with that one would stop the user's
@@ -20,6 +20,7 @@ use solidcraft_engine::doc::expr::is_bare_number;
 use solidcraft_engine::doc::{Document, Feature, ModelState};
 use solidcraft_engine::kernel::Stop;
 use solidcraft_engine::{DocumentStamp, Session};
+use web_time::Instant;
 
 use super::{gate, review, words};
 use crate::SolveApp;
@@ -33,7 +34,7 @@ pub const MAX_COMMANDS: usize = 32;
 pub const MAX_ANSWER: usize = 8_000;
 pub const MAX_QUESTION: usize = 8_000;
 /// A ghost that takes longer to work out is given up (seconds).
-pub const TIME_LIMIT_S: f64 = 3.0;
+const TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// Sheet-metal commands may run. Off until they are measured (the list's M8).
 pub const SHEET_METAL: bool = false;
 /// The faces and edges of one body listed in the question, and the bodies.
@@ -260,9 +261,10 @@ pub struct Drawn {
 /// Commands computing on a copy. Dropped, it stops them.
 pub struct Work {
     stop: Stop,
-    done: Receiver<Result<Drawn, Refused>>,
-    /// Input time it started (seconds).
-    pub started: f64,
+    done: Receiver<(Instant, Result<Drawn, Refused>)>,
+    deadline: Instant,
+    #[cfg(test)]
+    held_at: Option<f64>,
     /// Commands run so far on the copy.
     pub ran: Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -274,14 +276,24 @@ impl Drop for Work {
 }
 
 impl Work {
-    /// What it came to, once it is done (`None`: still computing at input time `now`).
-    pub fn poll(&self, now: f64) -> Option<Result<Drawn, Refused>> {
+    /// What it came to. A reply queued after the deadline is not a success, even if the
+    /// UI did not wake to cancel the worker before the reply arrived.
+    pub fn poll(&self, _input_time: f64) -> Option<Result<Drawn, Refused>> {
+        #[cfg(test)]
+        let simulated_timeout = self.held_at.is_some_and(|at| _input_time - at >= TIME_LIMIT.as_secs_f64());
+        #[cfg(not(test))]
+        let simulated_timeout = false;
         match self.done.try_recv() {
-            Ok(done) => Some(done),
+            Ok((finished, _)) if finished >= self.deadline => Some(Err(Refused::TooSlow)),
+            Ok((_, done)) => Some(done),
             Err(TryRecvError::Disconnected) => Some(Err(Refused::Failed)),
-            Err(TryRecvError::Empty) if now - self.started >= TIME_LIMIT_S => Some(Err(Refused::TooSlow)),
+            Err(TryRecvError::Empty) if simulated_timeout || Instant::now() >= self.deadline => Some(Err(Refused::TooSlow)),
             Err(TryRecvError::Empty) => None,
         }
+    }
+
+    pub fn remaining(&self) -> f64 {
+        self.deadline.saturating_duration_since(Instant::now()).as_secs_f64()
     }
 
     #[cfg(test)]
@@ -291,15 +303,26 @@ impl Work {
 
     /// A worker that says nothing until the test does.
     #[cfg(test)]
-    pub fn held(now: f64) -> (Work, std::sync::mpsc::Sender<Result<Drawn, Refused>>) {
+    pub fn held(now: f64) -> (Work, std::sync::mpsc::Sender<(Instant, Result<Drawn, Refused>)>) {
         let (tx, done) = std::sync::mpsc::channel();
-        (Work { stop: Stop::new(), done, started: now, ran: Arc::default() }, tx)
+        (Work { stop: Stop::new(), done, deadline: Instant::now() + TIME_LIMIT, held_at: Some(now), ran: Arc::default() }, tx)
+    }
+
+    #[cfg(test)]
+    pub fn expire_at_input_time(&mut self, started: f64) {
+        self.held_at = Some(started);
+    }
+
+    #[cfg(test)]
+    pub fn deadline(&self) -> Instant {
+        self.deadline
     }
 }
 
 /// Run `steps` on a copy of the open design: on a worker when the app has threads, here otherwise.
 /// `wake` is called once it is done.
-pub fn start(app: &mut SolveApp, steps: Vec<Step>, now: f64, wake: impl FnOnce() + Send + 'static) -> Work {
+pub fn start(app: &mut SolveApp, steps: Vec<Step>, wake: impl FnOnce() + Send + 'static) -> Work {
+    let deadline = Instant::now() + TIME_LIMIT;
     let start = Place::of(&mut app.session);
     let copy = app.session.scratch();
     let stop = Stop::new();
@@ -310,7 +333,7 @@ pub fn start(app: &mut SolveApp, steps: Vec<Step>, now: f64, wake: impl FnOnce()
     let job = move || {
         let result =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compute(copy, start, steps, &token, &counter))).unwrap_or(Err(Refused::Failed));
-        let _ = tx.send(result);
+        let _ = tx.send((Instant::now(), result));
         wake();
     };
     // Refused a thread, the suggestion is dropped (`Work::poll`: the sender is gone), not computed
@@ -320,7 +343,14 @@ pub fn start(app: &mut SolveApp, steps: Vec<Step>, now: f64, wake: impl FnOnce()
     } else {
         job();
     }
-    Work { stop, done, started: now, ran }
+    Work {
+        stop,
+        done,
+        deadline,
+        #[cfg(test)]
+        held_at: None,
+        ran,
+    }
 }
 
 /// Run `steps` on `copy` and check what came of them.
@@ -389,27 +419,32 @@ fn repeats(before: &Document, after: &Document) -> bool {
 pub struct Ghost {
     pub drawn: Drawn,
     /// Tells this ghost's drawing from another's.
-    id: u64,
-    /// Its drawing was asked for (the view shows it): Tab is taken only for a ghost on screen.
-    pub on_screen: bool,
+    pub(super) id: u64,
     /// The bodies it would leave, measured the first time they are asked for.
     bodies: std::cell::OnceCell<Vec<Value>>,
 }
 
 impl Ghost {
     pub fn new(id: u64, drawn: Drawn) -> Ghost {
-        Ghost { drawn, id, on_screen: false, bodies: std::cell::OnceCell::new() }
+        Ghost { drawn, id, bodies: std::cell::OnceCell::new() }
     }
 
     /// For `ui.agent_chat`: its commands, and the bodies it would leave.
-    pub fn status(&self) -> Value {
+    pub fn status(&self, on_screen: bool) -> Value {
         let measure = |b: &solidcraft_engine::doc::ModelBody| {
             let m = b.measure().ok();
             json!({"name": b.name, "volume": m.as_ref().filter(|_| b.is_closed()).map(|m| m.volume), "faces": m.map(|m| m.faces)})
         };
         let bodies = self.bodies.get_or_init(|| self.drawn.after.bodies.iter().map(measure).collect());
         let commands: Vec<Value> = self.drawn.steps.iter().map(|(id, params)| json!({"command": id, "params": params})).collect();
-        json!({"commands": commands, "ms": self.drawn.ms, "onScreen": self.on_screen, "bodies": bodies})
+        json!({"commands": commands, "ms": self.drawn.ms, "onScreen": on_screen, "bodies": bodies})
+    }
+
+    pub(super) fn scene_key(&self, uid: u64) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        ("next_step_ghost", self.id, self.drawn.start.stamp.revision, uid).hash(&mut h);
+        h.finish()
     }
 
     /// The bodies of the copy, for the tests.
@@ -422,17 +457,12 @@ impl Ghost {
 /// What the view draws for the ghost: a key that changes whenever the drawing would, and the two
 /// models ([`review::overlay`]'s shape). `None`: there is no ghost, or the design moved under it.
 pub(crate) fn overlay(app: &mut SolveApp) -> Option<(u64, Arc<ModelState>, Arc<ModelState>)> {
-    use std::hash::{Hash, Hasher};
-    let place = Place::of(&mut app.session);
-    let uid = app.session.uid;
-    if app.session.active_sketch.is_some() {
+    if !super::predict::available(app) || app.agent_chat.predict.ghost.is_none() {
         return None;
     }
-    let ghost = app.agent_chat.predict.ghost.as_mut().filter(|g| g.drawn.start == place)?;
-    ghost.on_screen = true;
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    ("next_step_ghost", ghost.id, place.stamp.revision, uid).hash(&mut h);
-    Some((h.finish(), ghost.drawn.before.clone(), ghost.drawn.after.clone()))
+    let place = Place::of(&mut app.session);
+    let ghost = app.agent_chat.predict.ghost.as_ref().filter(|g| g.drawn.start == place)?;
+    Some((ghost.scene_key(app.session.uid), ghost.drawn.before.clone(), ghost.drawn.after.clone()))
 }
 
 /// Put a ghost's steps into the design as one undo step named `label`. `Err`: the design is as it

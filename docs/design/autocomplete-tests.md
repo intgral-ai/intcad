@@ -100,7 +100,7 @@ Real: `session/new` as the app sends it. Faked: the agent (the stand-in).
 | G39 The report comes late, and changes | first session before any report; then `api_key`; then `account` | three sessions | full, lean, full | 13 |
 | G40 What a full session carries | Claude Code, kind `account` | a guessing session and a chat session | guessing: the note as `append`, no override, no `tools`, no `settingSources`, `strictMcpConfig: true` (Tianwei, 2026-11-25; it was "no `strictMcpConfig`"), and `disallowedTools` is today's list plus `mcp__*`; the chat's `session/new` is byte for byte today's | 13, 18 |
 | G41 The switch in code | the lean-on-plans constant turned on in the test build | kind `account` | lean; with the constant as shipped, full | 13 |
-| G42 Codex | agent id `codex`, stand-in with Codex's name | the two questions | both go out; each session is as Codex's chat session but with the guessing note, no bridge | 14 |
+| G42 Codex | agent id `codex`, recording backend | wait for a suggestion, then send an ordinary chat message | no prediction session or question; the ordinary chat prompt goes out | 14 |
 | G43 Not supported yet | the built-in agent, another ACP agent, an API endpoint, a Mastra workflow | edit, frames to 60 s | no session, no question; G37's sentence | 14 |
 | G44 Permission requests | the agent asks for permission during either question | poll | declined both times | 18 |
 
@@ -506,7 +506,7 @@ Real: the app's choice. Faked: the agents (none is started).
 
 | Case | Input | Action | Observable result and pass criterion |
 |---|---|---|---|
-| G79 The built-in agent beside another | the package carries the built-in agent; the chat runs Claude Code; again with Codex; again with the chat on the built-in agent and every agent allowed (`any_agent`, as the tests of the built-in agent's guessing session have it) | start the guessing session | Claude Code and Codex: started as an ordinary agent (no data folder, no connections setup; it opens its session by itself); the built-in agent: as the chat starts it. Without the package's agent: as now |
+| G79 The built-in agent beside another | the package carries the built-in agent; the chat runs Claude Code; again with the chat on the built-in agent and the test-only `any_agent` override | start the guessing session | Claude Code: started as an ordinary agent (no data folder or connections setup); the built-in agent: as the chat starts it. Codex is covered separately by G42. |
 
 **Built 2026-11-26** (`predict.rs`, `runs_builtin`; the test is in `predict_tests.rs`). The test reads the
 flag that both the start and the wait for "connected" go by; no agent program is there, so none starts. It
@@ -528,7 +528,7 @@ Claude plan sign-in. Harness: `examples/demo/next_step_ab.sh` with
 | **M7 with one measure** (`ModelBody::measure`, 1e-6) | 18 of 18 accepted and equal: 20 bodies, the largest difference 0, faces equal; Tab 25 ms median; the stamp held 45 of 45 | **passes** |
 | **M11**, inch parts, 54 suggestions | **new question and rule 11: 27 of 27 drawn**, none with a size without a unit, none at a wrong scale, the words in inches every time (3 with no length); Tab 27 of 27 equal; line 1.37 s, ghost 3.31 s median, 9 in 10 within 5.77 s. **Old question: 8 of 27 drawn**: 10 failed (a fillet or shell of mm numbers read in inches), 8 withdrawn for their words (a hole of mm numbers), 1 no change; 5 of the 8 drawn had sizes without a unit, and one of them a pattern spacing of 85.6 (inches) that put its copies off the part | **passes** (the 9 in 10 by 0.23 s) |
 | M2, lean | not run: needs an API key sign-in | open |
-| M3, Codex | not run: needs `codex-acp` installed, and Codex's MCP wall is not proven | open |
+| M3, Codex | prediction is refused before launching a background session; not run against a real Codex account. Reopen only after verifying MCP and write-tool isolation | deferred |
 | **M4 with `strictMcpConfig`**, two questions in each session | 0 of 20 questions reached the recording server, and Claude Code never started it; with both protections taken out it started in 3 of 3 sessions and 6 of 6 questions reached it | passes |
 | M4, two questions in each session | 0 of 20 questions reached the recording server; with the block taken out 6 of 6 did | passes |
 | M4, first run | 0 of 10 questions reached the recording server; with the block taken out 3 of 3 did, with no permission asked | passes |
