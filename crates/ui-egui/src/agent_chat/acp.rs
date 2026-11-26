@@ -617,6 +617,12 @@ pub enum Incoming {
         session: String,
         commands: Vec<AvailableCommand>,
     },
+    /// A reverse request on the built-in Agent's private ACP connection. Recognition does
+    /// not authorize it: the desktop dispatcher must bind it to the outgoing prompt.
+    CadTool {
+        rpc: Value,
+        params: Value,
+    },
     /// A request we don't serve (file system, terminal, …): answer "method not found".
     Unsupported {
         rpc: Value,
@@ -814,6 +820,7 @@ fn read(line: &str, builtin: bool) -> Option<Incoming> {
                 options,
             })
         }
+        (Some("_intcad/cad/tool"), Some(id)) if builtin => Some(Incoming::CadTool { rpc: id.clone(), params }),
         (Some(m), Some(id)) => Some(Incoming::Unsupported { rpc: id.clone(), method: m.to_string() }),
         (Some("session/update"), None) => Some(update(params.get("update")?, params.get("sessionId").and_then(Value::as_str).unwrap_or(""))),
         (Some(super::connections::CHANGED), None) if builtin => {

@@ -13,7 +13,8 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
+use solidcraft_engine::DocumentStamp;
 use solidcraft_engine::entitlement::{
     AuthenticatedHostScope, BridgeScopeCheck, Capability, ConservativeDeadline, EntryCategory, MonotonicInstant, OperationId, TrustedContext,
 };
@@ -192,11 +193,29 @@ struct ChatBackend {
     /// This request is a host-selected free helper or protocol read, named so control can admit
     /// only that tool's exact methods. It never mints or bills.
     helper: Option<String>,
+    /// The ACP worker binds each request to the stamp captured by the owning window.
+    acp_document: Option<DocumentStamp>,
 }
 
 impl ChatBackend {
-    fn raw_call(&self, method: &str, params: Value) -> Result<Value, String> {
+    fn raw_call(&self, method: &str, mut params: Value) -> Result<Value, String> {
         let turn = self.state.current()?;
+        if let Some(stamp) = self.acp_document.as_ref()
+            && let Some(envelope) = params.as_object_mut()
+        {
+            // The caller's own precondition stays first: advancing it here would let a request
+            // conditioned on an older revision commit against the current one. Only a call that
+            // named no condition gets the window's stamp, which is what binds it to this design.
+            if matches!(method, "engine.execute" | "engine.batch" | "document.inspect" | "document.revision")
+                && !envelope.contains_key("expectedDocument")
+            {
+                envelope.insert("expectedDocument".into(), crate::execution_guard::stamp_json(stamp));
+            }
+            if let Some(scope) = solidcraft_engine::io::vfs::current_scope() {
+                envelope.insert("allow_paths".into(), json!(scope.roots().iter().map(|root| root.to_string_lossy()).collect::<Vec<_>>()));
+                envelope.insert("design_folders".into(), json!(scope.design_roots().iter().map(|root| root.to_string_lossy()).collect::<Vec<_>>()));
+            }
+        }
         let call = self.next_call.fetch_add(1, Ordering::Relaxed).saturating_add(1);
         let id = format!("bridge:{call}");
         push_event(
@@ -301,6 +320,78 @@ impl Backend for ChatBackend {
     }
 }
 
+/// Serve one ACP reverse request on a worker. The child supplies only the
+/// tool and arguments; transport, account scope, document, and cancellation
+/// are supplied by the desktop. This uses the same server as the inherited lane.
+/// The flag says the call may have changed the design (or its outcome is unknown):
+/// such a turn must not be replayed automatically after a provider sign-in.
+pub(crate) fn serve_acp_cad(
+    tools: Sender<ControlRequest>,
+    check: Option<BridgeScopeCheck>,
+    active: Arc<AtomicBool>,
+    document: DocumentStamp,
+    working_dir: std::path::PathBuf,
+    name: String,
+    arguments: Value,
+) -> (Result<Value, String>, bool) {
+    let free = solidcraft_mcp::tool_is_free(&name);
+    let provenance = check.and_then(|check| check()).filter(AuthenticatedHostScope::is_provable).map(HostProvenance::new);
+    let state = Arc::new(BridgeState { turn: Mutex::new(None), generation: AtomicU64::new(0) });
+    state.begin(active);
+    let backend = ChatBackend {
+        tools,
+        state,
+        events: Arc::new(Mutex::new(VecDeque::new())),
+        next_call: Arc::new(AtomicU64::new(0)),
+        provenance: provenance.clone(),
+        forwarded: None,
+        helper: None,
+        acp_document: Some(document),
+    };
+    let mut server = if provenance.is_some() { Server::with_forwarded_authority(Box::new(backend)) } else { Server::new(Box::new(backend)) }
+        .with_path_scope(Some(solidcraft_mcp::agent_scope([working_dir])));
+    let mut reply = match server
+        .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}))
+        .ok_or_else(|| "The desktop CAD worker did not answer".to_string())
+    {
+        Ok(reply) => reply,
+        Err(error) => return (Err(error), !free),
+    };
+    if let Some(result) = reply.get_mut("result") {
+        let result = result.take();
+        let effect = !free && !proven_no_design_effect(&result);
+        return (Ok(result), effect);
+    }
+    let error = reply.pointer("/error/message").and_then(Value::as_str).unwrap_or("The desktop CAD worker refused the request").to_string();
+    (Err(error), !free)
+}
+
+/// Refusals the host made before any work: the document cannot have changed.
+fn proven_no_design_effect(result: &Value) -> bool {
+    if result.get("noEffect").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let code = result
+        .pointer("/structuredContent/errorDetails/code")
+        .or_else(|| result.pointer("/structuredContent/errorDetails/reason"))
+        .or_else(|| result.pointer("/errorDetails/code"))
+        .and_then(Value::as_str);
+    matches!(
+        code,
+        Some(
+            "STALE_DOCUMENT"
+                | "INVALID_REQUEST"
+                | "FORBIDDEN"
+                | "CANCELLED"
+                | "AUTH_REQUIRED"
+                | "AUTH_UNAVAILABLE"
+                | "UNSAFE_TO_START"
+                | "OPERATION_CONFLICT"
+                | "CAPABILITY_DENIED"
+        )
+    )
+}
+
 /// The host end of the runtime's bridge lane.
 pub(crate) struct HostBridge {
     #[cfg(unix)]
@@ -359,6 +450,7 @@ impl HostBridge {
                 provenance: None,
                 forwarded: None,
                 helper: None,
+                acp_document: None,
             };
             let reported = Arc::clone(&error);
             let close_state = Arc::clone(&state);

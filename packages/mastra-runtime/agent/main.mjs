@@ -87,7 +87,7 @@ if (!existsSync(join(sdkRoot, '@mastra', 'code-sdk', 'package.json'))) {
   process.exit(1);
 }
 
-const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }, { createTool }, { jsonSchema }, { RequestContext }] =
+const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }, { createTool }, { jsonSchema }, { RequestContext }, cadErrors] =
   await Promise.all([
     load('@agentclientprotocol/sdk/dist/acp.js'),
     load('@mastra/code-sdk/dist/acp/agent.js'),
@@ -103,6 +103,7 @@ const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent
     load('@mastra/core/dist/tools/index.js'),
     load('ai/dist/index.js'),
     load('@mastra/core/dist/request-context/index.js'),
+    load('@mastra/core/dist/error/index.js'),
   ]);
 
 let registry = {};
@@ -195,7 +196,7 @@ process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
 try {
   await new AgentSideConnection(connection => {
-    const cad = cadBridge({ createTool, jsonSchema, RequestContext, invoke: (method, params) => connection.extMethod(method, params) });
+    const cad = cadBridge({ createTool, jsonSchema, RequestContext, errors: cadErrors, invoke: (method, params) => connection.extMethod(method, params) });
     const IntcadAgent = intcadAgent({ Base: MastraCodeAcpAgent, RequestError, connections, dates: () => dates, reloadSignIns: () => gateway.reloadAuthStorage(), cad });
     agent = new IntcadAgent(connection, createSession(cad));
     return agent;

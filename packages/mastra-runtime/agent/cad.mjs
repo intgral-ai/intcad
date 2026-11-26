@@ -6,7 +6,35 @@ import { APP_SERVER } from './reads.mjs';
 
 const TURN_CONTEXT = 'intcad:desktop-cad-turn';
 
-export function cadBridge({ createTool, jsonSchema, RequestContext, invoke }) {
+// Match the bundled MCP adapter: errors fail the tool, successful structured
+// results retain their content channel, and content-only results keep media.
+function toolResult(result, name, { MastraError, ErrorDomain, ErrorCategory }) {
+  if (result.isError) {
+    const text = result.content?.map(part => part?.type === 'text' ? part.text : part?.type === 'resource' ? part.resource?.text : undefined)
+      .filter(text => typeof text === 'string').join('\n').trim();
+    throw new MastraError({
+      id: 'MCP_CLIENT_TOOL_EXECUTION_FAILED',
+      domain: ErrorDomain.MCP,
+      category: ErrorCategory.THIRD_PARTY,
+      text: text || 'MCP tool execution failed',
+      details: {
+        toolName: name, serverName: APP_SERVER,
+        ...(result.structuredContent !== undefined ? { structuredContent: JSON.stringify(result.structuredContent) } : {}),
+      },
+    });
+  }
+  const structured = result.structuredContent;
+  if (structured === undefined) return result;
+  if (structured !== null && typeof structured === 'object') {
+    Object.defineProperty(structured, Symbol.for('mastra.mcp.callToolContent'), { value: result.content, configurable: true });
+    if (result._meta !== undefined) {
+      Object.defineProperty(structured, Symbol.for('mastra.mcp.callToolMeta'), { value: result._meta, configurable: true });
+    }
+  }
+  return structured;
+}
+
+export function cadBridge({ createTool, jsonSchema, RequestContext, errors, invoke }) {
   const preparing = new WeakMap();
   const sessions = new WeakMap();
   const submission = new AsyncLocalStorage();
@@ -34,10 +62,11 @@ export function cadBridge({ createTool, jsonSchema, RequestContext, invoke }) {
         if (Object.hasOwn(tools, id)) throw new Error('Duplicate Intcad CAD tool');
         tools[id] = createTool({
           id, description, inputSchema: jsonSchema(inputSchema),
-          execute: (args, context) => {
+          execute: async (args, context) => {
             const scope = turns.get(context?.requestContext?.get(TURN_CONTEXT));
             if (!scope || scope.binding !== binding) throw new Error('The Intcad CAD turn is no longer active');
-            return invoke('_intcad/cad/tool', { sessionId: scope.sessionId, turn: scope.turn, name, arguments: args });
+            const result = await invoke('_intcad/cad/tool', { sessionId: scope.sessionId, turn: scope.turn, name, arguments: args });
+            return toolResult(result, name, errors);
           },
         });
       }

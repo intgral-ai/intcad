@@ -679,6 +679,30 @@ async function main(args) {
     out.desktopSawCalls = declinedRequests;
     return turn.stop === "end_turn" && turn.askedStandIn && turn.asked === 1 && declinedRequests === 0;
   });
+  const resultText = (service) => textOf(service.seen.bodies.at(-1)?.messages?.at(-1));
+  await run("packaged ACP preserves the structured CAD result", {
+    app: { handed: false },
+    cadBridge: desktopBridge,
+    hostTool: () => ({ content: [{ type: "text", text: "MCP display text" }], structuredContent: { marker: MARK } }),
+  }, async ({ out, prompt, service }) => {
+    const turn = Object.assign(out, await prompt(cadEdit({ name: "test", expression: "13 mm" })));
+    out.modelResult = resultText(service);
+    return turn.stop === "end_turn" && turn.asked === 1 && JSON.stringify(JSON.parse(out.modelResult)) === JSON.stringify({ marker: MARK });
+  });
+  await run("packaged ACP surfaces a CAD refusal as a tool error", {
+    app: { handed: false },
+    cadBridge: desktopBridge,
+    hostTool: () => ({
+      isError: true,
+      content: [{ type: "text", text: "STALE_DOCUMENT: the design changed" }],
+      structuredContent: { code: "STALE_DOCUMENT" },
+    }),
+  }, async ({ out, prompt, service, agent }) => {
+    const turn = Object.assign(out, await prompt(cadEdit({ name: "test", expression: "13 mm" })));
+    out.modelResult = resultText(service);
+    out.failedTool = agent.notes.some(note => note.params?.update?.sessionUpdate === "tool_call_update" && note.params.update.status === "failed");
+    return turn.stop === "end_turn" && turn.asked === 1 && out.failedTool && out.modelResult.includes("STALE_DOCUMENT: the design changed");
+  });
 
   // The app's tools that only look, and its `execute` with a command that only reads, ask nothing
   // (agent/reads.mjs); a command that changes the design, and a tool not known to only look, ask.

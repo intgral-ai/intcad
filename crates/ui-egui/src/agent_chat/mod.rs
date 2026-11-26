@@ -625,6 +625,9 @@ pub struct AgentChat {
     tools_tx: Option<Sender<ControlRequest>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) bridge_admission: Option<Receiver<ControlRequest>>,
+    /// The desktop can currently back the packaged Agent's CAD calls with an account and journal.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) bridge_authorized: bool,
     /// Settings → AI: the Add agent dialog and connection tests.
     pub settings: settings::State,
     /// Latest authentication evidence from a connection test or a chat, per agent; never saved.
@@ -1181,7 +1184,12 @@ impl AgentChat {
                         Some(snapshot) => snapshot.name_of(&problem.prefix),
                         None => connections::AGENT_NAME.to_string(),
                     };
-                    self.conn.keep(&problem);
+                    // A turn whose desktop call may have changed the design is never sent again
+                    // by itself: a fresh turn would mint a second operation. The user can send it
+                    // again deliberately. A turn proven to have no effect keeps the retry.
+                    if !self.backend.as_ref().is_some_and(|backend| backend.turn_had_bridge_effect()) {
+                        self.conn.keep(&problem);
+                    }
                     self.push(Item::Problem { kind: problem.kind, prefix: problem.prefix, name });
                 }
             }
@@ -1493,14 +1501,16 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     } else {
         None
     };
-    let bridge_scope_check = app.commit_scope.as_ref().filter(|scope| app.has_commit_authority() && scope.is_provable()).and_then(|scope| {
-        let account = app.commit_account.as_ref()?;
-        // Without worker-backed durability, even a live identity cannot open the paid lane.
-        account.bridge_journal()?;
-        account.bridge_scope_check(scope)
-    });
+    let bridge_scope_check = desktop_bridge_scope_check(app);
+    // The packaged Agent reaches this window over its own stdio. Its queue needs neither the
+    // loopback endpoint nor the external CLI, so a missing listener does not disable its tools.
+    let packaged_route = execution == agents::Execution::Direct
+        && entry.kind == agents::Kind::Acp
+        && entry.argv.len() == 2
+        && app.builtin_agent.as_ref().is_some_and(|found| found.packaged);
     let chat = &mut app.agent_chat;
-    if chat.tools_port.is_none()
+    if !packaged_route
+        && chat.tools_port.is_none()
         && let Some(start) = chat.control_starter.as_mut()
     {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1511,7 +1521,13 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         }
     }
     let cli = find_cli();
-    if chat.tools_port.is_none() {
+    if packaged_route {
+        if chat.tools_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            chat.tools_tx = Some(tx);
+            chat.tools_rx = Some(rx);
+        }
+    } else if chat.tools_port.is_none() {
         chat.notice(tr("ui.agent_chat_no_control"), true);
     } else if cli.is_none() {
         chat.notice(tr("ui.agent_chat_no_cli"), true);
@@ -1521,8 +1537,8 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(hint) = entry.problem_hint() {
         chat.notice(hint, true);
     }
-    let bridge = cli.zip(chat.tools_port).map(|(cli, port)| acp::McpBridge { cli, port });
-    chat.tools_available = Some(bridge.is_some());
+    let bridge = if packaged_route { None } else { cli.zip(chat.tools_port).map(|(cli, port)| acp::McpBridge { cli, port }) };
+    chat.tools_available = Some(packaged_route || bridge.is_some());
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
     chat.work_dir = Some(start.cwd.clone());
@@ -1586,6 +1602,9 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             // it would keep its sign-ins in, and read the agent files of, the user's own home.
             let data = app.builtin_agent.as_ref().and_then(|found| found.data.clone());
             match data.filter(|folder| std::fs::create_dir_all(folder).is_ok()) {
+                Some(folder) if packaged_route => {
+                    acp_client::AcpBackend::start_packaged(&entry.argv, start, &folder).map(|b| Box::new(b) as Box<dyn ChatBackend>)
+                }
                 Some(folder) => acp_client::AcpBackend::start_builtin(&entry.argv, start, &folder).map(|b| Box::new(b) as Box<dyn ChatBackend>),
                 None => Err(tr("ui.agent_chat_no_data_folder").to_string()),
             }
@@ -1614,6 +1633,15 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             chat.state = Some(State::Failed);
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn desktop_bridge_scope_check(app: &SolveApp) -> Option<solidcraft_engine::entitlement::BridgeScopeCheck> {
+    let scope = app.commit_scope.as_ref().filter(|scope| app.has_commit_authority() && scope.is_provable())?;
+    let account = app.commit_account.as_ref()?;
+    // Without worker-backed durability, even a live identity cannot open the paid lane.
+    account.bridge_journal()?;
+    account.bridge_scope_check(scope)
 }
 
 /// The agent's process is up: the conversation starts on it. The built-in agent is handed its
@@ -2463,8 +2491,12 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
         review::begin(app);
     }
     let active = app.agent_chat.turn.as_ref().map(|turn| Arc::clone(&turn.active));
+    #[cfg(not(target_arch = "wasm32"))]
+    let bridge_scope_check = desktop_bridge_scope_check(app);
     if let Some(b) = app.agent_chat.backend.as_mut() {
         b.set_document(&stamp.document_id, stamp.revision);
+        #[cfg(not(target_arch = "wasm32"))]
+        b.set_bridge_scope_check(bridge_scope_check);
         if let Some(active) = active {
             b.set_turn_control(active);
         }
@@ -3032,8 +3064,24 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     // The host's current stamp is the final authority for §9.3: a user or turn edit after the
     // captured snapshot must make the passing report historical, even if no new prompt ran.
     let stamp = app.session.document_stamp();
+    #[cfg(not(target_arch = "wasm32"))]
+    let bridge_scope_check = desktop_bridge_scope_check(app);
+    #[cfg(not(target_arch = "wasm32"))]
+    let bridge_was_authorized = std::mem::replace(&mut app.agent_chat.bridge_authorized, bridge_scope_check.is_some());
     if let Some(backend) = app.agent_chat.backend.as_mut() {
         backend.set_document(&stamp.document_id, stamp.revision);
+        #[cfg(not(target_arch = "wasm32"))]
+        match bridge_scope_check {
+            Some(check) => backend.set_bridge_scope_check(Some(check)),
+            // The account or its durable journal is no longer usable: a call already in the turn
+            // must not keep the authority it was started with.
+            None => {
+                backend.set_bridge_scope_check(None);
+                if bridge_was_authorized {
+                    backend.retire_bridge_authority();
+                }
+            }
+        }
     }
     follow_project(app);
     connections::poll(app, ctx);

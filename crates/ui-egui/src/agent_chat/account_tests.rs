@@ -443,6 +443,220 @@ fn bridge_registers_and_settles_the_minted_id_only_before_the_deadline() {
 }
 
 #[test]
+fn host_agent_parameter_edit_is_admitted_and_settled_once() {
+    use crate::control::{Outcome, queue_bridge_admission};
+
+    const NAME: &str = "int1481_acceptance_marker";
+    let (mut bridge, requests, _active) = authorized_bridge();
+    let mut child = child(&mut bridge);
+    let accounts = Arc::new(Mutex::new(BridgeAccounts::default()));
+    let journal = crate::dfm_review::tests::test_bridge_journal();
+    let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.install_commit_authority(
+        host_scope(),
+        Box::new(BridgeAccount(Arc::clone(&accounts), journal.clone())),
+        Box::new(BridgeResultClock { dispatched: Arc::default(), result_ms: 0 }),
+    );
+    let mut budget = BudgetTable::unverified_default();
+    budget.set_verified(Capability::Mcp, EntryCategory::GuiBridgeMcp, Duration::from_secs(280));
+    app.install_budget(budget);
+
+    let before = app.session.document_stamp();
+    assert!(app.session.doc.param(NAME).is_none());
+    write_wire(&mut child, &tools_call(1, "set_parameter", json!({"name": NAME, "expression": "13 mm"}), Value::Null));
+    let request = requests.recv_timeout(Duration::from_secs(5)).expect("the tool reaches the host");
+    let operation = request.operation().expect("the host minted an operation").clone();
+    queue_bridge_admission(&mut app, request);
+    let mut admitted = app.agent_chat.bridge_admission.take().unwrap().recv_timeout(Duration::from_secs(5)).expect("host admission");
+    let Outcome::Done(reply) = crate::control::handle(&mut app, &egui::Context::default(), &mut admitted) else {
+        panic!("test parameter should complete");
+    };
+    assert_eq!(reply["ok"], true, "{reply}");
+    admitted.reply.send(reply).unwrap();
+    let tool_reply = read_wire(&mut child);
+    assert_ne!(tool_reply["result"]["isError"], true, "{tool_reply}");
+
+    let after = app.session.document_stamp();
+    assert_eq!(after.document_id, before.document_id);
+    assert_eq!(after.revision, before.revision + 1);
+    let readback = app.session.execute("parameters.list", &json!({"filter":"user"})).expect("independent readback");
+    let matches: Vec<_> = readback["parameters"].as_array().unwrap().iter().filter(|param| param["name"] == NAME).collect();
+    assert_eq!(matches.len(), 1, "{readback}");
+    assert_eq!(matches[0]["expression"], "13 mm");
+    assert_eq!(matches[0]["value"], 13.0);
+    assert!(requests.try_recv().is_err(), "no second desktop command");
+    assert_eq!(bridge.minted_operations(), 1);
+    let accounts = accounts.lock().unwrap();
+    assert_eq!(accounts.begun, [operation.clone()]);
+    assert_eq!(accounts.finalized, [(operation.clone(), BillingResult::Succeeded)]);
+    assert_eq!(journal().unwrap().load(&operation).unwrap().unwrap().status, OperationStatus::Charged);
+}
+
+#[test]
+fn packaged_acp_edit_is_admitted_and_committed_once() {
+    use super::acp_client::AcpBackend;
+    use super::backend::{ChatBackend as _, Event, PromptPart, StartContext};
+    use crate::control::Outcome;
+    use std::time::Instant;
+
+    // This child speaks the same stdio protocol as the bundled SDK. The SDK itself is
+    // covered by agent-smoke; the app, MCP dispatch, CAD command and journal here are real.
+    // It sits in a package-shaped folder, so the launcher validation runs for real too.
+    let directory = std::env::temp_dir().join(format!("intcad-acp-paid-fixture-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let work = directory.as_path();
+    let root = work.join("mastra-agent");
+    for folder in ["agent", "node_modules/@mastra/code-sdk", "node_modules/@agentclientprotocol/sdk"] {
+        std::fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    std::fs::write(root.join("agent.json"), b"{}").unwrap();
+    std::fs::write(root.join("node_modules/@mastra/code-sdk/package.json"), b"{}").unwrap();
+    std::fs::write(root.join("node_modules/@agentclientprotocol/sdk/package.json"), b"{}").unwrap();
+    std::fs::write(root.join("agent/main.mjs"), b"").unwrap();
+    std::fs::write(
+        root.join("node"),
+        r#"#!/bin/sh
+        IFS= read -r initialize || exit 1
+        printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"agentInfo":{"name":"ACP CAD contract fixture"}}}'
+        IFS= read -r session || exit 1
+        printf '%s\n' "$session" > session.json
+        printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fixture-session"}}'
+        IFS= read -r prompt || exit 1
+        printf '%s\n' "$prompt" > prompt.json
+        printf '%s\n' '{"jsonrpc":"2.0","id":71,"method":"_intcad/cad/tool","params":{"sessionId":"fixture-session","turn":"3","name":"set_parameter","arguments":{"name":"int1481_acceptance_marker","expression":"13 mm"}}}'
+        IFS= read -r reply || exit 1
+        printf '%s\n' "$reply" > reply.json
+        printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+        while IFS= read -r unused; do :; done
+        "#,
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(root.join("node"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let argv = [root.join("node").to_string_lossy().into_owned(), root.join("agent/main.mjs").to_string_lossy().into_owned()];
+    let (tools, requests) = std::sync::mpsc::channel();
+    let ctx = StartContext { cwd: work.to_owned(), bridge: None, tools: Some(tools), wake: Box::new(|| {}) };
+    let mut backend = AcpBackend::start_packaged(&argv, ctx, work).unwrap();
+    backend.new_session();
+    let ready = Instant::now() + Duration::from_secs(5);
+    while !backend.poll().iter().any(|event| matches!(event, Event::Ready { .. })) {
+        assert!(Instant::now() < ready, "packaged ACP session did not open");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    let accounts = Arc::new(Mutex::new(BridgeAccounts::default()));
+    let journal = crate::dfm_review::tests::test_bridge_journal();
+    let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.install_commit_authority(
+        host_scope(),
+        Box::new(BridgeAccount(Arc::clone(&accounts), journal.clone())),
+        Box::new(BridgeResultClock { dispatched: Arc::default(), result_ms: 0 }),
+    );
+    let mut budget = BudgetTable::unverified_default();
+    budget.set_verified(Capability::Mcp, EntryCategory::GuiBridgeMcp, Duration::from_secs(280));
+    app.install_budget(budget);
+
+    let before = app.session.document_stamp();
+    assert!(app.session.doc.param("int1481_acceptance_marker").is_none());
+    backend.set_document(&before.document_id, before.revision);
+    backend.set_turn_control(Arc::new(AtomicBool::new(true)));
+    backend.set_bridge_scope_check(Some(Box::new(|| Some(host_scope()))));
+    backend.prompt(&[PromptPart::Text("Set the test parameter".into())]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let request = loop {
+        backend.poll();
+        if let Ok(request) = requests.try_recv() {
+            break request;
+        }
+        assert!(Instant::now() < deadline, "no call through the desktop queue");
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    let operation = request.operation().expect("the desktop minted an operation").clone();
+    assert_eq!(request.params["expectedDocument"], crate::execution_guard::stamp_json(&before));
+    crate::control::queue_bridge_admission(&mut app, request);
+    let mut admitted = app.agent_chat.bridge_admission.take().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+    let Outcome::Done(result) = crate::control::handle(&mut app, &egui::Context::default(), &mut admitted) else {
+        panic!("the CAD edit should complete");
+    };
+    assert_eq!(result["ok"], true, "{result}");
+    admitted.reply.send(result).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !backend.poll().iter().any(|event| matches!(event, Event::TurnEnded { .. })) {
+        assert!(Instant::now() < deadline, "the desktop never delivered the MCP reply");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    backend.shutdown(true);
+
+    let from_child = |name: &str| serde_json::from_str::<Value>(&std::fs::read_to_string(work.join(name)).unwrap()).unwrap();
+    let session = from_child("session.json");
+    assert_eq!(session["params"]["mcpServers"], json!([]));
+    assert!(session["params"]["_meta"]["intcad"]["cadBridge"]["tools"].as_array().unwrap().iter().any(|tool| tool["name"] == "set_parameter"));
+    assert_eq!(from_child("prompt.json")["params"]["_meta"]["intcad"]["cadTurn"], "3");
+    let reply = from_child("reply.json");
+    assert_eq!(reply["id"], 71);
+    assert!(reply["result"].is_object() && reply["result"]["isError"] != true, "{reply}");
+    let after = app.session.document_stamp();
+    assert_eq!(after.document_id, before.document_id);
+    assert_eq!(after.revision, before.revision + 1);
+    let readback = app.session.execute("parameters.list", &json!({"filter":"user"})).unwrap();
+    let matches: Vec<_> = readback["parameters"].as_array().unwrap().iter().filter(|param| param["name"] == "int1481_acceptance_marker").collect();
+    assert_eq!(matches.len(), 1, "{readback}");
+    assert_eq!(matches[0]["value"], 13.0);
+    assert_eq!(matches[0]["expression"], "13 mm");
+    assert!(requests.try_recv().is_err(), "no second desktop dispatch");
+    assert_eq!(journal().unwrap().load(&operation).unwrap().unwrap().status, OperationStatus::Charged);
+    let accounts = accounts.lock().unwrap();
+    assert_eq!(accounts.begun, std::slice::from_ref(&operation));
+    assert_eq!(accounts.finalized, [(operation, BillingResult::Succeeded)]);
+    for file in ["session.json", "prompt.json", "reply.json"] {
+        std::fs::remove_file(work.join(file)).unwrap();
+    }
+    std::fs::remove_dir_all(work).unwrap();
+}
+
+#[test]
+fn acp_worker_does_not_replace_an_explicit_document_precondition() {
+    let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.session.execute("parameters.add", &json!({"name":"width","expression":"7 mm"})).unwrap();
+    let current = app.session.document_stamp();
+    let previous = solidcraft_engine::DocumentStamp { document_id: current.document_id.clone(), revision: current.revision - 1 };
+    let expected = crate::execution_guard::stamp_json(&previous);
+    let arguments = json!({
+        "command":"parameters.change",
+        "params":{"name":"width","expression":"13 mm"},
+        "expectedDocument":expected,
+    });
+    let (tools, requests) = std::sync::mpsc::channel();
+    std::thread::scope(|worker| {
+        let reply = worker.spawn(move || {
+            super::host_bridge::serve_acp_cad(
+                tools,
+                Some(Box::new(|| Some(host_scope()))),
+                Arc::new(AtomicBool::new(true)),
+                current,
+                std::env::temp_dir(),
+                "execute".into(),
+                arguments,
+            )
+        });
+        let mut request = requests.recv_timeout(Duration::from_secs(5)).expect("desktop request");
+        let observed = request.params["expectedDocument"].clone();
+        let refusal = crate::execution_guard::admit(&mut app, &mut request).err();
+        let response = refusal
+            .as_ref()
+            .map_or_else(|| json!({"ok":false,"error":"test stopped the incorrectly admitted request"}), crate::execution_guard::refusal_json);
+        request.reply.send(response).unwrap();
+        let (outcome, _effect) = reply.join().unwrap();
+        outcome.unwrap();
+        assert_eq!(observed, expected, "the desktop must not advance a caller's condition to the current revision");
+        assert!(matches!(refusal, Some(crate::execution_guard::GuardRefusal::Stale { .. })));
+    });
+    assert_eq!(app.session.doc.param("width").unwrap().expr, "7 mm");
+}
+
+#[test]
 fn mastra_pure_chat_creates_no_billing_operation() {
     let (bridge, rx, _active) = authorized_bridge();
     // A chat turn that uses no Intcad tool sends no tools/call to the bridge.
