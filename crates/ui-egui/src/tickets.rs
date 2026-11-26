@@ -62,6 +62,7 @@ pub struct State {
     /// Files taken into the project for the ticket being created, by their paths there.
     pub adding: Vec<String>,
     /// The picture attachments of the tickets, by path: the key they are served by and their bytes.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pictures: BTreeMap<String, (String, Arc<Vec<u8>>)>,
     /// Where the right rail's Tickets panel gives its place to the tickets view this frame.
     pub(crate) web_place: Option<(egui::Rect, egui::LayerId)>,

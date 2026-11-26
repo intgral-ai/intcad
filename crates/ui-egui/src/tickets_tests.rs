@@ -522,6 +522,7 @@ fn the_tickets_view_is_told_the_stores_tickets_in_the_pages_shape() {
     assert_eq!(record, agent_steps, "every step of the Assistant's is its own line, as the Assistant's");
     assert_eq!(pages[4].1["record"].as_array().and_then(|r| r.last()).map(|e| e["action"].clone()), Some(json!("check_off")));
     // A refused step: its reason, and the answer says it was not taken.
+    request(&mut h, json!({"type": "ticket_collapse"})).unwrap();
     request(&mut h, json!({"type": "ticket_open", "id": joint})).unwrap();
     request(&mut h, json!({"type": "ticket_done", "id": joint, "revision": 1, "ask": 7})).unwrap();
     let refused = told(&mut h);
