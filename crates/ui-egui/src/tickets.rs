@@ -80,13 +80,34 @@ pub fn set_host(app: &mut SolveApp, available: bool) {
     app.tickets.web_host = Some(available);
 }
 
+/// A ticket is open large over the window: the Assistant's view gives way to it, as it does to
+/// the picture viewer, and comes back where it was when the ticket closes or goes back to the rail.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn open_large(app: &SolveApp) -> bool {
+    app.tickets.expanded && app.tickets.selected.is_some()
+}
+
 /// The host, once a frame after the app's UI: where the tickets view goes, in the window's egui
-/// points, or `None` to hide it. As for the Assistant's view (`agent_chat::web::placement`): it
-/// stays off the window's resize edges and off the panel's own resize grip, and it is hidden while
-/// a menu, a tooltip, a dialog or a floating panel lies over its place.
+/// points, or `None` to hide it. In the rail, as for the Assistant's view
+/// (`agent_chat::web::placement`): it stays off the window's resize edges and off the panel's own
+/// resize grip, and it is hidden while a menu, a tooltip, a dialog or a floating panel lies over its
+/// place. With a ticket open large it lies over the window below the application bar (the page dims
+/// the rest), and only a menu, a popup or a dialog of the app hides it.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> {
     let (rect, layer) = app.tickets.web_place.take()?;
+    if open_large(app) {
+        let window = ctx.content_rect();
+        // The rail begins under the application bar: so does the ticket opened large.
+        let rect = window.with_min_y(app.shell.right_rail.map_or(window.top(), |rail| rail.top().max(window.top())));
+        let rect = if app.custom_titlebar { rect.intersect(crate::titlebar::inside_resize_zones(ctx)) } else { rect };
+        let popup = ctx.memory(|memory| {
+            memory.layer_ids().any(|other| {
+                other.order >= egui::Order::Foreground && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(rect))
+            })
+        });
+        return (rect.is_positive() && !popup && !crate::agent_chat::gallery_open(app)).then_some(rect);
+    }
     let rect = if app.custom_titlebar { rect.intersect(crate::titlebar::inside_resize_zones(ctx)) } else { rect };
     let grip = ctx.global_style().interaction.resize_grab_radius_side;
     let rect = rect.with_min_x(rect.left() + grip);
@@ -515,6 +536,7 @@ pub fn page_state(app: &mut SolveApp) -> String {
     refresh(app);
     if app.tickets.selected.as_ref().is_some_and(|id| !app.tickets.tickets.iter().any(|ticket| &ticket.id == id)) {
         app.tickets.selected = None;
+        app.tickets.expanded = false;
         app.tickets.record.clear();
     }
     let selection = selected_parts(app);

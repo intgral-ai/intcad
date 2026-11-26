@@ -149,6 +149,11 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
     if app.agent_chat.gallery.is_some() {
         return None;
     }
+    // A part ticket open large over the window has it the same way; the view comes back where it
+    // was when the ticket goes back to the rail. Nothing of the conversation stops meanwhile.
+    if crate::tickets::open_large(app) {
+        return None;
+    }
     // What is shown of it: a layer over the rest of it covers nothing the page shows there.
     let shown = app
         .agent_chat

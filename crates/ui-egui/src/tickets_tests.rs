@@ -647,3 +647,52 @@ fn the_tickets_views_requests_are_answered_and_a_refusal_says_why() {
     crate::agent_chat::web::act(&mut h.app, &h.ctx.clone(), r#"{"type":"ticket_show","id":"T-4"}"#).unwrap();
     assert_eq!((crate::right_rail::open(&h.app), h.app.tickets.selected.as_deref()), (Some(crate::right_rail::Item::Tickets), Some("T-4")));
 }
+
+/// Opened large, the tickets view lies over the window below the application bar and the
+/// Assistant's view gives way to it, as to the picture viewer; back in the rail, the Assistant's
+/// view has its place again. The Assistant's turn goes on meanwhile: nothing is cancelled.
+#[test]
+fn a_ticket_opened_large_lies_over_the_window_and_the_assistant_gives_way_until_it_goes_back() {
+    let scratch = Scratch::new("large");
+    let (mut h, root) = window(&scratch);
+    let agent = StandIn::default();
+    crate::agent_chat::install_test_backend(&mut h.app, Box::new(agent.clone()));
+    crate::agent_chat::send(&mut h.app, &h.ctx.clone(), "Make the lid".into());
+    h.settle();
+    assert_eq!(h.app.agent_chat.state(), crate::agent_chat::State::Busy, "the Assistant is in a turn");
+    h.call("ui.prefs", json!({"right_rail": true}));
+    h.app.preferences.right_rail_open = crate::right_rail::Item::Tickets.id().to_string();
+    let id = tickets::create(&root, Draft { title: "Lid".into(), ..Draft::default() }).unwrap().id;
+    h.settle();
+    let ctx = h.ctx.clone();
+    let rail = crate::tickets::placement(&mut h.app, &ctx).expect("the tickets view in the rail");
+    // A place the Assistant's panel gives its view, on a layer nothing lies over.
+    let panel = egui::Rect::from_min_size(egui::pos2(300.0, 400.0), egui::vec2(500.0, 300.0));
+    let layer = egui::LayerId::new(egui::Order::Middle, egui::Id::new("intcad-test-assistant-panel"));
+    let assistant = |h: &mut Harness| {
+        h.app.agent_chat.web_place = Some((panel, layer));
+        crate::agent_chat::web::placement(&mut h.app, &ctx)
+    };
+    let before = assistant(&mut h);
+    assert!(before.is_some(), "the Assistant's view has its place");
+
+    crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_expand", "id": id}).to_string()).unwrap();
+    h.frames(1);
+    let large = crate::tickets::placement(&mut h.app, &ctx).expect("the tickets view over the window");
+    let window = ctx.content_rect();
+    assert!(large.width() > rail.width() * 2.0 && large.left() <= window.left() + 8.0 && large.right() >= window.right() - 8.0, "{large:?} over {window:?}");
+    assert!(large.top() > window.top() && large.bottom() >= window.bottom() - 8.0, "below the application bar, to the bottom: {large:?}");
+    assert_eq!(assistant(&mut h), None, "the Assistant's view gives way");
+    assert!(told(&mut h)["expanded"] == true);
+    // Previous / Next keep it large; Esc (the page's collapse) puts it back in the rail.
+    let other = tickets::create(&root, Draft { title: "Base".into(), ..Draft::default() }).unwrap().id;
+    crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_open", "id": other}).to_string()).unwrap();
+    h.frames(1);
+    assert!(crate::tickets::placement(&mut h.app, &ctx).is_some_and(|rect| rect.width() > rail.width() * 2.0));
+    crate::tickets::receive(&mut h.app, &ctx, r#"{"type":"ticket_collapse"}"#).unwrap();
+    h.frames(1);
+    assert_eq!(crate::tickets::placement(&mut h.app, &ctx), Some(rail), "back in the rail");
+    assert_eq!(assistant(&mut h), before, "the Assistant's view where it was");
+    assert_eq!(h.app.agent_chat.state(), crate::agent_chat::State::Busy, "its turn went on");
+    assert_eq!(agent.prompts().len(), 1);
+}
