@@ -538,6 +538,7 @@ pub fn state(app: &mut SolveApp) -> String {
         ("reviewAccepted", "ui.agent_chat_review_accepted"),
         ("reviewRejected", "ui.agent_chat_review_rejected"),
         ("reviewMore", "ui.agent_chat_review_more_steps"),
+        ("ticketShow", "ui.tickets_show"),
         ("dfmCheckTitle", "ui.dfm_check.title"),
         ("dfmRunning", "ui.dfm_check.running"),
         ("dfmDone", "ui.dfm_check.done"),

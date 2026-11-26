@@ -89,6 +89,7 @@
     "ui.tickets_expand": "Open large",
     "ui.tickets_collapse": "Back to the side panel",
     "ui.tickets_add_text": "Add a description…",
+    "ui.tickets_show": "Show in part tickets",
     "ui.tickets_still_waits": "It still waits for {ids} to be done"
   },
   "zh": {
@@ -181,6 +182,7 @@
     "ui.tickets_expand": "展开",
     "ui.tickets_collapse": "收回右边栏",
     "ui.tickets_add_text": "加说明…",
+    "ui.tickets_show": "在部件票里看",
     "ui.tickets_still_waits": "它还在等 {ids} 完成"
   },
   "ja": {
@@ -273,6 +275,7 @@
     "ui.tickets_expand": "大きく開く",
     "ui.tickets_collapse": "サイドパネルに戻す",
     "ui.tickets_add_text": "説明を追加…",
+    "ui.tickets_show": "部品チケットで表示",
     "ui.tickets_still_waits": "まだ {ids} の完了を待っています"
   },
   "de": {
@@ -365,6 +368,7 @@
     "ui.tickets_expand": "Groß öffnen",
     "ui.tickets_collapse": "Zurück zum Seitenbereich",
     "ui.tickets_add_text": "Beschreibung hinzufügen…",
+    "ui.tickets_show": "In Bauteil-Tickets anzeigen",
     "ui.tickets_still_waits": "Es wartet noch darauf, dass {ids} erledigt ist"
   },
   "ko": {
@@ -457,6 +461,7 @@
     "ui.tickets_expand": "크게 열기",
     "ui.tickets_collapse": "사이드 패널로 돌아가기",
     "ui.tickets_add_text": "설명 추가…",
+    "ui.tickets_show": "부품 티켓에서 보기",
     "ui.tickets_still_waits": "아직 {ids}이(가) 완료되기를 기다리고 있습니다"
   },
   "ar": {
@@ -549,6 +554,7 @@
     "ui.tickets_expand": "فتح بحجم كبير",
     "ui.tickets_collapse": "العودة إلى اللوحة الجانبية",
     "ui.tickets_add_text": "إضافة وصف…",
+    "ui.tickets_show": "عرض في تذاكر الأجزاء",
     "ui.tickets_still_waits": "لا يزال ينتظر اكتمال {ids}"
   },
   "he": {
@@ -641,6 +647,7 @@
     "ui.tickets_expand": "פתיחה בגדול",
     "ui.tickets_collapse": "חזרה לחלונית הצד",
     "ui.tickets_add_text": "הוספת תיאור…",
+    "ui.tickets_show": "הצגה בכרטיסי חלקים",
     "ui.tickets_still_waits": "הוא עדיין ממתין להשלמת {ids}"
   },
   "vi": {
@@ -733,6 +740,7 @@
     "ui.tickets_expand": "Mở rộng",
     "ui.tickets_collapse": "Quay lại bảng bên",
     "ui.tickets_add_text": "Thêm mô tả…",
+    "ui.tickets_show": "Xem trong phiếu chi tiết",
     "ui.tickets_still_waits": "Phiếu vẫn đang chờ {ids} xong"
   }
 }

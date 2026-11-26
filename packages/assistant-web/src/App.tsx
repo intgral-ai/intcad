@@ -37,6 +37,7 @@ import type { CSSProperties, KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import { flushSync } from 'react-dom';
 import type { AssistantState, Connect, ContextChip, ContextGroups, Item, MissingAgent, PermissionOption, PictureRef, QueuedMessage, Strings, TurnProblem } from './host';
 import { pictureUrl, post } from './host';
+import { StateIcon } from './tickets/status-icons';
 import { ModelPicker as MastraModelPicker } from '@/domains/llm/model-picker';
 import type { ModelPickerProvider } from '@/domains/llm/model-picker-types';
 import { ProviderLogoMonogram } from '@/domains/llm/provider-logo-monogram';
@@ -104,6 +105,7 @@ type Part =
   | { kind: 'approval'; item: Approval }
   | { kind: 'changes'; item: Of<'changes'> }
   | { kind: 'review'; item: Of<'review'> }
+  | { kind: 'ticket'; item: Of<'ticket'> }
   | { kind: 'notice'; item: Of<'notice'> }
   | { kind: 'check'; item: Of<'check'> }
   | { kind: 'skill'; item: Of<'skill'> };
@@ -483,6 +485,24 @@ function ReviewCard({ item, strings }: { item: Of<'review'>; strings: Strings })
   );
 }
 
+/** A part ticket the agent drafted (D-87): its state, number and title, and a way to it in the tickets view. */
+function TicketCard({ item, strings }: { item: Of<'ticket'>; strings: Strings }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border1 py-2 pr-2 pl-3">
+      <StateIcon state={item.state} />
+      <Txt variant="caption" tone="muted" className="shrink-0">
+        {item.id}
+      </Txt>
+      <Txt variant="caption" className="min-w-0 flex-1 font-medium break-words">
+        {item.title}
+      </Txt>
+      <Button type="button" size="sm" variant="ghost" className="shrink-0" onClick={() => post({ type: 'ticket_show', id: item.id })}>
+        {strings.ticketShow}
+      </Button>
+    </div>
+  );
+}
+
 /** The DFM check card: counts, "not checked", and one expandable row per finding. */
 function CheckCardView({ item, strings }: { item: Of<'check'>; strings: Strings }) {
   const card = item.card;
@@ -642,6 +662,8 @@ function Response({
             );
           case 'review':
             return <ReviewCard key={key} item={part.item} strings={strings} />;
+          case 'ticket':
+            return <TicketCard key={key} item={part.item} strings={strings} />;
           case 'changes':
             return (
               <div key={key} className="flex flex-wrap items-center gap-2">

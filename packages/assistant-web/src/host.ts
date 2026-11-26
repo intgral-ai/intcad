@@ -112,6 +112,8 @@ export type Item =
   | { kind: 'permission'; index: number; heading: string; answered: string | null; options: PermissionOption[] }
   | { kind: 'approval'; id: number; title: string; answer: boolean | null }
   | { kind: 'changes'; index: number; label: string; undone: boolean; undoable: boolean }
+  /** A part ticket the agent drafted in this turn (D-87); it waits in the tickets view's 待接受 group. Ahead of the host. */
+  | { kind: 'ticket'; id: string; title: string; state: TicketStateName }
   | { kind: 'review'; index: number; review: number; steps: string[]; more: number; made: { name: string; volume: number }[]; changed: { name: string; before: number; after: number }[]; removed: { name: string; volume: number }[]; outcome: string }
   /** `problem`: a turn of the built-in agent failed on its connection; `text` already says so in full. */
   | { kind: 'notice'; text: string; error: boolean; problem?: TurnProblem | null }
@@ -244,7 +246,7 @@ export type StringKey =
   | 'openPicture' | 'selectedNow'
   | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel' | 'moveBox'
   | 'reviewTitle' | 'reviewAccept' | 'reviewReject' | 'reviewMade' | 'reviewChanged' | 'reviewRemoved'
-  | 'reviewAccepted' | 'reviewRejected' | 'reviewMore'
+  | 'reviewAccepted' | 'reviewRejected' | 'reviewMore' | 'ticketShow'
   | 'dfmCheckTitle' | 'dfmRunning' | 'dfmDone' | 'dfmCancelled' | 'dfmError' | 'dfmNotChecked'
   | 'dfmRefresh' | 'dfmStale' | 'dfmFindings' | 'dfmAdvisory' | 'dfmFailed' | 'dfmChecked'
   | 'dfmNotCovered' | 'dfmMeasured' | 'dfmRequirement' | 'dfmSource' | 'dfmOverride'
@@ -313,6 +315,8 @@ export type Action =
   | { type: 'surface'; color: string }
   | { type: 'copy'; text: string }
   | { type: 'review'; id: number; accept: boolean }
+  /** Show a drafted part ticket in the tickets view. Ahead of the host: its `act` refuses it today. */
+  | { type: 'ticket_show'; id: string }
   | { type: 'open_link'; url: string }
   // The built-in agent's connections; the app refuses these for any other agent.
   | { type: 'conn_login'; id: string }
