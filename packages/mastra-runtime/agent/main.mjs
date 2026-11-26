@@ -15,6 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { intcadAgent } from './agent.mjs';
 import { holdCallbackPorts } from './callback.mjs';
+import { cadBridge } from './cad.mjs';
 import { Connections, KEYS } from './connections.mjs';
 import { deniedFolders, keepFilesFrom } from './fence.mjs';
 import { releaseDates } from './models.mjs';
@@ -86,7 +87,7 @@ if (!existsSync(join(sdkRoot, '@mastra', 'code-sdk', 'package.json'))) {
   process.exit(1);
 }
 
-const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }] =
+const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }, { createTool }, { jsonSchema }, { RequestContext }] =
   await Promise.all([
     load('@agentclientprotocol/sdk/dist/acp.js'),
     load('@mastra/code-sdk/dist/acp/agent.js'),
@@ -99,6 +100,9 @@ const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent
     load('@mastra/code-sdk/dist/agents/custom-provider-source.js'),
     load('@mastra/code-sdk/dist/utils/open-url.js'),
     load('@mastra/core/dist/workspace/index.js'),
+    load('@mastra/core/dist/tools/index.js'),
+    load('ai/dist/index.js'),
+    load('@mastra/core/dist/request-context/index.js'),
   ]);
 
 let registry = {};
@@ -167,16 +171,15 @@ const connections = new Connections({
 customSource.setCustomProvidersSource(() => []);
 
 // Sessions as Mastra Code's ACP server opens them, without a vector store (session.mjs).
-const createSession = sessionBuilder({
+const createSession = cad => sessionBuilder({
   createMastraCode,
   loadSettings: settings.loadSettings,
   resolveDefaultThinkingLevel: settings.resolveDefaultThinkingLevel,
   resolveSubagentsSetting,
   withCleanupFailure,
   RequestError,
+  cad,
 });
-
-const IntcadAgent = intcadAgent({ Base: MastraCodeAcpAgent, RequestError, connections, dates: () => dates, reloadSignIns: () => gateway.reloadAuthStorage() });
 
 // As Mastra Code's own `runAcpServer`, with the class above and the sign-in ended on the way out.
 let disposing;
@@ -192,7 +195,9 @@ process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
 try {
   await new AgentSideConnection(connection => {
-    agent = new IntcadAgent(connection, request => createSession(request));
+    const cad = cadBridge({ createTool, jsonSchema, RequestContext, invoke: (method, params) => connection.extMethod(method, params) });
+    const IntcadAgent = intcadAgent({ Base: MastraCodeAcpAgent, RequestError, connections, dates: () => dates, reloadSignIns: () => gateway.reloadAuthStorage(), cad });
+    agent = new IntcadAgent(connection, createSession(cad));
     return agent;
   }, ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin))).closed;
 } finally {
