@@ -431,6 +431,11 @@ impl Predictor {
         self.cancel_ask(outcome);
     }
 
+    /// Ordinary chat takes precedence even if it starts and finishes between predictor ticks.
+    pub(super) fn chat_took_view(&mut self) {
+        self.withdraw("dismissed");
+    }
+
     /// The app takes the line back: its commands did not pass.
     fn refuse(&mut self, why: Refused) {
         self.withdrawn += 1;
@@ -669,20 +674,23 @@ pub(crate) fn paint_ghost(app: &mut SolveApp, ui: &egui::Ui, painter: &egui::Pai
     painter.galley(rect.min + pad, galley, ink);
     crate::scenario::publish_rect("history:next_step", rect);
     crate::scenario::publish_handle("history:next_step", rect.center());
-    let sense = if guess { egui::Sense::click() } else { egui::Sense::hover() };
-    let mut response = ui.interact(rect, ui.id().with("sc_next_step_ghost"), sense);
+    let ready_id = app.agent_chat.predict.shown.as_ref().filter(|_| guess && ready_to_land(app)).map(|g| g.id);
+    // egui captures pointer-down to the widget ID. A press on the words (hover only),
+    // or on a different suggestion, cannot finish as a click on this ready ghost.
+    let sense = if ready_id.is_some() { egui::Sense::click() } else { egui::Sense::hover() };
+    let mut response = ui.interact(rect, ui.id().with(("sc_next_step_ghost", ready_id)), sense);
     if let Some(tip) = tip {
         response = response.backing_on_hover_text(tip);
     }
     if guess {
-        if response.hovered() {
+        if ready_id.is_some() && response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
-        let clicked = response.clicked_by(egui::PointerButton::Primary) && ready_to_land(app);
+        let clicked = ready_id.filter(|_| response.clicked_by(egui::PointerButton::Primary));
         let p = &mut app.agent_chat.predict;
         p.drawn = true;
-        if clicked {
-            p.clicked = p.shown.as_ref().map(|g| g.id);
+        if clicked.is_some() {
+            p.clicked = clicked;
         }
     }
     rect.right()

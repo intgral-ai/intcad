@@ -652,6 +652,70 @@ fn g21_an_answer_that_cannot_be_read_is_withdrawn() {
 
 // ---- C. Ghost and Tab ------------------------------------------------------------------------------
 
+#[test]
+fn review_round_one_a_chip_click_must_start_on_a_ready_ghost() {
+    let (mut app, _chat, guesser, ctx) = plate();
+    line(&mut app, &ctx, &guesser, 0.0, HOLES);
+    let was = before(&mut app);
+    assert_eq!(page(&app)["ready"], false);
+    let words = crate::scenario::rect_of("history:next_step").unwrap();
+    let at = words.center();
+    frame(&mut app, &ctx, 1.8, vec![egui::Event::PointerMoved(at), press(at, true)]);
+    answer_commands(&mut app, &ctx, &guesser, 1.9, &holes());
+    assert_eq!(page(&app)["ready"], true);
+    let ghost_chip = crate::scenario::rect_of("history:next_step").unwrap();
+    assert!(ghost_chip.contains(at), "release is inside both chip positions");
+    frame(&mut app, &ctx, 2.0, vec![press(at, false)]);
+    frame(&mut app, &ctx, 2.01, vec![]);
+    assert_eq!(app.session.document_stamp(), was.stamp, "an early pointer-down is not consent");
+
+    frame(&mut app, &ctx, 2.3, vec![press(at, true)]);
+    frame(&mut app, &ctx, 2.4, vec![press(at, false)]);
+    frame(&mut app, &ctx, 2.5, vec![]);
+    assert_eq!(outcome(&app, 0), "accepted", "a fresh click on the visible ghost still lands it");
+}
+
+#[test]
+fn review_round_one_short_web_turn_between_frames_retires_each_prediction_stage() {
+    for stage in [Stage::Asking, Stage::Drawn] {
+        let (mut app, chat, guesser, ctx) = at_stage(stage);
+        let was = before(&mut app);
+        let prediction_prompts = guesser.prompts().len();
+        app.preferences.agent_chat_preview = false;
+        app.agent_chat.open = true;
+        app.agent_chat.web_host = true;
+        crate::agent_chat::web::act(&mut app, &ctx, r#"{"type":"send","text":"What is the plate for?"}"#).unwrap();
+        assert_eq!(chat.prompts().len(), 1);
+        chat.answer("A mounting plate.");
+        crate::agent_chat::web::advance(&mut app, &ctx);
+        assert_eq!(app.agent_chat.state(), State::Ready, "{stage:?}: the turn already ended");
+        if stage == Stage::Asking {
+            guesser.answer(HOLES);
+        }
+        frame(&mut app, &ctx, 3.0, vec![]);
+        assert_eq!(guesser.prompts().len(), prediction_prompts, "{stage:?}: no further prediction question");
+        assert!(app.agent_chat.predict.shown().is_none(), "{stage:?}: no stale suggestion");
+        assert_eq!(app.session.document_stamp(), was.stamp);
+    }
+}
+
+#[test]
+fn review_round_one_enqueue_retires_prediction_even_if_the_message_is_removed_before_a_frame() {
+    let (mut app, chat, _guesser, ctx) = at_stage(Stage::Drawn);
+    let was = before(&mut app);
+    // Put the recording backend in Busy without polling a predictor frame.
+    app.agent_chat.state = Some(State::Busy);
+    app.agent_chat.open = true;
+    app.agent_chat.web_host = true;
+    crate::agent_chat::web::act(&mut app, &ctx, r#"{"type":"send","text":"A follow-up"}"#).unwrap();
+    assert_eq!(app.agent_chat.pending.len(), 1);
+    assert!(chat.prompts().is_empty(), "the message was queued, not sent");
+    crate::agent_chat::remove_pending(&mut app, 0);
+    app.agent_chat.state = Some(State::Ready);
+    frame(&mut app, &ctx, 3.0, vec![]);
+    withdrawn(&mut app, &chat, &was, "dismissed");
+}
+
 /// Querying a new overlay does not make it the scene the viewport has already applied.
 #[test]
 fn review_fix_tab_refuses_a_ghost_when_the_applied_scene_is_for_another_ghost() {

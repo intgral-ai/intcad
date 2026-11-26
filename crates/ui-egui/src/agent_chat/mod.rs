@@ -2215,6 +2215,7 @@ pub(crate) fn send_with(app: &mut SolveApp, ctx: &egui::Context, text: String, o
         }
         let files = if asked { Vec::new() } else { std::mem::take(&mut chat.attachments) };
         chat.pending.push(Pending { text, image, context, files });
+        chat.predict.chat_took_view();
         return Ok(());
     }
     let files = if asked { Vec::new() } else { std::mem::take(&mut app.agent_chat.attachments) };
@@ -2257,6 +2258,7 @@ fn submit(app: &mut SolveApp, ctx: &egui::Context, text: String, image: bool, co
         State::Ready => start_turn_with(app, text, image, at, files, interrupted.then_some(INTERRUPT_NOTE)),
         s => {
             app.agent_chat.queued = Some((text, image, at, files));
+            app.agent_chat.predict.chat_took_view();
             #[cfg(not(target_arch = "wasm32"))]
             if !s.running() {
                 connect(app, ctx);
@@ -2442,6 +2444,7 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     // The undo step is named after the message, or its first file when it has no words.
     let first_line = text.lines().find(|l| !l.trim().is_empty()).or_else(|| files.first().map(|f| f.name.as_str())).unwrap_or("");
     let label: String = first_line.chars().take(48).collect();
+    app.agent_chat.predict.chat_took_view();
     app.agent_chat.turn_warning = None;
     app.agent_chat.next_turn = app.agent_chat.next_turn.wrapping_add(1);
     let turn_id = app.agent_chat.next_turn;
