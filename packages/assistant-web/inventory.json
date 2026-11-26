@@ -34,6 +34,7 @@
       "packages/playground-ui/src/ds/components/Arrival/use-watched.ts",
       "packages/playground-ui/src/ds/components/AttachmentCard/attachment-card.tsx",
       "packages/playground-ui/src/ds/components/Badge/Badge.tsx",
+      "packages/playground-ui/src/ds/components/Breadcrumb/Breadcrumb.tsx",
       "packages/playground-ui/src/ds/components/Button/Button.tsx",
       "packages/playground-ui/src/ds/components/ButtonsGroup/buttons-group.tsx",
       "packages/playground-ui/src/ds/components/ChatShell/chat-shell-context.ts",
@@ -96,6 +97,7 @@
       "packages/playground-ui/src/ds/components/ScrollArea/scroll-area.tsx",
       "packages/playground-ui/src/ds/components/Select/select.tsx",
       "packages/playground-ui/src/ds/components/Shimmer/shimmer.tsx",
+      "packages/playground-ui/src/ds/components/Skeleton/skeleton.tsx",
       "packages/playground-ui/src/ds/components/StatusIndicators/status-dot-styles.ts",
       "packages/playground-ui/src/ds/components/StatusIndicators/status.tsx",
       "packages/playground-ui/src/ds/components/Tabs/tabs-context.ts",
@@ -160,6 +162,7 @@
       "packages/playground-ui/src/ds/icons/PerplexityIcon.tsx",
       "packages/playground-ui/src/ds/icons/QwenIcon.tsx",
       "packages/playground-ui/src/ds/icons/SakanaIcon.tsx",
+      "packages/playground-ui/src/ds/icons/SlashIcon.tsx",
       "packages/playground-ui/src/ds/icons/StepFunIcon.tsx",
       "packages/playground-ui/src/ds/icons/TencentIcon.tsx",
       "packages/playground-ui/src/ds/icons/TypesafeIcon.tsx",
@@ -181,6 +184,7 @@
       "packages/playground-ui/src/ds/primitives/popup-anchor.tsx",
       "packages/playground-ui/src/ds/primitives/portal-container.tsx",
       "packages/playground-ui/src/ds/primitives/raised-surface.ts",
+      "packages/playground-ui/src/ds/primitives/shimmer.ts",
       "packages/playground-ui/src/ds/primitives/text.ts",
       "packages/playground-ui/src/ds/primitives/textarea-control.tsx",
       "packages/playground-ui/src/ds/primitives/transitions.ts",
@@ -224,7 +228,12 @@
   "ownSource": [
     "src/App.tsx",
     "src/host.ts",
-    "src/main.tsx"
+    "src/main.tsx",
+    "src/tickets/TicketList.tsx",
+    "src/tickets/TicketPage.tsx",
+    "src/tickets/Tickets.tsx",
+    "src/tickets/shared.ts",
+    "src/tickets/status-icons.tsx"
   ],
   "bundler": {
     "vite": "8.3.5",
@@ -821,7 +830,7 @@
       "name": "lucide-react",
       "version": "1.67.0",
       "licence": "ISC",
-      "modulesInScript": 55,
+      "modulesInScript": 61,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -1496,16 +1505,16 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1769831,
-      "sha256": "8d23f5fef739485676d148c9af6306fa17d8dccc577aa699c10ed1491919ca21"
+      "bytes": 1790979,
+      "sha256": "9d6334b577b575990a12a43edafe825b47b831785f5c664ff63152dc7c2cca88"
     },
     "index.html": {
       "bytes": 822,
       "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
     },
     "style.css": {
-      "bytes": 353858,
-      "sha256": "139c97cb47e633862246a5180c4995673eab6ed034cc265a747b3470cd59b139"
+      "bytes": 355529,
+      "sha256": "3f94ab6c6a8de28181b91bc92fa108e1a95891f4c745fa07e622f453fa70096e"
     }
   }
 }

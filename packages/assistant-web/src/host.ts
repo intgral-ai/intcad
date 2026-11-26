@@ -326,10 +326,97 @@ export type Action =
   | { type: 'conn_custom_remove'; id: string }
   | { type: 'conn_retry' };
 
+// ---- The project's part tickets (a second view of this page) ----
+// The host pushes this state instead of the Assistant's, marked `view: 'tickets'`; the shapes
+// are the store's own (crates/engine/src/project/tickets.rs). What a ticket says was written by
+// an agent or a person: the page shows it as plain text.
+
+export type TicketStateName = 'draft' | 'confirmed' | 'in_progress' | 'waiting' | 'done' | 'blocked';
+
+export interface Ticket {
+  id: string;
+  parent: string | null;
+  title: string;
+  text: string;
+  requirements: string[];
+  part: { kind: string; id: string } | null;
+  state: TicketStateName;
+  /** The check bound to it: the run's own outcome word and counts, never a verdict of ours. */
+  check: {
+    state: 'asked' | 'running' | 'ran' | 'refused';
+    run?: string;
+    outcome?: string;
+    counts?: Record<string, number>;
+    freshness?: string;
+    reason?: string;
+    at: string;
+  } | null;
+  blocked: string | null;
+  revision: number;
+  created: string;
+  updated: string;
+}
+
+/** One line of a ticket's record; `at` is RFC 3339 in UTC. */
+export interface TicketEvent {
+  at: string;
+  actor: 'person' | 'agent' | 'app';
+  ticket: string;
+  action: string;
+  from?: TicketStateName;
+  to?: TicketStateName;
+  note?: string;
+  run?: string;
+  revision: number;
+}
+
+/** The names of the tickets view's words: the list `tickets_state` sends in web.rs. */
+// prettier-ignore
+export type TicketStringKey =
+  | 'title' | 'newTicket' | 'empty' | 'noProject' | 'previous' | 'next' | 'more'
+  | 'stateDraft' | 'stateConfirmed' | 'stateInProgress' | 'stateWaiting' | 'stateDone' | 'stateBlocked'
+  | 'properties' | 'part' | 'noPart' | 'check' | 'noCheck' | 'checkAsked' | 'checkRunning' | 'checkRefused'
+  | 'checkTitle' | 'checkDone' | 'checkStale' | 'failed' | 'advisory' | 'checked' | 'notCovered'
+  | 'requirements' | 'activity' | 'actorPerson' | 'actorAgent' | 'actorApp'
+  | 'didDrafted' | 'didCreated' | 'didEdited' | 'didConfirmed' | 'didStarted' | 'didCheckAsked' | 'didCheckStarted'
+  | 'didCheckRan' | 'didCheckRefused' | 'didBlocked' | 'didUnblocked' | 'didDone'
+  | 'confirm' | 'start' | 'done' | 'edit' | 'delete' | 'save' | 'cancel' | 'create'
+  | 'editTitle' | 'fieldTitle' | 'fieldText' | 'fieldLines' | 'deleteAsk';
+
+export interface TicketsState {
+  view: 'tickets';
+  dark: boolean;
+  /** The app's language, for dates and times in the person's own form. */
+  language: string;
+  strings: Record<TicketStringKey, string>;
+  /** The open design is in a project folder: without one there is nowhere to keep tickets. */
+  project: boolean;
+  tickets: Ticket[];
+  /** The ticket whose page is open, and its record, oldest first. */
+  selected: string | null;
+  record: TicketEvent[];
+  /** Each bound run's freshness now, by run id. */
+  freshness: Record<string, string>;
+  /** Why a step was refused, in the store's words. */
+  error: string | null;
+}
+
+/** What the host pushes: the Assistant's state, or the tickets view's. */
+export type PageState = AssistantState | TicketsState;
+
+/** The tickets view's requests; the host checks each against the ticket's state and `revision`. */
+export type TicketAction =
+  | { type: 'ticket_open'; id: string }
+  | { type: 'ticket_close' }
+  | { type: 'ticket_confirm' | 'ticket_start' | 'ticket_done'; id: string; revision: number }
+  | { type: 'ticket_create'; title: string; text: string; requirements: string[] }
+  | { type: 'ticket_edit'; id: string; revision: number; title: string; text: string; requirements: string[] }
+  | { type: 'ticket_delete'; id: string; revision: number };
+
 declare global {
   interface Window {
     ipc?: { postMessage(message: string): void };
-    __assistantHost?: { state(next: AssistantState): void };
+    __assistantHost?: { state(next: PageState): void };
   }
 }
 
@@ -338,13 +425,13 @@ export function pictureUrl(key: string) {
   return `picture/${encodeURIComponent(key)}`;
 }
 
-export function post(action: Action) {
+export function post(action: Action | TicketAction) {
   window.ipc?.postMessage(JSON.stringify(action));
 }
 
-/** The Assistant's state as the app last pushed it; `null` until the first push. */
-export function useAssistant(): AssistantState | null {
-  const [state, setState] = useState<AssistantState | null>(null);
+/** The state as the app last pushed it (the Assistant's or the tickets view's); `null` until the first push. */
+export function useAssistant(): PageState | null {
+  const [state, setState] = useState<PageState | null>(null);
   useEffect(() => {
     window.__assistantHost = { state: setState };
     post({ type: 'ready' });
