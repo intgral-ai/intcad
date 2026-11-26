@@ -1232,6 +1232,14 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
         return;
       }
     }
+    // A next-step suggestion is over the box: in an empty draft Tab takes it and Esc turns it down.
+    // With words in the draft, while the agent works or waits for an answer, the keys are the box's own.
+    const suggested = state.suggestion?.guess === true && text.trim() === '' && !busy && state.waiting === 0 && !composing;
+    if (suggested && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && (event.key === 'Tab' || event.key === 'Escape')) {
+      event.preventDefault();
+      if (!event.repeat) post({ type: 'suggestion', accept: event.key === 'Tab' });
+      return;
+    }
     // A held Enter repeats keydowns; a repeat must never send the draft it just inserted. A
     // composing key is left entirely to the input method.
     if (event.key === 'Enter' && event.repeat && !composing) {
@@ -2700,7 +2708,7 @@ function oneLine(box: HTMLTextAreaElement | null, text: string) {
  * that failed, a turn done (what it changed, or its reply's first line), or which agent this is.
  */
 interface Line {
-  kind: 'empty' | 'done' | 'note' | 'working' | 'tool' | 'check' | 'waiting' | 'error';
+  kind: 'empty' | 'done' | 'note' | 'working' | 'tool' | 'check' | 'waiting' | 'error' | 'suggestion';
   icon: LucideIcon;
   /** What, in plain words: the action, the state. */
   label?: string;
@@ -2768,6 +2776,9 @@ function previewOf(state: AssistantState): Line {
   }
   if (now?.kind === 'notice' && now.error) return { kind: 'error', icon: FailedGlyph, detail: plain(now.text), live: false, problem: now.problem ?? undefined };
   if (now?.kind === 'check' && now.status === 'error') return { kind: 'error', icon: FailedGlyph, detail: strings.dfmError, live: false };
+  // A next step for the design: at rest it is what the line is for. It shimmers until its ghost is drawn.
+  const next = state.suggestion;
+  if (next) return { kind: 'suggestion', icon: Sparkles, label: next.label ?? undefined, detail: next.text, live: next.guess && !next.ready };
   if (now?.kind === 'notice') return { kind: 'note', icon: NoticeGlyph, detail: plain(now.text), live: false };
   if (items.some(item => item.kind === 'user')) {
     // What the turn changed (the app counts it only when there is something), or its reply's first line.

@@ -12,7 +12,7 @@ Desktop app only.
 
 ## Turning it on and off
 
-Everything about it is on one page: **Preferences → AI**.
+Everything about it is on one page: **Preferences → Assistant**.
 
 - **Show AI features** (on by default) is the master switch. Turned off, SolidCraft shows nothing
   of it: no AI button, no shortcut, no menu entry, no panel, and nothing is looked for or
@@ -78,7 +78,7 @@ and may ask for is described in `crates/ui-egui/src/agent_chat/web.rs`.
 - What is selected in the design shows over the message box, by name and grouped by kind, so you
   can see what the agent finds when it reads the selection through the app's tools. It is also
   written into each message, unless **Attach selection** is off (the cross beside it, the **+**
-  menu, or Preferences → AI → Panel).
+  menu, or Preferences → Assistant → Panel).
 - In the floating layout the panel is a rounded surface inside the panel's own border and shadow,
   rounder than the app's other panels, and the strip at its inner edge is still what you drag to
   make it wider or narrower. Its text follows the app's zoom.
@@ -131,7 +131,7 @@ all of it.
 - **Docking:** on the left, Assistant is the first panel, before vertical history and the browser.
   The drag highlight shows the actual destination bounds. Drag the panel's header (the dotted grip and the title) to the other half of the
   window and let go. The side it would land on lights up while you drag. You can also pick
-  **Left** or **Right** under Preferences → AI → Panel. SolidCraft remembers the side.
+  **Left** or **Right** under Preferences → Assistant → Panel. SolidCraft remembers the side.
 - **Width:** drag the panel's inner edge. SolidCraft remembers it.
 - **No own window:** the Assistant is always a panel of the app's window. Its old pop-out button
   and **Own window** preference are gone; a saved choice opens in the side panel.
@@ -270,7 +270,7 @@ seen nothing yet, so its first message carries no note.
 
 ## Agents
 
-Preferences → AI → **Agents** lists every agent the chat can use, each with its kind (a program or
+Preferences → Assistant → **Agents** lists every agent the chat can use, each with its kind (a program or
 an endpoint), version or model, whether it looks signed in, **Test**, **Default** (the one a new
 conversation starts with), its own permission setting, and **Edit** and **Remove** for the ones you added.
 
@@ -372,7 +372,7 @@ may need different filesystem permissions.
 Install **Grok Build** and run `grok login` in a terminal to sign in with your Grok account.
 In SolidCraft, open **AI → Refresh**, select
 **XAI Grok**, then **Connect**. You can make it the default under
-**Preferences → AI → Agents**.
+**Preferences → Assistant → Agents**.
 
 SolidCraft reuses Grok Build's sign-in in `~/.grok/auth.json`; it checks only whether that file
 exists and does not read or copy its tokens. If sign-in is needed, the panel offers Grok's own
@@ -406,7 +406,7 @@ Grok Build also supports `XAI_API_KEY` for users who choose API authentication.
 - The **Model** picker lists the endpoint's models, without a key where the endpoint allows that
   (OpenRouter does), once you leave the address and key fields; opening it asks again after a
   failure. You can also type a model.
-- An endpoint's card under Preferences → AI → **Agents** has the same **Model** picker. While the
+- An endpoint's card under Preferences → Assistant → **Agents** has the same **Model** picker. While the
   agent isn't running, opening the picker lists the models (just viewing the page asks nothing),
   and a pick becomes the model for its next connection. While it runs, a pick changes the chat's
   next message's model; a message already running keeps its chosen model.
@@ -663,7 +663,7 @@ The agent reaches the open design only through SolidCraft's own tools (the
   while you do; click it to open the viewer (the message's pictures one at a time, with **‹** and
   **›** or the arrow keys, closed with Esc or a click outside). A long message scrolls inside its
   box, so **Send** and the buttons beside it stay in view.
-- **Attach selection:** on by default (Preferences → AI → Panel keeps your choice): what is selected in the model goes with your message, so the
+- **Attach selection:** on by default (Preferences → Assistant → Panel keeps your choice): what is selected in the model goes with your message, so the
   agent knows what "this edge" or "that feature" is. The box shows how many things are selected, counted as you clicked them (the two halves of a rim you clicked once are one).
   Faces and edges go with the names and numbers the agent's tools take and with their size and
   place (so they can be found again after an edit), features with their name and kind, bodies with
@@ -682,7 +682,7 @@ The agent reaches the open design only through SolidCraft's own tools (the
 
 ## Preview, then accept
 
-Preferences → AI → **Preview the agent's changes before they apply** (off by default) lets you
+Preferences → Assistant → **Preview the agent's changes before they apply** (off by default) lets you
 judge a message's changes before they reach your design.
 
 - **The agent works on a copy.** While it answers, everything it changes goes to a copy of the
@@ -728,7 +728,7 @@ back as a **Proposed changes** card to accept or reject.
 
 ## Custom instructions
 
-Preferences → AI → **Custom instructions** holds your own text for the agent: how you like to
+Preferences → Assistant → **Custom instructions** holds your own text for the agent: how you like to
 work, rules to keep to ("don't start a new design from the chat", "sketch on XZ with explicit
 plane vectors"). Every chat starts with it, after SolidCraft's own note about where the agent
 is, by the same route that note takes: the system prompt of an endpoint's requests, or the
@@ -741,7 +741,7 @@ and one text applies to every design.
 
 ## Permissions
 
-Preferences → AI → **Permissions** decides what the agent may do without asking, for every agent;
+Preferences → Assistant → **Permissions** decides what the agent may do without asking, for every agent;
 each agent can have its own setting in its row.
 
 - **Ask every time:** every change to the design and every file action waits for **Allow**,
@@ -791,6 +791,62 @@ saves, opens or inserts. A sweep's or pattern's `path` (curve ids) and an occurr
 When the panel's agent is stopped, another agent is picked, or SolidCraft quits, the agent and
 every program it started (the CLI it wraps, its MCP server) are stopped.
 
+## Next-step suggestions
+
+Off by default. Turn on **Suggest the next step after a pause** under Preferences → Assistant →
+Panel, or in the right rail's **Autocomplete** panel (search finds it as predict, autocomplete or
+suggest). Each suggestion asks your own agent twice, with the design's recent History and geometry,
+the selection and your messages in this chat, and uses your agent's plan or credits. For now only
+**Claude Code** and **Codex** make suggestions. Signed in with a plan, at most 20 suggestions an
+hour are asked for (**Suggestions an hour on a plan** changes it); with an API key there is no limit.
+
+When the agent is connected and idle and you stop for a moment after an edit (1.5 seconds by
+default; **Pause before a suggestion** changes it), the agent guesses one next modelling step. The
+line over the Assistant's message box shows it, with its reason (where the Assistant is not at the
+bottom centre of the window, a chip at the end of History does). The agent is then asked for the
+commands of that step; the app runs them on a copy of the design and draws the result over it as a
+**ghost**: material added in green, removed in red. Numbers the design, its parameters, the
+selection, your messages or the project's notes do not give are said to be **guessed**.
+
+- **Tab** puts exactly the drawn ghost into the design as one undo step, and the next suggestion is
+  asked for at once. Before the ghost is drawn Tab does nothing. Nothing is sent to the chat and
+  there is no card, whether or not **Preview the agent's changes before they apply** is on: the
+  ghost was the preview.
+- **Esc** turns it down: it goes, and that step is not offered again.
+- Another key, typing or an edit takes it away too. Orbiting, panning, zooming and clicking in the
+  model do not, and a first answer that arrives late is still shown if the design and the selection
+  have not changed since it was asked.
+- Tab and Esc are the suggestion's in the view, and in the message box while nothing is typed
+  there. In a text field, a dialog, the Ask Here box, the Render workspace, with words in the message
+  box, or while the agent works or waits for an answer, they are that place's own.
+
+The app takes a suggestion back by itself when its commands are not all on the list of modelling
+commands it may run, make a hole of another size than its line says, or, in a design that is not in
+millimetres, give a size without its unit (nothing runs then, not even on the copy), fail, change
+nothing, leave a body open, repeat the last History step or one you turned down, take longer than 3
+seconds on the copy, or when the design has changed meanwhile.
+
+Nothing is asked again until the design is edited (selecting something else is not an edit), and
+nothing is asked while the agent works, a preview waits, a sketch or tool is active, or the chat
+runs a skill. The agent is told to answer in the app's language, in at most twelve words each for
+the step and the reason, and to name things as you see them (no internal ids such as `F1:-y`).
+
+Each suggestion is asked for in a session of its own, opened ahead and closed after it, that has none
+of Intcad's tools. What the agent
+asks to run there is declined, and on Claude Code your own MCP servers are not loaded in it and every
+MCP tool is off, so a suggestion cannot change the design before Tab. Codex has no such switch that
+the app knows of: an MCP server you set up in Codex yourself, and allowed there without asking,
+could still be called. Signed in with an API key, a
+Claude Code session for a question has no other tools and none of the user's own setup either;
+with a plan it is the agent's own session, less those.
+
+The Autocomplete panel lists the latest suggestions and what became of each. Their time, tokens,
+cost (as the agent reports them), whether they were billed and their outcome are in `ui.agent_chat`
+under `nextStep`, and in the log; they stay on this computer. The words are translated into Arabic,
+Chinese, German, Hebrew, Japanese, Korean and Vietnamese; other languages show them in English.
+Design notes: [docs/design/next-step-prediction.md](design/next-step-prediction.md); test cases:
+[docs/design/autocomplete-tests.md](design/autocomplete-tests.md).
+
 ## Privacy
 
 Nothing goes anywhere except to the agent you run, or the endpoint you added. SolidCraft starts
@@ -811,9 +867,14 @@ no model behind it:
 cargo build --release -p solidcraft-ui-egui --example acp_test_agent
 ```
 
-Then add it under Preferences → AI → **Add agent… → Custom command** with the path of
+Then add it under Preferences → Assistant → **Add agent… → Custom command** with the path of
 `target/release/examples/acp_test_agent`. Put "save" in your message to see an Allow / Deny card,
 or "ask" to see the agent ask its own permission.
+
+For next-step suggestions, `acp_next_step_agent` (built the same way) guesses from the History it
+is sent, rounding then shelling then drilling, with the design's usual sizes, and does the step
+when Tab sends it. Its token counts and costs are estimates (characters ÷ 4 at assumed prices), not
+measurements.
 
 ## Benchmarking the Assistant
 

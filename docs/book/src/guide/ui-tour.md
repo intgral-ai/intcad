@@ -202,8 +202,9 @@ view.
   **Run DFM check** without the Assistant: the report lists its run, its counts and every
   finding with the measured and required value. Click a finding to locate it in the view; a
   label picked in the view selects the same row. Drag the report card onto the Assistant to
-  ask about it, and the message reads that run even when a newer check has run since. The
-  Simulation and Autocomplete panels have nothing to list yet and say so.
+  ask about it, and the message reads that run even when a newer check has run since.
+  **Autocomplete** switches next-step suggestions on and off and lists the latest ones and what
+  became of each. The Simulation panel has nothing to list yet and says so.
 - **Command search (S).** Click the ribbon search field or press S to open the search popup
   below it. Results group commands by their ribbon path and show matching features and user
   parameters from this design. With an empty query, recent commands appear first, followed by

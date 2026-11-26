@@ -371,6 +371,11 @@ fn panel(app: &mut SolveApp, ui: &mut egui::Ui, item: Item) {
         crate::dfm_review::panel(app, ui, body);
     } else if item == Item::Files {
         crate::file_tree::panel(app, ui, body);
+    } else if item == Item::Autocomplete {
+        let rest = crate::agent_chat::predict::panel::show(app, ui, body);
+        if let Some(rest) = rest {
+            empty(ui, rest, item);
+        }
     } else {
         empty(ui, body, item);
     }

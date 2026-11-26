@@ -760,6 +760,9 @@ pub(crate) struct Conn {
     catching_up: bool,
     /// A plan was signed in or out here since [`settle`] last looked.
     plans_changed: bool,
+    /// The last `setup` handed to this conversation's agent: next-step suggestions hand the same
+    /// to their own process of the agent. It holds keys, as the agent's environment does.
+    pub(super) last_setup: Option<Setup>,
 }
 
 impl Conn {
@@ -815,6 +818,9 @@ fn callback_words(app: &SolveApp) -> String {
 }
 
 fn send(app: &mut SolveApp, request: Request) {
+    if let Request::Setup(setup) = &request {
+        app.agent_chat.conn.last_setup = Some(setup.clone());
+    }
     if let Some(backend) = app.agent_chat.backend.as_mut() {
         backend.connections(request);
     }
@@ -1512,5 +1518,16 @@ mod tests {
         assert_eq!(key_secret("openai"), "mastra/key/openai");
         assert_eq!(custom_secret("my-llm"), "mastra/custom/my-llm");
         assert_eq!(KEY_IDS, ["anthropic", "openai", "google", "openrouter", "deepseek"]);
+    }
+
+    /// B10 (next-step suggestions): the setup handed to the chat's agent is kept, so the guessing
+    /// process of the same agent can be handed the same; another request does not replace it.
+    #[test]
+    fn the_setup_handed_to_the_agent_is_kept_for_the_guessing_process() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        let setup = Setup { keys: vec![("anthropic".into(), "k-chat".into())], ..Default::default() };
+        send(&mut app, Request::Setup(setup.clone()));
+        send(&mut app, Request::List);
+        assert_eq!(app.agent_chat.conn.last_setup, Some(setup));
     }
 }

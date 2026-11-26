@@ -47,6 +47,36 @@ pub enum PromptPart {
     },
 }
 
+/// What a session has used, as the agent reports it: ACP's `usage_update` (the context in use and
+/// the session's cost so far) and a prompt reply's `usage` (that turn's tokens). Each part is
+/// `None` until the agent says it; nothing is estimated here.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Usage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    /// Tokens in the session's context when the agent last said.
+    pub context_tokens: Option<u64>,
+    /// The session's cost so far: the amount and its currency (`USD`).
+    pub cost: Option<(f64, String)>,
+}
+
+impl Usage {
+    /// Nothing reported.
+    pub fn is_empty(&self) -> bool {
+        *self == Usage::default()
+    }
+
+    /// Take what `newer` says, keeping what it leaves out.
+    pub fn merge(&mut self, newer: Usage) {
+        self.input_tokens = newer.input_tokens.or(self.input_tokens);
+        self.output_tokens = newer.output_tokens.or(self.output_tokens);
+        self.total_tokens = newer.total_tokens.or(self.total_tokens);
+        self.context_tokens = newer.context_tokens.or(self.context_tokens);
+        self.cost = newer.cost.or(self.cost.take());
+    }
+}
+
 /// What a backend reports to the panel.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -232,6 +262,19 @@ pub trait ChatBackend {
     /// Stop using the open session without ending the agent: what it still sends for that
     /// session is no longer taken in. [`ChatBackend::new_session`] opens the next one.
     fn forget_session(&mut self) {}
+    /// The agent says it is signed in with an API key (not a plan, and not unknown).
+    fn key_sign_in(&self) -> bool {
+        false
+    }
+    /// The open session may be used on what the agent is signed in with now (one made for an API key
+    /// may not be used on a plan).
+    fn session_fits_sign_in(&self) -> bool {
+        true
+    }
+    /// What the session used since the last call, when the agent reports it (`None`: nothing new).
+    fn take_usage(&mut self) -> Option<Usage> {
+        None
+    }
     /// Its process, for status and tests.
     fn pid(&self) -> Option<u32> {
         None

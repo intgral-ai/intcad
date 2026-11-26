@@ -19,6 +19,8 @@ use super::process::{AgentProcess, FromAgent, ProcessIoError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pending {
+    /// `session/close` of a guessing session.
+    CloseSession,
     Initialize,
     SessionNew,
     Prompt,
@@ -97,6 +99,11 @@ pub const DATA_DIR_ENV: &str = "MASTRA_APP_DATA_DIR";
 /// Mastra's own switch for its usage reporting. The built-in agent is always started with it
 /// set, whatever program it is; the agent's entry sets it for itself as well.
 pub const TELEMETRY_OFF_ENV: &str = "MASTRA_TELEMETRY_DISABLED";
+
+/// Lean guessing sessions on a plan sign-in. Off until the agent's provider says it may be.
+const LEAN_ON_PLANS: bool = false;
+/// The kind of sign-in that is an API key, as the Claude adapter names it.
+const KEY_SIGN_IN: &str = "api_key";
 
 struct CadTurn {
     prompt: u64,
@@ -199,6 +206,20 @@ pub struct AcpBackend {
     /// The project folder the next session may work in ([`ChatBackend::set_project`]). Only the
     /// built-in agent is handed it.
     project: Option<std::path::PathBuf>,
+    /// What the open session used, as the agent reported it, not yet taken.
+    usage: super::backend::Usage,
+    /// The note of lean sessions ([`AcpBackend::lean_sessions`]); `None`: sessions as the chat's.
+    lean: Option<String>,
+    /// The `session/new` out was a lean one: its id.
+    lean_request: Option<u64>,
+    /// The last session asked for is a lean one.
+    lean_session: bool,
+    /// The agent refused a lean session: this process asks for none again.
+    lean_refused: bool,
+    /// Lean sessions on a plan sign-in too ([`LEAN_ON_PLANS`]).
+    lean_on_plans: bool,
+    /// The kind of sign-in the agent last reported (`_auth/status_update`).
+    sign_in: Option<String>,
     cad: Option<PackagedCad>,
 }
 
@@ -306,6 +327,13 @@ impl AcpBackend {
             initialized: false,
             setup: None,
             project: None,
+            usage: super::backend::Usage::default(),
+            lean: None,
+            lean_request: None,
+            lean_session: false,
+            lean_refused: false,
+            lean_on_plans: LEAN_ON_PLANS,
+            sign_in: None,
             cad: None,
         };
         b.request(Pending::Initialize, "initialize", acp::initialize_params(env!("CARGO_PKG_VERSION")));
@@ -327,18 +355,43 @@ impl AcpBackend {
         }
     }
 
+    /// As if [`LEAN_ON_PLANS`] were on.
+    #[cfg(test)]
+    pub(crate) fn lean_on_plans(&mut self) {
+        self.lean_on_plans = true;
+    }
+
+    /// Open every session of this process lean where the agent takes it
+    /// ([`acp::lean_session_params`]), with `note` as its whole system prompt: the guessing
+    /// sessions of next-step suggestions. Once the agent refuses one, sessions open as the chat's.
+    pub fn lean_sessions(&mut self, note: &str) {
+        self.lean = Some(note.to_string());
+    }
+
     fn new_session(&mut self) {
         self.config_pending = None;
         self.pending.retain(|_, request| *request != Pending::SetConfig);
         // INT-1473: the built-in agent's file tools reach a project it is handed, and its note
         // says what they are for. Any other agent's session is as it was.
-        let project = self.project.as_deref().filter(|_| self.built_in);
-        let note = if project.is_some() { acp::project_note(&self.note) } else { self.note.clone() };
-        let mut params = acp::session_new_params(&self.cwd, self.bridge.as_ref(), &self.init, &note, project);
-        if self.cad.is_some() {
+        // A guessing session is lean on an API key only: on a plan, and until the agent says what it
+        // is signed in with, it runs as the agent opens it, less the user's MCP servers and every MCP tool.
+        let guesses = self.lean.is_some();
+        let may_be_lean = !self.lean_refused && (self.lean_on_plans || self.sign_in.as_deref() == Some(KEY_SIGN_IN));
+        let lean = self.lean.as_deref().filter(|_| may_be_lean).and_then(|note| acp::lean_session_params(&self.cwd, &self.init, note));
+        let sent_lean = lean.is_some();
+        let mut params = lean.unwrap_or_else(|| {
+            let project = self.project.as_deref().filter(|_| self.built_in);
+            let note = if project.is_some() { acp::project_note(&self.note) } else { self.note.clone() };
+            let params = acp::session_new_params(&self.cwd, self.bridge.as_ref(), &self.init, &note, project);
+            if guesses { acp::without_mcp(params) } else { params }
+        });
+        // A guessing session is never handed the design's tools.
+        if self.cad.is_some() && !guesses {
             params["_meta"]["intcad"]["cadBridge"] = json!({"version":1,"tools":solidcraft_mcp::tool_definitions()});
         }
         self.request(Pending::SessionNew, "session/new", params);
+        self.lean_request = sent_lean.then_some(self.next_id);
+        self.lean_session = sent_lean;
     }
 
     fn revoke_cad(&mut self) {
@@ -444,6 +497,18 @@ impl AcpBackend {
                 if self.cancelling.is_some_and(|(request, _)| request == id) {
                     self.cancelling = None;
                 }
+                if self.lean_request == Some(id) {
+                    self.lean_request = None;
+                    // Any refusal, a sign-in one too: the user's own setup may be what signs in.
+                    if let Err((_, message)) = &result {
+                        log::warn!(
+                            "next-step suggestions: the agent refused a lean session ({message}); its sessions open as the chat's from now on"
+                        );
+                        self.lean_refused = true;
+                        self.new_session();
+                        return;
+                    }
+                }
                 match (what, result) {
                     (Pending::Initialize, Ok(v)) => {
                         self.agent = acp::agent_info(&v);
@@ -491,12 +556,17 @@ impl AcpBackend {
                         None => out.push(Event::Error("session/new: no sessionId".into())),
                     },
                     (Pending::Prompt, Ok(v)) => {
+                        if let Some(usage) = acp::turn_usage(&v) {
+                            self.usage.merge(usage);
+                        }
                         let reason = v.get("stopReason").and_then(Value::as_str).unwrap_or("");
                         out.push(Event::TurnEnded { reason: if reason == "end_turn" { String::new() } else { reason.to_string() } });
                     }
                     // Signed in: try the session again.
                     (Pending::Authenticate, Ok(_)) => self.new_session(),
-                    (Pending::SetMode | Pending::SetModel, Ok(_)) => {}
+                    (Pending::SetMode | Pending::SetModel | Pending::CloseSession, Ok(_)) => {}
+                    // The session is not used any more either way.
+                    (Pending::CloseSession, Err((_, message))) => log::debug!("the agent did not close a session: {message}"),
                     (Pending::SetConfig, Ok(v)) => {
                         if let Some((request_id, config_id)) = self.config_pending.take()
                             && request_id == id
@@ -568,7 +638,8 @@ impl AcpBackend {
                 self.permissions.insert(self.next_key, rpc);
                 out.push(Event::Permission { key: self.next_key, title, kind, options });
             }
-            Incoming::Text { .. } | Incoming::Tool { .. } | Incoming::Plan { .. } => {}
+            Incoming::Usage { session, usage } if self.accepts_session(&session) => self.usage.merge(usage),
+            Incoming::Text { .. } | Incoming::Tool { .. } | Incoming::Plan { .. } | Incoming::Usage { .. } => {}
             // The built-in agent says why a turn failed. Its kind decides what the panel shows,
             // so the general arm's guess from the error's code and words is not made, and the
             // session stays: the user signs in again and goes on in it.
@@ -588,7 +659,12 @@ impl AcpBackend {
             }
             Incoming::Refused { id, error, .. } => self.handle(Incoming::Reply { id, result: Err(error) }, out),
             Incoming::Connections(snapshot) => out.push(Event::Connections(snapshot)),
-            Incoming::AuthStatus(s) => out.push(Event::AuthStatus(s)),
+            Incoming::AuthStatus { label, kind } => {
+                self.sign_in = kind.or(self.sign_in.take());
+                if let Some(label) = label {
+                    out.push(Event::AuthStatus(label));
+                }
+            }
             Incoming::ModeChanged(m) if !self.modern_config => out.push(Event::Modes { current: m, available: Vec::new() }),
             Incoming::ModelChanged(m) if !self.modern_config => out.push(Event::Models { current: m, available: Vec::new() }),
             Incoming::ConfigOptions { session, options } if self.session.as_deref() == Some(session.as_str()) => {
@@ -709,6 +785,11 @@ impl ChatBackend for AcpBackend {
         }
     }
 
+    fn take_usage(&mut self) -> Option<super::backend::Usage> {
+        let usage = std::mem::take(&mut self.usage);
+        (!usage.is_empty()).then_some(usage)
+    }
+
     fn cancel(&mut self) {
         self.revoke_cad();
         // Open permission questions are answered "cancelled" first, as the protocol asks.
@@ -730,7 +811,11 @@ impl ChatBackend for AcpBackend {
             self.cancel();
         }
         self.revoke_cad();
-        self.session = None;
+        // A guessing session is asked once and not gone back to: left open, each would keep the
+        // agent's processes for it (Claude Code: two, about 320 MB). The chat's stay as they were.
+        if let Some(s) = self.session.take().filter(|_| self.lean.is_some() && acp::closes_sessions(&self.init)) {
+            self.request(Pending::CloseSession, "session/close", json!({"sessionId": s}));
+        }
         self.modern_config = false;
         self.config_pending = None;
         self.pending.retain(|_, request| *request != Pending::SetConfig);
@@ -739,6 +824,14 @@ impl ChatBackend for AcpBackend {
 
     fn set_instructions(&mut self, text: &str) {
         self.note = acp::system_note(text);
+    }
+
+    fn key_sign_in(&self) -> bool {
+        self.sign_in.as_deref() == Some(KEY_SIGN_IN)
+    }
+
+    fn session_fits_sign_in(&self) -> bool {
+        !self.lean_session || self.lean_on_plans || self.key_sign_in()
     }
 
     fn set_project(&mut self, root: Option<&std::path::Path>) {
