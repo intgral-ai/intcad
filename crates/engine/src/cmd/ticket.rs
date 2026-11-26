@@ -69,7 +69,7 @@ pub static COMMANDS: &[CommandSpec] = &[
 
 fn root(s: &Session, id: &str) -> Result<PathBuf> {
     let path = s.path.as_deref().ok_or_else(|| bad(id, "the open design is not saved in a project; make or open a project first"))?;
-    Ok(Project::locate(Path::new(path)).ok_or_else(|| bad(id, "the open design is not in a project; make or open a project first"))?)
+    Project::locate(Path::new(path)).ok_or_else(|| bad(id, "the open design is not in a project; make or open a project first"))
 }
 
 fn refusal(id: &str, error: TicketError) -> crate::EngineError {

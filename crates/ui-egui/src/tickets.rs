@@ -225,10 +225,10 @@ pub fn start(app: &mut SolveApp, ctx: &egui::Context, id: &str, seen: u64) {
         crate::agent_chat::notify(app, reason, true);
     }
     let text = trf("ui.tickets_start_message", &[("id", &ticket.id), ("title", &ticket.title)]);
-    if let Err(reason) = crate::agent_chat::send_with(app, ctx, text, None) {
-        if !reason.is_empty() {
-            app.tickets.error = Some(reason);
-        }
+    if let Err(reason) = crate::agent_chat::send_with(app, ctx, text, None)
+        && !reason.is_empty()
+    {
+        app.tickets.error = Some(reason);
     }
 }
 
