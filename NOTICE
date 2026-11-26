@@ -13,7 +13,8 @@ Software dependencies are listed in Cargo.lock; their licences are in THIRD-PART
 (`cargo xtask licences`), which the programs also carry (Help > About > Licences,
 `intcad-cli licences`). The geometry kernel builds on solidcore
 (https://github.com/tangency-labs/solidcore), licensed under the Apache License 2.0 and used as a
-library. solidcore is a Rust port of the SMLib and SM_API components of NVIDIA USD BRep; its
+library. Intcad pins a fork of solidcore for one reviewed release fix, recorded in that fork's
+FORK-NOTICE.md. solidcore is a Rust port of the SMLib and SM_API components of NVIDIA USD BRep; its
 notice, and NVIDIA's copyright on the portions it is derived from, are in
 THIRD-PARTY-LICENSES.txt.
 

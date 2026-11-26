@@ -5026,7 +5026,7 @@ dependencies = [
 [[package]]
 name = "solidcore"
 version = "1.0.1"
-source = "git+https://github.com/tangency-labs/solidcore?rev=8ddce901671f1cebd9214a31d21895d725e886c8#8ddce901671f1cebd9214a31d21895d725e886c8"
+source = "git+https://github.com/intgral-ai/solidcore?rev=b8847093a112c576a5da026969be3a409e37cc39#b8847093a112c576a5da026969be3a409e37cc39"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -7731,3 +7731,7 @@ dependencies = [
  "syn 3.0.6",
  "winnow 1.0.4",
 ]
+
+[[patch.unused]]
+name = "solidcore"
+version = "1.0.1"
