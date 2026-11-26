@@ -1,0 +1,11 @@
+use super::{TicketDraftParams, TicketInspectParams, TicketListParams, TicketUpdateParams};
+use crate::schema::input_schema_for;
+use crate::schema::tests::assert_keys;
+
+#[test]
+fn schemas_and_the_key_check_agree() {
+    assert_keys(input_schema_for::<TicketListParams>(), &[]);
+    assert_keys(input_schema_for::<TicketInspectParams>(), &["id"]);
+    assert_keys(input_schema_for::<TicketDraftParams>(), &["parent", "part", "requirements", "text", "title"]);
+    assert_keys(input_schema_for::<TicketUpdateParams>(), &["action", "id", "reason"]);
+}

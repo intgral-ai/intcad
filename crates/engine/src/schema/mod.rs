@@ -97,6 +97,8 @@ pub mod snapshot;
 pub mod surface_analysis;
 pub mod surface_boundary;
 pub mod surface_match;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod ticket;
 pub mod ui_prefs;
 pub mod view_navigation;
 
