@@ -2,10 +2,14 @@
 //! the protocol's side of the conversation (initialize, the session, prompts, permission questions,
 //! sign-in). The panel sees only [`Event`]s.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use solidcraft_engine::{DocumentStamp, entitlement::BridgeScopeCheck};
 
 use super::acp::{self, Incoming};
 use super::backend::{ChatBackend, Event, PromptPart, StartContext, TestError};
@@ -31,6 +35,7 @@ const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// Variables the agent doesn't inherit: a control token set for the app's own `--control` port
 /// would otherwise reach the agent and outrank the chat endpoint's own token file.
 const ENV_REMOVE: &[&str] = &["SOLIDCRAFT_CONTROL_TOKEN"];
+const PACKAGED_ENV_REMOVE: &[&str] = &["SOLIDCRAFT_CONTROL_TOKEN", "SOLIDCRAFT_MASTRA_SDK", "NODE_OPTIONS", "NODE_PATH"];
 
 /// The variable that tells the built-in agent where to keep its sign-ins and its own data.
 pub const DATA_DIR_ENV: &str = "MASTRA_APP_DATA_DIR";
@@ -38,6 +43,73 @@ pub const DATA_DIR_ENV: &str = "MASTRA_APP_DATA_DIR";
 /// Mastra's own switch for its usage reporting. The built-in agent is always started with it
 /// set, whatever program it is; the agent's entry sets it for itself as well.
 pub const TELEMETRY_OFF_ENV: &str = "MASTRA_TELEMETRY_DISABLED";
+
+struct CadTurn {
+    prompt: u64,
+    session: String,
+    document_id: String,
+    active: Arc<AtomicBool>,
+    replies_seen: HashSet<String>,
+    check: Option<Arc<std::sync::Mutex<BridgeScopeCheck>>>,
+    /// A dispatched call may have changed the design or left its outcome unknown.
+    effect: bool,
+}
+
+impl CadTurn {
+    /// The callback names the session, prompt and document this desktop turn actually owns, and
+    /// that turn is still live. A callback from an older prompt never borrows a later one.
+    fn owns(&self, stamp: &DocumentStamp, params: &Value) -> bool {
+        self.active.load(Ordering::Acquire)
+            && stamp.document_id == self.document_id
+            && params["sessionId"].as_str() == Some(self.session.as_str())
+            && params["turn"].as_str() == Some(self.prompt.to_string().as_str())
+    }
+}
+
+struct CadReply {
+    turn: u64,
+    rpc: Value,
+    result: Receiver<(Result<Value, String>, bool)>,
+}
+
+struct PackagedCad {
+    tools: Sender<crate::ControlRequest>,
+    wake: Arc<dyn Fn() + Send + Sync>,
+    document: Option<DocumentStamp>,
+    next_active: Option<Arc<AtomicBool>>,
+    next_check: Option<BridgeScopeCheck>,
+    turn: Option<CadTurn>,
+    reply: Option<CadReply>,
+    /// Calls whose turn was retired before the worker answered: answered at once so the Agent
+    /// can use its one in-flight slot in the next turn.
+    stale: Vec<Value>,
+    /// The last turn had (or may have had) a design effect. Read before the next prompt clears it.
+    last_effect: bool,
+}
+
+impl PackagedCad {
+    fn retire(&mut self) {
+        if let Some(turn) = self.turn.take() {
+            turn.active.store(false, Ordering::Release);
+            self.last_effect |= turn.effect;
+        }
+        if let Some(reply) = self.reply.take() {
+            // The worker may already have applied the change; never replay this turn by itself.
+            self.last_effect = true;
+            if self.stale.len() < 64 {
+                self.stale.push(reply.rpc);
+            }
+        }
+        self.next_active = None;
+        self.next_check = None;
+    }
+}
+
+impl Drop for PackagedCad {
+    fn drop(&mut self) {
+        self.retire();
+    }
+}
 
 pub struct AcpBackend {
     proc: AgentProcess,
@@ -72,6 +144,7 @@ pub struct AcpBackend {
     /// The project folder the next session may work in ([`ChatBackend::set_project`]). Only the
     /// built-in agent is handed it.
     project: Option<std::path::PathBuf>,
+    cad: Option<PackagedCad>,
 }
 
 impl AcpBackend {
@@ -88,14 +161,76 @@ impl AcpBackend {
         Ok(backend)
     }
 
+    pub(super) fn start_packaged(argv: &[String], mut ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
+        let (program, entry) = Self::packaged_agent(argv)?;
+        let tools = ctx.tools.take().ok_or_else(|| "The packaged Agent has no desktop tool queue".to_string())?;
+        let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(ctx.wake);
+        let process_wake = Arc::clone(&wake);
+        ctx.wake = Box::new(move || process_wake());
+        ctx.bridge = None;
+        let env = [(DATA_DIR_ENV, data.as_os_str()), (TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1"))];
+        let argv = [
+            program.to_str().ok_or_else(|| "The packaged Agent's Node path is not valid text".to_string())?.to_string(),
+            entry.to_str().ok_or_else(|| "The packaged Agent's entry path is not valid text".to_string())?.to_string(),
+        ];
+        let mut backend = Self::spawn(&argv, ctx, &env, PACKAGED_ENV_REMOVE)?;
+        backend.built_in = true;
+        backend.cad = Some(PackagedCad {
+            tools,
+            wake,
+            document: None,
+            next_active: None,
+            next_check: None,
+            turn: None,
+            reply: None,
+            stale: Vec::new(),
+            last_effect: false,
+        });
+        Ok(backend)
+    }
+
+    /// The one program pair the paid lane may start: this package's own Node, entry and SDK.
+    /// Discovery found the folder; this checks the bytes belong together before any authority
+    /// is offered. Anything else is refused, not downgraded to another folder.
+    pub(super) fn packaged_agent(argv: &[String]) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+        let [program, entry] = argv else { return Err("The packaged Agent must be one program and one entry".into()) };
+        let (program, entry) = (std::path::Path::new(program), std::path::Path::new(entry));
+        let node = if cfg!(windows) { "node.exe" } else { "node" };
+        let refused = || "The built-in Agent is not the package's own program".to_string();
+        if !program.is_absolute() || program.file_name().and_then(std::ffi::OsStr::to_str) != Some(node) {
+            return Err(refused());
+        }
+        if !entry.is_absolute() || entry.file_name().and_then(std::ffi::OsStr::to_str) != Some("main.mjs") {
+            return Err(refused());
+        }
+        let root = std::fs::canonicalize(program.parent().ok_or_else(refused)?).map_err(|_| refused())?;
+        if !root.join(node).is_file() {
+            return Err(refused());
+        }
+        let entry = std::fs::canonicalize(entry).map_err(|_| refused())?;
+        if entry.parent() != Some(root.join("agent").as_path()) {
+            return Err(refused());
+        }
+        for needed in ["agent.json", "node_modules/@mastra/code-sdk/package.json", "node_modules/@agentclientprotocol/sdk/package.json"] {
+            if !root.join(needed).is_file() {
+                return Err(format!("The built-in Agent package is incomplete: {needed} is missing"));
+            }
+        }
+        Ok((root.join(node), entry))
+    }
+
     /// Start `argv` and say hello (`initialize`); the session follows when the agent answers.
     pub fn start(argv: &[String], ctx: StartContext) -> Result<AcpBackend, String> {
         AcpBackend::start_with_env(argv, ctx, &[])
     }
 
     fn start_with_env(argv: &[String], ctx: StartContext, env: &[(&str, &std::ffi::OsStr)]) -> Result<AcpBackend, String> {
+        Self::spawn(argv, ctx, env, ENV_REMOVE)
+    }
+
+    fn spawn(argv: &[String], ctx: StartContext, env: &[(&str, &std::ffi::OsStr)], remove: &[&str]) -> Result<AcpBackend, String> {
         let wake = ctx.wake;
-        let proc = AgentProcess::spawn_with_env(argv, &ctx.cwd, ENV_REMOVE, env, wake)?;
+        let proc = AgentProcess::spawn_with_env(argv, &ctx.cwd, remove, env, wake)?;
         // An agent inside WSL is told the same folder and bridge as WSL shows them (#5546).
         let (cwd, bridge) =
             if acp::runs_in_wsl(argv) { (acp::wsl_path(&ctx.cwd), ctx.bridge.as_ref().map(acp::McpBridge::in_wsl)) } else { (ctx.cwd, ctx.bridge) };
@@ -122,6 +257,7 @@ impl AcpBackend {
             initialized: false,
             setup: None,
             project: None,
+            cad: None,
         };
         b.request(Pending::Initialize, "initialize", acp::initialize_params(env!("CARGO_PKG_VERSION")));
         Ok(b)
@@ -149,14 +285,113 @@ impl AcpBackend {
         // says what they are for. Any other agent's session is as it was.
         let project = self.project.as_deref().filter(|_| self.built_in);
         let note = if project.is_some() { acp::project_note(&self.note) } else { self.note.clone() };
-        let params = acp::session_new_params(&self.cwd, self.bridge.as_ref(), &self.init, &note, project);
+        let mut params = acp::session_new_params(&self.cwd, self.bridge.as_ref(), &self.init, &note, project);
+        if self.cad.is_some() {
+            params["_meta"]["intcad"]["cadBridge"] = json!({"version":1,"tools":solidcraft_mcp::tool_definitions()});
+        }
         self.request(Pending::SessionNew, "session/new", params);
+    }
+
+    fn revoke_cad(&mut self) {
+        if let Some(cad) = &mut self.cad {
+            cad.retire();
+        }
+    }
+
+    fn end_cad_prompt(&mut self, id: u64) {
+        if self.cad.as_ref().and_then(|cad| cad.turn.as_ref()).is_some_and(|turn| turn.prompt == id) {
+            self.revoke_cad();
+        }
+    }
+
+    fn dispatch_cad(&mut self, rpc: Value, params: Value) {
+        let Some(cad) = self.cad.as_mut() else {
+            self.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, "No private CAD dispatcher is attached to this Agent"));
+            return;
+        };
+        let refuse = |rpc| self.proc.send(&acp::reply_error(rpc, -32602, "The desktop CAD callback is not bound to an available turn"));
+        let (Some(turn), Some(stamp), Some(name), Some(arguments)) =
+            (cad.turn.as_mut(), cad.document.as_ref(), params["name"].as_str(), params.get("arguments").filter(|a| a.is_object()))
+        else {
+            refuse(rpc);
+            return;
+        };
+        if !turn.owns(stamp, &params)
+            || !(rpc.is_u64() || rpc.as_str().is_some_and(|id| (1..=128).contains(&id.len())))
+            || name.len() > 64
+            || cad.reply.is_some()
+            || turn.replies_seen.len() >= 1024
+            || !turn.replies_seen.insert(rpc.to_string())
+        {
+            refuse(rpc);
+            return;
+        }
+        let prompt = turn.prompt;
+        let tools = cad.tools.clone();
+        let active = Arc::clone(&turn.active);
+        let document = stamp.clone();
+        let working_dir = self.cwd.clone();
+        let name = name.to_string();
+        let arguments = arguments.clone();
+        let wake = Arc::clone(&cad.wake);
+        let (tx, result) = std::sync::mpsc::sync_channel(1);
+        // This check remains reusable within one active turn and is run only off the window.
+        let check = turn.check.clone().map(|source| Box::new(move || source.lock().ok().and_then(|check| check())) as BridgeScopeCheck);
+        if std::thread::Builder::new()
+            .name("acp-cad".into())
+            .spawn(move || {
+                let reply = super::host_bridge::serve_acp_cad(tools, check, active, document, working_dir, name, arguments);
+                let _ = tx.send(reply);
+                wake();
+            })
+            .is_err()
+        {
+            refuse(rpc);
+            return;
+        }
+        cad.reply = Some(CadReply { turn: prompt, rpc, result });
+    }
+
+    fn poll_cad(&mut self) {
+        let Some(cad) = self.cad.as_mut() else { return };
+        for rpc in std::mem::take(&mut cad.stale) {
+            self.proc.send(&acp::reply_error(rpc, -32603, "The originating CAD turn ended"));
+        }
+        let Some(reply) = cad.reply.take() else { return };
+        let outcome = match reply.result.try_recv() {
+            Ok(value) => value,
+            Err(TryRecvError::Empty) => {
+                cad.reply = Some(reply);
+                return;
+            }
+            Err(TryRecvError::Disconnected) => (Err("The desktop CAD worker stopped".into()), true),
+        };
+        let (result, effect) = outcome;
+        let current = cad.turn.as_ref().is_some_and(|turn| turn.prompt == reply.turn && turn.active.load(Ordering::Acquire));
+        if effect {
+            cad.last_effect = true;
+            if let Some(turn) = cad.turn.as_mut().filter(|turn| turn.prompt == reply.turn) {
+                turn.effect = true;
+            }
+        }
+        if !current {
+            self.proc.send(&acp::reply_error(reply.rpc, -32603, "The originating CAD turn ended"));
+        } else {
+            let message = match result {
+                Ok(value) => json!({"jsonrpc":"2.0","id":reply.rpc,"result":value}),
+                Err(error) => acp::reply_error(reply.rpc, -32603, &error),
+            };
+            self.proc.send(&message);
+        }
     }
 
     fn handle(&mut self, msg: Incoming, out: &mut Vec<Event>) {
         match msg {
             Incoming::Reply { id, result } => {
                 let Some(what) = self.pending.remove(&id) else { return };
+                if what == Pending::Prompt {
+                    self.end_cad_prompt(id);
+                }
                 if self.cancelling.is_some_and(|(request, _)| request == id) {
                     self.cancelling = None;
                 }
@@ -290,6 +525,7 @@ impl AcpBackend {
             // session stays: the user signs in again and goes on in it.
             Incoming::Refused { id, error, problem } if self.pending.get(&id) == Some(&Pending::Prompt) => {
                 self.pending.remove(&id);
+                self.end_cad_prompt(id);
                 if self.cancelling.is_some_and(|(request, _)| request == id) {
                     self.cancelling = None;
                 }
@@ -313,6 +549,7 @@ impl AcpBackend {
                 out.push(Event::Commands { session, commands })
             }
             Incoming::ModeChanged(_) | Incoming::ModelChanged(_) | Incoming::ConfigOptions { .. } | Incoming::Commands { .. } => {}
+            Incoming::CadTool { rpc, params } => self.dispatch_cad(rpc, params),
             Incoming::Unsupported { rpc, method } => {
                 self.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, &format!("Intcad does not serve `{method}`")));
             }
@@ -326,6 +563,7 @@ impl AcpBackend {
     }
 
     fn finish_exit(&mut self, tail: Vec<String>) -> Event {
+        self.revoke_cad();
         self.exited = true;
         self.session = None;
         self.pending.clear();
@@ -354,6 +592,7 @@ impl AcpBackend {
                 Err(_) => break,
             }
         }
+        self.poll_cad();
         // Drain replies first: an acknowledgement already waiting must keep the connection.
         if self.cancelling.is_some_and(|(_, started)| now.saturating_duration_since(started) >= CANCEL_GRACE) {
             self.proc.shutdown(false);
@@ -370,11 +609,33 @@ impl ChatBackend for AcpBackend {
 
     fn prompt(&mut self, parts: &[PromptPart]) {
         if let Some(s) = self.session.clone() {
-            self.request(Pending::Prompt, "session/prompt", acp::prompt_params(&s, parts));
+            let mut params = acp::prompt_params(&s, parts);
+            if let Some(cad) = &mut self.cad {
+                let active = cad.next_active.take();
+                let check = cad.next_check.take();
+                cad.retire();
+                // Any effect of the turn that just ended was read by the panel already.
+                cad.last_effect = false;
+                let prompt = self.next_id + 1;
+                params["_meta"]["intcad"]["cadTurn"] = json!(prompt.to_string());
+                if let (Some(active), Some(document)) = (active, &cad.document) {
+                    cad.turn = Some(CadTurn {
+                        prompt,
+                        session: s,
+                        document_id: document.document_id.clone(),
+                        active,
+                        replies_seen: HashSet::new(),
+                        check: check.map(|check| Arc::new(std::sync::Mutex::new(check))),
+                        effect: false,
+                    });
+                }
+            }
+            self.request(Pending::Prompt, "session/prompt", params);
         }
     }
 
     fn cancel(&mut self) {
+        self.revoke_cad();
         // Open permission questions are answered "cancelled" first, as the protocol asks.
         for (_, rpc) in self.permissions.drain() {
             self.proc.send(&acp::permission_reply(rpc, None));
@@ -393,6 +654,7 @@ impl ChatBackend for AcpBackend {
         if self.pending.values().any(|p| *p == Pending::Prompt) {
             self.cancel();
         }
+        self.revoke_cad();
         self.session = None;
         self.modern_config = false;
         self.config_pending = None;
@@ -406,8 +668,38 @@ impl ChatBackend for AcpBackend {
 
     fn set_project(&mut self, root: Option<&std::path::Path>) {
         if self.project.as_deref() != root {
+            self.revoke_cad();
             self.project = root.map(std::path::Path::to_path_buf);
         }
+    }
+
+    fn set_document(&mut self, document_id: &str, revision: u64) {
+        if let Some(cad) = &mut self.cad {
+            if cad.document.as_ref().is_some_and(|previous| previous.document_id != document_id) {
+                cad.retire();
+            }
+            cad.document = Some(DocumentStamp { document_id: document_id.to_owned(), revision });
+        }
+    }
+
+    fn set_turn_control(&mut self, active: Arc<AtomicBool>) {
+        if let Some(cad) = &mut self.cad {
+            cad.next_active = Some(active);
+        }
+    }
+
+    fn set_bridge_scope_check(&mut self, check: Option<BridgeScopeCheck>) {
+        if let Some(cad) = &mut self.cad {
+            cad.next_check = check;
+        }
+    }
+
+    fn turn_had_bridge_effect(&self) -> bool {
+        self.cad.as_ref().is_some_and(|cad| cad.last_effect)
+    }
+
+    fn retire_bridge_authority(&mut self) {
+        self.revoke_cad();
     }
 
     fn answer_permission(&mut self, key: u64, option: Option<&str>) {
@@ -455,6 +747,7 @@ impl ChatBackend for AcpBackend {
     }
 
     fn forget_session(&mut self) {
+        self.revoke_cad();
         self.session = None;
         self.modern_config = false;
         self.config_pending = None;
@@ -466,6 +759,7 @@ impl ChatBackend for AcpBackend {
     }
 
     fn shutdown(&mut self, wait: bool) {
+        self.revoke_cad();
         self.proc.shutdown(wait);
     }
 }
@@ -525,6 +819,106 @@ mod tests {
         backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut events);
         backend.handle(Incoming::Reply { id: 2, result: Ok(json!({"sessionId":"s1"})) }, &mut events);
         Ok(backend)
+    }
+
+    #[test]
+    fn packaged_acp_cad_callback_is_not_an_ordinary_agent_request() {
+        let line = r#"{"jsonrpc":"2.0","id":7,"method":"_intcad/cad/tool","params":{"sessionId":"s1","turn":"1","name":"set_parameter","arguments":{"name":"int1481_acceptance_marker","expression":"13 mm"}}}"#;
+        assert!(matches!(acp::parse(line), Some(Incoming::Unsupported { .. })));
+        let Some(Incoming::CadTool { rpc, params }) = acp::parse_builtin(line) else {
+            panic!("the packaged-agent parser must deliver the CAD callback to its private dispatcher");
+        };
+        assert_eq!(rpc, 7);
+        assert_eq!(params["sessionId"], "s1");
+        assert_eq!(params["turn"], "1");
+        assert_eq!(params["name"], "set_parameter");
+        assert_eq!(params["arguments"]["expression"], "13 mm");
+    }
+
+    /// The paid lane starts only this package's Node and entry, with the pinned SDK present.
+    /// A folder found beside the app is not enough: a different program or a stripped SDK is
+    /// refused before any authority is offered.
+    #[test]
+    fn the_paid_lane_starts_only_the_packages_own_agent() {
+        let dir = std::env::temp_dir().join(format!("intcad-packaged-agent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let root = dir.join("usr/lib/intcad/mastra-agent");
+        for folder in ["agent", "node_modules/@mastra/code-sdk", "node_modules/@agentclientprotocol/sdk"] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+        }
+        std::fs::write(root.join("node"), b"").unwrap();
+        std::fs::write(root.join("agent/main.mjs"), b"").unwrap();
+        std::fs::write(root.join("agent.json"), b"{}").unwrap();
+        std::fs::write(root.join("node_modules/@mastra/code-sdk/package.json"), b"{}").unwrap();
+        std::fs::write(root.join("node_modules/@agentclientprotocol/sdk/package.json"), b"{}").unwrap();
+        let argv = || vec![root.join("node").to_string_lossy().into_owned(), root.join("agent/main.mjs").to_string_lossy().into_owned()];
+        assert_eq!(AcpBackend::packaged_agent(&argv()).unwrap().1, std::fs::canonicalize(root.join("agent/main.mjs")).unwrap());
+
+        let elsewhere = dir.join("elsewhere/main.mjs");
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        std::fs::write(&elsewhere, b"").unwrap();
+        let moved = [argv()[0].clone(), elsewhere.to_string_lossy().into_owned()];
+        assert!(AcpBackend::packaged_agent(&moved).is_err(), "the entry must be the package's agent/main.mjs");
+
+        std::fs::remove_file(root.join("node_modules/@mastra/code-sdk/package.json")).unwrap();
+        assert!(AcpBackend::packaged_agent(&argv()).is_err(), "a package without its SDK is not started");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A retired turn answers the callback it still owed the Agent, so the Agent's one in-flight
+    /// slot is free for the next turn instead of waiting on the old worker.
+    #[test]
+    fn a_retired_cad_callback_releases_the_agents_reply_slot() {
+        let (tools, _requests) = std::sync::mpsc::channel();
+        let (_tx, result) = std::sync::mpsc::sync_channel(1);
+        let mut cad = PackagedCad {
+            tools,
+            wake: Arc::new(|| {}),
+            document: None,
+            next_active: None,
+            next_check: None,
+            turn: Some(CadTurn {
+                prompt: 3,
+                session: "s1".into(),
+                document_id: "d1".into(),
+                active: Arc::new(AtomicBool::new(true)),
+                replies_seen: HashSet::new(),
+                check: None,
+                effect: false,
+            }),
+            reply: Some(CadReply { turn: 3, rpc: json!(71), result }),
+            stale: Vec::new(),
+            last_effect: false,
+        };
+        cad.retire();
+        assert_eq!(cad.stale, [json!(71)], "the owed callback gets an answer");
+        assert!(cad.last_effect, "a dispatched call may have changed the design");
+        assert!(cad.turn.is_none());
+        cad.retire();
+        assert_eq!(cad.stale, [json!(71)], "nothing is answered twice");
+    }
+
+    /// A callback belongs only to the live session, prompt and document it names. An older
+    /// prompt, another session, another document or a stopped turn never borrows the new one.
+    #[test]
+    fn a_cad_callback_belongs_only_to_its_own_live_turn() {
+        let stamp = DocumentStamp { document_id: "d1".into(), revision: 7 };
+        let turn = CadTurn {
+            prompt: 9,
+            session: "s1".into(),
+            document_id: "d1".into(),
+            active: Arc::new(AtomicBool::new(true)),
+            replies_seen: HashSet::new(),
+            check: None,
+            effect: false,
+        };
+        let params = |turn_id: &str, session: &str| json!({"sessionId":session,"turn":turn_id,"name":"set_parameter","arguments":{}});
+        assert!(turn.owns(&stamp, &params("9", "s1")), "its own turn");
+        assert!(!turn.owns(&stamp, &params("8", "s1")), "an older prompt");
+        assert!(!turn.owns(&stamp, &params("9", "s2")), "another session");
+        assert!(!turn.owns(&DocumentStamp { document_id: "d2".into(), revision: 7 }, &params("9", "s1")), "another document");
+        turn.active.store(false, Ordering::Release);
+        assert!(!turn.owns(&stamp, &params("9", "s1")), "a stopped or replaced turn");
     }
 
     #[test]

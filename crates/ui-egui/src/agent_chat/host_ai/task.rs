@@ -486,7 +486,7 @@ impl AcpTaskExecutor {
                                 state: TaskPermissionState::Waiting,
                             });
                         }
-                        Incoming::Unsupported { rpc, .. } => {
+                        Incoming::Unsupported { rpc, .. } | Incoming::CadTool { rpc, .. } => {
                             live.proc.send(&acp::reply_error(rpc, acp::METHOD_NOT_FOUND, "Intcad task sessions serve no host tools"));
                         }
                         Incoming::AuthStatus(_) | Incoming::Ignored => {}

@@ -24,7 +24,7 @@ const BUSY = -32000;
  * @param dates           () => Map of release dates by model id; dates learned from Mastra's catalog are added to it
  * @param reloadSignIns   () => makes Mastra read its sign-in file again
  */
-export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns }) {
+export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns, cad }) {
   return class IntcadAgent extends Base {
     #gate;
 
@@ -79,6 +79,7 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       const response = await super.newSession(request);
       const entry = this.sessions.get(response.sessionId);
       if (!entry) return response;
+      cad?.bind(request, entry);
       // INT-1473: the project folder the app handed over (session.mjs) is where the file tools may
       // also go. Set here, on the session's own thread: Mastra Code opens a new thread for the
       // session after building it, and the thread starts with no such folder of its own.
@@ -185,7 +186,7 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       }
       this.#gate.prompted(request.sessionId);
       try {
-        return await super.prompt(request);
+        return await (cad ? cad.prompt(request, entry, () => super.prompt(request)) : super.prompt(request));
       } catch (error) {
         const model = entry?.session.model.get() ?? '';
         const prefix = connections.prefixOf(model);
