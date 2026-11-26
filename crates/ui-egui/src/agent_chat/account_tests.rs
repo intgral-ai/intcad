@@ -462,6 +462,7 @@ fn host_agent_parameter_edit_is_admitted_and_settled_once() {
     app.install_budget(budget);
 
     let before = app.session.document_stamp();
+    let undo_before = app.session.undo.len();
     assert!(app.session.doc.param(NAME).is_none());
     write_wire(&mut child, &tools_call(1, "set_parameter", json!({"name": NAME, "expression": "13 mm"}), Value::Null));
     let request = requests.recv_timeout(Duration::from_secs(5)).expect("the tool reaches the host");
@@ -478,7 +479,10 @@ fn host_agent_parameter_edit_is_admitted_and_settled_once() {
 
     let after = app.session.document_stamp();
     assert_eq!(after.document_id, before.document_id);
-    assert_eq!(after.revision, before.revision + 1, "before={before:?} after={after:?} undo={}", app.session.undo.len());
+    // Revisions are globally allocated identifiers, not per-session counters: a parallel test
+    // can consume the next number. One command shows as a changed stamp and one new undo step.
+    assert_ne!(after.revision, before.revision);
+    assert_eq!(app.session.undo.len(), undo_before + 1, "one undo step");
     let readback = app.session.execute("parameters.list", &json!({"filter":"user"})).expect("independent readback");
     let matches: Vec<_> = readback["parameters"].as_array().unwrap().iter().filter(|param| param["name"] == NAME).collect();
     assert_eq!(matches.len(), 1, "{readback}");
@@ -559,6 +563,7 @@ fn packaged_acp_edit_is_admitted_and_committed_once() {
     app.install_budget(budget);
 
     let before = app.session.document_stamp();
+    let undo_before = app.session.undo.len();
     assert!(app.session.doc.param("int1481_acceptance_marker").is_none());
     backend.set_document(&before.document_id, before.revision);
     backend.set_turn_control(Arc::new(AtomicBool::new(true)));
@@ -599,7 +604,10 @@ fn packaged_acp_edit_is_admitted_and_committed_once() {
     assert!(reply["result"].is_object() && reply["result"]["isError"] != true, "{reply}");
     let after = app.session.document_stamp();
     assert_eq!(after.document_id, before.document_id);
-    assert_eq!(after.revision, before.revision + 1, "before={before:?} after={after:?} undo={}", app.session.undo.len());
+    // Revisions are globally allocated identifiers, not per-session counters: a parallel test
+    // can consume the next number. One command shows as a changed stamp and one new undo step.
+    assert_ne!(after.revision, before.revision);
+    assert_eq!(app.session.undo.len(), undo_before + 1, "one undo step");
     let readback = app.session.execute("parameters.list", &json!({"filter":"user"})).unwrap();
     let matches: Vec<_> = readback["parameters"].as_array().unwrap().iter().filter(|param| param["name"] == "int1481_acceptance_marker").collect();
     assert_eq!(matches.len(), 1, "{readback}");
