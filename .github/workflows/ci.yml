@@ -852,26 +852,32 @@ jobs:
           # APT can otherwise select RISC-V Python to configure GLib.
           apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config python3:amd64 zstd
           sed -i '/^Architectures:/d; /^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
-          # Ubuntu's archive and ports publish security-pocket revisions independently.
-          # A Multi-Arch: same package then resolves to different revisions on the two
-          # architectures and nothing installs (for example krb5 -6ubuntu2.10 on amd64
-          # and -6ubuntu2.12 on riscv64). A cross-compile check needs one aligned
-          # revision, so the foreign architecture uses the release and updates pockets.
           cat >/etc/apt/sources.list.d/riscv64.sources <<'EOF'
           Types: deb
           URIs: http://ports.ubuntu.com/ubuntu-ports
-          Suites: noble noble-updates noble-backports
+          Suites: noble noble-updates noble-backports noble-security
           Components: main restricted universe multiverse
           Architectures: riscv64
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
           EOF
           dpkg --add-architecture riscv64
           update_apt
-          apt-get install -y --no-install-recommends \
-            gcc-riscv64-linux-gnu g++-riscv64-linux-gnu python3:amd64 \
-            libasound2-dev:riscv64 libxkbcommon-dev:riscv64 libwayland-dev:riscv64 \
-            libx11-dev:riscv64 libxrandr-dev:riscv64 libxi-dev:riscv64 libgl1-mesa-dev:riscv64 \
-            libgtk-3-dev:riscv64 libwebkit2gtk-4.1-dev:riscv64
+          # The archive and ports publish security-pocket revisions independently, so a
+          # Multi-Arch: same package can resolve to a different revision on each
+          # architecture and nothing installs. Retry with each pocket preferred; a
+          # resolution failure is immediate, so the retries cost seconds. Refuse loudly
+          # when no pocket aligns both architectures rather than checking less.
+          install_cross() {
+            apt-get install -y --no-install-recommends "$@" \
+              gcc-riscv64-linux-gnu g++-riscv64-linux-gnu python3:amd64 \
+              libasound2-dev:riscv64 libxkbcommon-dev:riscv64 libwayland-dev:riscv64 \
+              libx11-dev:riscv64 libxrandr-dev:riscv64 libxi-dev:riscv64 libgl1-mesa-dev:riscv64 \
+              libgtk-3-dev:riscv64 libwebkit2gtk-4.1-dev:riscv64
+          }
+          install_cross \
+            || install_cross -t noble-updates \
+            || install_cross -t noble \
+            || { echo 'no aligned package revision across the archive and ports' >&2; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
