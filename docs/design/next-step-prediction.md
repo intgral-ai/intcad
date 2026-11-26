@@ -55,9 +55,8 @@ Base: `tianwei/agent-preview-accept-rebased` (local, not pushed): PIL-300 rounds
   the agent) and outcome under `nextStep` in `ui.agent_chat` and in the app log (`next-step guess
   N: …`), including guesses dropped by an edit after they were sent. Nothing is estimated in the
   app.
-- `crates/ui-egui/examples/acp_next_step_agent.rs`: a scripted agent for the demo and for trying
-  it without an account. Its usage numbers are estimates (characters ÷ 4 at $3 / $15 per million
-  tokens in / out), labelled as such.
+- The account-free predictor tests use a recording backend and real design copies. The optional
+  desktop recorder uses a supported Claude Code session, not a custom agent ID.
 
 ## Decisions taken here (open for review)
 
@@ -255,9 +254,8 @@ gradients and colours and was rebuilt after review):
   agent cursor, but in neutral tokens and without its "Agent" tag, so the person's hand reads apart
   from the agent's.
 - **Hand steps** (`examples/demo/hand_steps.py`): the person's modelling through the UI (toolbar
-  buttons, plane and face picks, a profile click, values typed a character at a time) for takes
-  that mix hand steps with Tab. `examples/demo/next_step_bracket.py` drives the motor-bracket story
-  this way, with a matching demo project in `examples/demo/bracket_project/`.
+  buttons, plane and face picks, a profile click, values typed a character at a time). The
+  bracket project fixture is in `examples/demo/bracket_project/`.
 - **The project brief** (`agent_chat/project_brief.rs`): when the saved design is in a project
   (`.intcad/project.toml` at or above it), the question carries the project's name, process and
   material, confirmed `design-intent.toml` keep entries, and for a project the user trusts this
@@ -268,11 +266,15 @@ gradients and colours and was rebuilt after review):
   brief (R-1, R-2, F-7); the agent never reads `.intcad/`. Trust is kept in memory only, not yet in
   preferences as the PRD asks. The PRD draft still names the folder `.intgral/`; develop's code and
   this reader use `.intcad/`. A demo project is in `examples/demo/next_step_project/`.
-- Recorder: `examples/demo/record_next_step.sh` (headless GNOME Shell with a rootful Xwayland at
-  1920×1080, GStreamer MJPEG capture) and `examples/demo/next_step_demo.py` (the story, driven over
-  the control channel; writes `events.jsonl` with each beat's time in the video).
+- Current recorder: `examples/demo/record_next_step.sh APP NEW_OUTDIR [case|bracket]`
+  (headless GNOME Shell, Xwayland and GStreamer MJPEG capture). It seeds one part, waits for a
+  rendered ghost, and sends Tab once. The `events.jsonl` evidence checks the changed design,
+  matching body measurements and one undo entry, without a chat turn or review. With
+  `PROJECT_TEMPLATE` set, it copies that folder under `NEW_OUTDIR/project` and refuses existing
+  destinations. Measurements still use `next_step_ab.sh` with `NSM_SCRIPT=autocomplete_measure.py`.
 
-Kept takes (`demo-takes/README.md` has beats and timecodes), Claude Code through
+Historical takes from the earlier chat-preview prototype (`demo-takes/README.md` has beats and
+timecodes), Claude Code through
 `claude-agent-acp` 0.107.0, pause 3 s, previews on. In both, the user notes in chat that it is an
 enclosure for a 50 × 30 mm board and makes a 60 × 40 × 25 box.
 

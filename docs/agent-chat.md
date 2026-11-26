@@ -871,10 +871,9 @@ Then add it under Preferences → Assistant → **Add agent… → Custom comman
 `target/release/examples/acp_test_agent`. Put "save" in your message to see an Allow / Deny card,
 or "ask" to see the agent ask its own permission.
 
-For next-step suggestions, `acp_next_step_agent` (built the same way) guesses from the History it
-is sent, rounding then shelling then drilling, with the design's usual sizes, and does the step
-when Tab sends it. Its token counts and costs are estimates (characters ÷ 4 at assumed prices), not
-measurements.
+The scripted agent tests ordinary chat, not Autocomplete. The account-free Autocomplete tests use a
+recording backend inside the Rust test suite. The optional recording harness in
+`examples/demo/record_next_step.sh` uses a supported Claude Code session.
 
 ## Benchmarking the Assistant
 
