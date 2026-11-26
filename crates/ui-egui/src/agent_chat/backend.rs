@@ -192,6 +192,15 @@ pub trait ChatBackend {
     /// The trusted cancellation flag of the turn about to start. Backends that bridge tool calls
     /// attach it at the host boundary; model/runtime arguments never supply it.
     fn set_turn_control(&mut self, _active: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
+    /// A fresh desktop-owned check for the private bridge of the next prompt.
+    fn set_bridge_scope_check(&mut self, _check: Option<solidcraft_engine::entitlement::BridgeScopeCheck>) {}
+    /// Whether the turn that just ended gave the desktop a tool call that may have changed the
+    /// design. Such a turn is not sent again by itself after a sign-in.
+    fn turn_had_bridge_effect(&self) -> bool {
+        false
+    }
+    /// Withdraw the turn's desktop tool authority now, for a provider, key or account change.
+    fn retire_bridge_authority(&mut self) {}
     /// The authenticated host scope this backend can bind to forwarded Intcad operations.
     ///
     /// `None` means the backend has no proven account/installation/session binding and must fail
