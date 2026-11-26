@@ -154,7 +154,12 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
         .agent_chat
         .web_reveal
         .map_or(rect, |height| egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - height), rect.right_bottom()));
-    let covered = ctx.memory(|memory| {
+    (!covered(ctx, layer, shown)).then_some(rect)
+}
+
+/// Whether a visible layer above `layer` lies over `rect`: a native view there would hide it.
+pub(crate) fn covered(ctx: &egui::Context, layer: egui::LayerId, rect: egui::Rect) -> bool {
+    ctx.memory(|memory| {
         // A panel docked to the window's edge is under every floating layer; a floating panel
         // is under the layers that come after it.
         let mut above = layer.order == egui::Order::Background;
@@ -162,13 +167,12 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
         for other in memory.layer_ids() {
             if other == layer {
                 above = true;
-            } else if above && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(shown)) {
+            } else if above && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(rect)) {
                 covered = true;
             }
         }
         covered
-    });
-    (!covered).then_some(rect)
+    })
 }
 
 fn clipped(text: &str) -> String {

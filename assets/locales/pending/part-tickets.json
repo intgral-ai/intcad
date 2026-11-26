@@ -53,7 +53,11 @@
     "ui.tickets_field_title": "Title",
     "ui.tickets_field_text": "Description",
     "ui.tickets_field_lines": "Requirement lines, one per line",
-    "ui.tickets_delete_ask": "Delete {id}?"
+    "ui.tickets_delete_ask": "Delete {id}?",
+    "rail.tickets": "Tickets",
+    "rail.tickets_title": "Part tickets",
+    "rail.tickets_empty": "The tickets view is not available",
+    "rail.tickets_note": "This window has no web view for the tickets page."
   },
   "zh": {
     "ui.tickets_one_at_a_time": "{id} 正在进行。先做完它或等它的检查，再开始另一张。",
@@ -109,7 +113,11 @@
     "ui.tickets_field_title": "标题",
     "ui.tickets_field_text": "说明",
     "ui.tickets_field_lines": "要求，每行一条",
-    "ui.tickets_delete_ask": "删除 {id}？"
+    "ui.tickets_delete_ask": "删除 {id}？",
+    "rail.tickets": "部件票",
+    "rail.tickets_title": "部件票",
+    "rail.tickets_empty": "部件票视图不可用",
+    "rail.tickets_note": "这个窗口无法显示部件票页面。"
   },
   "ja": {
     "ui.tickets_one_at_a_time": "{id} が進行中です。終えるかチェックを待ってから次を開始してください。",
@@ -165,7 +173,11 @@
     "ui.tickets_field_title": "タイトル",
     "ui.tickets_field_text": "説明",
     "ui.tickets_field_lines": "要件（1 行に 1 つ）",
-    "ui.tickets_delete_ask": "{id} を削除しますか？"
+    "ui.tickets_delete_ask": "{id} を削除しますか？",
+    "rail.tickets": "チケット",
+    "rail.tickets_title": "部品チケット",
+    "rail.tickets_empty": "チケット表示を使用できません",
+    "rail.tickets_note": "このウィンドウではチケットのページを表示できません。"
   },
   "de": {
     "ui.tickets_one_at_a_time": "{id} ist in Arbeit. Schließen Sie es ab oder warten Sie auf seine Prüfung, bevor Sie ein weiteres starten.",
@@ -221,7 +233,11 @@
     "ui.tickets_field_title": "Titel",
     "ui.tickets_field_text": "Beschreibung",
     "ui.tickets_field_lines": "Anforderungen, eine pro Zeile",
-    "ui.tickets_delete_ask": "{id} löschen?"
+    "ui.tickets_delete_ask": "{id} löschen?",
+    "rail.tickets": "Tickets",
+    "rail.tickets_title": "Bauteil-Tickets",
+    "rail.tickets_empty": "Die Ticketansicht ist nicht verfügbar",
+    "rail.tickets_note": "Dieses Fenster kann die Ticketseite nicht anzeigen."
   },
   "ko": {
     "ui.tickets_one_at_a_time": "{id}이(가) 진행 중입니다. 끝내거나 검사를 기다린 뒤 다른 티켓을 시작하세요.",
@@ -277,7 +293,11 @@
     "ui.tickets_field_title": "제목",
     "ui.tickets_field_text": "설명",
     "ui.tickets_field_lines": "요구 사항, 한 줄에 하나",
-    "ui.tickets_delete_ask": "{id}을(를) 삭제할까요?"
+    "ui.tickets_delete_ask": "{id}을(를) 삭제할까요?",
+    "rail.tickets": "티켓",
+    "rail.tickets_title": "부품 티켓",
+    "rail.tickets_empty": "티켓 보기를 사용할 수 없음",
+    "rail.tickets_note": "이 창에서는 티켓 페이지를 표시할 수 없습니다."
   },
   "ar": {
     "ui.tickets_one_at_a_time": "{id} قيد التنفيذ. أنهِها أو انتظر فحصها قبل بدء أخرى.",
@@ -333,7 +353,11 @@
     "ui.tickets_field_title": "العنوان",
     "ui.tickets_field_text": "الوصف",
     "ui.tickets_field_lines": "المتطلبات، واحد في كل سطر",
-    "ui.tickets_delete_ask": "حذف {id}؟"
+    "ui.tickets_delete_ask": "حذف {id}؟",
+    "rail.tickets": "التذاكر",
+    "rail.tickets_title": "تذاكر الأجزاء",
+    "rail.tickets_empty": "عرض التذاكر غير متاح",
+    "rail.tickets_note": "لا يمكن عرض صفحة التذاكر هنا."
   },
   "he": {
     "ui.tickets_one_at_a_time": "{id} בעבודה. סיימו אותו או חכו לבדיקה שלו לפני שמתחילים אחר.",
@@ -389,7 +413,11 @@
     "ui.tickets_field_title": "כותרת",
     "ui.tickets_field_text": "תיאור",
     "ui.tickets_field_lines": "דרישות, אחת בכל שורה",
-    "ui.tickets_delete_ask": "למחוק את {id}?"
+    "ui.tickets_delete_ask": "למחוק את {id}?",
+    "rail.tickets": "כרטיסים",
+    "rail.tickets_title": "כרטיסי חלקים",
+    "rail.tickets_empty": "תצוגת הכרטיסים אינה זמינה",
+    "rail.tickets_note": "לא ניתן להציג כאן את דף הכרטיסים."
   },
   "vi": {
     "ui.tickets_one_at_a_time": "{id} đang làm. Hãy hoàn thành hoặc chờ kiểm tra của nó trước khi bắt đầu phiếu khác.",
@@ -445,6 +473,10 @@
     "ui.tickets_field_title": "Tiêu đề",
     "ui.tickets_field_text": "Mô tả",
     "ui.tickets_field_lines": "Yêu cầu, mỗi dòng một mục",
-    "ui.tickets_delete_ask": "Xóa {id}?"
+    "ui.tickets_delete_ask": "Xóa {id}?",
+    "rail.tickets": "Phiếu",
+    "rail.tickets_title": "Phiếu chi tiết",
+    "rail.tickets_empty": "Không xem được phiếu",
+    "rail.tickets_note": "Cửa sổ này không hiển thị được trang phiếu."
   }
 }

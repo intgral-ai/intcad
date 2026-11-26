@@ -50,6 +50,36 @@ pub struct State {
     /// The design revision the freshness was read at (the browser build reads none).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     stamp: Option<(String, u64)>,
+    /// Where the right rail's Tickets panel gives its place to the tickets view this frame.
+    pub(crate) web_place: Option<(egui::Rect, egui::LayerId)>,
+    /// Whether the host could make the tickets view's web view (`None`: not asked yet).
+    pub(crate) web_host: Option<bool>,
+}
+
+/// The rail's Tickets panel, each frame it gives up `rect` to the tickets view's web view.
+pub(crate) fn place(app: &mut SolveApp, ui: &egui::Ui, rect: egui::Rect) {
+    app.tickets.web_place = Some((rect, ui.layer_id()));
+}
+
+/// The host says whether it could make the tickets view's web view; without one the panel says so.
+pub fn set_host(app: &mut SolveApp, available: bool) {
+    app.tickets.web_host = Some(available);
+}
+
+/// The host, once a frame after the app's UI: where the tickets view goes, in the window's egui
+/// points, or `None` to hide it. As for the Assistant's view (`agent_chat::web::placement`): it
+/// stays off the window's resize edges and off the panel's own resize grip, and it is hidden while
+/// a menu, a tooltip, a dialog or a floating panel lies over its place.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> {
+    let (rect, layer) = app.tickets.web_place.take()?;
+    let rect = if app.custom_titlebar { rect.intersect(crate::titlebar::inside_resize_zones(ctx)) } else { rect };
+    let grip = ctx.global_style().interaction.resize_grab_radius_side;
+    let rect = rect.with_min_x(rect.left() + grip);
+    if rect.width() < 1.0 || rect.height() < 1.0 {
+        return None;
+    }
+    (!crate::agent_chat::web::covered(ctx, layer, rect)).then_some(rect)
 }
 
 /// The folder of the open design's project, if it is in one.

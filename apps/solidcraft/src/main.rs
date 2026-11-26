@@ -108,6 +108,10 @@ struct App {
     /// The Assistant's conversation as a web view over its panel.
     #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
     assistant_web: assistant_web::AssistantWeb,
+    /// The project's part tickets: the same page as a second web view over the right rail's
+    /// Tickets panel (experiment `experiment/part-tickets`).
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    tickets_web: assistant_web::AssistantWeb,
     /// A device's own app moving the view (Preferences › Navigation, off by default).
     nav_bridge: nav_bridge::NavBridge,
     /// Where the next file dialog opens: it follows the open design (#7756).
@@ -267,7 +271,10 @@ impl eframe::App for App {
         self.solve.logic(ctx);
         // The Assistant's page asks and is told with the app's logic, painted or not.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        self.assistant_web.logic(&mut self.solve, ctx);
+        {
+            self.assistant_web.logic(&mut self.solve, ctx);
+            self.tickets_web.logic(&mut self.solve, ctx);
+        }
         // The file chooser that opened is not the desktop's own: the user has to be told (#10159).
         #[cfg(target_os = "linux")]
         if let Some(reason) = desktop_chooser::take_reason() {
@@ -304,16 +311,23 @@ impl eframe::App for App {
         content_ui(&mut self.solve, ui);
         // After the frame's UI, which says where the Assistant panel is this frame.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        self.assistant_web.tick(&mut self.solve, ui.ctx(), frame);
+        {
+            self.assistant_web.tick(&mut self.solve, ui.ctx(), frame);
+            self.tickets_web.tick(&mut self.solve, ui.ctx(), frame);
+        }
         #[cfg(target_os = "macos")]
         {
             // Cut, Copy, Paste and Select All are in the Edit menu while the page has the keyboard.
             if let Some(menu) = &mut self.native_menu {
                 // Undo and Redo chosen while the page had the keyboard are its text's.
                 for redo in menu.take_text_edits() {
-                    self.assistant_web.edit_text(redo);
+                    if self.tickets_web.focused() {
+                        self.tickets_web.edit_text(redo);
+                    } else {
+                        self.assistant_web.edit_text(redo);
+                    }
                 }
-                menu.set_text_editing(&self.solve, self.assistant_web.focused());
+                menu.set_text_editing(&self.solve, self.assistant_web.focused() || self.tickets_web.focused());
             }
         }
         // After the frame's UI, so a setting changed in it (Preferences' OK) is written now.
@@ -340,7 +354,10 @@ impl eframe::App for App {
         self.solve.account.shutdown();
         // The Assistant's web view is a child of the window: it goes while the window is there.
         #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-        self.assistant_web.close();
+        {
+            self.assistant_web.close();
+            self.tickets_web.close();
+        }
         // The agent chat's agent and everything it started end with the app.
         solidcraft_ui_egui::agent_chat::shutdown(&mut self.solve);
         // A save still being written ends before the app does.
@@ -1501,6 +1518,8 @@ fn main() -> eframe::Result {
                 native_menu,
                 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
                 assistant_web,
+                #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+                tickets_web: assistant_web::AssistantWeb::tickets(),
                 nav_bridge,
                 dialog_folder,
             }))
