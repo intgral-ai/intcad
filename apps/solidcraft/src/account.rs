@@ -348,12 +348,27 @@ impl DesktopAccountConfig {
 /// origin as build environment values. They are compiled in, cannot be changed from preferences,
 /// MCP, a design file or a server response, and a missing or malformed value fails closed before
 /// any request or browser launch. Local builds normally have none of them.
+#[cfg(not(target_os = "macos"))]
 pub fn trusted_desktop_config() -> Option<DesktopAccountConfig> {
     config_from_build_values(
         option_env!("INTCAD_WORKOS_PUBLIC_CLIENT_ID"),
         option_env!("INTCAD_AUTHKIT_VERIFICATION_ORIGIN"),
         option_env!("INTCAD_PRODUCT_HTTPS_ORIGIN"),
     )
+}
+
+#[cfg(target_os = "macos")]
+pub fn trusted_desktop_config() -> Option<DesktopAccountConfig> {
+    // Read the actual constructor inputs from the record checked in each installed slice.
+    // Without the barrier, LTO can fold a field into noncontiguous immediate stores.
+    let record = std::hint::black_box(include_str!(concat!(env!("OUT_DIR"), "/macos-account-v1")));
+    let (_, fields) = record.split_once('\0')?; // build.rs writes the v1 marker before the fields.
+    let mut values = fields.strip_suffix("\0\x1e")?.split('\0');
+    let (client, authkit, product) = (values.next()?, values.next()?, values.next()?);
+    if values.next().is_some() {
+        return None;
+    }
+    config_from_build_values(Some(client), Some(authkit), Some(product))
 }
 
 fn config_from_build_values(client: Option<&str>, authkit: Option<&str>, product: Option<&str>) -> Option<DesktopAccountConfig> {

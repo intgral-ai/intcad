@@ -251,6 +251,57 @@ fn a_seam_used_twice_gets_pcurves_a_period_apart() {
     }
 }
 
+/// A control coefficient just below the seam must not move a full loop to the next turn.
+#[test]
+fn an_anchored_periodic_loop_keeps_its_face_chart() {
+    let cylinder = Surface::Cylinder { frame: about_z([0.; 3], false), radius: 3. };
+    let bottom = Curve::Circle { frame: about_z([0.; 3], false), radius: 3. };
+    let top = Curve::Circle { frame: about_z([0., 0., 1.], false), radius: 3. };
+    let seam = Curve::Line { start: [3., 0., 0.], end: [3., 0., 1.] };
+    for turn in [0., TAU] {
+        let chart = |p: [f64; 2]| [p[0] + turn, p[1]];
+        let line = |a, b| Curve2::Spline { knots: vec![0., 0., 1., 1.], points: vec![chart(a), chart(b)] };
+        let bottom_trim = Curve2::Spline { knots: vec![0., 0., 1e-6, TAU, TAU], points: vec![chart([0., 0.]), chart([-2e-6, 0.]), chart([TAU, 0.])] };
+        let top_trim = Curve2::Spline { knots: vec![0., 0., TAU, TAU], points: vec![chart([0., 1.]), chart([TAU, 1.])] };
+        let right = line([TAU, 0.], [TAU, 1.]);
+        let left = line([0., 0.], [0., 1.]);
+        let uses = vec![
+            EdgeUse { edge: 0, curve: &bottom, interval: [0., TAU], forward: true, tolerance: 0.0, given: Some(&bottom_trim) },
+            EdgeUse { edge: 1, curve: &seam, interval: [0., 1.], forward: true, tolerance: 0.0, given: Some(&right) },
+            EdgeUse { edge: 2, curve: &top, interval: [0., TAU], forward: false, tolerance: 0.0, given: Some(&top_trim) },
+            EdgeUse { edge: 1, curve: &seam, interval: [0., 1.], forward: false, tolerance: 0.0, given: Some(&left) },
+        ];
+        let domain = [[0., TAU], [0., 1.]];
+        for start in 0..uses.len() {
+            let mut rotated = uses.clone();
+            rotated.rotate_left(start);
+            let loops = pcurves_within(&cylinder, &[rotated.clone()], 2e-5, Some(domain)).unwrap();
+            for (u, pc) in rotated.iter().zip(&loops[0]) {
+                // The correction changes only which period contains the existing geometry.
+                assert!(lift_error(&cylinder, u.curve, u.interval, pc) <= 2e-5, "pcurve no longer lifts onto its edge");
+                let Curve2::Spline { knots, points } = pc else { panic!("trim changed kind") };
+                let Curve2::Spline { knots: given_knots, points: given_points } = u.given.unwrap() else { panic!("fixture trim") };
+                assert_eq!(knots, given_knots);
+                for (&[u, v], &[a, b]) in points.iter().zip(given_points) {
+                    assert!((u - (a - turn)).abs() < 1e-12 && v == b, "trim did not keep its face chart: {u} versus {}", a - turn);
+                }
+            }
+        }
+        // No seam proof, no full face box, or more than one loop: preserve the old result.
+        let mut unpaired = uses.clone();
+        unpaired[3].edge = 3;
+        let hole_curve = Curve::Circle { frame: about_z([0., 0., 0.5], false), radius: 3. };
+        let hole_pc = Curve2::Spline { knots: vec![0., 0., TAU, TAU], points: vec![[0., 0.5], [TAU, 0.5]] };
+        let hole = vec![EdgeUse { edge: 4, curve: &hole_curve, interval: [0., TAU], forward: false, tolerance: 0.0, given: Some(&hole_pc) }];
+        let multiple = (vec![uses.clone(), hole], Some(domain));
+        let partial = (vec![uses.clone()], Some([[0., TAU / 2.], [0., 1.]]));
+        for (loops, face) in [multiple, partial, (vec![unpaired], Some(domain))] {
+            let fallback = pcurves_within(&cylinder, &loops, 2e-5, None).unwrap();
+            assert_eq!(pcurves_within(&cylinder, &loops, 2e-5, face).unwrap(), fallback, "ambiguous chart changed");
+        }
+    }
+}
+
 /// A sphere bounded by one meridian used twice from pole to pole: each use runs straight into
 /// the poles, the two a period apart, and the loop runs along the poles' lines.
 #[test]

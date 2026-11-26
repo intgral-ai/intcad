@@ -852,10 +852,15 @@ jobs:
           # APT can otherwise select RISC-V Python to configure GLib.
           apt-get install -y --no-install-recommends ca-certificates curl git build-essential pkg-config python3:amd64 zstd
           sed -i '/^Architectures:/d; /^Types:/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          # Ubuntu's archive and ports publish security-pocket revisions independently.
+          # A Multi-Arch: same package then resolves to different revisions on the two
+          # architectures and nothing installs (for example krb5 -6ubuntu2.10 on amd64
+          # and -6ubuntu2.12 on riscv64). A cross-compile check needs one aligned
+          # revision, so the foreign architecture uses the release and updates pockets.
           cat >/etc/apt/sources.list.d/riscv64.sources <<'EOF'
           Types: deb
           URIs: http://ports.ubuntu.com/ubuntu-ports
-          Suites: noble noble-updates noble-backports noble-security
+          Suites: noble noble-updates noble-backports
           Components: main restricted universe multiverse
           Architectures: riscv64
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
