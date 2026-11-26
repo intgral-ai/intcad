@@ -879,23 +879,28 @@ test("attachment capability accounts for the MIME type and chosen adapter (INT-1
   assert.equal(reads("mastracode/stand-in/hello-1", [{ mediaType: "application/zip" }]), false, "the desktop only sends pictures and PDFs");
 });
 
-test("Copilot uses explicit live vision capability only on its signed-in route", async () => {
+test("Copilot requires advertised vision for SDK-listed models on its signed-in route", async () => {
   const registry = { models: { "github-copilot": ["former"] } };
   let signedIn = true;
+  let catalogFailed = false;
   let loads = 0;
   const reads = attachmentReader(registry, () => false, (provider: string) => provider === "github-copilot" && signedIn, async () => {
     loads++;
-    return [{ id: "text", supportsVision: false }, { id: "vision", supportsVision: true }, { id: "uncertain" }];
+    if (catalogFailed) throw new Error("catalog unavailable");
+    // The pinned SDK returns a boolean on every row: omitted upstream vision also becomes false.
+    return [{ id: "text", supportsVision: false }, { id: "vision", supportsVision: true }, { id: "omitted-upstream", supportsVision: false }];
   });
   const png = [{ mediaType: "image/png" }];
   assert.equal(await reads("github-copilot/text", png), false);
   assert.equal(await reads("github-copilot/vision", png), true);
-  assert.equal(await reads("github-copilot/uncertain", png), undefined);
+  assert.equal(await reads("github-copilot/omitted-upstream", png), false);
   assert.equal(await reads("github-copilot/former", png), undefined);
-  assert.notEqual(await reads("mastracode/github-copilot/text", png), false);
+  assert.equal(await reads("mastracode/github-copilot/text", png), undefined);
+  catalogFailed = true;
+  assert.equal(await reads("github-copilot/text", png), undefined);
   signedIn = false;
   assert.equal(await reads("github-copilot/text", png), undefined);
-  assert.equal(loads, 4);
+  assert.equal(loads, 5);
 });
 
 // ---- The session builder (session.mjs): Mastra Code's ACP session, without a vector store ---------

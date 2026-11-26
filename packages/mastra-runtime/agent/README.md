@@ -117,8 +117,10 @@ refuses both; `agent.mjs` takes them out and hands them to the session's `sendMe
 that turn's message (INT-1513). Just before submission, it checks the effective model and adapter
 against the message and any attachment types the SDK may retain from earlier turns, even on a
 text-only follow-up. A confirmed SDK cancellation before admission leaves no attachment history.
-DeepSeek and xAI's OAuth chat adapter cannot take PDFs. Signed-in Copilot uses its live vision
-catalog; an explicit negative refuses pictures, while an unlisted model stays unknown.
+DeepSeek and xAI's OAuth chat adapter cannot take PDFs. On signed-in Copilot, a model listed by
+the SDK must advertise vision to receive pictures. The SDK reports both explicit `false` and
+omitted upstream vision as `false`. An unlisted model, a failed catalog lookup, or no sign-in
+leaves the decision to the provider. Vision support does not establish PDF support.
 An incompatible turn is refused with kind `attachments` before a provider is asked. Stop also
 applies during model refresh or while a prompt is waiting in the SDK queue.
 

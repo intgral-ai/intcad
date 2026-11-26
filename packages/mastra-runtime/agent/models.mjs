@@ -57,8 +57,9 @@ export function attachmentReader(registry, supports, oauth = () => false, copilo
     if (pdf && (id.startsWith('deepseek/') || (id.startsWith('xai/') && oauth('xai')))) return false;
     const slash = id.indexOf('/');
     if (id.startsWith('github-copilot/')) {
-      // The pinned SDK uses a separate OAuth catalog, not models.dev. The SDK owns fetching
-      // and caching it. No vision metadata, no sign-in, or a failed lookup means unknown.
+      // The pinned SDK owns the OAuth catalog. A listed model must advertise vision for
+      // pictures: the SDK normalizes both explicit false and omitted upstream vision to
+      // false. An absent model, a failed lookup, or no sign-in leaves it to the provider.
       if (!files.some(file => String(file.mediaType).startsWith('image/')) || !oauth('github-copilot')) return undefined;
       return Promise.resolve().then(copilotCatalog).then(
         models => {
