@@ -24,7 +24,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 pub mod freeze;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod tickets;
 pub use freeze::{FrozenDataRef, FrozenProject};
 

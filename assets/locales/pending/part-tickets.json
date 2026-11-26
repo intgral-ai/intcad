@@ -1,0 +1,74 @@
+{
+  "en": {
+    "ui.tickets_one_at_a_time": "{id} is in progress. Finish it, or wait for its check, before starting another.",
+    "ui.tickets_start_message": "Work on part ticket {id} alone: {title}.",
+    "ui.tickets_check_not_started": "The check did not start.",
+    "cmd.ticket.list": "List Part Tickets",
+    "cmd.ticket.inspect": "Inspect Part Ticket",
+    "cmd.ticket.draft": "Draft Part Ticket",
+    "cmd.ticket.update": "Update Part Ticket"
+  },
+  "zh": {
+    "ui.tickets_one_at_a_time": "{id} 正在进行。先做完它或等它的检查，再开始另一张。",
+    "ui.tickets_start_message": "只做部件票 {id}：{title}。",
+    "ui.tickets_check_not_started": "检查没有开始。",
+    "cmd.ticket.list": "列出部件票",
+    "cmd.ticket.inspect": "查看部件票",
+    "cmd.ticket.draft": "起草部件票",
+    "cmd.ticket.update": "更新部件票"
+  },
+  "ja": {
+    "ui.tickets_one_at_a_time": "{id} が進行中です。終えるかチェックを待ってから次を開始してください。",
+    "ui.tickets_start_message": "部品チケット {id} だけに取り組む: {title}。",
+    "ui.tickets_check_not_started": "チェックは開始されませんでした。",
+    "cmd.ticket.list": "部品チケットを一覧",
+    "cmd.ticket.inspect": "部品チケットを表示",
+    "cmd.ticket.draft": "部品チケットを下書き",
+    "cmd.ticket.update": "部品チケットを更新"
+  },
+  "de": {
+    "ui.tickets_one_at_a_time": "{id} ist in Arbeit. Schließen Sie es ab oder warten Sie auf seine Prüfung, bevor Sie ein weiteres starten.",
+    "ui.tickets_start_message": "Arbeite nur an Bauteil-Ticket {id}: {title}.",
+    "ui.tickets_check_not_started": "Die Prüfung hat nicht begonnen.",
+    "cmd.ticket.list": "Bauteil-Tickets auflisten",
+    "cmd.ticket.inspect": "Bauteil-Ticket ansehen",
+    "cmd.ticket.draft": "Bauteil-Ticket entwerfen",
+    "cmd.ticket.update": "Bauteil-Ticket aktualisieren"
+  },
+  "ko": {
+    "ui.tickets_one_at_a_time": "{id}이(가) 진행 중입니다. 끝내거나 검사를 기다린 뒤 다른 티켓을 시작하세요.",
+    "ui.tickets_start_message": "부품 티켓 {id}만 작업: {title}.",
+    "ui.tickets_check_not_started": "검사가 시작되지 않았습니다.",
+    "cmd.ticket.list": "부품 티켓 목록",
+    "cmd.ticket.inspect": "부품 티켓 보기",
+    "cmd.ticket.draft": "부품 티켓 초안",
+    "cmd.ticket.update": "부품 티켓 업데이트"
+  },
+  "ar": {
+    "ui.tickets_one_at_a_time": "{id} قيد التنفيذ. أنهِها أو انتظر فحصها قبل بدء أخرى.",
+    "ui.tickets_start_message": "اعمل على تذكرة القطعة {id} وحدها: {title}.",
+    "ui.tickets_check_not_started": "لم يبدأ الفحص.",
+    "cmd.ticket.list": "عرض تذاكر القطع",
+    "cmd.ticket.inspect": "فحص تذكرة قطعة",
+    "cmd.ticket.draft": "كتابة مسودة تذكرة قطعة",
+    "cmd.ticket.update": "تحديث تذكرة قطعة"
+  },
+  "he": {
+    "ui.tickets_one_at_a_time": "{id} בעבודה. סיימו אותו או חכו לבדיקה שלו לפני שמתחילים אחר.",
+    "ui.tickets_start_message": "עבוד רק על כרטיס החלק {id}: {title}.",
+    "ui.tickets_check_not_started": "הבדיקה לא התחילה.",
+    "cmd.ticket.list": "הצגת כרטיסי חלקים",
+    "cmd.ticket.inspect": "בדיקת כרטיס חלק",
+    "cmd.ticket.draft": "ניסוח כרטיס חלק",
+    "cmd.ticket.update": "עדכון כרטיס חלק"
+  },
+  "vi": {
+    "ui.tickets_one_at_a_time": "{id} đang làm. Hãy hoàn thành hoặc chờ kiểm tra của nó trước khi bắt đầu phiếu khác.",
+    "ui.tickets_start_message": "Chỉ làm phiếu chi tiết {id}: {title}.",
+    "ui.tickets_check_not_started": "Kiểm tra chưa bắt đầu.",
+    "cmd.ticket.list": "Liệt kê phiếu chi tiết",
+    "cmd.ticket.inspect": "Xem phiếu chi tiết",
+    "cmd.ticket.draft": "Soạn phiếu chi tiết",
+    "cmd.ticket.update": "Cập nhật phiếu chi tiết"
+  }
+}

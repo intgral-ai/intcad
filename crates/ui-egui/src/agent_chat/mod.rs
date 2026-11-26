@@ -1822,6 +1822,13 @@ pub(crate) fn dfm_state() -> DfmState {
     DfmState { running: false }
 }
 
+/// Install a scripted agent that is ready to take a message (other areas' tests).
+#[cfg(test)]
+pub(crate) fn install_test_backend(app: &mut SolveApp, backend: Box<dyn ChatBackend>) {
+    app.agent_chat.backend = Some(backend);
+    app.agent_chat.state = Some(State::Ready);
+}
+
 /// Put a ready attachment on the next message and open the Assistant, so the person sees the chip
 /// they dropped there. A full message is refused with its reason, as a dropped file is.
 pub(crate) fn attach_ready(app: &mut SolveApp, file: attach::Attachment) -> Result<(), String> {
@@ -2382,7 +2389,10 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     let skill_note = skill.prompt_note().map(|note| task_runtime::prompt_note(skill, note));
     #[cfg(target_arch = "wasm32")]
     let skill_note = skill.prompt_note();
-    let notes: Vec<&str> = skill_note.iter().map(String::as_str).chain(reviewed.as_deref()).chain(note).chain(changed.as_deref()).collect();
+    // The project's part tickets: the one in progress in full, the others by id, title and state.
+    let tickets = crate::tickets::note(app);
+    let notes: Vec<&str> =
+        skill_note.iter().map(String::as_str).chain(reviewed.as_deref()).chain(note).chain(tickets.as_deref()).chain(changed.as_deref()).collect();
     let lead = if notes.is_empty() { text.clone() } else { format!("{}\n\n{text}", notes.join("\n")) };
     // The whole message stays within the cap: the files' text gets what the words leave.
     let budget = MAX_PROMPT.saturating_sub(lead.chars().count() + FILE_NAMES_ROOM);

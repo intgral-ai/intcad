@@ -17,7 +17,7 @@ use solidcraft_engine::entitlement::{
 };
 
 #[derive(Clone, Default)]
-struct CountingBilling {
+pub(crate) struct CountingBilling {
     admits: Arc<Mutex<usize>>,
     commits: Arc<Mutex<usize>>,
     releases: Arc<Mutex<usize>>,
@@ -30,7 +30,7 @@ impl CountingBilling {
         *self.admits.lock().expect("count")
     }
 
-    fn commits(&self) -> usize {
+    pub(crate) fn commits(&self) -> usize {
         *self.commits.lock().expect("count")
     }
 
@@ -68,7 +68,7 @@ impl BillingPort for CountingBilling {
 /// A local durable-journal double: review mappings and operation rows only. It never ships and
 /// never performs file or network IO.
 #[derive(Clone, Default)]
-struct ReviewLedger {
+pub(crate) struct ReviewLedger {
     reviews: Arc<Mutex<BTreeMap<String, OperationId>>>,
     records: Arc<Mutex<BTreeMap<String, OperationRecord>>>,
     /// The durable scope binding each operation was admitted under, when the test gives it one.
@@ -396,7 +396,8 @@ impl MonotonicClock for RecoveryClock {
     }
 }
 
-fn install(app: &mut crate::SolveApp, billing: &CountingBilling, ledger: &ReviewLedger) {
+/// Stand-in billing, journal and account for the Review entry (also used by the Tickets tests).
+pub(crate) fn install(app: &mut crate::SolveApp, billing: &CountingBilling, ledger: &ReviewLedger) {
     let mut budget = BudgetTable::unverified_default();
     budget.set_verified(Capability::Review, EntryCategory::ReviewPanel, Duration::from_secs(30));
     app.install_billing(Box::new(billing.clone()), budget);

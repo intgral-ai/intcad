@@ -236,12 +236,19 @@ fn file(root: &Path, id: &str) -> Result<PathBuf, TicketError> {
     Ok(folder(root).join(format!("{id}.json")))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn now() -> String {
     let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0);
     crate::validation::timestamp(ms)
+}
+
+/// The browser build keeps no project folder, so no ticket is ever written there.
+#[cfg(target_arch = "wasm32")]
+fn now() -> String {
+    String::new()
 }
 
 /// Every ticket of the project, by number. A project with no tickets has an empty list.
@@ -509,16 +516,17 @@ pub fn unblock(root: &Path, id: &str, note: Option<String>) -> Result<Ticket, Ti
     })
 }
 
-/// The app started the run of a ticket's asked-for check.
+/// The app started the run of a ticket's asked-for check (`run` empty: its id is known only once
+/// it has a report).
 pub fn check_started(root: &Path, id: &str, run: &str) -> Result<Ticket, TicketError> {
-    let run = run.to_string();
-    step(root, id, Actor::App, "check_started", None, Some(run.clone()), |ticket| {
+    let run = Some(run.to_string()).filter(|run| !run.is_empty());
+    step(root, id, Actor::App, "check_started", None, run.clone(), |ticket| {
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "a check runs for the ticket in progress"));
         }
         ticket.check = Some(Check {
             state: CheckState::Running,
-            run: Some(run),
+            run,
             outcome: None,
             counts: BTreeMap::new(),
             freshness: None,
