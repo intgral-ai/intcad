@@ -49,7 +49,7 @@ fi
 export PATH="$RUNDIR/bin:$HOME/.npm-global/bin:$HOME/.local/bin:$PATH"
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 export NSM_AGENT NSM_OUTPUT="$OUT"
-TOKEN=${NSM_TOKEN:-$(openssl rand -hex 32)}
+TOKEN=$(openssl rand -hex 32)
 printf '%s\n' "$TOKEN" > "$OUT/token"
 
 dbus-run-session -- bash -s -- "$HERE/next_step_harness.sh" "$APP" "$OUT" "$H" "$RUNDIR" "${NSM_PORT:-9493}" "$TOKEN" "$HERE/$NSM_SCRIPT" "$@" <<'BASH'
@@ -74,7 +74,7 @@ env WAYLAND_DISPLAY="$SOCK" HOME="$H" XDG_CONFIG_HOME="$H/.config" XDG_DATA_HOME
   "$APP" --control "$PORT" > "$OUT/app.log" 2>&1 &
 APP_PID=$!
 pids+=("$APP_PID")
-wait_for "$APP_PID" 120 control_ready "$PORT"
+wait_for_control "$APP_PID" "$PORT" "$TOKEN"
 if [[ $1 == serve ]]; then
   printf 'ready\n' > "$OUT/serving"
   wait "$APP_PID"
