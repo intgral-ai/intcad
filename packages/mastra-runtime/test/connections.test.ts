@@ -12,7 +12,7 @@ const agentFolder = import.meta.url.includes("/dist/test/") ? "../../agent/" : "
 const load = (name: string): Promise<Json> => import(new URL(agentFolder + name, import.meta.url).href);
 const { Connections, METHODS, customId } = await load("connections.mjs");
 const { holdCallbackPorts } = await load("callback.mjs");
-const { isChatModel, orderModelOptions, releaseDates } = await load("models.mjs");
+const { attachmentReader, isChatModel, orderModelOptions, releaseDates } = await load("models.mjs");
 const { classifyFailure, classifySignInFailure } = await load("problems.mjs");
 const { intcadAgent } = await load("agent.mjs");
 const { keepKeysFromCommands, keyVariables, withoutParams } = await load("secrets.mjs");
@@ -732,6 +732,20 @@ test("a message's pictures and PDFs go to the model with that message only, and 
   assert.equal(sent.length, 0);
   assert.deepEqual(await agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "words only" }] }), { stopReason: "end_turn" });
   assert.deepEqual(sent.splice(0), [{ content: "words only" }]);
+});
+
+test("a message's files are not sent to a model the catalog lists as reading none, nor anything but pictures to DeepSeek (INT-1513)", () => {
+  const registry = { models: { deepseek: ["deepseek-v4-pro", "deepseek-v4-flash"], anthropic: ["claude-sonnet-4-5"] } };
+  // As Mastra's `modelSupportsAttachments`: no also for a model it does not know.
+  const supports = (id: string) => ["deepseek/deepseek-v4-flash", "anthropic/claude-sonnet-4-5"].includes(id);
+  const reads = attachmentReader(registry, supports);
+  const [picture, pdf] = [[{ mediaType: "image/png" }], [{ mediaType: "application/pdf" }]];
+  assert.equal(reads("deepseek/deepseek-v4-pro", picture), false);
+  assert.equal(reads("deepseek/deepseek-v4-flash", picture), true);
+  assert.equal(reads("deepseek/deepseek-v4-flash", [...picture, ...pdf]), false, "DeepSeek's adapter would leave the PDF out");
+  assert.equal(reads("anthropic/claude-sonnet-4-5", pdf), true);
+  assert.equal(reads("anthropic/claude-sonnet-9", picture), undefined, "newer than the catalog: sent, and the provider answers");
+  assert.equal(reads("mastracode/stand-in/hello-1", pdf), undefined, "a custom address");
 });
 
 // ---- The session builder (session.mjs): Mastra Code's ACP session, without a vector store ---------

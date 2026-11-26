@@ -1,4 +1,4 @@
-// Which models the picker lists, and in what order.
+// Which models the picker lists, and in what order; and which a message's files are not sent to.
 
 // Names of models that cannot hold a conversation: pictures, sound, vectors, live audio, moderation.
 const NOT_CHAT = /embedding|image|imagine|realtime|lyria|veo|imagen|tts|audio|live|whisper|moderation|-video/i;
@@ -40,4 +40,20 @@ export function newestFirst(dates) {
 export function orderModelOptions(options, dates, current, typed = () => false) {
   const order = newestFirst(dates);
   return options.filter(option => option.value === current || typed(option.value) || isChatModel(option.value)).sort((a, b) => order(a.value, b.value));
+}
+
+/**
+ * `(model id, files) => false` when the model cannot read those files of a message (agent.mjs,
+ * `filesOf`); true or undefined otherwise. `supports` is Mastra's `modelSupportsAttachments`, which
+ * answers from the catalog Mastra ships (models.dev's `attachment`) and says no also for a model the
+ * catalog does not know. Its no is taken only for a model the registry lists: a newer model, or one
+ * of a custom address, is sent the files and its provider answers. DeepSeek is sent pictures only:
+ * Mastra's adapter for it leaves any other file out of the request without a word.
+ */
+export function attachmentReader(registry, supports) {
+  return (id, files = []) => {
+    if (id.startsWith('deepseek/') && files.some(file => !String(file.mediaType).startsWith('image/'))) return false;
+    const slash = id.indexOf('/');
+    return slash > 0 && registry?.models?.[id.slice(0, slash)]?.includes(id.slice(slash + 1)) ? supports(id) : undefined;
+  };
 }

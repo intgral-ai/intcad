@@ -18,7 +18,7 @@ import { holdCallbackPorts } from './callback.mjs';
 import { cadBridge } from './cad.mjs';
 import { Connections, KEYS } from './connections.mjs';
 import { deniedFolders, keepFilesFrom } from './fence.mjs';
-import { releaseDates } from './models.mjs';
+import { attachmentReader, releaseDates } from './models.mjs';
 import { keepKeysFromCommands, keyVariables, withoutParams } from './secrets.mjs';
 import { sessionBuilder, sweepSessionFolders } from './session.mjs';
 import { installSkillSets, setsToInstall } from './skills.mjs';
@@ -116,13 +116,8 @@ try {
 }
 const dates = releaseDates(registry);
 const keyEnv = id => [registry.providers?.[id]?.apiKeyEnvVar ?? []].flat();
-// Whether a model reads pictures and documents, by the catalog Mastra ships (models.dev's
-// `attachment`). Its "no" is taken only for a model that catalog lists: a newer model, or one of a
-// custom address, is sent them, and its provider answers.
-const takesAttachments = id => {
-  const slash = id.indexOf('/');
-  return slash > 0 && registry.models?.[id.slice(0, slash)]?.includes(id.slice(slash + 1)) ? modelSupportsAttachments(id) : undefined;
-};
+// Which models a message's pictures and documents are not sent to (models.mjs).
+const takesAttachments = attachmentReader(registry, modelSupportsAttachments);
 
 // A key reaches Mastra through this process's environment, and only the app puts one there
 // (`_intcad/connections/setup`). One that happens to be in the environment the app was started from

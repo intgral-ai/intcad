@@ -47,8 +47,8 @@ const turnFiles = new AsyncLocalStorage();
  * @param connections        the Connections of this process
  * @param dates              () => Map of release dates by model id; dates learned from Mastra's catalog are added to it
  * @param reloadSignIns      () => makes Mastra read its sign-in file again
- * @param takesAttachments   (model id) => false when Mastra's catalog says the model reads no
- *                           pictures or documents; true or undefined otherwise
+ * @param takesAttachments   (model id, files) => false when the model cannot read those files
+ *                           (models.mjs, `attachmentReader`); true or undefined otherwise
  */
 export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns, cad, takesAttachments = () => undefined }) {
   return class IntcadAgent extends Base {
@@ -235,8 +235,8 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
         throw new RequestError(INTERNAL, `no connection serves ${using}`, { intcad: { kind: 'model', prefix: connections.prefixOf(using, { known: true }) } });
       }
       const { rest, files } = filesOf(request.prompt);
-      // A model the catalog says reads none is not sent them: the Assistant says so instead.
-      if (files.length && takesAttachments(using) === false) {
+      // A model that cannot read them is not sent them: the Assistant says so instead.
+      if (files.length && takesAttachments(using, files) === false) {
         throw new RequestError(INTERNAL, `${using} reads no pictures or documents`, { intcad: { kind: 'attachments', prefix: connections.prefixOf(using) } });
       }
       this.#gate.prompted(request.sessionId);
