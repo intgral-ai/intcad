@@ -1,10 +1,11 @@
 //! `ticket.list`, `ticket.inspect`, `ticket.draft` and `ticket.update`: the agent's way to the
 //! project's part tickets (`crate::project::tickets`).
 //!
-//! These four are all there is. Drafting makes drafts only; an update asks for the check of the
-//! ticket in progress or says it is blocked. Confirming a draft, starting a ticket and marking it
-//! done are a person's buttons in the Tickets panel, so no command does them. Every step a command
-//! makes is recorded as the agent's.
+//! These four are all there is. Drafting makes drafts only; an update says the ticket the
+//! Assistant works is finished, or that it is blocked or taken up again. Accepting or declining a
+//! draft, handing a ticket over, starting its check, setting a state, finishing, editing,
+//! deleting and restoring are a person's buttons in the Tickets panel, so no command does them.
+//! Every step a command makes is recorded as the agent's.
 
 use std::path::{Path, PathBuf};
 
@@ -30,7 +31,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         .doc_only()
         .contract(&LIST_CONTRACT)
         .output(crate::schema::output_schema_for::<TicketsReply>)
-        .params("→ tickets: every part ticket of the open project, the top ticket first, each with id, parent, title, text, requirements, part, state and check"),
+        .params(
+            "→ tickets: every part ticket of the open project by number, each with id, parent, title, text, requirements, parts, attachments, waits, \
+             worker, checks, state, check and deleted (a person deleted it; it can be restored)",
+        ),
     CommandSpec::new("ticket.inspect", "Inspect Part Ticket", crate::checked!("ticket.inspect", inspect))
         .icon("settings")
         .noundo()
@@ -45,9 +49,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&DRAFT_CONTRACT)
         .output(crate::schema::output_schema_for::<TicketReply>)
         .params(
-            "title; text?; requirements?: [one line each, with numbers and units]; parent?: the top ticket's id; part?: {kind: component | body, id} \
-             → a draft. A person confirms it in the Tickets panel before anyone works on it. The first ticket of a project is its top ticket; \
-             later ones go under it, one per part",
+            "title; text?; requirements?: [one line each, with numbers and units]; parts?: [{kind: component | body, id}], none, one or several; \
+             attachments?: [paths of files in the project folder]; parent?: a ticket's id, to draft a sub-ticket (one level deep); \
+             waits?: [ids of tickets it waits for]; checks?: false when no check applies; view?: true to attach a picture of the 3D view \
+             → a draft, one piece of work. There is no top ticket. A person accepts it in the Tickets panel before anyone works on it",
         ),
     CommandSpec::new("ticket.update", "Update Part Ticket", crate::checked!("ticket.update", update))
         .icon("settings")
@@ -56,8 +61,9 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&UPDATE_CONTRACT)
         .output(crate::schema::output_schema_for::<TicketReply>)
         .params(
-            "id; action: check (the ticket in progress has its changes: run its check; it then waits for a person) | block (reason required) | unblock; \
-             reason? → the ticket. A person confirms drafts and marks tickets done in the Tickets panel; no command does either",
+            "id; action: finished (the ticket you work has its changes; a person starts its check, or confirms it when no check applies) \
+             | block (reason required) | unblock; reason? → the ticket. No check starts by itself. A person accepts drafts, starts checks, \
+             changes states and finishes tickets in the Tickets panel; no command does those",
         ),
 ];
 
@@ -96,7 +102,11 @@ fn draft(s: &mut Session, p: &Value) -> Result<Value> {
         text: params.text.unwrap_or_default(),
         requirements: params.requirements,
         parent: params.parent,
-        part: params.part,
+        parts: params.parts,
+        attachments: params.attachments,
+        waits: params.waits,
+        checks: params.checks,
+        view: params.view,
     };
     let ticket = tickets::draft(&root, draft, tickets::Actor::Agent).map_err(|error| refusal("ticket.draft", error))?;
     reply("ticket.draft", &root, ticket)
@@ -107,13 +117,22 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
     let root = root(s, "ticket.update")?;
     let id = params.id.trim();
     let ticket = match params.action.trim() {
-        "check" => tickets::ask_check(&root, id, tickets::Actor::Agent, params.reason),
+        "finished" => tickets::finished(&root, id, params.reason),
         "block" => tickets::block(&root, id, params.reason.as_deref().unwrap_or_default()),
         "unblock" => tickets::unblock(&root, id, params.reason),
-        "confirm" | "confirmed" | "done" | "complete" | "start" => {
-            return Err(bad("ticket.update", "only a person confirms, starts or marks a ticket done, with the buttons in the Tickets panel"));
+        "check" => {
+            return Err(bad(
+                "ticket.update",
+                "no check starts by itself: say `finished`, and a person starts the ticket's check in the Tickets panel",
+            ));
         }
-        other => return Err(bad("ticket.update", format!("`{other}` is not an action; use check, block or unblock"))),
+        "confirm" | "confirmed" | "accept" | "decline" | "done" | "complete" | "start" | "state" | "reopen" | "delete" | "restore" => {
+            return Err(bad(
+                "ticket.update",
+                "only a person accepts, starts, changes the state of, finishes, deletes or restores a ticket, with the buttons in the Tickets panel",
+            ));
+        }
+        other => return Err(bad("ticket.update", format!("`{other}` is not an action; use finished, block or unblock"))),
     }
     .map_err(|error| refusal("ticket.update", error))?;
     reply("ticket.update", &root, ticket)

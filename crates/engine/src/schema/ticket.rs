@@ -18,33 +18,49 @@ pub struct TicketInspectParams {
     pub id: String,
 }
 
-/// Draft one ticket. A draft waits for a person to confirm it in the Tickets panel.
+/// Draft one ticket: a piece of work. A draft waits for a person to accept it in the Tickets panel.
+/// Unknown keys are refused, so a draft in the old one-`part` shape does not lose its part.
 #[derive(Debug, Deserialize, JsonSchema)]
-#[schemars(deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct TicketDraftParams {
-    /// The part's name and what it must meet, in a few words.
+    /// What is to be done, in a few words.
     pub title: String,
     /// What the ticket asks for, in full.
     #[serde(default)]
     pub text: Option<String>,
-    /// The requirement lines it carries, one each, with numbers and units.
+    /// The requirement lines it carries, one each, with numbers and units; may be empty.
     #[serde(default)]
     pub requirements: Vec<String>,
-    /// The top ticket's id. Left out: the new ticket goes under the top ticket, or becomes the top
-    /// ticket when the project has none yet.
+    /// The ticket it is a sub-ticket of (one level deep). Left out: a ticket of its own; there is
+    /// no top ticket.
     #[serde(default)]
     pub parent: Option<String>,
-    /// The part it stands for: `{kind: component | body, id}`.
+    /// The parts it bears on, none, one or several: `[{kind: component | body, id}]`.
     #[serde(default)]
-    pub part: Option<Part>,
+    pub parts: Vec<Part>,
+    /// Files already in the project folder it points to, as paths relative to that folder (never
+    /// inside `.intcad/`).
+    #[serde(default)]
+    pub attachments: Vec<String>,
+    /// The tickets it waits for, such as `["T-3"]`: the Assistant takes it once those are done.
+    #[serde(default)]
+    pub waits: Vec<String>,
+    /// Whether a check applies to it; left out: one does. `false` for a ticket no check can
+    /// judge (a discussion of a constraint, say).
+    #[serde(default)]
+    pub checks: Option<bool>,
+    /// Ask the app to attach a picture of the 3D view as it is now.
+    #[serde(default)]
+    pub view: bool,
 }
 
-/// Ask for the check of the ticket in progress, or say it is blocked or taken up again.
+/// Say the ticket the Assistant works is finished, or that it is blocked or taken up again.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TicketUpdateParams {
     pub id: String,
-    /// `check` (the changes are made; run this ticket's check), `block` or `unblock`.
+    /// `finished` (its changes are made; a person starts its check, or confirms it when no check
+    /// applies), `block` (with the reason) or `unblock`.
     pub action: String,
     /// Why it is blocked, or a note for the record.
     #[serde(default)]

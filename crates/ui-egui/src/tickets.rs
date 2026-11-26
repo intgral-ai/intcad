@@ -3,16 +3,17 @@
 //! note every message carries and the check bound to a ticket.
 //!
 //! The tickets are the project's own (`solidcraft_engine::project::tickets`). The agent drafts
-//! them and asks for a ticket's check through the `ticket.*` commands; a person confirms a draft,
-//! starts a confirmed ticket, marks a ticket done, and creates, edits or deletes one of their own
-//! through the functions here, which the view's buttons call and no command reaches. Each such step
-//! names the revision the person saw, and the store refuses it when the ticket has changed since.
-//! The view's messages come in on its own channel ([`receive`]); the Assistant's view refuses them.
-//! Start sends the Assistant one message about that ticket, with its chip, and while a ticket is
-//! in progress every message carries it in full and the others by id, title and state ([`note`]).
-//! When the agent asks for the check, the app runs the Review panel's own DFM check (the same
-//! controlled entry, so a refusal is the same refusal) and binds the run to the ticket, which then
-//! waits for the person with the run's own outcome words: no tick and no "passed" of its own.
+//! them and says it has finished the ticket it works through the `ticket.*` commands; a person
+//! accepts a draft, hands a confirmed ticket to the Assistant, starts a check, finishes a ticket,
+//! and creates, edits or deletes one through the functions here, which the view's buttons call and
+//! no command reaches. Each such step names the revision the person saw, and the store refuses it
+//! when the ticket has changed since. The view's messages come in on its own channel ([`receive`]);
+//! the Assistant's view refuses them. Start sends the Assistant one message about that ticket, with
+//! its chip, and while the Assistant works a ticket every message carries it in full and the others
+//! by id, title and state ([`note`]). When a person asks for the check, the app runs the Review
+//! panel's own DFM check (the same controlled entry, so a refusal is the same refusal) and binds the
+//! run to the ticket, which then waits for the person with the run's own outcome words: no tick and
+//! no "passed" of its own.
 //!
 //! Experiment (branch `experiment/part-tickets`, 2026-11-26): the demo of the part-ticket loop.
 
@@ -137,9 +138,13 @@ pub fn refresh(app: &mut SolveApp) {
 #[cfg(target_arch = "wasm32")]
 pub fn refresh(_app: &mut SolveApp) {}
 
-/// The ticket in progress: the one the agent works on.
+/// The ticket in progress with the Assistant: the one the agent works on (not one a person works,
+/// nor a deleted one).
 pub fn current(app: &SolveApp) -> Option<&Ticket> {
-    app.tickets.tickets.iter().find(|ticket| ticket.state == TicketState::InProgress)
+    app.tickets
+        .tickets
+        .iter()
+        .find(|ticket| ticket.state == TicketState::InProgress && ticket.worker == Some(tickets::Worker::Assistant) && !ticket.deleted)
 }
 
 /// Run a person's or the app's step on the store and read it again; a refusal is kept as the view's
@@ -160,13 +165,14 @@ fn apply(app: &mut SolveApp, step: impl FnOnce(&std::path::Path) -> Result<Ticke
     }
 }
 
-/// Confirm: a person's step on a draft they saw at revision `seen`.
+/// Confirm (接受): a person's step on a draft they saw at revision `seen`, the draft alone; the
+/// page's choice to take its sub-tickets with it is the second wiring brief's.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn confirm(app: &mut SolveApp, id: &str, seen: u64) {
-    apply(app, |root| tickets::confirm(root, id, seen));
+    apply(app, |root| tickets::confirm(root, id, seen, false));
 }
 
-/// Done: a person's step on a ticket waiting for confirmation, seen at revision `seen`.
+/// Done: a person finishes a ticket seen at revision `seen`, past the store's gate.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn done(app: &mut SolveApp, id: &str, seen: u64) {
     apply(app, |root| tickets::done(root, id, seen));
@@ -178,13 +184,13 @@ pub fn create(app: &mut SolveApp, draft: tickets::Draft) -> Option<Ticket> {
     apply(app, |root| tickets::create(root, draft))
 }
 
-/// Edit: a person changes the words of a draft or a confirmed ticket seen at revision `seen`.
+/// Edit: a person changes a ticket seen at revision `seen`, in any state.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn edit(app: &mut SolveApp, id: &str, seen: u64, edit: tickets::Edit) {
     apply(app, |root| tickets::edit(root, id, seen, edit));
 }
 
-/// Delete: a person removes a draft or a confirmed ticket seen at revision `seen`; its page closes.
+/// Delete: a person deletes a ticket seen at revision `seen` (kept, restorable); its page closes.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn delete(app: &mut SolveApp, id: &str, seen: u64) {
     if apply(app, |root| tickets::delete(root, id, seen)).is_some() && app.tickets.selected.as_deref() == Some(id) {
@@ -193,11 +199,11 @@ pub fn delete(app: &mut SolveApp, id: &str, seen: u64) {
     }
 }
 
-/// Run check (dev-agent's addition, 2026-11-26): the person asks for the check of the ticket in
-/// progress, when the agent did not, or again after a refusal.
+/// Run check: the person starts the check of a ticket in progress, seen at revision `seen`; only a
+/// person starts one (D-90). [`tick`] then starts its run.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn ask_check(app: &mut SolveApp, id: &str) {
-    apply(app, |root| tickets::ask_check(root, id, tickets::Actor::Person, None));
+pub fn ask_check(app: &mut SolveApp, id: &str, seen: u64) {
+    apply(app, |root| tickets::ask_check(root, id, seen));
 }
 
 /// Start: the ticket (seen at revision `seen`) goes in progress and the Assistant gets one message
@@ -230,8 +236,9 @@ pub fn start(app: &mut SolveApp, ctx: &egui::Context, id: &str, seen: u64) {
 #[cfg(not(target_arch = "wasm32"))]
 fn summary(ticket: &Ticket) -> String {
     let mut out = format!("{} \"{}\" ({})", ticket.id, ticket.title, ticket.state.as_str());
-    if let Some(part) = &ticket.part {
-        out += &format!("\nPart: {} {}", part.kind, part.id);
+    if !ticket.parts.is_empty() {
+        let parts: Vec<String> = ticket.parts.iter().map(|part| format!("{} {}", part.kind, part.id)).collect();
+        out += &format!("\nParts: {}", parts.join(", "));
     }
     if let Some(parent) = &ticket.parent {
         out += &format!("\nUnder: {parent}");
@@ -265,20 +272,22 @@ pub fn note(app: &mut SolveApp) -> Option<String> {
         if all.is_empty() {
             return Some(
                 "Part tickets: this project has none yet. When asked to make tickets, or to read requirements.md, draft them with the \
-                 execute tool, command ticket.draft: first one top ticket for the project, then one per part (title, text, requirement \
-                 lines with numbers and units, part: {kind: component | body, id}). A person confirms each draft in the Tickets panel."
+                 execute tool, command ticket.draft: one ticket per piece of work, with no top ticket (title, text, requirement lines \
+                 with numbers and units, parts: [{kind: component | body, id}], parent for a sub-ticket, waits for the tickets it waits \
+                 for). A person accepts each draft in the Tickets panel."
                     .into(),
             );
         }
         let mut out = String::from(
-            "Part tickets of this project (a person confirms drafts, starts tickets and marks them done in the Tickets panel; no command does those).",
+            "Part tickets of this project (a person accepts drafts, hands tickets over, starts checks and finishes tickets in the Tickets panel; \
+             no command does those).",
         );
         match current(app) {
             Some(ticket) => {
                 out += &format!(
                     "\nYou are working on {} alone. Change only what it asks for.\n{}\nWhen its changes are made, call execute with \
-                     ticket.update {{\"id\": \"{}\", \"action\": \"check\"}}: the app runs its check and the ticket waits for the person. \
-                     If you cannot go on, use action block with the reason.",
+                     ticket.update {{\"id\": \"{}\", \"action\": \"finished\"}}: a person then starts its check (no check starts by \
+                     itself). If you cannot go on, use action block with the reason.",
                     ticket.id,
                     summary(ticket),
                     ticket.id
@@ -288,7 +297,7 @@ pub fn note(app: &mut SolveApp) -> Option<String> {
         }
         let others: Vec<String> = all
             .iter()
-            .filter(|ticket| current(app).is_none_or(|working| working.id != ticket.id))
+            .filter(|ticket| !ticket.deleted && current(app).is_none_or(|working| working.id != ticket.id))
             .map(|ticket| format!("{} {} ({})", ticket.id, ticket.title, ticket.state.as_str()))
             .collect();
         if !others.is_empty() {
@@ -323,7 +332,7 @@ fn run_result(app: &mut SolveApp, run: &str) -> Option<Result<crate::dfm_chat::C
     })
 }
 
-/// Each frame: when a ticket's check was asked for, start its run; when that run has a report,
+/// Each frame: when a person asked for a ticket's check, start its run; when that run has a report,
 /// bind it and the ticket waits for the person; a refusal or a run that did not finish stays on
 /// the ticket with its reason.
 #[cfg(not(target_arch = "wasm32"))]
@@ -338,7 +347,7 @@ pub fn tick(app: &mut SolveApp) {
                 .tickets
                 .tickets
                 .iter()
-                .find(|t| t.state == TicketState::InProgress && t.check.as_ref().is_some_and(|c| c.state == CheckState::Asked))
+                .find(|t| t.state == TicketState::InProgress && !t.deleted && t.check.as_ref().is_some_and(|c| c.state == CheckState::Asked))
                 .map(|t| t.id.clone());
             let Some(id) = asked else { return };
             if app.dfm_review.running {
@@ -401,13 +410,30 @@ pub fn page_state(app: &mut SolveApp) -> String {
         "language": app.preferences.language,
         "strings": page_strings(),
         "project": project,
-        "tickets": tickets.tickets,
+        "tickets": tickets.tickets.iter().map(page_ticket).collect::<Vec<_>>(),
         "selected": tickets.selected,
         "record": tickets.record,
         "freshness": tickets.freshness,
         "error": tickets.error,
     })
     .to_string()
+}
+
+/// A ticket as the page reads it (`Ticket` in host.ts): the store's own fields, with each
+/// attachment's path as `{path, name, picture}`; `picture` (the key a thumbnail is served by) is
+/// none until the host serves them.
+#[cfg(not(target_arch = "wasm32"))]
+fn page_ticket(ticket: &Ticket) -> serde_json::Value {
+    let mut value = serde_json::to_value(ticket).unwrap_or_default();
+    if let Some(fields) = value.as_object_mut() {
+        let attachments = ticket
+            .attachments
+            .iter()
+            .map(|path| serde_json::json!({ "path": path, "name": path.rsplit('/').next().unwrap_or(path), "picture": null }))
+            .collect();
+        fields.insert("attachments".into(), serde_json::Value::Array(attachments));
+    }
+    value
 }
 
 /// The longest list of requirement lines the page may send; the store's own limit is lower.
@@ -454,9 +480,10 @@ fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &serde_json:
         let body = text("text").unwrap_or_default().to_string();
         let lines = match action.get("requirements") {
             None | Some(Value::Null) => Vec::new(),
-            Some(Value::Array(lines)) if lines.len() <= MAX_SENT_LINES => {
-                lines.iter().map(|line| line.as_str().map(str::to_string).ok_or(format!("{kind}: a requirement line is not text"))).collect::<Result<_, _>>()?
-            }
+            Some(Value::Array(lines)) if lines.len() <= MAX_SENT_LINES => lines
+                .iter()
+                .map(|line| line.as_str().map(str::to_string).ok_or(format!("{kind}: a requirement line is not text")))
+                .collect::<Result<_, _>>()?,
             Some(_) => return Err(format!("{kind}: requirements must be at most {MAX_SENT_LINES} lines of text")),
         };
         Ok((title, body, lines))
@@ -479,11 +506,12 @@ fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &serde_json:
         "ticket_done" => done(app, id()?, seen()?),
         "ticket_create" => {
             let (title, text, requirements) = words()?;
-            create(app, tickets::Draft { title, text, requirements, parent: None, part: None });
+            create(app, tickets::Draft { title, text, requirements, ..tickets::Draft::default() });
         }
         "ticket_edit" => {
             let (title, text, requirements) = words()?;
-            edit(app, id()?, seen()?, tickets::Edit { title, text, requirements });
+            let change = tickets::Edit { title: Some(title), text: Some(text), requirements: Some(requirements), ..tickets::Edit::default() };
+            edit(app, id()?, seen()?, change);
         }
         "ticket_delete" => delete(app, id()?, seen()?),
         other => return Err(format!("unknown action {other}")),

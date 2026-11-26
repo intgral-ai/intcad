@@ -1,17 +1,22 @@
-//! Part tickets: what each part of a project has to meet, kept by the app in
+//! Part tickets: the pieces of work a project's design has to go through, kept by the app in
 //! `.intcad/tickets/` (the folder holds only what the app generates).
 //!
-//! A ticket stands for a part. The project has one top ticket that sets it up and part tickets
-//! under it, one level deep. Each ticket is one JSON file, `T-<n>.json`; every step that changes a
-//! ticket also appends one line to `events.jsonl`, which is never rewritten, so the record says who
-//! changed what and when.
+//! A ticket is a piece of work. It may bear on no part, one or several; it may be a sub-ticket of
+//! another, one level deep (there is no top ticket); it may wait for other tickets. Each ticket is
+//! one JSON file, `T-<n>.json`; every step that changes a ticket also appends one line to
+//! `events.jsonl`, which is never rewritten, so the record says who changed what and when. A
+//! deleted ticket keeps its file, marked deleted, and can be restored.
 //!
-//! Who may make which move is decided here, not by the caller: the agent drafts, asks for the
-//! check and says when it is blocked; only a person confirms a draft, starts a ticket and marks it
-//! done, and only a person creates a ticket of their own or edits or deletes one nobody has started
-//! (the tickets view's buttons; there is no command for any of these); the app binds the check's
-//! run. A person's step names the revision the person saw, and is refused when the ticket has
-//! changed since.
+//! Who may make which move is decided here, not by the caller. The agent drafts, says it has
+//! finished the ticket it works and says when it is blocked ([`may_move`] holds who may change a
+//! state). A person accepts or declines a draft, hands a ticket to the Assistant or works it
+//! themself, starts its check, sets any state (Done keeps its gate, [`why_not_done`]), edits a
+//! ticket in any state, deletes and restores (the tickets view's buttons; no command reaches
+//! these). The app binds the check's run. A person's step names the revision the person saw, and
+//! is refused when the ticket has changed since.
+//!
+//! Attachments are ordinary files of the project, outside `.intcad/`: a ticket keeps their paths.
+//! [`take_in`] copies a file from outside under the project's `attachments/`.
 //!
 //! Experiment (branch `experiment/part-tickets`, 2026-11-26): the demo of the part-ticket loop.
 
@@ -28,8 +33,10 @@ use serde::{Deserialize, Serialize};
 pub const DIR: &str = "tickets";
 /// The append-only record of every step.
 pub const EVENTS: &str = "events.jsonl";
-/// The layout this build reads and writes.
-pub const SCHEMA_VERSION: u32 = 1;
+/// The project's folder for files brought in from outside it (an ordinary folder of the project).
+pub const ATTACHMENTS: &str = "attachments";
+/// The layout this build writes. It reads 1 as well: one `part` there is a list of parts here.
+pub const SCHEMA_VERSION: u32 = 2;
 /// Limits on what a caller may store: parameters are hostile.
 pub const MAX_TICKETS: usize = 200;
 pub const MAX_TITLE: usize = 200;
@@ -37,8 +44,16 @@ pub const MAX_TEXT: usize = 8000;
 pub const MAX_LINES: usize = 40;
 pub const MAX_LINE: usize = 400;
 pub const MAX_REASON: usize = 1000;
+pub const MAX_PARTS: usize = 50;
+pub const MAX_ATTACHMENTS: usize = 20;
+pub const MAX_WAITS: usize = 20;
+pub const MAX_PATH: usize = 400;
+/// The largest file [`take_in`] copies into the project (dev-agent's number, 2026-11-26).
+pub const MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
 /// The most record lines one read returns, newest last.
 pub const MAX_EVENTS: usize = 2000;
+/// A run's finding states that mean a rule was checked: a run with none of them checked nothing.
+const CHECKED_STATES: [&str; 4] = ["passed", "checked", "advisory", "failed"];
 
 /// Bumped on every write, so a panel knows when to read the folder again.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -52,17 +67,17 @@ pub fn generation() -> u64 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
-    /// Written by the agent; a person has not confirmed it, so nobody works on it.
+    /// Written by the agent; a person has not accepted it, so nobody works on it.
     Draft,
-    /// Confirmed by a person; it can be started.
+    /// Accepted (or written) by a person; it can be handed to the Assistant or worked.
     Confirmed,
-    /// Started by a person; the agent works on it.
+    /// Somebody works it: the Assistant or a person (`worker`).
     InProgress,
-    /// Its check has run; it waits for a person to confirm it.
+    /// It waits for a person to confirm it: its check has run, or none applies.
     Waiting,
-    /// A person confirmed it after its check ran.
+    /// A person finished it.
     Done,
-    /// The agent stopped on it, with a reason.
+    /// Stopped, with the agent's reason when the agent stopped.
     Blocked,
 }
 
@@ -88,7 +103,15 @@ pub enum Actor {
     App,
 }
 
-/// The part a ticket stands for: a component of the design, or a body in a design of one part.
+/// Who works a ticket once it is started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Worker {
+    Assistant,
+    Person,
+}
+
+/// A part a ticket bears on: a component of the design, or a body in a design of one part.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Part {
@@ -102,7 +125,7 @@ pub struct Part {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckState {
-    /// The agent asked for it; the app has not started it yet.
+    /// A person asked for it; the app has not started its run yet.
     Asked,
     /// The app started a run for it.
     Running,
@@ -133,23 +156,56 @@ pub struct Check {
     pub at: String,
 }
 
+fn applies() -> bool {
+    true
+}
+
 /// One ticket, as its file holds it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Ticket {
     pub schema_version: u32,
     pub id: String,
-    /// The top ticket has none; a part ticket names the top ticket.
+    /// The ticket it is a sub-ticket of, one level deep; none for a ticket of its own.
     #[serde(default)]
     pub parent: Option<String>,
     pub title: String,
     #[serde(default)]
     pub text: String,
-    /// The requirement lines it carries, each one citable on its own.
+    /// The requirement lines it carries, each one citable on its own; may be empty.
     #[serde(default)]
     pub requirements: Vec<String>,
+    /// The parts it bears on: none, one or several.
     #[serde(default)]
-    pub part: Option<Part>,
+    pub parts: Vec<Part>,
+    /// Files of the project it points to: paths relative to the project folder, `/` between
+    /// names, never inside `.intcad/`.
+    #[serde(default)]
+    pub attachments: Vec<String>,
+    /// The tickets it waits for: the Assistant does not take it before they are done; a person
+    /// is only reminded (D-88).
+    #[serde(default)]
+    pub waits: Vec<String>,
+    /// Who works it: the Assistant, a person, or nobody (none).
+    #[serde(default)]
+    pub worker: Option<Worker>,
+    /// Deleted or declined by a person: kept with its record, restorable.
+    #[serde(default)]
+    pub deleted: bool,
+    /// A check applies to it. Without one it may be finished, recorded as unchecked.
+    #[serde(default = "applies")]
+    pub checks: bool,
+    /// 「需重查」: changed after it was finished, and why (its requirement lines or parts, or a part
+    /// in the model). Its state stays; its check is out of date until a new run is bound.
+    #[serde(default)]
+    pub recheck: Option<String>,
+    /// The Assistant said it has finished the work; a check applies, so the ticket stays in
+    /// progress until a person starts that check (no check starts by itself, D-90).
+    #[serde(default)]
+    pub finished: bool,
+    /// The agent asked, drafting it, for a picture of the 3D view; the app has not attached it yet.
+    #[serde(default)]
+    pub wants_view: bool,
     pub state: State,
     #[serde(default)]
     pub check: Option<Check>,
@@ -168,8 +224,9 @@ pub struct Event {
     pub at: String,
     pub actor: Actor,
     pub ticket: String,
-    /// `drafted`, `created`, `edited`, `deleted`, `confirmed`, `started`, `check_asked`,
-    /// `check_started`, `check_ran`, `check_refused`, `blocked`, `unblocked`, `done`.
+    /// `drafted`, `created`, `edited`, `confirmed`, `declined`, `deleted`, `restored`, `started`,
+    /// `taken`, `moved`, `done`, `finished`, `check_asked`, `check_started`, `check_ran`,
+    /// `check_refused`, `blocked`, `unblocked`, `recheck`, `view_attached`.
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<State>,
@@ -179,26 +236,40 @@ pub struct Event {
     pub note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    /// Done without a check that checked anything: none applies, or its run checked nothing
+    /// (「未检查」).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unchecked: bool,
     pub revision: u64,
 }
 
-/// What a draft is made of.
+/// What a new ticket is made of.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Draft {
     pub title: String,
     pub text: String,
     pub requirements: Vec<String>,
-    /// The top ticket's id; none: under the top ticket, or the top ticket itself when there is none.
+    /// The ticket it is a sub-ticket of; none: a ticket of its own.
     pub parent: Option<String>,
-    pub part: Option<Part>,
+    pub parts: Vec<Part>,
+    /// Paths of files already in the project ([`take_in`] brings one in from outside).
+    pub attachments: Vec<String>,
+    pub waits: Vec<String>,
+    /// Whether a check applies; none: it does.
+    pub checks: Option<bool>,
+    /// Ask the app for a picture of the 3D view as it is now ([`attach_view`]).
+    pub view: bool,
 }
 
-/// What a person may change on a ticket nobody has started.
+/// What a person changes in one save; none: left as it is.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Edit {
-    pub title: String,
-    pub text: String,
-    pub requirements: Vec<String>,
+    pub title: Option<String>,
+    pub text: Option<String>,
+    pub requirements: Option<Vec<String>>,
+    pub parts: Option<Vec<Part>>,
+    pub attachments: Option<Vec<String>>,
+    pub waits: Option<Vec<String>>,
 }
 
 /// A finished run as it is bound to a ticket.
@@ -262,7 +333,8 @@ fn now() -> String {
     String::new()
 }
 
-/// Every ticket of the project, by number. A project with no tickets has an empty list.
+/// Every ticket of the project by number, deleted ones included (marked). A project with no
+/// tickets has an empty list.
 pub fn list(root: &Path) -> Result<Vec<Ticket>, TicketError> {
     let dir = folder(root);
     let entries = match fs::read_dir(&dir) {
@@ -284,7 +356,9 @@ pub fn list(root: &Path) -> Result<Vec<Ticket>, TicketError> {
     Ok(found.into_iter().map(|(_, ticket)| ticket).collect())
 }
 
-/// One ticket.
+/// One ticket. A file of layout 1 is read as this layout: its one `part` becomes the list of parts,
+/// a ticket somebody worked was worked by the Assistant (the only worker then), and a check the
+/// agent asked for becomes the agent's "finished", so no run starts without a person.
 pub fn load(root: &Path, id: &str) -> Result<Ticket, TicketError> {
     let path = file(root, id)?;
     let bytes = match fs::read(&path) {
@@ -292,17 +366,33 @@ pub fn load(root: &Path, id: &str) -> Result<Ticket, TicketError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(TicketError::NoSuchTicket(id.to_string())),
         Err(error) => return Err(io(&path, &error)),
     };
-    let ticket: Ticket =
-        serde_json::from_slice(&bytes).map_err(|error| TicketError::Damaged { file: path.display().to_string(), message: error.to_string() })?;
-    if ticket.schema_version > SCHEMA_VERSION {
-        return Err(TicketError::Damaged {
-            file: path.display().to_string(),
-            message: format!("schema version {} is newer than this build's {SCHEMA_VERSION}", ticket.schema_version),
-        });
+    let damaged = |message: String| TicketError::Damaged { file: path.display().to_string(), message };
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| damaged(error.to_string()))?;
+    let version = value.get("schemaVersion").and_then(serde_json::Value::as_u64).unwrap_or(0);
+    if version > u64::from(SCHEMA_VERSION) {
+        return Err(damaged(format!("schema version {version} is newer than this build's {SCHEMA_VERSION}")));
     }
+    if version < 2
+        && let Some(fields) = value.as_object_mut()
+        && let Some(part) = fields.remove("part")
+        && !part.is_null()
+    {
+        fields.insert("parts".into(), serde_json::Value::Array(vec![part]));
+    }
+    let mut ticket: Ticket = serde_json::from_value(value).map_err(|error| damaged(error.to_string()))?;
     if ticket.id != id {
-        return Err(TicketError::Damaged { file: path.display().to_string(), message: format!("the file holds ticket {}", ticket.id) });
+        return Err(damaged(format!("the file holds ticket {}", ticket.id)));
     }
+    if version < 2 {
+        if matches!(ticket.state, State::InProgress | State::Blocked | State::Waiting | State::Done) {
+            ticket.worker = Some(Worker::Assistant);
+        }
+        if ticket.check.as_ref().is_some_and(|check| check.state == CheckState::Asked) {
+            ticket.check = None;
+            ticket.finished = ticket.state == State::InProgress;
+        }
+    }
+    ticket.schema_version = SCHEMA_VERSION;
     Ok(ticket)
 }
 
@@ -341,26 +431,39 @@ fn append(root: &Path, event: &Event) -> Result<(), TicketError> {
     file.sync_data().map_err(|error| io(&path, &error))
 }
 
-/// Write the ticket, then its record line. The line names the revision the ticket now has.
-fn commit(
-    root: &Path,
-    ticket: &Ticket,
+/// What a step's record line says besides the ticket and its states.
+struct Line {
     actor: Actor,
-    action: &str,
-    from: Option<State>,
+    action: &'static str,
     note: Option<String>,
     run: Option<String>,
-) -> Result<(), TicketError> {
+    unchecked: bool,
+}
+
+impl Line {
+    fn new(actor: Actor, action: &'static str) -> Self {
+        Self { actor, action, note: None, run: None, unchecked: false }
+    }
+
+    fn note(mut self, note: Option<String>) -> Self {
+        self.note = note;
+        self
+    }
+}
+
+/// Write the ticket, then its record line. The line names the revision the ticket now has.
+fn commit(root: &Path, ticket: &Ticket, from: Option<State>, line: Line) -> Result<(), TicketError> {
     write(root, ticket)?;
     let event = Event {
         at: ticket.updated.clone(),
-        actor,
+        actor: line.actor,
         ticket: ticket.id.clone(),
-        action: action.to_string(),
+        action: line.action.to_string(),
         from,
         to: Some(ticket.state).filter(|to| Some(*to) != from),
-        note,
-        run,
+        note: line.note,
+        run: line.run,
+        unchecked: line.unchecked,
         revision: ticket.revision,
     };
     let appended = append(root, &event);
@@ -376,26 +479,215 @@ fn clean(text: &str, max: usize, what: &str) -> Result<String, TicketError> {
     Ok(text.to_string())
 }
 
-/// A ticket's words, checked and trimmed: a title, the text, the requirement lines (empty ones dropped).
-fn words(title: &str, text: &str, requirements: &[String]) -> Result<(String, String, Vec<String>), TicketError> {
+fn note(note: Option<String>) -> Result<Option<String>, TicketError> {
+    Ok(note.map(|note| clean(&note, MAX_REASON, "note")).transpose()?.filter(|note| !note.is_empty()))
+}
+
+fn title(title: &str) -> Result<String, TicketError> {
     let title = clean(title, MAX_TITLE, "title")?;
     if title.is_empty() {
-        return Err(TicketError::Invalid("a ticket needs a title: the part's name and what it must meet".into()));
+        return Err(TicketError::Invalid("a ticket needs a title: what is to be done, in a few words".into()));
     }
-    let text = clean(text, MAX_TEXT, "text")?;
+    Ok(title)
+}
+
+/// Requirement lines, checked and trimmed, empty ones dropped.
+fn lines(requirements: &[String]) -> Result<Vec<String>, TicketError> {
     if requirements.len() > MAX_LINES {
         return Err(TicketError::Invalid(format!("a ticket carries at most {MAX_LINES} requirement lines")));
     }
-    let requirements = requirements
-        .iter()
-        .map(|line| clean(line, MAX_LINE, "requirement line"))
-        .filter(|line| !matches!(line, Ok(l) if l.is_empty()))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((title, text, requirements))
+    requirements.iter().map(|line| clean(line, MAX_LINE, "requirement line")).filter(|line| !matches!(line, Ok(l) if l.is_empty())).collect()
 }
 
-/// One more than the highest number the project has ever given, in its files or its record: the id
-/// of a deleted ticket, and with it that ticket's record lines, never passes to another.
+/// The parts a ticket bears on, checked, each once.
+fn parts(parts: &[Part]) -> Result<Vec<Part>, TicketError> {
+    if parts.len() > MAX_PARTS {
+        return Err(TicketError::Invalid(format!("a ticket bears on at most {MAX_PARTS} parts")));
+    }
+    let mut out: Vec<Part> = Vec::new();
+    for part in parts {
+        if !matches!(part.kind.as_str(), "component" | "body") {
+            return Err(TicketError::Invalid(format!(
+                "`{}` is not a part kind; use component or body",
+                part.kind.chars().take(40).collect::<String>()
+            )));
+        }
+        let id = part.id.trim();
+        if id.is_empty() || id.chars().count() > 128 {
+            return Err(TicketError::Invalid("a part needs the id or name of its component or body".into()));
+        }
+        let part = Part { kind: part.kind.clone(), id: id.to_string() };
+        if !out.contains(&part) {
+            out.push(part);
+        }
+    }
+    Ok(out)
+}
+
+/// Whether `name`, the first name of a path in the project, is the app's own folder.
+fn apps_folder(name: &str) -> bool {
+    name.eq_ignore_ascii_case(super::FOLDER)
+}
+
+/// A path of a file in the project as a ticket keeps it: relative to the project folder, `/`
+/// between names, the file there and inside the folder (no `..`, no link out of it), outside
+/// `.intcad/`, which holds only what the app generates (D-22).
+fn attachment(root: &Path, path: &str) -> Result<String, TicketError> {
+    let path = path.trim();
+    let shown: String = path.chars().take(80).collect();
+    let refuse = |why: &str| TicketError::Invalid(format!("attachment `{shown}`: {why}"));
+    if path.is_empty() || path.chars().count() > MAX_PATH {
+        return Err(refuse(&format!("give the path of a file in the project, at most {MAX_PATH} characters")));
+    }
+    let names: Vec<&str> = path.split(['/', '\\']).collect();
+    if names.iter().any(|name| name.is_empty() || *name == "." || *name == "..") || names.first().is_some_and(|name| name.ends_with(':')) {
+        return Err(refuse("give a path relative to the project folder, without `..`"));
+    }
+    if names.first().is_some_and(|name| apps_folder(name)) {
+        return Err(refuse(".intcad holds only what the app generates; attach a file of the project"));
+    }
+    let full = names.iter().fold(root.to_path_buf(), |path, name| path.join(name));
+    if !full.is_file() {
+        return Err(refuse("there is no such file in the project"));
+    }
+    let (Ok(real), Ok(base)) = (fs::canonicalize(&full), fs::canonicalize(root)) else {
+        return Err(refuse("the file cannot be read"));
+    };
+    if !real.starts_with(&base) || real.starts_with(base.join(super::FOLDER)) {
+        return Err(refuse("the file lies outside the project folder"));
+    }
+    Ok(names.join("/"))
+}
+
+fn attachments(root: &Path, paths: &[String]) -> Result<Vec<String>, TicketError> {
+    if paths.len() > MAX_ATTACHMENTS {
+        return Err(TicketError::Invalid(format!("a ticket carries at most {MAX_ATTACHMENTS} attachments")));
+    }
+    let mut out: Vec<String> = Vec::new();
+    for path in paths {
+        let path = attachment(root, path)?;
+        if !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    Ok(out)
+}
+
+/// A file name for the project's `attachments/`: no separators or control characters, not hidden,
+/// at most about 120 characters with its extension kept.
+fn file_name(name: &str) -> String {
+    let clean: String = name.chars().map(|c| if c.is_control() || "/\\:*?\"<>|".contains(c) { '_' } else { c }).collect();
+    let clean = clean.trim().trim_start_matches('.').trim_end_matches(['.', ' ']);
+    let (stem, extension) = match clean.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{}", extension.chars().take(16).collect::<String>())),
+        _ => (clean, String::new()),
+    };
+    let stem: String = stem.chars().take(100).collect();
+    format!("{}{extension}", if stem.trim().is_empty() { "attachment" } else { stem.trim() })
+}
+
+/// Write `bytes` as a new file under the project's `attachments/`, named after `name`: `name`, or
+/// `stem-2.ext` and on while that is taken, so no file there is ever overwritten. Its path as a
+/// ticket keeps it.
+fn store_file(root: &Path, name: &str, bytes: &[u8]) -> Result<String, TicketError> {
+    let name = file_name(name);
+    let dir = root.join(ATTACHMENTS);
+    fs::create_dir_all(&dir).map_err(|error| io(&dir, &error))?;
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => (stem.to_string(), format!(".{extension}")),
+        _ => (name.clone(), String::new()),
+    };
+    for n in 1..=1000 {
+        let candidate = if n == 1 { name.clone() } else { format!("{stem}-{n}{extension}") };
+        let path = dir.join(&candidate);
+        if fs::symlink_metadata(&path).is_ok() {
+            continue;
+        }
+        solidcraft_io::safe_write::write_atomic(&path, bytes, false).map_err(|error| io(&path, &error))?;
+        return Ok(format!("{ATTACHMENTS}/{candidate}"));
+    }
+    Err(TicketError::Refused(format!("{ATTACHMENTS}/ has too many files called {name}")))
+}
+
+/// Bring a file in for a ticket: a file already in the project (outside `.intcad/`) stays where it
+/// is; any other is copied under the project's `attachments/` with a name of its own, never into
+/// `.intcad/`. The path a ticket keeps for it, to pass to [`create`] or [`edit`].
+pub fn take_in(root: &Path, source: &Path) -> Result<String, TicketError> {
+    let meta = fs::metadata(source).map_err(|error| io(source, &error))?;
+    if !meta.is_file() {
+        return Err(TicketError::Invalid(format!("{}: only a file can be attached", source.display())));
+    }
+    let base = fs::canonicalize(root).map_err(|error| io(root, &error))?;
+    let real = fs::canonicalize(source).map_err(|error| io(source, &error))?;
+    if let Ok(inside) = real.strip_prefix(&base) {
+        let names: Vec<String> = inside.components().map(|name| name.as_os_str().to_string_lossy().into_owned()).collect();
+        if !names.first().is_some_and(|name| apps_folder(name)) {
+            return attachment(root, &names.join("/"));
+        }
+    }
+    if meta.len() > MAX_ATTACHMENT_BYTES {
+        return Err(TicketError::Refused(format!("{}: a file brought in is at most {} MB", source.display(), MAX_ATTACHMENT_BYTES / (1024 * 1024))));
+    }
+    let bytes = fs::read(&real).map_err(|error| io(&real, &error))?;
+    let name = real.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+    store_file(root, &name, &bytes)
+}
+
+/// The tickets `id` waits for, checked: each exists, is not deleted, is not `id`, is named once,
+/// and none of them waits for `id` already, directly or through others. A parent counts as
+/// waiting for each of its sub-tickets (it is done only after them), so a sub-ticket cannot wait
+/// for its parent. `parent`: the parent of a ticket not written yet.
+fn waits(id: &str, parent: Option<&str>, wanted: &[String], all: &[Ticket]) -> Result<Vec<String>, TicketError> {
+    if wanted.len() > MAX_WAITS {
+        return Err(TicketError::Invalid(format!("a ticket waits for at most {MAX_WAITS} tickets")));
+    }
+    let mut out: Vec<String> = Vec::new();
+    for other in wanted {
+        let other = other.trim();
+        number(other)
+            .ok_or_else(|| TicketError::Invalid(format!("`{}` is not a ticket id; ids look like T-1", other.chars().take(40).collect::<String>())))?;
+        if other == id {
+            return Err(TicketError::Invalid(format!("{id} cannot wait for itself")));
+        }
+        let ticket = all.iter().find(|ticket| ticket.id == other).ok_or_else(|| TicketError::NoSuchTicket(other.to_string()))?;
+        if ticket.deleted {
+            return Err(TicketError::Refused(format!("{other} is deleted: restore it first, or wait for another ticket")));
+        }
+        if !out.iter().any(|known| known == other) {
+            out.push(other.to_string());
+        }
+    }
+    let edges = |at: &str| -> Vec<String> {
+        let mut next: Vec<String> = all.iter().find(|ticket| ticket.id == at).map(|ticket| ticket.waits.clone()).unwrap_or_default();
+        next.extend(all.iter().filter(|ticket| ticket.parent.as_deref() == Some(at)).map(|ticket| ticket.id.clone()));
+        if parent == Some(at) {
+            next.push(id.to_string());
+        }
+        next
+    };
+    for start in &out {
+        let mut stack = vec![start.clone()];
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(at) = stack.pop() {
+            if at == id {
+                return Err(TicketError::Refused(format!("{id} cannot wait for {start}: {start} already waits for {id}, or is its parent")));
+            }
+            if seen.contains(&at) || seen.len() > MAX_TICKETS {
+                continue;
+            }
+            stack.extend(edges(&at));
+            seen.push(at);
+        }
+    }
+    Ok(out)
+}
+
+/// The tickets `ticket` waits for that are not done yet (deleted ones included: they will not be).
+pub fn open_waits(ticket: &Ticket, all: &[Ticket]) -> Vec<String> {
+    ticket.waits.iter().filter(|other| all.iter().find(|t| &t.id == *other).is_none_or(|t| t.state != State::Done)).cloned().collect()
+}
+
+/// One more than the highest number the project has ever given, in its files or its record.
 fn next_number(root: &Path, existing: &[Ticket]) -> Result<u32, TicketError> {
     let path = folder(root).join(EVENTS);
     let recorded = match fs::read_to_string(&path) {
@@ -408,7 +700,7 @@ fn next_number(root: &Path, existing: &[Ticket]) -> Result<u32, TicketError> {
 }
 
 /// Write a new draft. The agent's only way to add a ticket; nothing it drafts can be worked on
-/// before a person confirms it.
+/// before a person accepts it. A draft goes under a parent only when it names one.
 pub fn draft(root: &Path, draft: Draft, actor: Actor) -> Result<Ticket, TicketError> {
     new_ticket(root, draft, actor, State::Draft, "drafted")
 }
@@ -419,41 +711,48 @@ pub fn create(root: &Path, draft: Draft) -> Result<Ticket, TicketError> {
     new_ticket(root, draft, Actor::Person, State::Confirmed, "created")
 }
 
-fn new_ticket(root: &Path, draft: Draft, actor: Actor, state: State, action: &str) -> Result<Ticket, TicketError> {
-    let (title, text, requirements) = words(&draft.title, &draft.text, &draft.requirements)?;
-    if let Some(part) = &draft.part {
-        if !matches!(part.kind.as_str(), "component" | "body") {
-            return Err(TicketError::Invalid(format!("`{}` is not a part kind; use component or body", part.kind)));
-        }
-        if part.id.trim().is_empty() || part.id.chars().count() > 128 {
-            return Err(TicketError::Invalid("a part needs the id or name of its component or body".into()));
-        }
-    }
+fn new_ticket(root: &Path, draft: Draft, actor: Actor, state: State, action: &'static str) -> Result<Ticket, TicketError> {
+    let title = title(&draft.title)?;
+    let text = clean(&draft.text, MAX_TEXT, "text")?;
+    let requirements = lines(&draft.requirements)?;
+    let parts = parts(&draft.parts)?;
+    let attachments = attachments(root, &draft.attachments)?;
     let existing = list(root)?;
     if existing.len() >= MAX_TICKETS {
         return Err(TicketError::Refused(format!("a project holds at most {MAX_TICKETS} tickets")));
     }
-    let top = existing.iter().find(|ticket| ticket.parent.is_none()).map(|ticket| ticket.id.clone());
     let parent = match draft.parent.as_deref().map(str::trim).filter(|parent| !parent.is_empty()) {
         Some(parent) => {
             let ticket = existing.iter().find(|ticket| ticket.id == parent).ok_or_else(|| TicketError::NoSuchTicket(parent.to_string()))?;
+            if ticket.deleted {
+                return Err(TicketError::Refused(format!("{parent} is deleted: restore it before adding sub-tickets")));
+            }
             if ticket.parent.is_some() {
-                return Err(TicketError::Refused(format!("{parent} is a part ticket; part tickets go under the top ticket, one level deep")));
+                return Err(TicketError::Refused(format!("{parent} is a sub-ticket; sub-tickets go one level deep")));
             }
             Some(parent.to_string())
         }
-        None => top,
+        None => None,
     };
-    let next = next_number(root, &existing)?;
+    let id = format!("T-{}", next_number(root, &existing)?);
+    let waits = waits(&id, parent.as_deref(), &draft.waits, &existing)?;
     let at = now();
     let ticket = Ticket {
         schema_version: SCHEMA_VERSION,
-        id: format!("T-{next}"),
+        id,
         parent,
         title,
         text,
         requirements,
-        part: draft.part,
+        parts,
+        attachments,
+        waits,
+        worker: None,
+        deleted: false,
+        checks: draft.checks.unwrap_or(true),
+        recheck: None,
+        finished: false,
+        wants_view: draft.view,
         state,
         check: None,
         blocked: None,
@@ -461,33 +760,32 @@ fn new_ticket(root: &Path, draft: Draft, actor: Actor, state: State, action: &st
         created: at.clone(),
         updated: at,
     };
-    commit(root, &ticket, actor, action, None, None, None)?;
+    commit(root, &ticket, None, Line::new(actor, action))?;
     Ok(ticket)
 }
 
 /// Load, check the move, change, write and record, in one step. `seen`: the revision a person saw
-/// when they pressed; a ticket that has changed since is refused, so nobody confirms what they did
-/// not read.
-#[allow(clippy::too_many_arguments)]
+/// when they pressed; a ticket that has changed since is refused, so nobody acts on what they did
+/// not read. A deleted ticket takes no step but its restoring.
 fn step(
     root: &Path,
     id: &str,
-    actor: Actor,
-    action: &str,
-    note: Option<String>,
-    run: Option<String>,
+    mut line: Line,
     seen: Option<u64>,
-    change: impl FnOnce(&mut Ticket) -> Result<(), TicketError>,
+    change: impl FnOnce(&mut Ticket, &mut Line) -> Result<(), TicketError>,
 ) -> Result<Ticket, TicketError> {
     let mut ticket = load(root, id)?;
     if let Some(seen) = seen {
         unchanged(&ticket, seen)?;
     }
+    if ticket.deleted && line.action != "restored" {
+        return Err(TicketError::Refused(format!("{} is deleted: restore it first", ticket.id)));
+    }
     let from = ticket.state;
-    change(&mut ticket)?;
+    change(&mut ticket, &mut line)?;
     ticket.revision = ticket.revision.saturating_add(1);
     ticket.updated = now();
-    commit(root, &ticket, actor, action, Some(from), note, run)?;
+    commit(root, &ticket, Some(from), line)?;
     Ok(ticket)
 }
 
@@ -503,37 +801,302 @@ fn refused(ticket: &Ticket, what: &str) -> TicketError {
     TicketError::Refused(format!("{} is {}: {what}", ticket.id, ticket.state.as_str().replace('_', " ")))
 }
 
-/// A person confirms a draft they saw at revision `seen`. Only the tickets view's Confirm calls this.
-pub fn confirm(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
-    step(root, id, Actor::Person, "confirmed", None, None, Some(seen), |ticket| {
-        if ticket.state != State::Draft {
-            return Err(refused(ticket, "only a draft is confirmed"));
-        }
-        ticket.state = State::Confirmed;
-        Ok(())
-    })
+/// Who may move a ticket from one state to another. This is the one place the rule lives: every
+/// step that changes a state asks it ([`move_to`]).
+///
+/// - A person: any move, back as well as forward (spec ux-v0.4 point 5). Done keeps its gate
+///   ([`why_not_done`]).
+/// - The agent: only its own three, on the ticket it works: in progress to waiting (it says it
+///   has finished a ticket no check applies to), in progress to blocked, blocked to in progress.
+/// - The app: in progress to waiting, when it binds a check's run.
+///
+/// Open (spec point 17): about a finished ticket changed afterwards the owner wrote 「可以被ai改」, and
+/// how far that reaches is being asked. Until it is settled the agent changes no other state and
+/// such a ticket gets the 「需重查」 mark ([`mark_recheck`]). Letting the agent reopen it is the pair
+/// `(Done, InProgress)` in the agent's arm here, plus the action word in `ticket.update`.
+pub fn may_move(actor: Actor, from: State, to: State) -> bool {
+    use State::{Blocked, InProgress, Waiting};
+    match actor {
+        Actor::Person => true,
+        Actor::Agent => matches!((from, to), (InProgress, Waiting) | (InProgress, Blocked) | (Blocked, InProgress)),
+        Actor::App => matches!((from, to), (InProgress, Waiting)),
+    }
 }
 
-/// A person starts a confirmed ticket, which sends the agent to work on it. Only the tickets view's
-/// Start calls this. A blocked ticket is started again the same way.
-pub fn start(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
-    step(root, id, Actor::Person, "started", None, None, Some(seen), |ticket| {
-        if !matches!(ticket.state, State::Confirmed | State::Blocked) {
-            return Err(refused(ticket, "only a confirmed or blocked ticket is started"));
-        }
-        ticket.state = State::InProgress;
+/// Move `ticket` to `to` as `actor`, or say why not. With the move: nobody works a draft or a
+/// confirmed ticket, a block's reason goes when the block ends, and the Assistant's "finished"
+/// goes with the state it was said in.
+fn move_to(ticket: &mut Ticket, actor: Actor, to: State) -> Result<(), TicketError> {
+    let from = ticket.state;
+    if from == to {
+        return Ok(());
+    }
+    if !may_move(actor, from, to) {
+        let who = if actor == Actor::Agent { "the agent" } else { "the app" };
+        return Err(TicketError::Refused(format!(
+            "{} is {}: {who} cannot move it to {}; only a person changes a ticket's state",
+            ticket.id,
+            from.as_str().replace('_', " "),
+            to.as_str().replace('_', " ")
+        )));
+    }
+    ticket.state = to;
+    ticket.finished = false;
+    if from == State::Blocked {
         ticket.blocked = None;
+    }
+    if matches!(to, State::Draft | State::Confirmed) {
+        ticket.worker = None;
+    }
+    Ok(())
+}
+
+/// Why a person cannot finish `ticket` now, or none: every sub-ticket of it that is not deleted
+/// is done, and where a check applies a run is bound to it and nothing changed since that asks
+/// for another (「需重查」). A run that checked nothing, or no check at all, still lets it finish,
+/// recorded as unchecked ([`unchecked`]; spec point 6, D-87).
+pub fn why_not_done(ticket: &Ticket, all: &[Ticket]) -> Option<String> {
+    let open: Vec<&str> = all
+        .iter()
+        .filter(|t| t.parent.as_deref() == Some(ticket.id.as_str()) && !t.deleted && t.state != State::Done)
+        .map(|t| t.id.as_str())
+        .collect();
+    if !open.is_empty() {
+        return Some(format!("{} has sub-tickets not done yet ({})", ticket.id, open.join(", ")));
+    }
+    if ticket.checks {
+        if !ticket.check.as_ref().is_some_and(|check| check.state == CheckState::Ran && check.run.is_some()) {
+            return Some(format!("{}'s check has not run", ticket.id));
+        }
+        if let Some(why) = &ticket.recheck {
+            return Some(format!("{} was changed after its check ran ({why}): run its check again", ticket.id));
+        }
+    }
+    None
+}
+
+/// Whether finishing `ticket` now leaves it unchecked: no check applies, or its run checked nothing.
+pub fn unchecked(ticket: &Ticket) -> bool {
+    !ticket.checks || ticket.check.as_ref().is_none_or(|check| CHECKED_STATES.iter().all(|state| check.counts.get(*state).copied().unwrap_or(0) == 0))
+}
+
+/// A person accepts a draft they saw at revision `seen`; `with_subs`: its sub-tickets that are
+/// still drafts with it, each with its own record line (spec point 18). Only the tickets view's
+/// 接受 calls this.
+pub fn confirm(root: &Path, id: &str, seen: u64, with_subs: bool) -> Result<Ticket, TicketError> {
+    let ticket = step(root, id, Line::new(Actor::Person, "confirmed"), Some(seen), |ticket, _| {
+        if ticket.state != State::Draft {
+            return Err(refused(ticket, "only a draft is accepted"));
+        }
+        move_to(ticket, Actor::Person, State::Confirmed)
+    })?;
+    if with_subs {
+        let subs = list(root)?.into_iter().filter(|sub| sub.parent.as_deref() == Some(id) && sub.state == State::Draft && !sub.deleted);
+        for sub in subs {
+            let line = Line::new(Actor::Person, "confirmed").note(Some(format!("with {id}")));
+            step(root, &sub.id, line, None, |sub, _| move_to(sub, Actor::Person, State::Confirmed))?;
+        }
+    }
+    Ok(ticket)
+}
+
+/// Refused while `id` has sub-tickets that are not deleted (dev-agent's choice, 2026-11-26: the
+/// smallest rule; whether they should go with it is a question for the owner).
+fn no_live_subs(root: &Path, id: &str) -> Result<(), TicketError> {
+    let under: Vec<String> =
+        list(root)?.into_iter().filter(|other| other.parent.as_deref() == Some(id) && !other.deleted).map(|other| other.id).collect();
+    if under.is_empty() {
+        return Ok(());
+    }
+    Err(TicketError::Refused(format!("{id} has sub-tickets ({}): delete or decline those first", under.join(", "))))
+}
+
+/// A person declines a draft (不要) they saw at revision `seen`: it is deleted, its record kept,
+/// and can be restored as a draft. Only the tickets view calls this.
+pub fn decline(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
+    no_live_subs(root, id)?;
+    step(root, id, Line::new(Actor::Person, "declined"), Some(seen), |ticket, _| {
+        if ticket.state != State::Draft {
+            return Err(refused(ticket, "only a draft is declined; delete it instead"));
+        }
+        ticket.deleted = true;
         Ok(())
     })
 }
 
-/// The agent says it has made the ticket's changes and asks for its check (or a person asks for it
-/// from the panel).
-pub fn ask_check(root: &Path, id: &str, actor: Actor, note: Option<String>) -> Result<Ticket, TicketError> {
-    let note = note.map(|note| clean(&note, MAX_REASON, "note")).transpose()?.filter(|note| !note.is_empty());
-    step(root, id, actor, "check_asked", note, None, None, |ticket| {
+/// A person deletes a ticket in any state, seen at revision `seen`: it is marked deleted, its file
+/// and record kept, and it can be restored. Only the tickets view's Delete calls this.
+pub fn delete(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
+    no_live_subs(root, id)?;
+    step(root, id, Line::new(Actor::Person, "deleted"), Some(seen), |ticket, _| {
+        ticket.deleted = true;
+        Ok(())
+    })
+}
+
+/// A person restores a deleted or declined ticket, in the state it had. Only the tickets view's
+/// Restore (and the toast's Undo) calls this.
+pub fn restore(root: &Path, id: &str) -> Result<Ticket, TicketError> {
+    step(root, id, Line::new(Actor::Person, "restored"), None, |ticket, _| {
+        if !ticket.deleted {
+            return Err(TicketError::Refused(format!("{} is not deleted", ticket.id)));
+        }
+        ticket.deleted = false;
+        Ok(())
+    })
+}
+
+/// A person hands a confirmed or blocked ticket, seen at revision `seen`, to the Assistant (交给助手).
+/// Refused while it waits for tickets not done yet (D-88). Only the tickets view calls this; the
+/// host then sends the Assistant its message.
+pub fn start(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
+    let all = list(root)?;
+    step(root, id, Line::new(Actor::Person, "started"), Some(seen), |ticket, _| {
+        if !matches!(ticket.state, State::Confirmed | State::Blocked) {
+            return Err(refused(ticket, "only a confirmed or blocked ticket is handed to the Assistant"));
+        }
+        let open = open_waits(ticket, &all);
+        if !open.is_empty() {
+            return Err(TicketError::Refused(format!("{} waits for {}: the Assistant takes it once those are done", ticket.id, open.join(", "))));
+        }
+        move_to(ticket, Actor::Person, State::InProgress)?;
+        ticket.worker = Some(Worker::Assistant);
+        Ok(())
+    })
+}
+
+/// A person takes a confirmed or blocked ticket, seen at revision `seen`, to work it themself
+/// (我自己做). Tickets it waits for do not stop a person (the page reminds them, D-88).
+pub fn work_myself(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
+    step(root, id, Line::new(Actor::Person, "taken"), Some(seen), |ticket, _| {
+        if !matches!(ticket.state, State::Confirmed | State::Blocked) {
+            return Err(refused(ticket, "only a confirmed or blocked ticket is taken up"));
+        }
+        move_to(ticket, Actor::Person, State::InProgress)?;
+        ticket.worker = Some(Worker::Person);
+        Ok(())
+    })
+}
+
+/// A person sets a ticket they saw at revision `seen` to any state (the state menu): Done only
+/// past its gate ([`why_not_done`]), recorded as unchecked where nothing was checked. Setting the
+/// state it already has changes nothing. Tickets it waits for do not stop a person.
+pub fn set_state(root: &Path, id: &str, seen: u64, to: State) -> Result<Ticket, TicketError> {
+    let current = load(root, id)?;
+    unchanged(&current, seen)?;
+    if current.state == to && !current.deleted {
+        return Ok(current);
+    }
+    let all = list(root)?;
+    step(root, id, Line::new(Actor::Person, "moved"), Some(seen), |ticket, line| {
+        if to == State::Done {
+            if let Some(why) = why_not_done(ticket, &all) {
+                return Err(TicketError::Refused(why));
+            }
+            line.action = "done";
+            line.unchecked = unchecked(ticket);
+            line.run = ticket.check.as_ref().and_then(|check| check.run.clone());
+            ticket.recheck = None;
+        } else if ticket.state == State::Draft && to == State::Confirmed {
+            line.action = "confirmed";
+        }
+        move_to(ticket, Actor::Person, to)?;
+        if to == State::InProgress && ticket.worker.is_none() {
+            ticket.worker = Some(Worker::Person);
+        }
+        Ok(())
+    })
+}
+
+/// A person marks a ticket done (完成): [`set_state`] to Done.
+pub fn done(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
+    set_state(root, id, seen, State::Done)
+}
+
+/// A person changes, in one save, any of a ticket's title, text, requirement lines, parts,
+/// attachments and waits, in any state, seen at revision `seen`: one record line. A draft stays a
+/// draft. Changing the requirement lines or parts of a done ticket marks it 「需重查」 in the same
+/// line (spec point 17). A save that changes nothing writes nothing. Only the tickets view calls this.
+pub fn edit(root: &Path, id: &str, seen: u64, edit: Edit) -> Result<Ticket, TicketError> {
+    let current = load(root, id)?;
+    unchanged(&current, seen)?;
+    if current.deleted {
+        return Err(TicketError::Refused(format!("{id} is deleted: restore it first")));
+    }
+    let mut next = current.clone();
+    if let Some(words) = &edit.title {
+        next.title = title(words)?;
+    }
+    if let Some(words) = &edit.text {
+        next.text = clean(words, MAX_TEXT, "text")?;
+    }
+    if let Some(requirements) = &edit.requirements {
+        next.requirements = lines(requirements)?;
+    }
+    if let Some(wanted) = &edit.parts {
+        next.parts = parts(wanted)?;
+    }
+    if let Some(paths) = &edit.attachments {
+        next.attachments = attachments(root, paths)?;
+    }
+    if let Some(wanted) = &edit.waits {
+        next.waits = waits(id, None, wanted, &list(root)?)?;
+    }
+    if next == current {
+        return Ok(current);
+    }
+    let changed: Vec<&str> = [("requirement lines", next.requirements != current.requirements), ("parts", next.parts != current.parts)]
+        .into_iter()
+        .filter(|(_, c)| *c)
+        .map(|(what, _)| what)
+        .collect();
+    let recheck = (current.state == State::Done && !changed.is_empty()).then(|| format!("{} changed", changed.join(" and ")));
+    let line = Line::new(Actor::Person, "edited").note(recheck.as_ref().map(|why| format!("needs a re-check: {why}")));
+    step(root, id, line, Some(seen), move |ticket, _| {
+        ticket.title = next.title;
+        ticket.text = next.text;
+        ticket.requirements = next.requirements;
+        ticket.parts = next.parts;
+        ticket.attachments = next.attachments;
+        ticket.waits = next.waits;
+        if recheck.is_some() {
+            ticket.recheck = recheck;
+        }
+        Ok(())
+    })
+}
+
+/// 「需重查」 on a done ticket changed afterwards: its state stays, and its check is out of date
+/// until a new run is bound. The app calls this when a part the ticket bears on changed in the
+/// model (the store marks a person's edit itself, [`edit`]). A ticket already marked keeps its
+/// first reason and no line is written.
+pub fn mark_recheck(root: &Path, id: &str, why: &str) -> Result<Ticket, TicketError> {
+    let why = clean(why, MAX_REASON, "reason")?;
+    if why.is_empty() {
+        return Err(TicketError::Invalid("say what changed".into()));
+    }
+    let current = load(root, id)?;
+    if current.recheck.is_some() && !current.deleted {
+        return Ok(current);
+    }
+    step(root, id, Line::new(Actor::App, "recheck").note(Some(why.clone())), None, |ticket, _| {
+        if ticket.state != State::Done {
+            return Err(refused(ticket, "only a done ticket is marked for a re-check"));
+        }
+        ticket.recheck = Some(why);
+        Ok(())
+    })
+}
+
+/// A person starts the check of a ticket in progress (跑检查, 请求检查), seen at revision `seen`;
+/// the app then starts its run. Only a person starts a check, which costs credits (D-90).
+pub fn ask_check(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
+    step(root, id, Line::new(Actor::Person, "check_asked"), Some(seen), |ticket, _| {
         if ticket.state != State::InProgress {
-            return Err(refused(ticket, "the check is asked for on the ticket in progress"));
+            return Err(refused(ticket, "the check is started on a ticket in progress"));
+        }
+        if !ticket.checks {
+            return Err(TicketError::Refused(format!("no check applies to {}: it is finished without one", ticket.id)));
         }
         ticket.check =
             Some(Check { state: CheckState::Asked, run: None, outcome: None, counts: BTreeMap::new(), freshness: None, reason: None, at: now() });
@@ -541,31 +1104,77 @@ pub fn ask_check(root: &Path, id: &str, actor: Actor, note: Option<String>) -> R
     })
 }
 
-/// The agent stops on a ticket in progress and says why.
+/// Refused unless `ticket` is in `state` and worked by the Assistant: the agent acts only on the
+/// ticket handed to it.
+fn agents_ticket(ticket: &Ticket, state: State, what: &str) -> Result<(), TicketError> {
+    if ticket.state != state {
+        return Err(refused(ticket, what));
+    }
+    if ticket.worker != Some(Worker::Assistant) {
+        return Err(TicketError::Refused(format!("{} is not handed to the Assistant: the agent acts only on the ticket it works", ticket.id)));
+    }
+    Ok(())
+}
+
+/// The agent says it has finished the ticket it works (做完了). No check starts by itself (D-90):
+/// where a check applies, the ticket stays in progress, marked finished, until a person starts
+/// the check; where none applies, it goes to waiting for a person's confirmation.
+pub fn finished(root: &Path, id: &str, note_text: Option<String>) -> Result<Ticket, TicketError> {
+    let note_text = note(note_text)?;
+    step(root, id, Line::new(Actor::Agent, "finished").note(note_text), None, |ticket, _| {
+        agents_ticket(ticket, State::InProgress, "only the ticket in progress is finished")?;
+        if ticket.checks {
+            ticket.finished = true;
+            Ok(())
+        } else {
+            move_to(ticket, Actor::Agent, State::Waiting)
+        }
+    })
+}
+
+/// The agent stops on the ticket it works and says why.
 pub fn block(root: &Path, id: &str, reason: &str) -> Result<Ticket, TicketError> {
     let reason = clean(reason, MAX_REASON, "reason")?;
     if reason.is_empty() {
         return Err(TicketError::Invalid("say why the ticket is blocked".into()));
     }
-    step(root, id, Actor::Agent, "blocked", Some(reason.clone()), None, None, |ticket| {
-        if ticket.state != State::InProgress {
-            return Err(refused(ticket, "only the ticket in progress can be blocked"));
-        }
-        ticket.state = State::Blocked;
+    step(root, id, Line::new(Actor::Agent, "blocked").note(Some(reason.clone())), None, |ticket, _| {
+        agents_ticket(ticket, State::InProgress, "only the ticket in progress can be blocked")?;
+        move_to(ticket, Actor::Agent, State::Blocked)?;
         ticket.blocked = Some(reason);
         Ok(())
     })
 }
 
-/// The agent takes a blocked ticket up again.
-pub fn unblock(root: &Path, id: &str, note: Option<String>) -> Result<Ticket, TicketError> {
-    let note = note.map(|note| clean(&note, MAX_REASON, "note")).transpose()?.filter(|note| !note.is_empty());
-    step(root, id, Actor::Agent, "unblocked", note, None, None, |ticket| {
-        if ticket.state != State::Blocked {
-            return Err(refused(ticket, "only a blocked ticket is unblocked"));
+/// The agent takes the blocked ticket it works up again.
+pub fn unblock(root: &Path, id: &str, note_text: Option<String>) -> Result<Ticket, TicketError> {
+    let note_text = note(note_text)?;
+    step(root, id, Line::new(Actor::Agent, "unblocked").note(note_text), None, |ticket, _| {
+        agents_ticket(ticket, State::Blocked, "only a blocked ticket is unblocked")?;
+        move_to(ticket, Actor::Agent, State::InProgress)
+    })
+}
+
+/// The app attaches the picture of the 3D view the agent asked for when it drafted (`png`, as the
+/// host rendered the view): saved under `attachments/` as `<id>-view.png`, added to the ticket, the
+/// ask cleared. The seam for the host, which takes the picture; the engine has no view.
+pub fn attach_view(root: &Path, id: &str, png: &[u8]) -> Result<Ticket, TicketError> {
+    if png.len() as u64 > MAX_ATTACHMENT_BYTES || png.is_empty() {
+        return Err(TicketError::Invalid("the picture is empty or too large".into()));
+    }
+    let ticket = load(root, id)?;
+    if ticket.deleted {
+        return Err(TicketError::Refused(format!("{id} is deleted: restore it first")));
+    }
+    if ticket.attachments.len() >= MAX_ATTACHMENTS {
+        return Err(TicketError::Refused(format!("{id} carries {MAX_ATTACHMENTS} attachments already")));
+    }
+    let path = store_file(root, &format!("{id}-view.png"), png)?;
+    step(root, id, Line::new(Actor::App, "view_attached").note(Some(path.clone())), None, |ticket, _| {
+        if !ticket.attachments.contains(&path) {
+            ticket.attachments.push(path);
         }
-        ticket.state = State::InProgress;
-        ticket.blocked = None;
+        ticket.wants_view = false;
         Ok(())
     })
 }
@@ -574,19 +1183,14 @@ pub fn unblock(root: &Path, id: &str, note: Option<String>) -> Result<Ticket, Ti
 /// it has a report).
 pub fn check_started(root: &Path, id: &str, run: &str) -> Result<Ticket, TicketError> {
     let run = Some(run.to_string()).filter(|run| !run.is_empty());
-    step(root, id, Actor::App, "check_started", None, run.clone(), None, |ticket| {
+    let mut line = Line::new(Actor::App, "check_started");
+    line.run = run.clone();
+    step(root, id, line, None, |ticket, _| {
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "a check runs for the ticket in progress"));
         }
-        ticket.check = Some(Check {
-            state: CheckState::Running,
-            run,
-            outcome: None,
-            counts: BTreeMap::new(),
-            freshness: None,
-            reason: None,
-            at: now(),
-        });
+        ticket.check =
+            Some(Check { state: CheckState::Running, run, outcome: None, counts: BTreeMap::new(), freshness: None, reason: None, at: now() });
         Ok(())
     })
 }
@@ -595,7 +1199,7 @@ pub fn check_started(root: &Path, id: &str, run: &str) -> Result<Ticket, TicketE
 /// the reason on it.
 pub fn check_refused(root: &Path, id: &str, reason: &str) -> Result<Ticket, TicketError> {
     let reason: String = reason.trim().chars().take(MAX_REASON).collect();
-    step(root, id, Actor::App, "check_refused", Some(reason.clone()), None, None, |ticket| {
+    step(root, id, Line::new(Actor::App, "check_refused").note(Some(reason.clone())), None, |ticket, _| {
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "a check runs for the ticket in progress"));
         }
@@ -607,15 +1211,17 @@ pub fn check_refused(root: &Path, id: &str, reason: &str) -> Result<Ticket, Tick
 }
 
 /// The run of a ticket's check has a report: it is bound to the ticket, which now waits for a
-/// person's confirmation. The run's own outcome and counts are kept as they are.
+/// person's confirmation, and a 「需重查」 mark goes. The run's own outcome and counts are kept as
+/// they are.
 pub fn check_ran(root: &Path, id: &str, result: RunResult) -> Result<Ticket, TicketError> {
-    let note = format!("{} · {}", result.outcome, counts_text(&result.counts));
-    let run = result.run.clone();
-    step(root, id, Actor::App, "check_ran", Some(note), Some(run), None, |ticket| {
+    let mut line = Line::new(Actor::App, "check_ran").note(Some(format!("{} · {}", result.outcome, counts_text(&result.counts))));
+    line.run = Some(result.run.clone());
+    step(root, id, line, None, |ticket, _| {
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "a check runs for the ticket in progress"));
         }
-        ticket.state = State::Waiting;
+        move_to(ticket, Actor::App, State::Waiting)?;
+        ticket.recheck = None;
         ticket.check = Some(Check {
             state: CheckState::Ran,
             run: Some(result.run),
@@ -627,73 +1233,6 @@ pub fn check_ran(root: &Path, id: &str, result: RunResult) -> Result<Ticket, Tic
         });
         Ok(())
     })
-}
-
-/// A person marks a ticket done once its check has run. Only the tickets view's Done calls this.
-pub fn done(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
-    let ticket = load(root, id)?;
-    let run = ticket.check.as_ref().and_then(|check| check.run.clone());
-    step(root, id, Actor::Person, "done", None, run, Some(seen), |ticket| {
-        if ticket.state != State::Waiting {
-            return Err(refused(ticket, "a ticket is done after its check has run"));
-        }
-        if !ticket.check.as_ref().is_some_and(|check| check.state == CheckState::Ran && check.run.is_some()) {
-            return Err(refused(ticket, "it has no check run bound to it"));
-        }
-        ticket.state = State::Done;
-        Ok(())
-    })
-}
-
-/// Whether a person may still change or remove a ticket: nobody has started it.
-pub fn editable(state: State) -> bool {
-    matches!(state, State::Draft | State::Confirmed)
-}
-
-/// A person changes the words of a draft or a confirmed ticket they saw at revision `seen`. A draft
-/// stays a draft: it still waits for a person's confirmation. Only the tickets view's Edit calls this.
-pub fn edit(root: &Path, id: &str, seen: u64, edit: Edit) -> Result<Ticket, TicketError> {
-    let (title, text, requirements) = words(&edit.title, &edit.text, &edit.requirements)?;
-    step(root, id, Actor::Person, "edited", None, None, Some(seen), |ticket| {
-        if !editable(ticket.state) {
-            return Err(refused(ticket, "only a draft or a confirmed ticket is edited"));
-        }
-        ticket.title = title;
-        ticket.text = text;
-        ticket.requirements = requirements;
-        Ok(())
-    })
-}
-
-/// A person deletes a draft or a confirmed ticket they saw at revision `seen`. Its file goes; its
-/// record stays, with a last line that says who deleted it and when. A ticket that others are
-/// under is refused while they are. Only the tickets view's Delete calls this.
-pub fn delete(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
-    let ticket = load(root, id)?;
-    unchanged(&ticket, seen)?;
-    if !editable(ticket.state) {
-        return Err(refused(&ticket, "only a draft or a confirmed ticket is deleted"));
-    }
-    let under: Vec<String> = list(root)?.into_iter().filter(|other| other.parent.as_deref() == Some(id)).map(|other| other.id).collect();
-    if !under.is_empty() {
-        return Err(TicketError::Refused(format!("{id} has tickets under it ({}): delete those first", under.join(", "))));
-    }
-    let path = file(root, id)?;
-    fs::remove_file(&path).map_err(|error| io(&path, &error))?;
-    let event = Event {
-        at: now(),
-        actor: Actor::Person,
-        ticket: ticket.id.clone(),
-        action: "deleted".into(),
-        from: Some(ticket.state),
-        to: None,
-        note: None,
-        run: None,
-        revision: ticket.revision.saturating_add(1),
-    };
-    let appended = append(root, &event);
-    GENERATION.fetch_add(1, Ordering::Relaxed);
-    appended.map(|()| ticket)
 }
 
 /// `3 failed · 1 advisory · 12 checked · 4 not covered`, from a run's counts.

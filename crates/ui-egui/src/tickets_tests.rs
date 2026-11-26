@@ -93,12 +93,12 @@ fn a_persons_steps_are_refused_out_of_order_and_recorded_as_theirs() {
     let scratch = Scratch::new("steps");
     let (mut h, root) = window(&scratch);
     tickets::draft(&root, Draft { title: "Enclosure".into(), ..Draft::default() }, Actor::Agent).unwrap();
-    let part = Some(Part { kind: "component".into(), id: "Lid".into() });
-    let lid = tickets::draft(&root, Draft { title: "Lid".into(), part, ..Draft::default() }, Actor::Agent).unwrap().id;
+    let parts = vec![Part { kind: "component".into(), id: "Lid".into() }];
+    let lid = tickets::draft(&root, Draft { title: "Lid".into(), parts, ..Draft::default() }, Actor::Agent).unwrap().id;
     h.settle();
     assert_eq!(h.app.tickets.tickets.len(), 2, "the host read both");
     crate::tickets::done(&mut h.app, &lid, seen(&root, &lid));
-    assert!(h.app.tickets.error.as_deref().is_some_and(|e| e.contains("is draft")), "a draft is not done: {:?}", h.app.tickets.error);
+    assert!(h.app.tickets.error.as_deref().is_some_and(|e| e.contains("check has not run")), "a draft is not done: {:?}", h.app.tickets.error);
     assert_eq!(state(&root, &lid), TicketState::Draft);
     crate::tickets::confirm(&mut h.app, &lid, seen(&root, &lid));
     assert_eq!(state(&root, &lid), TicketState::Confirmed);
@@ -117,7 +117,7 @@ fn start_sends_one_message_with_the_chip_and_every_message_carries_the_ticket_in
     tickets::draft(&root, Draft { title: "Enclosure".into(), ..Draft::default() }, Actor::Agent).unwrap();
     let lines = vec!["Two M4 holes, centres 40 ± 0.1 mm".to_string()];
     let id = tickets::draft(&root, Draft { title: "Bracket".into(), requirements: lines, ..Draft::default() }, Actor::Agent).unwrap().id;
-    tickets::confirm(&root, &id, tickets::load(&root, &id).unwrap().revision).unwrap();
+    tickets::confirm(&root, &id, tickets::load(&root, &id).unwrap().revision, false).unwrap();
     h.settle();
     let ctx = h.ctx.clone();
     crate::tickets::start(&mut h.app, &ctx, &id, seen(&root, &id));
@@ -128,7 +128,7 @@ fn start_sends_one_message_with_the_chip_and_every_message_carries_the_ticket_in
     let sent = &prompts[0];
     assert!(sent.contains("Work on part ticket T-2 alone: Bracket."), "{sent}");
     assert!(sent.contains("You are working on T-2 alone") && sent.contains("Two M4 holes, centres 40 ± 0.1 mm"), "the ticket in full: {sent}");
-    assert!(sent.contains("\"action\": \"check\""), "how to ask for the check: {sent}");
+    assert!(sent.contains("\"action\": \"finished\"") && sent.contains("no check starts by itself"), "how to say it is finished: {sent}");
     assert!(sent.contains("Other tickets: T-1 Enclosure (draft)"), "the others by id, title and state: {sent}");
     assert!(sent.contains("Attached file `T-2 · Bracket`"), "the chip went with it: {sent}");
     let shown = h
@@ -140,17 +140,18 @@ fn start_sends_one_message_with_the_chip_and_every_message_carries_the_ticket_in
     assert!(shown, "the conversation shows the ticket's chip on the message");
     // Only one ticket at a time: a second Start is refused while T-2 is in progress.
     let other = tickets::draft(&root, Draft { title: "Lid".into(), ..Draft::default() }, Actor::Agent).unwrap().id;
-    tickets::confirm(&root, &other, tickets::load(&root, &other).unwrap().revision).unwrap();
+    tickets::confirm(&root, &other, tickets::load(&root, &other).unwrap().revision, false).unwrap();
     let revision = seen(&root, &other);
     crate::tickets::start(&mut h.app, &h.ctx.clone(), &other, revision);
     assert_eq!(state(&root, &other), TicketState::Confirmed);
     assert!(h.app.tickets.error.as_deref().is_some_and(|e| e.contains("T-2")), "{:?}", h.app.tickets.error);
 }
 
-/// The loop with a scripted agent: asked in the chat, it drafts tickets; a person confirms one
-/// and presses Start; the agent changes the model and asks for the check; the app runs the DFM
-/// check through the Review entry (stand-in billing and journal, the real background worker) and
-/// binds the run, so the ticket waits for the person, who marks it done.
+/// The loop with a scripted agent: asked in the chat, it drafts tickets; a person accepts one and
+/// hands it to the Assistant; the agent changes the model and says it is finished, which starts
+/// nothing; the person starts the check; the app runs the DFM check through the Review entry
+/// (stand-in billing and journal, the real background worker) and binds the run, so the ticket
+/// waits for the person, who marks it done.
 #[test]
 fn a_scripted_agent_drafts_is_started_on_one_ticket_and_its_check_leaves_it_waiting() {
     let scratch = Scratch::new("loop");
@@ -167,8 +168,11 @@ fn a_scripted_agent_drafts_is_started_on_one_ticket_and_its_check_leaves_it_wait
     h.settle();
     assert!(agent.prompts().last().is_some_and(|p| p.contains("this project has none yet") && p.contains("ticket.draft")), "{:?}", agent.prompts());
     agent_calls(&mut h, "ticket.draft", json!({"title": "Sensor enclosure", "requirements": ["5052-H32, 1.5 mm"]}));
-    let drafted =
-        agent_calls(&mut h, "ticket.draft", json!({"title": "Base plate", "requirements": ["40 × 30 mm"], "part": {"kind": "body", "id": "Body1"}}));
+    let drafted = agent_calls(
+        &mut h,
+        "ticket.draft",
+        json!({"title": "Base plate", "requirements": ["40 × 30 mm"], "parts": [{"kind": "body", "id": "Body1"}]}),
+    );
     assert_eq!(drafted["ticket"]["id"], "T-2");
     agent.end_turn();
     h.settle();
@@ -183,10 +187,15 @@ fn a_scripted_agent_drafts_is_started_on_one_ticket_and_its_check_leaves_it_wait
     assert_eq!(state(&root, "T-2"), TicketState::InProgress);
     assert!(agent.prompts().last().is_some_and(|p| p.contains("You are working on T-2 alone")), "{:?}", agent.prompts().last());
 
-    // The agent makes the part and asks for the check.
+    // The agent makes the part and says it is finished: no check starts by itself (D-90).
     agent_calls(&mut h, "solid.box", json!({"length": 40, "width": 30, "height": 1.5}));
-    agent_calls(&mut h, "ticket.update", json!({"id": "T-2", "action": "check", "reason": "Plate made"}));
+    agent_calls(&mut h, "ticket.update", json!({"id": "T-2", "action": "finished", "reason": "Plate made"}));
     agent.end_turn();
+    h.frames(30);
+    let said = tickets::load(&root, "T-2").unwrap();
+    assert_eq!((said.state, said.finished, said.check.is_none(), billing.commits()), (TicketState::InProgress, true, true, 0));
+    // The person starts the check.
+    crate::tickets::ask_check(&mut h.app, "T-2", seen(&root, "T-2"));
 
     // The app starts the check through the Review entry and binds the run once it has a report.
     let began = std::time::Instant::now();
@@ -210,7 +219,8 @@ fn a_scripted_agent_drafts_is_started_on_one_ticket_and_its_check_leaves_it_wait
         ("drafted", Actor::Agent),
         ("confirmed", Actor::Person),
         ("started", Actor::Person),
-        ("check_asked", Actor::Agent),
+        ("finished", Actor::Agent),
+        ("check_asked", Actor::Person),
         ("check_started", Actor::App),
         ("check_ran", Actor::App),
         ("done", Actor::Person),
@@ -227,9 +237,9 @@ fn without_an_authority_the_tickets_check_is_refused_and_the_ticket_stays_in_pro
     let scratch = Scratch::new("refused");
     let (mut h, root) = window(&scratch);
     let id = tickets::draft(&root, Draft { title: "Plate".into(), ..Draft::default() }, Actor::Agent).unwrap().id;
-    tickets::confirm(&root, &id, tickets::load(&root, &id).unwrap().revision).unwrap();
+    tickets::confirm(&root, &id, tickets::load(&root, &id).unwrap().revision, false).unwrap();
     tickets::start(&root, &id, tickets::load(&root, &id).unwrap().revision).unwrap();
-    tickets::ask_check(&root, &id, Actor::Agent, None).unwrap();
+    tickets::ask_check(&root, &id, tickets::load(&root, &id).unwrap().revision).unwrap();
     h.frames(4);
     let ticket = tickets::load(&root, &id).unwrap();
     assert_eq!(ticket.state, TicketState::InProgress);
@@ -239,7 +249,7 @@ fn without_an_authority_the_tickets_check_is_refused_and_the_ticket_stays_in_pro
     crate::tickets::done(&mut h.app, &id, seen(&root, &id));
     assert_eq!(state(&root, &id), TicketState::InProgress, "no run, no done");
     // The person can ask again; with no authority it is refused again, and said again.
-    crate::tickets::ask_check(&mut h.app, &id);
+    crate::tickets::ask_check(&mut h.app, &id, seen(&root, &id));
     h.frames(4);
     let record = tickets::events(&root, Some(&id)).unwrap();
     assert_eq!(record.iter().filter(|e| e.action == "check_refused").count(), 2);
@@ -253,15 +263,25 @@ fn the_tickets_view_is_told_the_tickets_the_open_ones_record_and_its_words() {
     let scratch = Scratch::new("page");
     let (mut h, root) = window(&scratch);
     tickets::draft(&root, Draft { title: "Enclosure".into(), ..Draft::default() }, Actor::Agent).unwrap();
-    let part = Some(Part { kind: "component".into(), id: "Lid".into() });
-    tickets::draft(&root, Draft { title: "Lid".into(), text: "**not markdown**".into(), part, ..Draft::default() }, Actor::Agent).unwrap();
+    let parts = vec![Part { kind: "component".into(), id: "Lid".into() }];
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(root.join("specs/lid.pdf"), b"%PDF-1.7").unwrap();
+    let attachments = vec!["specs/lid.pdf".to_string()];
+    tickets::draft(&root, Draft { title: "Lid".into(), text: "**not markdown**".into(), parts, attachments, ..Draft::default() }, Actor::Agent)
+        .unwrap();
     h.settle();
     let state: Value = serde_json::from_str(&crate::tickets::page_state(&mut h.app)).unwrap();
     assert_eq!((state["view"].as_str(), state["project"].as_bool()), (Some("tickets"), Some(true)));
     assert_eq!(state["tickets"].as_array().map(Vec::len), Some(2));
     let lid = &state["tickets"][1];
-    assert_eq!((lid["id"].as_str(), lid["state"].as_str(), lid["parent"].as_str()), (Some("T-2"), Some("draft"), Some("T-1")));
-    assert_eq!((lid["part"]["id"].as_str(), lid["revision"].as_u64(), lid["text"].as_str()), (Some("Lid"), Some(1), Some("**not markdown**")));
+    assert_eq!((lid["id"].as_str(), lid["state"].as_str(), lid["parent"].as_str()), (Some("T-2"), Some("draft"), None));
+    assert_eq!((lid["parts"][0]["id"].as_str(), lid["revision"].as_u64(), lid["text"].as_str()), (Some("Lid"), Some(1), Some("**not markdown**")));
+    // The store's new fields, by the page's names; an attachment as the page reads one.
+    assert_eq!(lid["attachments"], json!([{"path": "specs/lid.pdf", "name": "lid.pdf", "picture": null}]));
+    assert_eq!(
+        (lid["waits"].clone(), lid["worker"].clone(), lid["deleted"].clone(), lid["checks"].clone()),
+        (json!([]), Value::Null, json!(false), json!(true))
+    );
     assert!(lid["check"].is_null() && state["selected"].is_null() && state["record"].as_array().is_some_and(Vec::is_empty));
 
     crate::tickets::receive(&mut h.app, &h.ctx.clone(), r#"{"type":"ticket_open","id":"T-2"}"#).unwrap();
@@ -282,7 +302,9 @@ fn the_tickets_view_is_told_the_tickets_the_open_ones_record_and_its_words() {
     named.sort_unstable();
     sent.sort_unstable();
     assert_eq!(sent, named);
-    assert!(state["strings"].as_object().is_some_and(|words| words.values().all(|w| w.as_str().is_some_and(|w| !w.is_empty() && !w.starts_with("ui.")))));
+    assert!(
+        state["strings"].as_object().is_some_and(|words| words.values().all(|w| w.as_str().is_some_and(|w| !w.is_empty() && !w.starts_with("ui."))))
+    );
 }
 
 /// The tickets view's steps go through the page's own bridge, and the store checks each one against
@@ -298,7 +320,8 @@ fn the_tickets_views_steps_are_checked_against_the_state_and_the_revision_seen()
     let page = |h: &mut Harness, message: Value| crate::tickets::receive(&mut h.app, &ctx, &message.to_string());
 
     // A person edits the draft they saw at revision 1; it stays a draft.
-    page(&mut h, json!({"type": "ticket_edit", "id": "T-2", "revision": 1, "title": "Lid, 1.5 mm", "text": "", "requirements": ["Flange ≥ 8 mm"]})).unwrap();
+    page(&mut h, json!({"type": "ticket_edit", "id": "T-2", "revision": 1, "title": "Lid, 1.5 mm", "text": "", "requirements": ["Flange ≥ 8 mm"]}))
+        .unwrap();
     assert_eq!((tickets::load(&root, "T-2").unwrap().title.as_str(), state(&root, "T-2")), ("Lid, 1.5 mm", TicketState::Draft));
     // A Confirm pressed on what was seen before that edit is refused and said; nothing changes.
     page(&mut h, json!({"type": "ticket_confirm", "id": "T-2", "revision": 1})).unwrap();
@@ -312,14 +335,15 @@ fn the_tickets_views_steps_are_checked_against_the_state_and_the_revision_seen()
     assert_eq!(state(&root, "T-2"), TicketState::Confirmed);
 
     // New ticket: the person's own, confirmed from the start, recorded as theirs.
-    page(&mut h, json!({"type": "ticket_create", "title": "Label area 40 × 20 mm", "text": "No holes there.", "requirements": ["40 × 20 mm flat"]})).unwrap();
+    page(&mut h, json!({"type": "ticket_create", "title": "Label area 40 × 20 mm", "text": "No holes there.", "requirements": ["40 × 20 mm flat"]}))
+        .unwrap();
     let made = tickets::load(&root, "T-3").unwrap();
-    assert_eq!((made.state, made.parent.as_deref(), made.requirements.len()), (TicketState::Confirmed, Some("T-1"), 1));
+    assert_eq!((made.state, made.parent.as_deref(), made.requirements.len()), (TicketState::Confirmed, None, 1));
     assert_eq!(tickets::events(&root, Some("T-3")).unwrap()[0].actor, Actor::Person);
-    // Delete: the open page closes, the file goes, the record keeps the line.
+    // Delete: the open page closes, the ticket is kept marked deleted, the record keeps the line.
     page(&mut h, json!({"type": "ticket_open", "id": "T-3"})).unwrap();
     page(&mut h, json!({"type": "ticket_delete", "id": "T-3", "revision": 1})).unwrap();
-    assert!(tickets::load(&root, "T-3").is_err() && h.app.tickets.selected.is_none());
+    assert!(tickets::load(&root, "T-3").unwrap().deleted && h.app.tickets.selected.is_none());
     assert_eq!(tickets::events(&root, Some("T-3")).unwrap().last().map(|e| e.action.as_str()), Some("deleted"));
 
     // Hostile messages are refused before the store.
@@ -334,7 +358,7 @@ fn the_tickets_views_steps_are_checked_against_the_state_and_the_revision_seen()
     ] {
         assert!(page(&mut h, bad.clone()).is_err(), "{bad}");
     }
-    assert_eq!(tickets::list(&root).unwrap().len(), 2);
+    assert_eq!(tickets::list(&root).unwrap().len(), 3);
     // The Assistant's own view has no way to a ticket step.
     let confirm = json!({"type": "ticket_confirm", "id": "T-1", "revision": 1}).to_string();
     assert!(crate::agent_chat::web::act(&mut h.app, &ctx, &confirm).is_err());
