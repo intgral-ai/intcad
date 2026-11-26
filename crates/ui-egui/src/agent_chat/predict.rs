@@ -593,6 +593,7 @@ pub fn page(app: &SolveApp) -> Value {
 }
 
 /// The page's Tab and Esc in its empty message box, as the view's own.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn from_page(app: &mut SolveApp, id: u64, accept: bool) {
     if !available(app) || !app.agent_chat.open || !app.agent_chat.web_host || !app.agent_chat.predict.line().is_some_and(|g| g.id == id) {
         return;
