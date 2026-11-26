@@ -1,11 +1,11 @@
 //! `ticket.list`, `ticket.inspect`, `ticket.draft` and `ticket.update`: the agent's way to the
 //! project's part tickets (`crate::project::tickets`).
 //!
-//! These four are all there is. Drafting makes drafts only; an update says the ticket the
-//! Assistant works is finished, or that it is blocked or taken up again. Accepting or declining a
-//! draft, handing a ticket over, starting its check, setting a state, finishing, editing,
-//! deleting and restoring are a person's buttons in the Tickets panel, so no command does them.
-//! Every step a command makes is recorded as the agent's.
+//! These four are all there is. Drafting makes drafts; an update sets a ticket's state (its own
+//! draft's acceptance and finishing included, under the store's conditions), or says the ticket
+//! the Assistant works is finished, blocked or taken up again. Starting a check, editing, deleting
+//! and restoring are a person's buttons in the Tickets panel, so no command does them. Every step
+//! a command makes is recorded as the agent's.
 
 use std::path::{Path, PathBuf};
 
@@ -61,9 +61,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&UPDATE_CONTRACT)
         .output(crate::schema::output_schema_for::<TicketReply>)
         .params(
-            "id; action: finished (the ticket you work has its changes; a person starts its check, or confirms it when no check applies) \
-             | block (reason required) | unblock; reason? → the ticket. No check starts by itself. A person accepts drafts, starts checks, \
-             changes states and finishes tickets in the Tickets panel; no command does those",
+            "id; action: state (to: draft | confirmed | in_progress | waiting | done | blocked; confirmed accepts a draft; done only when its \
+             sub-tickets are done and, where a check applies, its check ran) | finished (the ticket you work has its changes; a person \
+             starts its check) | block (reason required) | unblock; reason? → the ticket. No command starts a check, edits, deletes or \
+             restores a ticket: a person does those in the Tickets panel",
         ),
 ];
 
@@ -117,6 +118,12 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
     let root = root(s, "ticket.update")?;
     let id = params.id.trim();
     let ticket = match params.action.trim() {
+        "state" => {
+            let to = params.to.as_deref().map(str::trim).unwrap_or_default();
+            let to = serde_json::from_value(Value::from(to))
+                .map_err(|_| bad("ticket.update", format!("`{to}` is not a state; use draft, confirmed, in_progress, waiting, done or blocked")))?;
+            tickets::agent_set_state(&root, id, to)
+        }
         "finished" => tickets::finished(&root, id, params.reason),
         "block" => tickets::block(&root, id, params.reason.as_deref().unwrap_or_default()),
         "unblock" => tickets::unblock(&root, id, params.reason),
@@ -126,13 +133,10 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
                 "no check starts by itself: say `finished`, and a person starts the ticket's check in the Tickets panel",
             ));
         }
-        "confirm" | "confirmed" | "accept" | "decline" | "done" | "complete" | "start" | "state" | "reopen" | "delete" | "restore" => {
-            return Err(bad(
-                "ticket.update",
-                "only a person accepts, starts, changes the state of, finishes, deletes or restores a ticket, with the buttons in the Tickets panel",
-            ));
+        "decline" | "delete" | "restore" | "edit" => {
+            return Err(bad("ticket.update", "only a person declines, edits, deletes or restores a ticket, with the buttons in the Tickets panel"));
         }
-        other => return Err(bad("ticket.update", format!("`{other}` is not an action; use finished, block or unblock"))),
+        other => return Err(bad("ticket.update", format!("`{other}` is not an action; use state (with to), finished, block or unblock"))),
     }
     .map_err(|error| refusal("ticket.update", error))?;
     reply("ticket.update", &root, ticket)

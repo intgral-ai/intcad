@@ -136,6 +136,8 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         #[cfg(not(target_arch = "wasm32"))]
         {
             app.agent_chat.seen_open = false;
+            // The tickets view opens its pictures in the viewer while the Assistant is closed.
+            gallery_window(app, &ctx);
         }
         return;
     }

@@ -6,8 +6,10 @@ import { STATE_ORDER } from './status-icons';
 
 export type Words = TicketsState['strings'];
 
-/** A ticket with the fields the store does not send yet filled in as today's ticket reads. */
-export type Full = Ticket & Required<Pick<Ticket, 'parts' | 'attachments' | 'waits' | 'worker' | 'deleted' | 'checks'>>;
+type Filled = 'parts' | 'attachments' | 'waits' | 'worker' | 'deleted' | 'checks' | 'checksOff' | 'recheck' | 'finished' | 'whyNotDone' | 'openWaits' | 'unchecked';
+
+/** A ticket with every optional field filled in, as a ticket without it reads. */
+export type Full = Ticket & Required<Pick<Ticket, Filled>>;
 
 export const full = (ticket: Ticket): Full => ({
   ...ticket,
@@ -17,6 +19,12 @@ export const full = (ticket: Ticket): Full => ({
   worker: ticket.worker ?? null,
   deleted: ticket.deleted ?? false,
   checks: ticket.checks ?? true,
+  checksOff: ticket.checksOff ?? false,
+  recheck: ticket.recheck ?? null,
+  finished: ticket.finished ?? false,
+  whyNotDone: ticket.whyNotDone ?? null,
+  openWaits: ticket.openWaits ?? [],
+  unchecked: ticket.unchecked ?? false,
 });
 
 /** The same limits as the store (crates/engine/src/project/tickets.rs). */
@@ -83,20 +91,17 @@ export function ordered(tickets: Full[]) {
   return STATE_ORDER.flatMap(state => top.filter(ticket => ticket.state === state)).flatMap(ticket => [ticket, ...childrenOf(ticket, tickets)]);
 }
 
-/** Why a person cannot finish it now: open sub-tickets, or a check that applies and has not run. */
-export function whyNotDone(ticket: Full, tickets: Full[], words: Words) {
-  const open = childrenOf(ticket, tickets).filter(child => child.state !== 'done').length;
-  if (open) return fill(words.whySubs, { n: String(open) });
-  if (ticket.checks && ticket.check?.state !== 'ran') return words.whyCheck;
-  return null;
+/** Why it cannot be finished now, in the person's words: the store's reason (open sub-tickets, a check that has not run, a change after its check). */
+export function whyNotDone(ticket: Full, words: Words) {
+  const why = ticket.whyNotDone;
+  if (!why) return null;
+  if (why.kind === 'subs') return fill(words.whySubs, { n: String(why.ids.length) });
+  return why.kind === 'check' ? words.whyCheck : words.whyRecheck;
 }
 
-/** The tickets it waits for that are not done yet. They keep it from the Assistant; a person is only reminded (D-88). */
-export const openWaits = (ticket: Full, tickets: Full[]) => ticket.waits.filter(id => tickets.find(other => other.id === id)?.state !== 'done');
-
-/** Why the Assistant cannot take it: tickets it waits for, no agent connected, or another ticket in its hands (one at a time). */
+/** Why the Assistant cannot take it: tickets it waits for (the store's list), no agent connected, or another ticket in its hands (one at a time). */
 export function whyNotAssistant(ticket: Full, state: TicketsState, tickets: Full[]) {
-  const waits = openWaits(ticket, tickets);
+  const waits = ticket.openWaits;
   if (waits.length) return fill(state.strings.whyWaits, { ids: names(waits, state.language) });
   if (state.assistant === false) return state.strings.whyOffline;
   const busy = tickets.find(other => other.state === 'in_progress' && other.worker === 'assistant');

@@ -258,6 +258,22 @@ pub struct Gallery {
     at: usize,
 }
 
+/// Show `pictures` (bytes and a name each) in the picture viewer over the app, from the one at
+/// `at`: a ticket's picture attachments.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn show_pictures(app: &mut SolveApp, pictures: Vec<(Arc<Vec<u8>>, String)>, at: usize) {
+    let pictures: Vec<Picture> = pictures.into_iter().map(|(bytes, name)| Picture::shared(bytes, name, false)).collect();
+    if !pictures.is_empty() {
+        app.agent_chat.gallery = Some(Gallery { at: at.min(pictures.len() - 1), pictures });
+    }
+}
+
+/// Whether the picture viewer is open over the app.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn gallery_open(app: &SolveApp) -> bool {
+    app.agent_chat.gallery.is_some()
+}
+
 #[derive(Clone, Debug)]
 pub enum Item {
     User {

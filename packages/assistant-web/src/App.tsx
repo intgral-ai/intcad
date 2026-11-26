@@ -485,7 +485,7 @@ function ReviewCard({ item, strings }: { item: Of<'review'>; strings: Strings })
   );
 }
 
-/** A part ticket the agent drafted (D-87): its state, number and title, and a way to it in the tickets view. */
+/** A part ticket the agent drafted: its state, number and title, and a way to it in the tickets view. */
 function TicketCard({ item, strings }: { item: Of<'ticket'>; strings: Strings }) {
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-lg border border-border1 py-2 pr-2 pl-3">

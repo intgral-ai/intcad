@@ -6,9 +6,9 @@
 // ticket is open (`selected`) and whether it is large (`expanded`), and checks every step against
 // the ticket's state and the revision the person saw.
 import { FileText, Paperclip, Plus } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { TicketsState } from '../host';
-import { pictureUrl, post } from '../host';
+import { ask, hear, pictureUrl } from '../host';
 import { full, lines, MAX_TEXT, MAX_TITLE } from './shared';
 import type { Full, Words } from './shared';
 import { StateIcon } from './status-icons';
@@ -18,6 +18,7 @@ import { Button } from '@/ds/components/Button';
 import { Dialog, DialogAction, DialogBody, DialogCancel, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/ds/components/Dialog';
 import { Field, FieldLabel } from '@/ds/components/Field';
 import { Input } from '@/ds/components/Input';
+import { Notice } from '@/ds/components/Notice';
 import { Textarea } from '@/ds/components/Textarea';
 import { Toaster } from '@/ds/components/Toaster';
 
@@ -27,14 +28,16 @@ function NewTicket({ state, words, parent, tickets, onClose }: { state: TicketsS
   const [text, setText] = useState('');
   const [typed, setTyped] = useState('');
   const [parts, setParts] = useState(state.selection ?? []);
+  // A refused ticket keeps the form open with what was typed, and says why.
+  const [refused, setRefused] = useState(false);
   const requirements = lines(typed);
   const fits = title.trim().length > 0 && requirements !== null;
   const adding = state.adding ?? [];
   const above = parent ? tickets.find(ticket => ticket.id === parent) : undefined;
   function save() {
     if (!fits) return;
-    post({ type: 'ticket_create', title: title.trim(), text: text.trim(), requirements, parts, attachments: adding.map(file => file.path), parent });
-    onClose();
+    setRefused(false);
+    ask({ type: 'ticket_create', title: title.trim(), text: text.trim(), requirements, parts, attachments: adding.map(file => file.path), parent }, ok => (ok ? onClose() : setRefused(true)));
   }
   return (
     <Dialog open onOpenChange={open => !open && onClose()}>
@@ -51,6 +54,11 @@ function NewTicket({ state, words, parent, tickets, onClose }: { state: TicketsS
           )}
         </DialogHeader>
         <DialogBody className="flex flex-col gap-3">
+          {refused && state.error && (
+            <Notice variant="destructive">
+              <Notice.Message>{state.error}</Notice.Message>
+            </Notice>
+          )}
           <Field className="gap-1">
             <FieldLabel>{words.fieldTitle}</FieldLabel>
             <Input autoFocus maxLength={MAX_TITLE} value={title} onChange={event => setTitle(event.target.value)} />
@@ -83,7 +91,7 @@ function NewTicket({ state, words, parent, tickets, onClose }: { state: TicketsS
                   <span className="truncate">{file.name}</span>
                 </span>
               ))}
-              <Button size="sm" variant="ghost" icon={<Paperclip />} onClick={() => post({ type: 'ticket_attach', id: null })}>
+              <Button size="sm" variant="ghost" icon={<Paperclip />} onClick={() => ask({ type: 'ticket_attach', id: null })}>
                 {words.attach}
               </Button>
             </div>
@@ -106,6 +114,8 @@ export function Tickets({ state }: { state: TicketsState }) {
   const tickets = state.tickets.map(full);
   const ticket = state.selected ? tickets.find(candidate => candidate.id === state.selected) : undefined;
   const expanded = Boolean(ticket && state.expanded);
+  // Each state the host pushes answers the request it was pushed for.
+  useEffect(() => hear(state), [state]);
   return (
     // Large, the ticket lies over the app's own window, which the dimmed surround lets through.
     <div className={`h-dvh overflow-hidden text-foreground ${expanded ? '' : 'bg-background'}`}>

@@ -197,13 +197,32 @@ fn a_ticket_no_check_applies_to_waits_once_the_assistant_finishes_and_is_done_un
     let text = std::fs::read_to_string(folder(&root).join(EVENTS)).unwrap();
     assert_eq!(text.matches("\"unchecked\":true").count(), 1, "only the unchecked done line says so: {text}");
 
-    // A run that checked nothing lets a ticket finish too, recorded as unchecked (spec point 6).
+    // A run that checked nothing lets a ticket finish too, recorded as unchecked.
     let id = handed(&root, bracket());
     let nothing = RunResult { counts: BTreeMap::from([("unsupported".into(), 5), ("not_applicable".into(), 2)]), ..ran("run-2") };
     checked(&root, &id, nothing);
     done(&root, &id, seen(&root, &id)).unwrap();
     let last = events(&root, Some(&id)).unwrap().pop().unwrap();
     assert_eq!((last.unchecked, last.run.as_deref()), (true, Some("run-2")));
+    // A ticket with no parts has no check to run: it finishes unchecked, whatever its switch says.
+    let loose = handed(&root, titled("Choose the hinge supplier"));
+    assert!(refusal(ask_check(&root, &loose, seen(&root, &loose))).contains("no check applies"));
+    finished(&root, &loose, None).unwrap();
+    done(&root, &loose, seen(&root, &loose)).unwrap();
+    assert!(events(&root, Some(&loose)).unwrap().pop().unwrap().unchecked);
+    // A ticket with parts needs its check until a person switches it off on the ticket, in one line.
+    let parted = handed(&root, bracket());
+    assert!(refusal(set_state(&root, &parted, seen(&root, &parted), State::Done)).contains("check has not run"));
+    let off = edit(&root, &parted, seen(&root, &parted), Edit { checks: Some(false), ..Edit::default() }).unwrap();
+    assert!(!applies(&off) && !off.checks);
+    assert_eq!(actions(&root, &parted).pop(), Some(("check_off".to_string(), Actor::Person)));
+    let on = edit(&root, &parted, seen(&root, &parted), Edit { checks: Some(true), ..Edit::default() }).unwrap();
+    assert!(applies(&on));
+    assert_eq!(actions(&root, &parted).pop().map(|(a, _)| a).as_deref(), Some("check_on"));
+    edit(&root, &parted, seen(&root, &parted), Edit { checks: Some(false), ..Edit::default() }).unwrap();
+    assert_eq!(set_state(&root, &parted, seen(&root, &parted), State::Done).unwrap().state, State::Done);
+    assert!(events(&root, Some(&parted)).unwrap().pop().unwrap().unchecked);
+
     // One failure is something checked.
     let failing = Ticket {
         check: Some(Check { counts: BTreeMap::from([("failed".into(), 1)]), ..load(&root, &id).unwrap().check.unwrap() }),
@@ -218,7 +237,7 @@ fn a_person_sets_any_state_and_done_waits_for_the_sub_tickets_and_the_check() {
     let (_, root) = project(&scratch);
     let parent = create(&root, Draft { checks: Some(false), ..titled("Enclosure fits the board") }).unwrap().id;
     let child = create(&root, Draft { parent: Some(parent.clone()), checks: Some(false), ..titled("Standoffs 6 mm") }).unwrap().id;
-    let other = create(&root, Draft { parent: Some(parent.clone()), ..titled("Vent slots") }).unwrap().id;
+    let other = create(&root, Draft { parent: Some(parent.clone()), parts: vec![part("component", "Vents")], ..titled("Vent slots") }).unwrap().id;
 
     // Back and forth, by a person, as they like; the same state again changes nothing.
     let moved = set_state(&root, &child, 1, State::InProgress).unwrap();
@@ -285,10 +304,9 @@ fn who_may_move_a_ticket_is_one_rule() {
             .collect()
     };
     assert_eq!(allowed(Actor::Person).len(), 30, "a person: every move");
-    assert_eq!(allowed(Actor::Agent), [(InProgress, Waiting), (InProgress, Blocked), (Blocked, InProgress)]);
+    assert_eq!(allowed(Actor::Agent).len(), 30, "the agent: every move, a draft's acceptance and finishing included");
     assert_eq!(allowed(Actor::App), [(InProgress, Waiting)]);
-    // Spec point 17 stays as written: the agent does not reopen a finished ticket.
-    assert!(!may_move(Actor::Agent, Done, InProgress));
+    assert!(may_move(Actor::Agent, Done, InProgress) && may_move(Actor::Agent, State::Draft, Confirmed));
 }
 
 #[test]
@@ -296,7 +314,7 @@ fn waits_are_checked_cycles_refused_and_only_the_assistant_is_held_by_them() {
     let scratch = Scratch::new("waits");
     let (_, root) = project(&scratch);
     let base = create(&root, Draft { checks: Some(false), ..titled("Base plate") }).unwrap().id;
-    let lid = create(&root, titled("Lid")).unwrap().id;
+    let lid = create(&root, Draft { parts: vec![part("component", "Lid")], ..titled("Lid") }).unwrap().id;
     let joint = create(&root, Draft { waits: vec![base.clone(), lid.clone(), base.clone()], ..titled("Join lid and base") }).unwrap();
     assert_eq!(joint.waits, [base.clone(), lid.clone()], "each once");
 
@@ -316,7 +334,7 @@ fn waits_are_checked_cycles_refused_and_only_the_assistant_is_held_by_them() {
     assert!(refusal(edit(&root, &hinge, 1, Edit { waits: Some(vec![joint.id.clone()]), ..Edit::default() })).contains("or is its parent"));
     assert!(refusal(create(&root, Draft { parent: Some(base.clone()), waits: vec![base.clone()], ..titled("x") })).contains("or is its parent"));
 
-    // Waits hold the Assistant, not a person (D-88).
+    // Waits hold the Assistant, not a person.
     let error = refusal(start(&root, &joint.id, 1));
     assert!(error.contains("T-3 waits for T-1, T-2"), "{error}");
     set_state(&root, &base, 1, State::Done).unwrap();
@@ -411,13 +429,26 @@ fn deleting_and_declining_keep_the_ticket_and_its_record_and_restoring_brings_it
     assert!(refusal(decline(&root, &id, seen(&root, &id))).contains("only a draft is declined"));
     assert_eq!(restore(&root, &other).unwrap().state, State::Draft, "back among the drafts");
 
-    // A ticket with live sub-tickets is neither deleted nor declined until they are.
-    let sub = draft(&root, Draft { parent: Some(other.clone()), ..titled("Lid hinge") }, Actor::Agent).unwrap().id;
-    assert!(refusal(decline(&root, &other, seen(&root, &other))).contains("has sub-tickets (T-3)"));
-    decline(&root, &sub, 1).unwrap();
+    // A parent goes to 已删除 with its live sub-tickets and comes back with them; a sub-ticket
+    // deleted on its own before stays deleted.
+    let subs: Vec<String> =
+        ["Lid hinge", "Lid seal", "Lid label"].iter().map(|t| draft(&root, Draft { parent: Some(other.clone()), ..titled(t) }, Actor::Agent).unwrap().id).collect();
+    decline(&root, &subs[2], 1).unwrap();
     decline(&root, &other, seen(&root, &other)).unwrap();
+    let gone: Vec<(bool, Option<String>)> = subs.iter().map(|id| load(&root, id).map(|t| (t.deleted, t.deleted_with)).unwrap()).collect();
+    assert_eq!(gone, [(true, Some(other.clone())), (true, Some(other.clone())), (true, None)]);
+    let line = events(&root, Some(&subs[0])).unwrap().pop().unwrap();
+    assert_eq!((line.action.as_str(), line.note.as_deref()), ("deleted", Some("with T-2")));
+    restore(&root, &other).unwrap();
+    let back: Vec<bool> = subs.iter().map(|id| load(&root, id).unwrap().deleted).collect();
+    assert_eq!(back, [false, false, true], "only those that went with it come back");
+    assert_eq!(load(&root, &subs[0]).unwrap().deleted_with, None);
+    let parent = create(&root, titled("Base")).unwrap().id;
+    let under = create(&root, Draft { parent: Some(parent.clone()), ..titled("Base feet") }).unwrap().id;
+    delete(&root, &parent, 1).unwrap();
+    assert!(load(&root, &under).unwrap().deleted);
     // Ids are never given again.
-    assert_eq!(draft(&root, titled("Base"), Actor::Agent).unwrap().id, "T-4");
+    assert_eq!(draft(&root, titled("Base"), Actor::Agent).unwrap().id, "T-8");
 }
 
 #[test]
@@ -548,8 +579,8 @@ fn a_version_1_folder_is_read_and_a_later_step_writes_version_2() {
         shape,
         [
             ("T-1", None, 0, None, true, 2),
-            ("T-2", Some("T-1"), 1, Some(Worker::Assistant), true, 2),
-            ("T-3", Some("T-1"), 1, Some(Worker::Assistant), true, 2),
+            ("T-2", None, 1, Some(Worker::Assistant), true, 2),
+            ("T-3", None, 1, Some(Worker::Assistant), true, 2),
         ]
     );
     let bracket = &tickets[1];
@@ -565,8 +596,12 @@ fn a_version_1_folder_is_read_and_a_later_step_writes_version_2() {
     let after = std::fs::read_to_string(folder(&root).join("T-2.json")).unwrap();
     assert!(after.contains("\"schemaVersion\": 2") && after.contains("\"parts\"") && !after.contains("\"part\":"), "{after}");
     assert_eq!(load(&root, "T-2").unwrap().worker, Some(Worker::Assistant));
-    // The top ticket of layout 1 is a parent like any other, and finishes after its sub-tickets.
-    assert!(refusal(done(&root, "T-1", 1)).contains("sub-tickets not done yet (T-2)"));
+    // Nobody chose layout 1's parents (its first ticket was the top one by rule): they are dropped,
+    // so its first ticket is a draft of its own and is declined alone.
+    let file = std::fs::read_to_string(folder(&root).join("T-3.json")).unwrap();
+    assert!(file.contains("\"parent\": \"T-1\""), "the file is left as it was: {file}");
+    decline(&root, "T-1", 1).unwrap();
+    assert!(!load(&root, "T-2").unwrap().deleted && !load(&root, "T-3").unwrap().deleted);
     assert_eq!(draft(&root, titled("New"), Actor::Agent).unwrap().id, "T-4");
     // A newer layout than this build's is refused, not guessed at.
     std::fs::write(folder(&root).join("T-9.json"), br#"{"schemaVersion": 3, "id": "T-9"}"#).unwrap();
@@ -598,7 +633,7 @@ fn run(s: &mut Session, id: &str, p: Value) -> Value {
 }
 
 #[test]
-fn the_agents_commands_draft_and_say_finished_but_cannot_accept_change_a_state_or_finish() {
+fn the_agents_commands_draft_set_states_and_say_finished_but_start_no_check_and_delete_nothing() {
     let scratch = Scratch::new("commands");
     let (mut s, root) = project(&scratch);
     std::fs::write(root.join("sketch.png"), b"\x89PNG").unwrap();
@@ -631,8 +666,8 @@ fn the_agents_commands_draft_and_say_finished_but_cannot_accept_change_a_state_o
     }
     assert_eq!(list(&root).unwrap().len(), 3);
 
-    // No command accepts, hands over, starts a check, sets a state, finishes, edits, deletes or
-    // restores: the agent's commands are these four, and update refuses those words.
+    // No command starts a check, edits, deletes or restores: the agent's commands are these four,
+    // and update refuses those words.
     let mut commands: Vec<&str> = crate::cmd::command_specs().iter().map(|spec| spec.id).filter(|id| id.starts_with("ticket.")).collect();
     commands.sort_unstable();
     assert_eq!(commands, ["ticket.draft", "ticket.inspect", "ticket.list", "ticket.update"]);
@@ -649,13 +684,19 @@ fn the_agents_commands_draft_and_say_finished_but_cannot_accept_change_a_state_o
     ] {
         assert!(crate::cmd::find_command(missing).is_none(), "{missing} must not exist");
     }
-    for action in ["confirm", "accept", "decline", "done", "start", "state", "reopen", "delete", "restore"] {
+    for action in ["decline", "delete", "restore", "edit"] {
         let error = s.execute("ticket.update", &json!({"id": "T-2", "action": action})).unwrap_err().to_string();
         assert!(error.contains("only a person"), "{action}: {error}");
     }
+    for to in [json!({}), json!({"to": "finished"}), json!({"to": "../done"})] {
+        let mut params = json!({"id": "T-2", "action": "state"});
+        params.as_object_mut().unwrap().extend(to.as_object().unwrap().clone());
+        let error = s.execute("ticket.update", &params).unwrap_err().to_string();
+        assert!(error.contains("is not a state"), "{params}: {error}");
+    }
     let error = s.execute("ticket.update", &json!({"id": "T-2", "action": "check"})).unwrap_err().to_string();
     assert!(error.contains("no check starts by itself") && error.contains("finished"), "{error}");
-    for action in ["create", "edit", "move"] {
+    for action in ["create", "move", "confirm"] {
         let error = s.execute("ticket.update", &json!({"id": "T-2", "action": action, "reason": "x"})).unwrap_err().to_string();
         assert!(error.contains("is not an action"), "{action}: {error}");
     }
@@ -679,6 +720,26 @@ fn the_agents_commands_draft_and_say_finished_but_cannot_accept_change_a_state_o
     let steps: Vec<&str> = inspected["events"].as_array().unwrap().iter().filter_map(|e| e["action"].as_str()).collect();
     assert_eq!(steps, ["drafted", "confirmed", "started", "finished"]);
     assert_eq!(inspected["events"][3]["actor"], "agent");
+    // The agent sets states as a person does, under the same conditions, each step its own line.
+    let accepted = run(&mut s, "ticket.update", json!({"id": "T-3", "action": "state", "to": "confirmed"}));
+    assert_eq!(accepted["ticket"]["state"], "confirmed", "the agent accepts its own draft");
+    let line = accepted["events"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!((line["action"].as_str(), line["actor"].as_str()), (Some("confirmed"), Some("agent")));
+    let error = s.execute("ticket.update", &json!({"id": "T-3", "action": "state", "to": "in_progress"})).unwrap_err().to_string();
+    assert!(error.contains("T-3 waits for T-2"), "open waits keep it from the Assistant: {error}");
+    let done_line = run(&mut s, "ticket.update", json!({"id": "T-2", "action": "state", "to": "done"}));
+    let line = done_line["events"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!((line["action"].as_str(), line["actor"].as_str(), line["unchecked"].as_bool()), (Some("done"), Some("agent"), Some(true)));
+    let taken = run(&mut s, "ticket.update", json!({"id": "T-3", "action": "state", "to": "in_progress"}));
+    assert_eq!((taken["ticket"]["state"].as_str(), taken["ticket"]["worker"].as_str()), (Some("in_progress"), Some("assistant")));
+    run(&mut s, "ticket.draft", json!({"title": "Flange", "parts": [{"kind": "component", "id": "Base"}]}));
+    run(&mut s, "ticket.update", json!({"id": "T-4", "action": "state", "to": "confirmed"}));
+    let error = s.execute("ticket.update", &json!({"id": "T-4", "action": "state", "to": "in_progress"})).unwrap_err().to_string();
+    assert!(error.contains("one ticket at a time"), "{error}");
+    let error = s.execute("ticket.update", &json!({"id": "T-4", "action": "state", "to": "done"})).unwrap_err().to_string();
+    assert!(error.contains("check has not run"), "the done gate holds for the agent: {error}");
+    let reopened = run(&mut s, "ticket.update", json!({"id": "T-2", "action": "state", "to": "confirmed"}));
+    assert_eq!(reopened["ticket"]["state"], "confirmed", "and back from done");
     // The commands are no undo steps: the design's history is untouched.
     assert!(s.undo.is_empty());
 }

@@ -202,7 +202,7 @@ fn context_json(context: &Context) -> Value {
 
 /// The name the page asks the host for a picture by: the bytes' length and a spread of them, so
 /// one picture is not shown for another. It says nothing of where the bytes are kept.
-fn picture_key(bytes: &[u8]) -> String {
+pub(crate) fn picture_key(bytes: &[u8]) -> String {
     let step = (bytes.len() / 4096).max(1);
     let spread = bytes.iter().step_by(step).fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3));
     format!("{:x}-{spread:016x}", bytes.len())
@@ -1066,6 +1066,11 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
         "copy" => {
             let body = text("text").ok_or("copy: no text")?;
             ctx.copy_text(body.chars().take(MAX_MESSAGE).collect());
+        }
+        "ticket_show" => {
+            // The card of a ticket the agent drafted: the Tickets panel opens on it.
+            let id = text("id").map(str::trim).filter(|id| solidcraft_engine::project::tickets::number(id).is_some()).ok_or("ticket_show: no ticket id")?;
+            crate::tickets::show(app, id);
         }
         "open_link" => {
             let url = text("url").ok_or("open_link: no url")?;

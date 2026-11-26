@@ -8,10 +8,12 @@
 import { Box, Ellipsis, Lock, Paperclip, Plus, Sparkles, Trash2, X } from 'lucide-react';
 import { useState } from 'react';
 import type { TicketsState } from '../host';
-import { post } from '../host';
+import { ask, post } from '../host';
 import { childrenOf, day, fill, names, progress, stateWord } from './shared';
 import type { Full, Words } from './shared';
 import { STATE_COLOUR, STATE_ORDER, StateIcon } from './status-icons';
+import { useAccept, useRemove } from './TicketPage';
+import { Badge } from '@/ds/components/Badge';
 import { Breadcrumb, Crumb } from '@/ds/components/Breadcrumb';
 import { Button } from '@/ds/components/Button';
 import { DisclosureChevron } from '@/ds/components/DisclosureChevron';
@@ -27,6 +29,11 @@ function Meta({ ticket, list }: { ticket: Full; list: List }) {
   const [first, ...more] = ticket.parts;
   return (
     <span className="ml-auto flex shrink-0 items-center justify-end gap-2 pl-2 text-xs whitespace-nowrap text-muted-foreground">
+      {ticket.recheck && (
+        <Badge variant="warning" emphasis="subtle" size="sm">
+          {list.words.recheck}
+        </Badge>
+      )}
       {first && (
         <span className="inline-flex items-center gap-1">
           <span className="max-w-16 truncate sm:max-w-32">{first.id}</span>
@@ -52,6 +59,8 @@ function Meta({ ticket, list }: { ticket: Full; list: List }) {
 function Row({ ticket, list, depth = 0, open, onToggle }: { ticket: Full; list: List; depth?: number; open?: boolean; onToggle?: () => void }) {
   const counted = progress(ticket, list.tickets);
   const proposed = ticket.state === 'draft' && depth === 0;
+  const { accept, dialog: accepting } = useAccept(ticket, list.tickets, list.words);
+  const { remove: decline, dialog: declining } = useRemove(ticket, list.tickets, list.words, 'ticket_decline');
   return (
     // The fold sits in the row's left margin, so every state icon lines up with its group's.
     <div className="flex h-11 w-full min-w-0 items-center pr-4 hover:bg-fill-subtle sm:pr-6 sm:pl-2">
@@ -78,14 +87,16 @@ function Row({ ticket, list, depth = 0, open, onToggle }: { ticket: Full; list: 
       </button>
       {proposed && (
         <span className="ml-1 flex shrink-0 items-center gap-1">
-          <Button size="sm" variant="primary" onClick={() => post({ type: 'ticket_confirm', id: ticket.id, revision: ticket.revision })}>
+          <Button size="sm" variant="primary" onClick={accept}>
             {list.words.confirm}
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => post({ type: 'ticket_decline', id: ticket.id, revision: ticket.revision })}>
+          <Button size="sm" variant="ghost" onClick={decline}>
             {list.words.decline}
           </Button>
         </span>
       )}
+      {accepting}
+      {declining}
     </div>
   );
 }
@@ -147,7 +158,7 @@ function Deleted({ words, deleted, onBack }: { words: Words; deleted: Full[]; on
               </span>
               <span className="shrink-0 text-sm font-medium">{ticket.id}</span>
               <span className="min-w-0 flex-1 truncate text-sm line-through decoration-muted-foreground/50">{ticket.title}</span>
-              <Button size="sm" className="shrink-0" onClick={() => post({ type: 'ticket_restore', id: ticket.id })}>
+              <Button size="sm" className="shrink-0" onClick={() => ask({ type: 'ticket_restore', id: ticket.id })}>
                 {words.restore}
               </Button>
             </div>

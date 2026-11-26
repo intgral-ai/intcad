@@ -10,18 +10,20 @@
 import { Ban, Box, ChevronDown, ChevronUp, CircleDot, ClipboardCheck, Ellipsis, FileText, Maximize2, Minimize2, Paperclip, PenLine, Pencil, Plus, Trash2, Unlock } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useRef, useState } from 'react';
-import type { TicketEvent, TicketStateName, TicketsState } from '../host';
-import { pictureUrl, post } from '../host';
-import { childrenOf, fill, lines, MAX_TEXT, MAX_TITLE, moment, names, openWaits, ordered, progress, stateWord, whyNotAssistant, whyNotDone } from './shared';
+import type { Ticket, TicketAction, TicketEvent, TicketStateName, TicketsState } from '../host';
+import { ask, lastTickets, pictureUrl, post } from '../host';
+import { childrenOf, fill, lines, MAX_TEXT, MAX_TITLE, moment, names, ordered, progress, stateWord, whyNotAssistant, whyNotDone } from './shared';
 import type { Full, Words } from './shared';
 import { StateIcon } from './status-icons';
 import { AttachmentCard } from '@/ds/components/AttachmentCard';
+import { Badge } from '@/ds/components/Badge';
 import { Breadcrumb, Crumb } from '@/ds/components/Breadcrumb';
 import { Button } from '@/ds/components/Button';
-import { Dialog, DialogContent, DialogTitle } from '@/ds/components/Dialog';
+import { Dialog, DialogAction, DialogCancel, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ds/components/Dialog';
 import { DropdownMenu } from '@/ds/components/DropdownMenu';
 import { Input } from '@/ds/components/Input';
 import { Notice } from '@/ds/components/Notice';
+import { Switch } from '@/ds/components/Switch';
 import { Textarea } from '@/ds/components/Textarea';
 import { toast } from '@/ds/components/Toaster';
 
@@ -70,6 +72,16 @@ const DID = {
   blocked: 'didBlocked',
   unblocked: 'didUnblocked',
   done: 'didDone',
+  declined: 'didDeclined',
+  deleted: 'didDeleted',
+  restored: 'didRestored',
+  taken: 'didTaken',
+  moved: 'didMoved',
+  finished: 'didFinished',
+  check_off: 'didCheckOff',
+  check_on: 'didCheckOn',
+  recheck: 'didRecheck',
+  view_attached: 'didViewAttached',
 } as const;
 
 /** The states a person may set from the menu, in Linear's order; a draft is accepted, not set. */
@@ -80,9 +92,11 @@ function actorWord(words: Words, actor: TicketEvent['actor']) {
 }
 
 function EventRow({ event, words, language }: { event: TicketEvent; words: Words; language: string }) {
-  const did = event.action in DID ? words[DID[event.action as keyof typeof DID]] : event.action;
-  // An agent's note, a refusal's reason; a bound run is named by its id (the store's counts line is English).
-  const extra = event.action === 'check_ran' || event.action === 'check_started' ? event.run : event.note;
+  const named = event.action in DID ? words[DID[event.action as keyof typeof DID]] : event.action;
+  const did = fill(named, { state: event.to ? stateWord(words, event.to) : '' });
+  // An agent's note, a refusal's reason, a step taken with another ticket; a bound run is named by its id (the store's counts line is English).
+  const together = event.note?.match(/^with (T-\d+)$/);
+  const extra = event.action === 'check_ran' || event.action === 'check_started' ? event.run : together ? fill(words.withTicket, { id: together[1] ?? '' }) : event.note;
   return (
     <li className="flex items-start gap-2.5 py-1.5 text-sm text-muted-foreground">
       <span className="mt-px flex size-5 shrink-0 items-center justify-center rounded-full bg-fill">{EVENT_ICONS[event.action] ?? <CircleDot className="size-3.5" />}</span>
@@ -95,32 +109,44 @@ function EventRow({ event, words, language }: { event: TicketEvent; words: Words
   );
 }
 
-/** The check in the run's own words: its id, its outcome word and its counts; 未检查 where none applies or it checked nothing. */
+/**
+ * The check in the run's own words: a run that ran shows its id, outcome word and counts first;
+ * 未检查 where it checked nothing (the store's `unchecked`) or where no check applies.
+ */
 function checkText({ ticket, state, words }: Page) {
-  if (!ticket.checks) return `${words.notChecked} · ${words.noApplicableCheck}`;
   const check = ticket.check;
+  if (check?.state === 'ran') {
+    const counts = check.counts ?? {};
+    // A passed rule was checked: the run's own `checked` and `passed` are one count here.
+    const checked = (counts.checked ?? 0) + (counts.passed ?? 0);
+    const named: [string, number | undefined, string][] = [
+      ['failed', counts.failed, words.failed],
+      ['advisory', counts.advisory, words.advisory],
+      ['checked', counts.checked !== undefined || counts.passed !== undefined ? checked : undefined, words.checked],
+      ['unsupported', counts.unsupported, words.notCovered],
+    ];
+    const parts = named.filter(([, n]) => n !== undefined).map(([, n, word]) => `${n} ${word}`);
+    parts.push(...Object.entries(counts).filter(([key]) => key !== 'passed' && !named.some(([known]) => known === key)).map(([key, n]) => `${n} ${key}`));
+    const outcome = check.outcome === 'done' ? words.checkDone : check.outcome;
+    const now = check.run ? state.freshness[check.run] : undefined;
+    const nothing = ticket.checks && ticket.unchecked ? words.notChecked : null;
+    return [nothing, `${words.checkTitle} ${check.run ?? ''}`.trim(), outcome, ...parts, now && now !== 'current' ? words.checkStale : null].filter(Boolean).join(' · ');
+  }
+  if (!ticket.checks) return `${words.notChecked} · ${words.noApplicableCheck}`;
   if (!check) return words.noCheck;
   if (check.state === 'asked') return words.checkAsked;
   if (check.state === 'running') return [words.checkRunning, check.run].filter(Boolean).join(' · ');
-  if (check.state === 'refused') return [words.checkRefused, check.reason].filter(Boolean).join(' · ');
-  const counts = check.counts ?? {};
-  const named: [string, string][] = [
-    ['failed', words.failed],
-    ['advisory', words.advisory],
-    ['checked', words.checked],
-    ['unsupported', words.notCovered],
-  ];
-  const parts = named.filter(([key]) => counts[key] !== undefined).map(([key, word]) => `${counts[key]} ${word}`);
-  parts.push(...Object.entries(counts).filter(([key]) => !named.some(([known]) => known === key)).map(([key, n]) => `${n} ${key}`));
-  const outcome = check.outcome === 'done' ? words.checkDone : check.outcome;
-  const now = check.run ? state.freshness[check.run] : undefined;
-  const nothing = !counts.checked ? words.notChecked : null;
-  return [nothing, `${words.checkTitle} ${check.run ?? ''}`.trim(), outcome, ...parts, now && now !== 'current' ? words.checkStale : null].filter(Boolean).join(' · ');
+  return [words.checkRefused, check.reason].filter(Boolean).join(' · ');
 }
 
-/** Text that becomes its editor on a click and saves itself when the person leaves it; Esc leaves it as it was. */
-function Editable({ value, multiline, label, empty, onSave, children }: { value: string; multiline?: boolean; label: string; empty?: string; onSave: (next: string) => void; children: ReactNode }) {
+/**
+ * Text that becomes its editor on a click and saves itself when the person leaves it; Esc leaves
+ * it as it was. What was typed stays shown until the host has taken the save, and a refused save
+ * opens the editor again with it, so nothing typed is lost.
+ */
+function Editable({ value, multiline, label, empty, onSave, children }: { value: string; multiline?: boolean; label: string; empty?: string; onSave: (next: string, then: (ok: boolean) => void) => void; children: ReactNode }) {
   const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
   if (draft === null) {
     return (
       <div
@@ -128,17 +154,23 @@ function Editable({ value, multiline, label, empty, onSave, children }: { value:
         tabIndex={0}
         aria-label={label}
         data-edit={label}
-        onClick={() => setDraft(value)}
-        onKeyDown={event => event.key === 'Enter' && setDraft(value)}
+        onClick={() => setDraft(saving ?? value)}
+        onKeyDown={event => event.key === 'Enter' && setDraft(saving ?? value)}
         className="-mx-2 cursor-text rounded-md px-2 py-0.5 hover:bg-fill-subtle focus-visible:bg-fill-subtle focus-visible:outline-none"
       >
-        {value ? children : <span className="text-sm text-muted-foreground">{empty}</span>}
+        {saving !== null ? <p className="text-sm break-words whitespace-pre-wrap text-muted-foreground">{saving}</p> : value ? children : <span className="text-sm text-muted-foreground">{empty}</span>}
       </div>
     );
   }
   const finish = () => {
-    if (draft !== value) onSave(draft);
+    const typed = draft;
     setDraft(null);
+    if (typed === value) return;
+    setSaving(typed);
+    onSave(typed, ok => {
+      setSaving(null);
+      if (!ok) setDraft(typed);
+    });
   };
   const keys = (event: React.KeyboardEvent) => {
     if (event.key === 'Escape') {
@@ -153,23 +185,107 @@ function Editable({ value, multiline, label, empty, onSave, children }: { value:
   );
 }
 
-/** Saves one field and sends the other two as they are; the store records an edit. */
-function edit({ ticket }: Page, change: Partial<{ title: string; text: string; requirements: string[] }>) {
-  const next = { title: ticket.title, text: ticket.text, requirements: ticket.requirements, ...change };
-  if (!next.title.trim()) return;
-  post({ type: 'ticket_edit', id: ticket.id, revision: ticket.revision, ...next });
+// A ticket's saves go one at a time: the next waits for the host's answer to the one before, and is
+// then made on the ticket as the host has it now (its new revision), so two saves made in quick
+// succession are not refused as made on an old one.
+let saving = false;
+const queued: (() => void)[] = [];
+
+/** Save a change of ticket `id`, built on the ticket as the host last told it when its turn comes. */
+function save(id: string, build: (ticket: Ticket) => TicketAction | null, then?: (ok: boolean) => void) {
+  const run = () => {
+    const ticket = lastTickets()?.tickets.find(other => other.id === id);
+    const action = ticket ? build(ticket) : null;
+    if (!action) {
+      then?.(false);
+      queued.shift()?.();
+      return;
+    }
+    saving = true;
+    ask(action, ok => {
+      saving = false;
+      then?.(ok);
+      queued.shift()?.();
+    });
+  };
+  if (saving) queued.push(run);
+  else run();
 }
 
-/** "It still waits for T-3 and T-5": what a person is reminded of, not stopped by, when they move a waiting ticket (D-88). */
-function still({ ticket, tickets, words, state }: Page) {
-  const waits = openWaits(ticket, tickets);
+/** Save one field of the ticket's text; the others are not sent and stay as they are. */
+function edit({ ticket }: Page, change: { title: string } | { text: string } | { requirements: string[] }, then: (ok: boolean) => void) {
+  if ('title' in change && !change.title.trim()) return then(false);
+  save(ticket.id, latest => ({ type: 'ticket_edit', id: latest.id, revision: latest.revision, ...change }), then);
+}
+
+/** "It still waits for T-3 and T-5": what a person is reminded of, not stopped by, when they move a waiting ticket. */
+function still({ ticket, words, state }: Page) {
+  const waits = ticket.openWaits;
   return waits.length ? fill(words.stillWaits, { ids: names(waits, state.language) }) : null;
+}
+
+/** A question before a step that takes other tickets with it: the primary answer, another (optional), or Cancel. */
+export function Choice({ title, primary, secondary, destructive, cancel, onPrimary, onSecondary, onClose }: { title: string; primary: string; secondary?: string; destructive?: boolean; cancel: string; onPrimary: () => void; onSecondary?: () => void; onClose: () => void }) {
+  return (
+    <Dialog open intent={destructive ? 'destructive' : 'default'} onOpenChange={open => !open && onClose()}>
+      <DialogContent showCloseButton={false} size="sm">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <DialogFooter>
+          <DialogCancel>{cancel}</DialogCancel>
+          {secondary && onSecondary && (
+            <Button
+              size="sm"
+              onClick={() => {
+                onSecondary();
+                onClose();
+              }}
+            >
+              {secondary}
+            </Button>
+          )}
+          <DialogAction
+            onConfirm={() => {
+              onPrimary();
+              onClose();
+            }}
+          >
+            {primary}
+          </DialogAction>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Accept a draft: with its draft sub-tickets, or alone; asked first when it has any. */
+export function useAccept(ticket: Full, tickets: Full[], words: Words) {
+  const [asking, setAsking] = useState(false);
+  const subs = childrenOf(ticket, tickets).filter(child => child.state === 'draft' && !child.deleted).length;
+  const send = (withSubs: boolean) => ask({ type: 'ticket_confirm', id: ticket.id, revision: ticket.revision, with_subs: withSubs });
+  const dialog = asking ? (
+    <Choice title={fill(words.confirmWithSubs, { n: String(subs) })} primary={words.together} secondary={words.onlyThis} cancel={words.cancel} onPrimary={() => send(true)} onSecondary={() => send(false)} onClose={() => setAsking(false)} />
+  ) : null;
+  return { accept: () => (subs ? setAsking(true) : send(false)), dialog };
+}
+
+/** Delete (or decline a draft): its live sub-tickets go with it, asked first. A success says so with Undo; a refusal says why on the page and nothing else. */
+export function useRemove(ticket: Full, tickets: Full[], words: Words, kind: 'ticket_delete' | 'ticket_decline') {
+  const [asking, setAsking] = useState(false);
+  const subs = childrenOf(ticket, tickets).filter(child => !child.deleted).length;
+  const send = () =>
+    ask({ type: kind, id: ticket.id, revision: ticket.revision }, ok => {
+      if (ok) toast(fill(words.deletedToast, { id: ticket.id }), { action: { label: words.undo, onClick: () => ask({ type: 'ticket_restore', id: ticket.id }) } });
+    });
+  const dialog = asking ? <Choice title={fill(words.deleteWithSubs, { n: String(subs) })} primary={kind === 'ticket_delete' ? words.delete : words.decline} destructive cancel={words.cancel} onPrimary={send} onClose={() => setAsking(false)} /> : null;
+  return { remove: () => (subs ? setAsking(true) : send()), dialog };
 }
 
 /** The state, and the menu a person changes it with; a step that cannot be taken now says why. */
 function StateMenu(page: Page) {
-  const { ticket, tickets, words, state } = page;
-  const why: Partial<Record<TicketStateName, string | null>> = { done: ticket.state === 'done' ? null : whyNotDone(ticket, tickets, words) };
+  const { ticket, words } = page;
+  const why: Partial<Record<TicketStateName, string | null>> = { done: ticket.state === 'done' ? null : whyNotDone(ticket, words) };
   const reminder = still(page);
   return (
     <DropdownMenu>
@@ -179,7 +295,7 @@ function StateMenu(page: Page) {
       </DropdownMenu.Trigger>
       <DropdownMenu.Content align="start" className="min-w-64">
         {reminder && <DropdownMenu.Label className="max-w-72 whitespace-normal">{reminder}</DropdownMenu.Label>}
-        <DropdownMenu.RadioGroup value={ticket.state} onValueChange={(to: unknown) => post({ type: 'ticket_set_state', id: ticket.id, revision: ticket.revision, to: to as TicketStateName })}>
+        <DropdownMenu.RadioGroup value={ticket.state} onValueChange={(to: unknown) => ask({ type: 'ticket_set_state', id: ticket.id, revision: ticket.revision, to: to as TicketStateName })}>
           {SETTABLE.map(name => (
             <DropdownMenu.RadioItem key={name} value={name} disabled={Boolean(why[name])} closeOnClick>
               <StateIcon state={name} />
@@ -205,9 +321,15 @@ function Prop({ label, children }: { label: string; children: ReactNode }) {
 function Properties(page: Page) {
   const { ticket, tickets, words, state } = page;
   const selected = Boolean(state.selection?.length);
-  const assign = () => post({ type: 'ticket_assign_parts', id: ticket.id, revision: ticket.revision });
+  const assign = () => save(ticket.id, latest => ({ type: 'ticket_assign_parts', id: latest.id, revision: latest.revision }));
   const others = tickets.filter(other => other.id !== ticket.id && other.parent !== ticket.id);
-  const toggle = (id: string) => post({ type: 'ticket_waits', id: ticket.id, revision: ticket.revision, waits: ticket.waits.includes(id) ? ticket.waits.filter(other => other !== id) : [...ticket.waits, id] });
+  // Built on the ticket as the host has it when its turn comes: two quick ticks both count.
+  const toggle = (id: string) =>
+    save(ticket.id, latest => {
+      const waits = latest.waits ?? [];
+      return { type: 'ticket_waits', id: latest.id, revision: latest.revision, waits: waits.includes(id) ? waits.filter(other => other !== id) : [...waits, id] };
+    });
+  const switchCheck = (on: boolean) => save(ticket.id, latest => ({ type: 'ticket_edit', id: latest.id, revision: latest.revision, checks: on }));
   return (
     <section className="flex flex-col" aria-label={words.properties}>
       <Prop label={words.state}>
@@ -261,7 +383,21 @@ function Properties(page: Page) {
         </DropdownMenu>
       </Prop>
       <Prop label={words.check}>
-        <span className={ticket.checks && ticket.check?.state === 'ran' ? undefined : 'text-muted-foreground'}>{checkText(page)}</span>
+        <span className={ticket.check?.state === 'ran' ? undefined : 'text-muted-foreground'}>{checkText(page)}</span>
+        {ticket.recheck && (
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Badge variant="warning" emphasis="subtle" size="sm">
+              {words.recheck}
+            </Badge>
+            <span className="min-w-0 text-xs break-words text-muted-foreground">{ticket.recheck}</span>
+          </span>
+        )}
+        {ticket.parts.length > 0 && (
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Switch checked={!ticket.checksOff} onCheckedChange={(on: boolean) => switchCheck(on)} aria-label={words.needsCheck} />
+            {words.needsCheck}
+          </label>
+        )}
       </Prop>
       <Prop label={words.worker}>
         {ticket.worker ? <span>{ticket.worker === 'assistant' ? words.actorAgent : words.actorPerson}</span> : <span className="text-muted-foreground">{words.workerNone}</span>}
@@ -273,16 +409,19 @@ function Properties(page: Page) {
 /** The buttons a ticket's state offers a person; one that cannot be pressed now says why under it. */
 function Actions(page: Page) {
   const { ticket, tickets, words, state } = page;
-  const step = (type: 'ticket_confirm' | 'ticket_decline' | 'ticket_start' | 'ticket_work_myself' | 'ticket_ask_check' | 'ticket_done') => () => post({ type, id: ticket.id, revision: ticket.revision });
+  const step = (type: 'ticket_start' | 'ticket_ask_check' | 'ticket_done', then?: (ok: boolean) => void) => () => ask({ type, id: ticket.id, revision: ticket.revision }, then);
+  const { accept, dialog: accepting } = useAccept(ticket, tickets, words);
+  const { remove: decline, dialog: declining } = useRemove(ticket, tickets, words, 'ticket_decline');
   let buttons: ReactNode = null;
   let why: string | null = null;
+  let note: string | null = null;
   if (ticket.state === 'draft') {
     buttons = (
       <>
-        <Button size="sm" variant="primary" onClick={step('ticket_confirm')}>
+        <Button size="sm" variant="primary" onClick={accept}>
           {words.confirm}
         </Button>
-        <Button size="sm" variant="ghost" onClick={step('ticket_decline')}>
+        <Button size="sm" variant="ghost" onClick={decline}>
           {words.decline}
         </Button>
       </>
@@ -295,16 +434,18 @@ function Actions(page: Page) {
         <Button size="sm" variant="primary" disabled={Boolean(why)} onClick={step('ticket_start')}>
           {words.start}
         </Button>
-        <Button
-          size="sm"
-          onClick={() => {
-            step('ticket_work_myself')();
-            if (reminder) toast(reminder);
-          }}
-        >
+        <Button size="sm" onClick={() => ask({ type: 'ticket_work_myself', id: ticket.id, revision: ticket.revision }, ok => ok && reminder && toast(reminder))}>
           {words.workMyself}
         </Button>
       </>
+    );
+  } else if (ticket.state === 'in_progress' && ticket.worker === 'assistant' && ticket.finished && ticket.checks) {
+    // The Assistant says it is finished; only a person starts the check.
+    note = words.finishedNote;
+    buttons = (
+      <Button size="sm" variant="primary" onClick={step('ticket_ask_check')}>
+        {words.runCheck}
+      </Button>
     );
   } else if ((ticket.state === 'in_progress' && ticket.worker === 'person') || ticket.state === 'waiting') {
     if (ticket.state === 'in_progress' && ticket.checks) {
@@ -314,7 +455,7 @@ function Actions(page: Page) {
         </Button>
       );
     } else {
-      why = whyNotDone(ticket, tickets, words);
+      why = whyNotDone(ticket, words);
       buttons = (
         <Button size="sm" variant="primary" disabled={Boolean(why)} onClick={step('ticket_done')}>
           {words.done}
@@ -325,14 +466,17 @@ function Actions(page: Page) {
   if (!buttons) return null;
   return (
     <div className="mt-3">
+      {note && <p className="mb-2 text-sm text-muted-foreground">{note}</p>}
       <div className="flex flex-wrap items-center gap-2">{buttons}</div>
       {why && <p className="mt-1.5 text-xs text-muted-foreground">{why}</p>}
+      {accepting}
+      {declining}
     </div>
   );
 }
 
 function Attachments({ ticket, words }: Page) {
-  const open = (path: string) => () => post({ type: 'ticket_attachment', path });
+  const open = (path: string) => () => ask({ type: 'ticket_attachment', path });
   const type = (name: string) => name.split('.').pop()?.toUpperCase() ?? '';
   return (
     <section className="mt-8" aria-label={words.attachments}>
@@ -351,7 +495,7 @@ function Attachments({ ticket, words }: Page) {
             </div>
           ),
         )}
-        <Button size="sm" variant="ghost" icon={<Paperclip />} onClick={() => post({ type: 'ticket_attach', id: ticket.id })}>
+        <Button size="sm" variant="ghost" icon={<Paperclip />} onClick={() => ask({ type: 'ticket_attach', id: ticket.id })}>
           {words.attach}
         </Button>
       </div>
@@ -397,7 +541,7 @@ function Body({ page, properties, onAddSub }: { page: Page; properties: boolean;
           <Notice.Message>{state.error}</Notice.Message>
         </Notice>
       )}
-      <Editable value={ticket.title} label={words.fieldTitle} onSave={title => edit(page, { title })}>
+      <Editable value={ticket.title} label={words.fieldTitle} onSave={(title, then) => edit(page, { title }, then)}>
         <h1 className="text-xl leading-tight font-semibold break-words whitespace-pre-wrap text-balance sm:text-2xl">{ticket.title}</h1>
       </Editable>
       <Actions {...page} />
@@ -407,7 +551,7 @@ function Body({ page, properties, onAddSub }: { page: Page; properties: boolean;
         </div>
       )}
       <div className="mt-6">
-        <Editable value={ticket.text} multiline label={words.fieldText} empty={words.addText} onSave={text => edit(page, { text })}>
+        <Editable value={ticket.text} multiline label={words.fieldText} empty={words.addText} onSave={(text, then) => edit(page, { text }, then)}>
           <p className="text-sm leading-relaxed break-words whitespace-pre-wrap">{ticket.text}</p>
         </Editable>
       </div>
@@ -420,9 +564,10 @@ function Body({ page, properties, onAddSub }: { page: Page; properties: boolean;
           multiline
           label={words.requirements}
           empty={words.fieldLines}
-          onSave={typed => {
+          onSave={(typed, then) => {
             const requirements = lines(typed);
-            if (requirements) edit(page, { requirements });
+            if (requirements) edit(page, { requirements }, then);
+            else then(false);
           }}
         >
           <ol className="flex flex-col border-t border-border">
@@ -456,10 +601,7 @@ function Header({ page, expanded }: { page: Page; expanded: boolean }) {
   const index = all.findIndex(other => other.id === ticket.id);
   const previous = index > 0 ? all[index - 1] : undefined;
   const next = index >= 0 && index < all.length - 1 ? all[index + 1] : undefined;
-  const remove = () => {
-    post({ type: 'ticket_delete', id: ticket.id, revision: ticket.revision });
-    toast(fill(words.deletedToast, { id: ticket.id }), { action: { label: words.undo, onClick: () => post({ type: 'ticket_restore', id: ticket.id }) } });
-  };
+  const { remove, dialog } = useRemove(ticket, tickets, words, 'ticket_delete');
   return (
     <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-2 sm:px-4">
       <Breadcrumb label={words.title} className="min-w-0">
@@ -504,6 +646,7 @@ function Header({ page, expanded }: { page: Page; expanded: boolean }) {
           </DropdownMenu.Content>
         </DropdownMenu>
       </div>
+      {dialog}
     </header>
   );
 }

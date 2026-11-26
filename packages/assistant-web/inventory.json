@@ -101,6 +101,7 @@
       "packages/playground-ui/src/ds/components/Skeleton/skeleton.tsx",
       "packages/playground-ui/src/ds/components/StatusIndicators/status-dot-styles.ts",
       "packages/playground-ui/src/ds/components/StatusIndicators/status.tsx",
+      "packages/playground-ui/src/ds/components/Switch/switch.tsx",
       "packages/playground-ui/src/ds/components/Tabs/tabs-context.ts",
       "packages/playground-ui/src/ds/components/Tabs/tabs-list.tsx",
       "packages/playground-ui/src/ds/components/Tabs/tabs-root.tsx",
@@ -277,7 +278,7 @@
       "name": "@base-ui/react",
       "version": "1.9.0",
       "licence": "MIT",
-      "modulesInScript": 321,
+      "modulesInScript": 327,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -1510,16 +1511,16 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1827539,
-      "sha256": "5c841a109e84af376d37f8273be5f51d13d8d494151a8ef12536bfcfd9a9fadc"
+      "bytes": 1836136,
+      "sha256": "a8d08dca12fac2a3f30a11d1ebc20a2329a26a630a3f97cfe13440c83773d9ff"
     },
     "index.html": {
       "bytes": 822,
       "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
     },
     "style.css": {
-      "bytes": 367804,
-      "sha256": "e981524f7da0e4dd09069776b871d11b02f8823d3868edf194f16a42517b52f3"
+      "bytes": 368405,
+      "sha256": "88dde60692a22c3b115e5a0ce429d928918ddd39b83481d9a45d3b1b7d9ddb22"
     }
   }
 }

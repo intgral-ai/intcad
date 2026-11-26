@@ -112,7 +112,7 @@ export type Item =
   | { kind: 'permission'; index: number; heading: string; answered: string | null; options: PermissionOption[] }
   | { kind: 'approval'; id: number; title: string; answer: boolean | null }
   | { kind: 'changes'; index: number; label: string; undone: boolean; undoable: boolean }
-  /** A part ticket the agent drafted in this turn (D-87); it waits in the tickets view's 待接受 group. Ahead of the host. */
+  /** A part ticket the agent drafted in this turn; it waits in the tickets view's 待接受 group. Ahead of the host. */
   | { kind: 'ticket'; id: string; title: string; state: TicketStateName }
   | { kind: 'review'; index: number; review: number; steps: string[]; more: number; made: { name: string; volume: number }[]; changed: { name: string; before: number; after: number }[]; removed: { name: string; volume: number }[]; outcome: string }
   /** `problem`: a turn of the built-in agent failed on its connection; `text` already says so in full. */
@@ -361,14 +361,26 @@ export interface Ticket {
   /** The parts it bears on, none, one or several; `part` until the store keeps a list. */
   parts?: TicketPart[];
   attachments?: TicketAttachment[];
-  /** The tickets it waits for: the Assistant cannot take it before they are done; a person is reminded (D-88). */
+  /** The tickets it waits for: the Assistant cannot take it before they are done; a person is reminded. */
   waits?: string[];
   /** Who works it once it is started. */
   worker?: 'assistant' | 'person' | null;
   /** Deleted by a person: listed under 已删除, restorable, its record kept. */
   deleted?: boolean;
-  /** A check applies to it. Without one it may be finished unchecked. */
+  /** The parent it was deleted together with; restoring that parent brings it back. */
+  deletedWith?: string | null;
+  /** A check applies to it (it bears on parts and the check is not switched off). Without one it may be finished unchecked. */
   checks?: boolean;
+  /** The check is switched off for it (shown as a switch on a ticket with parts). */
+  checksOff?: boolean;
+  /** 需重查: changed after it was finished, and why. */
+  recheck?: string | null;
+  /** The Assistant says it has finished the work; a person runs the check. */
+  finished?: boolean;
+  /** The store's reasons, so the page never decides them itself: why it cannot be finished now, the tickets it still waits for, whether finishing leaves it unchecked. */
+  whyNotDone?: { kind: 'subs'; ids: string[] } | { kind: 'check' } | { kind: 'recheck'; why: string } | null;
+  openWaits?: string[];
+  unchecked?: boolean;
   state: TicketStateName;
   /** The check bound to it: the run's own outcome word and counts, never a verdict of ours. */
   check: {
@@ -415,7 +427,9 @@ export type TicketStringKey =
   | 'whyOffline' | 'whyBusy' | 'whyWaits' | 'stillWaits' | 'whySubs' | 'whyCheck' | 'notChecked' | 'noApplicableCheck'
   | 'attachments' | 'attach' | 'subTickets' | 'addSub' | 'parent' | 'assign' | 'useSelection' | 'selectFirst'
   | 'filterPart' | 'clear' | 'askDraft' | 'deleted' | 'noDeleted' | 'restore' | 'deletedToast' | 'undo'
-  | 'expand' | 'collapse' | 'addText';
+  | 'expand' | 'collapse' | 'addText'
+  | 'didDeclined' | 'didDeleted' | 'didRestored' | 'didTaken' | 'didMoved' | 'didFinished' | 'didCheckOff' | 'didCheckOn' | 'didRecheck' | 'didViewAttached'
+  | 'runCheck' | 'recheck' | 'finishedNote' | 'needsCheck' | 'deleteWithSubs' | 'confirmWithSubs' | 'together' | 'onlyThis' | 'whyRecheck' | 'withTicket';
 
 export interface TicketsState {
   view: 'tickets';
@@ -444,23 +458,27 @@ export interface TicketsState {
   adding?: TicketAttachment[];
   /** An agent is connected, so the Assistant can take a ticket. */
   assistant?: boolean;
+  /** The view's last request as the host answered it: the host's count, the page's own number (`ask`) and whether the step was taken. */
+  answered?: { n: number; ask: number | null; ok: boolean } | null;
 }
 
 /** What the host pushes: the Assistant's state, or the tickets view's. */
 export type PageState = AssistantState | TicketsState;
 
 /**
- * The tickets view's requests; the host checks each against the ticket's state and `revision`.
- * `ticket_confirm` accepts a draft, `ticket_start` hands a ticket to the Assistant. Today's host
- * (crates/ui-egui/src/tickets.rs, `act`) answers the first five members (`ticket_delete` there
- * removes the ticket); the rest are ahead of it.
+ * The tickets view's requests; the host (crates/ui-egui/src/tickets.rs, `act`) has an arm for each
+ * name, a test keeps the two equal, and the store checks each step against the ticket's state and
+ * `revision`. `ticket_confirm` accepts a draft (`with_subs`: its draft sub-tickets too, the
+ * default), `ticket_start` hands a ticket to the Assistant. `ask`: the page's own number, which the
+ * host answers in `answered`.
  */
-export type TicketAction =
+export type TicketAction = (
   | { type: 'ticket_open'; id: string }
   | { type: 'ticket_close' }
-  | { type: 'ticket_confirm' | 'ticket_start' | 'ticket_done' | 'ticket_delete'; id: string; revision: number }
-  | { type: 'ticket_edit'; id: string; revision: number; title: string; text: string; requirements: string[] }
-  /** `parts`, `attachments` (paths in the project) and `parent` are new; today's host reads the rest. */
+  | { type: 'ticket_start' | 'ticket_done' | 'ticket_delete'; id: string; revision: number }
+  | { type: 'ticket_confirm'; id: string; revision: number; with_subs?: boolean }
+  /** Only the fields that change; the others stay as they are. */
+  | { type: 'ticket_edit'; id: string; revision: number; title?: string; text?: string; requirements?: string[]; checks?: boolean }
   | { type: 'ticket_create'; title: string; text: string; requirements: string[]; parts: TicketPart[]; attachments: string[]; parent: string | null }
   | { type: 'ticket_decline' | 'ticket_work_myself' | 'ticket_ask_check' | 'ticket_assign_parts'; id: string; revision: number }
   | { type: 'ticket_set_state'; id: string; revision: number; to: TicketStateName }
@@ -470,7 +488,8 @@ export type TicketAction =
   | { type: 'ticket_attach'; id: string | null }
   /** A picture opens in the app's viewer, any other file in the system's program for it. */
   | { type: 'ticket_attachment'; path: string }
-  | { type: 'ticket_collapse' | 'ticket_filter_clear' | 'ticket_ask_draft' };
+  | { type: 'ticket_collapse' | 'ticket_filter_clear' | 'ticket_ask_draft' }
+) & { ask?: number };
 
 declare global {
   interface Window {
@@ -486,6 +505,31 @@ export function pictureUrl(key: string) {
 
 export function post(action: Action | TicketAction) {
   window.ipc?.postMessage(JSON.stringify(action));
+}
+
+let asked = 0;
+const waiting = new Map<number, (ok: boolean) => void>();
+let latest: TicketsState | null = null;
+
+/** Send a tickets view request with a number of its own; `then` hears once whether the host took it. */
+export function ask(action: TicketAction, then?: (ok: boolean) => void) {
+  asked += 1;
+  if (then) waiting.set(asked, then);
+  post({ ...action, ask: asked });
+}
+
+/** The tickets view's state as the host last pushed it. */
+export const lastTickets = () => latest;
+
+/** Each state the host pushes: kept, and the request it answers, if one waits, is told how it went. */
+export function hear(state: TicketsState) {
+  latest = state;
+  const answer = state.answered;
+  const then = answer?.ask != null ? waiting.get(answer.ask) : undefined;
+  if (answer?.ask != null && then) {
+    waiting.delete(answer.ask);
+    then(answer.ok);
+  }
 }
 
 /** The state as the app last pushed it (the Assistant's or the tickets view's); `null` until the first push. */

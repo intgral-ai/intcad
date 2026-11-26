@@ -79,7 +79,7 @@ export function StateIcon({ state }: { state: TicketStateName }) {
 }
 
 /**
- * The order of the list's groups: the Assistant's drafts on top for a person to accept (D-87),
+ * The order of the list's groups: the Assistant's drafts on top for a person to accept,
  * then Linear's, started work first (Circle's display order).
  */
 export const STATE_ORDER: TicketStateName[] = ['draft', 'in_progress', 'waiting', 'blocked', 'confirmed', 'done'];

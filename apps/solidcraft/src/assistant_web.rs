@@ -471,10 +471,13 @@ impl AssistantWeb {
         };
         if state != self.told {
             // Before the page hears of a picture, the host can serve it.
-            if self.page == Page::Assistant
-                && let Ok(mut held) = self.pictures.lock()
-            {
-                *held = web::pictures(solve).into_iter().collect();
+            if let Ok(mut held) = self.pictures.lock() {
+                *held = match self.page {
+                    Page::Assistant => web::pictures(solve),
+                    Page::Tickets => solidcraft_ui_egui::tickets::pictures(solve),
+                }
+                .into_iter()
+                .collect();
             }
             match view.evaluate_script(&format!("window.__assistantHost&&window.__assistantHost.state({state})")) {
                 Ok(()) => {

@@ -54,14 +54,18 @@ pub struct TicketDraftParams {
     pub view: bool,
 }
 
-/// Say the ticket the Assistant works is finished, or that it is blocked or taken up again.
+/// Set a ticket's state, or say the ticket the Assistant works is finished, blocked or taken up again.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TicketUpdateParams {
     pub id: String,
-    /// `finished` (its changes are made; a person starts its check, or confirms it when no check
-    /// applies), `block` (with the reason) or `unblock`.
+    /// `state` (with `to`), `finished` (its changes are made; a person starts its check),
+    /// `block` (with the reason) or `unblock`.
     pub action: String,
+    /// For `state`: `draft`, `confirmed` (accepts a draft), `in_progress`, `waiting`, `done` or
+    /// `blocked`.
+    #[serde(default)]
+    pub to: Option<String>,
     /// Why it is blocked, or a note for the record.
     #[serde(default)]
     pub reason: Option<String>,
