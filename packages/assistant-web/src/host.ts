@@ -333,13 +333,38 @@ export type Action =
 
 export type TicketStateName = 'draft' | 'confirmed' | 'in_progress' | 'waiting' | 'done' | 'blocked';
 
+/** A part a ticket bears on, as the model names it. */
+export interface TicketPart {
+  kind: string;
+  id: string;
+}
+
+/** A file in the project folder a ticket points to; `picture`: the key the app serves a picture's thumbnail by (`pictureUrl`). */
+export interface TicketAttachment {
+  path: string;
+  name: string;
+  picture: string | null;
+}
+
 export interface Ticket {
   id: string;
   parent: string | null;
   title: string;
   text: string;
   requirements: string[];
-  part: { kind: string; id: string } | null;
+  part: TicketPart | null;
+  // The fields below are the page's ahead of the store: absent, a ticket reads as today's (`full` in shared.ts).
+  /** The parts it bears on, none, one or several; `part` until the store keeps a list. */
+  parts?: TicketPart[];
+  attachments?: TicketAttachment[];
+  /** The tickets it waits for: the Assistant cannot take it before they are done; a person is reminded (D-88). */
+  waits?: string[];
+  /** Who works it once it is started. */
+  worker?: 'assistant' | 'person' | null;
+  /** Deleted by a person: listed under 已删除, restorable, its record kept. */
+  deleted?: boolean;
+  /** A check applies to it. Without one it may be finished unchecked. */
+  checks?: boolean;
   state: TicketStateName;
   /** The check bound to it: the run's own outcome word and counts, never a verdict of ours. */
   check: {
@@ -380,8 +405,13 @@ export type TicketStringKey =
   | 'requirements' | 'activity' | 'actorPerson' | 'actorAgent' | 'actorApp'
   | 'didDrafted' | 'didCreated' | 'didEdited' | 'didConfirmed' | 'didStarted' | 'didCheckAsked' | 'didCheckStarted'
   | 'didCheckRan' | 'didCheckRefused' | 'didBlocked' | 'didUnblocked' | 'didDone'
-  | 'confirm' | 'start' | 'done' | 'edit' | 'delete' | 'save' | 'cancel' | 'create'
-  | 'editTitle' | 'fieldTitle' | 'fieldText' | 'fieldLines' | 'deleteAsk';
+  | 'confirm' | 'start' | 'done' | 'delete' | 'cancel' | 'create'
+  | 'fieldTitle' | 'fieldText' | 'fieldLines'
+  | 'decline' | 'proposed' | 'state' | 'waitsFor' | 'setWaits' | 'worker' | 'workerNone' | 'workMyself' | 'askCheck'
+  | 'whyOffline' | 'whyBusy' | 'whyWaits' | 'stillWaits' | 'whySubs' | 'whyCheck' | 'notChecked' | 'noApplicableCheck'
+  | 'attachments' | 'attach' | 'subTickets' | 'addSub' | 'parent' | 'assign' | 'useSelection' | 'selectFirst'
+  | 'filterPart' | 'clear' | 'askDraft' | 'deleted' | 'noDeleted' | 'restore' | 'deletedToast' | 'undo'
+  | 'expand' | 'collapse' | 'addText';
 
 export interface TicketsState {
   view: 'tickets';
@@ -399,19 +429,44 @@ export interface TicketsState {
   freshness: Record<string, string>;
   /** Why a step was refused, in the store's words. */
   error: string | null;
+  // Ahead of the host, like the ticket's new fields: absent, the view is as it was.
+  /** The open ticket is shown large over the window: the app has widened this view to the window. */
+  expanded?: boolean;
+  /** A part picked in the 3D view or the tree: the list shows only the tickets that bear on it. */
+  filter?: TicketPart | null;
+  /** The parts selected in the model now: a new ticket starts with them. */
+  selection?: TicketPart[];
+  /** Files the app has taken into the project's `attachments/` for the ticket being created. */
+  adding?: TicketAttachment[];
+  /** An agent is connected, so the Assistant can take a ticket. */
+  assistant?: boolean;
 }
 
 /** What the host pushes: the Assistant's state, or the tickets view's. */
 export type PageState = AssistantState | TicketsState;
 
-/** The tickets view's requests; the host checks each against the ticket's state and `revision`. */
+/**
+ * The tickets view's requests; the host checks each against the ticket's state and `revision`.
+ * `ticket_confirm` accepts a draft, `ticket_start` hands a ticket to the Assistant. Today's host
+ * (crates/ui-egui/src/tickets.rs, `act`) answers the first five members (`ticket_delete` there
+ * removes the ticket); the rest are ahead of it.
+ */
 export type TicketAction =
   | { type: 'ticket_open'; id: string }
   | { type: 'ticket_close' }
-  | { type: 'ticket_confirm' | 'ticket_start' | 'ticket_done'; id: string; revision: number }
-  | { type: 'ticket_create'; title: string; text: string; requirements: string[] }
+  | { type: 'ticket_confirm' | 'ticket_start' | 'ticket_done' | 'ticket_delete'; id: string; revision: number }
   | { type: 'ticket_edit'; id: string; revision: number; title: string; text: string; requirements: string[] }
-  | { type: 'ticket_delete'; id: string; revision: number };
+  /** `parts`, `attachments` (paths in the project) and `parent` are new; today's host reads the rest. */
+  | { type: 'ticket_create'; title: string; text: string; requirements: string[]; parts: TicketPart[]; attachments: string[]; parent: string | null }
+  | { type: 'ticket_decline' | 'ticket_work_myself' | 'ticket_ask_check' | 'ticket_assign_parts'; id: string; revision: number }
+  | { type: 'ticket_set_state'; id: string; revision: number; to: TicketStateName }
+  | { type: 'ticket_waits'; id: string; revision: number; waits: string[] }
+  | { type: 'ticket_restore' | 'ticket_expand' | 'ticket_show_parts'; id: string }
+  /** `id`: the ticket a file goes to, null for the one being created; the app asks for the file. */
+  | { type: 'ticket_attach'; id: string | null }
+  /** A picture opens in the app's viewer, any other file in the system's program for it. */
+  | { type: 'ticket_attachment'; path: string }
+  | { type: 'ticket_collapse' | 'ticket_filter_clear' | 'ticket_ask_draft' };
 
 declare global {
   interface Window {

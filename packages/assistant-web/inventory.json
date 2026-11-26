@@ -34,6 +34,7 @@
       "packages/playground-ui/src/ds/components/Arrival/use-watched.ts",
       "packages/playground-ui/src/ds/components/AttachmentCard/attachment-card.tsx",
       "packages/playground-ui/src/ds/components/Badge/Badge.tsx",
+      "packages/playground-ui/src/ds/components/BrandLoader/brand-loader.tsx",
       "packages/playground-ui/src/ds/components/Breadcrumb/Breadcrumb.tsx",
       "packages/playground-ui/src/ds/components/Button/Button.tsx",
       "packages/playground-ui/src/ds/components/ButtonsGroup/buttons-group.tsx",
@@ -111,6 +112,10 @@
       "packages/playground-ui/src/ds/components/ThinkingLevel/thinking-level-picker.tsx",
       "packages/playground-ui/src/ds/components/ThinkingLevel/thinking-level-ramp.tsx",
       "packages/playground-ui/src/ds/components/ThinkingLevel/use-thinking-level-stop.ts",
+      "packages/playground-ui/src/ds/components/Toaster/observe-toast-layout.ts",
+      "packages/playground-ui/src/ds/components/Toaster/scrollable-toast-content.ts",
+      "packages/playground-ui/src/ds/components/Toaster/toast-stack-layout.ts",
+      "packages/playground-ui/src/ds/components/Toaster/toaster.tsx",
       "packages/playground-ui/src/ds/components/Tooltip/info-tooltip.tsx",
       "packages/playground-ui/src/ds/components/Tooltip/tooltip.tsx",
       "packages/playground-ui/src/ds/components/Txt/Txt.tsx",
@@ -830,7 +835,7 @@
       "name": "lucide-react",
       "version": "1.67.0",
       "licence": "ISC",
-      "modulesInScript": 61,
+      "modulesInScript": 63,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -1505,16 +1510,16 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1790979,
-      "sha256": "9d6334b577b575990a12a43edafe825b47b831785f5c664ff63152dc7c2cca88"
+      "bytes": 1826934,
+      "sha256": "2b90e9fe3eb9ef578a0a6625a1357037dc48507903fdf4c613ed47de5a1c5fb3"
     },
     "index.html": {
       "bytes": 822,
       "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
     },
     "style.css": {
-      "bytes": 355529,
-      "sha256": "3f94ab6c6a8de28181b91bc92fa108e1a95891f4c745fa07e622f453fa70096e"
+      "bytes": 367804,
+      "sha256": "e981524f7da0e4dd09069776b871d11b02f8823d3868edf194f16a42517b52f3"
     }
   }
 }
