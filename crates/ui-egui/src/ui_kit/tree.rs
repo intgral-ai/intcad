@@ -58,6 +58,8 @@ pub(crate) struct Row<'a> {
     /// A feature that failed or built with a warning, or a folded row holding one: its mark at
     /// the row's end, the message in [`Row::tip`].
     pub(crate) status: Option<Status>,
+    /// A part with part tickets: a dot at the row's end in the state colour of its first open one.
+    pub(crate) dot: Option<Color32>,
     /// Optional document appearance and shared trailing text slots.
     pub(crate) swatch: Option<Color32>,
     pub(crate) secondary: &'a str,
@@ -328,6 +330,12 @@ pub(crate) fn tree_row(ui: &mut egui::Ui, id: egui::Id, row: &Row) -> RowResp {
     let badges_width = row.badges.len() as f32 * 15.0;
     let end = if (row.compact || eye_end) && row.eye.is_some() { eye_r.left() - t.space_4 } else { action_left };
     let mut right = end - badges_width;
+    if let Some(colour) = row.dot {
+        right -= t.space_12;
+        let centre = pos2(right + t.space_6, cy);
+        ui.painter().circle_filled(centre, t.space_3, colour);
+        crate::scenario::publish_handle(&format!("ticket_dot:{}", row.label), centre);
+    }
     if let Some(status) = row.status {
         right -= t.space_16;
         let sr = Rect::from_center_size(pos2(right + t.space_8, cy), vec2(t.space_14, t.space_14));

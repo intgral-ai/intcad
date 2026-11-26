@@ -113,7 +113,8 @@
     "ui.tickets_with_ticket": "with {id}",
     "ui.tickets_ask_draft_message": "Draft part tickets for this project from requirements.md: one ticket per piece of work.",
     "ui.tickets_why_stale": "It changed after you looked at it: look at it again",
-    "ui.tickets_check_off": "Not checked · switched off for this ticket"
+    "ui.tickets_check_off": "Not checked · switched off for this ticket",
+    "ui.tickets_parts_missing": "Not in the model any more: {parts}"
   },
   "zh": {
     "ui.tickets_one_at_a_time": "{id} 正在进行。先做完它或等它的检查，再开始另一张。",
@@ -229,7 +230,8 @@
     "ui.tickets_with_ticket": "随 {id} 一起",
     "ui.tickets_ask_draft_message": "根据 requirements.md 为这个项目起草部件票：每件要做的事一张。",
     "ui.tickets_why_stale": "它在你看过之后改过了，请再看一遍",
-    "ui.tickets_check_off": "不检查 · 已关掉"
+    "ui.tickets_check_off": "不检查 · 已关掉",
+    "ui.tickets_parts_missing": "模型里已经没有：{parts}"
   },
   "ja": {
     "ui.tickets_one_at_a_time": "{id} が進行中です。終えるかチェックを待ってから次を開始してください。",
@@ -345,7 +347,8 @@
     "ui.tickets_with_ticket": "{id} と一緒に",
     "ui.tickets_ask_draft_message": "requirements.md からこのプロジェクトの部品チケットを起草してください。作業ごとに 1 枚です。",
     "ui.tickets_why_stale": "表示した後に変更されました。もう一度確認してください",
-    "ui.tickets_check_off": "チェックしない · このチケットではオフ"
+    "ui.tickets_check_off": "チェックしない · このチケットではオフ",
+    "ui.tickets_parts_missing": "モデルにもうありません：{parts}"
   },
   "de": {
     "ui.tickets_one_at_a_time": "{id} ist in Arbeit. Schließen Sie es ab oder warten Sie auf seine Prüfung, bevor Sie ein weiteres starten.",
@@ -461,7 +464,8 @@
     "ui.tickets_with_ticket": "mit {id}",
     "ui.tickets_ask_draft_message": "Entwirf Teile-Tickets für dieses Projekt aus requirements.md: ein Ticket pro Arbeitsschritt.",
     "ui.tickets_why_stale": "Es hat sich geändert, seit du es angesehen hast: sieh es dir noch einmal an",
-    "ui.tickets_check_off": "Nicht geprüft · für dieses Ticket ausgeschaltet"
+    "ui.tickets_check_off": "Nicht geprüft · für dieses Ticket ausgeschaltet",
+    "ui.tickets_parts_missing": "Nicht mehr im Modell: {parts}"
   },
   "ko": {
     "ui.tickets_one_at_a_time": "{id}이(가) 진행 중입니다. 끝내거나 검사를 기다린 뒤 다른 티켓을 시작하세요.",
@@ -577,7 +581,8 @@
     "ui.tickets_with_ticket": "{id}와 함께",
     "ui.tickets_ask_draft_message": "requirements.md를 바탕으로 이 프로젝트의 부품 티켓 초안을 작성해 주세요. 작업 하나에 티켓 하나입니다.",
     "ui.tickets_why_stale": "확인한 뒤에 바뀌었습니다. 다시 확인하세요",
-    "ui.tickets_check_off": "검사 안 함 · 이 티켓에서 꺼짐"
+    "ui.tickets_check_off": "검사 안 함 · 이 티켓에서 꺼짐",
+    "ui.tickets_parts_missing": "모델에 더 이상 없습니다: {parts}"
   },
   "ar": {
     "ui.tickets_one_at_a_time": "{id} قيد التنفيذ. أنهِها أو انتظر فحصها قبل بدء أخرى.",
@@ -693,7 +698,8 @@
     "ui.tickets_with_ticket": "مع {id}",
     "ui.tickets_ask_draft_message": "اكتب مسودات تذاكر القطع لهذا المشروع من requirements.md: تذكرة لكل عمل.",
     "ui.tickets_why_stale": "تغيّرت بعد أن نظرت إليها: انظر إليها مجددًا",
-    "ui.tickets_check_off": "بلا فحص · أُوقف لهذه التذكرة"
+    "ui.tickets_check_off": "بلا فحص · أُوقف لهذه التذكرة",
+    "ui.tickets_parts_missing": "لم تعد في النموذج: {parts}"
   },
   "he": {
     "ui.tickets_one_at_a_time": "{id} בעבודה. סיימו אותו או חכו לבדיקה שלו לפני שמתחילים אחר.",
@@ -809,7 +815,8 @@
     "ui.tickets_with_ticket": "יחד עם {id}",
     "ui.tickets_ask_draft_message": "נסח כרטיסי חלקים לפרויקט הזה מתוך requirements.md: כרטיס אחד לכל עבודה.",
     "ui.tickets_why_stale": "הוא השתנה אחרי שהסתכלת עליו: הסתכל שוב",
-    "ui.tickets_check_off": "ללא בדיקה · כובתה לכרטיס הזה"
+    "ui.tickets_check_off": "ללא בדיקה · כובתה לכרטיס הזה",
+    "ui.tickets_parts_missing": "כבר לא במודל: {parts}"
   },
   "vi": {
     "ui.tickets_one_at_a_time": "{id} đang làm. Hãy hoàn thành hoặc chờ kiểm tra của nó trước khi bắt đầu phiếu khác.",
@@ -925,6 +932,7 @@
     "ui.tickets_with_ticket": "cùng {id}",
     "ui.tickets_ask_draft_message": "Soạn phiếu chi tiết cho dự án này từ requirements.md: mỗi việc một phiếu.",
     "ui.tickets_why_stale": "Phiếu đã thay đổi sau khi bạn xem: hãy xem lại",
-    "ui.tickets_check_off": "Không kiểm tra · đã tắt cho phiếu này"
+    "ui.tickets_check_off": "Không kiểm tra · đã tắt cho phiếu này",
+    "ui.tickets_parts_missing": "Không còn trong mô hình: {parts}"
   }
 }

@@ -61,6 +61,9 @@ pub struct State {
     pub expanded: bool,
     /// A part picked in the model: the view lists only the tickets that bear on it.
     pub filter: Option<tickets::Part>,
+    /// The model's selection as parts when the view was last told it: a change sets `filter`.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    picked: Vec<tickets::Part>,
     /// Files taken into the project for the ticket being created, by their paths there.
     pub adding: Vec<String>,
     /// The picture attachments of the tickets, by path: the key they are served by and their bytes.
@@ -213,6 +216,19 @@ fn read_pictures(state: &mut State, root: &std::path::Path) {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn pictures(app: &SolveApp) -> Vec<(String, Arc<Vec<u8>>)> {
     app.tickets.pictures.values().map(|(key, bytes)| (key.clone(), Arc::clone(bytes))).collect()
+}
+
+/// The tree's dot for a part (`kind` component or body, by its name): the state colour of the
+/// first ticket by number that bears on it and is neither done nor deleted; none without one.
+pub(crate) fn part_dot(app: &SolveApp, kind: &str, name: &str) -> Option<egui::Color32> {
+    let ticket = app.tickets.tickets.iter().find(|t| !t.deleted && t.state != TicketState::Done && t.parts.iter().any(|p| p.kind == kind && p.id == name))?;
+    let t = crate::theme::Tokens::get();
+    Some(match ticket.state {
+        TicketState::InProgress => t.agent_busy,
+        TicketState::Waiting => t.agent_ok,
+        TicketState::Blocked => t.error,
+        TicketState::Draft | TicketState::Confirmed | TicketState::Done => t.text_dim,
+    })
 }
 
 /// Whether an agent is connected, so the Assistant can take a ticket (one starting counts: a
@@ -562,6 +578,15 @@ pub fn page_state(app: &mut SolveApp) -> String {
         app.tickets.record.clear();
     }
     let selection = selected_parts(app);
+    // Picking one part in the 3D view or the tree lists the tickets that bear on it; picking
+    // something else, or nothing, lists them all again. Clearing the filter holds until the next pick.
+    if selection != app.tickets.picked {
+        app.tickets.picked = selection.clone();
+        app.tickets.filter = match selection.as_slice() {
+            [one] => Some(one.clone()),
+            _ => None,
+        };
+    }
     let assistant = connected(app);
     let tickets = &app.tickets;
     let file = |path: &String| attachment(path, &tickets.pictures);
@@ -886,9 +911,52 @@ fn open_attachment(app: &mut SolveApp, path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 点票上的件: the parts a ticket bears on, selected in the model (the next wiring step).
+/// A placement's path from the root: its own id after those of the placements it sits in.
 #[cfg(not(target_arch = "wasm32"))]
-fn show_parts(_app: &mut SolveApp, _id: &str) {}
+fn placement_path(doc: &solidcraft_engine::doc::Document, id: u64) -> Option<Vec<u64>> {
+    let mut path = vec![id];
+    let mut at = doc.occurrences.iter().find(|o| o.id == id)?;
+    for _ in 0..16 {
+        if at.parent == 0 {
+            return Some(path);
+        }
+        at = doc.occurrences.iter().find(|outer| outer.component == at.parent)?;
+        path.insert(0, at.id);
+    }
+    None
+}
+
+/// 点票上的件: the parts ticket `id` bears on, selected together in the model, so the 3D view
+/// highlights them and the tree shows them. A part the model no longer has is said, not guessed.
+#[cfg(not(target_arch = "wasm32"))]
+fn show_parts(app: &mut SolveApp, id: &str) {
+    use solidcraft_engine::Sel;
+    let Some(parts) = app.tickets.tickets.iter().find(|ticket| ticket.id == id && !ticket.deleted).map(|ticket| ticket.parts.clone()) else { return };
+    let doc = &app.session.doc;
+    let world = crate::open_meshing::session_world(&app.session);
+    let mut items: Vec<Sel> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for part in &parts {
+        let found: Vec<Sel> = match part.kind.as_str() {
+            "body" => world.body(&part.id).is_some().then(|| Sel::Body { name: part.id.clone() }).into_iter().collect(),
+            _ => {
+                let components: Vec<u64> = doc.components.iter().filter(|c| c.name == part.id).map(|c| c.id).collect();
+                doc.occurrences.iter().filter(|o| components.contains(&o.component)).filter_map(|o| placement_path(doc, o.id)).map(|path| Sel::Occurrence { path }).collect()
+            }
+        };
+        if found.is_empty() {
+            missing.push(part.id.clone());
+        }
+        items.extend(found);
+    }
+    if !items.is_empty() {
+        let _ = app.run("select.set", serde_json::json!({ "items": items }));
+        crate::browser::reveal_pick(app);
+    }
+    if !missing.is_empty() {
+        app.tickets.error = Some(trf("ui.tickets_parts_missing", &[("parts", &missing.join(", "))]));
+    }
+}
 
 /// The tickets view's words, by the names the page gives them (`TicketStringKey` in
 /// packages/assistant-web/src/host.ts; a test keeps the two equal).

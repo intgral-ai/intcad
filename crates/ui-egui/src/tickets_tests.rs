@@ -696,3 +696,39 @@ fn a_ticket_opened_large_lies_over_the_window_and_the_assistant_gives_way_until_
     assert_eq!(h.app.agent_chat.state(), crate::agent_chat::State::Busy, "its turn went on");
     assert_eq!(agent.prompts().len(), 1);
 }
+
+/// A ticket's parts are selected together in the model (the 3D view highlights them, the tree
+/// shows them); picking one part lists the tickets that bear on it, until the filter is cleared or
+/// the pick changes. A part the model no longer has is said.
+#[test]
+fn a_tickets_parts_are_selected_in_the_model_and_a_picked_part_filters_the_list() {
+    let scratch = Scratch::new("model");
+    let (mut h, root) = window(&scratch);
+    h.app.run("solid.box", json!({"length": 40, "width": 30, "height": 2})).unwrap();
+    h.settle();
+    let body = crate::open_meshing::session_world(&h.app.session).bodies.first().map(|b| b.name.clone()).expect("a body");
+    let parts = vec![Part { kind: "body".into(), id: body.clone() }, Part { kind: "body".into(), id: "Gone".into() }];
+    let id = tickets::create(&root, Draft { title: "Plate".into(), parts, ..Draft::default() }).unwrap().id;
+    h.settle();
+    let ctx = h.ctx.clone();
+    crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_show_parts", "id": id}).to_string()).unwrap();
+    h.settle();
+    assert_eq!(h.app.session.selection, [solidcraft_engine::Sel::Body { name: body.clone() }], "the ticket's part is selected");
+    assert!(h.app.tickets.error.as_deref().is_some_and(|e| e.contains("Gone")), "{:?}", h.app.tickets.error);
+    let picked = json!({"kind": "body", "id": body});
+    assert_eq!(told(&mut h)["filter"], picked, "one part picked: the list shows its tickets");
+    crate::tickets::receive(&mut h.app, &ctx, r#"{"type":"ticket_filter_clear"}"#).unwrap();
+    assert!(told(&mut h)["filter"].is_null() && told(&mut h)["filter"].is_null(), "cleared, and it stays cleared while the pick is the same");
+    h.app.run("select.clear", json!({})).unwrap();
+    assert!(told(&mut h)["filter"].is_null());
+    h.app.session.selection = vec![solidcraft_engine::Sel::Body { name: body.clone() }];
+    assert_eq!(told(&mut h)["filter"], picked, "picked again");
+    // The tree's dot beside the part: the state colour of its first open ticket.
+    let t = crate::theme::Tokens::get();
+    assert_eq!(crate::tickets::part_dot(&h.app, "body", &body), Some(t.text_dim));
+    tickets::work_myself(&root, &id, tickets::load(&root, &id).unwrap().revision).unwrap();
+    h.settle();
+    assert_eq!(crate::tickets::part_dot(&h.app, "body", &body), Some(t.agent_busy));
+    assert!(crate::scenario::handle_at(&format!("ticket_dot:{body}")).is_some(), "the body's row in the tree has its dot");
+    assert_eq!(crate::tickets::part_dot(&h.app, "component", &body), None, "a body is not a component of that name");
+}
