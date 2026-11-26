@@ -1,0 +1,26 @@
+{
+  "en": {
+    "ui.agent_chat_problem_attachments": "The model selected on {name} cannot read the attached pictures or PDFs. Pick another model, or send the message without them."
+  },
+  "ar": {
+    "ui.agent_chat_problem_attachments": "لا يستطيع النموذج المحدّد في {name} قراءة الصور أو ملفات PDF المرفقة. اختر نموذجًا آخر، أو أرسل الرسالة من دونها."
+  },
+  "de": {
+    "ui.agent_chat_problem_attachments": "Das bei {name} gewählte Modell kann die angehängten Bilder oder PDFs nicht lesen. Wähle ein anderes Modell oder sende die Nachricht ohne sie."
+  },
+  "he": {
+    "ui.agent_chat_problem_attachments": "המודל שנבחר ב־{name} אינו יכול לקרוא את התמונות או קובצי ה־PDF שצורפו. יש לבחור מודל אחר, או לשלוח את ההודעה בלעדיהם."
+  },
+  "ja": {
+    "ui.agent_chat_problem_attachments": "{name} で選択中のモデルは、添付の画像や PDF を読めません。別のモデルを選ぶか、それらを外して送ってください。"
+  },
+  "ko": {
+    "ui.agent_chat_problem_attachments": "{name}에서 선택한 모델은 첨부한 이미지나 PDF를 읽을 수 없습니다. 다른 모델을 고르거나 그것들을 빼고 보내세요."
+  },
+  "vi": {
+    "ui.agent_chat_problem_attachments": "Mô hình đã chọn trên {name} không đọc được hình ảnh hay PDF đính kèm. Hãy chọn mô hình khác, hoặc gửi tin nhắn mà không kèm chúng."
+  },
+  "zh": {
+    "ui.agent_chat_problem_attachments": "「{name}」选中的模型读不了附带的图片或 PDF。换一个模型，或者不带它们再发。"
+  }
+}

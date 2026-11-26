@@ -199,6 +199,11 @@ sketch, a brief, a part to fit around.
   JPEG when the picture has no transparency, halved until it fits; a GIF goes as its first frame.
   BMP and TIFF go as PNG. HEIC can't be read: export it as JPEG or PNG first. An agent that takes
   no pictures gets none, and the message says which were left out.
+- **PDFs** up to 12 MB go as documents to an agent that takes them; to any other, and when larger,
+  the message names the file and where it is. The built-in agent takes pictures and PDFs and hands
+  them to its model. When the chosen model cannot read them (Mastra's catalog lists it as reading
+  neither, or a PDF goes to a DeepSeek model), nothing is sent and the chat says to pick another
+  model or send the message without them.
 - **Text files** (UTF-8, up to 256 KB: Markdown, plain text, JSON, CSV, YAML, TOML, XML, SVG…)
   go in the message's text, whole as far as the message's 100,000-character cap allows: past it
   a file is cut (and says how much is missing) or named only.

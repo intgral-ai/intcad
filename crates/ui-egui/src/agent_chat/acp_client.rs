@@ -1141,6 +1141,7 @@ mod tests {
             ("rate", TurnKind::Rate),
             ("network", TurnKind::Network),
             ("model", TurnKind::Model),
+            ("attachments", TurnKind::Attachments),
         ];
         for (word, kind) in kinds {
             let mut backend = builtin_backend(true).unwrap();
@@ -1177,6 +1178,28 @@ mod tests {
         assert!(matches!(events.as_slice(), [Event::TurnEnded { reason }, Event::AuthRequired { .. }] if reason == "auth"), "{events:?}");
         other.shutdown(true);
         backend.shutdown(true);
+    }
+
+    /// INT-1513, on the wire: the built-in agent's `initialize` answer as it is now (it takes
+    /// pictures and documents) lets the panel send them with a message; its earlier answer did not.
+    #[test]
+    fn the_built_in_agent_says_it_takes_pictures_and_documents() {
+        let capabilities = json!({"loadSession": false, "mcpCapabilities": {"http": true, "sse": false}});
+        let mut now = capabilities.clone();
+        now["promptCapabilities"] = json!({"image": true, "embeddedContext": true});
+        for (answer, takes) in [(now, true), (capabilities, false)] {
+            let mut backend = builtin_backend(false).unwrap();
+            let mut events = Vec::new();
+            backend.handle(
+                Incoming::Reply { id: 1, result: Ok(json!({"agentInfo": {"name": "mastracode"}, "agentCapabilities": answer})) },
+                &mut events,
+            );
+            ChatBackend::new_session(&mut backend);
+            backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId": "s1"})) }, &mut events);
+            assert!(events.contains(&Event::Documents(takes)), "{events:?}");
+            assert!(events.iter().any(|event| matches!(event, Event::Ready { images, .. } if *images == takes)), "{events:?}");
+            backend.shutdown(true);
+        }
     }
 
     /// Forgetting the session stops what the agent still sends for it from being taken in; the

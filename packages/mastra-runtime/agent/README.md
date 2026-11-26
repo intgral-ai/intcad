@@ -109,7 +109,15 @@ is asked; its `prefix` is empty when the model's connection was a custom address
 session starts on a model that something connected can serve.
 
 A `session/prompt` that fails carries
-`data: { "intcad": { "kind": "auth" | "quota" | "rate" | "network" | "model" | "other", "prefix" } }`.
+`data: { "intcad": { "kind": "auth" | "quota" | "rate" | "network" | "model" | "attachments" | "other", "prefix" } }`.
+
+`initialize` declares `promptCapabilities.image` and `embeddedContext`, so the app sends a message's
+pictures (`image` blocks) and PDFs (`resource` blocks with a `blob`). Mastra Code's own prompt handler
+refuses both; `agent.mjs` takes them out and hands them to the session's `sendMessage` as files of
+that turn's message (INT-1513). A turn with such files on a model that cannot read them
+(`attachmentReader` in `models.mjs`: the shipped catalog lists it as reading no attachments, or a
+PDF to DeepSeek, whose adapter drops it) is refused with kind `attachments` before any provider is
+asked.
 
 ### The note and the project (INT-1473)
 

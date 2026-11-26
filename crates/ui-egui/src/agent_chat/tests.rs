@@ -18133,6 +18133,7 @@ fn a_failed_turn_says_why_in_the_users_words() {
         (TurnKind::Rate, "rate", "ui.agent_chat_problem_rate"),
         (TurnKind::Network, "network", "ui.agent_chat_problem_network"),
         (TurnKind::Model, "model", "ui.agent_chat_problem_model"),
+        (TurnKind::Attachments, "attachments", "ui.agent_chat_problem_attachments"),
     ];
     for language in ["en", "zh"] {
         for (kind, word, sentence) in cases {
@@ -18173,6 +18174,7 @@ fn a_failed_turn_says_why_in_the_users_words() {
         assert_eq!(trf("ui.agent_chat_problem_rate", &name), "「ChatGPT」现在限流了。过一会儿再试。");
         assert_eq!(trf("ui.agent_chat_problem_model", &name), "「ChatGPT」用不了选中的模型。换一个模型。");
         assert_eq!(trf("ui.agent_chat_problem_network", &name), "连不上模型服务。检查网络，消息没有丢。");
+        assert_eq!(trf("ui.agent_chat_problem_attachments", &name), "「ChatGPT」选中的模型读不了附带的图片或 PDF。换一个模型，或者不带它们再发。");
     }
     // The connection is found by its whole prefix: a custom address's has a slash in it.
     let (mut app, script, _keys, ctx) = builtin_ready();
