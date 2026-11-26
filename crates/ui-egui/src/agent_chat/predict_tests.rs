@@ -71,7 +71,14 @@ impl ChatBackend for Fake {
         self.calls.lock().unwrap().push(format!("config: {id}={value}"));
     }
     fn connections(&mut self, request: crate::agent_chat::connections::Request) {
-        self.calls.lock().unwrap().push(format!("connections: {:?}", request.what()));
+        // A setup by the providers of its keys (never the keys).
+        let keys = match &request {
+            crate::agent_chat::connections::Request::Setup(setup) => {
+                format!(" {:?}", setup.keys.iter().map(|(provider, _)| provider.as_str()).collect::<Vec<_>>())
+            }
+            _ => String::new(),
+        };
+        self.calls.lock().unwrap().push(format!("connections: {:?}{keys}", request.what()));
     }
     fn take_usage(&mut self) -> Option<Usage> {
         self.usage.lock().unwrap().take()
@@ -698,15 +705,33 @@ fn snapshot(connected: bool) -> crate::agent_chat::connections::Snapshot {
     .unwrap()
 }
 
-/// [`setup`] with the built-in agent as the guessing agent: its process is up and has answered
-/// with a snapshot, and no session is open yet.
+/// The chat runs the built-in agent a package carries (developer's route: one program).
+pub(super) fn run_builtin(app: &mut SolveApp) {
+    app.agent_chat.running_id = crate::agent_chat::connections::AGENT_ID.into();
+    app.builtin_agent = Some(crate::agent_chat::agents::Builtin {
+        packaged: false,
+        program: "/nonexistent/intcad-builtin-agent".into(),
+        args: Vec::new(),
+        data: Some(std::env::temp_dir().join("intcad-predict-builtin-data")),
+    });
+}
+
+/// [`setup`] with the built-in agent as the chat's and the guessing agent: its process is up and
+/// has answered with a snapshot, and no session is open yet. Suggestions are made with it as they
+/// are in the app (no `any_agent`).
 fn setup_builtin(connected: bool) -> (SolveApp, Fake, egui::Context) {
     let (mut app, _chat, guesser, ctx) = setup(true);
-    guesser.events.lock().unwrap().clear();
-    app.agent_chat.predict.builtin = true;
-    app.agent_chat.predict.any_agent = true;
-    guesser.say(Event::Connections(snapshot(connected)));
+    as_builtin(&mut app, &guesser, snapshot(connected));
     (app, guesser, ctx)
+}
+
+/// Make `app`'s chat and guessing agent the built-in one: its process is up and has said
+/// `snapshot`, and no session is open yet.
+pub(super) fn as_builtin(app: &mut SolveApp, guesser: &Fake, snapshot: crate::agent_chat::connections::Snapshot) {
+    guesser.events.lock().unwrap().clear();
+    run_builtin(app);
+    app.agent_chat.predict.builtin = true;
+    guesser.say(Event::Connections(snapshot));
 }
 
 pub(super) fn configs(guesser: &Fake) -> Vec<String> {
@@ -897,7 +922,6 @@ fn g79_the_built_in_agent_beside_another_is_not_taken_for_it() {
         let p = &mut app.agent_chat.predict;
         p.backend = None;
         p.link = Link::None;
-        p.any_agent = running == crate::agent_chat::connections::AGENT_ID;
         start_session(&mut app, &ctx, 0.0);
         let p = &app.agent_chat.predict;
         assert_eq!(p.builtin, as_builtin, "{running}, the package's agent carried: {carried}");
@@ -944,7 +968,8 @@ fn the_built_in_guessing_process_gets_the_chats_folder_and_setup() {
     let argv = ["sh".to_string(), "-c".to_string(), script.to_string(), seen.to_string_lossy().into_owned()];
     let ctx = crate::fonts::test_context();
     let setup = crate::agent_chat::connections::Setup { keys: vec![("anthropic".into(), "k-predict".into())], ..Default::default() };
-    let mut b = start_backend(&argv, &ctx, Some((Some(data.clone()), setup.clone()))).unwrap();
+    let builtin = |data: Option<std::path::PathBuf>, setup| Some(BuiltinStart { data, setup, packaged: false });
+    let mut b = start_backend(&argv, &ctx, builtin(Some(data.clone()), setup.clone())).unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     let text = loop {
         let _ = b.poll();
@@ -963,7 +988,7 @@ fn the_built_in_guessing_process_gets_the_chats_folder_and_setup() {
     b.shutdown(true);
     // Without the folder: the chat's own refusal, and no process.
     std::fs::remove_file(&seen).unwrap();
-    let refused = start_backend(&argv, &ctx, Some((None, setup))).err().unwrap();
+    let refused = start_backend(&argv, &ctx, builtin(None, setup)).err().unwrap();
     assert_eq!(refused, tr("ui.agent_chat_no_data_folder"));
     std::thread::sleep(Duration::from_millis(200));
     assert!(!seen.exists(), "nothing started");

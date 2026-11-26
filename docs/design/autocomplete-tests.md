@@ -2,7 +2,8 @@
 
 **Approved by Tianwei 2026-11-24**, with the eight rules at the end, before any test was written;
 G57–G64, G66–G70, M10 and rules 9 and 10 (under Results) on 2026-11-25, G71–G78, M11 and rules 11–13 the
-same day, rule 9 narrowed with R1 on 2026-11-26. G1–G48 and G54–G78 are written and pass; G49–G53 wait for Pai. What was measured, and where a test differs
+same day, rule 9 narrowed with R1 on 2026-11-26, and G80–G90 with M12–M14 (suggestions on the built-in agent) the same
+day. G1–G48 and G54–G90 are written and pass; G49–G53 wait for Pai. What was measured, and where a test differs
 from its case, is under Results. It covers the requirements AC-1 to AC-26 of the PRD on INT-1458
 (v0.3). The earlier list (B1–B10, L1–L8) is in `next-step-prediction.md`.
 
@@ -506,11 +507,168 @@ Real: the app's choice. Faked: the agents (none is started).
 
 | Case | Input | Action | Observable result and pass criterion |
 |---|---|---|---|
-| G79 The built-in agent beside another | the package carries the built-in agent; the chat runs Claude Code; again with the chat on the built-in agent and the test-only `any_agent` override | start the guessing session | Claude Code: started as an ordinary agent (no data folder or connections setup); the built-in agent: as the chat starts it. Codex is covered separately by G42. |
+| G79 The built-in agent beside another | the package carries the built-in agent; the chat runs Claude Code; again with the chat on the built-in agent (since decision 26 through the real `supported()`, no `any_agent`) | start the guessing session | Claude Code: started as an ordinary agent (no data folder or connections setup); the built-in agent: as the chat starts it. Codex is covered separately by G42. |
 
 **Built 2026-11-26** (`predict.rs`, `runs_builtin`; the test is in `predict_tests.rs`). The test reads the
 flag that both the start and the wait for "connected" go by; no agent program is there, so none starts. It
 passes on the tree with `develop` taken in, and fails with the fix taken out.
+
+### Approved by Tianwei 2026-11-26: suggestions on the built-in agent
+
+**Why.** The review of PR 252: "merged develop, but prediction does not use the built-in Mastra Code".
+Since #214 a release package carries the built-in agent and the chat starts on it, and `supported()` in
+`predict.rs` lets only Claude Code and Codex through, so most users of a release get no suggestion.
+Tianwei reversed the PRD's "Claude Code and Codex only, the built-in agent second" (decision 26 in
+`next-step-prediction.md`).
+
+**What was found** (read in Mastra Code 1.19.1, `@agentclientprotocol/sdk` 0.21.1 and `@mastra/core`
+as installed on zhikun in `~/open-skyfall-eval/mastra-agent-sdk`, and in this tree; nothing run yet):
+
+- **No `session/close`.** Mastra Code's ACP agent (`dist/acp/agent.js`) has no `closeSession` and offers
+  no `sessionCapabilities`; ACP's SDK answers `session/close` with "method not found" then. A session
+  is a whole Mastra Code runtime (its storage, workers and timers, and a folder under
+  `<data>/sessions/`), cleaned up only when the connection closes. So today the guessing process would
+  keep one runtime per suggestion until the app quits. The app already closes guessing sessions where
+  the agent offers it (`acp_client.rs`, `new_session`).
+- **`fast` is Explore, read-only.** Its tools are `view`, `find_files`, `search_content`, `file_stat`,
+  `lsp_inspect`, `ask_user` (Intcad turns it off) and `list-workflows`, `get-workflow`
+  (`agents/tool-availability.js`). `@mastra/core` sends only a mode's listed tools to the model
+  (`resolveModeActiveTools`), so in `fast` neither MCP tools nor the design tools of the private
+  `cadBridge` are offered. Switching the mode leaves the model as it is (`SessionMode.switch`).
+- **The note.** The guessing process sends `system_note(SESSION_NOTE)`: the chat's whole note (use the
+  `intcad-app` MCP tools, read `skill_reference`) with the guessing note after it as "the user's
+  custom instructions". `session.mjs` then adds "Answer in the language the user writes in" and, with
+  no project, the line about New chat (`hostOf`).
+- **The packaged start.** The guessing process uses `start_builtin`, which strips only
+  `SOLIDCRAFT_CONTROL_TOKEN`. The chat's packaged start (`start_packaged`) checks the package's own
+  Node and entry (`packaged_agent`) and strips `SOLIDCRAFT_MASTRA_SDK`, `NODE_OPTIONS` and `NODE_PATH`
+  too, so a variable left in the user's environment would make the guessing process load another SDK
+  or run other code. `start_builtin` never adds `cadBridge` (it is added only where `cad` is set, and
+  never to a guessing session), and the guessing process gets no bridge and no project.
+- **Sign-in.** `key_sign_in` reads `_auth/status_update`, which only the Claude Code adapter sends. The
+  built-in agent's kind of sign-in is in its connections snapshot: a plan (`plans[].state`), or a key
+  (`keys[].saved`, not `shadowed`), or a custom address, each for the models under its `prefix`. So on
+  the built-in agent every suggestion would count against the hourly cap, a key too.
+- **Keys later.** The guessing process gets the chat's setup once, at its start. A key the user removes
+  afterwards stays in the guessing process, which goes on using it.
+- **The rest is the agent's own.** Words and units checks, the ghost on `Session::scratch` and Tab do
+  not depend on the agent, and are kept as they are.
+
+**Plan.** Rust in `crates/ui-egui/src/agent_chat/` (`predict.rs`, `acp_client.rs`, `acp.rs`); JavaScript
+in `packages/mastra-runtime/agent/` (`agent.mjs`, `session.mjs`), the built-in agent's own files.
+
+1. `supported()` lets the built-in agent through (`runs_builtin`); a Mastra workflow, an API endpoint
+   and other ACP agents stay out. `any_agent` stays a test switch only.
+2. The guessing process starts as the chat's agent does: in a package with the package check and the
+   package's stripped environment, but with no `cadBridge` and no tool queue
+   (`AcpBackend::start_packaged_guesser`); otherwise with `start_builtin` as now.
+3. A built-in guessing session's `session/new` carries the guessing note alone and
+   `_meta.intcad.nextStep: true`, with `mcpServers: []` and no project. The agent then gives it the note
+   only (no language line, no project line), no MCP at all (`disableMcp`), no design tools even if asked,
+   and puts it in `fast` before it answers `session/new`.
+4. The built-in agent offers `session/close` and cleans the session up, as it does for all of them when
+   the connection closes. The app's existing rule then closes each guessing session it is done with.
+5. The hourly cap on the built-in agent follows the guess model's connection: a plan counts, a key or a
+   custom address does not, anything not known counts.
+6. Every setup the chat hands its agent is handed to the guessing process too, and so is the chat's
+   last setup when a plan was signed in or out (a setup makes the agent read its sign-ins again). A
+   session opened ahead of such a change is replaced before it is used.
+
+Real and faked, by group:
+- **Fake agent** (`predict_tests.rs`): the predictor, preferences, egui input, the real engine and
+  checks, the ghost and Tab; the agent's answers and snapshots are scripted.
+- **Stand-in agent** (`predict_tests.rs`, `acp_client.rs`): the app's real `AcpBackend` and the JSON it
+  writes; the agent is a shell script that records what it is sent and answers `initialize` and
+  `session/new`, in a package-shaped folder where the case says so (as `account_tests.rs` does).
+- **Stand-in Base** (`packages/mastra-runtime/test/`, `node --test`): Intcad's agent files for real;
+  Mastra Code's agent class and `createMastraCode` are stand-ins that record their calls, as
+  `plan.test.ts` and `reads.test.ts` have them. No model, no network.
+- **Real** (zhikun, M12–M14): the app, Mastra Code 1.19.1, a model on a key Tianwei enters himself.
+
+| Case | Input | Action | Observable result and pass criterion |
+|---|---|---|---|
+| G80 The built-in agent makes suggestions | Fake agent; the chat runs the built-in agent (`running_id` `mastra`, a package carries it, ACP, no workflow); `any_agent` off; a snapshot with a plan signed in; the plate of G67 | edit; frames past the pause; scripted answers to both questions (a hole of 5 mm at (90, 50)) | `new_session` once after the snapshot; mode, model and effort set as in B1; two prompts; the line shows the step; the ghost is drawn; Tab lands it as one undo step whose volume equals the ghost's (G23's measure); the log's model is the small one |
+| G81 Still not supported | Fake agent; the chat on the built-in agent with Mastra workflow execution (`chat.mastra`); an API endpoint; another ACP agent (id `gemini`) | edit; frames to 60 s | no session, no question; G37's sentence (G43 without the built-in agent) |
+| G82 The hourly cap follows the guess model's connection | Fake agent; limit 20; snapshots: (a) plan `openai-codex` in, model `openai/gpt-5.4-mini`; (b) key `openai` saved, no plan; (c) key saved and the plan in (`shadowed`); (d) the plan expired and the key saved; (e) a custom address, the model under its prefix; (f) the model under no prefix; (g) no snapshot yet | 60 suggestions in 30 min each | (a), (c), (d), (f), (g): 20 asked, the 21st not, one notice; (b), (e): 60 asked; the log's `keySignIn` false and true to match |
+| G83 The guessing process follows the chat's setup | Fake agent; guessing process started with setup S1 (key `openai`); a session opened ahead | the chat hands its agent S2 (the key removed); separately a plan signed out in the chat (`builtin_changes` moves, no new setup) | the guessing backend gets `setup` S2, once; after the sign-out it gets S1 again, once; the session opened ahead is replaced (`new_session`) before its question; nothing is sent while nothing changed |
+| G84 What a built-in guessing session asks for | stand-in agent named `mastracode`, built-in; custom instructions in the preferences; a project open in the window | the guessing process opens a session; the chat opens one | guessing `session/new`: `mcpServers: []`, `_meta.systemPrompt.append` equal to `SESSION_NOTE` (no word of `SYSTEM_NOTE`, no custom instructions), `_meta.intcad.nextStep: true`, no `_meta.intcad.project`, no `cadBridge`; the chat's `session/new` byte for byte as before this change |
+| G85 Started as the package starts it | stand-in `node` in a package-shaped folder (`agent/main.mjs`, `agent.json`, the two SDK `package.json`); the chat on the packaged route; separately the folder without `agent.json`; separately the entry outside `agent/` | start the guessing process | started as `[<root>/node, <root>/agent/main.mjs]`, in its environment `MASTRA_APP_DATA_DIR` = the data folder and `MASTRA_TELEMETRY_DISABLED=1`; the backend's list of removed variables is the package's (`SOLIDCRAFT_CONTROL_TOKEN`, `SOLIDCRAFT_MASTRA_SDK`, `NODE_OPTIONS`, `NODE_PATH`); its `session/new` has no `cadBridge`; the broken folders: nothing started, the state `paused` with the package's error, and the chat's backend untouched. The developer's route (one program named by `SOLIDCRAFT_MASTRA_AGENT`) starts as B9 has it |
+| G86 Each guessing session is closed | stand-in built-in agent offering `sessionCapabilities.close`; separately one without it | three suggestions | with the offer: `session/close` for each session the app is done with, so no more than two open at once (one in use, one opened ahead); without it: no `session/close` sent |
+| G87 The note alone for a guess | `hostOf` with `_meta.intcad.nextStep: true`, a note N and a project | call | `{project: null, instructions: N}`: no language line, no brief, no project line; without the flag every existing `hostOf` test as it is |
+| G88 A guess session has no MCP and no design tools | stand-in `createMastraCode`; `nextStep: true`; the request names an MCP server and a `cadBridge` catalog | `session/new` | `createMastraCode` called with `disableMcp: true`, `mcpServers: {}`, no `extraTools`, `hostInstructions` = N; without the flag: the options as today |
+| G89 `session/close` | stand-in Base with sessions s1 (a turn running) and s2 | `initialize`; `closeSession(s1)`; a prompt on s1; `closeSession(s1)` again; `closeSession("nope")` | `initialize` offers `sessionCapabilities.close` and keeps the other capabilities; s1's turn cancelled and aborted, its listener removed, its cleanup run once (its folder gone); the prompt and both later closes answered with an error; s2 untouched |
+| G90 A guess session starts read-only | stand-in Base whose session offers modes `build`, `plan`, `fast`; separately one without `fast` | `newSession` with `nextStep: true`; without it | with the flag: mode `fast` before the reply, and the reply's `mode` option says `fast`; without `fast`: the session refused with an error and cleaned up; without the flag: the mode as Mastra Code opened it |
+| M12 The built-in agent, packaged (real) | the package layout beside the test build on zhikun, Mastra Code 1.19.1, a key Tianwei enters; case, bracket, plate, flange; 5 runs (Tab in runs 1 and 2): 45 suggestions | harness (`next_step_ab.sh`, `NSM_AGENT=mastra`) | as M1: line median ≤ 2.5 s, ghost median ≤ 4 s and 9 in 10 ≤ 6 s, ≥ 95% run and change the part; Tab lands equal every time (M7's measure); the stamp held before Tab 45 of 45; tokens reported for each question; at most two guessing sessions' folders under `<data>/sessions/` and no growth in the guessing process's memory over the 45 (sampled after each suggestion; reported). Also reported: the data folder's size before and after |
+| M13 The developer's route (real) | as M12 with `SOLIDCRAFT_MASTRA_AGENT`, one run: 9 suggestions | harness | at least 8 of 9 drawn |
+| M14 Nothing reaches MCP (real) | an MCP server that records each start, set up in the built-in agent's own home; M13's run | harness; then one chat message | no start from the guessing process; the chat's session starts it (the probe works) |
+
+Existing tests that change with it: G43 (the built-in agent is no longer in its list; G81 takes it),
+G79 (the chat on the built-in agent without `any_agent`), and `setup_builtin` in `predict_tests.rs`
+drops `any_agent`, so B1–B8 run through the real `supported()`.
+
+Decisions approved with the list (in `next-step-prediction.md`): 27 the guessing session marked
+`nextStep` for the built-in agent; 28 `session/close` in the built-in agent; 29 the cap by the guess
+model's connection; 30 the guessing process follows the chat's setup; 31 the model on the built-in
+agent stays the small-model rule (no Sonnet as on Claude Code) until M12's guesses are read.
+
+**Built 2026-11-26.** Rust: `predict.rs` (`supported`, `BuiltinStart`, `paid_by_use`, `follow_setup`),
+`acp_client.rs` (`start_packaged_guesser`, the guessing branch of `new_session`), `acp.rs`
+(`next_step_session_params`), `connections.rs` (`Conn::setups`). The agent: `agent.mjs` (`closeSession`,
+the read-only mode for a guess), `session.mjs` (`isNextStep`, `hostOf`, `sessionBuilder`). G80–G86 are
+in `predict_ghost_tests.rs`; G87 in `test/brief.test.ts`; G88–G90 in `test/connections.test.ts`, where
+`sessionBuilder` and `intcadAgent`'s session methods were already tested (the list said brief.test.ts for
+G88). Two helpers changed for the real runs: `next_step_conn.py key <provider>` asks for a key without
+showing it, and `autocomplete_measure.py` no longer waits 90 s for the built-in agent to be "found".
+
+- **Tests** (zhikun, `ci` profile): the predictor's 111 pass (104 before), 1 measurement ignored; the
+  agent chat's 864 pass (857 before), 4 ignored; the agent's four test files 59 of 59 on Node 22.23.4.
+  `cargo fmt --check` and clippy (`-p solidcraft-ui-egui --all-targets -D warnings`) clean.
+- **Broken on purpose**, one change at a time. Rust, 7 of 7 caught: the built-in agent left out of
+  `supported` (13 tests fail, G80 and B1–B8 among them); a held plan not put before a key (G82); the
+  setup not handed on (G83); a session opened ahead used after a change (G83); the guessing branch of
+  `session/new` taken out (G84, G85); `start_builtin` used in a package (G85); the chat's list of
+  variables in place of the package's (G85). The agent, 15 of 15 caught: the flag check in `hostOf`
+  (G87, G88); `disableMcp` for a guess, ignoring a guess's MCP servers, withholding `extraTools` (G88);
+  `close` in `initialize`, the abort, cancelling the turns, answering an unknown id (G89); taking the
+  session off the list, the unsubscribe, the cleanup (G89, G90); the switch to `fast`, the reply's
+  `modes`, keeping plan-first off a guess, ending a refused guess (G90).
+
+**Real runs (2026-11-26, zhikun).** The test build of `/tmp/m1stub.sh` (the control channel's edits
+taken as the window's, not committed), with a package folder made by `agent-package.mjs build` for
+`x86_64-unknown-linux-gnu` beside it (Mastra Code 1.19.1, the system's Node 22.23.4, both skill sets).
+One DeepSeek key, entered by Tianwei; the guesses ran on `deepseek/deepseek-flash` at the lowest
+effort (the session already on it; the small-model rule had nothing to change). Harness:
+`next_step_ab.sh` with `NSM_AGENT=mastra` and `autocomplete_measure.py`; the machine had a load of
+about 6 from other work.
+
+| Run | Result | |
+|---|---|---|
+| **M12**, the package's agent, 45 suggestions | line median 1.60 s (90% 2.27 s); **ghost median 3.53 s, 9 in 10 within 5.27 s** (8.9 s at the slowest, four boxes for a lid lip); 44 of 45 ran and changed the part (97.8%); Tab 17 of 17 landed equal to the ghost (24 ms median); the stamp held 45 of 45; input and output tokens reported for both questions of every suggestion (about 9.0k and 10.3k input), no cost reported; at most two session folders of one process at any sample (one in use, one opened ahead) | **passes**, but for the memory (the long run below) |
+| **M13**, the developer's route, 9 suggestions | 7 of 9 drawn; line 1.56 s, ghost 3.73 s median; Tab 7 of 7 equal | **misses by one** (8 of 9) |
+| **M14**, an MCP server in the agent's own home | started 16 times, every time by the chat's agent process (four times as each run's chat connects); never by the guessing process. The chat's process is told by its pid (started first in each run) and by its memory (the guessing process's grows with its sessions) | **passes** |
+
+- **After Huaiyuan's review fixes** (rebased on `b102c0e69`: Tab only for a ghost on screen, the
+  harness's disposable runs): a smoke run on the package's agent, plate and case with Tab, 5 of 5 drawn
+  and 5 of 5 landed equal to the ghost (17–40 ms), the stamp held 5 of 5. M12–M14 were not run again.
+- **What was not drawn.** Three of 54: twice the agent answered `{"commands": []}` for a fillet of edges it
+  could not name ("the remaining vertical corner edges"), once a hole through the case's bottom failed on
+  the copy. Each was withdrawn as the rules say; none is particular to the built-in agent.
+- **Processes.** In each run the chat's and the guessing process start together. The chat's stays near
+  200–280 MB; the guessing process grows from about 250 MB to 330–465 MB over a run's two or three
+  suggestions. Each run is a new app, so a process lived through three suggestions at most.
+- **The long run** (30 suggestions in one app run on the package's agent, an edit adding a box each time,
+  sampled every 2 s): 30 of 30 drawn; at most two session folders of the guessing process at any sample.
+  Its memory **rose from about 250 MB to 550 MB over the first 12 suggestions, then held between 550 and
+  605 MiB to the 30th** (568–580 MiB over the last eight); the chat's process stayed under 260 MB. So it does
+  not stay flat as M12's case asked, and it was not run long enough to show that it stops growing: a
+  run of a few hundred suggestions would tell. Claude Code's guessing processes did not grow over M1's 45.
+- **The data folder** grew from 0.9 MB to 3.7 MB over M12's 45 suggestions, about 60 kB each: Mastra
+  keeps each closed session's thread in its storage.
+- **First reading of the guesses** (Tianwei judges): shell the case 10 of 10 (2 or 3 mm, open at the top);
+  four corner holes on the plate 5 of 5, the other three corners 4 of 5 at plate state 2 (once one hole),
+  and none asked to cut the hole again (M6); the flange's bore 5 of 5 and the bolt-hole pattern 5 of 5
+  (four or six copies); at bracket state 1 fillets 4 of 5 and holes once, at state 2 joining the boss 3 of 5.
+  As with Haiku on Claude Code, the small model leans to fillets on the bracket.
 
 ### Measurements
 

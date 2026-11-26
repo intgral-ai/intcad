@@ -580,6 +580,12 @@ told in a sentence that names the connection. After an expired sign-in the messa
 sent again once that plan is signed in; after a network failure **Retry** sends it again. A
 refused key is mended on the Connections page, and the message is then sent by hand.
 
+With **Suggest the next step after a pause** on, the built-in agent also makes next-step
+suggestions, in a second process of its own with no design tools ([Next-step
+suggestions](#next-step-suggestions)). The agent closes a session when the app asks it to
+(`session/close`, which Mastra Code's own ACP agent does not offer); the app asks only for the
+suggestions' sessions, so a chat's earlier sessions stay as they were.
+
 The agent's own side (its program, the requests it answers, what it keeps and where) is described
 in `packages/mastra-runtime/agent/README.md`. A script reaches the Connections page's actions
 through `ui.agent_chat` ([control protocol](control-protocol.md)).
@@ -796,11 +802,14 @@ every program it started (the CLI it wraps, its MCP server) are stopped.
 Off by default. Turn on **Suggest the next step after a pause** under Preferences → Assistant →
 Panel, or in the right rail's **Autocomplete** panel (search finds it as predict, autocomplete or
 suggest). Each suggestion asks your own agent twice, with the design's recent History and geometry,
-the selection and your messages in this chat, and uses your agent's plan or credits. For now only
-**Claude Code** makes suggestions. **Codex** is still available for normal chat, but Intcad does
-not start background suggestions with it until it can verify that the session cannot reach the
-user's MCP servers or write tools. Signed in with a plan, at most 20 suggestions an
-hour are asked for (**Suggestions an hour on a plan** changes it); with an API key there is no limit.
+the selection and your messages in this chat, and uses your agent's plan or credits. **Claude Code**
+and the **built-in agent** make suggestions; a Mastra workflow, an API endpoint and other agents do
+not yet. **Codex** is still available for normal chat, but Intcad does not start background
+suggestions with it until it can verify that the session cannot reach the user's MCP servers or write
+tools. Signed in with a plan, at most 20 suggestions an hour are asked for (**Suggestions an hour on
+a plan** changes it); with an API key there is no limit. On the built-in agent what counts is the
+connection of the model the suggestions run on: a plan signed in for its provider counts, even beside
+a key; a key or a custom address alone does not.
 
 When the agent is connected and idle and you stop for a moment after an edit (1.5 seconds by
 default; **Pause before a suggestion** changes it), the agent guesses one next modelling step. The
@@ -839,6 +848,15 @@ asks to run there is declined, and on Claude Code your own MCP servers are not l
 MCP tool is off, so a suggestion cannot change the design before Tab. Signed in with an API key, a
 Claude Code session for a question has no other tools and none of the user's own setup either;
 with a plan it is the agent's own session, less those.
+
+On the built-in agent the suggestions run in a second process of it, started as the chat's is (from
+the package, with its data folder and the keys the chat's agent has) but with none of the design's
+tools. Its sessions are marked as guesses: they get the guessing note alone, load no MCP server
+(also none from the agent's own settings), are given no project folder, and open in the agent's
+read-only mode, **Explore**, whose tools only look at files. They run on a small model of the
+connection in use (for example gpt-5.4-mini on an OpenAI key) at the lowest reasoning effort; the
+chat's own model and mode are not changed. Each key, address or sign-in change the chat's agent is
+handed reaches the suggestions' process too, before its next question.
 
 The Autocomplete panel lists the latest suggestions and what became of each. Their time, tokens,
 cost (as the agent reports them), whether they were billed and their outcome are in `ui.agent_chat`

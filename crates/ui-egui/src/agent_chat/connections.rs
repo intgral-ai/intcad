@@ -763,9 +763,17 @@ pub(crate) struct Conn {
     /// The last `setup` handed to this conversation's agent: next-step suggestions hand the same
     /// to their own process of the agent. It holds keys, as the agent's environment does.
     pub(super) last_setup: Option<Setup>,
+    /// The setups handed to this conversation's agent, counted: next-step suggestions hand each
+    /// one on to their own process of the agent.
+    pub(super) setups: u64,
 }
 
 impl Conn {
+    /// The keys of a setup are being read: the setup follows.
+    pub(super) fn reading_keys(&self) -> bool {
+        self.reading.is_some()
+    }
+
     /// Take in what the agent now says of its connections.
     pub(super) fn take_in(&mut self, snapshot: Snapshot) {
         let catching_up = std::mem::take(&mut self.catching_up);
@@ -820,6 +828,7 @@ fn callback_words(app: &SolveApp) -> String {
 fn send(app: &mut SolveApp, request: Request) {
     if let Request::Setup(setup) = &request {
         app.agent_chat.conn.last_setup = Some(setup.clone());
+        app.agent_chat.conn.setups = app.agent_chat.conn.setups.wrapping_add(1);
     }
     if let Some(backend) = app.agent_chat.backend.as_mut() {
         backend.connections(request);

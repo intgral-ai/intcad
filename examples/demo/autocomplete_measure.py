@@ -91,7 +91,8 @@ def inches(steps):
 call("ui.resize", {"width": 1500, "height": 940})
 call("ui.home", {"open": False})
 chat({"refresh": True})
-wait(lambda: any(a.get("found") and a.get("id") == agent for a in (chat().get("agents") or [])), 90, 0.5)
+# The built-in agent (`mastra`) is carried, not found on the computer.
+wait(lambda: any((a.get("found") or agent == "mastra") and a.get("id") == agent for a in (chat().get("agents") or [])), 90, 0.5)
 for params in ({"open": True}, {"permissions": "edits"}, {"agent": agent, "default_agent": agent}):
     chat(params)
 time.sleep(1)

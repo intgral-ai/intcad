@@ -1887,6 +1887,7 @@ while IFS= read -r line; do
     *'"method":"initialize"'*) say; printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$id" "$init" ;;
     *'"method":"session/new"'*) n=$((n+1)); printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"s%s"}}\n' "$id" "$n"; say ;;
     *'"method":"session/close"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"_intcad/connections/setup"'*) printf '{"jsonrpc":"2.0","id":%s,"result":{"plans":[{"id":"openai-codex","name":"ChatGPT","state":"in","prefix":"openai"}],"keys":[],"custom":[]}}\n' "$id" ;;
     *'"method":"session/prompt"'*)
       sid=$(printf '%s' "$line" | sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p')
       case "$line" in *'Write the Intcad commands'*) text="$commands" ;; *) text="$step"; signed "$mid"; mid= ;; esac
@@ -2886,4 +2887,374 @@ fn m5_frames_while_a_ghost_computes_on_a_400_hole_plate() {
         l.engine_ms,
         l.ran
     );
+}
+
+// ---- The built-in agent (decisions 26–30; autocomplete-tests.md, "suggestions on the built-in agent") --
+
+/// A snapshot of the built-in agent's connections: plans `(id, state, prefix)`, keys
+/// `(provider, saved, shadowed)` and custom addresses by prefix.
+fn connections_of(plans: &[(&str, &str, &str)], keys: &[(&str, bool, bool)], custom: &[&str]) -> crate::agent_chat::connections::Snapshot {
+    crate::agent_chat::connections::Snapshot::parse(&json!({
+        "plans": plans.iter().map(|(id, state, prefix)| json!({"id": id, "name": id, "state": state, "prefix": prefix})).collect::<Vec<_>>(),
+        "keys": keys.iter().map(|(id, saved, shadowed)| json!({"id": id, "name": id, "saved": saved, "shadowed": shadowed, "prefix": id})).collect::<Vec<_>>(),
+        "custom": custom.iter().map(|prefix| json!({"id": "local", "name": "Local", "url": "http://localhost:1234/v1", "models": ["m"], "prefix": prefix})).collect::<Vec<_>>(),
+    }))
+    .unwrap()
+}
+
+fn plan_in() -> crate::agent_chat::connections::Snapshot {
+    connections_of(&[("openai-codex", "in", "openai")], &[], &[])
+}
+
+/// What each body of the drawn ghost is: name, volume and faces.
+fn ghost_bodies(app: &SolveApp) -> Vec<(String, f64, usize)> {
+    let ghost = app.agent_chat.predict.ghost.as_ref().unwrap();
+    let mut out: Vec<_> = ghost.after().bodies.iter().map(|b| (b.name.clone(), b.body.volume_at(0.01).unwrap(), b.body.face_count())).collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// G80: the chat on the built-in agent makes suggestions, as the app runs it (no `any_agent`): the
+/// session is tuned as in B1, both questions go out, the ghost is drawn and Tab lands it as one undo
+/// step equal to the ghost.
+#[test]
+fn g80_the_built_in_agent_makes_suggestions() {
+    let (mut app, chat, guesser, ctx) = plate();
+    as_builtin(&mut app, &guesser, plan_in());
+    assert!(!app.agent_chat.predict.any_agent);
+    frame(&mut app, &ctx, 0.0, vec![]);
+    assert_eq!(sessions_opened(&guesser), 1, "{:?}", guesser.calls());
+    let options = mastra_options("build", SONNET, "medium");
+    guesser.say(Event::ConfigOptions(options.clone()));
+    guesser.ready();
+    frame(&mut app, &ctx, 0.1, vec![]);
+    let t = answer_settings(&mut app, &ctx, &guesser, options, 0, 0.1);
+    assert_eq!(configs(&guesser), ["config: mode=fast".to_string(), format!("config: model={HAIKU}"), "config: thought_level=off".into()]);
+    frame(&mut app, &ctx, t + 0.1, vec![]);
+    assert_eq!(guesser.firsts().len(), 1, "{:?}", guesser.calls());
+    guesser.answer(HOLES);
+    frame(&mut app, &ctx, t + 0.2, vec![]);
+    assert!(app.agent_chat.predict.shown().is_some(), "{}", status(&app));
+    frame(&mut app, &ctx, t + 0.3, vec![]);
+    assert_eq!(guesser.prompts().len(), 2, "the second question: {:?}", guesser.calls());
+    answer_commands(&mut app, &ctx, &guesser, t + 0.4, &holes());
+    assert_eq!(status(&app)["state"], "ghost", "{}", status(&app));
+    let ghost = ghost_bodies(&app);
+    let undo = app.session.undo.len();
+    frame(&mut app, &ctx, t + 1.0, vec![key(egui::Key::Tab)]);
+    let now = volumes(&app.session);
+    assert_eq!(now.len(), ghost.len());
+    for (a, b) in now.iter().zip(&ghost) {
+        assert_eq!((&a.0, a.2), (&b.0, b.2));
+        assert!((a.1 - b.1).abs() <= 1e-6 * b.1.abs(), "{a:?} {b:?}");
+    }
+    assert_eq!(app.session.undo.len(), undo + 1, "one undo step");
+    assert_eq!(outcome(&app, 0), "accepted");
+    assert_eq!(app.agent_chat.predict.log()[0].model.as_deref(), Some(HAIKU));
+    assert!(chat.calls().is_empty(), "{:?}", chat.calls());
+}
+
+/// G81: the built-in agent in a Mastra workflow, an API endpoint and another ACP agent beside it make
+/// no suggestion, and the line says so.
+#[test]
+fn g81_the_built_in_agent_in_a_workflow_or_another_agent_is_asked_nothing() {
+    let cases: [fn(&mut SolveApp); 3] = [
+        |app| app.agent_chat.mastra = true,
+        |app| app.agent_chat.running_endpoint = "https://api.example.com".into(),
+        |app| app.agent_chat.running_id = "gemini".into(),
+    ];
+    for (i, case) in cases.into_iter().enumerate() {
+        let (mut app, _chat, guesser, ctx) = plate();
+        as_builtin(&mut app, &guesser, plan_in());
+        case(&mut app);
+        for t in [0.0, 5.0, 60.0] {
+            frame(&mut app, &ctx, t, vec![]);
+        }
+        assert!(guesser.prompts().is_empty() && sessions_opened(&guesser) == 0, "case {i}: {:?}", guesser.calls());
+        assert_eq!(status(&app)["state"], "no agent", "case {i}");
+    }
+    let (mut app, _chat, guesser, ctx) = plate();
+    as_builtin(&mut app, &guesser, plan_in());
+    app.agent_chat.running_id = "gemini".into();
+    frame(&mut app, &ctx, 0.0, vec![]);
+    assert_eq!(chip(&app).unwrap().0, "Next step: not available with this agent yet");
+}
+
+/// A select option of a session, with `current` of `values`.
+fn option_of(id: &str, current: &str, values: &[&str]) -> ConfigOption {
+    ConfigOption {
+        id: id.into(),
+        name: id.into(),
+        description: String::new(),
+        category: id.into(),
+        current_value: current.into(),
+        options: values
+            .iter()
+            .map(|v| crate::agent_chat::backend::ConfigChoice { value: v.to_string(), name: v.to_string(), description: String::new(), group: None })
+            .collect(),
+    }
+}
+
+/// G82: on the built-in agent the hourly cap follows the guess model's connection: a plan counts, a
+/// key or a custom address does not, anything not known counts.
+#[test]
+fn g82_the_hourly_cap_follows_the_guess_models_connection() {
+    type Snapshot = crate::agent_chat::connections::Snapshot;
+    let cases: [(&str, Option<Snapshot>, bool); 7] = [
+        ("plan", Some(plan_in()), false),
+        ("key", Some(connections_of(&[("openai-codex", "out", "openai")], &[("openai", true, false)], &[])), true),
+        ("key behind a plan", Some(connections_of(&[("openai-codex", "in", "openai")], &[("openai", true, true)], &[])), false),
+        ("key behind an expired plan", Some(connections_of(&[("openai-codex", "expired", "openai")], &[("openai", true, true)], &[])), false),
+        ("custom address", Some(connections_of(&[], &[], &["mastracode/local"])), true),
+        ("under no prefix", Some(connections_of(&[("anthropic", "in", "anthropic")], &[("anthropic", true, false)], &[])), false),
+        ("no snapshot", None, false),
+    ];
+    for (name, snapshot, paid_by_use) in cases {
+        let (mut app, _chat, guesser, ctx) = plate();
+        as_builtin(&mut app, &guesser, plan_in());
+        app.preferences.agent_next_step_model = SAME_MODEL.into();
+        let model = if name == "custom address" { "mastracode/local/m" } else { MINI };
+        frame(&mut app, &ctx, 0.0, vec![]);
+        guesser.say(Event::ConfigOptions(vec![option_of("model", model, &[model])]));
+        frame(&mut app, &ctx, 0.05, vec![]);
+        app.agent_chat.predict.connections = snapshot;
+        for n in 0..60 {
+            one_question(&mut app, &ctx, &guesser, 10.0 + 25.0 * n as f64, n);
+        }
+        assert_eq!(guesser.firsts().len(), if paid_by_use { 60 } else { 20 }, "{name}: {}", status(&app));
+        assert_eq!(status(&app)["keySignIn"], paid_by_use, "{name}");
+    }
+}
+
+/// The setups the guessing backend was handed, by the providers of their keys.
+fn setups_handed(guesser: &Fake) -> Vec<String> {
+    guesser.calls().into_iter().filter(|c| c.starts_with("connections: Setup")).collect()
+}
+
+/// G83: the guessing process gets each setup the chat's agent gets, and the last one again when a
+/// plan was signed in or out; a session opened before is replaced before its question.
+#[test]
+fn g83_the_guessing_process_follows_the_chats_setup() {
+    let key = |provider: &str| crate::agent_chat::connections::Setup { keys: vec![(provider.into(), "k-test".into())], ..Default::default() };
+    for signed_out in [false, true] {
+        let (mut app, _chat, guesser, ctx) = plate();
+        app.agent_chat.conn.last_setup = Some(key("openai"));
+        as_builtin(&mut app, &guesser, plan_in());
+        frame(&mut app, &ctx, 0.0, vec![]);
+        guesser.ready();
+        for t in [0.1, 0.2, 0.3] {
+            frame(&mut app, &ctx, t, vec![]);
+        }
+        assert_eq!(app.agent_chat.predict.link, Link::Fresh, "{}", status(&app));
+        assert!(setups_handed(&guesser).is_empty(), "nothing while nothing changed: {:?}", guesser.calls());
+        if signed_out {
+            app.builtin_changes += 1;
+        } else {
+            app.agent_chat.conn.last_setup = Some(crate::agent_chat::connections::Setup::default());
+            app.agent_chat.conn.setups += 1;
+        }
+        for t in [0.4, 0.5] {
+            frame(&mut app, &ctx, t, vec![]);
+        }
+        let expected = if signed_out { r#"connections: Setup ["openai"]"# } else { "connections: Setup []" };
+        assert_eq!(setups_handed(&guesser), [expected], "signed out: {signed_out}");
+        // The pause is over: the session opened before the change is not asked; a new one is.
+        frame(&mut app, &ctx, 2.0, vec![]);
+        assert!(guesser.prompts().is_empty(), "{:?}", guesser.calls());
+        assert_eq!(sessions_opened(&guesser), 2, "{:?}", guesser.calls());
+        guesser.ready();
+        frame(&mut app, &ctx, 2.1, vec![]);
+        assert_eq!(guesser.firsts().len(), 1, "{:?}", guesser.calls());
+        let calls = guesser.calls();
+        let at = |what: &str| calls.iter().rposition(|c| c.starts_with(what)).unwrap();
+        assert!(at("connections: Setup") < at("new_session") && at("new_session") < at("prompt: "), "{calls:?}");
+    }
+}
+
+/// The `initialize` reply of a built-in agent stand-in: Mastra Code's name, with or without
+/// `session/close`.
+#[cfg(unix)]
+const MASTRA_INIT: &str = r#"{"agentInfo":{"name":"mastracode","title":"Mastra Code","version":"1.19.1"}}"#;
+#[cfg(unix)]
+const MASTRA_CLOSING_INIT: &str = r#"{"agentCapabilities":{"loadSession":false,"sessionCapabilities":{"close":{}}},"agentInfo":{"name":"mastracode","title":"Mastra Code","version":"1.19.1"}}"#;
+
+/// G84: a built-in guessing session asks for the guessing note alone, no MCP server, no project and
+/// no design tools, marked `nextStep`; the chat's session is as it was.
+#[cfg(unix)]
+#[test]
+fn g84_what_a_built_in_guessing_session_asks_for() {
+    let (dir, argv) = answering("g84", MASTRA_INIT, &[], "");
+    let ctx = crate::fonts::test_context();
+    let project = dir.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let start = BuiltinStart { data: Some(dir.join("mastra")), setup: Default::default(), packaged: false };
+    let mut b = start_backend(&argv, &ctx, Some(start)).unwrap();
+    // Even handed the chat's instructions and a project, the guessing session takes neither.
+    b.set_instructions("Always answer in French.");
+    b.set_project(Some(project.as_path()));
+    b.new_session();
+    poll_until(b.as_mut(), &dir, &|d| !sent(d, "session/new").is_empty());
+    let params = sent(&dir, "session/new")[0]["params"].clone();
+    b.shutdown(true);
+    assert_eq!(params["mcpServers"], json!([]), "{params}");
+    assert_eq!(params["_meta"]["systemPrompt"]["append"], SESSION_NOTE, "{params}");
+    assert_eq!(params["_meta"]["intcad"], json!({"nextStep": true}), "no project, no cadBridge: {params}");
+    assert!(params.get("systemPrompt").is_none(), "{params}");
+    // Everything but the app's own work folder, whose path is the machine's.
+    let mut rest = params.clone();
+    rest["cwd"] = json!("");
+    let text = rest.to_string();
+    for word in ["intcad-app", "skill_reference", "French", "project"] {
+        assert!(!text.contains(word), "{word}: {params}");
+    }
+    // The chat's own session with the same agent and the same setting.
+    let (chat_dir, argv) = answering("g84-chat", MASTRA_INIT, &[], "");
+    let start = crate::agent_chat::backend::StartContext { cwd: chat_dir.clone(), bridge: None, tools: None, wake: Box::new(|| {}) };
+    let mut chat = crate::agent_chat::acp_client::AcpBackend::start_builtin(&argv, start, &chat_dir.join("mastra")).unwrap();
+    chat.set_instructions("Always answer in French.");
+    chat.set_project(Some(project.as_path()));
+    ChatBackend::new_session(&mut chat);
+    poll_until(&mut chat, &chat_dir, &|d| !sent(d, "session/new").is_empty());
+    let init: Value = serde_json::from_str(MASTRA_INIT).unwrap();
+    let note = crate::agent_chat::acp::project_note(&crate::agent_chat::acp::system_note("Always answer in French."));
+    let expected = crate::agent_chat::acp::session_new_params(&chat_dir, None, &init, &note, Some(project.as_path()));
+    assert_eq!(sent(&chat_dir, "session/new")[0]["params"], expected);
+    chat.shutdown(true);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&chat_dir);
+}
+
+/// A package-shaped folder (`mastra-agent/` with `node`, `agent/main.mjs`, `agent.json` and the two
+/// SDK `package.json`) whose `node` is a stand-in built-in agent: it writes how it was started to
+/// `started`, every line it is sent to `seen`, and answers `initialize`, the setup and `session/new`.
+#[cfg(unix)]
+fn package(name: &str) -> (std::path::PathBuf, Vec<String>) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = std::env::temp_dir().join(format!("intcad-ghost-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let root = dir.join("mastra-agent");
+    for folder in ["agent", "node_modules/@mastra/code-sdk", "node_modules/@agentclientprotocol/sdk"] {
+        std::fs::create_dir_all(root.join(folder)).unwrap();
+    }
+    for file in ["agent.json", "node_modules/@mastra/code-sdk/package.json", "node_modules/@agentclientprotocol/sdk/package.json"] {
+        std::fs::write(root.join(file), b"{}").unwrap();
+    }
+    std::fs::write(root.join("agent/main.mjs"), b"").unwrap();
+    let (started, seen) = (dir.join("started"), dir.join("seen"));
+    let script = format!(
+        r#"#!/bin/sh
+printf '%s\n%s\n%s\n%s\n' "$0" "$1" "$MASTRA_APP_DATA_DIR" "$MASTRA_TELEMETRY_DISABLED" > '{started}'
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> '{seen}'
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{init}}}\n' "$id" ;;
+    *'"method":"_intcad/connections/setup"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"plans":[],"keys":[{{"id":"openai","name":"OpenAI","saved":true,"prefix":"openai"}}],"custom":[]}}}}\n' "$id" ;;
+    *'"method":"session/new"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"sessionId":"s1"}}}}\n' "$id" ;;
+  esac
+done
+"#,
+        started = started.display(),
+        seen = seen.display(),
+        init = MASTRA_CLOSING_INIT,
+    );
+    std::fs::write(root.join("node"), script).unwrap();
+    std::fs::set_permissions(root.join("node"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let argv = vec![root.join("node").to_string_lossy().into_owned(), root.join("agent/main.mjs").to_string_lossy().into_owned()];
+    (dir, argv)
+}
+
+/// G85: in a package the guessing process is started as the chat's agent is (the package's Node and
+/// entry, its checks, its environment), with no design tools; a broken package starts nothing.
+#[cfg(unix)]
+#[test]
+fn g85_the_guessing_process_is_started_as_the_package_starts_it() {
+    let (dir, argv) = package("g85");
+    let data = dir.join("data");
+    let ctx = crate::fonts::test_context();
+    let start = BuiltinStart { data: Some(data.clone()), setup: Default::default(), packaged: true };
+    let mut b = start_backend(&argv, &ctx, Some(start)).unwrap();
+    b.new_session();
+    poll_until(b.as_mut(), &dir, &|d| !sent(d, "session/new").is_empty());
+    let started = std::fs::read_to_string(dir.join("started")).unwrap();
+    let root = std::fs::canonicalize(dir.join("mastra-agent")).unwrap();
+    let expected = [root.join("node"), root.join("agent/main.mjs"), data.clone()].map(|p| p.to_string_lossy().into_owned());
+    assert_eq!(started.lines().take(3).collect::<Vec<_>>(), expected, "{started}");
+    assert_eq!(started.lines().nth(3), Some("1"), "telemetry off");
+    let params = &sent(&dir, "session/new")[0]["params"];
+    assert!(params["_meta"]["intcad"].get("cadBridge").is_none() && params["_meta"]["intcad"]["nextStep"] == true, "{params}");
+    b.shutdown(true);
+    // The variables a package's start takes out of the agent's environment.
+    let start = crate::agent_chat::backend::StartContext { cwd: dir.clone(), bridge: None, tools: None, wake: Box::new(|| {}) };
+    let mut guesser = crate::agent_chat::acp_client::AcpBackend::start_packaged_guesser(&argv, start, &data).unwrap();
+    assert_eq!(guesser.env_removed(), ["SOLIDCRAFT_CONTROL_TOKEN", "SOLIDCRAFT_MASTRA_SDK", "NODE_OPTIONS", "NODE_PATH"]);
+    guesser.shutdown(true);
+    let _ = std::fs::remove_dir_all(&dir);
+    // A broken package: nothing starts, the suggestions pause with its error, the chat goes on.
+    for (broken, why) in [
+        ("agent.json", "The built-in Agent package is incomplete: agent.json is missing"),
+        ("entry", "The built-in Agent is not the package's own program"),
+    ] {
+        let (dir, mut argv) = package(&format!("g85-{broken}"));
+        if broken == "agent.json" {
+            std::fs::remove_file(dir.join("mastra-agent/agent.json")).unwrap();
+        } else {
+            // An entry outside the package's `agent/`.
+            std::fs::write(dir.join("main.mjs"), b"").unwrap();
+            argv[1] = dir.join("main.mjs").to_string_lossy().into_owned();
+        }
+        let (mut app, chat, _guesser, ctx) = plate();
+        run_builtin(&mut app);
+        if let Some(found) = app.builtin_agent.as_mut() {
+            found.packaged = true;
+            found.data = Some(dir.join("data"));
+        }
+        app.agent_chat.argv = argv;
+        frame(&mut app, &ctx, 0.0, vec![]);
+        let p = &app.agent_chat.predict;
+        assert!(p.backend.is_none(), "{broken}: nothing started");
+        assert_eq!(p.link, Link::Failed { why: why.into(), sign_in: false, at: 0.0 }, "{broken}");
+        assert_eq!(status(&app)["state"], "paused", "{broken}");
+        assert!(app.agent_chat.backend.is_some() && chat.calls().is_empty(), "{broken}: {:?}", chat.calls());
+        assert!(!dir.join("started").exists(), "{broken}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// G86: each built-in guessing session the app is done with is closed where the agent offers it, so
+/// no more than two are open; without the offer none is closed.
+#[cfg(unix)]
+#[test]
+fn g86_each_built_in_guessing_session_is_closed() {
+    for (offered, init) in [(true, MASTRA_CLOSING_INIT), (false, MASTRA_INIT)] {
+        let (dir, argv) = answering(&format!("g86-{offered}"), init, &[], "");
+        let (mut app, _chat, _guesser, ctx) = plate();
+        run_builtin(&mut app);
+        if let Some(found) = app.builtin_agent.as_mut() {
+            found.data = Some(dir.join("data"));
+        }
+        app.agent_chat.argv = argv;
+        app.agent_chat.predict.stop();
+        frames_until(&mut app, &ctx, 0.0, &|app| app.agent_chat.predict.link == Link::Fresh);
+        assert!(app.agent_chat.predict.builtin);
+        for n in 1..=3 {
+            suggestion(&mut app, &ctx, &dir, 10.0 * n as f64, n, n + 1);
+        }
+        assert_eq!(asked_in(&dir), ["s1", "s1", "s2", "s2", "s3", "s3"]);
+        let wire: Vec<String> = std::fs::read_to_string(dir.join("seen"))
+            .unwrap()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|v| match v["method"].as_str() {
+                Some("session/new") => Some("new".to_string()),
+                Some("session/close") => Some(format!("close {}", v["params"]["sessionId"].as_str().unwrap())),
+                _ => None,
+            })
+            .collect();
+        let expected: &[&str] =
+            if offered { &["new", "close s1", "new", "close s2", "new", "close s3", "new"] } else { &["new", "new", "new", "new"] };
+        assert_eq!(wire, expected, "offered: {offered}");
+        app.agent_chat.predict.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

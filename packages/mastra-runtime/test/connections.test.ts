@@ -4,6 +4,7 @@
 
 import assert from "node:assert/strict";
 import http from "node:http";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 
 type Json = Record<string, any>;
@@ -742,7 +743,7 @@ test("a message's pictures and PDFs go with its words, without leaking files int
 
   // The app sends pictures and PDFs only to an agent that says it takes them.
   const init = await agent.initialize({});
-  assert.deepEqual(init.agentCapabilities, { loadSession: false, mcpCapabilities: { http: true, sse: false }, promptCapabilities: { image: true, embeddedContext: true } });
+  assert.deepEqual(init.agentCapabilities, { loadSession: false, mcpCapabilities: { http: true, sse: false }, promptCapabilities: { image: true, embeddedContext: true }, sessionCapabilities: { close: {} } });
   assert.deepEqual(init.authMethods, []);
 
   const note = { type: "resource", resource: { uri: "file:///work/note.txt", mimeType: "text/plain", text: "a note" } };
@@ -818,6 +819,21 @@ test("Stop acknowledges a prompt held in model refresh without dispatching it af
   assert.equal(sent.length, 0);
   await agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "after Stop" }] });
   assert.deepEqual(sent, [{ content: "after Stop" }]);
+});
+
+test("session/close promptly cancels a queued attachment and never admits it", async () => {
+  const { agent, entry, sent } = await attachmentAgent();
+  const head = deferred();
+  entry.queue = head.promise;
+  const running = agent.prompt({ sessionId: "s1", prompt: [picture("QUEUED")] });
+  await agent.closeSession({ sessionId: "s1" });
+  try {
+    assert.deepEqual(await Promise.race([running, settle().then(() => "still pending")]), { stopReason: "cancelled" });
+  } finally {
+    head.resolve();
+    await running.catch(() => {});
+  }
+  assert.deepEqual(sent, []);
 });
 
 test("Stop acknowledges a queued prompt before a blocked queue head clears", async () => {
@@ -914,11 +930,14 @@ test("Copilot requires advertised vision for SDK-listed models on its signed-in 
 
 // ---- The session builder (session.mjs): Mastra Code's ACP session, without a vector store ---------
 
-const { sessionBuilder } = await load("session.mjs");
+const { LANGUAGE, NO_PROJECT, sessionBuilder } = await load("session.mjs");
 const { permissionRules } = await load("reads.mjs");
 
-/** A stand-in for what the entry loads from Mastra Code, recording what the builder does with it. */
-function fakeSdk(overrides: { failed?: Json[] } = {}) {
+/**
+ * A stand-in for what the entry loads from Mastra Code, recording what the builder does with it;
+ * with `cad`, the design tools' bridge (cad.mjs) too.
+ */
+function fakeSdk(overrides: { failed?: Json[]; cad?: Json } = {}) {
   const calls: Json = { configs: [] as Json[], cleanup: [] as string[] };
   const step = (name: string) => () => {
     calls.cleanup.push(name);
@@ -958,6 +977,7 @@ function fakeSdk(overrides: { failed?: Json[] } = {}) {
     resolveDefaultThinkingLevel: () => ({ level: "medium" }),
     resolveSubagentsSetting: (enabled: boolean) => (enabled ? "the subagents" : undefined),
     withCleanupFailure: (error: unknown) => error,
+    ...(overrides.cad ? { cad: overrides.cad } : {}),
   };
   return { sdk, calls };
 }
@@ -1010,4 +1030,194 @@ test("a session whose MCP server does not connect is ended and says which one", 
   const { sdk, calls } = fakeSdk({ failed: [{ name: "app", error: "no such program" }, { name: "the user's own", error: "ignored" }] });
   await assert.rejects(sessionBuilder(sdk)({ cwd: "/p", mcpServers: [{ name: "app", command: "x", args: [], env: [] }] }), /MCP server app: no such program$/u);
   assert.ok(calls.cleanup.includes("storage"), "the session was cleaned up");
+});
+
+// A session the app opens to guess the user's next step (docs/design/autocomplete-tests.md, G88).
+test("G88 a guess of the next step is made with no MCP and no design tools, whatever the request names", async () => {
+  const tools = { "intcad-app_inspect_design": { id: "intcad-app_inspect_design" } };
+  const asked: Json[] = [];
+  const cad = { tools: (request: Json) => (asked.push(request), tools) };
+  const { sdk, calls } = fakeSdk({ cad });
+  const build = sessionBuilder(sdk);
+  const note = "The guessing note.";
+  const servers = [{ name: "app", command: "intcad-cli", args: ["mcp"], env: [{ name: "A", value: "1" }] }];
+  const meta = (intcad: Json) => ({ systemPrompt: { append: note }, intcad: { cadBridge: { version: 1, tools: [] }, ...intcad } });
+  await build({ cwd: "/p", mcpServers: servers, _meta: meta({}) });
+  // A project sent with a guess is not taken either (G87).
+  await build({ cwd: "/p", mcpServers: servers, _meta: meta({ nextStep: true, project: tmpdir() }) });
+  const [chat, guess] = calls.configs;
+  // Without the flag, as before: the server named, MCP on, the design tools, the note with its lines.
+  assert.deepEqual(chat.mcpServers, { app: { command: "intcad-cli", args: ["mcp"], env: { A: "1" }, cwd: "/p" } });
+  assert.equal(chat.disableMcp, false);
+  assert.equal(chat.extraTools, tools);
+  assert.equal(chat.hostInstructions, `${note}\n\n${LANGUAGE}\n\n${NO_PROJECT}`);
+  assert.equal(asked.length, 1, "the design tools were made for the chat alone");
+  // The guess: no MCP, no design tools, the note alone; everything else as the chat's, the rules of
+  // a session without a project too.
+  assert.equal(Object.hasOwn(guess, "extraTools"), false);
+  const rest = { ...chat };
+  delete rest.extraTools;
+  assert.deepEqual(guess, { ...rest, mcpServers: {}, disableMcp: true, hostInstructions: note });
+  assert.deepEqual(guess.initialState.permissionRules, permissionRules(null));
+  // The servers a guess names are not even checked: one Mastra Code's builder refuses is ignored.
+  await build({ cwd: "/p", mcpServers: [{ name: "old", type: "sse", url: "http://127.0.0.1:1/sse", headers: [] }], _meta: meta({ nextStep: true }) });
+  assert.deepEqual(calls.configs[2].mcpServers, {});
+  assert.equal(asked.length, 1);
+});
+
+// ---- session/close and the guesses' read-only mode (agent.mjs), G89 and G90 -----------------------
+
+class AcpError extends Error {
+  code: number;
+  data: unknown;
+  constructor(code: number, message: string, data?: unknown) {
+    super(message);
+    this.code = code;
+    this.data = data;
+  }
+}
+
+/** A session as Mastra Code's ACP agent keeps one, recording what is done to it. */
+function openSession({ modes = ["build", "plan", "fast"], project = null as string | null } = {}) {
+  let mode = "build";
+  const listeners = new Set<(event: Json) => void>();
+  const done = { switched: [] as string[], aborted: 0, cleanedUp: 0 };
+  const entry: Json = {
+    project,
+    modes: modes.map((id) => ({ id, name: id })),
+    state: null,
+    turns: new Set<Json>(),
+    controller: { listAvailableModels: async () => [] },
+    session: {
+      model: { get: () => "anthropic/claude-fable-5-2" },
+      mode: { get: () => mode, switch: async ({ modeId }: Json) => void (done.switched.push(modeId), (mode = modeId)) },
+      state: { set: async () => {} },
+      abort: () => void (done.aborted += 1),
+      respondToToolApproval: (answer: Json) => answer,
+      subscribe: (listener: (event: Json) => void) => {
+        listeners.add(listener);
+        return () => void listeners.delete(listener);
+      },
+    },
+    cleanup: async () => void (done.cleanedUp += 1),
+  };
+  return { entry, done, listening: () => listeners.size };
+}
+
+/**
+ * The agent on a stand-in for Mastra Code's ACP agent (`dist/acp/agent.js` of SDK 1.19.1), as far as
+ * these cases need it: `session/new` opens the next of `entries` as s1, s2 …, a turn runs until it is
+ * aborted, and a session not on the list is unknown.
+ */
+function guessingAgent(entries: Json[]) {
+  const next = [...entries];
+  let opened = 0;
+  class Base {
+    connection: Json;
+    sessions = new Map<string, Json>();
+    constructor(connection: Json) {
+      this.connection = connection;
+    }
+    getSession(sessionId: string): Json {
+      const entry = this.sessions.get(sessionId);
+      if (!entry) throw new AcpError(-32602, "Unknown ACP session", { sessionId });
+      return entry;
+    }
+    async initialize() {
+      return { protocolVersion: 1, agentInfo: { name: "mastracode" }, agentCapabilities: { loadSession: false, mcpCapabilities: { http: true, sse: false } }, authMethods: [{ id: "openai-codex" }] };
+    }
+    configOptions(entry: Json) {
+      return [{ id: "mode", currentValue: entry.session.mode.get(), options: entry.modes.map((item: Json) => ({ value: item.id, name: item.name })) }];
+    }
+    async newSession() {
+      const entry = next.shift();
+      if (!entry) throw new Error("this test opens no more sessions");
+      const sessionId = `s${++opened}`;
+      entry.unsubscribe = entry.session.subscribe(() => {});
+      const response = { sessionId, modes: { currentModeId: entry.session.mode.get(), availableModes: entry.modes }, configOptions: this.configOptions(entry) };
+      this.sessions.set(sessionId, entry);
+      return response;
+    }
+    async prompt(request: Json) {
+      const entry = this.getSession(request.sessionId);
+      const turn = { cancelled: false };
+      entry.turns.add(turn);
+      const state: Json = { cancelled: false };
+      try {
+        const reason = await new Promise((resolve) => {
+          state.resolve = resolve;
+          entry.state = state;
+        });
+        return { stopReason: state.cancelled || reason === "aborted" ? "cancelled" : "end_turn" };
+      } finally {
+        if (entry.state === state) entry.state = null;
+        entry.turns.delete(turn);
+      }
+    }
+  }
+  const Agent = intcadAgent({ Base, RequestError: AcpError, connections: world().connections, dates: () => new Map(DATES), reloadSignIns: () => {} });
+  return new Agent();
+}
+
+const unknownSession = (error: Json) => error.code === -32602 && /Unknown ACP session/u.test(error.message);
+
+test("G89 session/close is offered, ends the one session once with its turn, and a closed or unknown one is refused", async () => {
+  const s1 = openSession();
+  const s2 = openSession();
+  const agent = guessingAgent([s1.entry, s2.entry]);
+  const offered = await agent.initialize({ protocolVersion: 1 });
+  assert.deepEqual(offered.agentCapabilities, { loadSession: false, mcpCapabilities: { http: true, sse: false }, promptCapabilities: { image: true, embeddedContext: true }, sessionCapabilities: { close: {} } });
+  assert.deepEqual([offered.protocolVersion, offered.agentInfo, offered.authMethods], [1, { name: "mastracode" }, []]);
+  await agent.newSession({ cwd: "/p", mcpServers: [] });
+  await agent.newSession({ cwd: "/p", mcpServers: [] });
+  assert.deepEqual([s1.listening(), s2.listening()], [2, 2], "Mastra Code's listener and the task list's");
+  // A turn under way on s1.
+  const running = agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "Fix this part." }] });
+  await settle();
+  const turns = [...s1.entry.turns];
+  assert.ok(s1.entry.state && turns.length === 1, "the turn is running");
+
+  assert.deepEqual(await agent.closeSession({ sessionId: "s1" }), {});
+  assert.deepEqual(await running, { stopReason: "cancelled" });
+  assert.ok(turns.every((turn: Json) => turn.cancelled), "the turn was cancelled");
+  assert.deepEqual(s1.done, { switched: [], aborted: 1, cleanedUp: 1 });
+  assert.equal(s1.listening(), 0, "no listener is left");
+  assert.equal(agent.sessions.has("s1"), false);
+  // Closed: a prompt and a second close are refused, as is a close of a session never opened.
+  await assert.rejects(agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "Again." }] }), unknownSession);
+  await assert.rejects(agent.closeSession({ sessionId: "s1" }), unknownSession);
+  await assert.rejects(agent.closeSession({ sessionId: "nope" }), unknownSession);
+  await assert.rejects(agent.closeSession({}), unknownSession);
+  assert.equal(s1.done.cleanedUp, 1, "cleaned up once");
+  // s2 as it was.
+  assert.deepEqual(s2.done, { switched: [], aborted: 0, cleanedUp: 0 });
+  assert.equal(s2.listening(), 2);
+  assert.equal(agent.sessions.get("s2"), s2.entry);
+});
+
+test("G90 a guess of the next step is put in the read-only mode before the reply; without that mode it is refused and ended", async () => {
+  // The guess is given a project, which the session builder never does (G87), to show that the
+  // plan gate holds nothing of a guess whatever its entry says.
+  const guess = openSession({ project: "/home/u/plate" });
+  const chat = openSession();
+  const lacking = openSession({ modes: ["build", "plan"] });
+  const agent = guessingAgent([guess.entry, chat.entry, lacking.entry]);
+  const asGuess = { cwd: "/p", mcpServers: [], _meta: { intcad: { nextStep: true } } };
+
+  const reply = await agent.newSession(asGuess);
+  assert.deepEqual(guess.done.switched, ["fast"]);
+  assert.equal(reply.modes.currentModeId, "fast");
+  assert.deepEqual(reply.modes.availableModes, guess.entry.modes);
+  assert.equal(reply.configOptions.find((option: Json) => option.id === "mode").currentValue, "fast");
+  assert.equal(guess.entry.plansFirst, undefined);
+  // Without the flag the mode stays as Mastra Code opened it.
+  const opened = await agent.newSession({ cwd: "/p", mcpServers: [], _meta: { intcad: { nextStep: "true" } } });
+  assert.deepEqual(chat.done.switched, []);
+  assert.equal(opened.modes.currentModeId, "build");
+  assert.equal(opened.configOptions.find((option: Json) => option.id === "mode").currentValue, "build");
+  // No read-only mode: the guess is refused, and ended rather than left open in a mode that writes.
+  await assert.rejects(agent.newSession(asGuess), (error: Json) => error.code === -32603 && /no read-only mode/u.test(error.message));
+  assert.deepEqual(lacking.done, { switched: [], aborted: 0, cleanedUp: 1 });
+  assert.equal(lacking.listening(), 0);
+  assert.deepEqual([...agent.sessions.keys()], ["s1", "s2"]);
 });

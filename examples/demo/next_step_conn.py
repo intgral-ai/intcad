@@ -6,18 +6,17 @@ Usage: next_step_conn.py OUTDIR status
        next_step_conn.py OUTDIR login <plan id>        (anthropic, openai-codex, …)
        next_step_conn.py OUTDIR code <plan id> <code>  (the code the sign-in page showed)
        next_step_conn.py OUTDIR cancel
-The port is NSM_PORT (default 9493); the token is read from OUTDIR/token.
+       next_step_conn.py OUTDIR key <provider>         (anthropic, openai, google, openrouter, deepseek)
+The port is NSM_PORT (default 9493); the token is read from OUTDIR/token. `key` asks for the key
+without showing it, so it is in no command line, shell history or log; the app keeps it in its keyring.
 """
-import json, os, socket, sys, time
+import getpass, json, os, socket, sys, time
 
 out, what = sys.argv[1], sys.argv[2]
 port = int(os.environ.get("NSM_PORT", "9493"))
 token = open(os.path.join(out, "token")).read().strip()
-sock = socket.create_connection(("127.0.0.1", port))
-f = sock.makefile("rw")
-
-
 calls = 0
+f = None
 
 
 def call(params):
@@ -39,9 +38,14 @@ actions = {
     "login": lambda: {"type": "conn_login", "id": sys.argv[3]},
     "code": lambda: {"type": "conn_code", "id": sys.argv[3], "code": sys.argv[4]},
     "cancel": lambda: {"type": "conn_cancel"},
+    "key": lambda: {"type": "conn_key", "provider": sys.argv[3], "key": getpass.getpass(f"{sys.argv[3]} key (not shown): ")},
 }
 action = actions[what]
-r = call({"open": True} if action is None else {"connection": action()})
+# What to send is worked out (the key typed) before connecting: the control channel drops a
+# connection that stays silent.
+params = {"open": True} if action is None else {"connection": action()}
+f = socket.create_connection(("127.0.0.1", port)).makefile("rw")
+r = call(params)
 if "error" in r:
     print("refused:", r["error"])
     raise SystemExit(1)

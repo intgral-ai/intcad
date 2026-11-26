@@ -508,7 +508,7 @@ day, #229): three files, six hunks (`acp.rs` 2, `acp_client.rs` 3, `host_ai/task
 | Project handed to the built-in agent (#212): brief, fence, reads without a card | More context for a turn Tab starts. `brief.mjs` lists files and leaves `.intcad/` out; our `project_brief.rs` reads `.intcad/`, so the two do not overlap. | Later |
 | Plan first (`plan.mjs`) | Costs Tab time: in a project chat the turn's first change is held until `task_write`. With decision 17 Tab starts no turn, so it goes away. Its task list is also a free next step when a turn stops with steps pending. | Goes away with 17; pending steps later |
 | DFM findings per run (`dfm::service::findings_for`, with measure, requirement, faces) | A failed rule as the next step. The spec puts DFM fixes later. | Later |
-| The note reaches the built-in agent (`session.mjs`) | Until now it never saw `SESSION_NOTE`. After the merge it gets it behind the chat's note ("work through the Intcad tools", "read `skill_reference`") and "Answer in the language the user writes in", which goes against the app-language rule. Every `session/new` also stays open, with a folder of its own, until the app closes its connection: one per guess. By reading, not run. | Fix before guesses run on it |
+| The note reaches the built-in agent (`session.mjs`) | Until now it never saw `SESSION_NOTE`. After the merge it gets it behind the chat's note ("work through the Intcad tools", "read `skill_reference`") and "Answer in the language the user writes in", which goes against the app-language rule. Every `session/new` also stays open, with a folder of its own, until the app closes its connection: one per guess. By reading, not run. | Fix before guesses run on it. **Fixed 2026-11-26** (decisions 27 and 28) |
 | Related verbs in `describe_command` (#215), model picked while busy, Files panel | Nothing for a guess that has no tools. | None |
 
 Not on `develop` yet: release packages carry the built-in agent by default only with PR 214.
@@ -591,6 +591,34 @@ app, not the agent, says which numbers were guessed.
 
 Test cases for 17–19 are in `autocomplete-tests.md`, with what was measured.
 
+### The built-in agent makes suggestions (2026-11-26)
+
+26. **Suggestions on the built-in agent too** (Tianwei, 2026-11-26). This reverses the PRD's "Claude
+    Code and Codex only, the built-in agent second" above. Since #214 a release package carries the
+    built-in agent and the chat starts on it, so without this most users of a release get no
+    suggestion. A Mastra workflow, an API endpoint and other ACP agents still make none, and Codex
+    none until its sessions' isolation is verified (Huaiyuan's change of the same day, M3).
+
+Approved by Tianwei 2026-11-26 with the test list (`autocomplete-tests.md`, "suggestions on the
+built-in agent"):
+
+27. **A built-in guessing session is marked `nextStep`** (`_meta.intcad.nextStep`). It carries the
+    guessing note alone, not behind the chat's note; the agent adds no language line and no project
+    line, starts no MCP server, gives it no design tool even if asked, and opens it in `fast`
+    (Explore). This fixes "Fix before guesses run on it" above and keeps decision 14's wall in the agent
+    itself. Recommendation: yes.
+28. **The built-in agent closes a session on `session/close`.** Mastra Code 1.19.1 does not offer it, so
+    each guess would keep a whole Mastra Code runtime until the app quits. Recommendation: yes; it is
+    Intcad's own file (`agent.mjs`), and the chat sends no `session/close`, so the chat is as it was.
+29. **On the built-in agent the hourly cap follows the guess model's connection:** a plan counts, a key
+    or a custom address does not, anything not known counts. Recommendation: yes, as on Claude Code.
+30. **The guessing process gets every setup the chat's agent gets**, and the chat's last one again after a
+    plan is signed in or out, so a key the user removes stops being used for guesses at once.
+    Recommendation: yes.
+31. **The guess model on the built-in agent stays the small-model rule** (decision 13: haiku on an
+    Anthropic key, gpt-5.4-mini on an OpenAI one), not Sonnet as on Claude Code (decision 15), until
+    M12's guesses are read. Recommendation: yes, then decide on M12.
+
 ## Known issues and not done
 
 - Sheet metal misses its share (M8): `autocomplete-tests.md`.
@@ -610,7 +638,12 @@ Test cases for 17–19 are in `autocomplete-tests.md`, with what was measured.
   sandbox modes do not establish no-MCP and no-write-tool isolation across configurations. Normal
   Codex chat is unchanged.
 - Suggestions do not follow the user across design tabs: a new tab's chat starts disconnected.
-- API endpoints, Mastra workflows, the built-in agent and other ACP agents make no suggestions.
+- API endpoints, Mastra workflows and ACP agents other than Claude Code and the built-in agent make no
+  suggestions (Codex: above).
+- On the built-in agent (M12–M14 and the long run in `autocomplete-tests.md`): measured on one DeepSeek
+  key only, not on a plan; no cost is reported; a question carries about 9k input tokens; the guessing
+  process's memory rose to about 550 MB over 12 suggestions and held at 550–605 MiB to the 30th, not shown
+  to stop; Mastra keeps each closed session's thread (about 60 kB a suggestion in the data folder).
 - Where the Assistant is not at the bottom centre, the History chip is the line; History on the
   left or in the Browser shows no chip, so no suggestions are made there (decision 3).
 - Pattern spacings, extrusion distances and flange sizes always read as guessed.

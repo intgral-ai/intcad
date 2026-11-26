@@ -221,6 +221,9 @@ pub struct AcpBackend {
     /// The kind of sign-in the agent last reported (`_auth/status_update`).
     sign_in: Option<String>,
     cad: Option<PackagedCad>,
+    /// The variables taken out of the agent's environment when it was started.
+    #[cfg(test)]
+    env_removed: &'static [&'static str],
 }
 
 impl AcpBackend {
@@ -236,18 +239,12 @@ impl AcpBackend {
     }
 
     pub(super) fn start_packaged(argv: &[String], mut ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
-        let (program, entry) = Self::packaged_agent(argv)?;
+        let argv = Self::packaged_argv(argv)?;
         let tools = ctx.tools.take().ok_or_else(|| "The packaged Agent has no desktop tool queue".to_string())?;
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(ctx.wake);
         let process_wake = Arc::clone(&wake);
         ctx.wake = Box::new(move || process_wake());
-        ctx.bridge = None;
-        let env = [(DATA_DIR_ENV, data.as_os_str()), (TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1"))];
-        let argv = [
-            program.to_str().ok_or_else(|| "The packaged Agent's Node path is not valid text".to_string())?.to_string(),
-            entry.to_str().ok_or_else(|| "The packaged Agent's entry path is not valid text".to_string())?.to_string(),
-        ];
-        let mut backend = Self::spawn(&argv, ctx, &env, PACKAGED_ENV_REMOVE, true)?;
+        let mut backend = Self::spawn_packaged(&argv, ctx, data)?;
         backend.cad = Some(PackagedCad {
             tools,
             wake,
@@ -260,6 +257,39 @@ impl AcpBackend {
             last_effect: false,
         });
         Ok(backend)
+    }
+
+    /// The package's built-in agent for next-step suggestions: started as the chat's
+    /// ([`AcpBackend::start_packaged`]: the package's own Node and entry, the same variables taken out
+    /// of its environment), but with no desktop tool queue and no MCP bridge, so its sessions are
+    /// never handed the design's tools.
+    pub(super) fn start_packaged_guesser(argv: &[String], mut ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
+        let argv = Self::packaged_argv(argv)?;
+        ctx.tools = None;
+        Self::spawn_packaged(&argv, ctx, data)
+    }
+
+    /// The package's Node and entry ([`AcpBackend::packaged_agent`]) as the argument list to start.
+    fn packaged_argv(argv: &[String]) -> Result<[String; 2], String> {
+        let (program, entry) = Self::packaged_agent(argv)?;
+        Ok([
+            program.to_str().ok_or_else(|| "The packaged Agent's Node path is not valid text".to_string())?.to_string(),
+            entry.to_str().ok_or_else(|| "The packaged Agent's entry path is not valid text".to_string())?.to_string(),
+        ])
+    }
+
+    /// Start the package's agent with its data folder, its usage reporting off and the variables
+    /// that could make it load other code taken out ([`PACKAGED_ENV_REMOVE`]). No MCP bridge.
+    fn spawn_packaged(argv: &[String; 2], mut ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
+        ctx.bridge = None;
+        let env = [(DATA_DIR_ENV, data.as_os_str()), (TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1"))];
+        Self::spawn(argv, ctx, &env, PACKAGED_ENV_REMOVE, true)
+    }
+
+    /// The variables taken out of the agent's environment when it was started.
+    #[cfg(test)]
+    pub(crate) fn env_removed(&self) -> &'static [&'static str] {
+        self.env_removed
     }
 
     /// The one program pair the paid lane may start: this package's own Node, entry and SDK.
@@ -297,7 +327,13 @@ impl AcpBackend {
         Self::spawn(argv, ctx, &[], ENV_REMOVE, false)
     }
 
-    fn spawn(argv: &[String], ctx: StartContext, env: &[(&str, &std::ffi::OsStr)], remove: &[&str], built_in: bool) -> Result<AcpBackend, String> {
+    fn spawn(
+        argv: &[String],
+        ctx: StartContext,
+        env: &[(&str, &std::ffi::OsStr)],
+        remove: &'static [&'static str],
+        built_in: bool,
+    ) -> Result<AcpBackend, String> {
         let wake = ctx.wake;
         let proc = AgentProcess::spawn_with_env(argv, &ctx.cwd, remove, env, built_in, wake)?;
         // An agent inside WSL is told the same folder and bridge as WSL shows them (#5546).
@@ -335,6 +371,8 @@ impl AcpBackend {
             lean_on_plans: LEAN_ON_PLANS,
             sign_in: None,
             cad: None,
+            #[cfg(test)]
+            env_removed: remove,
         };
         b.request(Pending::Initialize, "initialize", acp::initialize_params(env!("CARGO_PKG_VERSION")));
         Ok(b)
@@ -376,6 +414,15 @@ impl AcpBackend {
         // A guessing session is lean on an API key only: on a plan, and until the agent says what it
         // is signed in with, it runs as the agent opens it, less the user's MCP servers and every MCP tool.
         let guesses = self.lean.is_some();
+        // The built-in agent's guessing session: the guessing note alone, marked for the agent to
+        // open it read-only, with no MCP and no design tool (decision 27). Never a project.
+        if let Some(note) = self.lean.as_deref().filter(|_| self.built_in) {
+            let params = acp::next_step_session_params(&self.cwd, note);
+            self.request(Pending::SessionNew, "session/new", params);
+            self.lean_request = None;
+            self.lean_session = false;
+            return;
+        }
         let may_be_lean = !self.lean_refused && (self.lean_on_plans || self.sign_in.as_deref() == Some(KEY_SIGN_IN));
         let lean = self.lean.as_deref().filter(|_| may_be_lean).and_then(|note| acp::lean_session_params(&self.cwd, &self.init, note));
         let sent_lean = lean.is_some();

@@ -396,6 +396,17 @@ pub fn lean_session_params(cwd: &std::path::Path, init: &Value, note: &str) -> O
     }))
 }
 
+/// The `session/new` parameters of a guessing session of the built-in agent (next-step design,
+/// decision 27): `note` alone, not behind the chat's note; no MCP server and no project; and marked
+/// `nextStep`, so the agent opens it in its read-only mode with no MCP and no design tool.
+pub fn next_step_session_params(cwd: &std::path::Path, note: &str) -> Value {
+    json!({
+        "cwd": cwd.to_string_lossy(),
+        "mcpServers": [],
+        "_meta": {"systemPrompt": {"append": note}, "intcad": {"nextStep": true}},
+    })
+}
+
 /// The agent is the Claude Code adapter (its package name, old or new).
 fn is_claude_code(init: &Value) -> bool {
     init.pointer("/agentInfo/name")

@@ -302,6 +302,16 @@ pub struct Predictor {
     /// What the session had cost when its second question went out: the agent reports the session's
     /// cost so far.
     cost_before: f64,
+    /// The built-in agent's guessing process: what it last said of its connections, and the model a
+    /// session of it was last on (kept across sessions, for the hourly cap before a new one says).
+    connections: Option<super::connections::Snapshot>,
+    known_model: String,
+    /// The chat's setups (`Conn::setups`) and the app's connection changes
+    /// (`SolveApp::builtin_changes`) the guessing process has been handed (decision 30); `renew`:
+    /// a session opened before the last one is not used.
+    setups_seen: u64,
+    changes_seen: u64,
+    renew: bool,
 }
 
 impl Drop for Predictor {
@@ -384,6 +394,7 @@ impl Predictor {
         if let Some(b) = self.backend.as_mut() {
             b.new_session();
             self.link = Link::Starting;
+            self.renew = false;
             self.new_session_state();
         }
     }
@@ -412,7 +423,19 @@ impl Predictor {
     fn note_model(&mut self, options: &[ConfigOption]) {
         if let Some(o) = options.iter().find(|o| o.category == "model" || o.id == "model") {
             self.model = o.current_value.clone();
+            self.known_model.clone_from(&o.current_value);
         }
+    }
+
+    /// The guesses are paid by use on an API key (or a custom address), not out of a plan: they are
+    /// not capped by the hour. Claude Code says so itself; on the built-in agent it is the guess
+    /// model's connection (decision 29).
+    fn key_sign_in(&self) -> bool {
+        if self.builtin {
+            let model = if self.model.is_empty() { &self.known_model } else { &self.model };
+            return self.connections.as_ref().is_some_and(|snapshot| paid_by_use(snapshot, model));
+        }
+        self.backend.as_ref().is_some_and(|b| b.key_sign_in())
     }
 
     /// The suggestion goes, whatever stage it is at: the question out, the line, the copy that
@@ -836,11 +859,13 @@ pub(super) fn available(app: &SolveApp) -> bool {
         && chat.predict.account.allows()
 }
 
-/// Codex chat stays available; the adapter has no verified isolation for background prediction.
+/// The chat runs an agent suggestions are made with: Claude Code or the built-in agent (decision
+/// 26), over ACP. Not a Mastra workflow, whatever its agent. Codex chat stays available; the adapter
+/// has no verified isolation for background prediction.
 fn supported(app: &SolveApp) -> bool {
     let chat = &app.agent_chat;
     let acp = !chat.argv.is_empty() && !chat.mastra && chat.running_endpoint.is_empty();
-    acp && chat.running_id != CODEX && (chat.predict.any_agent || chat.running_id == CLAUDE_CODE)
+    acp && chat.running_id != CODEX && (chat.predict.any_agent || chat.running_id == CLAUDE_CODE || runs_builtin(app))
 }
 
 fn pause(app: &SolveApp) -> f64 {
@@ -912,6 +937,7 @@ pub(crate) fn step(app: &mut SolveApp, ctx: &egui::Context, now: f64, acted: boo
         p.seen_selection = selection.clone();
     }
     start_session(app, ctx, now);
+    follow_setup(app);
     poll(app, ctx, now, &key, &selection);
     compute(app, now);
     let p = &app.agent_chat.predict;
@@ -930,7 +956,7 @@ fn within_hour(app: &mut SolveApp, now: f64) -> bool {
         p.hour.pop_front();
         p.told = false;
     }
-    if p.backend.as_ref().is_some_and(|b| b.key_sign_in()) || p.hour.len() < limit {
+    if p.key_sign_in() || p.hour.len() < limit {
         return true;
     }
     if !std::mem::replace(&mut p.told, true) {
@@ -971,16 +997,23 @@ fn start_session(app: &mut SolveApp, ctx: &egui::Context, now: f64) {
         return;
     }
     // The built-in agent keeps its sign-ins in the app's own folder and takes its keys from the
-    // app: its guessing process gets the same folder and the chat's last setup.
-    let builtin = runs_builtin(app).then(|| {
-        let data = app.builtin_agent.as_ref().and_then(|found| found.data.clone()).filter(|folder| std::fs::create_dir_all(folder).is_ok());
-        (data, app.agent_chat.conn.last_setup.clone().unwrap_or_default())
+    // app: its guessing process gets the same folder and the chat's last setup, and is started the
+    // way the chat's is (from the package, or from the developer's program).
+    let builtin = runs_builtin(app).then(|| BuiltinStart {
+        data: app.builtin_agent.as_ref().and_then(|found| found.data.clone()).filter(|folder| std::fs::create_dir_all(folder).is_ok()),
+        setup: app.agent_chat.conn.last_setup.clone().unwrap_or_default(),
+        packaged: app.builtin_agent.as_ref().is_some_and(|found| found.packaged) && argv.len() == 2,
     });
     let claude = app.agent_chat.running_id == CLAUDE_CODE;
+    let (setups, changes) = (app.agent_chat.conn.setups, app.builtin_changes);
     let p = &mut app.agent_chat.predict;
     p.builtin = builtin.is_some();
     p.claude = claude;
     p.opened = false;
+    p.connections = None;
+    p.setups_seen = setups;
+    p.changes_seen = changes;
+    p.renew = false;
     p.new_session_state();
     match start_backend(&argv, ctx, builtin) {
         Ok(b) => {
@@ -1000,8 +1033,51 @@ fn runs_builtin(app: &SolveApp) -> bool {
     super::agents::is_builtin(app) && app.agent_chat.running_id == super::connections::AGENT_ID
 }
 
-/// The built-in agent's data folder (`None`: there is none) and the setup to hand it.
-type BuiltinStart = (Option<std::path::PathBuf>, super::connections::Setup);
+/// Whether the built-in agent serves `model` on a key or a custom address of the user's, as its
+/// snapshot says: a plan held for the model's provider comes first (Mastra uses a plan's sign-in
+/// while it holds one, refused or not, and the key waits behind it). A model under no prefix the
+/// snapshot names is not known to be paid by use.
+fn paid_by_use(snapshot: &super::connections::Snapshot, model: &str) -> bool {
+    use super::connections::PlanState;
+    let under = |prefix: &str| !prefix.is_empty() && model.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/'));
+    if snapshot.plans.iter().any(|plan| plan.state != PlanState::Out && under(&plan.prefix)) {
+        return false;
+    }
+    snapshot.keys.iter().any(|key| key.saved && under(&key.prefix)) || snapshot.custom.iter().any(|custom| under(&custom.prefix))
+}
+
+/// Hand the built-in agent's guessing process what the chat's agent was handed since (decision 30):
+/// each new setup, and the last one again after a plan was signed in or out (a setup makes the agent
+/// read its sign-ins again). Not while the chat's keys are being read: that setup follows. A session
+/// opened before is not used.
+fn follow_setup(app: &mut SolveApp) {
+    let (setups, changes) = (app.agent_chat.conn.setups, app.builtin_changes);
+    let p = &app.agent_chat.predict;
+    if !p.builtin || p.backend.is_none() || (p.setups_seen == setups && p.changes_seen == changes) || app.agent_chat.conn.reading_keys() {
+        return;
+    }
+    let setup = app.agent_chat.conn.last_setup.clone().unwrap_or_default();
+    let p = &mut app.agent_chat.predict;
+    p.setups_seen = setups;
+    p.changes_seen = changes;
+    if let Some(b) = p.backend.as_mut() {
+        log::info!("next-step suggestions: the guessing agent is set up again");
+        b.connections(super::connections::Request::Setup(setup));
+    }
+    if matches!(p.link, Link::Starting | Link::Fresh) {
+        p.renew = true;
+    }
+}
+
+/// How the built-in agent's guessing process is started.
+struct BuiltinStart {
+    /// The data folder (`None`: there is none).
+    data: Option<std::path::PathBuf>,
+    /// The chat's last setup, handed to it first.
+    setup: super::connections::Setup,
+    /// The package's own agent (`argv` is its Node and entry): started with the package's checks.
+    packaged: bool,
+}
 
 /// A session of the same agent with no way to reach the design: no MCP bridge, no tools.
 /// `builtin`: the agent is the built-in one, started as the chat starts it.
@@ -1012,11 +1088,12 @@ fn start_backend(argv: &[String], ctx: &egui::Context, builtin: Option<BuiltinSt
     let start = super::backend::StartContext { cwd: super::working_dir(), bridge: None, tools: None, wake: Box::new(move || wake.request_repaint()) };
     let mut b = match builtin {
         None => AcpBackend::start(argv, start)?,
-        Some((data, setup)) => {
+        Some(BuiltinStart { data, setup, packaged }) => {
             // Without its folder the agent would keep its sign-ins in, and read the agent files
             // of, the user's own home: it is not started (as the chat's is not).
             let folder = data.ok_or_else(|| tr("ui.agent_chat_no_data_folder").to_string())?;
-            let mut b = AcpBackend::start_builtin(argv, start, &folder)?;
+            let mut b =
+                if packaged { AcpBackend::start_packaged_guesser(argv, start, &folder)? } else { AcpBackend::start_builtin(argv, start, &folder)? };
             b.connections(super::connections::Request::Setup(setup));
             b
         }
@@ -1204,7 +1281,7 @@ fn send_question(p: &mut Predictor) {
     let Some(b) = p.backend.as_mut() else { return };
     let right = b.session_fits_sign_in()
         && match ask.kind {
-            Kind::Step => p.link == Link::Fresh && p.opened_choice == p.choice,
+            Kind::Step => p.link == Link::Fresh && p.opened_choice == p.choice && !p.renew,
             Kind::Commands => true,
         };
     match p.link {
@@ -1259,14 +1336,19 @@ fn poll(app: &mut SolveApp, ctx: &egui::Context, now: f64, key: &Key, selection:
         match e {
             // The built-in agent opens no session by itself, and refuses one while nothing is
             // connected (`connections` on the snapshot): the first is asked for once it can be.
-            Event::Connections(snapshot) if p.builtin && !p.opened => {
-                if snapshot.connected() {
-                    p.opened = true;
-                    if let Some(b) = p.backend.as_mut() {
-                        b.new_session();
+            // What it says of its connections is kept: the hourly cap follows it.
+            Event::Connections(snapshot) if p.builtin => {
+                let connected = snapshot.connected();
+                p.connections = Some(snapshot);
+                if !p.opened {
+                    if connected {
+                        p.opened = true;
+                        if let Some(b) = p.backend.as_mut() {
+                            b.new_session();
+                        }
+                    } else {
+                        fail(p, now, tr("ui.next_step_sign_in").to_string(), true);
                     }
-                } else {
-                    fail(p, now, tr("ui.next_step_sign_in").to_string(), true);
                 }
             }
             // A fresh session's configuration: set what it needs before its question. While a
@@ -1858,7 +1940,7 @@ pub fn status(app: &SolveApp) -> Value {
         "ghost": p.ghost.as_ref().map(|ghost| ghost.status(ready_to_land(app))),
         "hourUsed": p.hour.len(),
         "perHour": hourly(app),
-        "keySignIn": p.backend.as_ref().is_some_and(|b| b.key_sign_in()),
+        "keySignIn": p.key_sign_in(),
         "lines": p.lines,
         "withdrawn": p.withdrawn,
         "guesses": p.log.len(),
