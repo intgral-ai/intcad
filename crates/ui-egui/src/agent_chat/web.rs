@@ -374,6 +374,22 @@ pub fn state(app: &mut SolveApp) -> String {
             }),
         })
         .collect();
+    // Under a call that drafted a part ticket, the ticket's card: it opens the ticket (`ticket_show`).
+    let cards: Vec<(usize, Value)> = chat
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(at, item)| match item {
+            Item::Tool { input, output, status: Some(backend::ToolStatus::Completed), .. } => {
+                crate::tickets::drafted_card(app, input.as_ref(), output.as_deref()).map(|card| (at, card))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut items = items;
+    for (at, card) in cards.into_iter().rev() {
+        items.insert(at + 1, card);
+    }
     let turn = chat.turn.as_ref().map(|turn| {
         let n = turn.changes.to_string();
         match app.preferences.agent_chat_turn_limit {

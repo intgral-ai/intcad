@@ -61,6 +61,10 @@ pub struct State {
     pub expanded: bool,
     /// A part picked in the model: the view lists only the tickets that bear on it.
     pub filter: Option<tickets::Part>,
+    /// The tickets whose 3D picture the app has tried to take, so a failed try is not repeated
+    /// every frame.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    viewed: Vec<String>,
     /// The model's selection as parts when the view was last told it: a change sets `filter`.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     picked: Vec<tickets::Part>,
@@ -173,6 +177,26 @@ pub fn refresh(app: &mut SolveApp) {
             }
         }
         app.tickets.freshness = freshness;
+        mark_stale(app, &root);
+    }
+}
+
+/// A done ticket whose bound run the model has moved past (its freshness is no longer `current`)
+/// is marked 「需重查」: its state stays, and its check is out of date until a new run is bound.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn mark_stale(app: &mut SolveApp, root: &std::path::Path) {
+    let stale: Vec<String> = app
+        .tickets
+        .tickets
+        .iter()
+        .filter(|t| t.state == TicketState::Done && !t.deleted && t.recheck.is_none() && tickets::applies(t))
+        .filter(|t| t.check.as_ref().and_then(|c| c.run.as_ref()).and_then(|run| app.tickets.freshness.get(run)).is_some_and(|now| now != "current"))
+        .map(|t| t.id.clone())
+        .collect();
+    for id in stale {
+        if let Err(error) = tickets::mark_recheck(root, &id, "a part it bears on changed in the model after its check ran") {
+            log::warn!("{id} was not marked for a re-check: {error}");
+        }
     }
 }
 
@@ -216,6 +240,24 @@ fn read_pictures(state: &mut State, root: &std::path::Path) {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn pictures(app: &SolveApp) -> Vec<(String, Arc<Vec<u8>>)> {
     app.tickets.pictures.values().map(|(key, bytes)| (key.clone(), Arc::clone(bytes))).collect()
+}
+
+/// The conversation's card under a tool call that drafted a part ticket (`ticket.draft`): the
+/// ticket's number, title and state as they are now (`{kind: ticket, …}` in host.ts); none for
+/// any other call, or a ticket deleted since.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn drafted_card(app: &SolveApp, input: Option<&serde_json::Value>, output: Option<&str>) -> Option<serde_json::Value> {
+    if !input?.to_string().contains("ticket.draft") {
+        return None;
+    }
+    // The reply names the ticket before anything else that could name one (`{"ticket": {"schemaVersion": 2,
+    // "id": "T-3", "parent": …`), whether it comes as JSON or as JSON inside text.
+    let output = output?;
+    let at = output.find("T-")?;
+    let digits: String = output[at + 2..].chars().take_while(char::is_ascii_digit).collect();
+    let id = format!("T-{digits}");
+    let ticket = app.tickets.tickets.iter().find(|ticket| ticket.id == id && !ticket.deleted)?;
+    Some(serde_json::json!({ "kind": "ticket", "id": ticket.id, "title": ticket.title, "state": ticket.state.as_str() }))
 }
 
 /// The tree's dot for a part (`kind` component or body, by its name): the state colour of the
@@ -381,6 +423,16 @@ pub fn start(app: &mut SolveApp, ctx: &egui::Context, id: &str, seen: u64) {
     if let Err(reason) = crate::agent_chat::attach_ready(app, chip) {
         crate::agent_chat::notify(app, reason, true);
     }
+    // Its attachments go with the message, as files dropped on the Assistant go: pictures and
+    // PDFs whole where the agent takes them, any other file pointed to.
+    if let Some(root) = root(app) {
+        for path in &ticket.attachments {
+            let full = path.split('/').fold(root.clone(), |full, name| full.join(name));
+            if let Err(reason) = crate::agent_chat::attach::read(&full).and_then(|file| crate::agent_chat::attach_ready(app, file)) {
+                crate::agent_chat::notify(app, reason, true);
+            }
+        }
+    }
     let text = trf("ui.tickets_start_message", &[("id", &ticket.id), ("title", &ticket.title)]);
     if let Err(reason) = crate::agent_chat::send_with(app, ctx, text, None)
         && !reason.is_empty()
@@ -511,6 +563,7 @@ pub fn tick(app: &mut SolveApp) {
         return;
     }
     refresh(app);
+    attach_wanted_view(app, |app| crate::control::view_png(app, VIEW_PICTURE.0, VIEW_PICTURE.1));
     match app.tickets.checking.clone() {
         None => {
             let asked = app
@@ -559,6 +612,26 @@ pub fn tick(app: &mut SolveApp) {
 
 #[cfg(target_arch = "wasm32")]
 pub fn tick(_app: &mut SolveApp) {}
+
+/// The agent asked, drafting a ticket, for a picture of the 3D view: `picture` takes it as the view
+/// is now, once per ticket (a picture that cannot be taken is not tried again every frame), and the
+/// store attaches it under the project's `attachments/`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn attach_wanted_view(app: &mut SolveApp, picture: impl FnOnce(&SolveApp) -> Result<Vec<u8>, String>) {
+    let wanted = app.tickets.tickets.iter().find(|t| t.wants_view && !t.deleted && !app.tickets.viewed.contains(&t.id)).map(|t| t.id.clone());
+    let Some(id) = wanted else { return };
+    app.tickets.viewed.push(id.clone());
+    match picture(app) {
+        Ok(png) => {
+            apply(app, |root| tickets::attach_view(root, &id, &png));
+        }
+        Err(error) => log::warn!("the 3D view's picture for {id} was not taken: {error}"),
+    }
+}
+
+/// The size of the 3D view's picture a ticket gets, in pixels.
+#[cfg(not(target_arch = "wasm32"))]
+const VIEW_PICTURE: (u32, u32) = (1280, 800);
 
 /// The tickets view's state as JSON (`TicketsState` in packages/assistant-web/src/host.ts): the
 /// project's tickets as the store keeps them, with what the store says of each (whether a check

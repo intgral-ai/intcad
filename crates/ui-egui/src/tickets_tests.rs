@@ -732,3 +732,81 @@ fn a_tickets_parts_are_selected_in_the_model_and_a_picked_part_filters_the_list(
     assert!(crate::scenario::handle_at(&format!("ticket_dot:{body}")).is_some(), "the body's row in the tree has its dot");
     assert_eq!(crate::tickets::part_dot(&h.app, "component", &body), None, "a body is not a component of that name");
 }
+
+/// The Assistant's side: handing a ticket over sends its attachments with the message; a call that
+/// drafted a ticket gets the ticket's card under it; a draft that asked for a picture of the 3D
+/// view gets one; a done ticket whose bound run the model moved past is marked 「需重查」.
+#[test]
+fn the_assistant_gets_a_tickets_files_its_draft_card_and_view_and_a_changed_part_asks_for_a_recheck() {
+    let scratch = Scratch::new("assistant");
+    let (mut h, root) = window(&scratch);
+    let agent = StandIn::default();
+    crate::agent_chat::install_test_backend(&mut h.app, Box::new(agent.clone()));
+    h.app.run("solid.box", json!({"length": 40, "width": 30, "height": 2})).unwrap();
+    std::fs::create_dir_all(root.join("specs")).unwrap();
+    std::fs::write(root.join("specs/flange.png"), png()).unwrap();
+    std::fs::write(root.join("specs/drawing.pdf"), b"%PDF-1.7\n").unwrap();
+    let files = vec!["specs/flange.png".to_string(), "specs/drawing.pdf".to_string()];
+    let id = tickets::create(&root, Draft { title: "Flange".into(), attachments: files, ..Draft::default() }).unwrap().id;
+    h.settle();
+    let ctx = h.ctx.clone();
+    crate::tickets::start(&mut h.app, &ctx, &id, seen(&root, &id));
+    h.settle();
+    let sent = h.app.agent_chat.items.iter().rev().find_map(|item| match item {
+        crate::agent_chat::Item::User { files, pictures, .. } => Some((files.clone(), pictures.len())),
+        _ => None,
+    });
+    let (names, pictures) = sent.expect("the hand-over message");
+    assert!(names.iter().any(|n| n.starts_with(&id)) && names.iter().any(|n| n == "drawing.pdf"), "{names:?}");
+    assert!(names.iter().any(|n| n == "flange.png") || pictures > 0, "the picture went too: {names:?} / {pictures}");
+
+    // The agent drafts a ticket and asks for the view; the call's card names it.
+    let reply = agent_calls(&mut h, "ticket.draft", json!({"title": "Hinge clashes with the lid", "view": true}));
+    let drafted = reply["ticket"]["id"].as_str().unwrap().to_string();
+    h.app.agent_chat.items.push(crate::agent_chat::Item::Tool {
+        id: "call-7".into(),
+        title: "execute".into(),
+        kind: "other".into(),
+        status: Some(crate::agent_chat::backend::ToolStatus::Completed),
+        input: Some(json!({"command": "ticket.draft", "params": {"title": "Hinge clashes with the lid", "view": true}})),
+        output: Some(serde_json::to_string(&json!({"content": [{"type": "text", "text": reply.to_string()}]})).unwrap()),
+    });
+    h.frames(3);
+    let page: Value = serde_json::from_str(&crate::agent_chat::web::state(&mut h.app)).unwrap();
+    let items = page["items"].as_array().unwrap();
+    let at = items.iter().position(|item| item["id"] == "call-7").expect("the call");
+    assert_eq!(items[at + 1], json!({"kind": "ticket", "id": drafted, "title": "Hinge clashes with the lid", "state": "draft"}));
+    // This test process draws no pictures: the try fails once, is said in the log and not repeated.
+    assert!(crate::control::view_png(&h.app, 64, 40).is_err() && tickets::load(&root, &drafted).unwrap().wants_view);
+    let mut tries = 0;
+    crate::tickets::attach_wanted_view(&mut h.app, |_| {
+        tries += 1;
+        Ok(png())
+    });
+    assert_eq!(tries, 0, "{drafted} was tried once already");
+    // A second draft asking for the view, with a picture to take: it is attached.
+    let again = agent_calls(&mut h, "ticket.draft", json!({"title": "Vent slots too close to the edge", "view": true}))["ticket"]["id"].as_str().unwrap().to_string();
+    // (Frames may have tried it already without a renderer; the test takes that try back.)
+    crate::tickets::refresh(&mut h.app);
+    h.app.tickets.viewed.retain(|id| id != &again);
+    crate::tickets::attach_wanted_view(&mut h.app, |_| Ok(png()));
+    let viewed = tickets::load(&root, &again).unwrap();
+    assert_eq!((viewed.wants_view, viewed.attachments.clone()), (false, vec![format!("attachments/{again}-view.png")]), "the view's picture is attached");
+    assert!(std::fs::read(root.join(format!("attachments/{again}-view.png"))).unwrap().starts_with(b"\x89PNG"));
+
+    // A done ticket whose run the model moved past: 需重查, its state kept.
+    let parts = vec![Part { kind: "body".into(), id: "Body1".into() }];
+    let done = tickets::create(&root, Draft { title: "Plate".into(), parts, ..Draft::default() }).unwrap().id;
+    tickets::work_myself(&root, &done, 1).unwrap();
+    tickets::ask_check(&root, &done, 2).unwrap();
+    tickets::check_started(&root, &done, "run-9").unwrap();
+    tickets::check_ran(&root, &done, tickets::RunResult { run: "run-9".into(), outcome: "done".into(), counts: [("checked".to_string(), 3)].into(), freshness: "current".into() }).unwrap();
+    tickets::done(&root, &done, seen(&root, &done)).unwrap();
+    h.settle();
+    h.app.tickets.freshness.insert("run-9".into(), "staleModel".into());
+    crate::tickets::mark_stale(&mut h.app, &root);
+    let marked = tickets::load(&root, &done).unwrap();
+    assert_eq!(marked.state, TicketState::Done);
+    assert!(marked.recheck.as_deref().is_some_and(|why| why.contains("changed in the model")), "{:?}", marked.recheck);
+    assert_eq!(tickets::events(&root, Some(&done)).unwrap().pop().map(|e| (e.action, e.actor)), Some(("recheck".to_string(), Actor::App)));
+}
