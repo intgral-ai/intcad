@@ -819,7 +819,7 @@ selection, your messages or the project's notes do not give are said to be **gue
   model do not. A late first answer is shown only if the design and selection still match and
   the Assistant is still free to ask for commands.
 - Tab and Esc are the suggestion's in the view, and in the message box while nothing is typed
-  there. In a text field, a dialog, the Ask Here box, the Render workspace, with words in the message
+  there. In a text field, Preferences, a dialog, the Ask Here box, the Render workspace, with words in the message
   box, or while the agent works or waits for an answer, they are that place's own.
 
 The app takes a suggestion back by itself when its commands are not all on the list of modelling

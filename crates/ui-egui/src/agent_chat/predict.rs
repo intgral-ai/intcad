@@ -730,11 +730,11 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     let visible = std::mem::take(&mut app.agent_chat.predict.drawn);
     let clicked = std::mem::take(&mut app.agent_chat.predict.clicked);
     // Typing in a text field: Tab and Esc are its own (egui takes the focus away before this frame
-    // when Esc is pressed in one). The Ask Here box (Ctrl+K), a dialog and the Render workspace,
-    // where no ghost is drawn, have their own too.
+    // when Esc is pressed in one). Preferences, the Ask Here box (Ctrl+K), a dialog and the
+    // Render workspace have their own keys as well.
     let typing = ctx.text_edit_focused();
     let typed = std::mem::replace(&mut app.agent_chat.predict.typing, typing) && ctx.input(|i| i.key_pressed(egui::Key::Escape));
-    let free = !typing && !typed && app.dialog.is_none() && !app.agent_chat.ask_box.open && !crate::render_workspace::active(app);
+    let free = !typing && !typed && keys_belong_to_model(app);
     let mut handled = false;
     if free && available(app) && app.agent_chat.predict.active() {
         let shown = app.agent_chat.predict.line().is_some() && (visible || ready_to_land(app) || in_page(app));
@@ -807,7 +807,7 @@ fn ready_to_land(app: &SolveApp) -> bool {
 }
 
 /// The chat's agent is connected, idle and an ACP agent, the chip has somewhere to go, and nothing
-/// else holds the user: no turn, preview, dialog, tool, sketch or Ask Here box. Only in plain chat:
+/// else holds the user: no turn, preview, Preferences, dialog, tool, sketch or Ask Here box. Only in plain chat:
 /// a skill's turn does not run as a preview, and Tab's must.
 fn may_ask(app: &SolveApp) -> bool {
     available(app) && (strip_shown(app) || in_page(app))
@@ -818,18 +818,20 @@ fn chat_holds_view(app: &SolveApp) -> bool {
     chat.state() != State::Ready || chat.turn.is_some() || chat.preview.is_some() || !chat.pending.is_empty() || chat.queued.is_some()
 }
 
+fn keys_belong_to_model(app: &SolveApp) -> bool {
+    !app.prefs_window.open && app.dialog.is_none() && !app.agent_chat.ask_box.open && !crate::render_workspace::active(app)
+}
+
 pub(super) fn available(app: &SolveApp) -> bool {
     let chat = &app.agent_chat;
     app.preferences.agent_next_step
         && supported(app)
         && !chat_holds_view(app)
         && chat.skill == super::skill::Skill::Plain
-        && !chat.ask_box.open
-        && app.dialog.is_none()
+        && keys_belong_to_model(app)
         && app.tool.is_none()
         && app.session.active_sketch.is_none()
         && !app.home.open
-        && !crate::render_workspace::active(app)
         && chat.predict.account.allows()
 }
 

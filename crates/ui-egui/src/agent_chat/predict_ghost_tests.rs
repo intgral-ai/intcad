@@ -653,6 +653,40 @@ fn g21_an_answer_that_cannot_be_read_is_withdrawn() {
 // ---- C. Ghost and Tab ------------------------------------------------------------------------------
 
 #[test]
+fn final_review_preferences_owns_tab_and_blocks_all_prediction_acceptance() {
+    for route in ["Tab", "History click", "WebView"] {
+        let (mut app, _chat, guesser, ctx) = plate();
+        ghost_drawn(&mut app, &ctx, &guesser);
+        assert_eq!(page(&app)["ready"], true);
+        let was = before(&mut app);
+        if route == "History click" {
+            let at = crate::scenario::rect_of("history:next_step").unwrap().center();
+            frame(&mut app, &ctx, 2.1, vec![egui::Event::PointerMoved(at), press(at, true)]);
+            frame(&mut app, &ctx, 2.2, vec![press(at, false)]);
+        }
+        // Preferences opens (e.g. from a mouse click) without a predictor tick.
+        crate::prefs::open_at(&mut app, crate::prefs::PAGE_ASSISTANT);
+        assert!(app.prefs_window.open);
+        match route {
+            "WebView" => page_act(&mut app, &ctx, 1, true),
+            "Tab" => {
+                let raw = egui::RawInput { time: Some(3.0), events: vec![key(egui::Key::Tab)], ..Default::default() };
+                let _ = ctx.run_ui(raw, |ui| {
+                    tick(&mut app, ui.ctx());
+                    assert_eq!(app.session.document_stamp(), was.stamp, "Tab in Preferences changed CAD");
+                    assert!(ui.ctx().input(|i| i.key_pressed(egui::Key::Tab)), "Tab belongs to Preferences");
+                });
+            }
+            _ => frame(&mut app, &ctx, 3.0, vec![]),
+        }
+        assert_eq!(app.session.document_stamp(), was.stamp, "{route}");
+        assert_eq!(app.session.undo.len(), was.undo, "{route}");
+        assert!(app.prefs_window.open, "{route}");
+        assert_ne!(page(&app)["ready"], true, "{route}");
+    }
+}
+
+#[test]
 fn review_round_one_a_chip_click_must_start_on_a_ready_ghost() {
     let (mut app, _chat, guesser, ctx) = plate();
     line(&mut app, &ctx, &guesser, 0.0, HOLES);
