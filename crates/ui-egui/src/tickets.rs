@@ -54,9 +54,10 @@ pub struct State {
     /// The design revision the freshness was read at (the browser build reads none).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     stamp: Option<(String, u64)>,
-    /// The view's last request and how it went: the host's count of requests, the page's own
-    /// number for it, and whether the step was taken (a refusal's reason is `error`).
-    pub answered: Option<(u64, Option<u64>, bool)>,
+    /// The view's latest requests and how each went: the host's count of requests, the page's own
+    /// number for it, and whether the step was taken (a refusal's reason is `error`). Several, as
+    /// the page may send more than one between two states.
+    pub answered: Vec<(u64, Option<u64>, bool)>,
     /// The open ticket is shown large over the window.
     pub expanded: bool,
     /// A part picked in the model: the view lists only the tickets that bear on it.
@@ -194,7 +195,7 @@ pub(crate) fn mark_stale(app: &mut SolveApp, root: &std::path::Path) {
         .map(|t| t.id.clone())
         .collect();
     for id in stale {
-        if let Err(error) = tickets::mark_recheck(root, &id, "a part it bears on changed in the model after its check ran") {
+        if let Err(error) = tickets::mark_recheck(root, &id, "the model changed after its check ran") {
             log::warn!("{id} was not marked for a re-check: {error}");
         }
     }
@@ -675,7 +676,7 @@ pub fn page_state(app: &mut SolveApp) -> String {
         "freshness": tickets.freshness,
         "error": tickets.error,
         "refusal": tickets.refusal,
-        "answered": tickets.answered.map(|(n, ask, ok)| serde_json::json!({"n": n, "ask": ask, "ok": ok})),
+        "answered": tickets.answered.iter().map(|(n, ask, ok)| serde_json::json!({"n": n, "ask": ask, "ok": ok})).collect::<Vec<_>>(),
         "expanded": tickets.expanded && tickets.selected.is_some(),
         "filter": tickets.filter,
         "selection": selection,
@@ -728,14 +729,14 @@ const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
 /// One message from the tickets view's own web view, as JSON. Only the tickets view's requests are
 /// taken here ([`act`]); the Assistant's view has no way to them (its `web::act` refuses them).
-/// Every message is answered in the next state (`answered`): the page's own number for it (`ask`)
+/// Every message is answered in the next state (`answered`, the latest few): the page's own number for it (`ask`)
 /// and whether the step was taken, so the page shows a success only for a step that was.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn receive(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> Result<(), String> {
     let _language = crate::i18n::scope(&app.preferences.language);
-    let n = app.tickets.answered.map_or(1, |(n, _, _)| n.saturating_add(1));
+    let n = app.tickets.answered.last().map_or(1, |(n, _, _)| n.saturating_add(1));
     if message.len() > MAX_MESSAGE_BYTES {
-        app.tickets.answered = Some((n, None, false));
+        answer(app, (n, None, false));
         return Err("message too long".into());
     }
     let action: serde_json::Value = serde_json::from_str(message).map_err(|error| format!("not JSON: {error}"))?;
@@ -744,9 +745,22 @@ pub fn receive(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> Result
     app.tickets.error = None;
     app.tickets.refusal = None;
     let done = if kind.starts_with("ticket_") { act(app, ctx, kind, &action) } else { Err(format!("unknown action {kind}")) };
-    app.tickets.answered = Some((n, ask, done.is_ok() && app.tickets.error.is_none()));
+    answer(app, (n, ask, done.is_ok() && app.tickets.error.is_none()));
     ctx.request_repaint();
     done
+}
+
+/// The most answers the view is told at once: more than the page sends between two states.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_ANSWERS: usize = 16;
+
+/// Keep a request's answer among the latest ones the view is told.
+#[cfg(not(target_arch = "wasm32"))]
+fn answer(app: &mut SolveApp, answered: (u64, Option<u64>, bool)) {
+    app.tickets.answered.push(answered);
+    if app.tickets.answered.len() > MAX_ANSWERS {
+        app.tickets.answered.remove(0);
+    }
 }
 
 /// A list of text sent by the page, at most [`MAX_SENT_LINES`] long.

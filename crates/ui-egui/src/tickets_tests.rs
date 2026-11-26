@@ -526,7 +526,7 @@ fn the_tickets_view_is_told_the_stores_tickets_in_the_pages_shape() {
     request(&mut h, json!({"type": "ticket_open", "id": joint})).unwrap();
     request(&mut h, json!({"type": "ticket_done", "id": joint, "revision": 1, "ask": 7})).unwrap();
     let refused = told(&mut h);
-    assert!(refused["error"].as_str().is_some_and(|e| e.contains("check has not run")) && refused["answered"]["ok"] == false, "{}", refused["error"]);
+    assert!(refused["error"].as_str().is_some_and(|e| e.contains("check has not run")) && refused["answered"].as_array().and_then(|all| all.last()).is_some_and(|last| last["ok"] == false), "{}", refused["error"]);
     pages.push(("refused-done", refused));
     // A parent deleted goes to 已删除 with its sub-tickets, and comes back with them.
     request(&mut h, json!({"type": "ticket_close"})).unwrap();
@@ -564,16 +564,21 @@ fn the_tickets_views_requests_are_answered_and_a_refusal_says_why() {
         message["ask"] = json!(ask);
         let _ = crate::tickets::receive(&mut h.app, &ctx, &message.to_string());
         let state = told(h);
-        assert_eq!(state["answered"]["ask"], json!(ask), "{message}");
-        (state["answered"]["ok"] == true, state["error"].as_str().map(str::to_string))
+        let answer = state["answered"].as_array().and_then(|all| all.iter().find(|a| a["ask"] == json!(ask)).cloned()).unwrap_or_else(|| panic!("{message} answered"));
+        (answer["ok"] == true, state["error"].as_str().map(str::to_string))
     };
     let seen_now = |id: &str| tickets::load(&root, id).unwrap().revision;
     let parent = tickets::draft(&root, Draft { title: "Enclosure".into(), ..Draft::default() }, Actor::Agent).unwrap().id;
     let sub = tickets::draft(&root, Draft { title: "Lid".into(), parent: Some(parent.clone()), ..Draft::default() }, Actor::Agent).unwrap().id;
     h.settle();
 
+    // Two requests before one state (a save, then a click elsewhere): both are answered.
+    crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_edit", "id": parent, "revision": 1, "text": "From requirements.md", "ask": 901}).to_string()).unwrap();
+    crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_open", "id": sub, "ask": 902}).to_string()).unwrap();
+    let both: Vec<Value> = told(&mut h)["answered"].as_array().unwrap().iter().map(|a| a["ask"].clone()).collect();
+    assert!(both.contains(&json!(901)) && both.contains(&json!(902)), "{both:?}");
     // 接受 takes the drafts under it by default.
-    assert_eq!(page(&mut h, json!({"type": "ticket_confirm", "id": parent, "revision": 1})), (true, None));
+    assert_eq!(page(&mut h, json!({"type": "ticket_confirm", "id": parent, "revision": 2})), (true, None));
     assert_eq!(state(&root, &sub), TicketState::Confirmed);
     // A refused delete (seen before a change) is said, not taken; the next one is.
     let (ok, why) = page(&mut h, json!({"type": "ticket_delete", "id": parent, "revision": 1}));
@@ -807,6 +812,6 @@ fn the_assistant_gets_a_tickets_files_its_draft_card_and_view_and_a_changed_part
     crate::tickets::mark_stale(&mut h.app, &root);
     let marked = tickets::load(&root, &done).unwrap();
     assert_eq!(marked.state, TicketState::Done);
-    assert!(marked.recheck.as_deref().is_some_and(|why| why.contains("changed in the model")), "{:?}", marked.recheck);
+    assert!(marked.recheck.as_deref().is_some_and(|why| why.contains("model changed")), "{:?}", marked.recheck);
     assert_eq!(tickets::events(&root, Some(&done)).unwrap().pop().map(|e| (e.action, e.actor)), Some(("recheck".to_string(), Actor::App)));
 }

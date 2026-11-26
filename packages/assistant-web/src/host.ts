@@ -469,8 +469,8 @@ export interface TicketsState {
   adding?: TicketAttachment[];
   /** An agent is connected, so the Assistant can take a ticket. */
   assistant?: boolean;
-  /** The view's last request as the host answered it: the host's count, the page's own number (`ask`) and whether the step was taken. */
-  answered?: { n: number; ask: number | null; ok: boolean } | null;
+  /** The view's latest requests as the host answered them: the host's count, the page's own number (`ask`) and whether the step was taken. Several: the page may send more than one between two states. */
+  answered?: { n: number; ask: number | null; ok: boolean }[];
 }
 
 /** What the host pushes: the Assistant's state, or the tickets view's. */
@@ -522,24 +522,34 @@ let asked = 0;
 const waiting = new Map<number, (ok: boolean) => void>();
 let latest: TicketsState | null = null;
 
+/** How long a request waits for its answer before it counts as not taken (a host that never answers must not hold the next save forever). */
+const ANSWER_WAIT_MS = 10_000;
+
 /** Send a tickets view request with a number of its own; `then` hears once whether the host took it. */
 export function ask(action: TicketAction, then?: (ok: boolean) => void) {
   asked += 1;
-  if (then) waiting.set(asked, then);
-  post({ ...action, ask: asked });
+  const number = asked;
+  if (then) {
+    waiting.set(number, then);
+    window.setTimeout(() => {
+      if (waiting.delete(number)) then(false);
+    }, ANSWER_WAIT_MS);
+  }
+  post({ ...action, ask: number });
 }
 
 /** The tickets view's state as the host last pushed it. */
 export const lastTickets = () => latest;
 
-/** Each state the host pushes: kept, and the request it answers, if one waits, is told how it went. */
+/** Each state the host pushes: kept, and each request it answers that still waits is told how it went. */
 export function hear(state: TicketsState) {
   latest = state;
-  const answer = state.answered;
-  const then = answer?.ask != null ? waiting.get(answer.ask) : undefined;
-  if (answer?.ask != null && then) {
-    waiting.delete(answer.ask);
-    then(answer.ok);
+  for (const answer of state.answered ?? []) {
+    const then = answer.ask != null ? waiting.get(answer.ask) : undefined;
+    if (answer.ask != null && then) {
+      waiting.delete(answer.ask);
+      then(answer.ok);
+    }
   }
 }
 
