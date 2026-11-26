@@ -32,23 +32,32 @@ export function filesOf(blocks) {
     if (block?.type === 'image' && typeof block.data === 'string') files.push({ data: block.data, mediaType: block.mimeType });
     else if (block?.type === 'resource' && typeof block.resource?.blob === 'string') {
       const { blob, mimeType, uri } = block.resource;
-      files.push({ data: blob, mediaType: mimeType ?? 'application/octet-stream', filename: decodeURIComponent(String(uri ?? '').split('/').pop() ?? '') || undefined });
+      files.push({ data: blob, mediaType: mimeType ?? 'application/octet-stream', filename: nameOf(uri) });
     } else rest.push(block);
   }
   return { rest, files };
+}
+
+/** The file name at the end of a `file:` address, or undefined. */
+function nameOf(uri) {
+  const last = String(uri ?? '').split('/').pop();
+  try {
+    return decodeURIComponent(last) || undefined;
+  } catch {
+    return last || undefined;
+  }
 }
 
 /** The files of the turn `prompt` is sending, for the one message of that turn (see `newSession`). */
 const turnFiles = new AsyncLocalStorage();
 
 /**
- * @param Base               Mastra Code's ACP agent class
- * @param RequestError       ACP's error class (`new RequestError(code, message, data)`)
- * @param connections        the Connections of this process
- * @param dates              () => Map of release dates by model id; dates learned from Mastra's catalog are added to it
- * @param reloadSignIns      () => makes Mastra read its sign-in file again
- * @param takesAttachments   (model id, files) => false when the model cannot read those files
- *                           (models.mjs, `attachmentReader`); true or undefined otherwise
+ * @param Base            Mastra Code's ACP agent class
+ * @param RequestError    ACP's error class (`new RequestError(code, message, data)`)
+ * @param connections     the Connections of this process
+ * @param dates           () => Map of release dates by model id; dates learned from Mastra's catalog are added to it
+ * @param reloadSignIns   () => makes Mastra read its sign-in file again
+ * @param takesAttachments (model id, files) => false when the model cannot read those files (models.mjs)
  */
 export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns, cad, takesAttachments = () => undefined }) {
   return class IntcadAgent extends Base {
@@ -132,7 +141,7 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
           const turn = turnFiles.getStore();
           const files = turn?.files ?? [];
           if (turn) turn.files = [];
-          return send(files.length ? { ...input, files: [...(input?.files ?? []), ...files] } : input);
+          return send(files.length ? { ...input, files } : input);
         };
       }
       if (entry.project && typeof session?.respondToToolApproval === 'function') {
