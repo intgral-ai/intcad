@@ -7,6 +7,15 @@ import http from "node:http";
 import { test } from "node:test";
 
 type Json = Record<string, any>;
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 // Compiled, this file is in `dist/test/`; the modules stay where they are written.
 const agentFolder = import.meta.url.includes("/dist/test/") ? "../../agent/" : "../agent/";
 const load = (name: string): Promise<Json> => import(new URL(agentFolder + name, import.meta.url).href);
@@ -792,8 +801,8 @@ test("a text-only follow-up cannot resend retained pictures to an incompatible m
 test("Stop acknowledges a prompt held in model refresh without dispatching it afterwards", async () => {
   const { agent, entry, sent, list } = await attachmentAgent();
   entry.usable = ["openai/other"];
-  const refreshStarted = Promise.withResolvers<void>();
-  const refreshed = Promise.withResolvers<void>();
+  const refreshStarted = deferred();
+  const refreshed = deferred();
   entry.controller.listAvailableModels = async () => {
     refreshStarted.resolve();
     await refreshed.promise;
@@ -813,7 +822,7 @@ test("Stop acknowledges a prompt held in model refresh without dispatching it af
 
 test("Stop acknowledges a queued prompt before a blocked queue head clears", async () => {
   const { agent, entry, sent } = await attachmentAgent();
-  const queueHead = Promise.withResolvers<void>();
+  const queueHead = deferred();
   entry.queue = queueHead.promise;
   const cancelled = agent.prompt({ sessionId: "s1", prompt: [picture("ABANDONED")] });
   await agent.cancel({ sessionId: "s1" });
@@ -830,8 +839,8 @@ test("only a confirmed SDK startup cancellation removes the picture from possibl
   // The pinned local SDK's isSessionStartupCancelledError distinguishes this code from
   // post-admission aborts in Session.sendMessage. A generic AbortError proves nothing.
   for (const admitted of [false, true]) {
-    const started = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
+    const started = deferred();
+    const release = deferred();
     const { agent, select, textOnly, sent } = await attachmentAgent(async (input, admit) => {
       if (!input.files) return admit();
       if (admitted) admit();
