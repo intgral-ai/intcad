@@ -87,7 +87,7 @@ if (!existsSync(join(sdkRoot, '@mastra', 'code-sdk', 'package.json'))) {
   process.exit(1);
 }
 
-const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }, { createTool }, { jsonSchema }, { RequestContext }, cadErrors] =
+const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }, { createTool }, { jsonSchema }, { RequestContext }, cadErrors, { modelSupportsAttachments }] =
   await Promise.all([
     load('@agentclientprotocol/sdk/dist/acp.js'),
     load('@mastra/code-sdk/dist/acp/agent.js'),
@@ -104,6 +104,7 @@ const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent
     load('ai/dist/index.js'),
     load('@mastra/core/dist/request-context/index.js'),
     load('@mastra/core/dist/error/index.js'),
+    load('@mastra/core/dist/llm/index.js'),
   ]);
 
 let registry = {};
@@ -115,6 +116,13 @@ try {
 }
 const dates = releaseDates(registry);
 const keyEnv = id => [registry.providers?.[id]?.apiKeyEnvVar ?? []].flat();
+// Whether a model reads pictures and documents, by the catalog Mastra ships (models.dev's
+// `attachment`). Its "no" is taken only for a model that catalog lists: a newer model, or one of a
+// custom address, is sent them, and its provider answers.
+const takesAttachments = id => {
+  const slash = id.indexOf('/');
+  return slash > 0 && registry.models?.[id.slice(0, slash)]?.includes(id.slice(slash + 1)) ? modelSupportsAttachments(id) : undefined;
+};
 
 // A key reaches Mastra through this process's environment, and only the app puts one there
 // (`_intcad/connections/setup`). One that happens to be in the environment the app was started from
@@ -197,7 +205,7 @@ process.on('SIGTERM', stop);
 try {
   await new AgentSideConnection(connection => {
     const cad = cadBridge({ createTool, jsonSchema, RequestContext, errors: cadErrors, invoke: (method, params) => connection.extMethod(method, params) });
-    const IntcadAgent = intcadAgent({ Base: MastraCodeAcpAgent, RequestError, connections, dates: () => dates, reloadSignIns: () => gateway.reloadAuthStorage(), cad });
+    const IntcadAgent = intcadAgent({ Base: MastraCodeAcpAgent, RequestError, connections, dates: () => dates, reloadSignIns: () => gateway.reloadAuthStorage(), cad, takesAttachments });
     agent = new IntcadAgent(connection, createSession(cad));
     return agent;
   }, ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin))).closed;

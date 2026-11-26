@@ -633,6 +633,107 @@ test("a session's model list older than its keys is worked out again before a tu
   assert.deepEqual({ asked, invalidated, told: updates.length }, { asked: 2, invalidated: 3, told: 1 });
 });
 
+test("a message's pictures and PDFs go to the model with that message only, and not to a model that reads none (INT-1513)", async () => {
+  class RequestError extends Error {
+    code: number;
+    data: unknown;
+    constructor(code: number, message: string, data?: unknown) {
+      super(message);
+      this.code = code;
+      this.data = data;
+    }
+  }
+  const sent: Json[] = [];
+  let model = "anthropic/claude-sonnet-4-5";
+  const entry: Json = {
+    controller: { listAvailableModels: async () => ["anthropic/claude-sonnet-4-5", "deepseek/deepseek-v4-pro"].map((id) => ({ id, hasApiKey: true })) },
+    session: { model: { get: () => model, switch: async () => {} }, sendMessage: async (input: Json) => void sent.push(input) },
+    queue: Promise.resolve(),
+    turns: new Set<Json>(),
+  };
+  // As Mastra Code's ACP agent: words and text documents only, a picture refused; turns queue, and
+  // one cancelled before its place in the queue sends nothing.
+  class Base {
+    connection = { sessionUpdate: async () => {} };
+    sessions = new Map<string, Json>();
+    async initialize() {
+      return { protocolVersion: 1, agentCapabilities: { loadSession: false, mcpCapabilities: { http: true, sse: false } }, authMethods: [{ id: "mastracode-login" }] };
+    }
+    async newSession() {
+      this.sessions.set("s1", entry);
+      return { sessionId: "s1" };
+    }
+    configOptions() {
+      return [];
+    }
+    async prompt(request: Json): Promise<Json> {
+      const content = request.prompt
+        .map((block: Json) => {
+          if (block.type === "text") return block.text;
+          if (block.type === "resource" && "text" in block.resource) return block.resource.text;
+          throw new RequestError(-32602, `Unsupported prompt content: ${block.type}`);
+        })
+        .join("\n");
+      const turn = { cancelled: false };
+      entry.turns.add(turn);
+      const result = entry.queue.then(async () => {
+        await new Promise((done) => setImmediate(done));
+        if (turn.cancelled) return { stopReason: "cancelled" };
+        await entry.session.sendMessage({ content });
+        return { stopReason: "end_turn" };
+      });
+      entry.queue = result.then(() => {}, () => {});
+      return result;
+    }
+    async cancel() {
+      for (const turn of entry.turns) turn.cancelled = true;
+    }
+  }
+  const { connections } = world();
+  const takesAttachments = (id: string) => (id === "deepseek/deepseek-v4-pro" ? false : undefined);
+  const Agent = intcadAgent({ Base, RequestError, connections, dates: () => new Map(DATES), reloadSignIns: () => {}, takesAttachments });
+  const agent = new Agent();
+
+  // The app sends pictures and PDFs only to an agent that says it takes them.
+  const init = await agent.initialize({});
+  assert.deepEqual(init.agentCapabilities, { loadSession: false, mcpCapabilities: { http: true, sse: false }, promptCapabilities: { image: true, embeddedContext: true } });
+  assert.deepEqual(init.authMethods, []);
+  await agent.newSession({});
+
+  const picture = (data: string) => ({ type: "image", mimeType: "image/png", data });
+  const pdf = { type: "resource", resource: { uri: "file:///work/brief%20one.pdf", mimeType: "application/pdf", blob: "JVBERi0=" } };
+  const note = { type: "resource", resource: { uri: "file:///work/note.txt", mimeType: "text/plain", text: "a note" } };
+  // The picture and the PDF go as files with the words; a text document stays with the words.
+  assert.deepEqual(await agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "what is this?" }, picture("AAAA"), pdf, note] }), { stopReason: "end_turn" });
+  assert.deepEqual(sent.shift(), {
+    content: "what is this?\na note",
+    files: [
+      { data: "AAAA", mediaType: "image/png" },
+      { data: "JVBERi0=", mediaType: "application/pdf", filename: "brief one.pdf" },
+    ],
+  });
+  // Two turns queued at once: each message carries its own picture.
+  await Promise.all([agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "one" }, picture("ONE")] }), agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "two" }, picture("TWO")] })]);
+  assert.deepEqual(sent.splice(0).map((input) => [input.content, input.files.map((file: Json) => file.data)]), [["one", ["ONE"]], ["two", ["TWO"]]]);
+  // A turn cancelled before it sends: its picture does not go with the next message.
+  const cancelled = agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "never sent" }, picture("GONE")] });
+  await agent.cancel({ sessionId: "s1" });
+  assert.deepEqual(await cancelled, { stopReason: "cancelled" });
+  await agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "words only" }] });
+  assert.deepEqual(sent.splice(0), [{ content: "words only" }]);
+
+  // A model the catalog says reads no pictures: refused before any provider is asked, with a word
+  // the Assistant has a sentence for. Words alone still go.
+  model = "deepseek/deepseek-v4-pro";
+  await assert.rejects(agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "and this?" }, pdf] }), (error: Json) => {
+    assert.deepEqual(error.data, { intcad: { kind: "attachments", prefix: "deepseek" } });
+    return error.code === -32603;
+  });
+  assert.equal(sent.length, 0);
+  assert.deepEqual(await agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "words only" }] }), { stopReason: "end_turn" });
+  assert.deepEqual(sent.splice(0), [{ content: "words only" }]);
+});
+
 // ---- The session builder (session.mjs): Mastra Code's ACP session, without a vector store ---------
 
 const { sessionBuilder } = await load("session.mjs");

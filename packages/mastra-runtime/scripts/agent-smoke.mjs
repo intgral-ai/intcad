@@ -621,6 +621,33 @@ async function main(args) {
     return turns.every((turn) => turn.stop === "end_turn" && turn.askedStandIn && /stand-in model/u.test(turn.answer));
   });
 
+  // INT-1513: a picture and a PDF attached to a message reach the model as parts of the user's
+  // message (agent/agent.mjs, `filesOf`); the next message brings none of its own.
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const pdf = Buffer.from(`%PDF-1.4\n% ${MARK}\n%%EOF\n`).toString("base64");
+  await run("I1 a picture and a PDF reach the model with the message", {}, async ({ out, agent, service, sessionId, prompt }) => {
+    const lastUser = () => {
+      const user = (service.seen.bodies.at(-1)?.messages ?? []).findLast((message) => message.role === "user");
+      return Array.isArray(user?.content) ? user.content : [{ type: "text", text: user?.content }];
+    };
+    const before = service.seen.requests;
+    const reply = await agent.call("session/prompt", {
+      sessionId,
+      prompt: [
+        { type: "text", text: "what is in these?" },
+        { type: "image", mimeType: "image/png", data: png },
+        { type: "resource", resource: { uri: "file:///brief%20one.pdf", mimeType: "application/pdf", blob: pdf } },
+      ],
+    });
+    const parts = lastUser();
+    Object.assign(out, { stop: reply.stopReason, askedStandIn: service.seen.requests > before, parts: parts.map((part) => part.type) });
+    out.picture = parts.some((part) => part.image_url?.url === `data:image/png;base64,${png}`);
+    out.document = parts.some((part) => part.file?.file_data === `data:application/pdf;base64,${pdf}` && part.file?.filename === "brief one.pdf");
+    out.next = await prompt("and now?");
+    out.nextParts = lastUser().map((part) => part.type);
+    return out.stop === "end_turn" && out.askedStandIn && out.picture && out.document && out.next.stop === "end_turn" && out.nextParts.every((type) => type === "text");
+  });
+
   await run("a command after a permission request", {}, async ({ out, prompt, marker }) => {
     const turn = Object.assign(out, await prompt(`run the command: echo ${MARK} > allowed-command.txt`));
     out.markerFile = marker("allowed-command.txt") !== null;

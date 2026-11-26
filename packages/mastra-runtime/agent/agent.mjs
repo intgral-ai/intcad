@@ -6,6 +6,8 @@
 // `Base` is Mastra Code's `MastraCodeAcpAgent`. It is passed in so this file imports nothing of
 // Mastra's and the tests can stand in for it.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { METHODS } from './connections.mjs';
 import { classifyFailure } from './problems.mjs';
 import { isChatModel, newestFirst, orderModelOptions } from './models.mjs';
@@ -18,13 +20,37 @@ const INTERNAL = -32603;
 const BUSY = -32000;
 
 /**
- * @param Base            Mastra Code's ACP agent class
- * @param RequestError    ACP's error class (`new RequestError(code, message, data)`)
- * @param connections     the Connections of this process
- * @param dates           () => Map of release dates by model id; dates learned from Mastra's catalog are added to it
- * @param reloadSignIns   () => makes Mastra read its sign-in file again
+ * A message's pictures and documents (PDFs), apart from the rest. Mastra Code's ACP agent reads text
+ * and text documents and refuses the turn on a picture or a binary document, while its session
+ * sends files with a message (`sendMessage({ content, files })`, as its own terminal sends a pasted
+ * picture). So these go as files: `{ data: base64, mediaType, filename? }`.
  */
-export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns, cad }) {
+export function filesOf(blocks) {
+  const rest = [];
+  const files = [];
+  for (const block of blocks ?? []) {
+    if (block?.type === 'image' && typeof block.data === 'string') files.push({ data: block.data, mediaType: block.mimeType });
+    else if (block?.type === 'resource' && typeof block.resource?.blob === 'string') {
+      const { blob, mimeType, uri } = block.resource;
+      files.push({ data: blob, mediaType: mimeType ?? 'application/octet-stream', filename: decodeURIComponent(String(uri ?? '').split('/').pop() ?? '') || undefined });
+    } else rest.push(block);
+  }
+  return { rest, files };
+}
+
+/** The files of the turn `prompt` is sending, for the one message of that turn (see `newSession`). */
+const turnFiles = new AsyncLocalStorage();
+
+/**
+ * @param Base               Mastra Code's ACP agent class
+ * @param RequestError       ACP's error class (`new RequestError(code, message, data)`)
+ * @param connections        the Connections of this process
+ * @param dates              () => Map of release dates by model id; dates learned from Mastra's catalog are added to it
+ * @param reloadSignIns      () => makes Mastra read its sign-in file again
+ * @param takesAttachments   (model id) => false when Mastra's catalog says the model reads no
+ *                           pictures or documents; true or undefined otherwise
+ */
+export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns, cad, takesAttachments = () => undefined }) {
   return class IntcadAgent extends Base {
     #gate;
 
@@ -40,10 +66,19 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       this.#gate = gate;
     }
 
-    /** The sign-ins are offered on the Connections page, through the methods below, not as ACP sign-in methods. */
+    /**
+     * The sign-ins are offered on the Connections page, through the methods below, not as ACP
+     * sign-in methods. Pictures and documents are taken (`prompt`): the app sends them only to an
+     * agent that says so.
+     */
     async initialize(request) {
       const response = await super.initialize(request);
-      return { ...response, authMethods: [] };
+      const capabilities = response.agentCapabilities ?? {};
+      return {
+        ...response,
+        agentCapabilities: { ...capabilities, promptCapabilities: { ...capabilities.promptCapabilities, image: true, embeddedContext: true } },
+        authMethods: [],
+      };
     }
 
     configOptions(entry) {
@@ -88,6 +123,18 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       // model reads in place of Mastra's "not approved by the user". Without a way to give the
       // reason, nothing is held: a bare decline would read as the user's refusal.
       const session = entry.session;
+      // The files of a turn (`prompt`) go with the first message that turn sends, which is Mastra
+      // Code's own `sendMessage` of the user's words, and with no other: a turn cancelled before
+      // it sends leaves nothing for the next one.
+      if (typeof session?.sendMessage === 'function') {
+        const send = session.sendMessage.bind(session);
+        session.sendMessage = input => {
+          const turn = turnFiles.getStore();
+          const files = turn?.files ?? [];
+          if (turn) turn.files = [];
+          return send(files.length ? { ...input, files: [...(input?.files ?? []), ...files] } : input);
+        };
+      }
       if (entry.project && typeof session?.respondToToolApproval === 'function') {
         const respond = session.respondToToolApproval.bind(session);
         const gate = this.#gate;
@@ -175,7 +222,10 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       return true;
     }
 
-    /** A turn that fails says why in a word the Assistant has a sentence for, and for which provider. */
+    /**
+     * A turn that fails says why in a word the Assistant has a sentence for, and for which provider.
+     * Its pictures and documents go to the model as files (`filesOf`).
+     */
     async prompt(request) {
       const entry = this.sessions.get(request.sessionId);
       // A session is not moved off a model nothing serves by itself (see #settle), so a turn can be
@@ -184,9 +234,15 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       if (entry?.usable?.length && !entry.usable.includes(using) && !(await this.#usableNow(request.sessionId, entry, using))) {
         throw new RequestError(INTERNAL, `no connection serves ${using}`, { intcad: { kind: 'model', prefix: connections.prefixOf(using, { known: true }) } });
       }
+      const { rest, files } = filesOf(request.prompt);
+      // A model the catalog says reads none is not sent them: the Assistant says so instead.
+      if (files.length && takesAttachments(using) === false) {
+        throw new RequestError(INTERNAL, `${using} reads no pictures or documents`, { intcad: { kind: 'attachments', prefix: connections.prefixOf(using) } });
+      }
       this.#gate.prompted(request.sessionId);
       try {
-        return await (cad ? cad.prompt(request, entry, () => super.prompt(request)) : super.prompt(request));
+        const sent = files.length ? { ...request, prompt: rest } : request;
+        return await turnFiles.run({ files }, () => (cad ? cad.prompt(sent, entry, () => super.prompt(sent)) : super.prompt(sent)));
       } catch (error) {
         const model = entry?.session.model.get() ?? '';
         const prefix = connections.prefixOf(model);
