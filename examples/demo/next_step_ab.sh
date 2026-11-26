@@ -18,10 +18,21 @@ trap 'rm -r -- "$RUNDIR"' EXIT
 H=$RUNDIR/profile
 if [[ -n ${NSM_HOME:-} ]]; then
   H=$NSM_HOME
+  if [[ -L $H ]]; then
+    printf 'NSM_HOME must not be a symlink\n' >&2
+    exit 2
+  fi
+  if mkdir -- "$H" 2>/dev/null; then
+    touch -- "$H/.intcad-next-step-profile"
+  elif [[ ! -f $H/.intcad-next-step-profile || -L $H/.intcad-next-step-profile ]]; then
+    printf 'NSM_HOME must be a new directory or a profile created by this harness\n' >&2
+    exit 2
+  fi
+else
+  mkdir -- "$H"
 fi
-mkdir -p -- "$H"
 H=$(cd -P -- "$H" && pwd)
-if [[ $NSM_AGENT == claude && $H != "$HOME" ]]; then
+if [[ $NSM_AGENT == claude ]]; then
   [[ ! -e $HOME/.claude || -e $H/.claude || -L $H/.claude ]] || ln -s -- "$HOME/.claude" "$H/.claude"
   [[ ! -f $HOME/.claude.json || -e $H/.claude.json || -L $H/.claude.json ]] || cp -- "$HOME/.claude.json" "$H/.claude.json"
 fi
