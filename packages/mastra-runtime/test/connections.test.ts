@@ -714,7 +714,7 @@ test("a message's pictures and PDFs go to the model with that message only, and 
   });
   // Two turns queued at once: each message carries its own picture.
   await Promise.all([agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "one" }, picture("ONE")] }), agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "two" }, picture("TWO")] })]);
-  assert.deepEqual(sent.splice(0).map((input) => [input.content, input.files.map((file: Json) => file.data)]), [["one", ["ONE"]], ["two", ["TWO"]]]);
+  assert.deepEqual(sent.splice(0).map((input) => [input.content, (input.files ?? []).map((file: Json) => file.data)]), [["one", ["ONE"]], ["two", ["TWO"]]]);
   // A turn cancelled before it sends: its picture does not go with the next message.
   const cancelled = agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "never sent" }, picture("GONE")] });
   await agent.cancel({ sessionId: "s1" });

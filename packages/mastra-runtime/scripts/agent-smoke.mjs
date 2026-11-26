@@ -8,6 +8,8 @@
  * It starts the folder's own Node with the folder's entry, as the app does, and talks ACP with
  * it: `initialize`, a custom address handed over with `_intcad/connections/setup`, then
  *   - three turns in one session, answered by a stand-in model service;
+ *   - a message with a picture and a PDF, which reach the model as parts of the user's message (I1,
+ *     INT-1513);
  *   - a turn in which the model asks for a command, run after one permission request;
  *   - a turn in which the model asks for a tool of an MCP server handed over in `session/new`;
  *   - a command and a file write whose permission requests are refused;
