@@ -26,11 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// The order and marker match `scripts/ci/verify_embedded_account.py`.
 fn macos_account_record() -> Result<(), Box<dyn std::error::Error>> {
     let mut record = String::from("INTCAD_ACCOUNT_CONFIG_V1\0");
-    for key in [
-        "INTCAD_WORKOS_PUBLIC_CLIENT_ID",
-        "INTCAD_AUTHKIT_VERIFICATION_ORIGIN",
-        "INTCAD_PRODUCT_HTTPS_ORIGIN",
-    ] {
+    for key in ["INTCAD_WORKOS_PUBLIC_CLIENT_ID", "INTCAD_AUTHKIT_VERIFICATION_ORIGIN", "INTCAD_PRODUCT_HTTPS_ORIGIN"] {
         println!("cargo:rerun-if-env-changed={key}");
         if let Ok(value) = std::env::var(key) {
             record.push_str(&value);
