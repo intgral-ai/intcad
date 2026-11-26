@@ -50,12 +50,25 @@ export function orderModelOptions(options, dates, current, typed = () => false) 
  * of a custom address, is sent the files and its provider answers. DeepSeek's adapter silently
  * drops PDFs; the xAI OAuth route uses xAI's chat endpoint, not its document input route.
  */
-export function attachmentReader(registry, supports, oauth = () => false) {
+export function attachmentReader(registry, supports, oauth = () => false, copilotCatalog = async () => []) {
   return (id, files = []) => {
     const pdf = files.some(file => file.mediaType === 'application/pdf');
     if (files.some(file => file.mediaType !== 'application/pdf' && !String(file.mediaType).startsWith('image/'))) return false;
     if (pdf && (id.startsWith('deepseek/') || (id.startsWith('xai/') && oauth('xai')))) return false;
     const slash = id.indexOf('/');
+    if (id.startsWith('github-copilot/')) {
+      // The pinned SDK uses a separate OAuth catalog, not models.dev. The SDK owns fetching
+      // and caching it. No vision metadata, no sign-in, or a failed lookup means unknown.
+      if (!files.some(file => String(file.mediaType).startsWith('image/')) || !oauth('github-copilot')) return undefined;
+      return Promise.resolve().then(copilotCatalog).then(
+        models => {
+          if (!oauth('github-copilot')) return undefined;
+          const vision = models.find(model => model.id === id.slice(slash + 1))?.supportsVision;
+          return vision === false ? false : vision === true && !pdf ? true : undefined;
+        },
+        () => undefined,
+      );
+    }
     return slash > 0 && registry?.models?.[id.slice(0, slash)]?.includes(id.slice(slash + 1)) ? supports(id) : undefined;
   };
 }

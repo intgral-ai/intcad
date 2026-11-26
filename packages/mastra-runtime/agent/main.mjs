@@ -87,7 +87,7 @@ if (!existsSync(join(sdkRoot, '@mastra', 'code-sdk', 'package.json'))) {
   process.exit(1);
 }
 
-const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }, { createTool }, { jsonSchema }, { RequestContext }, cadErrors, { modelSupportsAttachments }] =
+const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }, { createTool }, { jsonSchema }, { RequestContext }, cadErrors, { modelSupportsAttachments }, { isSessionStartupCancelledError }, copilot] =
   await Promise.all([
     load('@agentclientprotocol/sdk/dist/acp.js'),
     load('@mastra/code-sdk/dist/acp/agent.js'),
@@ -105,6 +105,8 @@ const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent
     load('@mastra/core/dist/request-context/index.js'),
     load('@mastra/core/dist/error/index.js'),
     load('@mastra/core/dist/llm/index.js'),
+    load('@mastra/core/dist/agent-controller/index.js'),
+    load('@mastra/code-sdk/dist/providers/github-copilot.js'),
   ]);
 
 let registry = {};
@@ -117,7 +119,17 @@ try {
 const dates = releaseDates(registry);
 const keyEnv = id => [registry.providers?.[id]?.apiKeyEnvVar ?? []].flat();
 // Which models a message's pictures and documents are not sent to (models.mjs).
-const takesAttachments = attachmentReader(registry, modelSupportsAttachments, id => gateway.getGlobalAuthStorage().get(id)?.type === 'oauth');
+const takesAttachments = attachmentReader(
+  registry, modelSupportsAttachments,
+  id => {
+    // The standalone Copilot gateway uses the provider's own store. Reload before asking
+    // about the route, including after a catalog lookup that may overlap a sign-out.
+    const auth = id === 'github-copilot' ? copilot.getAuthStorage() : gateway.getGlobalAuthStorage();
+    if (id === 'github-copilot') auth.reload();
+    return auth.get(id)?.type === 'oauth';
+  },
+  () => copilot.getCopilotModelCatalog(),
+);
 
 // A key reaches Mastra through this process's environment, and only the app puts one there
 // (`_intcad/connections/setup`). One that happens to be in the environment the app was started from
@@ -200,7 +212,11 @@ process.on('SIGTERM', stop);
 try {
   await new AgentSideConnection(connection => {
     const cad = cadBridge({ createTool, jsonSchema, RequestContext, errors: cadErrors, invoke: (method, params) => connection.extMethod(method, params) });
-    const IntcadAgent = intcadAgent({ Base: MastraCodeAcpAgent, RequestError, connections, dates: () => dates, reloadSignIns: () => gateway.reloadAuthStorage(), cad, takesAttachments });
+    const IntcadAgent = intcadAgent({
+      Base: MastraCodeAcpAgent, RequestError, connections, dates: () => dates,
+      reloadSignIns: () => gateway.reloadAuthStorage(), cad, takesAttachments,
+      isNotAdmitted: isSessionStartupCancelledError,
+    });
     agent = new IntcadAgent(connection, createSession(cad));
     return agent;
   }, ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin))).closed;

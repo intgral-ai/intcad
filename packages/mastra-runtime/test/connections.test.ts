@@ -644,7 +644,10 @@ test("a session's model list older than its keys is worked out again before a tu
   assert.deepEqual({ asked, invalidated, told: updates.length }, { asked: 2, invalidated: 3, told: 1 });
 });
 
-async function attachmentAgent() {
+async function attachmentAgent(
+  deliver?: (input: Json, admit: () => void) => Promise<void>,
+  isNotAdmitted?: (error: unknown) => boolean,
+) {
   class RequestError extends Error {
     code: number;
     data: unknown;
@@ -661,7 +664,14 @@ async function attachmentAgent() {
   const list = async () => [vision, textOnly].map((id) => ({ id, hasApiKey: true }));
   const entry: Json = {
     controller: { listAvailableModels: list },
-    session: { model: { get: () => model, switch: async () => {} }, sendMessage: async (input: Json) => void sent.push(input) },
+    session: {
+      model: { get: () => model, switch: async () => {} },
+      sendMessage: async (input: Json) => {
+        const admit = () => { sent.push(input); };
+        if (deliver) await deliver(input, admit);
+        else admit();
+      },
+    },
     queue: Promise.resolve(),
     turns: new Set<Json>(),
   };
@@ -705,7 +715,7 @@ async function attachmentAgent() {
   }
   const { connections } = world();
   const takesAttachments = (id: string) => (id === textOnly ? false : undefined);
-  const Agent = intcadAgent({ Base, RequestError, connections, dates: () => new Map(DATES), reloadSignIns: () => {}, takesAttachments });
+  const Agent = intcadAgent({ Base, RequestError, connections, dates: () => new Map(DATES), reloadSignIns: () => {}, takesAttachments, isNotAdmitted });
   const agent = new Agent();
   await agent.newSession({});
   return { agent, entry, sent, list, vision, textOnly, select: (id: string) => { model = id; } };
@@ -801,6 +811,54 @@ test("Stop acknowledges a prompt held in model refresh without dispatching it af
   assert.deepEqual(sent, [{ content: "after Stop" }]);
 });
 
+test("Stop acknowledges a queued prompt before a blocked queue head clears", async () => {
+  const { agent, entry, sent } = await attachmentAgent();
+  const queueHead = Promise.withResolvers<void>();
+  entry.queue = queueHead.promise;
+  const cancelled = agent.prompt({ sessionId: "s1", prompt: [picture("ABANDONED")] });
+  await agent.cancel({ sessionId: "s1" });
+  const outcome = await Promise.race([cancelled, new Promise((done) => setImmediate(() => done("still waiting")))]);
+  const followUp = agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "later" }, picture("LATER")] });
+  queueHead.resolve();
+  await cancelled;
+  assert.deepEqual(await followUp, { stopReason: "end_turn" });
+  assert.deepEqual(outcome, { stopReason: "cancelled" });
+  assert.deepEqual(sent, [{ content: "later", files: [{ data: "LATER", mediaType: "image/png" }] }]);
+});
+
+test("only a confirmed SDK startup cancellation removes the picture from possible history", async () => {
+  // The pinned local SDK's isSessionStartupCancelledError distinguishes this code from
+  // post-admission aborts in Session.sendMessage. A generic AbortError proves nothing.
+  for (const admitted of [false, true]) {
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const { agent, select, textOnly, sent } = await attachmentAgent(async (input, admit) => {
+      if (!input.files) return admit();
+      if (admitted) admit();
+      started.resolve();
+      await release.promise;
+      throw Object.assign(new Error("stopped"), {
+        name: "AbortError",
+        ...(admitted ? {} : { code: "SESSION_STARTUP_CANCELLED" }),
+      });
+    }, (error) => error instanceof Error && "code" in error && error.code === "SESSION_STARTUP_CANCELLED");
+    const stopped = agent.prompt({ sessionId: "s1", prompt: [picture("STOPPED")] });
+    await started.promise;
+    await agent.cancel({ sessionId: "s1" });
+    release.resolve();
+    assert.deepEqual(await stopped, { stopReason: "cancelled" });
+    select(textOnly);
+    const followUp = { sessionId: "s1", prompt: [{ type: "text", text: "after Stop" }] };
+    if (admitted) {
+      await assert.rejects(agent.prompt(followUp), attachmentRefusal);
+      assert.equal(sent.length, 1);
+    } else {
+      assert.deepEqual(await agent.prompt(followUp), { stopReason: "end_turn" });
+      assert.deepEqual(sent, [{ content: "after Stop" }]);
+    }
+  }
+});
+
 test("attachment capability accounts for the MIME type and chosen adapter (INT-1513)", () => {
   const registry = { models: { deepseek: ["deepseek-v4-pro", "deepseek-v4-flash"], anthropic: ["claude-sonnet-4-5"] } };
   // As Mastra's `modelSupportsAttachments`: no also for a model it does not know.
@@ -819,6 +877,25 @@ test("attachment capability accounts for the MIME type and chosen adapter (INT-1
   xaiOAuth = false;
   assert.equal(reads("xai/grok-vision", pdf), undefined, "the OAuth restriction does not get applied to the key route");
   assert.equal(reads("mastracode/stand-in/hello-1", [{ mediaType: "application/zip" }]), false, "the desktop only sends pictures and PDFs");
+});
+
+test("Copilot uses explicit live vision capability only on its signed-in route", async () => {
+  const registry = { models: { "github-copilot": ["former"] } };
+  let signedIn = true;
+  let loads = 0;
+  const reads = attachmentReader(registry, () => false, (provider: string) => provider === "github-copilot" && signedIn, async () => {
+    loads++;
+    return [{ id: "text", supportsVision: false }, { id: "vision", supportsVision: true }, { id: "uncertain" }];
+  });
+  const png = [{ mediaType: "image/png" }];
+  assert.equal(await reads("github-copilot/text", png), false);
+  assert.equal(await reads("github-copilot/vision", png), true);
+  assert.equal(await reads("github-copilot/uncertain", png), undefined);
+  assert.equal(await reads("github-copilot/former", png), undefined);
+  assert.notEqual(await reads("mastracode/github-copilot/text", png), false);
+  signedIn = false;
+  assert.equal(await reads("github-copilot/text", png), undefined);
+  assert.equal(loads, 4);
 });
 
 // ---- The session builder (session.mjs): Mastra Code's ACP session, without a vector store ---------

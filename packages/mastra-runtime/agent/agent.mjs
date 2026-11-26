@@ -57,9 +57,13 @@ const turnFiles = new AsyncLocalStorage();
  * @param connections     the Connections of this process
  * @param dates           () => Map of release dates by model id; dates learned from Mastra's catalog are added to it
  * @param reloadSignIns   () => makes Mastra read its sign-in file again
- * @param takesAttachments (model id, files) => false when the model cannot read those files (models.mjs)
+ * @param takesAttachments (model id, files) => false (possibly async) when the model cannot read those files
+ * @param isNotAdmitted    pinned SDK predicate for a startup cancellation before signal admission
  */
-export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns, cad, takesAttachments = () => undefined }) {
+export function intcadAgent({
+  Base, RequestError, connections, dates, reloadSignIns, cad,
+  takesAttachments = () => undefined, isNotAdmitted = () => false,
+}) {
   return class IntcadAgent extends Base {
     #gate;
     #prompts = new Map();
@@ -143,32 +147,49 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
         const send = session.sendMessage.bind(session);
         session.sendMessage = async input => {
           const turn = turnFiles.getStore();
-          if (turn?.entry !== entry || turn.submitted) return send(input);
+          if (turn?.entry !== entry) return send(input);
           const { signal, sessionId, files } = turn;
+          signal.throwIfAborted();
+          if (turn.submitted) return send(input);
           // The SDK queues model selection and prompts together. Check only now, when a
           // preceding selection has run; if refresh yields, read the model again afterwards.
           let model;
           let usable;
+          let supported;
+          const types = Array.from(new Set([...history, ...files.map(file => file.mediaType)]), mediaType => ({ mediaType }));
           do {
             signal.throwIfAborted();
             model = session.model.get() ?? '';
             usable = !entry.usable?.length || entry.usable.includes(model) ||
               await this.#usableNow(sessionId, entry, model, signal);
+            signal.throwIfAborted();
+            if (model !== (session.model.get() ?? '')) continue;
+            supported = usable && types.length ? takesAttachments(model, types) : undefined;
+            if (supported?.then) supported = await beforeAbort(signal, () => supported);
           } while (model !== (session.model.get() ?? ''));
           signal.throwIfAborted();
           turn.model = model;
           if (!usable) {
             throw new RequestError(INTERNAL, `no connection serves ${model}`, { intcad: { kind: 'model', prefix: connections.prefixOf(model, { known: true }) } });
           }
-          const types = new Set([...history, ...files.map(file => file.mediaType)]);
-          if (types.size && takesAttachments(model, Array.from(types, mediaType => ({ mediaType }))) === false) {
+          if (supported === false) {
             throw new RequestError(INTERNAL, `${model} cannot read the pictures or documents in this chat`, { intcad: { kind: 'attachments', prefix: connections.prefixOf(model) } });
           }
           this.#gate.prompted(sessionId);
           turn.submitted = true;
           turn.files = [];
-          for (const file of files) history.add(file.mediaType);
-          return send(files.length ? { ...input, files } : input);
+          let mayBeRetained = true;
+          try {
+            return await send(files.length ? { ...input, files } : input);
+          } catch (error) {
+            // The pinned Session raises this before agent.sendSignal, including when Stop
+            // changes its abort generation during thread/subscription setup. Other outcomes
+            // cannot prove non-admission, so keep their MIME types conservatively.
+            mayBeRetained = !isNotAdmitted(error);
+            throw error;
+          } finally {
+            if (mayBeRetained) for (const file of files) history.add(file.mediaType);
+          }
         };
       }
       if (entry.project && typeof session?.respondToToolApproval === 'function') {
@@ -242,16 +263,7 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
      * list. A list that cannot be worked out leaves the turn refused as before.
      */
     async #usableNow(sessionId, entry, model, signal) {
-      let abort;
-      const cancelled = new Promise((_, reject) => {
-        abort = () => reject(signal.reason);
-        signal.addEventListener('abort', abort, { once: true });
-      });
-      try {
-        return await Promise.race([this.#refreshForPrompt(sessionId, entry, model, signal), cancelled]);
-      } finally {
-        signal.removeEventListener('abort', abort);
-      }
+      return beforeAbort(signal, () => this.#refreshForPrompt(sessionId, entry, model, signal));
     }
 
     async #refreshForPrompt(sessionId, entry, model, signal) {
@@ -285,9 +297,19 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       prompts.add(controller);
       const { rest, files } = filesOf(request.prompt);
       const turn = { entry, sessionId, files, signal: controller.signal, submitted: false };
+      const early = Promise.withResolvers();
+      const stopped = () => {
+        if (turn.submitted) return;
+        turn.files = [];
+        early.resolve({ stopReason: 'cancelled' });
+      };
+      controller.signal.addEventListener('abort', stopped, { once: true });
       try {
         const sent = files.length ? { ...request, prompt: rest } : request;
-        return await turnFiles.run(turn, () => (cad ? cad.prompt(sent, entry, () => super.prompt(sent)) : super.prompt(sent)));
+        // Keep the SDK's queue intact. Its cancel marks its own queued callback before it can
+        // replace entry.state; the per-turn signal independently guards our sendMessage hook.
+        const run = () => Promise.race([super.prompt(sent), early.promise]);
+        return await turnFiles.run(turn, () => (cad ? cad.prompt(sent, entry, run) : run()));
       } catch (error) {
         if (controller.signal.aborted) return { stopReason: 'cancelled' };
         if (error instanceof RequestError && error.data?.intcad) throw error;
@@ -299,6 +321,7 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
         const data = error?.data && typeof error.data === 'object' ? { ...error.data } : {};
         throw new RequestError(typeof error?.code === 'number' ? error.code : INTERNAL, message, { ...data, intcad: { kind, prefix } });
       } finally {
+        controller.signal.removeEventListener('abort', stopped);
         prompts.delete(controller);
         if (!prompts.size) this.#prompts.delete(sessionId);
       }
@@ -331,4 +354,18 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       }
     }
   };
+}
+
+async function beforeAbort(signal, run) {
+  signal.throwIfAborted();
+  let abort;
+  const cancelled = new Promise((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    return await Promise.race([run(), cancelled]);
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
 }

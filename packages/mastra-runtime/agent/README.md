@@ -115,8 +115,10 @@ A `session/prompt` that fails carries
 pictures (`image` blocks) and PDFs (`resource` blocks with a `blob`). Mastra Code's own prompt handler
 refuses both; `agent.mjs` takes them out and hands them to the session's `sendMessage` as files of
 that turn's message (INT-1513). Just before submission, it checks the effective model and adapter
-against the message and any attachment types submitted in the session. The SDK can replay those
-files on a text-only follow-up. DeepSeek and xAI's OAuth chat adapter cannot take PDFs.
+against the message and any attachment types the SDK may retain from earlier turns, even on a
+text-only follow-up. A confirmed SDK cancellation before admission leaves no attachment history.
+DeepSeek and xAI's OAuth chat adapter cannot take PDFs. Signed-in Copilot uses its live vision
+catalog; an explicit negative refuses pictures, while an unlisted model stays unknown.
 An incompatible turn is refused with kind `attachments` before a provider is asked. Stop also
 applies during model refresh or while a prompt is waiting in the SDK queue.
 
