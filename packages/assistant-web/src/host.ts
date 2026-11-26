@@ -429,7 +429,8 @@ export type TicketStringKey =
   | 'filterPart' | 'clear' | 'askDraft' | 'deleted' | 'noDeleted' | 'restore' | 'deletedToast' | 'undo'
   | 'expand' | 'collapse' | 'addText'
   | 'didDeclined' | 'didDeleted' | 'didRestored' | 'didTaken' | 'didMoved' | 'didFinished' | 'didCheckOff' | 'didCheckOn' | 'didRecheck' | 'didViewAttached'
-  | 'runCheck' | 'recheck' | 'finishedNote' | 'needsCheck' | 'deleteWithSubs' | 'confirmWithSubs' | 'together' | 'onlyThis' | 'whyRecheck' | 'withTicket';
+  | 'runCheck' | 'recheck' | 'finishedNote' | 'needsCheck' | 'deleteWithSubs' | 'confirmWithSubs' | 'together' | 'onlyThis' | 'whyRecheck' | 'withTicket'
+  | 'whyStale' | 'checkOff';
 
 export interface TicketsState {
   view: 'tickets';
@@ -447,6 +448,16 @@ export interface TicketsState {
   freshness: Record<string, string>;
   /** Why a step was refused, in the store's words. */
   error: string | null;
+  /** The same refusal as a kind the page says in the person's words; absent for any other. */
+  refusal?:
+    | { kind: 'stale'; id: string }
+    | { kind: 'subs'; ids: string[] }
+    | { kind: 'check' }
+    | { kind: 'recheck'; why: string }
+    | { kind: 'waits'; ids: string[] }
+    | { kind: 'busy'; id: string }
+    | { kind: 'offline' }
+    | null;
   // Ahead of the host, like the ticket's new fields: absent, the view is as it was.
   /** The open ticket is shown large over the window: the app has widened this view to the window. */
   expanded?: boolean;

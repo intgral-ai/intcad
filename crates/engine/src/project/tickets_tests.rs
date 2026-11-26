@@ -87,6 +87,7 @@ fn actions(root: &Path, id: &str) -> Vec<(String, Actor)> {
 fn refusal<T: std::fmt::Debug>(result: Result<T, TicketError>) -> String {
     match result {
         Err(TicketError::Refused(why)) | Err(TicketError::Invalid(why)) => why,
+        Err(error @ (TicketError::Stale { .. } | TicketError::NotDone { .. } | TicketError::Waits { .. })) => error.to_string(),
         other => panic!("expected a refusal, got {other:?}"),
     }
 }

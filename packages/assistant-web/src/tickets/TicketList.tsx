@@ -9,7 +9,7 @@ import { Box, Ellipsis, Lock, Paperclip, Plus, Sparkles, Trash2, X } from 'lucid
 import { useState } from 'react';
 import type { TicketsState } from '../host';
 import { ask, post } from '../host';
-import { childrenOf, day, fill, names, progress, stateWord } from './shared';
+import { childrenOf, day, fill, names, progress, refusalText, stateWord } from './shared';
 import type { Full, Words } from './shared';
 import { STATE_COLOUR, STATE_ORDER, StateIcon } from './status-icons';
 import { useAccept, useRemove } from './TicketPage';
@@ -51,7 +51,8 @@ function Meta({ ticket, list }: { ticket: Full; list: List }) {
           <Lock className="size-3" aria-hidden />
         </span>
       )}
-      <span>{day(ticket.created, list.state.language)}</span>
+      {/* Narrow, in the rail, a row keeps its room for the title; wide rows show the day. */}
+      <span className="hidden sm:inline">{day(ticket.created, list.state.language)}</span>
     </span>
   );
 }
@@ -215,7 +216,7 @@ export function TicketList({ state, tickets, onNew }: { state: TicketsState; tic
       )}
       {state.error && (
         <Notice variant="destructive" className="mx-4 mt-3 sm:mx-6">
-          <Notice.Message>{state.error}</Notice.Message>
+          <Notice.Message>{refusalText(state)}</Notice.Message>
         </Notice>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto">

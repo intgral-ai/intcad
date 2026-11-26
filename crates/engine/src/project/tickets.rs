@@ -294,6 +294,15 @@ pub enum TicketError {
     NoSuchTicket(String),
     #[error("{0}")]
     Refused(String),
+    /// A person's step on a ticket that has changed since they saw it.
+    #[error("{id} has changed since you saw it (revision {seen}, now {now}): look at it again")]
+    Stale { id: String, seen: u64, now: u64 },
+    /// Done before its gate opened ([`why_not_done`]); `message` says it in the store's words.
+    #[error("{message}")]
+    NotDone { why: NotDone, message: String },
+    /// Handed to the Assistant while it waits for tickets not done yet.
+    #[error("{id} waits for {}: the Assistant takes it once those are done", .open.join(", "))]
+    Waits { id: String, open: Vec<String> },
     #[error("{0}")]
     Invalid(String),
     #[error("{file}: {message}")]
@@ -804,7 +813,7 @@ fn unchanged(ticket: &Ticket, seen: u64) -> Result<(), TicketError> {
     if ticket.revision == seen {
         return Ok(());
     }
-    Err(TicketError::Refused(format!("{} has changed since you saw it (revision {seen}, now {}): look at it again", ticket.id, ticket.revision)))
+    Err(TicketError::Stale { id: ticket.id.clone(), seen, now: ticket.revision })
 }
 
 fn refused(ticket: &Ticket, what: &str) -> TicketError {
@@ -1013,7 +1022,7 @@ pub fn start(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
         }
         let open = open_waits(ticket, &all);
         if !open.is_empty() {
-            return Err(TicketError::Refused(format!("{} waits for {}: the Assistant takes it once those are done", ticket.id, open.join(", "))));
+            return Err(TicketError::Waits { id: ticket.id.clone(), open });
         }
         move_to(ticket, Actor::Person, State::InProgress)?;
         ticket.worker = Some(Worker::Assistant);
@@ -1061,7 +1070,7 @@ fn move_state(root: &Path, id: &str, seen: Option<u64>, to: State, actor: Actor)
     if actor == Actor::Agent && to == State::InProgress {
         let open = open_waits(&current, &all);
         if !open.is_empty() {
-            return Err(TicketError::Refused(format!("{id} waits for {}: the Assistant takes it once those are done", open.join(", "))));
+            return Err(TicketError::Waits { id: id.to_string(), open });
         }
         if let Some(other) = all.iter().find(|t| t.id != id && !t.deleted && t.state == State::InProgress && t.worker == Some(Worker::Assistant)) {
             return Err(TicketError::Refused(format!("the Assistant works {} now: one ticket at a time", other.id)));
@@ -1070,7 +1079,8 @@ fn move_state(root: &Path, id: &str, seen: Option<u64>, to: State, actor: Actor)
     step(root, id, Line::new(actor, "moved"), seen, |ticket, line| {
         if to == State::Done {
             if let Some(why) = why_not_done(ticket, &all) {
-                return Err(TicketError::Refused(why.say(&ticket.id)));
+                let message = why.say(&ticket.id);
+                return Err(TicketError::NotDone { why, message });
             }
             line.action = "done";
             line.unchecked = unchecked(ticket);

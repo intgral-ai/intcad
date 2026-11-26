@@ -9,7 +9,7 @@ import { FileText, Paperclip, Plus } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TicketsState } from '../host';
 import { ask, hear, pictureUrl } from '../host';
-import { full, lines, MAX_TEXT, MAX_TITLE } from './shared';
+import { full, lines, MAX_TEXT, MAX_TITLE, refusalText } from './shared';
 import type { Full, Words } from './shared';
 import { StateIcon } from './status-icons';
 import { TicketList } from './TicketList';
@@ -56,7 +56,7 @@ function NewTicket({ state, words, parent, tickets, onClose }: { state: TicketsS
         <DialogBody className="flex flex-col gap-3">
           {refused && state.error && (
             <Notice variant="destructive">
-              <Notice.Message>{state.error}</Notice.Message>
+              <Notice.Message>{refusalText(state)}</Notice.Message>
             </Notice>
           )}
           <Field className="gap-1">

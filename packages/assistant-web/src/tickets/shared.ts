@@ -99,6 +99,29 @@ export function whyNotDone(ticket: Full, words: Words) {
   return why.kind === 'check' ? words.whyCheck : words.whyRecheck;
 }
 
+/** Why the host refused the last step, in the person's words where the host gave its kind; otherwise the store's own words. */
+export function refusalText(state: TicketsState) {
+  const why = state.refusal;
+  const words = state.strings;
+  if (!why) return state.error;
+  switch (why.kind) {
+    case 'stale':
+      return words.whyStale;
+    case 'subs':
+      return fill(words.whySubs, { n: String(why.ids.length) });
+    case 'check':
+      return words.whyCheck;
+    case 'recheck':
+      return words.whyRecheck;
+    case 'waits':
+      return fill(words.whyWaits, { ids: names(why.ids, state.language) });
+    case 'busy':
+      return fill(words.whyBusy, { id: why.id });
+    case 'offline':
+      return words.whyOffline;
+  }
+}
+
 /** Why the Assistant cannot take it: tickets it waits for (the store's list), no agent connected, or another ticket in its hands (one at a time). */
 export function whyNotAssistant(ticket: Full, state: TicketsState, tickets: Full[]) {
   const waits = ticket.openWaits;

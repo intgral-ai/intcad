@@ -12,7 +12,7 @@ import type { ReactNode } from 'react';
 import { useRef, useState } from 'react';
 import type { Ticket, TicketAction, TicketEvent, TicketStateName, TicketsState } from '../host';
 import { ask, lastTickets, pictureUrl, post } from '../host';
-import { childrenOf, fill, lines, MAX_TEXT, MAX_TITLE, moment, names, ordered, progress, stateWord, whyNotAssistant, whyNotDone } from './shared';
+import { childrenOf, fill, lines, MAX_TEXT, MAX_TITLE, moment, names, ordered, progress, refusalText, stateWord, whyNotAssistant, whyNotDone } from './shared';
 import type { Full, Words } from './shared';
 import { StateIcon } from './status-icons';
 import { AttachmentCard } from '@/ds/components/AttachmentCard';
@@ -132,6 +132,7 @@ function checkText({ ticket, state, words }: Page) {
     const nothing = ticket.checks && ticket.unchecked ? words.notChecked : null;
     return [nothing, `${words.checkTitle} ${check.run ?? ''}`.trim(), outcome, ...parts, now && now !== 'current' ? words.checkStale : null].filter(Boolean).join(' · ');
   }
+  if (ticket.checksOff && ticket.parts.length > 0) return words.checkOff;
   if (!ticket.checks) return `${words.notChecked} · ${words.noApplicableCheck}`;
   if (!check) return words.noCheck;
   if (check.state === 'asked') return words.checkAsked;
@@ -538,7 +539,7 @@ function Body({ page, properties, onAddSub }: { page: Page; properties: boolean;
     <>
       {state.error && (
         <Notice variant="destructive" className="mb-4">
-          <Notice.Message>{state.error}</Notice.Message>
+          <Notice.Message>{refusalText(state)}</Notice.Message>
         </Notice>
       )}
       <Editable value={ticket.title} label={words.fieldTitle} onSave={(title, then) => edit(page, { title }, then)}>

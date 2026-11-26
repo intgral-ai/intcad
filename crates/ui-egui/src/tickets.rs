@@ -39,6 +39,8 @@ pub struct State {
     pub record: Vec<Event>,
     /// Why the tickets could not be read or a button's step was refused.
     pub error: Option<String>,
+    /// A refusal the page says in the person's words (`{kind, …}`), alongside the store's `error`.
+    pub refusal: Option<serde_json::Value>,
     /// The ticket whose check run is in flight, and that run.
     pub checking: Option<(String, String)>,
     /// Each bound run's freshness now, read again when the design changes.
@@ -262,14 +264,32 @@ fn apply(app: &mut SolveApp, step: impl FnOnce(&std::path::Path) -> Result<Ticke
     match step(&root) {
         Ok(ticket) => {
             app.tickets.error = None;
+            app.tickets.refusal = None;
             refresh(app);
             Some(ticket)
         }
         Err(error) => {
+            app.tickets.refusal = refusal_of(&error);
             app.tickets.error = Some(error.to_string());
             None
         }
     }
+}
+
+/// A refusal a person can meet, as the page words it: its kind and what it names. Any other keeps
+/// only the store's words (`error`).
+#[cfg(not(target_arch = "wasm32"))]
+fn refusal_of(error: &tickets::TicketError) -> Option<serde_json::Value> {
+    use serde_json::json;
+    use tickets::{NotDone, TicketError};
+    Some(match error {
+        TicketError::Stale { id, .. } => json!({ "kind": "stale", "id": id }),
+        TicketError::NotDone { why: NotDone::Subs(ids), .. } => json!({ "kind": "subs", "ids": ids }),
+        TicketError::NotDone { why: NotDone::NoRun, .. } => json!({ "kind": "check" }),
+        TicketError::NotDone { why: NotDone::Recheck(why), .. } => json!({ "kind": "recheck", "why": why }),
+        TicketError::Waits { open, .. } => json!({ "kind": "waits", "ids": open }),
+        _ => return None,
+    })
 }
 
 /// Confirm (接受): a person's step on a draft they saw at revision `seen`; `with_subs`: its
@@ -327,10 +347,12 @@ pub fn ask_check(app: &mut SolveApp, id: &str, seen: u64) {
 pub fn start(app: &mut SolveApp, ctx: &egui::Context, id: &str, seen: u64) {
     if !connected(app) {
         app.tickets.error = Some(tr("ui.tickets_why_offline").to_string());
+        app.tickets.refusal = Some(serde_json::json!({ "kind": "offline" }));
         return;
     }
-    if let Some(other) = current(app).filter(|ticket| ticket.id != id) {
-        app.tickets.error = Some(trf("ui.tickets_one_at_a_time", &[("id", &other.id)]));
+    if let Some(other) = current(app).filter(|ticket| ticket.id != id).map(|ticket| ticket.id.clone()) {
+        app.tickets.refusal = Some(serde_json::json!({ "kind": "busy", "id": other }));
+        app.tickets.error = Some(trf("ui.tickets_one_at_a_time", &[("id", &other)]));
         return;
     }
     let Some(ticket) = apply(app, |root| tickets::start(root, id, seen)) else { return };
@@ -554,6 +576,7 @@ pub fn page_state(app: &mut SolveApp) -> String {
         "record": tickets.record,
         "freshness": tickets.freshness,
         "error": tickets.error,
+        "refusal": tickets.refusal,
         "answered": tickets.answered.map(|(n, ask, ok)| serde_json::json!({"n": n, "ask": ask, "ok": ok})),
         "expanded": tickets.expanded && tickets.selected.is_some(),
         "filter": tickets.filter,
@@ -621,6 +644,7 @@ pub fn receive(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> Result
     let ask = action.get("ask").and_then(serde_json::Value::as_u64);
     let kind = action.get("type").and_then(serde_json::Value::as_str).ok_or("no type")?;
     app.tickets.error = None;
+    app.tickets.refusal = None;
     let done = if kind.starts_with("ticket_") { act(app, ctx, kind, &action) } else { Err(format!("unknown action {kind}")) };
     app.tickets.answered = Some((n, ask, done.is_ok() && app.tickets.error.is_none()));
     ctx.request_repaint();
@@ -779,6 +803,7 @@ fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &serde_json:
         "ticket_ask_draft" => {
             if !connected(app) {
                 app.tickets.error = Some(tr("ui.tickets_why_offline").to_string());
+                app.tickets.refusal = Some(serde_json::json!({ "kind": "offline" }));
                 return Ok(());
             }
             if let Err(reason) = crate::agent_chat::send_with(app, ctx, tr("ui.tickets_ask_draft_message").to_string(), None)
@@ -981,6 +1006,8 @@ fn page_strings() -> serde_json::Map<String, serde_json::Value> {
         ("onlyThis", "ui.tickets_only_this"),
         ("whyRecheck", "ui.tickets_why_recheck"),
         ("withTicket", "ui.tickets_with_ticket"),
+        ("whyStale", "ui.tickets_why_stale"),
+        ("checkOff", "ui.tickets_check_off"),
     ]
     .into_iter()
     .map(|(name, key)| (name.to_string(), serde_json::Value::from(tr(key))))

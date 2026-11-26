@@ -36,8 +36,8 @@
     "ui.tickets_did_drafted": "drafted the ticket",
     "ui.tickets_did_created": "created the ticket",
     "ui.tickets_did_edited": "edited the ticket",
-    "ui.tickets_did_confirmed": "confirmed it",
-    "ui.tickets_did_started": "started it",
+    "ui.tickets_did_confirmed": "accepted it",
+    "ui.tickets_did_started": "handed it to the Assistant",
     "ui.tickets_did_check_asked": "asked for its check",
     "ui.tickets_did_check_started": "started the check",
     "ui.tickets_did_check_ran": "bound the check's run",
@@ -111,7 +111,9 @@
     "ui.tickets_only_this": "Only this one",
     "ui.tickets_why_recheck": "Changed after its check ran: run it again",
     "ui.tickets_with_ticket": "with {id}",
-    "ui.tickets_ask_draft_message": "Draft part tickets for this project from requirements.md: one ticket per piece of work."
+    "ui.tickets_ask_draft_message": "Draft part tickets for this project from requirements.md: one ticket per piece of work.",
+    "ui.tickets_why_stale": "It changed after you looked at it: look at it again",
+    "ui.tickets_check_off": "Not checked · switched off for this ticket"
   },
   "zh": {
     "ui.tickets_one_at_a_time": "{id} 正在进行。先做完它或等它的检查，再开始另一张。",
@@ -150,8 +152,8 @@
     "ui.tickets_did_drafted": "起草了这张票",
     "ui.tickets_did_created": "新建了这张票",
     "ui.tickets_did_edited": "编辑了这张票",
-    "ui.tickets_did_confirmed": "确认了它",
-    "ui.tickets_did_started": "开始了它",
+    "ui.tickets_did_confirmed": "接受了它",
+    "ui.tickets_did_started": "交给了助手",
     "ui.tickets_did_check_asked": "请求检查",
     "ui.tickets_did_check_started": "开始检查",
     "ui.tickets_did_check_ran": "绑定了检查的运行",
@@ -225,7 +227,9 @@
     "ui.tickets_only_this": "只接受这张",
     "ui.tickets_why_recheck": "检查后又改过，要再跑一次检查",
     "ui.tickets_with_ticket": "随 {id} 一起",
-    "ui.tickets_ask_draft_message": "根据 requirements.md 为这个项目起草部件票：每件要做的事一张。"
+    "ui.tickets_ask_draft_message": "根据 requirements.md 为这个项目起草部件票：每件要做的事一张。",
+    "ui.tickets_why_stale": "它在你看过之后改过了，请再看一遍",
+    "ui.tickets_check_off": "不检查 · 已关掉"
   },
   "ja": {
     "ui.tickets_one_at_a_time": "{id} が進行中です。終えるかチェックを待ってから次を開始してください。",
@@ -264,8 +268,8 @@
     "ui.tickets_did_drafted": "がチケットを下書き",
     "ui.tickets_did_created": "がチケットを作成",
     "ui.tickets_did_edited": "がチケットを編集",
-    "ui.tickets_did_confirmed": "が確認",
-    "ui.tickets_did_started": "が開始",
+    "ui.tickets_did_confirmed": "受け入れました",
+    "ui.tickets_did_started": "アシスタントに渡しました",
     "ui.tickets_did_check_asked": "がチェックを依頼",
     "ui.tickets_did_check_started": "がチェックを開始",
     "ui.tickets_did_check_ran": "がチェックの実行を紐付け",
@@ -339,7 +343,9 @@
     "ui.tickets_only_this": "これだけ",
     "ui.tickets_why_recheck": "チェック後に変更されました。もう一度実行してください",
     "ui.tickets_with_ticket": "{id} と一緒に",
-    "ui.tickets_ask_draft_message": "requirements.md からこのプロジェクトの部品チケットを起草してください。作業ごとに 1 枚です。"
+    "ui.tickets_ask_draft_message": "requirements.md からこのプロジェクトの部品チケットを起草してください。作業ごとに 1 枚です。",
+    "ui.tickets_why_stale": "表示した後に変更されました。もう一度確認してください",
+    "ui.tickets_check_off": "チェックしない · このチケットではオフ"
   },
   "de": {
     "ui.tickets_one_at_a_time": "{id} ist in Arbeit. Schließen Sie es ab oder warten Sie auf seine Prüfung, bevor Sie ein weiteres starten.",
@@ -378,8 +384,8 @@
     "ui.tickets_did_drafted": "hat das Ticket entworfen",
     "ui.tickets_did_created": "hat das Ticket angelegt",
     "ui.tickets_did_edited": "hat das Ticket bearbeitet",
-    "ui.tickets_did_confirmed": "hat es bestätigt",
-    "ui.tickets_did_started": "hat es gestartet",
+    "ui.tickets_did_confirmed": "hat es angenommen",
+    "ui.tickets_did_started": "hat es dem Assistenten übergeben",
     "ui.tickets_did_check_asked": "hat die Prüfung angefordert",
     "ui.tickets_did_check_started": "hat die Prüfung gestartet",
     "ui.tickets_did_check_ran": "hat den Prüflauf verknüpft",
@@ -453,7 +459,9 @@
     "ui.tickets_only_this": "Nur dieses",
     "ui.tickets_why_recheck": "Nach der Prüfung geändert: erneut prüfen",
     "ui.tickets_with_ticket": "mit {id}",
-    "ui.tickets_ask_draft_message": "Entwirf Teile-Tickets für dieses Projekt aus requirements.md: ein Ticket pro Arbeitsschritt."
+    "ui.tickets_ask_draft_message": "Entwirf Teile-Tickets für dieses Projekt aus requirements.md: ein Ticket pro Arbeitsschritt.",
+    "ui.tickets_why_stale": "Es hat sich geändert, seit du es angesehen hast: sieh es dir noch einmal an",
+    "ui.tickets_check_off": "Nicht geprüft · für dieses Ticket ausgeschaltet"
   },
   "ko": {
     "ui.tickets_one_at_a_time": "{id}이(가) 진행 중입니다. 끝내거나 검사를 기다린 뒤 다른 티켓을 시작하세요.",
@@ -492,8 +500,8 @@
     "ui.tickets_did_drafted": "이(가) 티켓 초안 작성",
     "ui.tickets_did_created": "이(가) 티켓 생성",
     "ui.tickets_did_edited": "이(가) 티켓 편집",
-    "ui.tickets_did_confirmed": "이(가) 확인",
-    "ui.tickets_did_started": "이(가) 시작",
+    "ui.tickets_did_confirmed": "수락했습니다",
+    "ui.tickets_did_started": "어시스턴트에게 넘겼습니다",
     "ui.tickets_did_check_asked": "이(가) 검사 요청",
     "ui.tickets_did_check_started": "이(가) 검사 시작",
     "ui.tickets_did_check_ran": "이(가) 검사 실행 연결",
@@ -567,7 +575,9 @@
     "ui.tickets_only_this": "이것만",
     "ui.tickets_why_recheck": "검사 후 변경됨: 다시 실행하세요",
     "ui.tickets_with_ticket": "{id}와 함께",
-    "ui.tickets_ask_draft_message": "requirements.md를 바탕으로 이 프로젝트의 부품 티켓 초안을 작성해 주세요. 작업 하나에 티켓 하나입니다."
+    "ui.tickets_ask_draft_message": "requirements.md를 바탕으로 이 프로젝트의 부품 티켓 초안을 작성해 주세요. 작업 하나에 티켓 하나입니다.",
+    "ui.tickets_why_stale": "확인한 뒤에 바뀌었습니다. 다시 확인하세요",
+    "ui.tickets_check_off": "검사 안 함 · 이 티켓에서 꺼짐"
   },
   "ar": {
     "ui.tickets_one_at_a_time": "{id} قيد التنفيذ. أنهِها أو انتظر فحصها قبل بدء أخرى.",
@@ -606,8 +616,8 @@
     "ui.tickets_did_drafted": "صاغ التذكرة",
     "ui.tickets_did_created": "أنشأ التذكرة",
     "ui.tickets_did_edited": "حرّر التذكرة",
-    "ui.tickets_did_confirmed": "أكّدها",
-    "ui.tickets_did_started": "بدأها",
+    "ui.tickets_did_confirmed": "قبلها",
+    "ui.tickets_did_started": "سلّمها إلى المساعد",
     "ui.tickets_did_check_asked": "طلب فحصها",
     "ui.tickets_did_check_started": "بدأ الفحص",
     "ui.tickets_did_check_ran": "ربط تشغيل الفحص",
@@ -681,7 +691,9 @@
     "ui.tickets_only_this": "هذه فقط",
     "ui.tickets_why_recheck": "تغيّرت بعد فحصها: شغّله مجددًا",
     "ui.tickets_with_ticket": "مع {id}",
-    "ui.tickets_ask_draft_message": "اكتب مسودات تذاكر القطع لهذا المشروع من requirements.md: تذكرة لكل عمل."
+    "ui.tickets_ask_draft_message": "اكتب مسودات تذاكر القطع لهذا المشروع من requirements.md: تذكرة لكل عمل.",
+    "ui.tickets_why_stale": "تغيّرت بعد أن نظرت إليها: انظر إليها مجددًا",
+    "ui.tickets_check_off": "بلا فحص · أُوقف لهذه التذكرة"
   },
   "he": {
     "ui.tickets_one_at_a_time": "{id} בעבודה. סיימו אותו או חכו לבדיקה שלו לפני שמתחילים אחר.",
@@ -720,8 +732,8 @@
     "ui.tickets_did_drafted": "ניסח את הכרטיס",
     "ui.tickets_did_created": "יצר את הכרטיס",
     "ui.tickets_did_edited": "ערך את הכרטיס",
-    "ui.tickets_did_confirmed": "אישר אותו",
-    "ui.tickets_did_started": "התחיל אותו",
+    "ui.tickets_did_confirmed": "קיבל אותו",
+    "ui.tickets_did_started": "העביר אותו לעוזר",
     "ui.tickets_did_check_asked": "ביקש את הבדיקה",
     "ui.tickets_did_check_started": "התחיל את הבדיקה",
     "ui.tickets_did_check_ran": "קשר את הרצת הבדיקה",
@@ -795,7 +807,9 @@
     "ui.tickets_only_this": "רק את זה",
     "ui.tickets_why_recheck": "השתנה אחרי הבדיקה: הרץ שוב",
     "ui.tickets_with_ticket": "יחד עם {id}",
-    "ui.tickets_ask_draft_message": "נסח כרטיסי חלקים לפרויקט הזה מתוך requirements.md: כרטיס אחד לכל עבודה."
+    "ui.tickets_ask_draft_message": "נסח כרטיסי חלקים לפרויקט הזה מתוך requirements.md: כרטיס אחד לכל עבודה.",
+    "ui.tickets_why_stale": "הוא השתנה אחרי שהסתכלת עליו: הסתכל שוב",
+    "ui.tickets_check_off": "ללא בדיקה · כובתה לכרטיס הזה"
   },
   "vi": {
     "ui.tickets_one_at_a_time": "{id} đang làm. Hãy hoàn thành hoặc chờ kiểm tra của nó trước khi bắt đầu phiếu khác.",
@@ -834,8 +848,8 @@
     "ui.tickets_did_drafted": "đã soạn phiếu",
     "ui.tickets_did_created": "đã tạo phiếu",
     "ui.tickets_did_edited": "đã sửa phiếu",
-    "ui.tickets_did_confirmed": "đã xác nhận",
-    "ui.tickets_did_started": "đã bắt đầu",
+    "ui.tickets_did_confirmed": "đã chấp nhận",
+    "ui.tickets_did_started": "đã giao cho trợ lý",
     "ui.tickets_did_check_asked": "đã yêu cầu kiểm tra",
     "ui.tickets_did_check_started": "đã bắt đầu kiểm tra",
     "ui.tickets_did_check_ran": "đã gắn lần chạy kiểm tra",
@@ -909,6 +923,8 @@
     "ui.tickets_only_this": "Chỉ phiếu này",
     "ui.tickets_why_recheck": "Đã thay đổi sau khi kiểm tra: chạy lại",
     "ui.tickets_with_ticket": "cùng {id}",
-    "ui.tickets_ask_draft_message": "Soạn phiếu chi tiết cho dự án này từ requirements.md: mỗi việc một phiếu."
+    "ui.tickets_ask_draft_message": "Soạn phiếu chi tiết cho dự án này từ requirements.md: mỗi việc một phiếu.",
+    "ui.tickets_why_stale": "Phiếu đã thay đổi sau khi bạn xem: hãy xem lại",
+    "ui.tickets_check_off": "Không kiểm tra · đã tắt cho phiếu này"
   }
 }
