@@ -13,7 +13,7 @@ use solidcraft_engine::entitlement::CredentialStore;
 
 use crate::credentials::{MAX_ACCOUNT_BYTES, safe_token};
 use crate::http::{Secret, WireConnection};
-use crate::identity_journal::{AttemptRecord, IdentityJournal, JournalError, RevocationRecord};
+use crate::identity_journal::{AttemptRecord, CurrentLoginRecord, IdentityJournal, JournalError, RevocationRecord};
 use crate::identity_store::{CredentialIdentityStore, IdentityStore, IdentityStoreError, StoredIdentity};
 use crate::identity_transport::{IdentityTransport, RefreshResponse, RefreshTransportError, UreqIdentityTransport, UreqRefreshHttp};
 use crate::token_expiry::access_token_expiry_unix;
@@ -80,6 +80,9 @@ pub trait IdentityClock: Send + Sync {
 
     #[cfg(test)]
     fn before_refresh_lock(&self, _: IdentityTrigger) {}
+
+    #[cfg(test)]
+    fn on_local_refresh_contention(&self) {}
 
     #[cfg(test)]
     fn after_attempt_write(&self) {}
@@ -350,14 +353,20 @@ impl IdentityLifecycle {
         let mut store = self.store()?;
         let old = self.load(store.as_ref())?;
         let revoked = self.read_revocation()?;
-        let high_water = self.last_login_generation.load(Ordering::Acquire).max(revoked);
+        // Explicit login can replace a torn publication. The store and revocation
+        // still bound the next generation, and peers still reject a corrupt journal.
+        let current = match self.journal.read_current_login() {
+            Ok(record) => self.current_login_generation(record)?,
+            Err(JournalError::Corrupt) => 0,
+            Err(error) => return Err(error.into()),
+        };
+        let retiring = current.max(old.as_ref().map_or(0, |record| record.login_generation));
+        let high_water = self.last_login_generation.load(Ordering::Acquire).max(revoked).max(retiring);
         let login_generation = high_water.checked_add(1).ok_or(IdentityError::Storage)?;
         // Retire the old login before reusing its generation-1 key names. The tombstone
         // also prevents generation reuse by another process if delete or adoption is interrupted.
-        if let Some(old) = old
-            && old.login_generation > revoked
-        {
-            self.write_revocation(old.login_generation)?;
+        if retiring > revoked {
+            self.write_revocation(retiring)?;
         }
         store.delete()?;
         let record = StoredIdentity {
@@ -379,6 +388,7 @@ impl IdentityLifecycle {
         // Clear the old attempt before publishing a leaseable record.
         self.clear_attempt()?;
         store.activate(&record)?;
+        self.journal.write_current_login(&CurrentLoginRecord { version: RECORD_VERSION, domain: record.domain, login_generation })?;
         self.revoked.store(false, Ordering::Release);
         Ok(())
     }
@@ -400,7 +410,7 @@ impl IdentityLifecycle {
 
         #[cfg(test)]
         self.clock.before_refresh_lock(trigger);
-        let _local = lock_refresh(&self.refresh, &wait)?;
+        let _local = self.lock_refresh(&wait)?;
         let _file = lock_file(&self.lock_dir.join("refresh.lock"), &wait)?;
         let snapshot = {
             let _barrier = self.barrier_lock(&wait)?;
@@ -433,8 +443,10 @@ impl IdentityLifecycle {
             self.revoked.store(true, Ordering::Release);
             let store = self.store()?;
             // An unreadable store might contain a newer login that we have never seen.
-            let generation =
-                self.load(store.as_ref())?.map_or_else(|| self.last_login_generation.load(Ordering::Acquire), |record| record.login_generation);
+            let generation = self
+                .load(store.as_ref())?
+                .map_or_else(|| self.last_login_generation.load(Ordering::Acquire), |record| record.login_generation)
+                .max(self.read_current_login()?);
             if generation == 0 {
                 return Ok(SignOutOutcome { credentials_cleared: true });
             }
@@ -487,6 +499,13 @@ impl IdentityLifecycle {
             return Err(IdentityError::Transient);
         }
         let response = self.transport.refresh(self.domain.client_id(), &refresh_token);
+        self.check_local_barrier()?;
+        // Cleanup can hold the barrier lock after the peer publishes revocation.
+        // Check before waiting; the snapshot under the lock still gates all writes.
+        let revoked = self.read_revocation()?;
+        if revoked >= attempt.login_generation {
+            return Err(if self.read_current_login()? > revoked { IdentityError::SessionChanged } else { IdentityError::SignedOut });
+        }
         let pending = {
             let _barrier = self.barrier_lock(wait)?;
             let mut store = self.store()?;
@@ -759,11 +778,15 @@ impl IdentityLifecycle {
 
     fn current_record(&self, store: &dyn IdentityStore) -> Result<StoredIdentity, IdentityError> {
         self.check_local_barrier()?;
-        let record = self.load(store)?;
         let revoked = self.read_revocation()?;
-        let record = record.ok_or(IdentityError::SignedOut)?;
-        if record.login_generation <= revoked {
+        let current = self.read_current_login()?;
+        if revoked != 0 && current <= revoked {
             return Err(IdentityError::SignedOut);
+        }
+        let record = self.load(store)?.ok_or(IdentityError::SignedOut)?;
+        // Credentials may have been activated just before an interrupted publication.
+        if record.login_generation != current {
+            return Err(IdentityError::Storage);
         }
         Ok(record)
     }
@@ -801,6 +824,20 @@ impl IdentityLifecycle {
         Ok(record.login_generation)
     }
 
+    fn read_current_login(&self) -> Result<u64, IdentityError> {
+        self.current_login_generation(self.journal.read_current_login()?)
+    }
+
+    fn current_login_generation(&self, record: Option<CurrentLoginRecord>) -> Result<u64, IdentityError> {
+        let Some(record) = record else {
+            return Ok(0);
+        };
+        if record.version != RECORD_VERSION || record.domain != self.domain.storage_key() || record.login_generation == 0 {
+            return Err(IdentityError::Storage);
+        }
+        Ok(record.login_generation)
+    }
+
     fn write_revocation(&self, login_generation: u64) -> Result<(), IdentityError> {
         self.journal.write_revocation(&RevocationRecord {
             version: RECORD_VERSION,
@@ -811,8 +848,22 @@ impl IdentityLifecycle {
         Ok(())
     }
 
-    fn barrier_lock(&self, wait: &LockWait) -> Result<File, IdentityError> {
+    fn barrier_lock(&self, wait: &LockWait) -> Result<FileLock, IdentityError> {
         lock_file(&self.lock_dir.join("barrier.lock"), wait)
+    }
+
+    fn lock_refresh(&self, wait: &LockWait) -> Result<MutexGuard<'_, ()>, IdentityError> {
+        loop {
+            match self.refresh.try_lock() {
+                Ok(guard) => return Ok(guard),
+                Err(MutexTryLockError::WouldBlock) => {
+                    #[cfg(test)]
+                    self.clock.on_local_refresh_contention();
+                    wait.poll()?;
+                }
+                Err(MutexTryLockError::Poisoned(_)) => return Err(IdentityError::Busy),
+            }
+        }
     }
 }
 
@@ -838,21 +889,21 @@ impl LockWait {
     }
 }
 
-fn lock_refresh<'a>(mutex: &'a Mutex<()>, wait: &LockWait) -> Result<MutexGuard<'a, ()>, IdentityError> {
-    loop {
-        match mutex.try_lock() {
-            Ok(guard) => return Ok(guard),
-            Err(MutexTryLockError::WouldBlock) => wait.poll()?,
-            Err(MutexTryLockError::Poisoned(_)) => return Err(IdentityError::Busy),
-        }
+struct FileLock(File);
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        // On Unix, a concurrent fork can keep the open file description alive until exec.
+        // Release the lock at the end of this critical section, not at the last close.
+        let _ = self.0.unlock();
     }
 }
 
-fn lock_file(path: &Path, wait: &LockWait) -> Result<File, IdentityError> {
+fn lock_file(path: &Path, wait: &LockWait) -> Result<FileLock, IdentityError> {
     let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path).map_err(|_| IdentityError::Busy)?;
     loop {
         match file.try_lock() {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok(FileLock(file)),
             Err(TryLockError::WouldBlock) => wait.poll()?,
             Err(TryLockError::Error(_)) => return Err(IdentityError::Busy),
         }

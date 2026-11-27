@@ -3,7 +3,8 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use std::time::Duration;
 
 use crate::http::Secret;
@@ -14,12 +15,15 @@ use crate::identity_transport::{IdentityTransport, RefreshResponse, RefreshTrans
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 const WAIT: Duration = Duration::from_secs(1);
+const RACE_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 struct Clock {
     wall: AtomicU64,
     millis: AtomicU64,
     on_resume_before_lock: Mutex<Option<SendHook>>,
+    on_background_before_lock: Mutex<Option<SendHook>>,
+    on_local_refresh_contention: Mutex<Option<SendHook>>,
     on_attempt_write: Mutex<Option<SendHook>>,
 }
 
@@ -33,16 +37,26 @@ impl IdentityClock for Arc<Clock> {
     }
 
     fn before_refresh_lock(&self, trigger: IdentityTrigger) {
-        if trigger == IdentityTrigger::Resume {
-            let hook = self.on_resume_before_lock.lock().unwrap().take();
-            if let Some(hook) = hook {
-                hook();
-            }
+        let hooks = match trigger {
+            IdentityTrigger::Resume => &self.on_resume_before_lock,
+            IdentityTrigger::Background => &self.on_background_before_lock,
+            _ => return,
+        };
+        let hook = hooks.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
         }
     }
 
     fn after_attempt_write(&self) {
         let hook = self.on_attempt_write.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+
+    fn on_local_refresh_contention(&self) {
+        let hook = self.on_local_refresh_contention.lock().unwrap().take();
         if let Some(hook) = hook {
             hook();
         }
@@ -62,8 +76,10 @@ impl Clock {
 #[derive(Default)]
 struct StoreState {
     record: Option<StoredIdentity>,
+    reads: usize,
     unreadable: bool,
     fail_delete: bool,
+    on_delete: Option<SendHook>,
     events: Vec<(&'static str, Option<u64>)>,
 }
 
@@ -71,7 +87,8 @@ struct Store(Arc<Mutex<StoreState>>, PathBuf);
 
 impl IdentityStore for Store {
     fn load(&self) -> Result<Option<StoredIdentity>, IdentityStoreError> {
-        let state = self.0.lock().unwrap();
+        let mut state = self.0.lock().unwrap();
+        state.reads += 1;
         if state.unreadable { Err(IdentityStoreError::Unavailable) } else { Ok(state.record.clone()) }
     }
 
@@ -98,6 +115,9 @@ impl IdentityStore for Store {
         let mut state = self.0.lock().unwrap();
         let revoked = IdentityJournal::new(self.1.clone()).unwrap().read_revocation().unwrap();
         state.events.push(("delete", revoked.map(|record| record.login_generation)));
+        if let Some(hook) = state.on_delete.take() {
+            hook();
+        }
         if state.fail_delete {
             return Err(IdentityStoreError::Unavailable);
         }
@@ -266,10 +286,480 @@ fn an_expiring_identity_is_refreshed_once_and_activated_with_a_matching_binding(
     assert_eq!((lease.login_generation(), lease.token_generation(), lease.expires_at_unix_seconds()), (1, 2, 290));
     assert_eq!(f.ensure().unwrap().token_generation(), 2);
     assert_eq!(f.refreshes(), 1);
+    assert_eq!(f.journal().read_current_login().unwrap().unwrap().login_generation, 1);
     assert_eq!(
         f.lifecycle.status(),
         IdentityStatus::Active { account_id: "verified".to_owned(), login_generation: 1, token_generation: 2, expires_at_unix: 290 }
     );
+}
+
+fn block_transport(script: &Script) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+    let (entered, wait_for_send) = mpsc::channel();
+    let (release, wait_for_release) = mpsc::channel();
+    *script.on_send.lock().unwrap() = Some(Box::new(move || {
+        entered.send(()).unwrap();
+        wait_for_release.recv_timeout(RACE_WAIT).unwrap();
+    }));
+    (wait_for_send, release)
+}
+
+#[cfg(unix)]
+fn observe_background_contender(clock: &Clock) -> mpsc::Receiver<()> {
+    let (entered, wait_for_entry) = mpsc::channel();
+    *clock.on_background_before_lock.lock().unwrap() = Some(Box::new(move || entered.send(()).unwrap()));
+    wait_for_entry
+}
+
+#[test]
+fn a_concurrent_refresh_calls_the_transport_once() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    f.success();
+    f.verifies(Some("binding"));
+    let (sent, release) = block_transport(&f.script);
+
+    let first = f.lifecycle.clone();
+    let first = thread::spawn(move || first.ensure(IdentityTrigger::Background, RACE_WAIT));
+    sent.recv_timeout(RACE_WAIT).unwrap();
+    let (contended, wait_for_contention) = mpsc::channel();
+    *f.clock.on_local_refresh_contention.lock().unwrap() = Some(Box::new(move || contended.send(()).unwrap()));
+    let second = f.lifecycle.clone();
+    let second = thread::spawn(move || second.ensure(IdentityTrigger::Background, RACE_WAIT));
+    wait_for_contention.recv_timeout(RACE_WAIT).unwrap();
+    release.send(()).unwrap();
+
+    for call in [first, second] {
+        let lease = call.join().unwrap().unwrap();
+        assert_eq!((lease.login_generation(), lease.token_generation()), (1, 2));
+        assert_eq!(lease.access_token().expose_secret(), "new-access");
+    }
+    assert_eq!(f.refreshes(), 1);
+}
+
+#[test]
+fn sign_out_during_a_refresh_discards_the_late_success() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    f.success();
+    let (sent, release) = block_transport(&f.script);
+    let refresh = f.lifecycle.clone();
+    let refresh = thread::spawn(move || refresh.ensure(IdentityTrigger::Background, RACE_WAIT));
+    sent.recv_timeout(RACE_WAIT).unwrap();
+
+    let events_before = f.store.lock().unwrap().events.len();
+    assert!(f.lifecycle.clone().sign_out().unwrap().credentials_cleared);
+    release.send(()).unwrap();
+    assert_eq!(refresh.join().unwrap().unwrap_err(), IdentityError::SignedOut);
+    let store = f.store.lock().unwrap();
+    assert!(store.record.is_none());
+    assert_eq!(&store.events[events_before..], &[("delete", Some(1))]);
+    assert_eq!(f.refreshes(), 1);
+}
+
+#[test]
+fn a_late_refresh_observes_peer_logout_while_cleanup_holds_the_barrier_lock() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    f.success();
+    let (sent, release_response) = block_transport(&f.script);
+    let refresh = f.lifecycle.clone();
+    let refresh = thread::spawn(move || refresh.ensure(IdentityTrigger::Background, Duration::ZERO));
+    sent.recv_timeout(RACE_WAIT).unwrap();
+
+    let (deleting, wait_for_delete) = mpsc::channel();
+    let (release_delete, wait_for_release) = mpsc::channel();
+    f.store.lock().unwrap().on_delete = Some(Box::new(move || {
+        deleting.send(()).unwrap();
+        wait_for_release.recv_timeout(RACE_WAIT).unwrap();
+    }));
+    let peer = f.restarted(); // Separate lifecycle, with no shared local revocation flag.
+    let logout = thread::spawn(move || peer.sign_out());
+    wait_for_delete.recv_timeout(RACE_WAIT).unwrap();
+    release_response.send(()).unwrap();
+    let result = refresh.join().unwrap();
+    release_delete.send(()).unwrap();
+    assert!(logout.join().unwrap().unwrap().credentials_cleared);
+    assert_eq!(result.unwrap_err(), IdentityError::SignedOut);
+    assert!(f.store.lock().unwrap().record.is_none());
+    assert_eq!(f.refreshes(), 1);
+}
+
+#[test]
+fn a_current_logout_is_resolved_without_a_store_read() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.lifecycle.sign_out().unwrap();
+    let peer = f.restarted();
+    let reads = {
+        let mut store = f.store.lock().unwrap();
+        store.unreadable = true;
+        store.reads
+    };
+    assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::SignedOut);
+    assert_eq!(peer.status(), IdentityStatus::SignedOut);
+    assert_eq!(f.store.lock().unwrap().reads, reads);
+
+    // A durable revocation is enough even when no current generation was published.
+    std::fs::remove_file(f.root.join("identity/current.0")).unwrap();
+    assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::SignedOut);
+    assert_eq!(peer.status(), IdentityStatus::SignedOut);
+    assert_eq!(f.store.lock().unwrap().reads, reads);
+}
+
+#[test]
+fn a_newer_login_generation_can_still_reach_the_store_after_an_older_revocation() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.lifecycle.sign_out().unwrap();
+    f.login().unwrap();
+    let peer = f.restarted();
+    let reads = {
+        let mut store = f.store.lock().unwrap();
+        store.unreadable = true;
+        store.reads
+    };
+    assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::Storage);
+    assert_eq!(peer.status(), IdentityStatus::Recovering);
+    {
+        let mut store = f.store.lock().unwrap();
+        assert_eq!(store.reads, reads + 2);
+        store.unreadable = false;
+    }
+    assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap().login_generation(), 2);
+
+    // Simulate an activated but unpublished store record alongside an unrevoked
+    // journal generation; it must not become leaseable.
+    f.store.lock().unwrap().record.as_mut().unwrap().login_generation = 3;
+    assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::Storage);
+    assert_eq!(peer.status(), IdentityStatus::Recovering);
+}
+
+#[test]
+fn a_torn_first_current_publication_can_be_repaired_by_a_new_login() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    let journal = f.journal();
+    let slot = f.root.join("identity/current.0");
+    std::fs::write(slot, b"intcad-identity-journal/1\n1\n").unwrap();
+    assert!(matches!(journal.read_current_login(), Err(crate::identity_journal::JournalError::Corrupt)));
+
+    let peer = f.restarted();
+    assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::Storage);
+    assert_eq!(peer.status(), IdentityStatus::Recovering);
+
+    f.restarted().adopt_login("provider", Secret::new("old-access"), Secret::new("old-refresh"), 100, 200, "binding").unwrap();
+    assert_eq!(journal.read_current_login().unwrap().unwrap().login_generation, 2);
+    assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap().login_generation(), 2);
+    assert!(matches!(peer.status(), IdentityStatus::Active { login_generation: 2, .. }));
+}
+
+#[test]
+fn an_activated_login_without_a_published_generation_is_not_leaseable() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    let target = f.root.join("identity/current.1");
+    std::fs::create_dir(&target).unwrap(); // Block publication of login 2.
+    assert_eq!(f.login().unwrap_err(), IdentityError::Storage);
+    assert!(!f.record().pending);
+    assert_eq!(f.record().login_generation, 2);
+    assert_eq!(f.journal().read_current_login().unwrap().unwrap().login_generation, 1);
+
+    let peer = f.restarted();
+    let reads = f.store.lock().unwrap().reads;
+    assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::SignedOut);
+    assert_eq!(peer.status(), IdentityStatus::SignedOut);
+    assert_eq!(f.store.lock().unwrap().reads, reads);
+
+    std::fs::remove_dir(target).unwrap();
+    f.login().unwrap();
+    assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap().login_generation(), 3);
+}
+
+#[cfg(unix)]
+mod process {
+    use super::*;
+    use serde_json::{Value, json};
+    use std::fs::{self, File, OpenOptions, TryLockError};
+    use std::io::ErrorKind;
+    use std::path::Path;
+    use std::process::{Child, Command, Stdio};
+    use std::time::Instant;
+
+    const POLL: Duration = Duration::from_millis(10);
+
+    #[derive(Clone)]
+    struct FileStore {
+        path: PathBuf,
+        unavailable: bool,
+    }
+
+    impl FileStore {
+        fn mutation_lock(&self) -> File {
+            let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(self.path.with_extension("lock")).unwrap();
+            file.lock().unwrap();
+            file
+        }
+
+        fn write(&self, record: &StoredIdentity, pending: bool) {
+            let _lock = self.mutation_lock();
+            let data = json!({
+                "version": record.version,
+                "domain": record.domain,
+                "login_generation": record.login_generation,
+                "token_generation": record.token_generation,
+                "provider_account_id": record.provider_account_id,
+                "verified_account_id": record.verified_account_id,
+                "access_token": record.access_token,
+                "refresh_token": record.refresh_token,
+                "issued_at_unix": record.issued_at_unix,
+                "expires_at_unix": record.expires_at_unix,
+                "session_binding": record.session_binding,
+                "pending": pending,
+            });
+            let temp = self.path.with_extension("tmp");
+            fs::write(&temp, data.to_string()).unwrap();
+            fs::rename(temp, &self.path).unwrap();
+        }
+    }
+
+    fn field<T: serde::de::DeserializeOwned>(data: &Value, name: &str) -> T {
+        serde_json::from_value(data[name].clone()).unwrap()
+    }
+
+    impl IdentityStore for FileStore {
+        fn load(&self) -> Result<Option<StoredIdentity>, IdentityStoreError> {
+            if self.unavailable {
+                use std::io::Write as _;
+                OpenOptions::new().append(true).create(true).open(self.path.with_extension("reads")).unwrap().write_all(b"1\n").unwrap();
+                return Err(IdentityStoreError::Unavailable);
+            }
+            let data = match fs::read(&self.path) {
+                Ok(bytes) => serde_json::from_slice(&bytes).unwrap(),
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+                Err(error) => panic!("read test store: {error}"),
+            };
+            Ok(Some(StoredIdentity {
+                version: field(&data, "version"),
+                domain: field(&data, "domain"),
+                login_generation: field(&data, "login_generation"),
+                token_generation: field(&data, "token_generation"),
+                provider_account_id: field(&data, "provider_account_id"),
+                verified_account_id: field(&data, "verified_account_id"),
+                access_token: field(&data, "access_token"),
+                refresh_token: field(&data, "refresh_token"),
+                issued_at_unix: field(&data, "issued_at_unix"),
+                expires_at_unix: field(&data, "expires_at_unix"),
+                session_binding: field(&data, "session_binding"),
+                pending: field(&data, "pending"),
+            }))
+        }
+
+        fn store_pending(&mut self, record: &StoredIdentity) -> Result<(), IdentityStoreError> {
+            self.write(record, true);
+            Ok(())
+        }
+
+        fn activate(&mut self, record: &StoredIdentity) -> Result<(), IdentityStoreError> {
+            self.write(record, false);
+            Ok(())
+        }
+
+        fn delete(&mut self) -> Result<(), IdentityStoreError> {
+            let _lock = self.mutation_lock();
+            match fs::remove_file(&self.path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => panic!("delete test store: {error}"),
+            }
+            Ok(())
+        }
+    }
+
+    struct FileScript(PathBuf);
+
+    impl IdentityTransport for FileScript {
+        fn refresh(&self, client_id: &str, token: &Secret) -> Reply {
+            assert_eq!(client_id, "client");
+            assert_eq!(token.expose_secret(), "old-refresh");
+            let consumed = self.0.join("response.consumed");
+            // The rename consumes the only response and tells the parent we entered transport.
+            fs::rename(self.0.join("response.json"), &consumed).unwrap();
+            let started = Instant::now();
+            while !self.0.join("response.release").exists() {
+                assert!(started.elapsed() < RACE_WAIT, "parent did not release the response");
+                thread::sleep(POLL);
+            }
+            let data: Value = serde_json::from_slice(&fs::read(consumed).unwrap()).unwrap();
+            Ok(RefreshResponse {
+                access_token: Secret::new(field::<String>(&data, "access_token")),
+                refresh_token: Secret::new(field::<String>(&data, "refresh_token")),
+                provider_account_id: field(&data, "provider_account_id"),
+                expires_in: Some(Duration::from_secs(field(&data, "expires_in"))),
+            })
+        }
+    }
+
+    impl SessionVerifier for FileScript {
+        fn verify(&self, token: &Secret) -> Verify {
+            assert_eq!(token.expose_secret(), "new-access");
+            Ok(VerifiedSession { account_id: "verified".to_owned(), same_login_binding: Some("binding".to_owned()) })
+        }
+    }
+
+    fn lifecycle(root: &Path, store: FileStore, clock: Arc<Clock>) -> IdentityLifecycle {
+        IdentityLifecycle::with_identity_store(
+            IdentityDomain::new("test", "client", "https://product.example").unwrap(),
+            Box::new(store),
+            Box::new(FileScript(root.to_owned())),
+            Box::new(FileScript(root.to_owned())),
+            Box::new(clock),
+            root.to_owned(),
+        )
+        .unwrap()
+    }
+
+    struct Peer(Option<Child>, Instant);
+
+    impl Peer {
+        fn spawn(root: &Path, mode: &str, store: &Path) -> Self {
+            let child = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "identity_tests::child_process_helper", "--nocapture"])
+                .env("INTCAD_IDENTITY_CHILD_ROOT", root)
+                .env("INTCAD_IDENTITY_CHILD_MODE", mode)
+                .env("INTCAD_IDENTITY_CHILD_STORE", store)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            Self(Some(child), Instant::now())
+        }
+
+        fn exited(&mut self) -> bool {
+            if self.0.as_mut().unwrap().try_wait().unwrap().is_some() {
+                return true;
+            }
+            assert!(self.1.elapsed() < RACE_WAIT, "identity child timed out");
+            false
+        }
+
+        fn status(mut self) -> Value {
+            while !self.exited() {
+                thread::sleep(POLL);
+            }
+            let output = self.0.take().unwrap().wait_with_output().unwrap();
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            assert!(output.status.success(), "identity child failed: {stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+            let mut lines = stdout.lines().filter_map(|line| serde_json::from_str(line).ok());
+            let status = lines.next().unwrap_or_else(|| panic!("no JSON status in child output: {stdout}"));
+            assert!(lines.next().is_none(), "more than one JSON status line: {stdout}");
+            status
+        }
+    }
+
+    impl Drop for Peer {
+        fn drop(&mut self) {
+            if let Some(child) = &mut self.0 {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    pub(super) fn child(root: PathBuf) {
+        let mode = std::env::var("INTCAD_IDENTITY_CHILD_MODE").unwrap();
+        assert!(matches!(mode.as_str(), "refresh" | "barrier"));
+        let path = std::env::var_os("INTCAD_IDENTITY_CHILD_STORE").unwrap().into();
+        let clock = Arc::new(Clock::default());
+        clock.set_wall(170);
+        let lifecycle = lifecycle(&root, FileStore { path, unavailable: mode == "barrier" }, clock);
+        let ensured = lifecycle.ensure(IdentityTrigger::Background, RACE_WAIT);
+        let status = match (&ensured, mode.as_str()) {
+            // A lease proves activation. A zero-budget status probe could race the parent.
+            (Ok(lease), "refresh") => json!({"state": "Active", "token_generation": lease.token_generation()}),
+            _ => json!({"state": format!("{:?}", lifecycle.status())}),
+        };
+        let ensure = match ensured {
+            Ok(lease) => json!({"token_generation": lease.token_generation()}),
+            Err(error) => json!(format!("{error:?}")),
+        };
+        println!("{}", json!({"status": status, "ensure": ensure}));
+    }
+
+    fn seed(f: &Fixture) -> (IdentityLifecycle, FileStore) {
+        let store = FileStore { path: f.root.join("test-store.json"), unavailable: false };
+        let parent = lifecycle(&f.root, store.clone(), f.clock.clone());
+        parent.adopt_login("provider", Secret::new("old-access"), Secret::new("old-refresh"), 100, 200, "binding").unwrap();
+        f.due();
+        (parent, store)
+    }
+
+    pub(super) fn refresh() {
+        let f = Fixture::new();
+        let (parent, store) = seed(&f);
+        let script = json!({"access_token": "new-access", "refresh_token": "new-refresh", "provider_account_id": "provider", "expires_in": 120});
+        fs::write(f.root.join("response.json"), script.to_string()).unwrap();
+        let mut child = Peer::spawn(&f.root, "refresh", &store.path);
+        let consumed = f.root.join("response.consumed");
+        while !consumed.exists() {
+            assert!(!child.exited(), "identity child exited before it entered transport");
+            thread::sleep(POLL);
+        }
+
+        // A separate process holds the actual domain file lock throughout the exchange.
+        let lock = OpenOptions::new().read(true).write(true).open(f.root.join("identity/refresh.lock")).unwrap();
+        assert!(matches!(lock.try_lock(), Err(TryLockError::WouldBlock)));
+        let entered = observe_background_contender(&f.clock);
+        let parent = thread::spawn(move || parent.ensure(IdentityTrigger::Background, RACE_WAIT));
+        entered.recv_timeout(RACE_WAIT).unwrap();
+        fs::write(f.root.join("response.release"), []).unwrap();
+
+        let lease = parent.join().unwrap().unwrap();
+        assert_eq!(lease.token_generation(), 2);
+        assert_eq!(lease.access_token().expose_secret(), "new-access");
+        assert_eq!(child.status(), json!({"status":{"state":"Active","token_generation":2},"ensure":{"token_generation":2}}));
+        assert!(!f.root.join("response.json").exists());
+        assert_eq!(fs::read_to_string(consumed).unwrap(), script.to_string());
+        let record = store.load().unwrap().unwrap();
+        assert!(!record.pending);
+        assert_eq!((record.login_generation, record.token_generation), (1, 2));
+        assert_eq!(record.refresh_token, "new-refresh");
+    }
+
+    pub(super) fn barrier() {
+        let f = Fixture::new();
+        let (parent, store) = seed(&f);
+        assert_eq!(Peer::spawn(&f.root, "barrier", &store.path).status(), json!({"status":{"state":"Recovering"},"ensure":"Storage"}));
+        let reads = store.path.with_extension("reads");
+        assert_eq!(fs::read_to_string(&reads).unwrap().lines().count(), 2);
+        fs::remove_file(&reads).unwrap();
+        assert!(parent.sign_out().unwrap().credentials_cleared);
+        assert_eq!(Peer::spawn(&f.root, "barrier", &store.path).status(), json!({"status":{"state":"SignedOut"},"ensure":"SignedOut"}));
+        assert!(!reads.exists(), "a logged-out peer must not read credentials");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn child_process_helper() {
+    let Some(root) = std::env::var_os("INTCAD_IDENTITY_CHILD_ROOT") else {
+        return;
+    };
+    process::child(root.into());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_second_process_shares_the_file_lock_and_reuses_the_new_record() {
+    process::refresh();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_second_process_sees_the_logout_barrier_without_keyring() {
+    process::barrier();
 }
 
 #[test]

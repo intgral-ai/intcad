@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::identity_journal::{AttemptRecord, IdentityJournal, JournalError, RevocationRecord};
+use crate::identity_journal::{AttemptRecord, CurrentLoginRecord, IdentityJournal, JournalError, RevocationRecord};
 
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
@@ -51,6 +51,44 @@ fn attempt(attempt_id: u64) -> AttemptRecord {
 
 fn revocation(revoked_at_unix: u64) -> RevocationRecord {
     RevocationRecord { version: 1, domain: "https://account.example.test".to_owned(), login_generation: 7, revoked_at_unix }
+}
+
+fn current(login_generation: u64) -> CurrentLoginRecord {
+    CurrentLoginRecord { version: 1, domain: "https://account.example.test".to_owned(), login_generation }
+}
+
+#[test]
+fn current_login_round_trips_across_reopen() {
+    let temp = TempRoot::new("current-round-trip");
+    let journal = temp.journal();
+    assert_eq!(journal.read_current_login().unwrap(), None);
+    journal.write_current_login(&current(7)).unwrap();
+    assert_eq!(temp.journal().read_current_login().unwrap(), Some(current(7)));
+    let slot = std::fs::read_to_string(temp.slot("current", 0)).unwrap();
+    let fields: serde_json::Value = serde_json::from_str(slot.rsplit('\n').next().unwrap()).unwrap();
+    assert_eq!(fields, serde_json::json!({"version":1,"domain":"https://account.example.test","login_generation":7}));
+}
+
+#[test]
+fn the_newest_current_login_slot_wins() {
+    let temp = TempRoot::new("current-newest");
+    let journal = temp.journal();
+    for generation in [7, 8, 9] {
+        journal.write_current_login(&current(generation)).unwrap();
+        assert_eq!(temp.journal().read_current_login().unwrap(), Some(current(generation)));
+    }
+}
+
+#[test]
+fn a_torn_current_login_slot_falls_back_to_the_previous_slot() {
+    let temp = TempRoot::new("current-torn");
+    let journal = temp.journal();
+    journal.write_current_login(&current(7)).unwrap();
+    journal.write_current_login(&current(8)).unwrap();
+    std::fs::write(temp.slot("current", 1), b"intcad-identity-journal/1\n2\n").unwrap();
+    assert_eq!(temp.journal().read_current_login().unwrap(), Some(current(7)));
+    journal.write_current_login(&current(9)).unwrap();
+    assert_eq!(temp.journal().read_current_login().unwrap(), Some(current(9)));
 }
 
 #[test]

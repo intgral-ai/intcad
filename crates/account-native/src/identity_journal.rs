@@ -1,10 +1,10 @@
 //! Crash-safe, non-secret identity journal.
 //!
 //! This journal records identity refresh attempts and logout revocation as plain checksummed
-//! files under `<root>/identity/`. It is deliberately separate from the OS keyring: it must stay
+//! files under `<root>/identity/`, along with the current login generation. It is deliberately separate from the OS keyring: it must stay
 //! readable when the keyring is locked, and it never stores a token, secret or keyring value.
 //!
-//! Each record lives in one of two slots (`attempt.0`/`attempt.1`, `revoked.0`/`revoked.1`).
+//! Each record lives in a slot pair (`attempt.0`/`attempt.1`, `revoked.0`/`revoked.1`, `current.0`/`current.1`).
 //! A slot is `intcad-identity-journal/1\n<sequence>\n<sha256-hex>\n<json>`. A write goes to the
 //! slot with the lower sequence and is synced whole; readers accept only a matching magic,
 //! checksum and JSON, and choose the highest sequence. A torn or partial write therefore leaves
@@ -59,6 +59,15 @@ pub(crate) struct RevocationRecord {
     pub domain: String,
     pub login_generation: u64,
     pub revoked_at_unix: u64,
+}
+
+/// Published only after an explicit login has committed active credentials.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CurrentLoginRecord {
+    pub version: u32,
+    pub domain: String,
+    pub login_generation: u64,
 }
 
 /// The journal could not be used. Messages are static and never quote file contents.
@@ -149,6 +158,14 @@ impl IdentityJournal {
     /// Persist a revocation marker as the newest sequence.
     pub(crate) fn write_revocation(&self, record: &RevocationRecord) -> Result<(), JournalError> {
         self.write_newest("revoked", record)
+    }
+
+    pub(crate) fn read_current_login(&self) -> Result<Option<CurrentLoginRecord>, JournalError> {
+        self.read_newest("current")
+    }
+
+    pub(crate) fn write_current_login(&self, record: &CurrentLoginRecord) -> Result<(), JournalError> {
+        self.write_newest("current", record)
     }
 
     fn slot_path(&self, stem: &str, index: usize) -> PathBuf {
