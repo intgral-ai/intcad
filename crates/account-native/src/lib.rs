@@ -14,6 +14,7 @@ mod credentials;
 mod device_code;
 mod form;
 mod http;
+mod identity_journal;
 mod ledger;
 mod session_verification;
 mod token_expiry;
@@ -24,6 +25,8 @@ mod credentials_tests;
 mod device_code_tests;
 #[cfg(test)]
 mod http_tests;
+#[cfg(test)]
+mod identity_journal_tests;
 #[cfg(test)]
 mod ledger_tests;
 #[cfg(test)]
