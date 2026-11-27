@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::http::Secret;
 use crate::identity::*;
-use crate::identity_journal::IdentityJournal;
+use crate::identity_journal::{AttemptRecord, IdentityJournal};
 use crate::identity_store::{IdentityStore, IdentityStoreError, StoredIdentity};
 use crate::identity_transport::{IdentityTransport, RefreshResponse, RefreshTransportError};
 
@@ -28,6 +28,16 @@ impl IdentityClock for Arc<Clock> {
 
     fn monotonic_now(&self) -> Duration {
         Duration::from_millis(self.millis.load(Ordering::Relaxed))
+    }
+}
+
+impl Clock {
+    fn set_wall(&self, seconds: u64) {
+        self.wall.store(seconds, Ordering::Relaxed);
+    }
+
+    fn set_monotonic(&self, seconds: u64) {
+        self.millis.store(seconds * 1000, Ordering::Relaxed);
     }
 }
 
@@ -143,8 +153,20 @@ impl Fixture {
     }
 
     fn due(&self) {
-        self.clock.wall.store(170, Ordering::Relaxed);
-        self.clock.millis.store(70_000, Ordering::Relaxed);
+        self.clock.set_wall(170);
+        self.clock.set_monotonic(70);
+    }
+
+    fn restarted(&self) -> IdentityLifecycle {
+        IdentityLifecycle::with_identity_store(
+            IdentityDomain::new("test", "client", "https://product.example").unwrap(),
+            Box::new(Store(self.store.clone(), self.root.clone())),
+            Box::new(self.script.clone()),
+            Box::new(self.script.clone()),
+            Box::new(self.clock.clone()),
+            self.root.clone(),
+        )
+        .unwrap()
     }
 
     fn refreshes(&self) -> u64 {
@@ -153,6 +175,10 @@ impl Fixture {
 
     fn reply(&self, reply: Reply) {
         self.script.replies.lock().unwrap().push_back(("old-refresh", reply));
+    }
+
+    fn transient(&self, retry_after: Option<u64>) {
+        self.reply(Err(RefreshTransportError::Transient { retry_after: retry_after.map(Duration::from_secs) }));
     }
 
     fn success(&self) {
@@ -182,6 +208,12 @@ impl Fixture {
 
     fn journal(&self) -> IdentityJournal {
         IdentityJournal::new(self.root.clone()).unwrap()
+    }
+
+    fn attempt(&self, sends: u8, diagnostic_used: bool, until: u64, step: u8) -> AttemptRecord {
+        let record = self.journal().read_attempt().unwrap().unwrap();
+        assert_eq!((record.sends, record.diagnostic_used, record.cooldown_until_unix, record.cooldown_step), (sends, diagnostic_used, until, step));
+        record
     }
 }
 
@@ -457,24 +489,256 @@ fn a_contended_refresh_file_lock_obeys_zero_wait_without_sending() {
 }
 
 #[test]
-fn resume_checks_the_unchanged_bearer_without_requiring_a_new_binding() {
+fn resume_rechecks_an_unexpired_identity_without_granting_on_failure() {
     let f = Fixture::new();
     f.login().unwrap();
     f.script.checks.lock().unwrap().push_back(Err(VerifyError::Rejected));
     assert_eq!(f.lifecycle.ensure(IdentityTrigger::Resume, WAIT).unwrap_err(), IdentityError::Rejected);
     f.verifies(None);
     assert_eq!(f.lifecycle.ensure(IdentityTrigger::Resume, WAIT).unwrap().token_generation(), 1);
+    f.due(); // Unexpired but already inside the proactive refresh lead.
+    f.script.checks.lock().unwrap().push_back(Err(VerifyError::Transient));
+    assert_eq!(f.lifecycle.ensure(IdentityTrigger::Resume, WAIT).unwrap_err(), IdentityError::Transient);
+    assert!(f.script.checks.lock().unwrap().is_empty());
     assert_eq!(f.refreshes(), 0);
+    assert!(f.journal().read_attempt().unwrap().is_none());
 }
 
 #[test]
-fn a_clock_before_issuance_cannot_yield_the_stored_lease() {
+fn a_wall_clock_jump_does_not_extend_a_lease() {
     let f = Fixture::new();
     f.login().unwrap();
-    f.clock.wall.store(99, Ordering::Relaxed);
-    f.reply(Err(RefreshTransportError::Transient { retry_after: None }));
+    let lease = f.ensure().unwrap();
+    assert_eq!(lease.expires_at_unix_seconds(), 200);
+    f.clock.set_wall(99);
+    f.transient(None);
     assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
     assert_eq!(f.refreshes(), 1);
+    f.attempt(1, false, 104, 1);
+    f.clock.set_wall(170);
+    f.clock.set_monotonic(31); // A wall jump cannot restart the original replay clock.
+    f.transient(None);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 2);
+    f.attempt(2, true, 180, 2);
+    assert_eq!(lease.expires_at_unix_seconds(), 200);
+}
+
+#[test]
+fn an_expired_lease_is_not_returned() {
+    for now in [200, 201] {
+        let f = Fixture::new();
+        f.login().unwrap();
+        f.clock.set_wall(now);
+        f.reply(Err(RefreshTransportError::Protocol));
+        assert_eq!(f.ensure().unwrap_err(), IdentityError::Protocol);
+        assert_eq!(f.refreshes(), 1);
+        f.attempt(1, false, now + 5, 1);
+        assert_eq!(f.record().expires_at_unix, 200);
+    }
+}
+
+#[test]
+fn the_third_send_inside_the_batch_budget_is_the_last() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    for (sends, wall, mono, until) in [(1, 170, 70, 175), (2, 175, 75, 185), (3, 185, 85, 205)] {
+        f.clock.set_wall(wall);
+        f.clock.set_monotonic(mono);
+        let root = f.root.clone();
+        *f.script.on_send.lock().unwrap() = Some(Box::new(move || {
+            let marker = IdentityJournal::new(root).unwrap().read_attempt().unwrap().unwrap();
+            assert_eq!((marker.sends, marker.diagnostic_used, marker.first_possible_send_unix), (sends, false, 170));
+        }));
+        f.transient(None);
+        assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+        assert_eq!(f.refreshes(), u64::from(sends));
+        f.attempt(sends, false, until, sends);
+    }
+    f.clock.set_wall(205); // Cooldown expired, but only 16 monotonic seconds have elapsed.
+    f.clock.set_monotonic(86);
+    f.transient(None);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 3);
+    f.attempt(3, false, 205, 3);
+    assert_eq!(f.lifecycle.ensure(IdentityTrigger::UserRetry, WAIT).unwrap_err(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 4);
+    assert_eq!(f.attempt(3, true, 245, 4).first_possible_send_unix, 205);
+    f.clock.set_wall(245);
+    assert_eq!(f.lifecycle.ensure(IdentityTrigger::UserRetry, WAIT).unwrap_err(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 4);
+    f.attempt(3, true, 245, 4);
+}
+
+#[test]
+fn cooldown_blocks_automatic_retry_and_honours_retry_after() {
+    for retry_after in [2, 90] {
+        let f = Fixture::new();
+        f.login().unwrap();
+        f.due();
+        f.transient(Some(retry_after));
+        assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+        f.attempt(1, false, 170 + retry_after, 1);
+        f.clock.set_monotonic(71);
+        f.clock.set_wall(169 + retry_after);
+        f.reply(Err(RefreshTransportError::Protocol));
+        assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+        assert_eq!(f.refreshes(), 1);
+        f.attempt(1, false, 170 + retry_after, 1);
+        f.clock.set_wall(170 + retry_after); // Only wall time decides when cooldown ends.
+        let before = f.record();
+        assert_eq!(f.ensure().unwrap_err(), IdentityError::Protocol);
+        assert_eq!(f.refreshes(), 2);
+        f.attempt(2, false, 180 + retry_after, 2);
+        assert_eq!(f.record(), before);
+    }
+}
+
+#[test]
+fn a_same_process_replay_is_allowed_only_inside_the_thirty_second_window() {
+    // The 20s batch is tighter than the provider's 30s window.
+    for (elapsed, diagnostic) in [(19, false), (20, true), (26, true), (31, true)] {
+        let f = Fixture::new();
+        f.login().unwrap();
+        f.due();
+        f.transient(None);
+        assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+        let first = f.attempt(1, false, 175, 1);
+        f.clock.set_wall(175);
+        f.clock.set_monotonic(70 + elapsed);
+        f.transient(None);
+        assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+        assert_eq!(f.refreshes(), 2);
+        let second = f.attempt(2, diagnostic, 185, 2);
+        assert_eq!(second.attempt_id, first.attempt_id);
+        assert_eq!(second.first_possible_send_unix, 170);
+    }
+}
+
+#[test]
+fn a_restarted_attempt_gets_one_diagnostic_not_a_new_batch() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    f.transient(None);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    let first = f.attempt(1, false, 175, 1);
+    let other = f.restarted();
+    f.clock.set_wall(175);
+    let root = f.root.clone();
+    *f.script.on_send.lock().unwrap() = Some(Box::new(move || {
+        let marker = IdentityJournal::new(root).unwrap().read_attempt().unwrap().unwrap();
+        assert_eq!((marker.sends, marker.diagnostic_used), (2, true));
+    }));
+    f.transient(None);
+    assert_eq!(other.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::Transient);
+    let diagnostic = f.attempt(2, true, 185, 2);
+    assert_eq!(diagnostic.attempt_id, first.attempt_id);
+    assert_eq!(diagnostic.first_possible_send_unix, 170);
+    assert_eq!(f.refreshes(), 2);
+    f.clock.set_wall(185);
+    f.transient(None);
+    for lifecycle in [f.restarted(), other, f.lifecycle.clone()] {
+        assert_eq!(lifecycle.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::Transient);
+        assert_eq!(f.refreshes(), 2);
+        f.attempt(2, true, 185, 2);
+    }
+}
+
+#[test]
+fn a_user_retry_gets_one_new_diagnostic_after_cooldown() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    let user = || f.lifecycle.ensure(IdentityTrigger::UserRetry, WAIT).unwrap_err();
+    f.transient(None);
+    assert_eq!(user(), IdentityError::Transient);
+    let first = f.attempt(1, false, 175, 1); // Fresh UserRetry starts a normal batch.
+    f.clock.set_wall(175);
+    f.clock.set_monotonic(101);
+    f.transient(None);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    f.attempt(2, true, 185, 2);
+    f.clock.set_wall(184);
+    f.transient(None);
+    assert_eq!(user(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 2);
+    f.attempt(2, true, 185, 2);
+    f.clock.set_wall(185);
+    assert_eq!(user(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 3);
+    let last = f.attempt(3, true, 205, 3);
+    assert_eq!(last.attempt_id, first.attempt_id);
+    assert_eq!(last.first_possible_send_unix, 185);
+    f.clock.set_wall(205);
+    f.transient(None);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    assert_eq!(user(), IdentityError::Transient);
+    assert_eq!(f.restarted().ensure(IdentityTrigger::UserRetry, WAIT).unwrap_err(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 3);
+    assert_eq!(f.attempt(3, true, 205, 3), last);
+}
+
+#[test]
+fn a_stale_attempt_marker_for_another_generation_is_ignored() {
+    for mismatch in ["domain", "login", "token"] {
+        let f = Fixture::new();
+        f.login().unwrap();
+        let record = f.record();
+        let mut marker = AttemptRecord {
+            version: 1,
+            domain: record.domain,
+            login_generation: 1,
+            token_generation: 1,
+            attempt_id: 99,
+            first_possible_send_unix: 100,
+            sends: 3,
+            diagnostic_used: true,
+            cooldown_until_unix: 999,
+            cooldown_step: 4,
+        };
+        match mismatch {
+            "domain" => marker.domain = "another-domain".to_owned(),
+            "login" => marker.login_generation = 2,
+            _ => marker.token_generation = 2,
+        }
+        f.journal().write_attempt(&marker).unwrap();
+        assert_eq!(f.ensure().unwrap().token_generation(), 1);
+        assert_eq!(f.refreshes(), 0);
+        assert!(f.journal().read_attempt().unwrap().is_none());
+        f.due();
+        f.transient(None);
+        assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+        assert_eq!(f.refreshes(), 1);
+        f.attempt(1, false, 175, 1);
+    }
+}
+
+#[test]
+fn resume_treats_the_window_as_unprovable_and_does_not_reset_the_batch() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    f.transient(None);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    let first = f.attempt(1, false, 175, 1);
+    f.clock.set_wall(174);
+    f.clock.set_monotonic(74);
+    assert_eq!(f.lifecycle.ensure(IdentityTrigger::Resume, WAIT).unwrap_err(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 1);
+    assert_eq!(f.attempt(1, false, 175, 1), first);
+    f.clock.set_wall(175);
+    f.transient(None);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    let last = f.attempt(2, true, 185, 2);
+    assert_eq!(last.first_possible_send_unix, 170);
+    assert_eq!(last.attempt_id, first.attempt_id);
+    f.clock.set_wall(185);
+    f.transient(None);
+    assert_eq!(f.lifecycle.ensure(IdentityTrigger::Resume, WAIT).unwrap_err(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 2);
+    assert_eq!(f.attempt(2, true, 185, 2), last);
 }
 
 #[test]
