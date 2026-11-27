@@ -9,7 +9,6 @@
 import http from 'node:http';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { format } from 'node:util';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -22,18 +21,12 @@ import { deniedFolders, keepFilesFrom } from './fence.mjs';
 import { attachmentReader, releaseDates } from './models.mjs';
 import { keepKeysFromCommands, keyVariables, withoutParams } from './secrets.mjs';
 import { predictionToolGuard, sessionBuilder, sweepSessionFolders } from './session.mjs';
-import { OPENAI_TOKEN_URL, signInLog, watchExchange } from './signin.mjs';
+import { OPENAI_TOKEN_URL, watchExchange } from './signin.mjs';
 import { installSkillSets, setsToInstall } from './skills.mjs';
 
-// ACP's SDK prints a request it refuses, parameters and all. See secrets.mjs. While a sign-in is
-// under way, what is printed also goes to its log (`signInTap`, set once the log is there).
+// ACP's SDK prints a request it refuses, parameters and all. See secrets.mjs.
 const printError = console.error.bind(console);
-let signInTap = () => {};
-console.error = (...args) => {
-  const shown = withoutParams(args);
-  printError(...shown);
-  signInTap(shown);
-};
+console.error = (...args) => printError(...withoutParams(args));
 
 // Mastra Code is a coding agent: it reads a person's own agent files from their home folder (their
 // instructions for agents, their MCP servers, its own settings there). None of that is meant for
@@ -177,10 +170,6 @@ const openUrl = url => {
 };
 
 let agent = null;
-// The sign-in log, in the app's own folder; none when run by hand (signin.mjs). Its first line says
-// which proxy variables the agent was given (names only: an address can hold a password).
-const proxyNames = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'NO_PROXY', 'no_proxy', 'NODE_USE_ENV_PROXY'].filter(name => process.env[name]);
-const log = signInLog(process.env.MASTRA_APP_DATA_DIR, () => connections.secrets());
 const connections = new Connections({
   auth: () => gateway.getGlobalAuthStorage(),
   providers: () => storage.getOAuthProviders().map(provider => ({ id: provider.id, name: provider.name })),
@@ -199,18 +188,7 @@ const connections = new Connections({
   refresh: async why => {
     await agent?.refreshSessions(why);
   },
-  log: log && {
-    path: log.path,
-    start() {
-      log.start();
-      log.write(`agent: Node ${process.version} on ${process.platform}; proxy variables: ${proxyNames.join(', ') || 'none'}`);
-    },
-    write: log.write,
-  },
 });
-signInTap = shown => {
-  if (connections.signingIn()) connections.note(`printed: ${format(...shown)}`);
-};
 // What the ChatGPT sign-in's token endpoint answers is told to the sign-in under way (signin.mjs).
 globalThis.fetch = watchExchange(globalThis.fetch, OPENAI_TOKEN_URL, answer => connections.exchanged(answer));
 // Until the app hands over its custom addresses there are none: Mastra's own settings file is not read for them.

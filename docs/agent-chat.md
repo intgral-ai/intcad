@@ -547,9 +547,7 @@ can tell: another design's sign-in, another running Intcad's, or another program
 
 A sign-in that fails says at which step: it could not start, it stopped waiting for the browser,
 the sign-in service refused the last step (with its HTTP status and error code) or could not be
-reached, or the result
-could not be saved. Each sign-in is written down, with secrets taken out, in `logs/sign-in.log` in
-the agent's data folder, and the page says where.
+reached, or the result could not be saved.
 
 The model is picked at the lower right of the message box, in Mastra's own model picker: the
 models of the connection in use, newest first, with a search box and a row that opens the

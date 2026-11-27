@@ -1,19 +1,13 @@
 // What a sign-in leaves to go by when it fails (INT-1521): what the provider's token endpoint
-// answered, and a log in the app's own folder. Mastra Code's SDK keeps neither: it prints the HTTP
-// status of a refused exchange and throws "Token exchange failed".
-
-import { appendFileSync, mkdirSync, statSync, truncateSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-
-import { scrub } from './secrets.mjs';
+// answered. Mastra Code's SDK keeps nothing of it: it prints the HTTP status of a refused exchange
+// and throws "Token exchange failed".
 
 // Where Mastra Code's ChatGPT sign-in trades the browser's code for a token (its
 // `auth/providers/openai-codex.js`, `TOKEN_URL`).
 export const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 
-// Longest part of a refusal read, and the log's size before it starts over.
+// Longest part of a refusal read.
 const MAX_BODY = 16384;
-const MAX_LOG = 256 * 1024;
 
 const word = value => (typeof value === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(value) ? value : null);
 
@@ -72,35 +66,5 @@ export function watchExchange(fetch, url, onAnswer) {
     }
     onAnswer(refusalOf(response.status, body));
     return response;
-  };
-}
-
-/**
- * The sign-in log, `logs/sign-in.log` in the agent's data folder: one line per step and per line
- * the agent printed while a sign-in was under way, each with secrets taken out (`scrub`). It starts
- * over when it has grown past 256 KiB. Writing never fails a sign-in.
- *
- * @param secrets () => the keys the agent holds, taken out too
- */
-export function signInLog(dataDir, secrets = () => []) {
-  if (!dataDir) return null;
-  const path = join(dataDir, 'logs', 'sign-in.log');
-  return {
-    path,
-    start() {
-      try {
-        mkdirSync(dirname(path), { recursive: true });
-        if (statSync(path, { throwIfNoEntry: false })?.size > MAX_LOG) truncateSync(path, 0);
-      } catch {
-        // Written to as far as it goes.
-      }
-    },
-    write(text) {
-      try {
-        appendFileSync(path, `${new Date().toISOString()} ${scrub(text, secrets()).replace(/\s*\n\s*/g, ' ')}\n`, { mode: 0o600 });
-      } catch {
-        // A full disk or a folder that cannot be written must not end the sign-in.
-      }
-    },
   };
 }

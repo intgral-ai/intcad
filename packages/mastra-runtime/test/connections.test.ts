@@ -4,11 +4,9 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { after, test } from "node:test";
 import { Agent as CoreAgent } from "@mastra/core/agent";
 
@@ -32,8 +30,7 @@ const { classifyFailure, classifySignInFailure } = await load("problems.mjs");
 const { intcadAgent } = await load("agent.mjs");
 const { PlanGate } = await load("plan.mjs");
 const { keepKeysFromCommands, keyVariables, withoutParams } = await load("secrets.mjs");
-// INT-1521. Loaded so that their tests fail, not the whole file, while a file is missing.
-const secretsModule = await load("secrets.mjs");
+// INT-1521. Loaded so that its tests fail, not the whole file, while the file is missing.
 const signinModule: Json = await load("signin.mjs").catch(() => ({}));
 
 const PROVIDERS = [
@@ -97,7 +94,6 @@ function world(overrides: Json = {}) {
     changed: (snapshot: Json) => void told.push(snapshot),
     refresh: async (why?: Json) => void ((refreshed += 1), whys.push(why)),
     ...(overrides.limitMs ? { limitMs: overrides.limitMs } : {}),
-    ...(overrides.log ? { log: overrides.log } : {}),
   });
   return { connections, signedIn, told, opened, written, env, held, custom: () => custom, refreshed: () => refreshed, whys };
 }
@@ -514,7 +510,7 @@ test("a sign-in's problem carries who holds the port, or the port and the system
   assert.deepEqual(refused.connections.list().problem, { id: "openai-codex", kind: "listen", port: 1457, code: "EACCES" });
 });
 
-// ---- INT-1521: which step failed, what the token endpoint answered, the log ----
+// ---- INT-1521: which step failed, and what the token endpoint answered ----
 
 /** A stand-in for a provider's token endpoint: each test says how it answers. */
 async function tokenEndpoint(answer: (request: http.IncomingMessage, response: http.ServerResponse) => void) {
@@ -597,14 +593,12 @@ const chatgptSignIn = (fetcher: () => (url: string, init: Json) => Promise<Respo
   after?.();
 };
 
-test("a sign-in that fails says at which step, with the token endpoint's status and code, and where its log is (INT-1521)", async () => {
-  const { watchExchange, signInLog } = signinModule;
-  const folder = mkdtempSync(join(tmpdir(), "intcad-sign-in-"));
-  const log = signInLog(folder);
+test("a sign-in that fails says at which step, with the token endpoint's status and code (INT-1521)", async () => {
+  const { watchExchange } = signinModule;
   const steps = async (answer: (request: http.IncomingMessage, response: http.ServerResponse) => void, overrides: Json = {}) => {
     const endpoint = await tokenEndpoint(answer);
     let watched: (url: string, init: Json) => Promise<Response> = fetch;
-    const w = world({ log, login: chatgptSignIn(() => watched, endpoint.url, overrides.after), ...overrides });
+    const w = world({ login: chatgptSignIn(() => watched, endpoint.url, overrides.after), ...overrides });
     watched = watchExchange(fetch, endpoint.url, (seen: Json) => w.connections.exchanged(seen));
     w.connections.login({ id: "openai-codex" });
     await settle();
@@ -614,61 +608,34 @@ test("a sign-in that fails says at which step, with the token endpoint's status 
     return w.connections.list().problem;
   };
   const refused = (body: Json) => (_request: http.IncomingMessage, response: http.ServerResponse) => ((response.statusCode = 400), response.end(JSON.stringify(body)));
-  assert.deepEqual(await steps(refused({ error: "invalid_grant" })), { id: "openai-codex", kind: "refused", step: "exchange", status: 400, code: "invalid_grant", log: log.path });
+  assert.deepEqual(await steps(refused({ error: "invalid_grant" })), { id: "openai-codex", kind: "refused", step: "exchange", status: 400, code: "invalid_grant" });
   // Taken, but the answer holds no token: the exchange still, with the status it had.
-  assert.deepEqual(await steps((_request, response) => response.end("{}")), { id: "openai-codex", kind: "failed", step: "exchange", status: 200, code: "missing_tokens", log: log.path });
+  assert.deepEqual(await steps((_request, response) => response.end("{}")), { id: "openai-codex", kind: "failed", step: "exchange", status: 200, code: "missing_tokens" });
   // Taken, and the sign-in could not be saved: a file error after the exchange.
   const unsaved = await steps((_request, response) => response.end(JSON.stringify({ access_token: "a", refresh_token: "r" })), {
     after: () => {
       throw Object.assign(new Error("EACCES: permission denied, rename 'auth.json.tmp'"), { code: "EACCES", syscall: "rename" });
     },
   });
-  assert.deepEqual(unsaved, { id: "openai-codex", kind: "failed", step: "store", code: "EACCES", log: log.path });
+  assert.deepEqual(unsaved, { id: "openai-codex", kind: "failed", step: "store", code: "EACCES" });
   // Before the browser opened, and while waiting for it.
-  const early = world({ log, login: async () => Promise.reject(new Error("crypto is not available")) });
+  const early = world({ login: async () => Promise.reject(new Error("crypto is not available")) });
   early.connections.login({ id: "openai-codex" });
   await settle();
-  assert.deepEqual(early.connections.list().problem, { id: "openai-codex", kind: "failed", step: "open", log: log.path });
-  const waiting = world({ log, login: async (_id: string, callbacks: Json) => (callbacks.onAuth({ url: "https://auth.example/a?state=s1" }), Promise.reject(new Error("Unexpected"))) });
+  assert.deepEqual(early.connections.list().problem, { id: "openai-codex", kind: "failed", step: "open" });
+  const waiting = world({ login: async (_id: string, callbacks: Json) => (callbacks.onAuth({ url: "https://auth.example/a?state=s1" }), Promise.reject(new Error("Unexpected"))) });
   waiting.connections.login({ id: "openai-codex" });
   await settle();
-  assert.deepEqual(waiting.connections.list().problem, { id: "openai-codex", kind: "failed", step: "wait", log: log.path });
+  assert.deepEqual(waiting.connections.list().problem, { id: "openai-codex", kind: "failed", step: "wait" });
 
   // A ChatGPT token refresh answered while another plan's sign-in exchanges its code is not that sign-in's.
-  const claude = world({ log, login: async (_id: string, callbacks: Json) => (callbacks.onAuth({ url: "https://claude.example/authorize" }), await callbacks.onPrompt({}), Promise.reject(new Error("Token exchange failed"))) });
+  const claude = world({ login: async (_id: string, callbacks: Json) => (callbacks.onAuth({ url: "https://claude.example/authorize" }), await callbacks.onPrompt({}), Promise.reject(new Error("Token exchange failed"))) });
   claude.connections.login({ id: "anthropic" });
   await settle();
   claude.connections.code({ id: "anthropic", code: "abc#def" });
   claude.connections.exchanged({ status: 400, code: "invalid_grant", kind: "refused" });
   await settle();
-  assert.deepEqual(claude.connections.list().problem, { id: "anthropic", kind: "failed", step: "exchange", log: log.path });
-
-  // The log says what happened, step by step, and nothing of the codes, addresses or account.
-  const text = readFileSync(log.path, "utf8");
-  assert.match(text, /openai-codex: started/);
-  assert.match(text, /exchange: HTTP 400 invalid_grant/);
-  assert.match(text, /"step":"store"/);
-  assert.doesNotMatch(text, /state=s1|code=c1|auth\.example/);
-});
-
-test("the sign-in log takes out what could let someone in or say whose account it is (INT-1521)", () => {
-  const { scrub } = secretsModule;
-  const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFAZXhhbXBsZS5jb20ifQ.c2lnbmF0dXJlLXNpZ25hdHVyZQ";
-  const raw = [
-    "callback http://localhost:1457/auth/callback?code=ac_abc123&state=9f8e7d",
-    `proxy http://alice:s3cret@proxy.corp:8080 and token ${jwt}`,
-    '{"access_token":"at-1","refresh_token":"rt-2","id_token":"x","error":"invalid_grant"} {"kind":"offline","code":"ECONNREFUSED"}',
-    "signed in as someone@example.com with sk-the-users-own-key-0001",
-    `verifier ${"Ab9_".repeat(12)} and a path /Users/someone/Library/Application Support/Intcad/mastra/logs/sign-in.log`,
-  ].join("\n");
-  const clean = scrub(raw, ["sk-the-users-own-key-0001"]);
-  for (const secret of ["ac_abc123", "9f8e7d", "alice", "s3cret", jwt, "at-1", "rt-2", "someone@example.com", "sk-the-users-own-key-0001", "Ab9_Ab9_Ab9_"]) {
-    assert.ok(!clean.includes(secret), `${secret} is in: ${clean}`);
-  }
-  // What helps to tell what went wrong stays: the provider's code, the host, the step, the log's own path.
-  for (const kept of ["invalid_grant", '"code":"ECONNREFUSED"', "proxy.corp:8080", "callback http://localhost:1457/auth/callback", "/Users/someone/Library/Application Support/Intcad/mastra/logs/sign-in.log"]) {
-    assert.ok(clean.includes(kept), `${kept} is not in: ${clean}`);
-  }
+  assert.deepEqual(claude.connections.list().problem, { id: "anthropic", kind: "failed", step: "exchange" });
 });
 
 test("a key is not in the environment of a command a model runs, nor in a refusal that is printed", () => {

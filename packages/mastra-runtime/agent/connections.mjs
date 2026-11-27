@@ -90,7 +90,6 @@ export class Connections {
    * @param deps.changed     (snapshot) => tells the app
    * @param deps.refresh     () => Promise: every open session re-reads which models it may use
    * @param deps.limitMs     how long a sign-in may wait, for the tests (`SIGN_IN_LIMIT_MS`)
-   * @param deps.log         the sign-in log (signin.mjs `signInLog`): `{ path, start(), write(text) }`, or none
    */
   constructor(deps) {
     this.#deps = deps;
@@ -193,14 +192,11 @@ export class Connections {
     const login = { id, phase: 'starting', url: null, userCode: null, error: null, abort: new AbortController(), pasted: null, ports: null, timer: null, step: 'open', exchange: null };
     this.#login = login;
     this.#problem = null;
-    this.#deps.log?.start();
-    this.note(`${id}: started`);
     // The time is up as at a cancel, whatever Mastra is waiting on, and the ports are free at once.
     login.timer = setTimeout(() => {
       if (this.#login !== login) return;
       this.#end(login);
-      this.#problem = this.#withLog({ id, kind: 'timeout', step: login.step });
-      this.note(`${id}: stopped, its time was up`);
+      this.#problem = { id, kind: 'timeout', step: login.step };
       this.#tell();
     }, this.#deps.limitMs ?? SIGN_IN_LIMIT_MS);
     login.timer.unref?.();
@@ -231,7 +227,6 @@ export class Connections {
           login.userCode = userCode && !String(info.url).includes(userCode) ? userCode : null;
           login.phase = login.userCode ? 'device' : PASTED.has(id) ? 'code' : 'browser';
           login.step = 'wait';
-          this.note(`${id}: the browser is opened (${login.phase})`);
           this.#deps.openUrl(info.url);
           this.#tell();
         },
@@ -253,7 +248,6 @@ export class Connections {
           const expected = login.url ? new URL(login.url).searchParams.get('state') : null;
           if (expected && new URL(url).searchParams.get('state') !== expected) return false;
           login.step = 'exchange';
-          this.note(`${id}: the browser called back`);
           calledBack.resolve(url);
           return true;
         });
@@ -264,15 +258,13 @@ export class Connections {
       await this.#deps.auth().login(id, callbacks);
       if (this.#login !== login) return;
       this.#login = null;
-      this.note(`${id}: signed in`);
       this.#expired.delete(id);
       await this.#deps.refresh();
     } catch (error) {
       // Cancelled, or its time was up: that has been said already.
       if (this.#login !== login) return;
       this.#login = null;
-      this.#problem = this.#withLog({ id, ...this.#failedAt(login, error) });
-      this.note(`${id}: failed: ${error?.message ?? error}; ${JSON.stringify(this.#problem)}`);
+      this.#problem = { id, ...this.#failedAt(login, error) };
     } finally {
       clearTimeout(login.timer);
       login.ports?.close();
@@ -294,7 +286,6 @@ export class Connections {
     } else {
       login.error = null;
       login.step = 'exchange';
-      this.note(`${login.id}: the code was pasted`);
       login.pasted.resolve(code);
     }
     this.#tell();
@@ -309,10 +300,7 @@ export class Connections {
   cancel() {
     const login = this.#login;
     this.#problem = null;
-    if (login) {
-      this.#end(login);
-      this.note(`${login.id}: cancelled`);
-    }
+    if (login) this.#end(login);
     this.#tell();
     return this.snapshot();
   }
@@ -369,28 +357,7 @@ export class Connections {
     const login = this.#login;
     if (login?.id !== 'openai-codex' || login.step !== 'exchange') return;
     login.exchange = answer;
-    if (answer.error) this.note(`${login.id}: exchange: no answer (${failureCode(answer.error)})`);
-    else this.note(`${login.id}: exchange: HTTP ${answer.status}${answer.code ? ` ${answer.code}` : ''}${answer.kind ? ` (${answer.kind})` : ''}`);
     if (!answer.error && !answer.kind) login.step = 'store';
-  }
-
-  /** Whether a sign-in is under way: what the agent prints meanwhile goes to the sign-in log. */
-  signingIn() {
-    return this.#login !== null;
-  }
-
-  /** The keys the agent holds, to be taken out of what the sign-in log keeps. */
-  secrets() {
-    return [...this.#keys.values(), ...this.#custom.map(entry => entry.apiKey).filter(Boolean)];
-  }
-
-  /** A line in the sign-in log. */
-  note(text) {
-    this.#deps.log?.write(text);
-  }
-
-  #withLog(problem) {
-    return this.#deps.log ? { ...problem, log: this.#deps.log.path } : problem;
   }
 
   /**

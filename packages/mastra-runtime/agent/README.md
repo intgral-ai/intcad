@@ -10,10 +10,8 @@ its SDK and unchanged, with what the Assistant's Connections page needs added in
 - `agent.mjs`: the methods on the ACP agent, a model list a person can read, sessions that follow a
   sign-in or sign-out, and the reason on a turn that fails;
 - `models.mjs`, `problems.mjs`: the order of the model list, and the kinds of failure;
-- `secrets.mjs`: what keeps a key out of the commands a model runs and out of what is printed
-  or logged;
-- `signin.mjs`: what a failed sign-in leaves to go by: what the ChatGPT sign-in's token endpoint
-  answered, and the sign-in log;
+- `secrets.mjs`: what keeps a key out of the commands a model runs and out of what is printed;
+- `signin.mjs`: what the ChatGPT sign-in's token endpoint answered, for a sign-in that fails;
 - `skills.mjs`: the skill sets the package carries (`modelling-skills`: the repository's
   `skills/solidcraft-modeling`, `-editing`, `-checking` and `-mechanisms`; `context-skills`:
   `../agent-skills/intcad-context`, written for this agent alone), how the build copies
@@ -107,7 +105,6 @@ sends the same snapshot as the notification `_intcad/connections/changed` whenev
   ChatGPT sign-in's token endpoint `refused`. `step`: how far it got: `open` (before the browser
   is opened), `wait`, `exchange` (with the token endpoint: its `status` and its error `code`, or for `offline` the
   system's code, `timeout` or `no-connection`), `store` (saving it: the file error's `code`).
-  `log`: the path of the sign-in log, when the agent keeps one (below).
 - `dates`: release dates of the models of connected providers, from Mastra's registry.
 
 A session's `model` option lists only models one can talk to, newest first. After a sign-in, a
@@ -388,12 +385,7 @@ turn answered by a real provider, and the Kimi plan's model prefix.
 
 Mastra Code's SDK keeps nothing of a failed exchange: it prints the HTTP status and throws "Token
 exchange failed". The entry wraps `fetch` for the ChatGPT sign-in's token endpoint only
-(`signin.mjs`): the answer's status, and for a refusal the provider's own error code (a short word
-from the JSON, never its description), are handed to
-the sign-in under way; the body of an answer that was taken is never read. With
-`MASTRA_APP_DATA_DIR` set, each sign-in writes `logs/sign-in.log` there: the Node version and the
-names of the proxy variables it was given, each step, what the endpoint answered, and every line
-the agent printed meanwhile. Each line goes through `scrub` (`secrets.mjs`) first: the keys the
-agent holds, every value in an address's query, a user and password in an address, token fields,
-JWTs, e-mail addresses and any other run of 32 or more letters and digits are taken out. The file
-starts over past 256 KiB.
+(`signin.mjs`): the answer's status, and for a refusal the provider's own error code (1 to 64
+letters, digits, `_`, `.` or `-` from the JSON, never its description), are handed to the sign-in
+under way; the body of an answer that was taken is never read. The app shows a code only when it
+is such a word (`word` in `connections.rs`).
