@@ -12,9 +12,11 @@ mod billing;
 mod contract;
 mod credentials;
 mod device_code;
+mod form;
 mod http;
 mod ledger;
 mod session_verification;
+mod token_expiry;
 
 #[cfg(test)]
 mod credentials_tests;
@@ -32,7 +34,7 @@ pub use billing::SessionBilling;
 pub use contract::{ContractArtifacts, ContractPin, VerifiedContract};
 pub use credentials::{
     ACCOUNT_KEYRING_SERVICE, BlockedProductExchange, CredentialSession, KeyringStore, MemorySession, NoPersistentStore, ProductExchangeError,
-    ProductLogin, ProductSession, ProductSessionExchange, ProviderLogin, ProviderSession,
+    ProductLogin, ProductSession, ProductSessionExchange, ProviderLogin, ProviderRefresh, ProviderSession,
 };
 pub use device_code::{
     DeviceCodeError, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodePrompt, DeviceCodeTransport, UreqDeviceCodeTransport,

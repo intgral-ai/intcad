@@ -6,11 +6,13 @@
 //!
 //! [`DeviceCodeFlow::complete`] stores only the provider login. It never activates an Intcad
 //! product session: the caller must separately obtain a typed product session from a documented
-//! [`crate::credentials::ProductSessionExchange`]. Refresh tokens are not persisted.
+//! [`crate::credentials::ProductSessionExchange`]. The refresh token and access-token expiry are
+//! captured in memory on the authorized provider session for the renewal lifecycle; they are
+//! not persisted.
 
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use solidcraft_engine::entitlement::{CredentialError, CredentialErrorCode, Refusal, RefusalCode};
@@ -18,7 +20,9 @@ use solidcraft_engine::entitlement::{CredentialError, CredentialErrorCode, Refus
 use crate::credentials::{
     CredentialSession, MAX_ACCOUNT_BYTES, ProviderLogin, ProviderSession, auth_unavailable, has_control, safe_token, unavailable,
 };
+use crate::form::form_encode;
 use crate::http::Secret;
+use crate::token_expiry::access_token_expiry_unix;
 
 /// WorkOS CLI Auth device authorization endpoint (`POST`).
 pub const WORKOS_DEVICE_AUTHORIZATION_URL: &str = "https://api.workos.com/user_management/authorize/device";
@@ -194,6 +198,8 @@ struct PendingDeviceCode {
 struct DeviceCodeAuthorization {
     account_id: String,
     access_token: Secret,
+    refresh_token: Secret,
+    expires_at_unix_seconds: u64,
 }
 
 /// Explicit device-code lifecycle over one shared credential session.
@@ -255,7 +261,9 @@ impl<T: DeviceCodeTransport> DeviceCodeFlow<T> {
     }
 
     /// Poll the token endpoint once. The caller decides when to call again; the returned interval
-    /// is the server's, increased after `slow_down` as RFC 8628 requires.
+    /// is the server's, increased after `slow_down` as RFC 8628 requires. A 200 response must
+    /// carry a non-empty refresh token and a usable access-token lifetime (`expires_in` or the
+    /// JWT `exp` claim); a response without both is refused.
     pub fn poll(&mut self) -> Result<DeviceCodePoll, Refusal> {
         let (device_code, interval) = {
             let pending = self.pending.as_ref().ok_or_else(|| auth_required("start a device sign-in first"))?;
@@ -274,14 +282,16 @@ impl<T: DeviceCodeTransport> DeviceCodeFlow<T> {
         if (200..300).contains(&status) {
             let value: Value = serde_json::from_slice(&body).map_err(|_| auth_unavailable("the sign-in service returned an invalid response"))?;
             let access_token = required_secret(&value, "access_token")?;
+            let refresh_token = required_secret(&value, "refresh_token")?;
             let account_id = value
                 .pointer("/user/id")
                 .and_then(Value::as_str)
                 .filter(|id| safe_token(id, MAX_ACCOUNT_BYTES))
                 .ok_or_else(|| auth_unavailable("the sign-in service returned an invalid account"))?
                 .to_owned();
+            let expires_at_unix_seconds = token_expiry_seconds(&value, access_token.expose_secret())?;
             self.pending = None;
-            self.authorized = Some(DeviceCodeAuthorization { account_id, access_token });
+            self.authorized = Some(DeviceCodeAuthorization { account_id, access_token, refresh_token, expires_at_unix_seconds });
             return Ok(DeviceCodePoll::Authorized);
         }
         if status != 400 {
@@ -332,7 +342,12 @@ impl<T: DeviceCodeTransport> DeviceCodeFlow<T> {
     /// bearer and this call does not activate anything.
     pub fn authorized_provider(&self) -> Result<ProviderSession, Refusal> {
         let authorization = self.authorized.as_ref().ok_or_else(|| auth_required("poll until the sign-in is authorized first"))?;
-        Ok(ProviderSession::from_authorized(authorization.account_id.clone(), authorization.access_token.clone()))
+        Ok(ProviderSession::from_authorized_refreshable(
+            authorization.account_id.clone(),
+            authorization.access_token.clone(),
+            authorization.refresh_token.clone(),
+            authorization.expires_at_unix_seconds,
+        ))
     }
 
     /// Persist the authorized provider login into the shared credential store. This does not
@@ -381,6 +396,17 @@ fn optional_uri(value: &Value, field: &str) -> Result<Option<String>, Refusal> {
     }
 }
 
+/// The access-token expiry in Unix seconds: the server's `expires_in` when it is a valid
+/// 1..=3600 seconds lifetime, otherwise the access token's JWT `exp` claim. A response with
+/// neither is refused; a login without a usable lifetime could never be renewed.
+fn token_expiry_seconds(value: &Value, access_token: &str) -> Result<u64, Refusal> {
+    if let Some(seconds) = value.get("expires_in").and_then(Value::as_u64).filter(|seconds| (1..=3600).contains(seconds)) {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0);
+        return Ok(now.saturating_add(seconds));
+    }
+    access_token_expiry_unix(access_token).ok_or_else(|| auth_unavailable("the sign-in service returned a token without a usable lifetime"))
+}
+
 fn required_seconds(value: &Value, field: &str) -> Result<Duration, Refusal> {
     value
         .get(field)
@@ -388,20 +414,4 @@ fn required_seconds(value: &Value, field: &str) -> Result<Duration, Refusal> {
         .filter(|seconds| (1..=3600).contains(seconds))
         .map(Duration::from_secs)
         .ok_or_else(|| auth_unavailable("the sign-in service returned an invalid lifetime"))
-}
-
-fn form_encode(value: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
-            _ => {
-                out.push('%');
-                out.push(HEX[usize::from(byte >> 4)] as char);
-                out.push(HEX[usize::from(byte & 0x0f)] as char);
-            }
-        }
-    }
-    out
 }

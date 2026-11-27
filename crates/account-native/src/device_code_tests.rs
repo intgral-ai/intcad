@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use solidcraft_engine::entitlement::{CredentialError, CredentialErrorCode, RefusalCode};
@@ -34,6 +34,7 @@ fn token_body() -> Value {
         "organization_id": "org_01H945H0YD4F97JN9MATX7BYAG",
         "access_token": "access_token_SECRET_000000000000000000000000",
         "refresh_token": "refresh_token_SECRET_000000000000000000000000",
+        "expires_in": 300,
         "authentication_method": "Password"
     })
 }
@@ -225,4 +226,61 @@ fn device_code_denied_expired_and_bad_responses_fail_closed() {
     let error = flow.start().unwrap_err();
     assert_eq!(error.code, RefusalCode::AuthUnavailable);
     assert!(!error.message.contains("must_not_echo"));
+}
+
+#[test]
+fn a_device_token_response_keeps_the_refresh_token_and_expiry() {
+    let transport = ScriptedDeviceTransport::scripted(vec![(200, device_body()), (200, token_body())]);
+    let (session, _) = session_with_memory();
+    let mut flow = DeviceCodeFlow::new(WorkOsPublicClient::new("client_test").unwrap(), transport, session, DeviceCodeMode::Explicit);
+    flow.start().unwrap();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    assert_eq!(flow.poll().unwrap(), DeviceCodePoll::Authorized);
+
+    let provider = flow.authorized_provider().unwrap();
+    let refresh = provider.refresh().expect("a completed device login keeps its refresh token");
+    assert_eq!(refresh.refresh_token().expose_secret(), "refresh_token_SECRET_000000000000000000000000");
+    let expires_at = refresh.expires_at_unix_seconds();
+    assert!((now + 299..=now + 301).contains(&expires_at), "expiry {expires_at} is outside now+299..=now+301 (now {now})");
+
+    let shown = format!("{provider:?}");
+    assert!(!shown.contains("refresh_token_SECRET"));
+    assert!(!shown.contains("access_token_SECRET"));
+    assert!(shown.contains("refresh: true"));
+    assert!(!format!("{:?}", provider.refresh().unwrap()).contains("refresh_token_SECRET"));
+}
+
+#[test]
+fn a_device_token_response_uses_the_jwt_expiry_when_expires_in_is_absent() {
+    let mut body = token_body();
+    let object = body.as_object_mut().unwrap();
+    object.remove("expires_in");
+    object.insert("access_token".into(), json!("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MDAwMDAwMDB9.c2lnbmF0dXJl"));
+    let transport = ScriptedDeviceTransport::scripted(vec![(200, device_body()), (200, body)]);
+    let (session, _) = session_with_memory();
+    let mut flow = DeviceCodeFlow::new(WorkOsPublicClient::new("client_test").unwrap(), transport, session, DeviceCodeMode::Explicit);
+    flow.start().unwrap();
+    assert_eq!(flow.poll().unwrap(), DeviceCodePoll::Authorized);
+
+    let provider = flow.authorized_provider().unwrap();
+    let refresh = provider.refresh().expect("the JWT exp fallback still keeps the refresh token");
+    assert_eq!(refresh.expires_at_unix_seconds(), 1_700_000_000);
+    assert_eq!(refresh.refresh_token().expose_secret(), "refresh_token_SECRET_000000000000000000000000");
+}
+
+#[test]
+fn a_device_token_response_without_refresh_or_expiry_is_refused() {
+    let mut without_refresh = token_body();
+    without_refresh.as_object_mut().unwrap().remove("refresh_token");
+    let mut without_expiry = token_body();
+    without_expiry.as_object_mut().unwrap().remove("expires_in");
+    // The shared access token is opaque, not a JWT, so there is no exp fallback either.
+    for body in [without_refresh, without_expiry] {
+        let transport = ScriptedDeviceTransport::scripted(vec![(200, device_body()), (200, body)]);
+        let (session, _) = session_with_memory();
+        let mut flow = DeviceCodeFlow::new(WorkOsPublicClient::new("client_test").unwrap(), transport, session, DeviceCodeMode::Explicit);
+        flow.start().unwrap();
+        assert_eq!(flow.poll().unwrap_err().code, RefusalCode::AuthUnavailable);
+        assert!(flow.authorized_provider().is_err());
+    }
 }

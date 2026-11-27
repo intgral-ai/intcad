@@ -123,6 +123,30 @@ fn product_activation_requires_a_provider_login_and_rejects_expired_results() {
     assert!(!session.product_session_active());
 }
 
+#[test]
+fn a_legacy_provider_session_without_refresh_still_activates() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    // A stored provider login from before refresh capture has no refresh key at all.
+    session.complete_provider_login("user_provider_0001", "provider_access_SECRET").unwrap();
+    assert!(!store.keys().iter().any(|key| key.contains("refresh")));
+
+    let legacy = ProviderSession::from_authorized("user_provider_0001".into(), crate::http::Secret::new("provider_access_SECRET"));
+    assert!(legacy.refresh().is_none());
+    assert!(format!("{legacy:?}").contains("refresh: false"));
+
+    let login = session
+        .activate_product_session(&FixedExchange {
+            account_id: "acct_legacy",
+            product_session: "product_legacy_SECRET",
+            expires_at_unix_seconds: None,
+        })
+        .unwrap();
+    assert_eq!(login.account_id, "acct_legacy");
+    assert!(session.product_session_active());
+    assert_eq!(WireCredentials::product_session(&session).unwrap().expose_secret(), "product_legacy_SECRET");
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Call {
     Get(String),
