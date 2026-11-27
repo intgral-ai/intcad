@@ -853,6 +853,14 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     send_owed(app, ctx);
     match app.tickets.checking.clone() {
         None => {
+            // A run the store says is going on with none in flight (the app was closed while it ran)
+            // is written off, so the ticket does not wait on it for ever.
+            let lost = app.tickets.tickets.iter().find(|t| t.state == TicketState::InProgress && !t.deleted && t.check.as_ref().is_some_and(|c| c.state == CheckState::Running));
+            if let Some(id) = lost.map(|t| t.id.clone()) {
+                let ticket = apply(app, |root| tickets::check_refused(root, &id, "its run was lost: the app was closed while it ran"));
+                tell(app, ticket.as_ref(), None);
+                return;
+            }
             let asked = app.tickets.tickets.iter().find_map(|t| {
                 let check = t.check.as_ref().filter(|c| c.state == CheckState::Asked && t.state == TicketState::InProgress && !t.deleted)?;
                 Some((t.id.clone(), check.kind))
@@ -874,7 +882,10 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             let kind = app.tickets.tickets.iter().find(|t| t.id == id).and_then(|t| t.check.as_ref()).map(|c| c.kind).unwrap_or_default();
             let Some(result) = run_result(app, kind, &run) else { return };
             app.tickets.checking = None;
-            let moved = app.tickets.tickets.iter().find(|t| t.id == id).is_none_or(|t| t.state != TicketState::InProgress || t.deleted);
+            // A person moved the ticket meanwhile (its check ended with the move): nothing binds.
+            let moved = app.tickets.tickets.iter().find(|t| t.id == id).is_none_or(|t| {
+                t.state != TicketState::InProgress || t.deleted || t.check.as_ref().is_none_or(|c| c.state != CheckState::Running)
+            });
             if moved {
                 return;
             }

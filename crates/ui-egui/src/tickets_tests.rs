@@ -1016,7 +1016,7 @@ fn says_finished(h: &mut Harness, agent: &StandIn, id: &str, text: &str) {
     h.frames(12);
 }
 
-/// [`dump`] with ticket `id` open, its words in Chinese, as the owner reads it.
+/// [`dump`] with ticket `id` open and its words in Chinese.
 fn dump_zh(h: &mut Harness, name: &str, id: &str) {
     let language = std::mem::replace(&mut h.app.preferences.language, "zh".into());
     let ctx = h.ctx.clone();
@@ -1103,6 +1103,11 @@ fn after_the_last_round_advisories_leave_it_waiting_and_a_failure_blocks_it_each
         let last = tickets::events(&root, Some(&id)).unwrap().pop().unwrap();
         assert_eq!((last.action.as_str(), last.actor), ("comment", Actor::Agent));
         assert_eq!(started(&h), 4, "{name}: nothing more starts");
+        // Taken up again by itself, the Assistant gets no more rounds: its finished starts nothing.
+        let back = if state == TicketState::Blocked { json!({"id": id, "action": "unblock"}) } else { json!({"id": id, "action": "state", "to": "in_progress"}) };
+        agent_calls(&mut h, "ticket.update", back);
+        says_finished(&mut h, &agent, &id, "One more try");
+        assert_eq!(started(&h), 4, "{name}: the Assistant cannot buy itself more rounds");
         dump_zh(&mut h, &format!("{name}-stopped"), &id);
     }
 }
@@ -1170,6 +1175,26 @@ fn no_change_is_taken_while_the_check_runs_and_a_persons_step_ends_the_rounds() 
     let ticket = tickets::load(&root, &id).unwrap();
     assert_eq!((ticket.state, ticket.check.map(|c| c.by)), (TicketState::Waiting, Some(Actor::Person)));
     assert_eq!((agent.prompts().len(), started(&h)), (prompts, 1), "no findings to the Assistant, no second check");
+
+    // A person moves the ticket while its check runs, then hands it back: the old run binds nothing,
+    // and the Assistant may change the model again.
+    let (_scratch, mut h, root, agent, id) = handed("moved-mid-check", vec![Ok(reported(&[RELIEF], 3))]);
+    h.app.tickets.stand_in.as_mut().unwrap().hold = true;
+    says_finished(&mut h, &agent, &id, "Plate made");
+    let ctx = h.ctx.clone();
+    let moved = json!({"type": "ticket_set_state", "id": id, "revision": seen(&root, &id), "to": "confirmed"});
+    crate::tickets::receive(&mut h.app, &ctx, &moved.to_string()).unwrap();
+    h.app.tickets.stand_in.as_mut().unwrap().hold = false;
+    h.frames(6);
+    let ticket = tickets::load(&root, &id).unwrap();
+    assert_eq!((ticket.state, ticket.check.map(|c| c.state)), (TicketState::Confirmed, Some(CheckState::Refused)), "the move ended the check");
+    crate::tickets::start(&mut h.app, &ctx, &id, seen(&root, &id));
+    h.frames(4);
+    assert_eq!(crate::tickets::checking(&h.app), None);
+    let tools = crate::agent_chat::install_test_tools(&mut h.app);
+    let edit = chat_tool(&mut h, &tools, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    assert_eq!(edit["ok"], true, "{edit}");
+    assert_eq!(tickets::load(&root, &id).unwrap().check.map(|c| c.state), Some(CheckState::Refused), "the old run did not bind");
 
     // A person moves the ticket while the Assistant fixes: the rounds end, and its finished starts
     // nothing more.

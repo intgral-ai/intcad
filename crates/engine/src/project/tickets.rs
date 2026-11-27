@@ -955,6 +955,13 @@ fn move_to(ticket: &mut Ticket, actor: Actor, to: State) -> Result<(), TicketErr
     }
     ticket.state = to;
     ticket.finished = false;
+    // A check asked for or running ends with the work it was for: its run, if it comes, binds nothing.
+    if from == State::InProgress
+        && let Some(check) = ticket.check.as_mut().filter(|check| matches!(check.state, CheckState::Asked | CheckState::Running))
+    {
+        check.state = CheckState::Refused;
+        check.reason = Some("the ticket left in progress before its check ended".into());
+    }
     if let Some(rounds) = ticket.rounds.as_mut().filter(|rounds| rounds.stopped.is_none()) {
         rounds.stopped = match actor {
             Actor::Person => Some(Stop::Person),
@@ -1220,6 +1227,10 @@ fn move_state(root: &Path, id: &str, seen: Option<u64>, to: State, actor: Actor,
         if actor == Actor::Agent && blocked.is_some() {
             ticket.blocked = blocked;
         }
+        // A person who puts it back in progress gives the Assistant its rounds again.
+        if actor == Actor::Person && to == State::InProgress {
+            ticket.rounds = None;
+        }
         if to == State::InProgress {
             match actor {
                 Actor::Agent => ticket.worker = Some(Worker::Assistant),
@@ -1394,7 +1405,16 @@ pub fn auto_check(root: &Path, id: &str) -> Result<Ticket, TicketError> {
         if checking(ticket) {
             return Err(TicketError::Refused(format!("{}'s check is asked for or running already", ticket.id)));
         }
-        let rounds = ticket.rounds.take().filter(|rounds| rounds.stopped.is_none()).unwrap_or(Rounds { round: 0, of, stopped: None });
+        // Rounds that stopped start again only after a person's step (handing it over, taking it up,
+        // moving it back in progress): the Assistant cannot buy itself more.
+        if let Some(stop) = ticket.rounds.as_ref().and_then(|rounds| rounds.stopped) {
+            return Err(TicketError::Refused(format!(
+                "the Assistant's rounds on {} stopped ({}): a person runs its check or hands it over again",
+                ticket.id,
+                serde_json::to_value(stop).ok().and_then(|value| value.as_str().map(str::to_string)).unwrap_or_default()
+            )));
+        }
+        let rounds = ticket.rounds.take().unwrap_or(Rounds { round: 0, of, stopped: None });
         line.rounds = Some(rounds.clone());
         ticket.rounds = Some(rounds);
         ticket.check = Some(asked(Actor::Agent));

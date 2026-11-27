@@ -696,7 +696,12 @@ fn the_rounds_stop_when_the_check_cannot_run_a_person_steps_in_or_automatic_chec
     let refused = check_refused(&root, &id, "AUTH_REQUIRED: sign in").unwrap();
     assert_eq!((refused.state, refused.rounds.as_ref().and_then(|r| r.stopped)), (State::Blocked, Some(Stop::Refused)));
     assert!(refused.blocked.as_deref().is_some_and(|why| why.contains("AUTH_REQUIRED")), "{:?}", refused.blocked);
-    // Handed again, it starts over.
+    // The Assistant cannot buy itself more rounds: taken up again by itself, its finished asks for none.
+    unblock(&root, &id, None).unwrap();
+    finished(&root, &id, Some("Holes moved again"), &[], false).unwrap();
+    assert!(refusal(auto_check(&root, &id)).contains("rounds on T-1 stopped (refused)"));
+    set_state(&root, &id, seen(&root, &id), State::Blocked, None).unwrap();
+    // Handed again by a person, it starts over.
     start(&root, &id, seen(&root, &id)).unwrap();
     assert_eq!(load(&root, &id).unwrap().rounds, None);
 
@@ -715,6 +720,17 @@ fn the_rounds_stop_when_the_check_cannot_run_a_person_steps_in_or_automatic_chec
     round(&root, &id, counted("run-m", &[("advisory", 1)]));
     set_state(&root, &id, seen(&root, &id), State::Confirmed, Some("Wrong part".into())).unwrap();
     assert_eq!(load(&root, &id).unwrap().rounds.and_then(|r| r.stopped), Some(Stop::Person));
+    // A move out of progress ends a running check; a person's move back in progress gives the
+    // rounds back.
+    start(&root, &id, seen(&root, &id)).unwrap();
+    finished(&root, &id, Some("Again"), &[], false).unwrap();
+    auto_check(&root, &id).unwrap();
+    check_started(&root, &id, "run-gone").unwrap();
+    let moved = set_state(&root, &id, seen(&root, &id), State::Waiting, None).unwrap();
+    assert_eq!(moved.check.as_ref().map(|c| c.state), Some(CheckState::Refused));
+    assert!(!checking(&moved) && moved.rounds.as_ref().and_then(|r| r.stopped) == Some(Stop::Person), "no check is left going on");
+    let back = set_state(&root, &id, seen(&root, &id), State::InProgress, Some("One more look".into())).unwrap();
+    assert_eq!((back.worker, back.rounds), (Some(Worker::Assistant), None));
 
     // With the project's automatic checks off, nothing is asked for: a person starts the check.
     let id = handed(&root, bracket());

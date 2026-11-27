@@ -278,13 +278,15 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         if let Ok(value) = thickness.parse::<f64>() {
             params["thicknessMm"] = json!(value);
         }
+        // What was typed, read before the first save reloads the window from the files.
+        let skip: Vec<String> = dialog.skip.split(',').map(str::trim).filter(|rule| !rule.is_empty()).map(str::to_string).collect();
+        let rounds = dialog.rounds.trim().to_string();
         let mut saved = run(app, &mut dialog, "project.settings_set", params);
         if saved {
-            let skip: Vec<String> = dialog.skip.split(',').map(str::trim).filter(|rule| !rule.is_empty()).map(str::to_string).collect();
             let mut params = json!({"enabled": dialog.auto_check, "skip": skip});
-            match dialog.rounds.trim().parse::<u32>() {
+            match rounds.parse::<u32>() {
                 Ok(rounds) => params["rounds"] = json!(rounds),
-                Err(_) if dialog.rounds.trim().is_empty() => {}
+                Err(_) if rounds.is_empty() => {}
                 Err(_) => {
                     dialog.error = Some(crate::i18n::tr("project_settings.rounds").to_string() + ": 0 … 10");
                     app.project_settings = Some(dialog);
