@@ -33,6 +33,9 @@ impl Drop for Scratch {
 #[derive(Clone, Default)]
 struct StandIn {
     prompts: Arc<Mutex<Vec<String>>>,
+    /// Each message's pictures and documents, as the agent receives them: `image <mime>`,
+    /// `document <name> <mime>`.
+    files: Arc<Mutex<Vec<Vec<String>>>>,
     events: Arc<Mutex<Vec<Event>>>,
 }
 
@@ -52,6 +55,12 @@ impl ChatBackend for StandIn {
     fn prompt(&mut self, parts: &[PromptPart]) {
         let text = parts.iter().find_map(|p| if let PromptPart::Text(t) = p { Some(t.clone()) } else { None }).unwrap_or_default();
         self.prompts.lock().unwrap().push(text);
+        let files = parts.iter().filter_map(|part| match part {
+            PromptPart::Text(_) => None,
+            PromptPart::Image { mime, base64 } => (!base64.is_empty()).then(|| format!("image {mime}")),
+            PromptPart::Document { name, mime, base64, .. } => (!base64.is_empty()).then(|| format!("document {name} {mime}")),
+        });
+        self.files.lock().unwrap().push(files.collect());
     }
     fn cancel(&mut self) {}
     fn new_session(&mut self) {}
@@ -904,6 +913,8 @@ fn the_assistant_gets_a_tickets_files_its_draft_card_and_view_and_a_changed_part
     std::fs::write(root.join("specs/drawing.pdf"), b"%PDF-1.7\n").unwrap();
     let files = vec!["specs/flange.png".to_string(), "specs/drawing.pdf".to_string()];
     let id = tickets::create(&root, Draft { title: "Flange".into(), attachments: files, ..Draft::default() }).unwrap().id;
+    // The agent takes pictures and PDFs, as the built-in agent's `initialize` says since #255.
+    agent.events.lock().unwrap().extend([Event::Ready { agent: "Intcad".into(), images: true }, Event::Documents(true)]);
     h.settle();
     let ctx = h.ctx.clone();
     crate::tickets::start(&mut h.app, &ctx, &id, seen(&root, &id));
@@ -915,6 +926,9 @@ fn the_assistant_gets_a_tickets_files_its_draft_card_and_view_and_a_changed_part
     let (names, pictures) = sent.expect("the hand-over message");
     assert!(names.iter().any(|n| n.starts_with(&id)) && names.iter().any(|n| n == "drawing.pdf"), "{names:?}");
     assert!(names.iter().any(|n| n == "flange.png") || pictures > 0, "the picture went too: {names:?} / {pictures}");
+    // The picture and the PDF reach the agent whole, as a picture and a document.
+    let taken = agent.files.lock().unwrap().pop().unwrap_or_default();
+    assert_eq!(taken, ["image image/png", "document drawing.pdf application/pdf"], "{taken:?}");
 
     // The agent drafts a ticket and asks for the view; the call's card names it.
     let reply = agent_calls(&mut h, "ticket.draft", json!({"title": "Hinge clashes with the lid", "view": true}));
