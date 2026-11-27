@@ -541,3 +541,29 @@ def test_suggestion_shows_on_the_line_over_the_box(assistant):
     # What needs the user comes first.
     show(assistant, centre=600, suggestion=SUGGESTION, state="busy")
     expect(composer).not_to_contain_text("Drill four")
+
+
+# The built-in agent's Connections page and a ChatGPT sign-in waiting for the browser (INT-1522).
+
+BUILT_IN = [{"id": "built-in", "name": "Built-in", "detail": "", "hint": None}]
+PLAN = {"id": "openai-codex", "name": "ChatGPT", "state": "out", "account": None, "prefix": "openai"}
+KEY = {"id": "deepseek", "name": "DeepSeek", "saved": True, "shadowed": False, "prefix": "deepseek", "title": "DeepSeek key"}
+
+
+def connections(**more):
+    return {"plans": [PLAN], "keys": [KEY], "custom": [], "login": None, "problem": None,
+            "error": None, "keySaves": 0, "dates": {}, "connected": True, **more}
+
+
+def test_collapse_drops_connections_asked_for_before_the_agent_answered(assistant):
+    assistant.set_viewport_size({"width": 520, "height": 700})
+    unlisted = connections(plans=[], keys=[], connected=False)
+    show(assistant, centre=600, agents=BUILT_IN, agent="built-in", running=False, connect=unlisted)
+    assistant.get_by_role("button", name="expand", exact=True).click()
+    assistant.get_by_role("button", name="connButtonTip").click()
+    assert {"type": "connect"} in actions(assistant)
+    assistant.locator('button[aria-label="collapse"]').click()
+    # The agent answers after the collapse: its page does not open by itself.
+    show(assistant, centre=600, agents=BUILT_IN, agent="built-in", running=True, connect=connections())
+    expect(assistant.get_by_role("heading", name="connTitle")).to_have_count(0)
+    expect(assistant.get_by_role("button", name="connBack", exact=True)).to_have_count(0)

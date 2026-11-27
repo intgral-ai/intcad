@@ -2549,7 +2549,7 @@ export function App({ state }: { state: AssistantState | null }) {
   // Back to the message box there: the bar's Collapse and a press on the bar's empty part.
   const collapse = () => {
     setCentreOpen(false);
-    if (showConn) closeConn();
+    closeConn();
   };
   const shell = (
       <ChatShell
