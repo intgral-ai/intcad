@@ -21,7 +21,7 @@ const word = value => (typeof value === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.tes
  * What a refusal says: its status, the provider's error code (a short word, never its description)
  * and whether it is about the region or the plan. Only the code leaves this function.
  */
-export function refusalOf(status, body) {
+function refusalOf(status, body) {
   let json = null;
   try {
     json = JSON.parse(body);
