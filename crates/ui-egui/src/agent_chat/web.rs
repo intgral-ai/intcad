@@ -662,7 +662,7 @@ pub fn state(app: &mut SolveApp) -> String {
         tr("ui.ai_model").to_string()
     };
     strings.insert("modelEffort".into(), Value::from(model_effort));
-    let page = json!({
+    let mut page = json!({
         "items": items,
         // A text file open from a file card: the start of its text, read when the card was clicked.
         "filePreview": chat.file_preview.as_ref().map(|file| json!({"name": file.name, "text": file.text, "markdown": file.markdown})),
