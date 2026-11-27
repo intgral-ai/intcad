@@ -1,0 +1,6 @@
+schema_version = 1
+
+[[keep]]
+id = "motor-axis-height"
+status = "confirmed"
+text = "The motor's axis sits 30 mm above the base plate's top face, centred across the upright."

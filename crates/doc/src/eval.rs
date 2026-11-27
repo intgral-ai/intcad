@@ -2377,8 +2377,9 @@ impl Model {
                 }
                 Err(e) => Some(e.to_string().trim_start_matches("the operation failed: ").to_string()),
             };
-            // A panic is no result to reuse: the kernel was replaced after it.
-            if !self.no_cache && !watched.cancelled() && !internal {
+            // A panic is no result to reuse: the kernel was replaced after it. Nor is what stopped
+            // work came to: a copy that is stopped shares this cache with its design.
+            if !self.no_cache && !watched.cancelled() && !internal && !crate::kernel::stopped() {
                 let e = CachedEval {
                     error: error.clone(),
                     warning: warning.clone(),

@@ -189,6 +189,8 @@ export interface AssistantState {
   radius: number;
   /** At the bottom centre of the window: the most height the page may take, in points; absent in the side panel. */
   centre?: number | null;
+  /** A next-step suggestion, or why there is none, for the line over the message box; `ready`: its ghost is drawn. */
+  suggestion?: { label: string | null; text: string; guess: boolean; ready: boolean; id?: string } | null;
   /** There: the primary presses in the app's window outside the page so far. Its conversation collapses on a new one. */
   outsidePresses?: number;
   permissions: 'ask' | 'edits' | 'all';
@@ -309,6 +311,8 @@ export type Action =
   | { type: 'minimize' }
   /** At the bottom centre: how tall the page wants to be, in points (the host keeps it within `centre`). */
   | { type: 'size'; height: number }
+  /** Tab (accept) or Esc in the empty message box, with a suggestion over it. */
+  | { type: 'suggestion'; accept: boolean; id: string }
   | { type: 'side'; left: boolean }
   | { type: 'surface'; color: string }
   | { type: 'copy'; text: string }
