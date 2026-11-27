@@ -10,8 +10,9 @@ use crate::ui_kit::{Container, Surface};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COMMIT: &str = env!("SOLIDCRAFT_COMMIT");
 pub const BUILD_DATE: &str = env!("SOLIDCRAFT_BUILD_DATE");
-/// The user and developer guide (docs/book). Intcad has no guide site of its own yet, so this is
-/// the guide's contents page in the repository.
+/// The user and developer guide (docs/book). It lives in the public source repository, which
+/// stays readable after the closed-source switch, so this link keeps working without a new
+/// guide site. Move it to the public guide when that is published (docs/releasing.md).
 pub const DOCS_URL: &str = "https://github.com/intgral-ai/intcad/blob/main/docs/book/src/SUMMARY.md";
 const ATTRIBUTION: &str = include_str!("../../../ATTRIBUTION.md");
 use solidcraft_engine::licences::{LICENSE_APACHE, LICENSE_MIT, NOTICE, THIRD_PARTY};

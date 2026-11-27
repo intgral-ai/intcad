@@ -507,7 +507,7 @@ const DESCRIBE_CONTRACT: crate::schema::TypedContract<crate::schema::inspect::De
 /// A command's prose documentation and, for converted commands, its schemas.
 fn describe(_s: &mut Session, p: &Value) -> Result<Value> {
     let id = p.get("command").and_then(Value::as_str).ok_or_else(|| crate::params::bad("engine.describe", "`command` must be a command id"))?;
-    let spec = super::find_command(id).ok_or_else(|| crate::EngineError::UnknownCommand(id.to_string()))?;
+    let spec = super::find_command(id).ok_or_else(|| crate::EngineError::UnknownCommandDescription(id.to_string()))?;
     let reply = crate::schema::inspect::DescribeResult {
         id: spec.id.to_string(),
         label: spec.label.to_string(),

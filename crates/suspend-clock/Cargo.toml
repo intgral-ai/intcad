@@ -1,0 +1,27 @@
+[package]
+name = "solidcraft-suspend-clock"
+description = "Suspend-inclusive clocks for native account deadlines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Match the workspace lints except for the narrowly scoped native clock FFI.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
+neg_cmp_op_on_partial_ord = "allow"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.6", features = ["time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_LibraryLoader"] }

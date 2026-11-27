@@ -10,8 +10,7 @@ build-dir = "../../target/book"
 create-missing = false
 
 [output.html]
-git-repository-url = "https://github.com/intgral-ai/open-skyfall-desktop"
-edit-url-template = "https://github.com/intgral-ai/open-skyfall-desktop/edit/main/docs/book/{path}"
+# The source repository is private: the published guide has no public repository or edit link.
 site-url = "/"
 no-section-label = false
 
