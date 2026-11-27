@@ -10,10 +10,14 @@
 //! when the ticket has changed since. The view's messages come in on its own channel ([`receive`]);
 //! the Assistant's view refuses them. Start sends the Assistant one message about that ticket, with
 //! its chip, and while the Assistant works a ticket every message carries it in full and the others
-//! by id, title and state ([`note`]). When a person asks for the check, the app runs the Review
-//! panel's own DFM check (the same controlled entry, so a refusal is the same refusal) and binds the
-//! run to the ticket, which then waits for the person with the run's own outcome words: no tick and
-//! no "passed" of its own.
+//! by id, title and state ([`note`]). When a person asks for the check, or the Assistant's
+//! 「做完了」 does with the project's automatic checks on (once its turn has ended and the model is
+//! quiet, `agent_chat::dfm_runtime`), the app runs the Review panel's own DFM check (the same
+//! controlled entry, so a refusal is the same refusal) and binds the run to the ticket, with the
+//! run's own outcome words: no tick and no "passed" of its own. After a person's check the ticket
+//! waits for them; after the Assistant's, the findings that ask for work go back to it on that
+//! ticket, for a few rounds the project bounds, and the store decides where the rounds end. While
+//! a ticket's check runs, the agent's requests that would change the model are refused.
 //!
 //! Experiment (branch `experiment/part-tickets`, 2026-11-26): the demo of the part-ticket loop.
 
@@ -37,6 +41,39 @@ pub struct RunItem {
     pub count: usize,
     pub parts: Vec<String>,
     pub values: Vec<(String, Option<String>)>,
+}
+
+/// A run's report as a ticket's check reads it, whatever the check: the run, its own outcome word,
+/// its counts by finding state, its freshness, and each rule it reported.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Report {
+    pub run: String,
+    pub outcome: String,
+    pub counts: BTreeMap<String, u64>,
+    pub freshness: String,
+    pub items: Vec<RunItem>,
+}
+
+/// How starting the run of a ticket's check went.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) enum Begun {
+    /// The run that was admitted and started.
+    Started(String),
+    /// Another check is running: try again on a later frame.
+    Wait,
+    /// The admission's own refusal, or why the run did not start.
+    Refused(String),
+}
+
+/// Stand-in runs for tests: each start takes the next answer (a report, or a refusal), and while
+/// `hold` is set the run keeps running.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct StandInRuns {
+    pub answers: std::collections::VecDeque<Result<Report, String>>,
+    pub started: usize,
+    pub hold: bool,
+    running: Option<Report>,
 }
 
 /// What the host keeps between frames for a Tickets view.
@@ -99,6 +136,12 @@ pub struct State {
     pub(crate) web_place: Option<(egui::Rect, egui::LayerId)>,
     /// Whether the host could make the tickets view's web view (`None`: not asked yet).
     pub(crate) web_host: Option<bool>,
+    /// Messages to the Assistant about its rounds that could not go yet (another step waits for
+    /// Accept or Reject): sent on a later frame, oldest first.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    owed: Vec<String>,
+    #[cfg(test)]
+    pub(crate) stand_in: Option<StandInRuns>,
 }
 
 /// The rail's Tickets panel, each frame it gives up `rect` to the tickets view's web view.
@@ -385,6 +428,36 @@ pub fn current(app: &SolveApp) -> Option<&Ticket> {
         .find(|ticket| ticket.state == TicketState::InProgress && ticket.worker == Some(tickets::Worker::Assistant) && !ticket.deleted)
 }
 
+/// The ticket whose check is asked for or running, if any: the model is not to change meanwhile,
+/// as a change cancels the run.
+pub(crate) fn checking(app: &SolveApp) -> Option<&str> {
+    app.tickets.tickets.iter().find(|t| !t.deleted && t.state == TicketState::InProgress && tickets::checking(t)).map(|t| t.id.as_str())
+}
+
+/// The Assistant's ticket, said finished, whose check applies and is not asked for yet: the one an
+/// ended turn hands to the automatic check (`agent_chat::dfm_runtime`).
+pub(crate) fn finished_unchecked(app: &SolveApp) -> Option<String> {
+    current(app).filter(|t| t.finished && tickets::applies(t) && !tickets::checking(t)).map(|t| t.id.clone())
+}
+
+/// The automatic check's trigger for the Assistant's finished ticket: the store asks for its check
+/// as the Assistant's step, and [`tick`] starts the run through the same admission as a person's.
+/// A refusal is logged, not shown: no person pressed anything.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn ask_auto_check(app: &mut SolveApp, id: &str) -> bool {
+    let Some(root) = root(app) else { return false };
+    match tickets::auto_check(&root, id) {
+        Ok(_) => {
+            refresh(app);
+            true
+        }
+        Err(error) => {
+            log::info!("{id}'s automatic check was not asked for: {error}");
+            false
+        }
+    }
+}
+
 /// Run a person's or the app's step on the store and read it again; a refusal is kept as the view's
 /// error.
 #[cfg(not(target_arch = "wasm32"))]
@@ -610,8 +683,9 @@ pub fn note(app: &mut SolveApp) -> Option<String> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        root(app)?;
+        let project = root(app)?;
         refresh(app);
+        let automatic = tickets::automatic_rounds(&project);
         let all = &app.tickets.tickets;
         if all.is_empty() {
             return Some(
@@ -624,26 +698,41 @@ pub fn note(app: &mut SolveApp) -> Option<String> {
             );
         }
         let mut out = String::from(
-            "Part tickets of this project. You may set a ticket's state with ticket.update {\"action\": \"state\", \"to\": …}: done only \
-             when its sub-tickets are done and, where a check applies, its check ran; one ticket in progress with you at a time; a ticket \
-             waiting for others is not started. Accept your own drafts only when the person asked for that work. No command starts a \
-             check, edits, deletes or restores a ticket: a person does those in the Tickets panel.",
+            "Part tickets of this project. You may set a ticket's state with ticket.update {\"action\": \"state\", \"to\": …}, with a \
+             text saying why for waiting, blocked and done: done only when its sub-tickets are done and, where a check applies, its check \
+             ran and left nothing failed; one ticket in progress with you at a time; a ticket waiting for others is not started. Accept \
+             your own drafts only when the person asked for that work. No command asks for a check, edits, deletes or restores a \
+             ticket: a person does those in the Tickets panel.",
         );
         match current(app) {
             Some(ticket) => {
+                let check = match (tickets::applies(ticket), automatic) {
+                    (false, _) => "no check applies to it, so it then waits for a person and you may set it done with a text".to_string(),
+                    (true, None) => "a person then starts its check".to_string(),
+                    (true, Some(of)) => format!(
+                        "its check then runs by itself once your turn has ended, and the findings that ask for work (failed, then \
+                         advisory) come back to you on this ticket: fix them and say finished again. At most {of} rounds of fixing; then \
+                         the ticket goes to a person"
+                    ),
+                };
                 out += &format!(
                     "\nYou are working on {} alone. Change only what it asks for.\n{}\nWhen its changes are made, call execute with \
                      ticket.update {{\"id\": \"{}\", \"action\": \"finished\", \"text\": …}}, the text saying what you changed, on which \
                      parts, and what you did not do (attachments: [project files] and view: true add files and a picture of the 3D view): \
-                     where a check applies a person then starts it (no check starts by itself); where none applies you may set it done. If \
-                     you cannot go on, use action block with the text saying why. To tell the person something on the ticket, use action \
-                     comment with text.",
+                     {check}. If you cannot go on, use action block with the text saying why. To tell the person something on the ticket, \
+                     use action comment with text.",
                     ticket.id,
                     summary(ticket),
                     ticket.id
                 );
+                if let Some(rounds) = ticket.rounds.as_ref().filter(|rounds| rounds.stopped.is_none() && rounds.round > 0) {
+                    out += &format!("\nRound {} of {} of fixing: fix what its last check found, then say finished again.", rounds.round, rounds.of);
+                }
             }
             None => out += "\nNo ticket is in progress: do not change the model for a ticket until a person starts it.",
+        }
+        if let Some(id) = checking(app) {
+            out += &format!("\nThe check of {id} is running: do not change the model until its result comes (a change cancels it).");
         }
         let others: Vec<String> = all
             .iter()
@@ -658,41 +747,76 @@ pub fn note(app: &mut SolveApp) -> Option<String> {
 }
 
 /// Start the run of a ticket's check through the Review panel's own controlled entry: the run it
-/// reserved, or why it did not start (the entry's own refusal).
+/// reserved, or why it did not start (the entry's own refusal). While a check started by hand is
+/// still running, wait for it to end.
 #[cfg(not(target_arch = "wasm32"))]
-fn start_run(app: &mut SolveApp) -> Result<String, String> {
+fn start_run(app: &mut SolveApp) -> Begun {
+    #[cfg(test)]
+    if let Some(runs) = app.tickets.stand_in.as_mut() {
+        runs.started += 1;
+        return match runs.answers.pop_front() {
+            Some(Ok(mut report)) => {
+                report.run = format!("run-stand-in-{}", runs.started);
+                runs.running = Some(report.clone());
+                Begun::Started(report.run)
+            }
+            Some(Err(reason)) => Begun::Refused(reason),
+            None => Begun::Refused("no stand-in answer left".into()),
+        };
+    }
+    if app.dfm_review.running {
+        return Begun::Wait;
+    }
     crate::dfm_review::start(app);
     match (app.dfm_review.running, app.dfm_review.mapped_run.clone()) {
-        (true, Some(run)) => Ok(run),
-        _ => Err(app.dfm_review.error.clone().unwrap_or_else(|| tr("ui.tickets_check_not_started").to_string())),
+        (true, Some(run)) => Begun::Started(run),
+        _ => Begun::Refused(app.dfm_review.error.clone().unwrap_or_else(|| tr("ui.tickets_check_not_started").to_string())),
     }
 }
 
 /// Where the run of a ticket's check stands: `None` while it runs; its report once it has one;
 /// why it did not finish otherwise. The Review panel's own poll reads the run each frame.
 #[cfg(not(target_arch = "wasm32"))]
-fn run_result(app: &mut SolveApp, run: &str) -> Option<Result<crate::dfm_chat::Card, String>> {
+fn run_result(app: &mut SolveApp, run: &str) -> Option<Result<Report, String>> {
+    #[cfg(test)]
+    if let Some(runs) = app.tickets.stand_in.as_mut() {
+        if runs.hold {
+            return None;
+        }
+        return Some(runs.running.take().filter(|report| report.run == run).ok_or_else(|| "the stand-in run is gone".to_string()));
+    }
     if app.dfm_review.running {
         return None;
     }
     let card = app.dfm_review.card.clone().filter(|card| !run.is_empty() && card.run_id == run);
     Some(match (app.dfm_review.error.clone(), card) {
-        (None, Some(card)) => Ok(card),
+        (None, Some(card)) => Ok(report(&card)),
         (error, _) => Err(error.unwrap_or_else(|| tr("ui.dfm_review_did_not_finish").to_string())),
     })
 }
 
-/// Each frame: when a person asked for a ticket's check, start its run; when that run has a report,
-/// bind it and the ticket waits for the person; a refusal or a run that did not finish stays on
-/// the ticket with its reason.
+/// A run's report as a ticket keeps it: the run's own words (its card state `done`, or its outcome
+/// when that is not the newest run's: `superseded`, `cancelled`, `failed`), counts and rules.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn tick(app: &mut SolveApp) {
+fn report(card: &crate::dfm_chat::Card) -> Report {
+    let counts = card.counts().as_object().map(|counts| counts.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64()?))).collect()).unwrap_or_default();
+    let outcome = card.outcome.clone().filter(|outcome| outcome != "current").unwrap_or_else(|| card.status.clone());
+    Report { run: card.run_id.clone(), outcome, counts, freshness: card.freshness.clone(), items: run_items(card) }
+}
+
+/// Each frame: send what is owed to the Assistant; when a ticket's check is asked for (by a person,
+/// or by the Assistant's 「做完了」), start its run; when that run has a report, bind it, and the
+/// store says where the ticket goes; a refusal or a run that did not finish is said on the ticket
+/// with its reason. A run whose ticket a person moved meanwhile binds nothing.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     if root(app).is_none() {
         return;
     }
     refresh(app);
     attach_wanted_view(app, |app| crate::control::view_png(app, VIEW_PICTURE.0, VIEW_PICTURE.1));
     attach_comment_views(app, |app| crate::control::view_png(app, VIEW_PICTURE.0, VIEW_PICTURE.1));
+    send_owed(app, ctx);
     match app.tickets.checking.clone() {
         None => {
             let asked = app
@@ -702,45 +826,92 @@ pub fn tick(app: &mut SolveApp) {
                 .find(|t| t.state == TicketState::InProgress && !t.deleted && t.check.as_ref().is_some_and(|c| c.state == CheckState::Asked))
                 .map(|t| t.id.clone());
             let Some(id) = asked else { return };
-            if app.dfm_review.running {
-                // A check started by hand is still running: wait for it to end.
-                return;
-            }
             match start_run(app) {
-                Ok(run) => {
+                Begun::Wait => {}
+                Begun::Started(run) => {
                     app.tickets.checking = Some((id.clone(), run.clone()));
                     apply(app, |root| tickets::check_started(root, &id, &run));
                 }
-                Err(reason) => {
-                    apply(app, |root| tickets::check_refused(root, &id, &reason));
+                Begun::Refused(reason) => {
+                    let ticket = apply(app, |root| tickets::check_refused(root, &id, &reason));
+                    tell(app, ticket.as_ref(), None);
                 }
             }
         }
-        Some((id, run)) => match run_result(app, &run) {
-            None => {}
-            Some(Ok(card)) => {
-                app.tickets.checking = None;
-                let counts = card
-                    .counts()
-                    .as_object()
-                    .map(|counts| counts.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64()?))).collect())
-                    .unwrap_or_default();
-                // The run's own words: its card state (`done`), or its outcome when that is not the
-                // newest run's (`superseded`, `cancelled`, `failed`).
-                let outcome = card.outcome.clone().filter(|outcome| outcome != "current").unwrap_or_else(|| card.status.clone());
-                let result = tickets::RunResult { run: card.run_id.clone(), outcome, counts, freshness: card.freshness.clone() };
-                apply(app, |root| tickets::check_ran(root, &id, result));
+        Some((id, run)) => {
+            let Some(result) = run_result(app, &run) else { return };
+            app.tickets.checking = None;
+            let moved = app.tickets.tickets.iter().find(|t| t.id == id).is_none_or(|t| t.state != TicketState::InProgress || t.deleted);
+            if moved {
+                return;
             }
-            Some(Err(reason)) => {
-                app.tickets.checking = None;
-                apply(app, |root| tickets::check_refused(root, &id, &reason));
+            match result {
+                Ok(report) => {
+                    let result = tickets::RunResult {
+                        run: report.run.clone(),
+                        outcome: report.outcome.clone(),
+                        counts: report.counts.clone(),
+                        freshness: report.freshness.clone(),
+                    };
+                    let ticket = apply(app, |root| tickets::check_ran(root, &id, result));
+                    tell(app, ticket.as_ref(), Some(&report));
+                }
+                Err(reason) => {
+                    let ticket = apply(app, |root| tickets::check_refused(root, &id, &reason));
+                    tell(app, ticket.as_ref(), None);
+                }
             }
-        },
+        }
     }
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn tick(_app: &mut SolveApp) {}
+pub fn tick(_app: &mut SolveApp, _ctx: &egui::Context) {}
+
+/// After a check of the Assistant's rounds: while they go on, the findings that ask for work, failed
+/// first, go to it as its next message on that ticket (which part, the numbers, the rule); when they
+/// stop with something left, it is asked for one comment on what is left and what it tried. A
+/// person's check, or rounds that ended clean or by somebody's step, tell it nothing.
+#[cfg(not(target_arch = "wasm32"))]
+fn tell(app: &mut SolveApp, ticket: Option<&Ticket>, report: Option<&Report>) {
+    let Some(ticket) = ticket.filter(|t| t.check.as_ref().is_some_and(|c| c.by == tickets::Actor::Agent)) else { return };
+    let Some(rounds) = &ticket.rounds else { return };
+    let (round, of) = (rounds.round.to_string(), rounds.of.to_string());
+    let mut text = match rounds.stopped {
+        None if ticket.state == TicketState::InProgress => {
+            trf("ui.tickets_rounds_findings", &[("id", &ticket.id), ("round", &round), ("of", &of)])
+        }
+        Some(tickets::Stop::Advisory | tickets::Stop::Failed | tickets::Stop::Refused) => {
+            trf("ui.tickets_rounds_stopped", &[("id", &ticket.id), ("round", &round), ("of", &of)])
+        }
+        _ => return,
+    };
+    if let Some(report) = report {
+        let mut work: Vec<&RunItem> = report.items.iter().filter(|item| matches!(item.state.as_str(), "failed" | "advisory")).collect();
+        work.sort_by_key(|item| item.state != "failed");
+        for item in work {
+            let values = page_item(item)["values"].as_array().map(|v| v.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; ")).unwrap_or_default();
+            text += &format!("\n- {} · {} · {} · {values}", item.state, item.rule, item.parts.join(", "));
+        }
+    } else if let Some(reason) = ticket.check.as_ref().and_then(|check| check.reason.as_deref()) {
+        text += &format!("\n- {reason}");
+    }
+    app.tickets.owed.push(text);
+}
+
+/// Send the Assistant what is owed about its rounds, as messages of their own: the person's files
+/// and selection waiting in the box stay there. One that cannot go yet (a preview waits for Accept
+/// or Reject) waits for a later frame.
+#[cfg(not(target_arch = "wasm32"))]
+fn send_owed(app: &mut SolveApp, ctx: &egui::Context) {
+    while !app.tickets.owed.is_empty() {
+        let text = app.tickets.owed[0].clone();
+        if crate::agent_chat::send_with(app, ctx, text, Some(crate::agent_chat::context::Context::default())).is_err() {
+            return;
+        }
+        app.tickets.owed.remove(0);
+    }
+}
 
 /// The agent asked, drafting a ticket, for a picture of the 3D view: `picture` takes it as the view
 /// is now, once per ticket (a picture that cannot be taken is not tried again every frame), and the

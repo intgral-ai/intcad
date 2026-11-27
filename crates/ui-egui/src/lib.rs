@@ -3457,7 +3457,7 @@ impl SolveApp {
         // The Review panel's own check, and a report dragged from it onto the Assistant.
         dfm_review::poll(self, ui.ctx());
         // A part ticket's check runs through the same entry and is bound to its ticket.
-        tickets::tick(self);
+        tickets::tick(self, ui.ctx());
         dfm_review::drag_hint(self, ui.ctx());
         dfm_review::release(self, ui.ctx());
         let floating = render_workspace::active(self) || ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Panel).floating();

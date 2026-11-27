@@ -1777,10 +1777,18 @@ fn assistant_dfm_refusal(app: &SolveApp) -> solidcraft_engine::entitlement::Refu
     RefusalCode::UnsafeToStart
 }
 
-/// A decided automatic trigger is not permission to run the ordinary CAD command.
-fn submit_dfm(app: &SolveApp, trigger: dfm_runtime::Trigger) -> bool {
-    log::debug!("Assistant DFM not started after {trigger:?}: {:?}", assistant_dfm_refusal(app));
-    false
+/// A decided automatic trigger is not permission to run the ordinary CAD command. The one that
+/// runs is a part ticket's: the Assistant's finished ticket gets its check asked for, and the
+/// tickets' own step starts it through the Review panel's admission, as a person's 跑检查 does.
+fn submit_dfm(app: &mut SolveApp, trigger: dfm_runtime::Trigger) -> bool {
+    match trigger {
+        #[cfg(not(target_arch = "wasm32"))]
+        dfm_runtime::Trigger::TicketFinished { ticket, .. } => crate::tickets::ask_auto_check(app, &ticket),
+        trigger => {
+            log::debug!("Assistant DFM not started after {trigger:?}: {:?}", assistant_dfm_refusal(app));
+            false
+        }
+    }
 }
 
 /// A manual Assistant trigger, separate from the ordinary CAD command.
@@ -1843,6 +1851,15 @@ pub(crate) fn dfm_state() -> DfmState {
 pub(crate) fn install_test_backend(app: &mut SolveApp, backend: Box<dyn ChatBackend>) {
     app.agent_chat.backend = Some(backend);
     app.agent_chat.state = Some(State::Ready);
+}
+
+/// The scripted agent's tool port (other areas' tests): requests sent here are judged by the gate
+/// as an agent's are.
+#[cfg(test)]
+pub(crate) fn install_test_tools(app: &mut SolveApp) -> std::sync::mpsc::Sender<ControlRequest> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.agent_chat.tools_rx = Some(rx);
+    tx
 }
 
 /// Put a ready attachment on the next message and open the Assistant, so the person sees the chip
@@ -2906,6 +2923,13 @@ fn pump_tools(app: &mut SolveApp) {
             refuse(req, reason);
             continue;
         }
+        // A ticket's check runs on the model as it is: a change would cancel it.
+        if let Some(id) = crate::tickets::checking(app).map(str::to_string)
+            && gate::may_change_model(&req.method, &req.params)
+        {
+            refuse(req, format!("the check of part ticket {id} is running: wait for its result before you change the model"));
+            continue;
+        }
         let undo_len = app.session.undo.len();
         let previewing = review::running(&app.agent_chat);
         let Some(turn) = app.agent_chat.turn.as_mut() else {
@@ -3099,6 +3123,10 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
                     refresh_dfm_auto(app);
                     let stamp = app.session.document_stamp();
                     app.agent_chat.dfm.on_turn_end(&stamp.document_id, &format!("turn-{turn}"), stamp.revision, changed, pending);
+                    // The part ticket it said finished has its check held the same way.
+                    if let Some(ticket) = crate::tickets::finished_unchecked(app) {
+                        app.agent_chat.dfm.on_ticket_finished(&stamp.document_id, &format!("turn-{turn}"), stamp.revision, pending, &ticket);
+                    }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 task_runtime::on_turn_end(app);

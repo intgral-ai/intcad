@@ -4,9 +4,9 @@
 //! These four are all there is. Drafting makes drafts; an update sets a ticket's state (its own
 //! draft's acceptance and finishing included, under the store's conditions), comments on a ticket,
 //! or says the ticket the Assistant works is finished (with what was done), blocked or taken up
-//! again. Starting a check, editing, deleting
-//! and restoring are a person's buttons in the Tickets panel, so no command does them. Every step
-//! a command makes is recorded as the agent's.
+//! again. Its 「做完了」 asks for the ticket's check when the project's automatic checks are on; no
+//! command asks for one. Editing, deleting and restoring are a person's buttons in the Tickets
+//! panel, so no command does them. Every step a command makes is recorded as the agent's.
 
 use std::path::{Path, PathBuf};
 
@@ -63,11 +63,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         .output(crate::schema::output_schema_for::<TicketReply>)
         .params(
             "id; action: state (to: draft | confirmed | in_progress | waiting | done | blocked; confirmed accepts a draft; done only when its \
-             sub-tickets are done and, where a check applies, its check ran) | comment (text, on any ticket) | finished (the ticket you \
-             work has its changes; text required: what you changed, on which parts, what you did not do; a person starts its check) | \
-             block (text required: why) | unblock; text?; attachments?: [paths of files in the project, at most 5, for comment and \
-             finished]; view?: true to add a picture of the 3D view to a comment or finished → the ticket. No command starts a check, \
-             edits, deletes or restores a ticket: a person does those in the Tickets panel",
+             sub-tickets are done and, where a check applies, its check ran and left nothing failed; text required for waiting, blocked \
+             and done: what you did and why you move it) | comment (text, on any ticket) | finished (the ticket you work has its \
+             changes; text required: what you changed, on which parts, what you did not do; with the project's automatic checks on its \
+             check then runs and its findings come back to you, else a person starts it) | block (text required: why) | unblock; text?; \
+             attachments?: [paths of files in the project, at most 5, for comment and finished]; view?: true to add a picture of the 3D \
+             view to a comment or finished → the ticket. No command asks for a check, edits, deletes or restores a ticket: a person \
+             does those in the Tickets panel",
         ),
 ];
 
@@ -129,7 +131,7 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
             let to = params.to.as_deref().map(str::trim).unwrap_or_default();
             let to = serde_json::from_value(Value::from(to))
                 .map_err(|_| bad("ticket.update", format!("`{to}` is not a state; use draft, confirmed, in_progress, waiting, done or blocked")))?;
-            tickets::agent_set_state(&root, id, to)
+            tickets::agent_set_state(&root, id, to, text)
         }
         "comment" => tickets::comment(&root, id, tickets::Actor::Agent, text.unwrap_or_default(), &params.attachments, params.view)
             .and_then(|_| tickets::load(&root, id)),
@@ -139,7 +141,8 @@ fn update(s: &mut Session, p: &Value) -> Result<Value> {
         "check" => {
             return Err(bad(
                 "ticket.update",
-                "no check starts by itself: say `finished`, and a person starts the ticket's check in the Tickets panel",
+                "no command asks for a check: say `finished`; with the project's automatic checks on the ticket's check then runs, else a \
+                 person starts it in the Tickets panel",
             ));
         }
         "decline" | "delete" | "restore" | "edit" => {

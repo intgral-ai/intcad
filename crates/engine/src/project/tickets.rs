@@ -9,7 +9,10 @@
 //!
 //! Who may make which move is decided here, not by the caller ([`may_move`]). The agent drafts,
 //! sets a ticket's state, its own draft's acceptance included, says it has finished the ticket it
-//! works and says when it is blocked; it starts no check and deletes or restores nothing. A person
+//! works and says when it is blocked; it deletes or restores nothing and asks for no check by a
+//! command. Its 「做完了」 asks for the ticket's check when the project's automatic checks are on
+//! ([`auto_check`]): the findings go back to it and it fixes them, in rounds the project bounds
+//! ([`Rounds`]), until nothing is left or the rounds stop the ticket for a person. A person
 //! accepts or declines a draft, hands a ticket to the Assistant or works it themself, starts its
 //! check, sets any state, edits a ticket in any state, deletes and restores (the tickets view's
 //! buttons; no command reaches these). For both, Done keeps its gate ([`why_not_done`]) and open
@@ -58,6 +61,9 @@ pub const MAX_ATTACHMENT_BYTES: u64 = 100 * 1024 * 1024;
 pub const MAX_EVENTS: usize = 2000;
 /// A run's finding states that mean a rule was checked: a run with none of them checked nothing.
 const CHECKED_STATES: [&str; 4] = ["passed", "checked", "advisory", "failed"];
+/// Rounds of fixing the Assistant takes after a ticket's first automatic check, when the project
+/// says nothing.
+pub const DEFAULT_ROUNDS: u32 = 3;
 
 /// Bumped on every write, so a panel knows when to read the folder again.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
@@ -139,10 +145,18 @@ pub enum CheckState {
     Refused,
 }
 
+fn person() -> Actor {
+    Actor::Person
+}
+
 /// A ticket's check: today one sheet-metal DFM run, bound by its run id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Check {
     pub state: CheckState,
+    /// Who asked for it: a person (跑检查), or the Assistant, whose 「做完了」 asked for it while the
+    /// project's automatic checks are on ([`auto_check`]).
+    #[serde(default = "person")]
+    pub by: Actor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
     /// The run's own outcome word, as the run record has it.
@@ -162,6 +176,39 @@ pub struct Check {
 
 fn on() -> bool {
     true
+}
+
+/// The Assistant's rounds of check and fix on a ticket, from the first check its 「做完了」 asked
+/// for: a check, then a round of fixing while the findings ask for work, then a check again, and
+/// so on, at most `of` rounds of fixing. They stop when nothing is left to fix, when the rounds are
+/// used up or the check cannot run, or when somebody else steps in ([`Stop`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Rounds {
+    /// The round of fixing it is in: 0 until a check has asked for work.
+    pub round: u32,
+    /// The most rounds of fixing, as the project said when the first check was asked for.
+    pub of: u32,
+    /// Why the rounds stopped; none while they go on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<Stop>,
+}
+
+/// Why the Assistant's rounds stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Stop {
+    /// The check found nothing to fix: the ticket waits for a person.
+    Clean,
+    /// Only 「建议」 were left after the last round: the ticket waits for a person.
+    Advisory,
+    /// Something failed after the last round: the ticket is blocked.
+    Failed,
+    /// The check was refused or did not finish: the ticket is blocked.
+    Refused,
+    /// A person started a check or moved the ticket.
+    Person,
+    /// The Assistant moved the ticket itself.
+    Assistant,
 }
 
 /// One ticket, as its file holds it.
@@ -208,9 +255,13 @@ pub struct Ticket {
     #[serde(default)]
     pub recheck: Option<String>,
     /// The Assistant said it has finished the work; a check applies, so the ticket stays in
-    /// progress until a person starts that check (no check starts by itself).
+    /// progress until its check is asked for: by the app, when the project's automatic checks are
+    /// on ([`auto_check`]), or by a person.
     #[serde(default)]
     pub finished: bool,
+    /// The Assistant's rounds of check and fix, once its 「做完了」 has asked for a check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<Rounds>,
     /// The agent asked, drafting it, for a picture of the 3D view; the app has not attached it yet.
     #[serde(default)]
     pub wants_view: bool,
@@ -257,6 +308,9 @@ pub struct Event {
     /// `comment_view` line ([`comment_view`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub view: bool,
+    /// The Assistant's rounds as this step left them, on the lines of a check it asked for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<Rounds>,
     pub revision: u64,
 }
 
@@ -470,11 +524,12 @@ struct Line {
     unchecked: bool,
     attachments: Vec<String>,
     view: bool,
+    rounds: Option<Rounds>,
 }
 
 impl Line {
     fn new(actor: Actor, action: &'static str) -> Self {
-        Self { actor, action, note: None, run: None, unchecked: false, attachments: Vec::new(), view: false }
+        Self { actor, action, note: None, run: None, unchecked: false, attachments: Vec::new(), view: false, rounds: None }
     }
 
     fn note(mut self, note: Option<String>) -> Self {
@@ -498,6 +553,7 @@ fn commit(root: &Path, ticket: &Ticket, from: Option<State>, line: Line) -> Resu
         unchecked: line.unchecked,
         attachments: line.attachments,
         view: line.view,
+        rounds: line.rounds,
         revision: ticket.revision,
     };
     let appended = append(root, &event);
@@ -787,6 +843,7 @@ fn new_ticket(root: &Path, draft: Draft, actor: Actor, state: State, action: &'s
         checks: draft.checks.unwrap_or(true),
         recheck: None,
         finished: false,
+        rounds: None,
         wants_view: draft.view,
         state,
         check: None,
@@ -842,19 +899,22 @@ fn refused(ticket: &Ticket, what: &str) -> TicketError {
 /// - A person and the agent: any move, back as well as forward, a draft's acceptance included.
 ///   Done keeps its gate for both ([`why_not_done`]); open waits keep a ticket from the Assistant
 ///   ([`start`], [`agent_set_state`]).
-/// - The app: in progress to waiting, when it binds a check's run.
+/// - The app: in progress to waiting, when it binds a check's run; in progress to blocked, when
+///   the Assistant's rounds stop with something left or a check that cannot run ([`stop`]).
 ///
-/// Starting a check, deleting and restoring are not moves: only a person does those.
+/// Starting a check, deleting and restoring are not moves: only a person deletes and restores, and
+/// a check is asked for by a person or by the Assistant's 「做完了」 ([`auto_check`]).
 pub fn may_move(actor: Actor, from: State, to: State) -> bool {
     match actor {
         Actor::Person | Actor::Agent => true,
-        Actor::App => matches!((from, to), (State::InProgress, State::Waiting)),
+        Actor::App => matches!((from, to), (State::InProgress, State::Waiting | State::Blocked)),
     }
 }
 
 /// Move `ticket` to `to` as `actor`, or say why not. With the move: nobody works a draft or a
-/// confirmed ticket, a block's reason goes when the block ends, and the Assistant's "finished"
-/// goes with the state it was said in.
+/// confirmed ticket, a block's reason goes when the block ends, the Assistant's "finished" goes
+/// with the state it was said in, and the Assistant's rounds stop, a person's or its own move
+/// being the reason (the app's ending move names its own, [`stop`]).
 fn move_to(ticket: &mut Ticket, actor: Actor, to: State) -> Result<(), TicketError> {
     let from = ticket.state;
     if from == to {
@@ -870,6 +930,13 @@ fn move_to(ticket: &mut Ticket, actor: Actor, to: State) -> Result<(), TicketErr
     }
     ticket.state = to;
     ticket.finished = false;
+    if let Some(rounds) = ticket.rounds.as_mut().filter(|rounds| rounds.stopped.is_none()) {
+        rounds.stopped = match actor {
+            Actor::Person => Some(Stop::Person),
+            Actor::Agent => Some(Stop::Assistant),
+            Actor::App => None,
+        };
+    }
     if from == State::Blocked {
         ticket.blocked = None;
     }
@@ -1042,6 +1109,7 @@ pub fn start(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
         }
         move_to(ticket, Actor::Person, State::InProgress)?;
         ticket.worker = Some(Worker::Assistant);
+        ticket.rounds = None;
         Ok(())
     })
 }
@@ -1055,6 +1123,7 @@ pub fn work_myself(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketErr
         }
         move_to(ticket, Actor::Person, State::InProgress)?;
         ticket.worker = Some(Worker::Person);
+        ticket.rounds = None;
         Ok(())
     })
 }
@@ -1071,9 +1140,16 @@ pub fn set_state(root: &Path, id: &str, seen: u64, to: State, reason: Option<Str
 /// The agent sets a ticket to any state (`ticket.update`, action `state`), under the conditions a
 /// person meets: Done only past its gate. Moving a ticket in progress makes it the Assistant's, and
 /// is refused while it waits for tickets not done yet or while the Assistant works another ticket
-/// (one at a time). Accepting a draft is a move from draft to confirmed.
-pub fn agent_set_state(root: &Path, id: &str, to: State) -> Result<Ticket, TicketError> {
-    move_state(root, id, None, to, Actor::Agent, None)
+/// (one at a time). Accepting a draft is a move from draft to confirmed. A move to waiting, blocked
+/// or done needs `text`, as 「做完了」 and 「受阻」 do: what it did and why it moves the ticket,
+/// kept on the move's line as its comment. It does not finish a ticket whose last check left
+/// something failed: a person does, or the Assistant fixes it and the check runs again.
+pub fn agent_set_state(root: &Path, id: &str, to: State, text: Option<&str>) -> Result<Ticket, TicketError> {
+    let text = match to {
+        State::Waiting | State::Blocked | State::Done => Some(said(text, "moved")?),
+        _ => note(text.map(str::to_string))?,
+    };
+    move_state(root, id, None, to, Actor::Agent, text)
 }
 
 fn move_state(root: &Path, id: &str, seen: Option<u64>, to: State, actor: Actor, reason: Option<String>) -> Result<Ticket, TicketError> {
@@ -1094,11 +1170,19 @@ fn move_state(root: &Path, id: &str, seen: Option<u64>, to: State, actor: Actor,
             return Err(TicketError::Refused(format!("the Assistant works {} now: one ticket at a time", other.id)));
         }
     }
+    let blocked = (to == State::Blocked).then(|| reason.clone()).flatten();
     step(root, id, Line::new(actor, "moved").note(reason), seen, |ticket, line| {
         if to == State::Done {
             if let Some(why) = why_not_done(ticket, &all) {
                 let message = why.say(&ticket.id);
                 return Err(TicketError::NotDone { why, message });
+            }
+            let failed = ticket.check.as_ref().and_then(|check| check.counts.get("failed")).copied().unwrap_or(0);
+            if actor == Actor::Agent && failed > 0 {
+                return Err(TicketError::Refused(format!(
+                    "{}'s last check left {failed} failed: fix them and say finished again, or a person finishes it",
+                    ticket.id
+                )));
             }
             line.action = "done";
             line.unchecked = unchecked(ticket);
@@ -1108,6 +1192,9 @@ fn move_state(root: &Path, id: &str, seen: Option<u64>, to: State, actor: Actor,
             line.action = "confirmed";
         }
         move_to(ticket, actor, to)?;
+        if actor == Actor::Agent && blocked.is_some() {
+            ticket.blocked = blocked;
+        }
         if to == State::InProgress {
             match actor {
                 Actor::Agent => ticket.worker = Some(Worker::Assistant),
@@ -1209,20 +1296,115 @@ pub fn mark_recheck(root: &Path, id: &str, why: &str) -> Result<Ticket, TicketEr
     })
 }
 
+/// A new check of `by`'s asking: asked for, not started yet.
+fn asked(by: Actor) -> Check {
+    Check { state: CheckState::Asked, by, run: None, outcome: None, counts: BTreeMap::new(), freshness: None, reason: None, at: now() }
+}
+
 /// A person starts the check of a ticket in progress (跑检查, 请求检查), seen at revision `seen`;
-/// the app then starts its run. Only a person starts a check, which costs credits.
+/// the app then starts its run, which costs credits. It ends the Assistant's rounds on the ticket:
+/// the result is the person's, and the ticket then waits for them.
 pub fn ask_check(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
-    step(root, id, Line::new(Actor::Person, "check_asked"), Some(seen), |ticket, _| {
+    step(root, id, Line::new(Actor::Person, "check_asked"), Some(seen), |ticket, line| {
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "the check is started on a ticket in progress"));
         }
         if !applies(ticket) {
             return Err(TicketError::Refused(format!("no check applies to {}: it is finished without one", ticket.id)));
         }
-        ticket.check =
-            Some(Check { state: CheckState::Asked, run: None, outcome: None, counts: BTreeMap::new(), freshness: None, reason: None, at: now() });
+        if let Some(rounds) = ticket.rounds.as_mut().filter(|rounds| rounds.stopped.is_none()) {
+            rounds.stopped = Some(Stop::Person);
+            line.rounds = Some(rounds.clone());
+        }
+        // A run already going on keeps going; its result is the person's now.
+        let running = ticket.check.as_ref().is_some_and(|check| check.state == CheckState::Running);
+        match ticket.check.as_mut().filter(|_| running) {
+            Some(check) => check.by = Actor::Person,
+            None => ticket.check = Some(asked(Actor::Person)),
+        }
         Ok(())
     })
+}
+
+/// Whether the project's automatic checks are on, and the most rounds of fixing it gives the
+/// Assistant; none when they are off or the project cannot be read.
+pub fn automatic_rounds(root: &Path) -> Option<u32> {
+    let project = super::Project::open(root).ok()?;
+    project.ci().enabled.then_some(DEFAULT_ROUNDS)
+}
+
+/// The app asks for the check of the ticket the Assistant works, on its 「做完了」, while the
+/// project's automatic checks are on: the first check of its rounds, or the next one. Refused
+/// unless the Assistant works it in progress, has said it is finished, a check applies (its switch
+/// is on), and no check is asked for or running. Recorded as the Assistant's step with its round;
+/// the app then starts the run through the same admission a person's 跑检查 uses.
+pub fn auto_check(root: &Path, id: &str) -> Result<Ticket, TicketError> {
+    let Some(of) = automatic_rounds(root) else {
+        return Err(TicketError::Refused("the project's automatic checks are off: a person starts the check".into()));
+    };
+    step(root, id, Line::new(Actor::Agent, "check_asked"), None, |ticket, line| {
+        agents_ticket(ticket, State::InProgress, "a check is asked for on the ticket in progress")?;
+        if !ticket.finished {
+            return Err(TicketError::Refused(format!("{} is not finished: the Assistant says finished first", ticket.id)));
+        }
+        if !applies(ticket) {
+            return Err(TicketError::Refused(format!("no check applies to {}", ticket.id)));
+        }
+        if checking(ticket) {
+            return Err(TicketError::Refused(format!("{}'s check is asked for or running already", ticket.id)));
+        }
+        let rounds = ticket.rounds.take().filter(|rounds| rounds.stopped.is_none()).unwrap_or(Rounds { round: 0, of, stopped: None });
+        line.rounds = Some(rounds.clone());
+        ticket.rounds = Some(rounds);
+        ticket.check = Some(asked(Actor::Agent));
+        Ok(())
+    })
+}
+
+/// Whether a check of `ticket` is asked for or running: the model is not to change meanwhile, as a
+/// change cancels the run.
+pub fn checking(ticket: &Ticket) -> bool {
+    ticket.check.as_ref().is_some_and(|check| matches!(check.state, CheckState::Asked | CheckState::Running))
+}
+
+/// The Assistant's rounds go on: nothing has stopped them.
+fn going(ticket: &Ticket) -> bool {
+    ticket.rounds.as_ref().is_some_and(|rounds| rounds.stopped.is_none())
+}
+
+/// Whether the check that just ran ends the Assistant's rounds, and how; none: a round of fixing
+/// follows. The findings that ask for work are the failed and the 「建议」 ones of the run: none
+/// left ends them clean; while rounds are left, they are fixed; after the last round, a failure
+/// stops the ticket and 「建议」 alone leave it to a person. The one place this rule lives.
+fn after_run(rounds: &Rounds, counts: &BTreeMap<String, u64>) -> Option<Stop> {
+    let count = |state: &str| counts.get(state).copied().unwrap_or(0);
+    let (failed, advisory) = (count("failed"), count("advisory"));
+    if failed == 0 && advisory == 0 {
+        return Some(Stop::Clean);
+    }
+    if rounds.round < rounds.of {
+        return None;
+    }
+    Some(if failed > 0 { Stop::Failed } else { Stop::Advisory })
+}
+
+/// End the Assistant's rounds on `ticket` with `stop`: the one place each ending moves it. Clean and
+/// 「建议」 left wait for a person; something failed, or a check that could not run, is blocked with
+/// `why` (what is left and what was tried).
+fn stop(ticket: &mut Ticket, stop: Stop, why: String) -> Result<(), TicketError> {
+    let to = match stop {
+        Stop::Clean | Stop::Advisory => State::Waiting,
+        Stop::Failed | Stop::Refused => State::Blocked,
+        Stop::Person | Stop::Assistant => return Err(TicketError::Invalid("only a check's result ends the rounds here".into())),
+    };
+    move_to(ticket, Actor::App, to)?;
+    if let Some(rounds) = ticket.rounds.as_mut() {
+        rounds.stopped = Some(stop);
+    }
+    if to == State::Blocked {
+        ticket.blocked = Some(why);
+    }
+    Ok(())
 }
 
 /// Refused unless `ticket` is in `state` and worked by the Assistant: the agent acts only on the
@@ -1241,21 +1423,30 @@ fn agents_ticket(ticket: &Ticket, state: State, what: &str) -> Result<(), Ticket
 pub const SAY_FINISHED: &str = "say what you did, as text: what you changed, on which parts, and what you did not do";
 /// What the agent is told to write when it says it is blocked.
 pub const SAY_BLOCKED: &str = "say why, as text: what you changed so far, on which parts, and what stops you";
+/// What the agent is told to write when it moves a ticket to waiting, blocked or done.
+pub const SAY_MOVED: &str = "say why, as text: what you did, on which parts, and why you move the ticket";
 
 /// The agent's text for a finished or blocked line: required, at most [`MAX_COMMENT`] characters.
 fn said(text: Option<&str>, what: &str) -> Result<String, TicketError> {
     let text = clean(text.unwrap_or_default(), MAX_COMMENT, "text")?;
     if text.is_empty() {
-        return Err(TicketError::Invalid(format!("{what}: {}", if what == "finished" { SAY_FINISHED } else { SAY_BLOCKED })));
+        let say = match what {
+            "finished" => SAY_FINISHED,
+            "blocked" => SAY_BLOCKED,
+            _ => SAY_MOVED,
+        };
+        return Err(TicketError::Invalid(format!("{what}: {say}")));
     }
     Ok(text)
 }
 
 /// The agent says it has finished the ticket it works (做完了), with what it did (`text`,
 /// required: what it changed, on which parts, what it did not do), files of the project to show
-/// with it, and whether the app adds a picture of the 3D view (`view`). No check starts by itself:
-/// where a check applies, the ticket stays in progress, marked finished, until a person starts
-/// the check; where none applies, it goes to waiting for a person's confirmation.
+/// with it, and whether the app adds a picture of the 3D view (`view`). Where a check applies, the
+/// ticket stays in progress, marked finished, until its check is asked for (by the app once the
+/// Assistant's turn has ended, with the project's automatic checks on, [`auto_check`]; else by a
+/// person); not while a check is asked for or running. Where none applies, it goes to waiting for
+/// a person's confirmation.
 pub fn finished(root: &Path, id: &str, text: Option<&str>, files: &[String], view: bool) -> Result<Ticket, TicketError> {
     let text = said(text, "finished")?;
     let files = comment_files(root, files)?;
@@ -1264,6 +1455,9 @@ pub fn finished(root: &Path, id: &str, text: Option<&str>, files: &[String], vie
     line.view = view;
     step(root, id, line, None, |ticket, _| {
         agents_ticket(ticket, State::InProgress, "only the ticket in progress is finished")?;
+        if checking(ticket) {
+            return Err(TicketError::Refused(format!("{}'s check is running: wait for its result", ticket.id)));
+        }
         if applies(ticket) {
             ticket.finished = true;
             Ok(())
@@ -1331,6 +1525,7 @@ pub fn comment(root: &Path, id: &str, actor: Actor, text: &str, files: &[String]
         unchecked: false,
         attachments: files,
         view: view && actor == Actor::Agent,
+        rounds: None,
         revision: ticket.revision,
     };
     let appended = append(root, &event);
@@ -1382,6 +1577,7 @@ pub fn comment_view(root: &Path, id: &str, at: &str, png: &[u8]) -> Result<Event
         unchecked: false,
         attachments: vec![path],
         view: false,
+        rounds: None,
         revision: ticket.revision,
     };
     let appended = append(root, &event);
@@ -1436,45 +1632,67 @@ pub fn check_started(root: &Path, id: &str, run: &str) -> Result<Ticket, TicketE
     let run = Some(run.to_string()).filter(|run| !run.is_empty());
     let mut line = Line::new(Actor::App, "check_started");
     line.run = run.clone();
-    step(root, id, line, None, |ticket, _| {
+    step(root, id, line, None, |ticket, line| {
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "a check runs for the ticket in progress"));
         }
-        ticket.check =
-            Some(Check { state: CheckState::Running, run, outcome: None, counts: BTreeMap::new(), freshness: None, reason: None, at: now() });
+        let by = ticket.check.as_ref().map_or(Actor::Person, |check| check.by);
+        if by == Actor::Agent && going(ticket) {
+            line.rounds = ticket.rounds.clone();
+        }
+        ticket.check = Some(Check { state: CheckState::Running, by, run, outcome: None, counts: BTreeMap::new(), freshness: None, reason: None, at: now() });
         Ok(())
     })
 }
 
-/// The run of a ticket's check was refused or did not finish: the ticket stays in progress, with
-/// the reason on it.
+/// The run of a ticket's check was refused or did not finish, with the reason on it. A person's
+/// check leaves the ticket in progress; one of the Assistant's rounds stops them, and the ticket is
+/// blocked with the reason, as nothing can check its next fix.
 pub fn check_refused(root: &Path, id: &str, reason: &str) -> Result<Ticket, TicketError> {
     let reason: String = reason.trim().chars().take(MAX_REASON).collect();
-    step(root, id, Line::new(Actor::App, "check_refused").note(Some(reason.clone())), None, |ticket, _| {
+    step(root, id, Line::new(Actor::App, "check_refused").note(Some(reason.clone())), None, |ticket, line| {
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "a check runs for the ticket in progress"));
         }
-        let run = ticket.check.as_ref().and_then(|check| check.run.clone());
-        ticket.check =
-            Some(Check { state: CheckState::Refused, run, outcome: None, counts: BTreeMap::new(), freshness: None, reason: Some(reason), at: now() });
+        let (run, by) = ticket.check.as_ref().map_or((None, Actor::Person), |check| (check.run.clone(), check.by));
+        ticket.check = Some(Check {
+            state: CheckState::Refused,
+            by,
+            run,
+            outcome: None,
+            counts: BTreeMap::new(),
+            freshness: None,
+            reason: Some(reason.clone()),
+            at: now(),
+        });
+        if by == Actor::Agent && going(ticket) {
+            let tried = ticket.rounds.as_ref().map_or(0, |rounds| rounds.round);
+            stop(ticket, Stop::Refused, format!("the check could not run ({reason}) after {tried} rounds of fixing"))?;
+            line.rounds = ticket.rounds.clone();
+        }
         Ok(())
     })
 }
 
-/// The run of a ticket's check has a report: it is bound to the ticket, which now waits for a
-/// person's confirmation, and a 「需重查」 mark goes. The run's own outcome and counts are kept as
-/// they are.
+/// The run of a ticket's check has a report: it is bound to the ticket and a 「需重查」 mark goes.
+/// The run's own outcome and counts are kept as they are. After a person's check the ticket waits
+/// for their confirmation. After one of the Assistant's rounds, [`after_run`] decides: the ticket
+/// stays in progress with the Assistant for the next round of fixing, or the rounds end
+/// ([`stop`]).
 pub fn check_ran(root: &Path, id: &str, result: RunResult) -> Result<Ticket, TicketError> {
     let mut line = Line::new(Actor::App, "check_ran").note(Some(format!("{} · {}", result.outcome, counts_text(&result.counts))));
     line.run = Some(result.run.clone());
-    step(root, id, line, None, |ticket, _| {
+    step(root, id, line, None, |ticket, line| {
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "a check runs for the ticket in progress"));
         }
-        move_to(ticket, Actor::App, State::Waiting)?;
+        let by = ticket.check.as_ref().map_or(Actor::Person, |check| check.by);
+        let rounds = ticket.rounds.clone().filter(|_| by == Actor::Agent && going(ticket));
+        let left = counts_text(&result.counts);
         ticket.recheck = None;
         ticket.check = Some(Check {
             state: CheckState::Ran,
+            by,
             run: Some(result.run),
             outcome: Some(result.outcome),
             counts: result.counts,
@@ -1482,6 +1700,16 @@ pub fn check_ran(root: &Path, id: &str, result: RunResult) -> Result<Ticket, Tic
             reason: None,
             at: now(),
         });
+        let Some(rounds) = rounds else { return move_to(ticket, Actor::App, State::Waiting) };
+        let counts = ticket.check.as_ref().map(|check| check.counts.clone()).unwrap_or_default();
+        match after_run(&rounds, &counts) {
+            None => {
+                ticket.finished = false;
+                ticket.rounds = Some(Rounds { round: rounds.round.saturating_add(1), ..rounds });
+            }
+            Some(end) => stop(ticket, end, format!("after {} of {} rounds of fixing the check still finds {left}", rounds.round, rounds.of))?,
+        }
+        line.rounds = ticket.rounds.clone();
         Ok(())
     })
 }

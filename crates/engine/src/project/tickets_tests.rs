@@ -306,7 +306,7 @@ fn who_may_move_a_ticket_is_one_rule() {
     };
     assert_eq!(allowed(Actor::Person).len(), 30, "a person: every move");
     assert_eq!(allowed(Actor::Agent).len(), 30, "the agent: every move, a draft's acceptance and finishing included");
-    assert_eq!(allowed(Actor::App), [(InProgress, Waiting)]);
+    assert_eq!(allowed(Actor::App), [(InProgress, Waiting), (InProgress, Blocked)], "binding a run, and ending the Assistant's rounds");
     assert!(may_move(Actor::Agent, Done, InProgress) && may_move(Actor::Agent, State::Draft, Confirmed));
 }
 
@@ -590,14 +590,142 @@ fn finished_and_blocked_need_a_text_that_says_what_was_done_or_why() {
 }
 
 #[test]
-fn the_agents_own_state_move_takes_no_text() {
-    // Recorded as it is: `state` to waiting, blocked or done needs no text, unlike finished and block.
+fn the_agents_own_move_to_waiting_blocked_or_done_takes_a_text_kept_as_its_comment() {
+    // As finished and block do: no text, no move; the text is the move line's note. A person's
+    // moves need none.
     let scratch = Scratch::new("move-text");
     let (_, root) = project(&scratch);
     let id = handed(&root, titled("Constraint, no parts"));
-    let moved = agent_set_state(&root, &id, State::Waiting).unwrap();
-    assert_eq!(moved.state, State::Waiting);
+    for to in [State::Waiting, State::Blocked, State::Done] {
+        let why = refusal(agent_set_state(&root, &id, to, None));
+        assert!(why.contains("why you move the ticket"), "{to:?}: {why}");
+        assert!(refusal(agent_set_state(&root, &id, to, Some("  "))).contains("why you move the ticket"));
+    }
+    assert_eq!(load(&root, &id).unwrap().state, State::InProgress, "nothing moved without a text");
+    let moved = agent_set_state(&root, &id, State::Blocked, Some("The hinge needs a part we do not have.")).unwrap();
+    assert_eq!((moved.state, moved.blocked.as_deref()), (State::Blocked, Some("The hinge needs a part we do not have.")));
+    let line = events(&root, Some(&id)).unwrap().pop().unwrap();
+    assert_eq!((line.action.as_str(), line.actor, line.note.as_deref()), ("moved", Actor::Agent, Some("The hinge needs a part we do not have.")));
+    // Back in progress needs none; a person's moves need none either.
+    agent_set_state(&root, &id, State::InProgress, None).unwrap();
+    set_state(&root, &id, seen(&root, &id), State::Waiting, None).unwrap();
     assert_eq!(events(&root, Some(&id)).unwrap().pop().unwrap().note, None);
+}
+
+/// A run's result with these counts.
+fn counted(run: &str, counts: &[(&str, u64)]) -> RunResult {
+    RunResult { run: run.into(), outcome: "done".into(), counts: counts.iter().map(|(k, n)| (k.to_string(), *n)).collect(), freshness: "current".into() }
+}
+
+/// The Assistant says it is finished, and the app asks for the check and runs it with `result`.
+fn round(root: &Path, id: &str, result: RunResult) -> Ticket {
+    finished(root, id, Some("Fixed what the check found"), &[], false).unwrap();
+    let asked = auto_check(root, id).unwrap();
+    assert_eq!(asked.check.as_ref().map(|c| (c.state, c.by)), Some((CheckState::Asked, Actor::Agent)));
+    check_started(root, id, &result.run).unwrap();
+    check_ran(root, id, result).unwrap()
+}
+
+#[test]
+fn the_assistants_finished_asks_for_its_check_and_the_findings_keep_it_fixing_for_a_few_rounds() {
+    let scratch = Scratch::new("rounds");
+    let (_, root) = project(&scratch);
+    // Clean on the second check: one round of fixing, then waiting for a person.
+    let id = handed(&root, bracket());
+    let first = round(&root, &id, counted("run-1", &[("advisory", 2), ("checked", 9)]));
+    assert_eq!((first.state, first.worker, first.finished), (State::InProgress, Some(Worker::Assistant), false), "it stays the Assistant's to fix");
+    assert_eq!(first.rounds, Some(Rounds { round: 1, of: DEFAULT_ROUNDS, stopped: None }));
+    assert_eq!(first.check.as_ref().map(|c| c.state), Some(CheckState::Ran), "the run is bound");
+    let second = round(&root, &id, counted("run-2", &[("checked", 11)]));
+    assert_eq!(second.state, State::Waiting);
+    assert_eq!(second.rounds, Some(Rounds { round: 1, of: DEFAULT_ROUNDS, stopped: Some(Stop::Clean) }));
+    let record = events(&root, Some(&id)).unwrap();
+    let steps: Vec<(&str, Actor, Option<(u32, Option<Stop>)>)> =
+        record.iter().skip(3).map(|e| (e.action.as_str(), e.actor, e.rounds.as_ref().map(|r| (r.round, r.stopped)))).collect();
+    assert_eq!(
+        steps,
+        [
+            ("finished", Actor::Agent, None),
+            ("check_asked", Actor::Agent, Some((0, None))),
+            ("check_started", Actor::App, Some((0, None))),
+            ("check_ran", Actor::App, Some((1, None))),
+            ("finished", Actor::Agent, None),
+            ("check_asked", Actor::Agent, Some((1, None))),
+            ("check_started", Actor::App, Some((1, None))),
+            ("check_ran", Actor::App, Some((1, Some(Stop::Clean)))),
+        ]
+    );
+    // The Assistant may finish it itself: nothing failed.
+    let done = agent_set_state(&root, &id, State::Done, Some("Checked clean in round 1")).unwrap();
+    assert_eq!(done.state, State::Done);
+
+    // 「建议」 left after the last round: four checks for three rounds, then waiting for a person.
+    let id = handed(&root, bracket());
+    for n in 0..DEFAULT_ROUNDS {
+        let ticket = round(&root, &id, counted(&format!("run-a{n}"), &[("advisory", 1)]));
+        assert_eq!((ticket.state, ticket.rounds.map(|r| r.round)), (State::InProgress, Some(n + 1)));
+    }
+    let last = round(&root, &id, counted("run-a-last", &[("advisory", 1)]));
+    assert_eq!((last.state, last.rounds.as_ref().and_then(|r| r.stopped)), (State::Waiting, Some(Stop::Advisory)));
+    assert_eq!(events(&root, Some(&id)).unwrap().iter().filter(|e| e.action == "check_ran").count() as u32, DEFAULT_ROUNDS + 1);
+    assert!(refusal(auto_check(&root, &id)).contains("T-2 is waiting"), "no check after the rounds stopped");
+
+    // Something failed after the last round: blocked, with what is left and what was tried.
+    let id = handed(&root, bracket());
+    for n in 0..DEFAULT_ROUNDS {
+        round(&root, &id, counted(&format!("run-f{n}"), &[("failed", 1), ("advisory", 2)]));
+    }
+    let blocked = round(&root, &id, counted("run-f-last", &[("failed", 1), ("advisory", 2)]));
+    assert_eq!((blocked.state, blocked.rounds.as_ref().and_then(|r| r.stopped)), (State::Blocked, Some(Stop::Failed)));
+    let why = blocked.blocked.clone().unwrap();
+    assert!(why.contains("after 3 of 3 rounds") && why.contains("1 failed · 2 advisory"), "{why}");
+    // The Assistant does not finish a ticket whose last check left something failed; a person may.
+    assert!(refusal(agent_set_state(&root, &id, State::Done, Some("done"))).contains("left 1 failed"));
+    set_state(&root, &id, seen(&root, &id), State::Done, None).unwrap();
+}
+
+#[test]
+fn the_rounds_stop_when_the_check_cannot_run_a_person_steps_in_or_automatic_checks_are_off() {
+    let scratch = Scratch::new("rounds-stop");
+    let (_, root) = project(&scratch);
+    // A refused check stops the rounds: blocked, with the reason.
+    let id = handed(&root, bracket());
+    finished(&root, &id, Some("Holes moved"), &[], false).unwrap();
+    auto_check(&root, &id).unwrap();
+    assert!(refusal(finished(&root, &id, Some("again"), &[], false)).contains("check is running"), "no finished while a check is asked for");
+    let refused = check_refused(&root, &id, "AUTH_REQUIRED: sign in").unwrap();
+    assert_eq!((refused.state, refused.rounds.as_ref().and_then(|r| r.stopped)), (State::Blocked, Some(Stop::Refused)));
+    assert!(refused.blocked.as_deref().is_some_and(|why| why.contains("AUTH_REQUIRED")), "{:?}", refused.blocked);
+    // Handed again, it starts over.
+    start(&root, &id, seen(&root, &id)).unwrap();
+    assert_eq!(load(&root, &id).unwrap().rounds, None);
+
+    // A person's 跑检查 while the Assistant's check runs: the run's result is the person's, the ticket
+    // waits for them, and the rounds say who stopped them.
+    finished(&root, &id, Some("Holes moved"), &[], false).unwrap();
+    auto_check(&root, &id).unwrap();
+    check_started(&root, &id, "run-p").unwrap();
+    ask_check(&root, &id, seen(&root, &id)).unwrap();
+    let ticket = check_ran(&root, &id, counted("run-p", &[("advisory", 2)])).unwrap();
+    assert_eq!((ticket.state, ticket.rounds.and_then(|r| r.stopped)), (State::Waiting, Some(Stop::Person)));
+    assert_eq!(ticket.check.map(|c| c.by), Some(Actor::Person));
+
+    // A person's move while the Assistant fixes stops the rounds; no further check is asked for.
+    let id = handed(&root, bracket());
+    round(&root, &id, counted("run-m", &[("advisory", 1)]));
+    set_state(&root, &id, seen(&root, &id), State::Confirmed, Some("Wrong part".into())).unwrap();
+    assert_eq!(load(&root, &id).unwrap().rounds.and_then(|r| r.stopped), Some(Stop::Person));
+
+    // With the project's automatic checks off, nothing is asked for: a person starts the check.
+    let id = handed(&root, bracket());
+    crate::project::Project::open(&root).unwrap().update_ci(Some(false), None).unwrap();
+    finished(&root, &id, Some("Holes moved"), &[], false).unwrap();
+    assert!(refusal(auto_check(&root, &id)).contains("automatic checks are off"));
+    assert_eq!(load(&root, &id).unwrap().check, None);
+    // A ticket the agent does not work, or not finished, is refused too.
+    crate::project::Project::open(&root).unwrap().update_ci(Some(true), None).unwrap();
+    let other = draft(&root, bracket(), Actor::Agent).unwrap().id;
+    assert!(refusal(auto_check(&root, &other)).contains("is draft"));
 }
 
 #[test]
@@ -823,7 +951,7 @@ fn the_agents_commands_draft_set_states_and_say_finished_but_start_no_check_and_
         assert!(error.contains("is not a state"), "{params}: {error}");
     }
     let error = s.execute("ticket.update", &json!({"id": "T-2", "action": "check"})).unwrap_err().to_string();
-    assert!(error.contains("no check starts by itself") && error.contains("finished"), "{error}");
+    assert!(error.contains("no command asks for a check") && error.contains("finished"), "{error}");
     for action in ["create", "move", "confirm"] {
         let error = s.execute("ticket.update", &json!({"id": "T-2", "action": action, "reason": "x"})).unwrap_err().to_string();
         assert!(error.contains("is not an action"), "{action}: {error}");
@@ -864,7 +992,9 @@ fn the_agents_commands_draft_set_states_and_say_finished_but_start_no_check_and_
     assert_eq!((line["action"].as_str(), line["actor"].as_str()), (Some("confirmed"), Some("agent")));
     let error = s.execute("ticket.update", &json!({"id": "T-3", "action": "state", "to": "in_progress"})).unwrap_err().to_string();
     assert!(error.contains("T-3 waits for T-2"), "open waits keep it from the Assistant: {error}");
-    let done_line = run(&mut s, "ticket.update", json!({"id": "T-2", "action": "state", "to": "done"}));
+    let error = s.execute("ticket.update", &json!({"id": "T-2", "action": "state", "to": "done"})).unwrap_err().to_string();
+    assert!(error.contains("why you move the ticket"), "a move to done needs a text: {error}");
+    let done_line = run(&mut s, "ticket.update", json!({"id": "T-2", "action": "state", "to": "done", "text": "Hinge moved; nothing to check"}));
     let line = done_line["events"].as_array().unwrap().last().unwrap().clone();
     assert_eq!((line["action"].as_str(), line["actor"].as_str(), line["unchecked"].as_bool()), (Some("done"), Some("agent"), Some(true)));
     let taken = run(&mut s, "ticket.update", json!({"id": "T-3", "action": "state", "to": "in_progress"}));
@@ -873,7 +1003,7 @@ fn the_agents_commands_draft_set_states_and_say_finished_but_start_no_check_and_
     run(&mut s, "ticket.update", json!({"id": "T-4", "action": "state", "to": "confirmed"}));
     let error = s.execute("ticket.update", &json!({"id": "T-4", "action": "state", "to": "in_progress"})).unwrap_err().to_string();
     assert!(error.contains("one ticket at a time"), "{error}");
-    let error = s.execute("ticket.update", &json!({"id": "T-4", "action": "state", "to": "done"})).unwrap_err().to_string();
+    let error = s.execute("ticket.update", &json!({"id": "T-4", "action": "state", "to": "done", "text": "x"})).unwrap_err().to_string();
     assert!(error.contains("check has not run"), "the done gate holds for the agent: {error}");
     let reopened = run(&mut s, "ticket.update", json!({"id": "T-2", "action": "state", "to": "confirmed"}));
     assert_eq!(reopened["ticket"]["state"], "confirmed", "and back from done");

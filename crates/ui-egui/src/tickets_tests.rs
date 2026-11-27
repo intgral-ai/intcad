@@ -128,7 +128,7 @@ fn start_sends_one_message_with_the_chip_and_every_message_carries_the_ticket_in
     let sent = &prompts[0];
     assert!(sent.contains("Work on part ticket T-2 alone: Bracket."), "{sent}");
     assert!(sent.contains("You are working on T-2 alone") && sent.contains("Two M4 holes, centres 40 ± 0.1 mm"), "the ticket in full: {sent}");
-    assert!(sent.contains("\"action\": \"finished\"") && sent.contains("no check starts by itself"), "how to say it is finished: {sent}");
+    assert!(sent.contains("\"action\": \"finished\"") && sent.contains("no check applies to it"), "how to say it is finished: {sent}");
     assert!(sent.contains("Other tickets: T-1 Enclosure (draft)"), "the others by id, title and state: {sent}");
     assert!(sent.contains("Attached file `T-2 · Bracket`"), "the chip went with it: {sent}");
     let shown = h
@@ -147,15 +147,16 @@ fn start_sends_one_message_with_the_chip_and_every_message_carries_the_ticket_in
     assert!(h.app.tickets.error.as_deref().is_some_and(|e| e.contains("T-2")), "{:?}", h.app.tickets.error);
 }
 
-/// The loop with a scripted agent: asked in the chat, it drafts tickets; a person accepts one and
-/// hands it to the Assistant; the agent changes the model and says it is finished, which starts
-/// nothing; the person starts the check; the app runs the DFM check through the Review entry
-/// (stand-in billing and journal, the real background worker) and binds the run, so the ticket
-/// waits for the person, who marks it done.
+/// The loop with a scripted agent, the project's automatic checks off: asked in the chat, it
+/// drafts tickets; a person accepts one and hands it to the Assistant; the agent changes the model
+/// and says it is finished, which starts nothing; the person starts the check; the app runs the DFM
+/// check through the Review entry (stand-in billing and journal, the real background worker) and
+/// binds the run, so the ticket waits for the person, who marks it done.
 #[test]
 fn a_scripted_agent_drafts_is_started_on_one_ticket_and_its_check_leaves_it_waiting() {
     let scratch = Scratch::new("loop");
     let (mut h, root) = window(&scratch);
+    solidcraft_engine::project::Project::open(&root).unwrap().update_ci(Some(false), None).unwrap();
     let agent = StandIn::default();
     crate::agent_chat::install_test_backend(&mut h.app, Box::new(agent.clone()));
     let billing = crate::dfm_review::tests::CountingBilling::default();
@@ -187,7 +188,7 @@ fn a_scripted_agent_drafts_is_started_on_one_ticket_and_its_check_leaves_it_wait
     assert_eq!(state(&root, "T-2"), TicketState::InProgress);
     assert!(agent.prompts().last().is_some_and(|p| p.contains("You are working on T-2 alone")), "{:?}", agent.prompts().last());
 
-    // The agent makes the part and says it is finished: no check starts by itself.
+    // The agent makes the part and says it is finished: with automatic checks off, nothing starts.
     // A sheet-metal tray, so the check has rules to report.
     for (command, params) in [
         ("sheet.manage_rules", json!({"name": "SPCC 2.0", "thickness": "2 mm", "bend_radius": "2 mm", "k_factor": 0.44, "active": true})),
@@ -614,10 +615,10 @@ fn the_tickets_view_is_told_the_stores_tickets_in_the_pages_shape() {
     // The Assistant drafts, accepts, works and finishes a ticket no check applies to.
     let agents = agent(Draft { title: "Choose the hinge supplier".into(), ..Draft::default() });
     for to in [TicketState::Confirmed, TicketState::InProgress] {
-        tickets::agent_set_state(&root, &agents, to).unwrap();
+        tickets::agent_set_state(&root, &agents, to, None).unwrap();
     }
     tickets::finished(&root, &agents, Some("Supplier B: 3 mm pins in stock"), &[], false).unwrap();
-    tickets::agent_set_state(&root, &agents, TicketState::Done).unwrap();
+    tickets::agent_set_state(&root, &agents, TicketState::Done, Some("Supplier B chosen; nothing to check")).unwrap();
     // Parts, and the check switched off by a person on the ticket (one record line).
     let rivets = person(Draft { title: "Rivet holes on the lid".into(), parts: vec![part("body", "Lid")], ..Draft::default() });
     // The Assistant's ticket, which it says is finished; a check applies.
@@ -964,4 +965,295 @@ fn the_assistant_gets_a_tickets_files_its_draft_card_and_view_and_a_changed_part
     assert_eq!(marked.state, TicketState::Done);
     assert!(marked.recheck.as_deref().is_some_and(|why| why.contains("model changed")), "{:?}", marked.recheck);
     assert_eq!(tickets::events(&root, Some(&done)).unwrap().pop().map(|e| (e.action, e.actor)), Some(("recheck".to_string(), Actor::App)));
+}
+
+/// A stand-in run's report: `items` as (state, rule, part, found, required), counted by state, with
+/// `checked` rules besides.
+fn reported(items: &[(&str, &str, &str, &str, &str)], checked: u64) -> crate::tickets::Report {
+    let mut counts = std::collections::BTreeMap::from([("checked".to_string(), checked)]);
+    for (state, ..) in items {
+        *counts.entry(state.to_string()).or_insert(0) += 1;
+    }
+    let items = items
+        .iter()
+        .map(|(state, rule, part, found, required)| crate::tickets::RunItem {
+            rule: rule.to_string(),
+            state: state.to_string(),
+            count: 1,
+            parts: vec![part.to_string()],
+            values: vec![(found.to_string(), Some(required.to_string()))],
+        })
+        .collect();
+    crate::tickets::Report { run: String::new(), outcome: "done".into(), counts, freshness: "current".into(), items }
+}
+
+const RELIEF: (&str, &str, &str, &str, &str) = ("advisory", "sm.bend_relief", "Body1", "1.2 mm", "2 mm");
+const EDGE: (&str, &str, &str, &str, &str) = ("advisory", "sm.hole_to_edge", "Body1", "2.5 mm", "3 mm");
+const CRACK: (&str, &str, &str, &str, &str) = ("failed", "sm.min_bend_radius", "Body1", "0.5 mm", "2 mm");
+
+/// A window with a scripted agent and a ticket on Body1 handed to it; stand-in runs answer its
+/// checks in turn.
+fn handed(name: &str, answers: Vec<Result<crate::tickets::Report, String>>) -> (Scratch, Harness, std::path::PathBuf, StandIn, String) {
+    let scratch = Scratch::new(name);
+    let (mut h, root) = window(&scratch);
+    let agent = StandIn::default();
+    crate::agent_chat::install_test_backend(&mut h.app, Box::new(agent.clone()));
+    let parts = vec![Part { kind: "body".into(), id: "Body1".into() }];
+    let id = tickets::draft(&root, Draft { title: "Base plate".into(), parts, ..Draft::default() }, Actor::Agent).unwrap().id;
+    tickets::confirm(&root, &id, seen(&root, &id), false).unwrap();
+    h.app.tickets.stand_in = Some(crate::tickets::StandInRuns { answers: answers.into(), ..Default::default() });
+    h.settle();
+    let ctx = h.ctx.clone();
+    crate::tickets::start(&mut h.app, &ctx, &id, seen(&root, &id));
+    h.settle();
+    (scratch, h, root, agent, id)
+}
+
+/// The scripted agent says the ticket is finished and its turn ends; the frames that follow.
+fn says_finished(h: &mut Harness, agent: &StandIn, id: &str, text: &str) {
+    agent_calls(h, "ticket.update", json!({"id": id, "action": "finished", "text": text}));
+    agent.end_turn();
+    h.frames(12);
+}
+
+/// [`dump`] with ticket `id` open, its words in Chinese, as the owner reads it.
+fn dump_zh(h: &mut Harness, name: &str, id: &str) {
+    let language = std::mem::replace(&mut h.app.preferences.language, "zh".into());
+    let ctx = h.ctx.clone();
+    crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_open", "id": id}).to_string()).unwrap();
+    dump(h, name);
+    h.app.preferences.language = language;
+}
+
+fn started(h: &Harness) -> usize {
+    h.app.tickets.stand_in.as_ref().map_or(0, |runs| runs.started)
+}
+
+fn rounds(root: &std::path::Path, id: &str) -> Option<tickets::Rounds> {
+    tickets::load(root, id).unwrap().rounds
+}
+
+/// Finished → the check starts by itself → its findings reach the agent → it fixes and says
+/// finished again → the second check is clean → the ticket waits for a person. The record says the
+/// Assistant's work asked for each check, with the round; the page is told the rounds.
+#[test]
+fn the_assistants_finished_runs_its_check_by_itself_and_the_findings_come_back_until_it_is_clean() {
+    let (_scratch, mut h, root, agent, id) = handed("rounds", vec![Ok(reported(&[RELIEF, EDGE], 12)), Ok(reported(&[], 14))]);
+    says_finished(&mut h, &agent, &id, "Plate made, 100 × 60 mm");
+    assert_eq!(started(&h), 1, "the check started without a person");
+    let ticket = tickets::load(&root, &id).unwrap();
+    assert_eq!((ticket.state, ticket.worker, ticket.finished), (TicketState::InProgress, Some(tickets::Worker::Assistant), false));
+    assert_eq!(ticket.rounds, Some(tickets::Rounds { round: 1, of: 3, stopped: None }));
+    let sent = agent.prompts().last().cloned().unwrap_or_default();
+    assert!(sent.contains(&format!("{id}: its check found work to do (round 1 of 3)")), "{sent}");
+    assert!(sent.contains("advisory · sm.bend_relief · Body1 · ") && sent.contains("1.2 mm") && sent.contains("2 mm"), "part, numbers and rule: {sent}");
+    assert!(sent.contains("sm.hole_to_edge") && sent.contains("Round 1 of 3 of fixing"), "{sent}");
+    dump_zh(&mut h, "rounds-1-findings", &id);
+
+    agent_calls(&mut h, "sheet.manage_rules", json!({"name": "SPCC 2.0", "thickness": "2 mm", "bend_radius": "2 mm", "k_factor": 0.44, "active": true}));
+    says_finished(&mut h, &agent, &id, "Bend relief 2 mm, holes 3 mm from the edge");
+    assert_eq!(started(&h), 2, "a second check, by itself");
+    let ticket = tickets::load(&root, &id).unwrap();
+    assert_eq!(ticket.state, TicketState::Waiting);
+    assert_eq!(ticket.rounds, Some(tickets::Rounds { round: 1, of: 3, stopped: Some(tickets::Stop::Clean) }));
+    let asked: Vec<(Actor, Option<u32>)> =
+        tickets::events(&root, Some(&id)).unwrap().iter().filter(|e| e.action == "check_asked").map(|e| (e.actor, e.rounds.as_ref().map(|r| r.round))).collect();
+    assert_eq!(asked, [(Actor::Agent, Some(0)), (Actor::Agent, Some(1))], "the Assistant's work asked for both, with the round");
+    let page = told(&mut h);
+    assert_eq!(ticket_of(&page, &id)["rounds"], json!({"round": 1, "of": 3, "stopped": "clean"}));
+    let prompts = agent.prompts().len();
+    h.frames(6);
+    assert_eq!(agent.prompts().len(), prompts, "a clean end tells the Assistant nothing");
+    dump_zh(&mut h, "rounds-2-clean", &id);
+}
+
+fn ticket_of<'a>(state: &'a Value, id: &str) -> &'a Value {
+    ticket(state, id)
+}
+
+/// Three rounds used up: 「建议」 left → waiting; something failed left → blocked; each with the
+/// Assistant asked for its comment, which it writes. Four checks for three rounds.
+#[test]
+fn after_the_last_round_advisories_leave_it_waiting_and_a_failure_blocks_it_each_with_a_comment() {
+    for (name, left, state) in [("rounds-advisory", RELIEF, TicketState::Waiting), ("rounds-failed", CRACK, TicketState::Blocked)] {
+        let answers = (0..4).map(|_| Ok(reported(&[left], 10))).collect();
+        let (_scratch, mut h, root, agent, id) = handed(name, answers);
+        for n in 1..=3u32 {
+            says_finished(&mut h, &agent, &id, &format!("Round {n}: tried a larger relief"));
+            assert_eq!(rounds(&root, &id).map(|r| (r.round, r.stopped)), Some((n, None)), "{name}");
+            if n == 2 {
+                assert_eq!(ticket_of(&told(&mut h), &id)["rounds"]["round"], 2);
+                dump_zh(&mut h, &format!("{name}-round-2"), &id);
+            }
+        }
+        says_finished(&mut h, &agent, &id, "Round 4: tried a larger radius");
+        assert_eq!(started(&h), 4, "{name}: four checks for three rounds");
+        let ticket = tickets::load(&root, &id).unwrap();
+        assert_eq!(ticket.state, state, "{name}");
+        let sent = agent.prompts().last().cloned().unwrap_or_default();
+        assert!(sent.contains("a person takes it from here") && sent.contains(left.1), "{name}: {sent}");
+        if state == TicketState::Blocked {
+            assert!(ticket.blocked.as_deref().is_some_and(|why| why.contains("after 3 of 3 rounds") && why.contains("1 failed")), "{:?}", ticket.blocked);
+            let refused = h.call("engine.execute", json!({"command": "ticket.update", "params": {"id": id, "action": "state", "to": "done", "text": "x"}}));
+            assert_eq!(refused["ok"], false, "the Assistant does not finish what failed: {refused}");
+        }
+        agent_calls(&mut h, "ticket.update", json!({"id": id, "action": "comment", "text": format!("Left: {} on Body1. Tried: relief 1.5, 2 and 2.5 mm.", left.1)}));
+        agent.end_turn();
+        h.frames(6);
+        let last = tickets::events(&root, Some(&id)).unwrap().pop().unwrap();
+        assert_eq!((last.action.as_str(), last.actor), ("comment", Actor::Agent));
+        assert_eq!(started(&h), 4, "{name}: nothing more starts");
+        dump_zh(&mut h, &format!("{name}-stopped"), &id);
+    }
+}
+
+/// With the ticket's switch off, or the project's automatic checks off, nothing starts: the ticket
+/// waits for a person as before (no check applies: waiting; automatic checks off: in progress,
+/// finished, for a person's 跑检查).
+#[test]
+fn with_either_switch_off_nothing_starts() {
+    let (_scratch, mut h, root, agent, id) = handed("switch-off", vec![Ok(reported(&[RELIEF], 3))]);
+    crate::tickets::edit(&mut h.app, &id, seen(&root, &id), tickets::Edit { checks: Some(false), ..tickets::Edit::default() });
+    says_finished(&mut h, &agent, &id, "Plate made");
+    assert_eq!((state(&root, &id), started(&h)), (TicketState::Waiting, 0), "the ticket's switch is off");
+
+    let (_scratch, mut h, root, agent, id) = handed("project-off", vec![Ok(reported(&[RELIEF], 3))]);
+    solidcraft_engine::project::Project::open(&root).unwrap().update_ci(Some(false), None).unwrap();
+    says_finished(&mut h, &agent, &id, "Plate made");
+    let ticket = tickets::load(&root, &id).unwrap();
+    assert_eq!((ticket.state, ticket.finished, ticket.check.is_none(), started(&h)), (TicketState::InProgress, true, true, 0));
+}
+
+/// The agent's tool request as it reaches the gate in a turn of its own.
+fn chat_tool(h: &mut Harness, tx: &std::sync::mpsc::Sender<crate::ControlRequest>, command: &str, params: Value) -> Value {
+    let (req, reply) = crate::ControlRequest::trusted_gui("engine.execute", json!({"command": command, "params": params}));
+    tx.send(req).unwrap();
+    for _ in 0..200 {
+        h.frames(1);
+        if let Ok(answer) = reply.try_recv() {
+            return answer;
+        }
+    }
+    panic!("{command}: no answer");
+}
+
+/// While the check runs the agent's changes to the model are refused (a ticket comment is not); a
+/// person's message still reaches it, its note saying to wait. A person's 跑检查 in the middle takes
+/// the running check as theirs and ends the rounds; a person's move ends them too.
+#[test]
+fn no_change_is_taken_while_the_check_runs_and_a_persons_step_ends_the_rounds() {
+    let (_scratch, mut h, root, agent, id) = handed("hold", vec![Ok(reported(&[RELIEF], 3))]);
+    h.app.tickets.stand_in.as_mut().unwrap().hold = true;
+    says_finished(&mut h, &agent, &id, "Plate made");
+    assert_eq!(tickets::load(&root, &id).unwrap().check.map(|c| (c.state, c.by)), Some((CheckState::Running, Actor::Agent)));
+    let tools = crate::agent_chat::install_test_tools(&mut h.app);
+    let ctx = h.ctx.clone();
+    crate::agent_chat::send(&mut h.app, &ctx, "How is it going?".into());
+    h.frames(2);
+    let sent = agent.prompts().last().cloned().unwrap_or_default();
+    assert!(sent.contains(&format!("The check of {id} is running: do not change the model")), "{sent}");
+    let before = h.app.session.doc.clone();
+    let refused = chat_tool(&mut h, &tools, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(refused["error"].as_str().is_some_and(|e| e.contains("is running: wait for its result")), "{refused}");
+    assert!(Arc::ptr_eq(&h.app.session.doc, &before), "the model did not change");
+    let comment = chat_tool(&mut h, &tools, "ticket.update", json!({"id": id, "action": "comment", "text": "Waiting for the check."}));
+    assert_eq!(comment["ok"], true, "{comment}");
+    agent.end_turn();
+    h.frames(4);
+    // A person presses 跑检查: the running check is theirs; when it ends the ticket waits for them.
+    crate::tickets::ask_check(&mut h.app, &id, seen(&root, &id));
+    assert_eq!(rounds(&root, &id).and_then(|r| r.stopped), Some(tickets::Stop::Person));
+    let prompts = agent.prompts().len();
+    h.app.tickets.stand_in.as_mut().unwrap().hold = false;
+    h.frames(8);
+    let ticket = tickets::load(&root, &id).unwrap();
+    assert_eq!((ticket.state, ticket.check.map(|c| c.by)), (TicketState::Waiting, Some(Actor::Person)));
+    assert_eq!((agent.prompts().len(), started(&h)), (prompts, 1), "no findings to the Assistant, no second check");
+
+    // A person moves the ticket while the Assistant fixes: the rounds end, and its finished starts
+    // nothing more.
+    let (_scratch, mut h, root, agent, id) = handed("moved", vec![Ok(reported(&[RELIEF], 3)), Ok(reported(&[], 3))]);
+    says_finished(&mut h, &agent, &id, "Plate made");
+    assert_eq!(rounds(&root, &id).map(|r| r.round), Some(1));
+    let ctx = h.ctx.clone();
+    let moved = json!({"type": "ticket_set_state", "id": id, "revision": seen(&root, &id), "to": "confirmed", "reason": "Wrong part"});
+    crate::tickets::receive(&mut h.app, &ctx, &moved.to_string()).unwrap();
+    assert_eq!(rounds(&root, &id).and_then(|r| r.stopped), Some(tickets::Stop::Person));
+    let refused = h.call("engine.execute", json!({"command": "ticket.update", "params": {"id": id, "action": "finished", "text": "x"}}));
+    assert_eq!(refused["ok"], false);
+    agent.end_turn();
+    h.frames(8);
+    assert_eq!((state(&root, &id), started(&h)), (TicketState::Confirmed, 1));
+}
+
+/// The automatic check goes through the Review panel's admission, as a person's 跑检查 does: with an
+/// authority it is billed once and binds its run (the generic data finds nothing to fix, so the
+/// ticket waits); without one it is refused, the ticket is blocked with the refusal, and the
+/// Assistant is asked for its comment.
+#[test]
+fn the_automatic_check_takes_the_review_entrys_admission_billed_once_or_refused() {
+    let scratch = Scratch::new("auto-real");
+    let (mut h, root) = window(&scratch);
+    let agent = StandIn::default();
+    crate::agent_chat::install_test_backend(&mut h.app, Box::new(agent.clone()));
+    let billing = crate::dfm_review::tests::CountingBilling::default();
+    let ledger = crate::dfm_review::tests::ReviewLedger::default();
+    crate::dfm_review::tests::install(&mut h.app, &billing, &ledger);
+    let parts = vec![Part { kind: "body".into(), id: "Body1".into() }];
+    let id = tickets::draft(&root, Draft { title: "Tray".into(), parts, ..Draft::default() }, Actor::Agent).unwrap().id;
+    tickets::confirm(&root, &id, seen(&root, &id), false).unwrap();
+    h.settle();
+    let ctx = h.ctx.clone();
+    crate::tickets::start(&mut h.app, &ctx, &id, seen(&root, &id));
+    h.settle();
+    for (command, params) in [
+        ("sheet.manage_rules", json!({"name": "SPCC 2.0", "thickness": "2 mm", "bend_radius": "2 mm", "k_factor": 0.44, "active": true})),
+        ("sketch.create", json!({"plane": "XY", "name": "Base outline"})),
+        ("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]})),
+        ("sketch.finish", json!({})),
+        ("sheet.flange", json!({"sketch": "Base outline", "body_name": "Body1"})),
+        ("sheet.flange", json!({"edges": [[50, 0, 2], [100, 30, 2], [50, 60, 2], [0, 30, 2]], "height": 30, "body": "Body1"})),
+    ] {
+        agent_calls(&mut h, command, params);
+    }
+    says_finished(&mut h, &agent, &id, "Tray made");
+    let ran = |root: &std::path::Path| tickets::load(root, &id).unwrap().check.is_some_and(|c| matches!(c.state, CheckState::Ran | CheckState::Refused));
+    let began = std::time::Instant::now();
+    while !ran(&root) && began.elapsed() < Duration::from_secs(60) {
+        h.frames(30);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let ticket = tickets::load(&root, &id).unwrap();
+    let check = ticket.check.clone().unwrap();
+    assert_eq!((check.state, check.by, billing.commits()), (CheckState::Ran, Actor::Agent, 1), "one billed Review operation: {:?}", h.app.dfm_review.error);
+    assert_eq!(check.run, h.app.dfm_review.mapped_run, "the run the Review entry reserved");
+    // The generic data fails nothing; what it leaves as 「建议」 goes back to the Assistant.
+    let advisory = check.counts.get("advisory").copied().unwrap_or(0);
+    assert_eq!(check.counts.get("failed").copied().unwrap_or(0), 0, "{:?}", check.counts);
+    let expected = if advisory == 0 { (TicketState::Waiting, Some(tickets::Stop::Clean)) } else { (TicketState::InProgress, None) };
+    assert_eq!((ticket.state, ticket.rounds.and_then(|r| r.stopped)), expected, "{:?}", check.counts);
+    dump_zh(&mut h, "rounds-real-run", &id);
+
+    // No authority: refused where a person's 跑检查 is refused, said on the ticket, which is blocked.
+    let scratch = Scratch::new("auto-refused");
+    let (mut h, root) = window(&scratch);
+    let agent = StandIn::default();
+    crate::agent_chat::install_test_backend(&mut h.app, Box::new(agent.clone()));
+    let parts = vec![Part { kind: "body".into(), id: "Body1".into() }];
+    let id = tickets::draft(&root, Draft { title: "Plate".into(), parts, ..Draft::default() }, Actor::Agent).unwrap().id;
+    tickets::confirm(&root, &id, seen(&root, &id), false).unwrap();
+    h.settle();
+    let ctx = h.ctx.clone();
+    crate::tickets::start(&mut h.app, &ctx, &id, seen(&root, &id));
+    h.settle();
+    says_finished(&mut h, &agent, &id, "Plate made");
+    let ticket = tickets::load(&root, &id).unwrap();
+    assert_eq!(ticket.state, TicketState::Blocked, "{:?}", ticket.check);
+    let reason = ticket.check.and_then(|c| c.reason).unwrap_or_default();
+    assert!(reason.contains("UNSAFE_TO_START") || reason.contains("AUTH_UNAVAILABLE"), "{reason}");
+    assert!(ticket.blocked.as_deref().is_some_and(|why| why.contains(&reason)), "the refusal is said: {:?}", ticket.blocked);
+    assert_eq!(ticket.rounds.and_then(|r| r.stopped), Some(tickets::Stop::Refused));
+    assert!(agent.prompts().last().is_some_and(|p| p.contains("a person takes it from here") && p.contains(&reason)), "{:?}", agent.prompts().last());
+    dump_zh(&mut h, "rounds-refused", &id);
 }
