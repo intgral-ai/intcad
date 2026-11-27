@@ -15,7 +15,7 @@
     "rail.files_note": "This design is not in a project folder yet. A project's designs, requirement documents and records will be listed here.",
     "rail.review_note": "Run the DFM check to list what the manufacturing rules find on this design.",
     "rail.simulation_note": "Physical checks do not run from here yet. Their results will be listed here.",
-    "rail.autocomplete_note": "Next steps are not suggested yet. Suggestions will be listed here.",
+    "rail.autocomplete_note": "Suggestions for the next step will be listed here.",
     "prefs.right_rail": "Right rail",
     "prefs.right_rail_note": "A rail along the window's right edge with Files, Review, Simulation and Autocomplete; an item opens its panel beside the rail. Off: no rail."
   },
@@ -35,7 +35,7 @@
     "rail.files_note": "このデザインはまだプロジェクトフォルダーに入っていません。プロジェクトのデザイン、要件ドキュメント、記録がここに一覧表示されます。",
     "rail.review_note": "DFM チェックを実行すると、製造ルールがこの設計で見つけた内容が一覧表示されます。",
     "rail.simulation_note": "物理チェックは、まだここから実行できません。結果はここに一覧表示されます。",
-    "rail.autocomplete_note": "次の手順の提案はまだ行われません。提案はここに一覧表示されます。",
+    "rail.autocomplete_note": "次の手順の提案はここに一覧表示されます。",
     "prefs.right_rail": "右レール",
     "prefs.right_rail_note": "ウィンドウの右端に、ファイル、レビュー、解析、補完のレールを表示します。項目を選ぶとレールの横にパネルが開きます。オフ: レールなし。"
   },
@@ -55,7 +55,7 @@
     "rail.files_note": "这个设计还不在项目文件夹里。项目里的设计、要求文档和记录会列在这里。",
     "rail.review_note": "运行 DFM 检查，就会列出制造规则在这个设计中发现的问题。",
     "rail.simulation_note": "物理检查还不能从这里运行。结果会列在这里。",
-    "rail.autocomplete_note": "现在还不会给出下一步建议。建议会列在这里。",
+    "rail.autocomplete_note": "下一步的建议会列在这里。",
     "prefs.right_rail": "右边栏",
     "prefs.right_rail_note": "窗口最右侧的一条边栏：文件、审查、仿真、补全；点一项会在边栏旁打开它的面板。关闭后不显示边栏。"
   },

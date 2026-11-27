@@ -17,6 +17,8 @@ solidcraft-gpu = { workspace = true }
 solidcraft-space-mouse = { workspace = true, features = ["serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Reads a project's .intcad/ files for the next-step brief (agent_chat/project_brief.rs).
+toml = { workspace = true }
 log = { workspace = true }
 web-time = { workspace = true }
 # gif, webp, bmp, tiff: pictures attached to an agent chat message (GIF and WebP go as they are,
