@@ -50,6 +50,15 @@ the runtime staged by `vc-runtime.ps1` from the Community install):
   read the running Node's loaded modules and found `VCRUNTIME140.dll` at
   `…\mastra-agent\node_modules\@libsql\win32-x64-msvc\VCRUNTIME140.dll`.
 
+Clean-machine proof (Windows 11 Enterprise Evaluation, no Visual Studio, no
+`C:\Windows\System32\vcruntime140.dll`, no Intcad install): the portable tree was extracted
+under `C:\Users\intcad\Desktop\Intcad Portable Test\` (spaces in the path), the receipt file was
+placed beside each native module, and the installed Node answered ACP `initialize` (Mastra Code
+1.19.1). `libSQL` and `ast-grep` both ran, and the running Node's modules listed
+`…\@libsql\win32-x64-msvc\VCRUNTIME140.dll` — the package copy, not a system one. Repeating with
+the file only beside `node.exe` failed on that clean machine. This is the portable channel's
+loader proof; the exact new ZIP and MSI are verified again at the installed gate.
+
 The initial "beside `node.exe`" placement was **not** used: Node loads a native module's
 dependency from that module's own folder, and an empirical probe with the file only beside
 `node.exe` loaded the machine-wide copy from `System32`. The receipt therefore targets both
