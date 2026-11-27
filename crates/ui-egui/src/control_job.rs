@@ -87,6 +87,148 @@ const READ_ON_A_COPY: &[&str] = &[
     "occurrence.properties",
 ];
 
+/// A read from [`READ_ON_A_COPY`] that a controlled entry (an agent) may run on a copy, because
+/// the host can end it before its authorization does (docs/account/copy-read-admission.md).
+pub(crate) struct StoppableRead {
+    /// The command, as registered.
+    pub(crate) id: &'static str,
+    /// End the run now: it answers soon after, and keeps and shows nothing new. The host calls it
+    /// again until the run answers, so a stop asked for before the run can see it is not lost.
+    pub(crate) stop: fn(),
+    /// Take away what a run that finished shows for this document (its id), given the run's
+    /// parameters. Called only for a finished run whose reply the host withholds, so what an
+    /// earlier run shows stays.
+    pub(crate) withdraw: fn(&str, &Value),
+}
+
+/// The reads a controlled entry may run on a copy. Every other copy reading, export and snapshot
+/// stays refused for a controlled entry: none of them can be stopped once it has started.
+const STOPPABLE_READS: &[StoppableRead] = &[];
+
+/// The stoppable read `id` names, if it is one.
+pub(crate) fn stoppable_read(id: &str) -> Option<&'static StoppableRead> {
+    #[cfg(test)]
+    if let Some(row) = test_support::stoppable_row(id) {
+        return Some(row);
+    }
+    STOPPABLE_READS.iter().find(|row| row.id == id)
+}
+
+/// Whether `req` asks for a stoppable read.
+pub(crate) fn stoppable_request(req: &ControlRequest) -> bool {
+    reading(req).is_some_and(|(id, _)| stoppable_read(id).is_some())
+}
+
+/// How long before its authorization ends the host stops a controlled read. It covers the time a
+/// stopped read takes to answer and the commit gate after it.
+pub(crate) const STOP_MARGIN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Why the host withholds a controlled read's reply. Each case also stops the read, and takes away
+/// what a finished one shows, so nothing of it is delivered: while the commit gate is still open
+/// it is settled as having no effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Withheld {
+    /// Less than [`STOP_MARGIN`] of its authorization was left.
+    AuthorizationEnded,
+    /// Stop was pressed.
+    Stopped,
+    /// The chat turn it belongs to ended, or its document tab was left.
+    TurnEnded,
+}
+
+impl Withheld {
+    fn reply(self, req: &ControlRequest, label: &str) -> Value {
+        let guarded = req.guarded.is_some();
+        match self {
+            Withheld::AuthorizationEnded => crate::control::admission_refusal_json(&solidcraft_engine::entitlement::Refusal::new(
+                solidcraft_engine::entitlement::RefusalCode::UnsafeToStart,
+                format!("stopped: `{label}` would have outlasted its authorization; nothing was shown or charged"),
+            )),
+            Withheld::Stopped => crate::control::stopped_command_response(&req.method, &req.params, guarded, label),
+            Withheld::TurnEnded => crate::control::cancelled_request_response(&req.method, &req.params, guarded),
+        }
+    }
+}
+
+/// A controlled read running on a copy: the admission it runs under, carried to its commit.
+struct Controlled {
+    row: &'static StoppableRead,
+    admission: solidcraft_engine::entitlement::Admission,
+    /// The document it reads, for [`StoppableRead::withdraw`].
+    document: String,
+    withheld: Option<Withheld>,
+    /// Stops it at its authorization's end when the window draws no frames.
+    watchdog: Option<Watchdog>,
+}
+
+/// A thread that calls a controlled read's `stop` once its stop time passes, and again until the
+/// read answers. The window draws no frames while it is minimised, so it cannot rely on
+/// [`SolveApp::poll_control_jobs`] alone; each frame moves the stop time as the lease is renewed.
+/// Its clock does not count a suspend; the window's own check, on the host's clock, covers that.
+/// The web build has no threads and no controlled entries: it never starts one.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct Watchdog {
+    stop_at: Arc<std::sync::Mutex<std::time::Instant>>,
+    done: Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::Thread,
+}
+
+impl Watchdog {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start(stop: fn(), left: std::time::Duration) -> Option<Watchdog> {
+        let stop_at = Arc::new(std::sync::Mutex::new(stop_time(left)));
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (at, ended) = (stop_at.clone(), done.clone());
+        let handle = std::thread::Builder::new()
+            .name("agent-read-stop".into())
+            .spawn(move || {
+                while !ended.load(Ordering::Relaxed) {
+                    let Ok(due) = at.lock().map(|at| *at) else { return };
+                    let now = std::time::Instant::now();
+                    if now >= due {
+                        stop();
+                        std::thread::park_timeout(std::time::Duration::from_millis(250));
+                    } else {
+                        std::thread::park_timeout(due - now);
+                    }
+                }
+            })
+            .ok()?;
+        Some(Watchdog { stop_at, done, thread: handle.thread().clone() })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn start(_stop: fn(), _left: std::time::Duration) -> Option<Watchdog> {
+        None
+    }
+
+    /// The authorization now has `left`: stop the read that long, less the margin, from now.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn moved(&self, left: std::time::Duration) {
+        if let Ok(mut at) = self.stop_at.lock() {
+            *at = stop_time(left);
+        }
+        self.thread.unpark();
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn moved(&self, _left: std::time::Duration) {}
+}
+
+/// When to stop a read whose authorization has `left` now.
+#[cfg(not(target_arch = "wasm32"))]
+fn stop_time(left: std::time::Duration) -> std::time::Instant {
+    let now = std::time::Instant::now();
+    now.checked_add(left.saturating_sub(STOP_MARGIN)).unwrap_or(now)
+}
+
+impl Drop for Watchdog {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Relaxed);
+        self.thread.unpark();
+    }
+}
+
 /// Exports and readings computing at once; more run here.
 const MAX_ANSWERING: usize = 4;
 
@@ -172,6 +314,8 @@ pub struct ControlJob {
     pub(crate) label: String,
     /// How far it has got (evaluated ahead).
     steps: Option<Arc<Steps>>,
+    /// A controlled read's admission and stop ([`Work::Answer`] only).
+    controlled: Option<Controlled>,
 }
 
 impl ControlJob {
@@ -265,21 +409,53 @@ fn begin_ahead(
     Some((Work::Ahead { commands, doc: app.session.doc.clone(), revision: app.session.revision, tries, kept }, rx, steps))
 }
 
-/// A copy answered on a worker cannot carry typed admission into a durable commit gate yet.
-/// Refuse a controlled entry before starting the worker or taking a grant; free GUI and browser
-/// work still answers on the copy.
-fn admit_copy_path(app: &mut SolveApp, req: &mut ControlRequest) -> bool {
-    if !crate::control::free_entry(req.entry) {
+/// Admit a request answered on a copy (`id`), before any worker starts. Free GUI and browser work
+/// answers on the copy as before (`Ok(None)`). A controlled entry may only run a stoppable read
+/// (`Ok(Some)`): it passes everything a dispatch here passes, and carries its admission to
+/// [`SolveApp::answered`]'s commit gate. Any other copy answer for a controlled entry is refused
+/// before a grant or a worker, as before. `Err`: refused, and answered.
+fn admit_copy_path(app: &mut SolveApp, req: &mut ControlRequest, id: &str) -> Result<Option<Controlled>, ()> {
+    let controlled = !crate::control::free_entry(req.entry);
+    let row = if controlled { stoppable_read(id) } else { None };
+    if controlled && row.is_none() {
         crate::control::release_unstarted(app, req);
         let _ = req.reply.send(crate::control::async_controlled_refusal(req).unwrap_or_else(|| json!({"ok":false,"error":"refused"})));
-        return false;
+        return Err(());
     }
-    match crate::control::admit_once(app, req) {
-        Ok(_) => true,
-        Err(refusal) => {
-            let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
-            false
+    if let Err(refusal) = crate::control::admit_once(app, req) {
+        let _ = req.reply.send(crate::control::admission_refusal_json(&refusal));
+        return Err(());
+    }
+    let Some(row) = row else { return Ok(None) };
+    match crate::control::start_dispatch(app, req) {
+        Ok(admission) => {
+            // A bridge read may outlast one lease: the host renews it while it runs.
+            crate::control::register_control_renewal(app, req, &admission);
+            let watchdog = crate::control::authorization_left(app, req, &admission).and_then(|left| Watchdog::start(row.stop, left));
+            Ok(Some(Controlled { row, admission, document: app.session.document_id.clone(), withheld: None, watchdog }))
         }
+        Err(refused) => {
+            let _ = req.reply.send(outcome_value(refused));
+            Err(())
+        }
+    }
+}
+
+/// A reading's successful reply carries the stamp of the design it read.
+fn stamped(work: &Work, mut reply: Value) -> Value {
+    if reply["ok"] == true
+        && let Work::Answer { source: Some(source) } = work
+    {
+        reply["documentStamp"] = crate::execution_guard::stamp_json(source);
+    }
+    reply
+}
+
+/// The reply an outcome sends on the copy path, where nothing renders a screenshot.
+fn outcome_value(out: crate::control::Outcome) -> Value {
+    match out {
+        crate::control::Outcome::Done(value) => value,
+        crate::control::Outcome::Screenshot { .. } => json!({"ok": false, "error": "a read on a copy answers no screenshot"}),
     }
 }
 
@@ -418,6 +594,7 @@ impl SolveApp {
     /// and nothing of it is applied (its worker finishes on its own, unseen). Requests waiting
     /// behind it go on.
     pub fn stop_agent_command(&mut self) {
+        self.stop_controlled_reads();
         let stopped = match self.control_job.take() {
             Some(mut job) => {
                 // The job never reached the dispatch boundary; its admission is unused.
@@ -461,10 +638,8 @@ impl SolveApp {
         if self.control_answering.len() < MAX_ANSWERING
             && let Some((id, params)) = reading(&req)
         {
-            if !admit_copy_path(self, &mut req) {
-                return None;
-            }
-            return self.answer_on_a_copy(req, id, params);
+            let Ok(controlled) = admit_copy_path(self, &mut req, id) else { return None };
+            return self.answer_on_a_copy(req, id, params, controlled);
         }
         // A snapshot freezes and writes a large artifact: answer on a copy even when the general
         // agent-off-thread preference is off, so a large container never blocks a frame.
@@ -473,10 +648,8 @@ impl SolveApp {
             && let Some((command, params)) = executed(&req.params)
             && spec_id(command) == Some("document.snapshot.capture")
         {
-            if !admit_copy_path(self, &mut req) {
-                return None;
-            }
-            return self.answer_on_a_copy(req, "document.snapshot.capture", params);
+            let Ok(controlled) = admit_copy_path(self, &mut req, "document.snapshot.capture") else { return None };
+            return self.answer_on_a_copy(req, "document.snapshot.capture", params, controlled);
         }
         if !self.preferences.agent_off_thread {
             return Some(req);
@@ -487,10 +660,8 @@ impl SolveApp {
             && let Some((command, params)) = executed(&req.params)
             && let Some(id) = spec_id(command).filter(|id| ANSWERED_ON_A_COPY.contains(id))
         {
-            if !admit_copy_path(self, &mut req) {
-                return None;
-            }
-            return self.answer_on_a_copy(req, id, params);
+            let Ok(controlled) = admit_copy_path(self, &mut req, id) else { return None };
+            return self.answer_on_a_copy(req, id, params, controlled);
         }
         let commands = ahead_commands(&req.method, &req.params);
         let Some(first) = commands.first().map(|(c, _)| c.clone()) else { return Some(req) };
@@ -501,7 +672,7 @@ impl SolveApp {
             return None;
         }
         let Some((work, rx, steps)) = begin_ahead(self, &req, commands, 0) else { return Some(req) };
-        let job = ControlJob { label: label(self, &first), req, work, done: rx, started: crate::now_ms(), steps: Some(steps) };
+        let job = ControlJob { label: label(self, &first), req, work, done: rx, started: crate::now_ms(), steps: Some(steps), controlled: None };
         if within_wait(self, &job.done).is_some() {
             // Computed within the wait: it runs now, as before, finding what was computed.
             let Work::Ahead { kept, .. } = job.work else { return Some(job.req) };
@@ -515,11 +686,17 @@ impl SolveApp {
     /// Run command `id` on a copy of the session, off the window thread, and answer `req` from
     /// there: at once when it is done within the app's wait, otherwise once it is in. `None`: it
     /// is taken care of; `Some`: it runs here (no threads).
-    fn answer_on_a_copy(&mut self, req: ControlRequest, id: &'static str, params: Value) -> Option<ControlRequest> {
-        let Ok(scope) = crate::control::request_scope(self, &req.params) else { return Some(req) };
+    fn answer_on_a_copy(&mut self, req: ControlRequest, id: &'static str, params: Value, controlled: Option<Controlled>) -> Option<ControlRequest> {
+        let scope = match crate::control::request_scope(self, &req.params) {
+            Ok(scope) => scope,
+            Err(error) => return self.unstarted_read(req, controlled, error),
+        };
         // The request's own level (#9184) checks it on the copy, and the reply says so, as
         // `control::handle` does; a word that is no level is refused there.
-        let Ok(level) = crate::control::request_param_check(&req.method, &req.params) else { return Some(req) };
+        let level = match crate::control::request_param_check(&req.method, &req.params) {
+            Ok(level) => level,
+            Err(error) => return self.unstarted_read(req, controlled, error),
+        };
         // Capture on the owner before scratch resets its followed revision. The worker only
         // reads this pinned copy; answered rechecks the live source, never the scratch stamp.
         let source = req.guarded.as_ref().map(|_| self.session.document_stamp());
@@ -535,6 +712,10 @@ impl SolveApp {
         // The copy has no history and no file (#9624): an inspection reports the design's own.
         let s = &self.session;
         let own = (id == "document.inspect").then(|| (s.undo.len(), s.redo.len(), s.path.clone()));
+        // The dispatch boundary of a controlled read: from here on it settles in `answered`.
+        if controlled.is_some() {
+            req.work_started.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         let rx = spawn(scope, move || {
             let mut reply = match copy.execute(id, &params) {
                 Ok(mut v) => {
@@ -552,8 +733,14 @@ impl SolveApp {
             }
             Some(reply)
         });
-        let Some(rx) = rx else { return Some(req) };
-        let job = ControlJob { label: label(self, id), req, work: Work::Answer { source }, done: rx, started: crate::now_ms(), steps: None };
+        let Some(rx) = rx else {
+            if controlled.is_none() {
+                return Some(req);
+            }
+            return self.unstarted_read(req, controlled, "this build cannot read the design on a copy".into());
+        };
+        let job =
+            ControlJob { label: label(self, id), req, work: Work::Answer { source }, done: rx, started: crate::now_ms(), steps: None, controlled };
         match within_wait(self, &job.done) {
             Some(reply) => self.answered(job, reply),
             None => self.control_answering.push(job),
@@ -561,9 +748,23 @@ impl SolveApp {
         None
     }
 
+    /// A read that could not start on a copy. A free one runs here, as before (`Some`); a
+    /// controlled one was admitted, so it is answered and settled now, as having had no effect.
+    fn unstarted_read(&mut self, req: ControlRequest, controlled: Option<Controlled>, error: String) -> Option<ControlRequest> {
+        let Some(controlled) = controlled else { return Some(req) };
+        req.local_no_effect.store(true, std::sync::atomic::Ordering::Relaxed);
+        let out =
+            crate::control::finish_dispatch(self, &req, &controlled.admission, crate::control::Outcome::Done(json!({"ok": false, "error": error})));
+        let _ = req.reply.send(outcome_value(out));
+        None
+    }
+
     /// An export's or a reading's reply, from its copy, with the echo an export leaves when it
-    /// runs here.
-    fn answered(&mut self, job: ControlJob, reply: Option<Value>) {
+    /// runs here. A controlled read's goes through [`SolveApp::answered_controlled`].
+    fn answered(&mut self, mut job: ControlJob, reply: Option<Value>) {
+        if let Some(controlled) = job.controlled.take() {
+            return self.answered_controlled(job, controlled, reply);
+        }
         if job.req.refuse_cancelled_chat() {
             return;
         }
@@ -589,12 +790,90 @@ impl SolveApp {
         let _ = job.req.reply.send(reply);
     }
 
+    /// A controlled read's reply, through the same commit gate and single settlement as a
+    /// dispatch here ([`crate::control::finish_dispatch`]).
+    ///
+    /// While the gate is open, a reply the host withholds (see [`Withheld`], or a document that
+    /// changed while it read) is settled as having had no effect: the read ran on a copy that is
+    /// dropped, a stopped run shows nothing new, and what a finished one shows is taken away. Once
+    /// the gate is closed nothing is decided here: the result takes the existing late path, which
+    /// discards it and defers its settlement under the original operation, never releasing it.
+    fn answered_controlled(&mut self, job: ControlJob, controlled: Controlled, reply: Option<Value>) {
+        let req = &job.req;
+        let reply = reply.unwrap_or_else(|| json!({"ok": false, "error": format!("`{}` ended without a reply", job.label)}));
+        let out = if crate::control::commit_open(self, req, &controlled.admission) {
+            let mut withheld = controlled.withheld;
+            if withheld.is_none() && crate::control::chat_turn_cancelled(req.chat_turn.as_deref()) {
+                withheld = Some(Withheld::TurnEnded);
+            }
+            let finished = reply["ok"] == true;
+            let withhold = |reply: Value| {
+                if finished {
+                    let params = reading(req).map(|(_, params)| params).unwrap_or_default();
+                    (controlled.row.withdraw)(&controlled.document, &params);
+                }
+                req.local_no_effect.store(true, std::sync::atomic::Ordering::Relaxed);
+                reply
+            };
+            match (withheld, crate::execution_guard::check_application(self, req)) {
+                (Some(reason), _) => withhold(reason.reply(req, &job.label)),
+                // The document changed while it read: the reply is about a design no longer shown.
+                (None, Err(error)) => withhold(crate::execution_guard::refusal_json(&error)),
+                (None, Ok(_)) => stamped(&job.work, reply),
+            }
+        } else {
+            reply
+        };
+        let out = crate::control::finish_dispatch(self, req, &controlled.admission, crate::control::Outcome::Done(out));
+        let _ = req.reply.send(outcome_value(out));
+    }
+
+    /// Each frame, for a controlled read on a copy: stop it when its authorization is about to
+    /// end, or its chat turn ended, and keep stopping it until it answers. Otherwise move its
+    /// watchdog's stop time to the live (possibly renewed) cutoff.
+    fn watch_controlled_reads(&mut self) {
+        for i in 0..self.control_answering.len() {
+            let Some(job) = self.control_answering.get(i) else { continue };
+            let Some(controlled) = job.controlled.as_ref() else { continue };
+            let left = crate::control::authorization_left(self, &job.req, &controlled.admission);
+            let reason = if controlled.withheld.is_some() {
+                controlled.withheld
+            } else if crate::control::chat_turn_cancelled(job.req.chat_turn.as_deref()) {
+                Some(Withheld::TurnEnded)
+            } else if left.is_none_or(|left| left < STOP_MARGIN) {
+                Some(Withheld::AuthorizationEnded)
+            } else {
+                None
+            };
+            let Some(controlled) = self.control_answering.get_mut(i).and_then(|job| job.controlled.as_mut()) else { continue };
+            match (reason, left, controlled.watchdog.as_ref()) {
+                (Some(reason), ..) => {
+                    controlled.withheld = Some(reason);
+                    (controlled.row.stop)();
+                }
+                (None, Some(left), Some(watchdog)) => watchdog.moved(left),
+                (None, ..) => {}
+            }
+        }
+    }
+
+    /// Stop the controlled reads computing on copies (Stop was pressed): each answers soon after,
+    /// as stopped, and is settled as having had no effect.
+    fn stop_controlled_reads(&mut self) {
+        for controlled in self.control_answering.iter_mut().filter_map(|job| job.controlled.as_mut()) {
+            controlled.withheld.get_or_insert(Withheld::Stopped);
+            (controlled.row.stop)();
+        }
+    }
+
     /// Each frame: exports that are done reply; a design change whose evaluation is in runs.
     pub(crate) fn poll_control_jobs(&mut self, ctx: &egui::Context) {
         if !self.control_answering.is_empty() {
+            self.watch_controlled_reads();
             let mut i = 0;
             while i < self.control_answering.len() {
-                if self.control_answering.get(i).is_some_and(|job| job.req.refuse_cancelled_chat()) {
+                // A controlled read whose turn ended is stopped above and settles when it answers.
+                if self.control_answering.get(i).is_some_and(|job| job.controlled.is_none() && job.req.refuse_cancelled_chat()) {
                     let mut job = self.control_answering.remove(i);
                     crate::control::release_unstarted(self, &mut job.req);
                     continue;
@@ -682,7 +961,22 @@ pub(crate) mod test_support {
         };
         let (tx, done) = std::sync::mpsc::channel();
         tx.send(Some(reply)).unwrap();
-        ControlJob { req, work: Work::Answer { source }, done, started: crate::now_ms(), label: id.into(), steps: None }
+        ControlJob { req, work: Work::Answer { source }, done, started: crate::now_ms(), label: id.into(), steps: None, controlled: None }
+    }
+
+    thread_local! {
+        static STOPPABLE: std::cell::RefCell<Vec<&'static StoppableRead>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+
+    /// Make `id` a stoppable read on this test's thread (the window thread in a test), with its
+    /// own `stop` and `withdraw`. Other tests' threads keep `develop`'s empty table.
+    pub(crate) fn stoppable_on_this_thread(id: &'static str, stop: fn(), withdraw: fn(&str, &Value)) {
+        let row: &'static StoppableRead = Box::leak(Box::new(StoppableRead { id, stop, withdraw }));
+        STOPPABLE.with(|rows| rows.borrow_mut().push(row));
+    }
+
+    pub(super) fn stoppable_row(id: &str) -> Option<&'static StoppableRead> {
+        STOPPABLE.with(|rows| rows.borrow().iter().copied().find(|row| row.id == id))
     }
 
     pub(crate) fn answer_completed(app: &mut SolveApp, job: ControlJob) {
