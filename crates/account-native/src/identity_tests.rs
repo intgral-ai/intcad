@@ -19,6 +19,8 @@ const WAIT: Duration = Duration::from_secs(1);
 struct Clock {
     wall: AtomicU64,
     millis: AtomicU64,
+    on_resume_before_lock: Mutex<Option<SendHook>>,
+    on_attempt_write: Mutex<Option<SendHook>>,
 }
 
 impl IdentityClock for Arc<Clock> {
@@ -28,6 +30,22 @@ impl IdentityClock for Arc<Clock> {
 
     fn monotonic_now(&self) -> Duration {
         Duration::from_millis(self.millis.load(Ordering::Relaxed))
+    }
+
+    fn before_refresh_lock(&self, trigger: IdentityTrigger) {
+        if trigger == IdentityTrigger::Resume {
+            let hook = self.on_resume_before_lock.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+    }
+
+    fn after_attempt_write(&self) {
+        let hook = self.on_attempt_write.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 }
 
@@ -617,6 +635,12 @@ fn a_same_process_replay_is_allowed_only_inside_the_thirty_second_window() {
 }
 
 #[test]
+fn the_provider_replay_window_includes_exactly_one_request_at_its_boundary() {
+    assert!(fits_replay_window(Duration::from_secs(25)));
+    assert!(!fits_replay_window(Duration::from_millis(25_001)));
+}
+
+#[test]
 fn a_restarted_attempt_gets_one_diagnostic_not_a_new_batch() {
     let f = Fixture::new();
     f.login().unwrap();
@@ -678,6 +702,84 @@ fn a_user_retry_gets_one_new_diagnostic_after_cooldown() {
     assert_eq!(f.restarted().ensure(IdentityTrigger::UserRetry, WAIT).unwrap_err(), IdentityError::Transient);
     assert_eq!(f.refreshes(), 3);
     assert_eq!(f.attempt(3, true, 205, 3), last);
+}
+
+#[test]
+fn a_user_retry_inside_the_replay_window_still_consumes_the_one_shot() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    f.transient(None);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    f.attempt(1, false, 175, 1);
+
+    f.clock.set_wall(175);
+    f.clock.set_monotonic(75);
+    let root = f.root.clone();
+    *f.script.on_send.lock().unwrap() = Some(Box::new(move || {
+        let attempt = IdentityJournal::new(root).unwrap().read_attempt().unwrap().unwrap();
+        assert_eq!((attempt.sends, attempt.diagnostic_used, attempt.first_possible_send_unix), (3, true, 175));
+    }));
+    f.transient(None);
+    assert_eq!(f.lifecycle.ensure(IdentityTrigger::UserRetry, WAIT).unwrap_err(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 2);
+    let attempt = f.attempt(3, true, 185, 2);
+
+    f.clock.set_wall(185);
+    f.clock.set_monotonic(85);
+    for trigger in [IdentityTrigger::Background, IdentityTrigger::UserRetry, IdentityTrigger::Resume] {
+        assert_eq!(f.lifecycle.ensure(trigger, WAIT).unwrap_err(), IdentityError::Transient);
+        assert_eq!(f.refreshes(), 2);
+        assert_eq!(f.attempt(3, true, 185, 2), attempt);
+    }
+}
+
+#[test]
+fn resume_cannot_replay_a_background_attempt_started_before_it_acquires_the_refresh_lock() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    f.transient(Some(0));
+    f.transient(None);
+    let lifecycle = f.lifecycle.clone();
+    let root = f.root.clone();
+    *f.clock.on_resume_before_lock.lock().unwrap() = Some(Box::new(move || {
+        assert_eq!(lifecycle.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::Transient);
+        let attempt = IdentityJournal::new(root).unwrap().read_attempt().unwrap().unwrap();
+        assert_eq!((attempt.sends, attempt.diagnostic_used, attempt.cooldown_until_unix), (1, false, 170));
+    }));
+    assert_eq!(f.lifecycle.ensure(IdentityTrigger::Resume, WAIT).unwrap_err(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 2);
+    f.attempt(2, true, 180, 2);
+    f.clock.set_wall(180);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 2);
+}
+
+#[test]
+fn a_replay_reservation_crossing_the_batch_deadline_is_consumed_without_sending() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    f.transient(None);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    let first = f.attempt(1, false, 175, 1);
+
+    f.clock.set_wall(175);
+    f.clock.millis.store(89_900, Ordering::Relaxed);
+    let clock = f.clock.clone();
+    let root = f.root.clone();
+    *f.clock.on_attempt_write.lock().unwrap() = Some(Box::new(move || {
+        let attempt = IdentityJournal::new(root).unwrap().read_attempt().unwrap().unwrap();
+        assert_eq!((attempt.sends, attempt.diagnostic_used), (2, false));
+        clock.set_monotonic(90);
+    }));
+    f.transient(None);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    assert_eq!(f.refreshes(), 1);
+    let reserved = f.attempt(2, false, 180, 1);
+    assert_eq!(reserved.attempt_id, first.attempt_id);
+    assert_eq!(reserved.first_possible_send_unix, 170);
 }
 
 #[test]

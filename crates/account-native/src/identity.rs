@@ -77,6 +77,12 @@ fn valid_text(text: &str, max: usize) -> bool {
 pub trait IdentityClock: Send + Sync {
     fn now_unix_seconds(&self) -> u64;
     fn monotonic_now(&self) -> Duration;
+
+    #[cfg(test)]
+    fn before_refresh_lock(&self, _: IdentityTrigger) {}
+
+    #[cfg(test)]
+    fn after_attempt_write(&self) {}
 }
 
 pub struct SystemIdentityClock {
@@ -230,6 +236,7 @@ pub enum IdentityStatus {
     PendingVerification { account_id: String },
 }
 
+#[derive(Clone, Copy)]
 struct AttemptStart {
     attempt_id: u64,
     login_generation: u64,
@@ -242,8 +249,12 @@ impl AttemptStart {
         self.attempt_id == attempt.attempt_id
             && self.login_generation == attempt.login_generation
             && self.token_generation == attempt.token_generation
-            && now.checked_sub(self.started).is_some_and(|elapsed| elapsed < BATCH_BUDGET && elapsed.saturating_add(REQUEST_TIMEOUT) <= REPLAY_WINDOW)
+            && now.checked_sub(self.started).is_some_and(|elapsed| elapsed < BATCH_BUDGET && fits_replay_window(elapsed))
     }
+}
+
+pub(super) fn fits_replay_window(elapsed: Duration) -> bool {
+    elapsed.saturating_add(REQUEST_TIMEOUT) <= REPLAY_WINDOW
 }
 
 struct Snapshot {
@@ -387,6 +398,8 @@ impl IdentityLifecycle {
             }
         }
 
+        #[cfg(test)]
+        self.clock.before_refresh_lock(trigger);
         let _local = lock_refresh(&self.refresh, &wait)?;
         let _file = lock_file(&self.lock_dir.join("refresh.lock"), &wait)?;
         let snapshot = {
@@ -460,7 +473,7 @@ impl IdentityLifecycle {
     }
 
     fn refresh(&self, old: Snapshot, trigger: IdentityTrigger, wait: &LockWait) -> Result<IdentityLease, IdentityError> {
-        let (attempt, issued_at_unix) = {
+        let ((attempt, replay_start), issued_at_unix) = {
             let _barrier = self.barrier_lock(wait)?;
             let current = self.snapshot(self.store()?.as_ref())?;
             Self::check_unchanged(&old, &current)?;
@@ -468,7 +481,12 @@ impl IdentityLifecycle {
             (self.mark_send(current, trigger, now)?, now)
         };
         self.check_local_barrier()?;
-        let response = self.transport.refresh(self.domain.client_id(), &Secret::new(old.record.refresh_token.clone()));
+        let refresh_token = Secret::new(old.record.refresh_token.clone());
+        if replay_start.is_some_and(|start| !start.can_replay(&attempt, self.clock.monotonic_now())) {
+            // The durable reservation is consumed even when the journal sync used up the window.
+            return Err(IdentityError::Transient);
+        }
+        let response = self.transport.refresh(self.domain.client_id(), &refresh_token);
         let pending = {
             let _barrier = self.barrier_lock(wait)?;
             let mut store = self.store()?;
@@ -513,27 +531,33 @@ impl IdentityLifecycle {
     }
 
     // Runs under the barrier lock while the caller also holds the refresh locks.
-    fn mark_send(&self, current: Snapshot, trigger: IdentityTrigger, now: u64) -> Result<AttemptRecord, IdentityError> {
+    fn mark_send(&self, current: Snapshot, trigger: IdentityTrigger, now: u64) -> Result<(AttemptRecord, Option<AttemptStart>), IdentityError> {
         let monotonic = self.clock.monotonic_now();
         let mut local = self.attempt_start.lock().map_err(|_| IdentityError::Storage)?;
+        let mut replay_start = None;
         let fresh_batch = current.attempt.is_none();
         let mut attempt = if let Some(mut attempt) = current.attempt {
             if now < attempt.cooldown_until_unix {
                 return Err(IdentityError::Transient);
             }
-            let can_replay =
-                !attempt.diagnostic_used && attempt.sends < MAX_SENDS && local.as_ref().is_some_and(|start| start.can_replay(&attempt, monotonic));
-            if !can_replay {
-                if trigger == IdentityTrigger::UserRetry && !(attempt.diagnostic_used && attempt.sends >= MAX_SENDS) {
-                    // Reserve the last slot for this one explicit send; never open a replay window.
-                    attempt.sends = MAX_SENDS - 1;
-                    attempt.diagnostic_used = true;
-                    attempt.first_possible_send_unix = now;
-                } else if !attempt.diagnostic_used && attempt.sends < MAX_SENDS {
-                    attempt.diagnostic_used = true;
-                } else {
+            if trigger == IdentityTrigger::UserRetry {
+                if attempt.diagnostic_used && attempt.sends >= MAX_SENDS {
                     return Err(IdentityError::Transient);
                 }
+                // Reserve the last slot for this one explicit send; never open a replay window.
+                attempt.sends = MAX_SENDS - 1;
+                attempt.diagnostic_used = true;
+                attempt.first_possible_send_unix = now;
+            } else {
+                if attempt.diagnostic_used || attempt.sends >= MAX_SENDS {
+                    return Err(IdentityError::Transient);
+                }
+                // Resume cannot trust a start even if a background call installed it
+                // between the early invalidation and acquiring the refresh locks.
+                if trigger == IdentityTrigger::Background {
+                    replay_start = local.filter(|start| start.can_replay(&attempt, monotonic));
+                }
+                attempt.diagnostic_used = replay_start.is_none();
             }
             attempt
         } else {
@@ -555,6 +579,8 @@ impl IdentityLifecycle {
         attempt.cooldown_until_unix = now.saturating_add(COOLDOWN_BASE.as_secs());
         self.check_local_barrier()?;
         self.journal.write_attempt(&attempt)?;
+        #[cfg(test)]
+        self.clock.after_attempt_write();
         if fresh_batch {
             *local = Some(AttemptStart {
                 attempt_id: attempt.attempt_id,
@@ -565,7 +591,7 @@ impl IdentityLifecycle {
         } else if attempt.diagnostic_used {
             *local = None;
         }
-        Ok(attempt)
+        Ok((attempt, replay_start))
     }
 
     fn rotated_record(mut old: StoredIdentity, response: RefreshResponse, issued_at_unix: u64) -> Result<StoredIdentity, IdentityError> {
