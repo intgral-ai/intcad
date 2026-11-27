@@ -19491,7 +19491,7 @@ fn a_stress_estimates_card_says_what_the_run_will_take_before_and_after_meshing(
     };
     let (held, pulled) = (end(0.0), end(40.0));
     let params = json!({"loads": [{"face": pulled, "force": [100, 0, 0]}], "supports": [{"face": held}], "material": "6061-T6"});
-    let _reply = ask(&tx, "engine.execute", json!({"command": "inspect.stress_estimate", "params": params}));
+    let _reply = ask(&tx, "engine.execute", json!({"command": "inspect.stress_estimate", "params": params.clone()}));
     pump_tools(&mut app);
     let cards: Vec<(u64, String)> = app
         .agent_chat
@@ -19510,10 +19510,16 @@ fn a_stress_estimates_card_says_what_the_run_will_take_before_and_after_meshing(
         lines[1].starts_with("Before meshing, from the part's size: about ")
             && lines[1].contains(" nodes, about ")
             && lines[1].contains(" of memory, about ")
-            && (lines[1].contains(" in all (2 runs)") || lines[1].contains(" in all (one run)")),
+            && lines[1].contains(" in all ("),
         "{title}"
     );
     assert!(lines.len() > 2 && lines[2..].iter().any(|l| l.contains("6061-T6")), "the setup follows: {title}");
+    // The line is the dry run's prediction, the third mesh's share included when it may follow.
+    let mut dry = params.clone();
+    dry["dry_run"] = json!(true);
+    let predicted = app.session.execute("inspect.stress_estimate", &dry).expect("a dry run");
+    assert_eq!(Some(lines[1].to_string()), crate::stress_overlay::predicted_line(&predicted));
+    assert_eq!(predicted["predicted"]["most"].is_null(), !lines[1].contains(" – "), "{title}");
 
     let doc = app.session.document_id.clone();
     let forecast = |document_id: &str, nodes: usize| fea::Forecast {
@@ -19521,10 +19527,12 @@ fn a_stress_estimates_card_says_what_the_run_will_take_before_and_after_meshing(
         seq: 0,
         run: 1,
         runs: 2,
+        runs_most: 2,
         elements: fea::Elements::Solid,
         nodes,
         bytes: 0.5e9,
         seconds_left: 30.0,
+        seconds_most: 30.0,
     };
     let counted = |app: &SolveApp| {
         app.agent_chat.items.iter().find_map(|i| match i {
