@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::dfm::compile::{RunInput, SheetRef};
-use crate::dfm::run::{Freshness, RunOutcome, RunRequest, RunResult, RunStore, freshness, run_once};
+use crate::dfm::run::{Freshness, Reservation, RunOutcome, RunRequest, RunResult, RunStore, freshness, run_once_reserved};
 use crate::project::Project;
 use crate::schema::snapshot::CandidateRef;
 use crate::validation::{ValidationPort, timestamp};
@@ -72,6 +72,11 @@ struct Job {
     /// not depend on thread-local or later host state.
     candidates: Option<PathBuf>,
     store: Option<PathBuf>,
+    /// A controlled Review run: exact host run identity, billed operation and measured stop.
+    reservation: Option<Reservation>,
+    /// The queue ownership this job was sent under. A stale job or stale completion must not
+    /// touch a newer reservation.
+    generation: JobGeneration,
 }
 
 struct Last {
@@ -80,10 +85,76 @@ struct Last {
     reason: Option<String>,
 }
 
+/// One queued or running job's ownership generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct JobGeneration(u64);
+
+#[derive(Clone, Copy)]
+struct OwnedJob {
+    generation: JobGeneration,
+    controlled: bool,
+}
+
+/// Queue-aware ownership book. A reservation exists before the send and stays until the worker
+/// that owns that generation finishes. A stale worker cannot clear a newer reservation because
+/// only the current generation may transition to idle.
+#[derive(Default)]
+pub(super) struct JobBook {
+    next: u64,
+    current: Option<OwnedJob>,
+}
+
+impl JobBook {
+    pub(super) fn reserve(&mut self, requested_controlled: bool) -> Result<(JobGeneration, bool), &'static str> {
+        let active = self.current.is_some();
+        let active_controlled = self.current.is_some_and(|job| job.controlled);
+        let plan = start_plan(active, active_controlled, requested_controlled)?;
+        self.next = self.next.saturating_add(1);
+        let generation = JobGeneration(self.next);
+        self.current = Some(OwnedJob { generation, controlled: requested_controlled });
+        Ok((generation, matches!(plan, StartPlan::ReplaceFree)))
+    }
+
+    pub(super) fn begin(&self, generation: JobGeneration) -> bool {
+        self.current.is_some_and(|job| job.generation == generation)
+    }
+
+    pub(super) fn finish(&mut self, generation: JobGeneration) -> bool {
+        if self.current.is_some_and(|job| job.generation == generation) {
+            self.current = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(super) fn rollback(&mut self, generation: JobGeneration) {
+        if self.current.is_some_and(|job| job.generation == generation) {
+            self.current = None;
+        }
+    }
+
+    fn is_idle(&self) -> bool {
+        self.current.is_none()
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_running(&self) -> bool {
+        self.current.is_some()
+    }
+    #[cfg(test)]
+    pub(super) fn is_idle_for_test(&self) -> bool {
+        self.is_idle()
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     cancel: AtomicBool,
+    /// A status mirror updated only by [JobBook] owners; stale completions leave it alone.
     running: AtomicBool,
+    /// Serializes queue ownership; the same lock covers reserve, send, worker begin and finish.
+    book: Mutex<JobBook>,
     active: Mutex<Option<String>>,
     last: Mutex<Option<Last>>,
     error: Mutex<Option<String>>,
@@ -123,13 +194,9 @@ fn service() -> Result<(Sender<Job>, Arc<Shared>), EngineError> {
 
 fn worker(rx: Receiver<Job>, shared: Arc<Shared>) {
     while let Ok(job) = rx.recv() {
-        shared.running.store(true, Ordering::Release);
-        shared.cancel.store(false, Ordering::Release);
-        if let Ok(mut revision) = shared.started_revision.lock() {
-            *revision = Some(job.request.candidate.source.revision.clone());
-        }
-        if let Ok(mut error) = shared.error.lock() {
-            *error = None;
+        if !worker_begin(&shared, job.generation, &job.request.candidate.source.revision) {
+            // A newer start invalidated this queued job; it must not run or touch newer state.
+            continue;
         }
         let result = run_job(&job, &shared);
         let last = match result {
@@ -141,17 +208,48 @@ fn worker(rx: Receiver<Job>, shared: Arc<Shared>) {
                 Last { run_id: String::new(), outcome: RunOutcome::Failed, reason: Some(message) }
             }
         };
-        if let Ok(mut last_slot) = shared.last.lock() {
-            *last_slot = Some(last);
-        }
-        if let Ok(mut active) = shared.active.lock() {
-            *active = None;
-        }
-        if let Ok(mut revision) = shared.started_revision.lock() {
-            *revision = None;
-        }
-        shared.running.store(false, Ordering::Release);
+        worker_end(&shared, job.generation, last);
     }
+}
+
+fn worker_begin(shared: &Shared, generation: JobGeneration, revision: &str) -> bool {
+    // Keep the book lock across the initial state writes. A concurrent start cannot reserve a
+    // newer generation until this owner has finished publishing its own start.
+    let Ok(book) = shared.book.lock() else { return false };
+    if !book.begin(generation) {
+        return false;
+    }
+    shared.cancel.store(false, Ordering::Release);
+    if let Ok(mut slot) = shared.started_revision.lock() {
+        *slot = Some(revision.to_string());
+    }
+    if let Ok(mut error) = shared.error.lock() {
+        *error = None;
+    }
+    shared.running.store(true, Ordering::Release);
+    drop(book);
+    true
+}
+
+fn worker_end(shared: &Shared, generation: JobGeneration, last: Last) {
+    // Keep the book lock across the completion writes too. A new reservation waits; once this
+    // owner clears its own generation, that reservation's state is the one that remains.
+    let Ok(mut book) = shared.book.lock() else { return };
+    if !book.finish(generation) {
+        // Stale completion: a newer reservation owns the queue/status. Never clear or overwrite it.
+        return;
+    }
+    if let Ok(mut last_slot) = shared.last.lock() {
+        *last_slot = Some(last);
+    }
+    if let Ok(mut active) = shared.active.lock() {
+        *active = None;
+    }
+    if let Ok(mut revision) = shared.started_revision.lock() {
+        *revision = None;
+    }
+    shared.running.store(false, Ordering::Release);
+    drop(book);
 }
 
 fn run_job(job: &Job, shared: &Arc<Shared>) -> Result<RunResult, String> {
@@ -172,7 +270,7 @@ fn run_job(job: &Job, shared: &Arc<Shared>) -> Result<RunResult, String> {
             *active = Some(run_id.to_string());
         }
     };
-    run_once(&port, &job.request, &shared.cancel, &on_submitted).map_err(|error| error.to_string())
+    run_once_reserved(&port, &job.request, &shared.cancel, &on_submitted, job.reservation.as_ref()).map_err(|error| error.to_string())
 }
 
 /// The validation store root a check uses unless a host chooses another.
@@ -206,6 +304,29 @@ fn internal(message: impl Into<String>) -> EngineError {
     EngineError::Internal("dfm service".into(), message.into())
 }
 
+/// What a start may do with the currently active job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StartPlan {
+    Start,
+    ReplaceFree,
+}
+
+/// A controlled request never replaces an active job. A free request may replace an ordinary
+/// free check but never an active controlled run. Keeping this pure makes the rule deterministic
+/// and testable; the service guards the check-and-send with `start_gate`.
+pub(super) fn start_plan(active: bool, active_controlled: bool, requested_controlled: bool) -> Result<StartPlan, &'static str> {
+    if !active {
+        return Ok(StartPlan::Start);
+    }
+    if active_controlled {
+        return Err("an active controlled Review run is never replaced by a free or controlled check");
+    }
+    if requested_controlled {
+        return Err("a controlled Review check never replaces an active check");
+    }
+    Ok(StartPlan::ReplaceFree)
+}
+
 fn open_project(session: &Session) -> Result<Project, EngineError> {
     let path = session.path.as_deref().ok_or_else(|| internal("the open design is not saved in a project"))?;
     Project::of(std::path::Path::new(path))
@@ -213,8 +334,24 @@ fn open_project(session: &Session) -> Result<Project, EngineError> {
         .ok_or_else(|| internal("the open design is not in a project; make or open a project first"))
 }
 
-/// Capture the snapshot and freeze the project in one operation, then queue the check.
+/// Capture the snapshot and freeze the project in one operation, then queue a free check.
 pub fn start(session: &mut Session) -> Result<CheckTicket, EngineError> {
+    start_with_reservation(session, None)
+}
+
+/// Queue one controlled Review check under the host's exact reservation. The host persists the
+/// run-to-operation mapping before calling; the worker submits and claims only that run.
+pub fn start_reserved(session: &mut Session, reservation: Reservation) -> Result<CheckTicket, EngineError> {
+    if reservation.run_id.is_empty() || reservation.operation_id.is_empty() {
+        return Err(internal("the controlled Review reservation has no run or operation identity"));
+    }
+    if crate::validation::now_ms() >= reservation.stop_at_ms {
+        return Err(internal("the controlled Review safe-stop bound has already passed"));
+    }
+    start_with_reservation(session, Some(reservation))
+}
+
+fn start_with_reservation(session: &mut Session, reservation: Option<Reservation>) -> Result<CheckTicket, EngineError> {
     let project = open_project(session)?;
     let frozen = project.freeze().map_err(|error| internal(error.to_string()))?;
     let captured = session.execute("document.snapshot.capture", &json!({}))?;
@@ -239,12 +376,26 @@ pub fn start(session: &mut Session) -> Result<CheckTicket, EngineError> {
         started_at: timestamp(crate::validation::now_ms()),
     };
     let (tx, shared) = service()?;
-    let replaces_running = shared.running.load(Ordering::Acquire);
+    let requested_controlled = reservation.is_some();
+    let mut book = shared.book.lock().map_err(|_| internal("the DFM queue book is poisoned"))?;
+    let (generation, replaces_running) = book.reserve(requested_controlled).map_err(internal)?;
     if replaces_running {
         cancel_shared(&shared);
     }
-    tx.send(Job { request, candidates: crate::cmd::candidate_store_root(), store: validation_store_root() })
-        .map_err(|_| internal("the DFM worker is not running"))?;
+    // Mark the queue active before the send. The worker can only begin this exact generation,
+    // and a concurrent start blocks on the same book lock until the send has happened.
+    shared.running.store(true, Ordering::Release);
+    let send = tx.send(Job { request, candidates: crate::cmd::candidate_store_root(), store: validation_store_root(), reservation, generation });
+    if send.is_err() {
+        // Send failure rolls back only this generation; a newer reservation (none can exist while
+        // the book is held) would never be cleared by this caller.
+        book.rollback(generation);
+        if book.is_idle() {
+            shared.running.store(false, Ordering::Release);
+        }
+        return Err(internal("the DFM worker is not running"));
+    }
+    drop(book);
     Ok(CheckTicket {
         project_id: frozen.project_id,
         project_name: frozen.project_name,
@@ -345,7 +496,10 @@ pub fn inspect(session: &mut Session, run: Option<&str>, model_digest: Option<&s
         });
     };
     let meta = store.load_meta(&run_id).map_err(|error| internal(error.to_string()))?;
-    let written = store.load_findings(&run_id).map_err(|error| internal(error.to_string()))?;
+    // A stopped or failed run has no `findings.json`; terminal metadata is still readable. Never
+    // turn a missing findings document into an unreadable run: the exact run and its outcome
+    // decide settlement, and a missing report stays explicit as `findings: None`.
+    let written = if store.is_complete(&run_id) { Some(store.load_findings(&run_id).map_err(|error| internal(error.to_string()))?) } else { None };
     let summary = store.load_summary(&run_id).ok();
     let current_revision = session.document_stamp().revision.to_string();
     let digest_owned = model_digest.map(str::to_string);
@@ -354,7 +508,7 @@ pub fn inspect(session: &mut Session, run: Option<&str>, model_digest: Option<&s
         (!meta.source_revision.is_empty() && meta.source_revision == current_revision).then_some(meta.candidate_digest.as_str())
     });
     let fresh = freshness(&meta, current_model, live_config.as_deref());
-    let findings_value = serde_json::to_value(&written).map_err(|error| internal(error.to_string()))?;
+    let findings_value = written.as_ref().map(serde_json::to_value).transpose().map_err(|error| internal(error.to_string()))?;
     Ok(Inspection {
         available: true,
         running: status().running,
@@ -365,7 +519,7 @@ pub fn inspect(session: &mut Session, run: Option<&str>, model_digest: Option<&s
         candidate_digest: Some(meta.candidate_digest),
         config_digest: Some(meta.config_digest),
         freshness: Some(freshness_name(fresh).to_string()),
-        findings: Some(findings_value),
+        findings: findings_value,
         summary,
         source_revision: (!meta.source_revision.is_empty()).then_some(meta.source_revision),
     })

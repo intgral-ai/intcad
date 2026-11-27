@@ -7,6 +7,16 @@
     "version": "69.0.0-alpha.4",
     "licence": "Apache-2.0",
     "sourceFilesInScript": [
+      "packages/playground-ui/src/domains/llm/clean-provider-id.ts",
+      "packages/playground-ui/src/domains/llm/model-picker-option.tsx",
+      "packages/playground-ui/src/domains/llm/model-picker-panel.tsx",
+      "packages/playground-ui/src/domains/llm/model-picker-provider-filter.tsx",
+      "packages/playground-ui/src/domains/llm/model-picker-provider-option.tsx",
+      "packages/playground-ui/src/domains/llm/model-picker.tsx",
+      "packages/playground-ui/src/domains/llm/models-dev-logo-slugs.ts",
+      "packages/playground-ui/src/domains/llm/provider-logo-monogram.tsx",
+      "packages/playground-ui/src/domains/llm/provider-logo.tsx",
+      "packages/playground-ui/src/domains/llm/provider-map-icon.tsx",
       "packages/playground-ui/src/ds/components/AgentIndicator/agent-glyph.tsx",
       "packages/playground-ui/src/ds/components/AgentIndicator/paint.ts",
       "packages/playground-ui/src/ds/components/AgentIndicator/poses.ts",
@@ -37,13 +47,21 @@
       "packages/playground-ui/src/ds/components/Combobox/combobox-parts.tsx",
       "packages/playground-ui/src/ds/components/Combobox/combobox-styles.ts",
       "packages/playground-ui/src/ds/components/Combobox/combobox.tsx",
+      "packages/playground-ui/src/ds/components/Command/command.tsx",
+      "packages/playground-ui/src/ds/components/Composer/composer-header.tsx",
       "packages/playground-ui/src/ds/components/Composer/composer.tsx",
       "packages/playground-ui/src/ds/components/Composer/use-composer-pointer.ts",
       "packages/playground-ui/src/ds/components/CopyButton/copy-button.tsx",
+      "packages/playground-ui/src/ds/components/Dialog/dialog-action.tsx",
+      "packages/playground-ui/src/ds/components/Dialog/dialog-context.ts",
+      "packages/playground-ui/src/ds/components/Dialog/dialog-shell.ts",
+      "packages/playground-ui/src/ds/components/Dialog/dialog.tsx",
       "packages/playground-ui/src/ds/components/DisclosureChevron/disclosure-chevron.tsx",
+      "packages/playground-ui/src/ds/components/Drawer/drawer.tsx",
       "packages/playground-ui/src/ds/components/DropdownMenu/dropdown-menu.tsx",
       "packages/playground-ui/src/ds/components/EmptyState/EmptyState.tsx",
       "packages/playground-ui/src/ds/components/Field/field-control-aria.ts",
+      "packages/playground-ui/src/ds/components/Field/field.tsx",
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-column.tsx",
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-error-msg.tsx",
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-help-text.tsx",
@@ -52,6 +70,7 @@
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block-message.tsx",
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-block.tsx",
       "packages/playground-ui/src/ds/components/FormFieldBlocks/block/field-error-id.ts",
+      "packages/playground-ui/src/ds/components/Input/input.tsx",
       "packages/playground-ui/src/ds/components/MarkdownRenderer/arriving.ts",
       "packages/playground-ui/src/ds/components/MarkdownRenderer/blocks.ts",
       "packages/playground-ui/src/ds/components/MarkdownRenderer/markdown-renderer.tsx",
@@ -72,31 +91,85 @@
       "packages/playground-ui/src/ds/components/Notice/notice-message.tsx",
       "packages/playground-ui/src/ds/components/Notice/notice-root.tsx",
       "packages/playground-ui/src/ds/components/PendingIndicator/pending-indicator.tsx",
+      "packages/playground-ui/src/ds/components/Popover/popover.tsx",
       "packages/playground-ui/src/ds/components/ProductAvatar/product-identity.ts",
       "packages/playground-ui/src/ds/components/ScrollArea/scroll-area.tsx",
       "packages/playground-ui/src/ds/components/Select/select.tsx",
       "packages/playground-ui/src/ds/components/Shimmer/shimmer.tsx",
+      "packages/playground-ui/src/ds/components/StatusIndicators/status-dot-styles.ts",
+      "packages/playground-ui/src/ds/components/StatusIndicators/status.tsx",
       "packages/playground-ui/src/ds/components/Tabs/tabs-context.ts",
       "packages/playground-ui/src/ds/components/Tabs/tabs-list.tsx",
       "packages/playground-ui/src/ds/components/Tabs/tabs-root.tsx",
       "packages/playground-ui/src/ds/components/Tabs/tabs-tab.tsx",
       "packages/playground-ui/src/ds/components/Textarea/textarea.tsx",
       "packages/playground-ui/src/ds/components/ThemeProvider/theme-context.ts",
+      "packages/playground-ui/src/ds/components/ThinkingLevel/thinking-level-brain.tsx",
+      "packages/playground-ui/src/ds/components/ThinkingLevel/thinking-level-icon.tsx",
+      "packages/playground-ui/src/ds/components/ThinkingLevel/thinking-level-picker.tsx",
+      "packages/playground-ui/src/ds/components/ThinkingLevel/thinking-level-ramp.tsx",
+      "packages/playground-ui/src/ds/components/ThinkingLevel/use-thinking-level-stop.ts",
+      "packages/playground-ui/src/ds/components/Tooltip/info-tooltip.tsx",
       "packages/playground-ui/src/ds/components/Tooltip/tooltip.tsx",
       "packages/playground-ui/src/ds/components/Txt/Txt.tsx",
       "packages/playground-ui/src/ds/components/ai/activity/activity.tsx",
+      "packages/playground-ui/src/ds/components/ai/activity/presets/message-preview.ts",
       "packages/playground-ui/src/ds/components/ai/activity/use-relative-paths.ts",
       "packages/playground-ui/src/ds/components/ai/task-list/task-graph-node.ts",
       "packages/playground-ui/src/ds/components/ai/task-list/task-graph.tsx",
       "packages/playground-ui/src/ds/components/ai/task-list/task-list.tsx",
       "packages/playground-ui/src/ds/components/ai/task-list/use-focused-row-scroll.ts",
+      "packages/playground-ui/src/ds/components/ai/tool-call/ansi.ts",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-arguments.tsx",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-body.tsx",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-edit.tsx",
       "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-group.tsx",
       "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-mono.tsx",
       "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-output.tsx",
+      "packages/playground-ui/src/ds/components/ai/tool-call/tool-call-view.ts",
       "packages/playground-ui/src/ds/components/ai/tool-call/tool-presentation.ts",
       "packages/playground-ui/src/ds/components/ai/tool-call/tool-styles.ts",
+      "packages/playground-ui/src/ds/icons/AmazonIcon.tsx",
+      "packages/playground-ui/src/ds/icons/AnthropicChatIcon.tsx",
+      "packages/playground-ui/src/ds/icons/AnthropicMessagesIcon.tsx",
+      "packages/playground-ui/src/ds/icons/AzureIcon.tsx",
+      "packages/playground-ui/src/ds/icons/ByteDanceIcon.tsx",
+      "packages/playground-ui/src/ds/icons/ClaudeIcon.tsx",
+      "packages/playground-ui/src/ds/icons/CohereBrandIcon.tsx",
+      "packages/playground-ui/src/ds/icons/CohereIcon.tsx",
+      "packages/playground-ui/src/ds/icons/DeepSeekIcon.tsx",
+      "packages/playground-ui/src/ds/icons/FireworksIcon.tsx",
+      "packages/playground-ui/src/ds/icons/GeminiIcon.tsx",
+      "packages/playground-ui/src/ds/icons/GoogleIcon.tsx",
+      "packages/playground-ui/src/ds/icons/GroqIcon.tsx",
       "packages/playground-ui/src/ds/icons/Icon.tsx",
+      "packages/playground-ui/src/ds/icons/LongCatIcon.tsx",
+      "packages/playground-ui/src/ds/icons/MastraIcon.tsx",
+      "packages/playground-ui/src/ds/icons/MetaIcon.tsx",
+      "packages/playground-ui/src/ds/icons/MicrosoftIcon.tsx",
+      "packages/playground-ui/src/ds/icons/MinimaxIcon.tsx",
+      "packages/playground-ui/src/ds/icons/MistralIcon.tsx",
+      "packages/playground-ui/src/ds/icons/MoonshotIcon.tsx",
+      "packages/playground-ui/src/ds/icons/MorphIcon.tsx",
+      "packages/playground-ui/src/ds/icons/NetlifyIcon.tsx",
+      "packages/playground-ui/src/ds/icons/NousResearchIcon.tsx",
+      "packages/playground-ui/src/ds/icons/NovaIcon.tsx",
+      "packages/playground-ui/src/ds/icons/NvidiaIcon.tsx",
+      "packages/playground-ui/src/ds/icons/OpenRouterIcon.tsx",
+      "packages/playground-ui/src/ds/icons/OpenaiChatIcon.tsx",
+      "packages/playground-ui/src/ds/icons/PerplexityIcon.tsx",
+      "packages/playground-ui/src/ds/icons/QwenIcon.tsx",
+      "packages/playground-ui/src/ds/icons/SakanaIcon.tsx",
+      "packages/playground-ui/src/ds/icons/StepFunIcon.tsx",
+      "packages/playground-ui/src/ds/icons/TencentIcon.tsx",
+      "packages/playground-ui/src/ds/icons/TypesafeIcon.tsx",
+      "packages/playground-ui/src/ds/icons/UpstageIcon.tsx",
+      "packages/playground-ui/src/ds/icons/XGroqIcon.tsx",
+      "packages/playground-ui/src/ds/icons/XaiIcon.tsx",
+      "packages/playground-ui/src/ds/icons/ZaiIcon.tsx",
       "packages/playground-ui/src/ds/icons/icon-size-classes.ts",
+      "packages/playground-ui/src/ds/new/settings/settings-container.tsx",
+      "packages/playground-ui/src/ds/new/settings/settings-header.tsx",
       "packages/playground-ui/src/ds/primitives/control-icon.ts",
       "packages/playground-ui/src/ds/primitives/control-size.ts",
       "packages/playground-ui/src/ds/primitives/floating.ts",
@@ -121,11 +194,16 @@
       "packages/playground-ui/src/ds/tokens/sizes.ts",
       "packages/playground-ui/src/hooks/use-autoscroll.tsx",
       "packages/playground-ui/src/hooks/use-copy-to-clipboard.ts",
+      "packages/playground-ui/src/hooks/use-is-mobile.ts",
+      "packages/playground-ui/src/hooks/use-isomorphic-layout-effect.ts",
+      "packages/playground-ui/src/hooks/use-measured-auto-height.ts",
       "packages/playground-ui/src/lib/merge-refs.ts",
       "packages/playground-ui/src/lib/string.ts",
       "packages/playground-ui/src/lib/toast-api.tsx",
+      "packages/playground-ui/src/lib/truncate-string.ts",
       "packages/playground-ui/src/lib/tw-merge-config.ts",
-      "packages/playground-ui/src/lib/utils.ts"
+      "packages/playground-ui/src/lib/utils.ts",
+      "packages/playground-ui/src/utils/model.ts"
     ],
     "stylesheetsImported": [
       "packages/playground-ui/components.css",
@@ -185,7 +263,7 @@
       "name": "@base-ui/react",
       "version": "1.9.0",
       "licence": "MIT",
-      "modulesInScript": 256,
+      "modulesInScript": 321,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -416,10 +494,163 @@
       ]
     },
     {
+      "name": "@radix-ui/primitive",
+      "version": "1.2.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-compose-refs",
+      "version": "1.1.5",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-context",
+      "version": "1.3.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-dialog",
+      "version": "1.3.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-dismissable-layer",
+      "version": "1.2.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-focus-guards",
+      "version": "1.2.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-focus-scope",
+      "version": "1.3.1",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-id",
+      "version": "1.1.4",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-portal",
+      "version": "1.2.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-presence",
+      "version": "1.1.11",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-primitive",
+      "version": "2.2.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-slot",
+      "version": "1.5.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-use-callback-ref",
+      "version": "1.1.5",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-use-controllable-state",
+      "version": "1.3.0",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-use-effect-event",
+      "version": "0.0.5",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "@radix-ui/react-use-layout-effect",
+      "version": "1.1.4",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "@ungap/structured-clone",
       "version": "1.4.0",
       "licence": "ISC",
       "modulesInScript": 3,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "aria-hidden",
+      "version": "1.2.6",
+      "licence": "MIT",
+      "modulesInScript": 1,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -458,6 +689,15 @@
       "modulesInScript": 1,
       "licenceFiles": [
         "license"
+      ]
+    },
+    {
+      "name": "cmdk",
+      "version": "1.1.1",
+      "licence": "MIT",
+      "modulesInScript": 2,
+      "licenceFiles": [
+        "LICENSE.md"
       ]
     },
     {
@@ -508,6 +748,15 @@
     {
       "name": "extend",
       "version": "3.0.2",
+      "licence": "MIT",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "get-nonce",
+      "version": "1.0.1",
       "licence": "MIT",
       "modulesInScript": 1,
       "licenceFiles": [
@@ -572,7 +821,7 @@
       "name": "lucide-react",
       "version": "1.67.0",
       "licence": "ISC",
-      "modulesInScript": 45,
+      "modulesInScript": 54,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -947,6 +1196,31 @@
       ]
     },
     {
+      "name": "react-remove-scroll-bar",
+      "version": "2.3.8",
+      "licence": "MIT",
+      "modulesInScript": 3,
+      "licenceFiles": []
+    },
+    {
+      "name": "react-remove-scroll",
+      "version": "2.7.2",
+      "licence": "MIT",
+      "modulesInScript": 7,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "react-style-singleton",
+      "version": "2.2.3",
+      "licence": "MIT",
+      "modulesInScript": 3,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "react",
       "version": "19.3.1",
       "licence": "MIT",
@@ -1073,6 +1347,15 @@
       ]
     },
     {
+      "name": "tslib",
+      "version": "2.9.1",
+      "licence": "0BSD",
+      "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE.txt"
+      ]
+    },
+    {
       "name": "unified",
       "version": "11.0.5",
       "licence": "MIT",
@@ -1127,10 +1410,28 @@
       ]
     },
     {
+      "name": "use-callback-ref",
+      "version": "1.3.3",
+      "licence": "MIT",
+      "modulesInScript": 3,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
       "name": "use-debounce",
       "version": "10.1.1",
       "licence": "MIT",
       "modulesInScript": 1,
+      "licenceFiles": [
+        "LICENSE"
+      ]
+    },
+    {
+      "name": "use-sidecar",
+      "version": "1.1.3",
+      "licence": "MIT",
+      "modulesInScript": 2,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -1195,16 +1496,16 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1515052,
-      "sha256": "0647260127baf1af8f699af1d50694b7c90a153a46c179e806460e481fc42c29"
+      "bytes": 1768319,
+      "sha256": "879b9fcaf0b713fbc61109fee5b6d6f439f449f87a3e690ee96f06b31f1b4e83"
     },
     "index.html": {
       "bytes": 822,
       "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
     },
     "style.css": {
-      "bytes": 346209,
-      "sha256": "7c99657d3be54d740a460c9702ab7bb524ad0ae22f6c37c35d3996e81dbcafed"
+      "bytes": 353858,
+      "sha256": "139c97cb47e633862246a5180c4995673eab6ed034cc265a747b3470cd59b139"
     }
   }
 }

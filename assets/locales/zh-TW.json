@@ -4192,7 +4192,7 @@
   "ui.agent_chat_limit": "代理已達到每條訊息 {limit} 項變更的上限。再傳送一條訊息可讓它繼續。",
   "ui.agent_chat_login_found": "已找到登入資訊",
   "ui.agent_chat_minimize": "最小化為細條",
-  "ui.agent_chat_mode_all": "全部",
+  "ui.agent_chat_mode_all": "自動",
   "ui.agent_chat_mode_ask": "詢問",
   "ui.agent_chat_mode_edits": "編輯",
   "ui.agent_chat_model_custom": "使用自訂：{model}",

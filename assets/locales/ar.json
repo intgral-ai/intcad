@@ -4536,7 +4536,7 @@
   "ui.agent_chat_limit": "بلغ الوكيل حد {limit} تغييرات للرسالة الواحدة. أرسل رسالة أخرى ليتابع.",
   "ui.agent_chat_login_found": "تم العثور على تسجيل دخول",
   "ui.agent_chat_minimize": "تصغير إلى شريط",
-  "ui.agent_chat_mode_all": "الكل",
+  "ui.agent_chat_mode_all": "تلقائي",
   "ui.agent_chat_mode_ask": "السؤال",
   "ui.agent_chat_mode_edits": "التعديلات",
   "ui.agent_chat_model_custom": "استخدام المخصص: {model}",

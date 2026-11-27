@@ -4536,7 +4536,7 @@
   "ui.agent_chat_limit": "AI Agent đã đạt giới hạn {limit} thay đổi cho một tin nhắn. Hãy gửi tin nhắn tiếp theo để tiếp tục.",
   "ui.agent_chat_login_found": "đã tìm thấy thông tin đăng nhập",
   "ui.agent_chat_minimize": "Thu nhỏ thành thanh công cụ",
-  "ui.agent_chat_mode_all": "Tất cả",
+  "ui.agent_chat_mode_all": "Tự động",
   "ui.agent_chat_mode_ask": "Hỏi",
   "ui.agent_chat_mode_edits": "Chỉnh sửa",
   "ui.agent_chat_model_custom": "Dùng tùy chỉnh: {model}",

@@ -1,0 +1,7 @@
+{
+  "package": "@mastra/code-sdk",
+  "version": "1.19.1",
+  "file": "dist/acp/runtime.js",
+  "sha256": "fc06abe4d93c8062ae4e60ec41455d0312b45b39e0a6d7e52e43c2add669f22f",
+  "adaptedIn": "packages/mastra-runtime/agent/session.mjs"
+}

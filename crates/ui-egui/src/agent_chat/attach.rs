@@ -32,8 +32,8 @@ const MAX_TEXT_BYTES: u64 = 256 * 1024;
 const MAX_PDF_BYTES: u64 = 12 * 1024 * 1024;
 /// A picture's longer side is scaled down to this before it is sent.
 pub const MAX_SIDE: u32 = 2048;
-/// Largest picture sent, as it came or re-encoded: its base64 (a third larger) stays under 5 MB,
-/// so eight of them still fit in a prompt.
+/// Largest picture sent, as it came or re-encoded: its base64 is at most 5 MB.
+/// The transport also limits the total encoded message.
 pub const MAX_SENT_BYTES: usize = 3_750_000;
 /// A picture is not halved below this to fit; past it, it is refused.
 const MIN_SIDE: u32 = 64;
