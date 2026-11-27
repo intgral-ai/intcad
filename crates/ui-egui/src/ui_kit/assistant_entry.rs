@@ -26,7 +26,14 @@ pub(crate) fn assistant_entry(ui: &egui::Ui, response: &Response, state: Assista
         ring = t.app_bar.blend(fill);
     }
     icons::paint_app_bar(ui.painter(), at.shrink(t.space_6 + 1.0), "assistant", 1.0);
-    let c = egui::pos2(at.right() - t.space_8 - 0.5, at.top() + t.space_10 - 0.5);
+    assistant_entry_mark(ui, egui::pos2(at.right() - t.space_8 - 0.5, at.top() + t.space_10 - 0.5), mark, ring, animate);
+}
+
+/// The status mark alone, centred on `c` over a surface of colour `ring`, for an entry point the
+/// caller paints itself (the right rail's row).
+/// Tokens: agent_ok/busy, warning/error, app_bar, font_badge.
+pub(crate) fn assistant_entry_mark(ui: &egui::Ui, c: egui::Pos2, mark: AssistantEntryState, ring: egui::Color32, animate: bool) {
+    let t = Tokens::get();
     match mark {
         AssistantEntryState::Quiet => {}
         AssistantEntryState::Ready | AssistantEntryState::NeedsAuth | AssistantEntryState::Stopped => {

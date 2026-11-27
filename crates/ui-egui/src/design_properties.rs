@@ -603,8 +603,8 @@ mod tests {
         // The card settles its size over a few frames: click where the button ends up.
         h.frames(3);
         let [x, y] = h.widget("Copy matrix").expect("the Copy matrix button");
-        let (request, _reply) = crate::control::ControlRequest::new("ui.click", json!({"x": x, "y": y}));
-        crate::control::handle(&mut h.app, &h.ctx, &request);
+        let (mut request, _reply) = crate::control::ControlRequest::trusted_gui("ui.click", json!({"x": x, "y": y}));
+        crate::control::handle(&mut h.app, &h.ctx, &mut request);
         let mut copied = Vec::new();
         for _ in 0..4 {
             h.frame();

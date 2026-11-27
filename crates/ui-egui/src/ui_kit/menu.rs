@@ -9,19 +9,49 @@ pub(crate) struct Menu;
 /// that crosses a neighbouring row keeps it open.
 pub(crate) const SUBMENU_CLOSE_DELAY: f64 = 0.3;
 
+/// A popup hosting secondary controls (copy feedback, a manual disclosure) stays open while the
+/// person clicks inside it. Other menus keep egui's close-on-click default.
+pub(crate) const KEEP_OPEN_ON_CLICK: egui::PopupCloseBehavior = egui::PopupCloseBehavior::CloseOnClickOutside;
+
+fn keep_open_marker() -> egui::Id {
+    egui::Id::new("sc_keep_open_menu")
+}
+
 impl Menu {
     pub(crate) fn context<R>(response: &Response, add: impl FnOnce(&mut Ui) -> R) -> Option<egui::InnerResponse<R>> {
         Container::new(&response.ctx, Surface::Popup).context_menu(response).frame(Self::frame()).show(add)
     }
 
     pub(crate) fn button<R>(ui: &mut Ui, label: impl Into<egui::WidgetText>, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<Option<R>> {
-        Self::button_with(
+        Self::button_with_policy(ui, label, add, false)
+    }
+
+    /// A menu row whose popup must remain open while its contents are used. The account entry
+    /// uses this so copy feedback and the manual address survive the click that reveals them.
+    pub(crate) fn button_keep_open<R>(
+        ui: &mut Ui,
+        label: impl Into<egui::WidgetText>,
+        add: impl FnOnce(&mut Ui) -> R,
+    ) -> egui::InnerResponse<Option<R>> {
+        Self::button_with_policy(ui, label, add, true)
+    }
+
+    fn button_with_policy<R>(
+        ui: &mut Ui,
+        label: impl Into<egui::WidgetText>,
+        add: impl FnOnce(&mut Ui) -> R,
+        keep_open: bool,
+    ) -> egui::InnerResponse<Option<R>> {
+        let label = label.into();
+        Self::button_at(
             ui,
-            |ui, nested| {
-                let button = egui::Button::new(label.into());
+            move |ui, nested| {
+                let button = egui::Button::new(label);
                 ui.add(if nested { button.right_text(egui::menu::SubMenuButton::RIGHT_ARROW) } else { button })
             },
             add,
+            false,
+            keep_open,
         )
     }
 
@@ -31,7 +61,7 @@ impl Menu {
 
     /// A row whose popup opens beside it, on the left only when the right has no room (#8267).
     pub(crate) fn item_button<R>(ui: &mut Ui, item: &MenuItem<'_>, add: impl FnOnce(&mut Ui) -> R) -> egui::InnerResponse<Option<R>> {
-        Self::button_at(ui, |ui, _| item.show(ui), add, true)
+        Self::button_at(ui, |ui, _| item.show(ui), add, true, false)
     }
 
     pub(crate) fn button_with<R>(
@@ -39,7 +69,7 @@ impl Menu {
         button: impl FnOnce(&mut Ui, bool) -> Response,
         add: impl FnOnce(&mut Ui) -> R,
     ) -> egui::InnerResponse<Option<R>> {
-        Self::button_at(ui, button, add, false)
+        Self::button_at(ui, button, add, false, false)
     }
 
     fn button_at<R>(
@@ -47,6 +77,7 @@ impl Menu {
         button: impl FnOnce(&mut Ui, bool) -> Response,
         add: impl FnOnce(&mut Ui) -> R,
         beside: bool,
+        keep_open: bool,
     ) -> egui::InnerResponse<Option<R>> {
         let previous = ui.style().clone();
         let frame = Self::frame();
@@ -80,11 +111,8 @@ impl Menu {
         };
         let popup = if nested {
             let submenu = Container::new(ui.ctx(), Surface::Popup).submenu();
-            let submenu = if opening_press {
-                submenu.config(egui::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside))
-            } else {
-                submenu
-            };
+            let submenu =
+                if opening_press || keep_open { submenu.config(egui::menu::MenuConfig::new().close_behavior(KEEP_OPEN_ON_CLICK)) } else { submenu };
             let slot = super::container::BackingSlot::reserve(ui.ctx(), egui::LayerId::new(egui::Order::Foreground, popup_id));
             submenu.show(ui, &response, |ui| match slot {
                 Some(slot) => slot.body(ui, content),
@@ -98,11 +126,43 @@ impl Menu {
             let at = Self::flyout_at(ui.ctx().content_rect(), response.interact_rect, size, false);
             popup.anchor(at).align(egui::RectAlign::BOTTOM_START).align_alternatives(&[]).gap(0.0).show(content)
         } else {
-            Container::new(ui.ctx(), Surface::Popup).menu(&response).frame(frame).show(content)
+            let popup = Container::new(ui.ctx(), Surface::Popup).menu(&response).frame(frame);
+            let popup = if keep_open { popup.close_behavior(KEEP_OPEN_ON_CLICK) } else { popup };
+            popup.show(content)
         };
+        let child = popup.as_ref().map(|r| (r.response.rect, r.response.layer_id));
+        if keep_open {
+            // The child shares the custom parent's foreground order. Mark it as that layer's
+            // sublayer so it paints and receives hit tests above the rows it overlaps, even after
+            // the parent area is moved to top by a later click.
+            if let Some((_, layer)) = child
+                && layer.order == ui.layer_id().order
+            {
+                ui.ctx().set_sublayer(ui.layer_id(), layer);
+            }
+            Self::mark_keep_open(ui.ctx(), child.map(|(rect, _)| rect));
+        }
         let response = egui::InnerResponse { response, inner: popup.map(|r| r.inner) };
         ui.set_style(previous);
         response
+    }
+
+    fn mark_keep_open(ctx: &egui::Context, child_rect: Option<Rect>) {
+        let pass = ctx.cumulative_pass_nr();
+        ctx.data_mut(|data| data.insert_temp(keep_open_marker(), (pass, child_rect)));
+    }
+
+    /// A click inside the keep-open child popup in this pass. Parent menus that close on an outside
+    /// click must stay open only for that interaction; a previous pass's response or a click
+    /// elsewhere never suppresses dismissal or an explicit File action.
+    pub(crate) fn keeps_parent_open(ctx: &egui::Context) -> bool {
+        let pass = ctx.cumulative_pass_nr();
+        let marker = ctx.data(|data| data.get_temp::<(u64, Option<Rect>)>(keep_open_marker()));
+        let Some(rect) = marker.filter(|(marked, _)| *marked == pass).and_then(|(_, rect)| rect) else {
+            return false;
+        };
+        let click = ctx.input(|i| i.pointer.any_click().then(|| i.pointer.interact_pos()).flatten());
+        click.is_some_and(|at| rect.contains(at))
     }
 
     /// Hovering a row opens its flyout, like the context menu's. The open flyout stays while the

@@ -1,0 +1,50 @@
+{
+  "en": {
+    "ui.files_delete_count_macos": "Move {n} items to the Trash? {names}",
+    "ui.files_move_to_trash_macos": "Move to Trash",
+    "ui.files_no_associated_app": "No app is set to open this file.",
+    "ui.files_trash_unavailable_macos": "This location has no usable Trash. Deleting for good cannot be undone."
+  },
+  "ar": {
+    "ui.files_delete_count_macos": "نقل {n} عناصر إلى سلة المحذوفات؟ {names}",
+    "ui.files_move_to_trash_macos": "نقل إلى سلة المحذوفات",
+    "ui.files_no_associated_app": "لا يوجد تطبيق مخصص لفتح هذا الملف.",
+    "ui.files_trash_unavailable_macos": "لا توجد سلة محذوفات قابلة للاستخدام في هذا الموقع. لا يمكن التراجع عن الحذف النهائي."
+  },
+  "de": {
+    "ui.files_delete_count_macos": "{n} Einträge in den Papierkorb? {names}",
+    "ui.files_move_to_trash_macos": "In den Papierkorb",
+    "ui.files_no_associated_app": "Für diese Datei ist kein Programm zum Öffnen festgelegt.",
+    "ui.files_trash_unavailable_macos": "An diesem Ort gibt es keinen nutzbaren Papierkorb. Endgültiges Löschen lässt sich nicht rückgängig machen."
+  },
+  "he": {
+    "ui.files_delete_count_macos": "להעביר {n} פריטים לסל האשפה? {names}",
+    "ui.files_move_to_trash_macos": "העבר לסל האשפה",
+    "ui.files_no_associated_app": "לא הוגדרה אפליקציה לפתיחת קובץ זה.",
+    "ui.files_trash_unavailable_macos": "במיקום הזה אין סל אשפה שמיש. מחיקה לצמיתות אינה ניתנת לביטול."
+  },
+  "ja": {
+    "ui.files_delete_count_macos": "{n} 個の項目をゴミ箱へ移動しますか？{names}",
+    "ui.files_move_to_trash_macos": "ゴミ箱へ移動",
+    "ui.files_no_associated_app": "このファイルを開くアプリが設定されていません。",
+    "ui.files_trash_unavailable_macos": "この場所には使えるゴミ箱がありません。完全に削除すると元に戻せません。"
+  },
+  "ko": {
+    "ui.files_delete_count_macos": "{n}개 항목을 휴지통으로 옮길까요? {names}",
+    "ui.files_move_to_trash_macos": "휴지통으로 이동",
+    "ui.files_no_associated_app": "이 파일을 열 앱이 지정되지 않았습니다.",
+    "ui.files_trash_unavailable_macos": "이 위치에는 사용할 수 있는 휴지통이 없습니다. 영구 삭제는 되돌릴 수 없습니다."
+  },
+  "vi": {
+    "ui.files_delete_count_macos": "Chuyển {n} mục vào thùng rác? {names}",
+    "ui.files_move_to_trash_macos": "Chuyển vào thùng rác",
+    "ui.files_no_associated_app": "Chưa có ứng dụng nào được đặt để mở tệp này.",
+    "ui.files_trash_unavailable_macos": "Vị trí này không có thùng rác khả dụng. Xóa vĩnh viễn không thể hoàn tác."
+  },
+  "zh": {
+    "ui.files_delete_count_macos": "将 {n} 个项目移到废纸篓？{names}",
+    "ui.files_move_to_trash_macos": "移到废纸篓",
+    "ui.files_no_associated_app": "未设置可打开此文件的应用。",
+    "ui.files_trash_unavailable_macos": "此位置没有可用的废纸篓。永久删除后无法撤销。"
+  }
+}

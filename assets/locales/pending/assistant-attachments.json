@@ -1,0 +1,26 @@
+{
+  "en": {
+    "ui.agent_chat_problem_attachments": "The model selected on {name} cannot read the pictures or PDFs in this message or chat. Pick a compatible model, remove the new attachments, or start a new chat if the files are in the chat history."
+  },
+  "ar": {
+    "ui.agent_chat_problem_attachments": "لا يستطيع النموذج المحدّد في {name} قراءة الصور أو ملفات PDF في هذه الرسالة أو المحادثة. اختر نموذجًا متوافقًا، أو أزل المرفقات الجديدة، أو ابدأ محادثة جديدة إذا كانت الملفات في سجل المحادثة."
+  },
+  "de": {
+    "ui.agent_chat_problem_attachments": "Das bei {name} gewählte Modell kann die Bilder oder PDFs in dieser Nachricht oder im Chat nicht lesen. Wähle ein kompatibles Modell, entferne die neuen Anhänge oder starte einen neuen Chat, wenn die Dateien im Chatverlauf stehen."
+  },
+  "he": {
+    "ui.agent_chat_problem_attachments": "המודל שנבחר ב־{name} אינו יכול לקרוא את התמונות או קובצי ה־PDF בהודעה או בשיחה. יש לבחור מודל תואם, להסיר את הקבצים המצורפים החדשים או לפתוח שיחה חדשה אם הקבצים נמצאים בהיסטוריית השיחה."
+  },
+  "ja": {
+    "ui.agent_chat_problem_attachments": "{name} で選択中のモデルは、このメッセージやチャット内の画像や PDF を読めません。対応するモデルを選ぶか、新しい添付を外してください。ファイルが履歴にある場合は、新しいチャットを始めてください。"
+  },
+  "ko": {
+    "ui.agent_chat_problem_attachments": "{name}에서 선택한 모델은 이 메시지나 채팅의 이미지 또는 PDF를 읽을 수 없습니다. 호환되는 모델을 선택하거나 새 첨부 파일을 제거하세요. 파일이 채팅 기록에 있다면 새 채팅을 시작하세요."
+  },
+  "vi": {
+    "ui.agent_chat_problem_attachments": "Mô hình đã chọn trên {name} không đọc được hình ảnh hoặc PDF trong tin nhắn hay cuộc trò chuyện này. Hãy chọn mô hình tương thích, gỡ tệp mới đính kèm hoặc bắt đầu cuộc trò chuyện mới nếu tệp nằm trong lịch sử."
+  },
+  "zh": {
+    "ui.agent_chat_problem_attachments": "「{name}」中选定的模型无法读取这条消息或聊天中的图片或 PDF。请选择兼容的模型、移除新附件，或在文件已进入聊天记录时开启新聊天。"
+  }
+}

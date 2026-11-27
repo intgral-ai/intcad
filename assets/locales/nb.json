@@ -4186,7 +4186,7 @@
   "ui.agent_chat_limit": "Agenten nådde grensen på {limit} endringer for én melding. Send en ny melding for å la den fortsette.",
   "ui.agent_chat_login_found": "innlogging funnet",
   "ui.agent_chat_minimize": "Minimer til en stripe",
-  "ui.agent_chat_mode_all": "Alle",
+  "ui.agent_chat_mode_all": "Auto",
   "ui.agent_chat_mode_ask": "Spør",
   "ui.agent_chat_mode_edits": "Endringer",
   "ui.agent_chat_model_custom": "Bruk egendefinert modell: {model}",
