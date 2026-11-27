@@ -156,7 +156,12 @@ pub struct Login {
 /// Why the last sign-in could not finish.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoginProblemKind {
+    /// The local port the browser calls back to is taken.
     Port,
+    /// The system would not open that port.
+    Listen,
+    /// The person did not come back from the browser in the sign-in's time.
+    Timeout,
     Offline,
     Failed,
 }
@@ -165,16 +170,44 @@ impl LoginProblemKind {
     pub fn id(self) -> &'static str {
         match self {
             LoginProblemKind::Port => "port",
+            LoginProblemKind::Listen => "listen",
+            LoginProblemKind::Timeout => "timeout",
             LoginProblemKind::Offline => "offline",
             LoginProblemKind::Failed => "failed",
         }
     }
 }
 
+/// Who holds the port a sign-in needs, as far as the agent could tell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PortHolder {
+    /// A sign-in of another design of this app.
+    Here,
+    /// A sign-in of another Intcad.
+    Intcad,
+    /// Another program, by its name.
+    Program(String),
+}
+
+/// Longest program name and system error code read from a sign-in's problem (characters).
+const MAX_WORD: usize = 64;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoginProblem {
     pub id: String,
     pub kind: LoginProblemKind,
+    /// For [`LoginProblemKind::Port`]: who holds it, when the agent found out.
+    pub holder: Option<PortHolder>,
+    /// For [`LoginProblemKind::Listen`]: the port and the system's code for the refusal (`EACCES`).
+    pub port: Option<u16>,
+    pub code: Option<String>,
+}
+
+/// A short word from the agent for a sentence: printable, cut to size, `None` when empty.
+fn word(value: &Value, name: &str) -> Option<String> {
+    let word: String = value.get(name)?.as_str()?.chars().filter(|c| !c.is_control()).take(MAX_WORD).collect();
+    let word = word.trim();
+    (!word.is_empty()).then(|| word.to_string())
 }
 
 /// Everything the agent says about its connections, as it last said it.
@@ -244,13 +277,24 @@ impl Snapshot {
             })
         });
         let problem = value.get("problem").filter(|problem| problem.is_object()).and_then(|problem| {
+            let holder = problem.get("holder").and_then(|holder| match holder.get("kind").and_then(Value::as_str) {
+                Some("here") => Some(PortHolder::Here),
+                Some("intcad") => Some(PortHolder::Intcad),
+                Some("program") => word(holder, "name").map(PortHolder::Program),
+                _ => None,
+            });
             Some(LoginProblem {
                 id: text(problem, "id").filter(|id| !id.is_empty())?,
                 kind: match problem.get("kind").and_then(Value::as_str) {
                     Some("port") => LoginProblemKind::Port,
+                    Some("listen") => LoginProblemKind::Listen,
+                    Some("timeout") => LoginProblemKind::Timeout,
                     Some("offline") => LoginProblemKind::Offline,
                     _ => LoginProblemKind::Failed,
                 },
+                holder,
+                port: problem.get("port").and_then(Value::as_u64).and_then(|port| u16::try_from(port).ok()),
+                code: word(problem, "code"),
             })
         });
         let dates = value
@@ -739,6 +783,8 @@ pub(crate) struct Conn {
     pub active: bool,
     /// The agent's last snapshot (`None`: it has sent none since it started).
     pub snapshot: Option<Snapshot>,
+    /// A sign-in was asked for and no snapshot has come since: it may be under way already.
+    login_asked: bool,
     /// What the last action could not do: the catalog id of its sentence. It is worded where it
     /// is shown, as a failed turn is, because it can be set outside a frame.
     pub error: Option<&'static str>,
@@ -793,6 +839,7 @@ impl Conn {
         }
         self.snapshot = Some(snapshot);
         self.refused = false;
+        self.login_asked = false;
     }
 
     /// Keep the message of a turn that failed for `problem`.
@@ -1019,12 +1066,44 @@ fn page(conn: &Conn) -> Value {
         "keys": keys,
         "custom": custom,
         "login": login,
-        "problem": snapshot.problem.as_ref().map(|problem| json!({"id": problem.id, "kind": problem.kind.id()})),
+        "problem": snapshot.problem.as_ref().map(|problem| json!({"id": problem.id, "kind": problem.kind.id(), "text": problem_text(problem)})),
         "error": conn.error.map(tr),
         "keySaves": conn.key_saves,
         "dates": snapshot.dates,
         "connected": snapshot.connected(),
     })
+}
+
+/// Why a sign-in could not finish, as the page says it under the plan's row.
+fn problem_text(problem: &LoginProblem) -> String {
+    match (problem.kind, &problem.holder) {
+        (LoginProblemKind::Port, Some(PortHolder::Here)) => tr("ui.agent_chat_conn_problem_port_here").to_string(),
+        (LoginProblemKind::Port, Some(PortHolder::Intcad)) => tr("ui.agent_chat_conn_problem_port_intcad").to_string(),
+        (LoginProblemKind::Port, Some(PortHolder::Program(name))) => trf("ui.agent_chat_conn_problem_port_program", &[("program", name)]),
+        (LoginProblemKind::Port, None) => tr("ui.agent_chat_conn_problem_port").to_string(),
+        (LoginProblemKind::Listen, _) => {
+            let port = problem.port.map(|port| port.to_string()).unwrap_or_else(|| "1457".into());
+            trf("ui.agent_chat_conn_problem_listen", &[("port", &port), ("code", problem.code.as_deref().unwrap_or("?"))])
+        }
+        (LoginProblemKind::Timeout, _) => tr("ui.agent_chat_conn_problem_timeout").to_string(),
+        (LoginProblemKind::Offline, _) => tr("ui.agent_chat_conn_problem_offline").to_string(),
+        (LoginProblemKind::Failed, _) => tr("ui.agent_chat_conn_problem_failed").to_string(),
+    }
+}
+
+/// End the sign-in this conversation's agent has under way, or was asked for and has not
+/// answered yet: the conversation is leaving the window (another design is shown), or another
+/// design's sign-in needs the port it holds (INT-1522).
+pub(crate) fn cancel_sign_in(chat: &mut super::AgentChat) {
+    let conn = &mut chat.conn;
+    let under_way = conn.login_asked || conn.snapshot.as_ref().is_some_and(|snapshot| snapshot.login.is_some());
+    if !conn.active || !under_way {
+        return;
+    }
+    conn.login_asked = false;
+    if let Some(backend) = chat.backend.as_mut() {
+        backend.connections(Request::Cancel);
+    }
 }
 
 /// The snapshot of the running built-in agent, for the actions that ask it for something.
@@ -1098,6 +1177,9 @@ pub(super) fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &
             if snapshot.login.is_some() {
                 return Err("conn_login: a sign-in is already under way".into());
             }
+            // A sign-in left under way in another design would hold the port this one needs.
+            crate::documents::cancel_background_sign_ins(app);
+            app.agent_chat.conn.login_asked = true;
             send(app, Request::Login(id.to_string()));
         }
         "conn_code" => {
@@ -1258,10 +1340,30 @@ mod tests {
         let login = snapshot.login.as_ref().expect("the sign-in under way");
         assert_eq!((login.id.as_str(), login.phase, login.user_code.as_deref(), login.incomplete), ("anthropic", Phase::Code, None, true));
         assert!(!format!("{snapshot:?}").contains("claude.ai"), "the address is not kept");
-        assert_eq!(snapshot.problem, Some(LoginProblem { id: "openai-codex".into(), kind: LoginProblemKind::Port }));
+        assert_eq!(snapshot.problem, Some(LoginProblem { id: "openai-codex".into(), kind: LoginProblemKind::Port, holder: None, port: None, code: None }));
         assert_eq!(snapshot.dates.len(), 1, "a date that is no text is left out");
         // Something is connected by the saved key and the custom address, though the plan expired.
         assert!(snapshot.connected() && !snapshot.plan_in("openai"));
+    }
+
+    /// INT-1522: who holds the sign-in's port, and the port and code of one the system would not
+    /// open, are read as short words; anything else of them is left out.
+    #[test]
+    fn a_sign_in_problem_says_who_holds_the_port_or_what_the_system_answered() {
+        let problem = |value: Value| Snapshot::parse(&json!({"plans": [], "keys": [], "problem": value})).and_then(|snapshot| snapshot.problem);
+        let holder = |value: Value| problem(json!({"id": "openai-codex", "kind": "port", "holder": value})).and_then(|problem| problem.holder);
+        assert_eq!(holder(json!({"kind": "here"})), Some(PortHolder::Here));
+        assert_eq!(holder(json!({"kind": "intcad"})), Some(PortHolder::Intcad));
+        assert_eq!(holder(json!({"kind": "program", "name": " Codex\u{7} "})), Some(PortHolder::Program("Codex".into())));
+        assert_eq!(holder(json!({"kind": "program", "name": "x".repeat(500)})), Some(PortHolder::Program("x".repeat(MAX_WORD))));
+        for none in [json!({"kind": "program"}), json!({"kind": "program", "name": "  "}), json!({"kind": "someone"}), json!("Codex"), json!(null)] {
+            assert_eq!(holder(none.clone()), None, "{none}");
+        }
+        let listen = problem(json!({"id": "openai-codex", "kind": "listen", "port": 1457, "code": "EACCES"})).expect("a problem");
+        assert_eq!((listen.kind, listen.port, listen.code.as_deref()), (LoginProblemKind::Listen, Some(1457), Some("EACCES")));
+        let odd = problem(json!({"id": "openai-codex", "kind": "listen", "port": 99999, "code": 13})).expect("a problem");
+        assert_eq!((odd.port, odd.code), (None, None));
+        assert_eq!(problem(json!({"id": "openai-codex", "kind": "timeout"})).map(|problem| problem.kind), Some(LoginProblemKind::Timeout));
     }
 
     /// What comes from the agent's process is hostile: nothing of it panics, a row that does not

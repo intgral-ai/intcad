@@ -17,9 +17,21 @@ export function classifyFailure(message) {
   return 'other';
 }
 
-/** Why a sign-in could not finish: `port`, `offline` or `failed`. */
+/**
+ * Why a sign-in could not finish: `port` (taken), `listen` (the system would not open it),
+ * `offline` or `failed`. A sign-in whose time ran out is `timeout`, said by connections.mjs.
+ */
 export function classifySignInFailure(error) {
   if (error?.code === 'PORT_BUSY') return 'port';
+  if (error?.code === 'LISTEN_FAILED') return 'listen';
   const text = `${error?.message ?? error} ${error?.cause?.code ?? ''} ${error?.cause?.message ?? ''}`;
   return classifyFailure(text) === 'network' ? 'offline' : 'failed';
+}
+
+/** The snapshot's `problem` for a sign-in that failed with `error`, without its `id`. */
+export function signInProblem(error) {
+  const kind = classifySignInFailure(error);
+  if (kind === 'port') return error.holder ? { kind, holder: error.holder } : { kind };
+  if (kind === 'listen') return { kind, port: error.port, code: error.errno ?? null };
+  return { kind };
 }

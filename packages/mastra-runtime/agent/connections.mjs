@@ -5,7 +5,7 @@
 // Nothing in this file talks to Mastra directly: what it needs is passed in (`deps`), so the tests
 // run it against stand-ins and no test signs in anywhere.
 
-import { classifySignInFailure } from './problems.mjs';
+import { signInProblem } from './problems.mjs';
 
 /** The plan sign-ins offered, in the order the page lists them, with the provider part of their model ids. */
 export const PLANS = [
@@ -31,6 +31,11 @@ const PASTED = new Set(['anthropic']);
 const CALLED_BACK = new Set(['openai-codex']);
 
 const MAX_KEY = 4096;
+
+// How long a sign-in may wait for the person (INT-1522): one left open held the ChatGPT ports for
+// 16 hours. The longest of the providers' own limits seen is 15 minutes (a device code), so no
+// sign-in a provider would still take is cut short.
+export const SIGN_IN_LIMIT_MS = 15 * 60 * 1000;
 
 /**
  * A custom address's id, from its name: lower case, and a hyphen for every run of anything else.
@@ -83,6 +88,7 @@ export class Connections {
    * @param deps.dates       () => Map of release dates by model id
    * @param deps.changed     (snapshot) => tells the app
    * @param deps.refresh     () => Promise: every open session re-reads which models it may use
+   * @param deps.limitMs     how long a sign-in may wait, for the tests (`SIGN_IN_LIMIT_MS`)
    */
   constructor(deps) {
     this.#deps = deps;
@@ -179,12 +185,29 @@ export class Connections {
     const id = params?.id;
     if (!PLANS.some(([plan]) => plan === id) || !this.#deps.providers().some(provider => provider.id === id)) throw invalid(`unknown sign-in: ${id}`);
     if (this.#login) throw Object.assign(new Error('busy'), { code: 'BUSY' });
-    const login = { id, phase: 'starting', url: null, userCode: null, error: null, abort: new AbortController(), pasted: null, ports: null };
+    const login = { id, phase: 'starting', url: null, userCode: null, error: null, abort: new AbortController(), pasted: null, ports: null, timer: null };
     this.#login = login;
     this.#problem = null;
+    // The time is up as at a cancel, whatever Mastra is waiting on, and the ports are free at once.
+    login.timer = setTimeout(() => {
+      if (this.#login !== login) return;
+      this.#end(login);
+      this.#problem = { id, kind: 'timeout' };
+      this.#tell();
+    }, this.#deps.limitMs ?? SIGN_IN_LIMIT_MS);
+    login.timer.unref?.();
     this.#tell();
     void this.#run(login);
     return this.snapshot();
+  }
+
+  /** Ends a sign-in under way, as cancel, the time limit and the end of the process do. */
+  #end(login) {
+    if (this.#login === login) this.#login = null;
+    clearTimeout(login.timer);
+    login.abort.abort();
+    login.pasted?.reject(new Error('Login cancelled'));
+    login.ports?.close();
   }
 
   async #run(login) {
@@ -232,11 +255,12 @@ export class Connections {
       this.#expired.delete(id);
       await this.#deps.refresh();
     } catch (error) {
-      // Cancelled: the user asked for it, there is nothing to report.
+      // Cancelled, or its time was up: that has been said already.
       if (this.#login !== login) return;
       this.#login = null;
-      this.#problem = { id, kind: classifySignInFailure(error) };
+      this.#problem = { id, ...signInProblem(error) };
     } finally {
+      clearTimeout(login.timer);
       login.ports?.close();
       this.#tell();
     }
@@ -268,13 +292,8 @@ export class Connections {
 
   cancel() {
     const login = this.#login;
-    this.#login = null;
     this.#problem = null;
-    if (login) {
-      login.abort.abort();
-      login.pasted?.reject(new Error('Login cancelled'));
-      login.ports?.close();
-    }
+    if (login) this.#end(login);
     this.#tell();
     return this.snapshot();
   }
@@ -324,11 +343,7 @@ export class Connections {
 
   /** Ends a sign-in that is under way, when the process is about to go. */
   dispose() {
-    const login = this.#login;
-    this.#login = null;
-    login?.abort.abort();
-    login?.pasted?.reject(new Error('Login cancelled'));
-    login?.ports?.close();
+    if (this.#login) this.#end(this.#login);
   }
 }
 

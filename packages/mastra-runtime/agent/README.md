@@ -5,7 +5,8 @@ its SDK and unchanged, with what the Assistant's Connections page needs added in
 
 - `connections.mjs`: which plans are signed in, which keys and custom addresses the app handed
   over, the one sign-in that may be under way, and the methods the page's buttons end in;
-- `callback.mjs`: how the ChatGPT browser sign-in waits for the browser without a time limit;
+- `callback.mjs`: how the ChatGPT browser sign-in waits for the browser beyond Mastra Code's 60
+  seconds, and who holds its port when it is taken;
 - `agent.mjs`: the methods on the ACP agent, a model list a person can read, sessions that follow a
   sign-in or sign-out, and the reason on a turn that fails;
 - `models.mjs`, `problems.mjs`: the order of the model list, and the kinds of failure;
@@ -96,7 +97,10 @@ sends the same snapshot as the notification `_intcad/connections/changed` whenev
 - `login.phase`: `starting`; `browser` (the address is open, nothing to type); `device` (`userCode`
   is typed on that page); `code` (the page will show a code that is pasted back). `login.error` is
   `incomplete` after a pasted code that has not the shape of one.
-- `problem.kind`, for a sign-in that could not finish: `port`, `offline`, `failed`.
+- `problem.kind`, for a sign-in that could not finish: `port` (with `holder`, when found: `{ kind:
+  'here' }` a sign-in of another design of the same app, `{ kind: 'intcad' }` one of another
+  Intcad, `{ kind: 'program', name }`), `listen` (the system would not open the port: `port`,
+  `code`, such as `EACCES`), `timeout` (15 minutes passed), `offline`, `failed`.
 - `dates`: release dates of the models of connected providers, from Mastra's registry.
 
 A session's `model` option lists only models one can talk to, newest first. After a sign-in, a
@@ -327,11 +331,12 @@ one folder per skill and a note per set, before Mastra is loaded (`skills.mjs`).
 `MASTRA_APP_DATA_DIR` (run by hand) nothing of this is changed, and no skill is installed. The browser is the exception: it is started with the user's own home
 folder, so it is the browser they use, with the profile they are signed in with.
 
-## The ChatGPT sign-in does not time out
+## The ChatGPT sign-in waits for the browser
 
 That sign-in ends with the browser calling a local address (port 1455, or 1457). Mastra Code's own
 listener for the call gives up after 60 seconds, and a call that arrives later is lost. Intcad
-waits until the user has signed in or cancels, without changing Mastra's files:
+waits until the user has signed in or cancels, or 15 minutes have passed (every sign-in has that
+limit: one left open once held the ports for 16 hours), without changing Mastra's files:
 
 1. `callback.mjs` takes both ports before the sign-in starts.
 2. Mastra Code, finding both taken, still builds the sign-in address (pointing at 1457) and then
@@ -343,8 +348,16 @@ waits until the user has signed in or cancels, without changing Mastra's files:
 The page the browser then shows sends the user back to the app. It does not say "signed in":
 the code is exchanged after it.
 
-`cancel`, the end of the sign-in, or the end of the process frees the ports. If another program
-holds 1457, the sign-in cannot be received and fails with `problem.kind` `port`.
+`cancel`, the end of the sign-in, its time limit, or the end of the process frees the ports. The
+app cancels a sign-in when its design is left and, before a sign-in starts, any still under way in
+another design; the page cancels one when the user goes back from it. If 1457 is taken, the
+sign-in cannot be received and fails with `problem.kind` `port`. Who holds it is asked first at
+`/intcad-sign-in`, where Intcad's own listener answers `{ app: 'intcad', parent }` (the agent's
+parent process, the app); one of the same app is waited for up to two seconds, since its cancel
+may be on the way. Otherwise the program is named where the system says it: `lsof` and `ps` on
+macOS and Linux, `netstat` and `tasklist` on Windows, by the app it sits in when it is one
+(`…/Codex.app/…` is Codex). The first port may be refused by the system as well: what keeps this
+process off it keeps Mastra Code off it too.
 
 ## What was checked, and what was not
 

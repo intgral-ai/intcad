@@ -3,7 +3,9 @@
 // outside `src/`, so they are loaded by address from the compiled test's own place.
 
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import http from "node:http";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { Agent as CoreAgent } from "@mastra/core/agent";
@@ -22,7 +24,8 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 const agentFolder = import.meta.url.includes("/dist/test/") ? "../../agent/" : "../agent/";
 const load = (name: string): Promise<Json> => import(new URL(agentFolder + name, import.meta.url).href);
 const { Connections, METHODS, customId } = await load("connections.mjs");
-const { holdCallbackPorts } = await load("callback.mjs");
+const callbackModule = await load("callback.mjs");
+const { holdCallbackPorts } = callbackModule;
 const { attachmentReader, isChatModel, orderModelOptions, releaseDates } = await load("models.mjs");
 const { classifyFailure, classifySignInFailure } = await load("problems.mjs");
 const { intcadAgent } = await load("agent.mjs");
@@ -89,6 +92,7 @@ function world(overrides: Json = {}) {
     dates: () => DATES,
     changed: (snapshot: Json) => void told.push(snapshot),
     refresh: async (why?: Json) => void ((refreshed += 1), whys.push(why)),
+    ...(overrides.limitMs ? { limitMs: overrides.limitMs } : {}),
   });
   return { connections, signedIn, told, opened, written, env, held, custom: () => custom, refreshed: () => refreshed, whys };
 }
@@ -198,7 +202,7 @@ test("a custom address that cannot be used is left out and the rest is taken; na
   await assert.rejects(connections.setup({ keys: { openai: "x".repeat(5000) } }), { code: "INVALID" });
 });
 
-test("a browser sign-in holds the local ports, opens the browser, waits without a limit and ends when the browser calls back", async () => {
+test("a browser sign-in holds the local ports, opens the browser, waits for it and ends when the browser calls back", async () => {
   let finish: (value?: unknown) => void = () => {};
   const { connections, told, opened, held, refreshed } = world({
     login: async (_id: string, callbacks: Json) => {
@@ -215,7 +219,7 @@ test("a browser sign-in holds the local ports, opens the browser, waits without 
   await settle();
   assert.deepEqual(connections.list().login, { id: "openai-codex", phase: "browser", url: "https://auth.example/authorize?state=s1", userCode: null, error: null });
   assert.deepEqual(opened, ["https://auth.example/authorize?state=s1"]);
-  // Nothing in here counts time: however long the browser takes, the sign-in is still under way.
+  // However long the browser takes within the time limit (15 minutes), the sign-in is still under way.
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(connections.list().login.phase, "browser");
   assert.equal(held.length, 1);
@@ -388,6 +392,137 @@ test("the two local ports are held until closed, only the awaited callback is ta
   const second = await holdCallbackPorts(http, () => false, { ports: [base, base + 6] });
   again.close();
   second.close();
+});
+
+test("a sign-in left unfinished stops at the time limit, gives the ports back and says so (INT-1522)", async () => {
+  const { connections, held, told } = world({
+    limitMs: 40,
+    login: (_id: string, callbacks: Json) => {
+      callbacks.onAuth({ url: "https://auth.example/authorize?state=s1" });
+      return callbacks.onManualCodeInput();
+    },
+  });
+  connections.login({ id: "openai-codex" });
+  await settle();
+  assert.equal(connections.list().login.phase, "browser");
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.equal(held[0]!.closed, true, "the ports are free once the time is up");
+  assert.equal(told.at(-1)!.login, null);
+  assert.deepEqual(told.at(-1)!.problem, { id: "openai-codex", kind: "timeout" });
+  // A new sign-in starts as usual afterwards, and the end of the agent's process gives its ports back too.
+  connections.login({ id: "openai-codex" });
+  await settle();
+  assert.equal(held.length, 2);
+  connections.dispose();
+  assert.equal(held[1]!.closed, true);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(connections.list().problem, null, "a sign-in ended with the process is not timed out afterwards");
+});
+
+/** Listens on `port` of 127.0.0.1 with a server that is not a sign-in's: another program. */
+async function foreignListener(port: number): Promise<net.Server> {
+  const server = net.createServer((socket) => socket.end());
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => resolve());
+  });
+  return server;
+}
+
+test("a taken port says who holds it: a sign-in of this app, of another Intcad, or which program (INT-1522)", async () => {
+  const base = 42455;
+  // Another program: named where the system lets the agent find it (lsof and ps on macOS and Linux).
+  const foreign = await foreignListener(base + 2);
+  const byProgram = await holdCallbackPorts(http, () => false, { ports: [base, base + 2] }).then(() => null, (error: Json) => error);
+  foreign.close();
+  assert.equal(byProgram?.code, "PORT_BUSY");
+  assert.equal(byProgram?.port, base + 2);
+  if (process.platform === "darwin") assert.deepEqual(byProgram?.holder, { kind: "program", name: "node" });
+  else assert.ok(byProgram?.holder === null || byProgram?.holder?.name === "node", JSON.stringify(byProgram?.holder));
+
+  // A sign-in of this same app (another design's agent: same parent), which never ends.
+  const ours = await holdCallbackPorts(http, () => false, { ports: [base + 4, base + 6] });
+  const byUs = await holdCallbackPorts(http, () => false, { ports: [base + 8, base + 6], retryMs: 300 }).then(() => null, (error: Json) => error);
+  assert.equal(byUs?.code, "PORT_BUSY");
+  assert.deepEqual(byUs?.holder, { kind: "here" });
+  ours.close();
+
+  // A sign-in of another Intcad: its agent has another parent.
+  const entry = new URL(agentFolder + "callback.mjs", import.meta.url).href;
+  const child = spawn(
+    process.execPath,
+    ["--input-type=module", "-e", `const http = await import("node:http"); const { holdCallbackPorts } = await import(${JSON.stringify(entry)}); await holdCallbackPorts(http, () => false, { ports: [${base + 10}, ${base + 12}] }); console.log("held");`],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  try {
+    await new Promise<void>((resolve) => child.stdout!.once("data", () => resolve()));
+    const byOther = await holdCallbackPorts(http, () => false, { ports: [base + 14, base + 12] }).then(() => null, (error: Json) => error);
+    assert.equal(byOther?.code, "PORT_BUSY");
+    assert.deepEqual(byOther?.holder, { kind: "intcad" });
+  } finally {
+    child.kill();
+  }
+});
+
+test("the holder of a port is read from what lsof, netstat, ps and tasklist print, and named by its app (INT-1522)", () => {
+  const { pidIn, programName } = callbackModule;
+  assert.equal(pidIn("p15185\ncnode\nf33\n", 1457, "darwin"), 15185);
+  assert.equal(pidIn("", 1457, "linux"), null);
+  const netstat = "\r\nActive Connections\r\n\r\n  Proto  Local Address          Foreign Address        State           PID\r\n  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1000\r\n  TCP    127.0.0.1:1457         0.0.0.0:0              LISTENING       4242\r\n";
+  assert.equal(pidIn(netstat, 1457, "win32"), 4242);
+  assert.equal(pidIn(netstat, 1455, "win32"), null);
+  assert.equal(programName("/Applications/Intcad.app/Contents/Resources/mastra-agent/node\n"), "Intcad");
+  assert.equal(programName("/Applications/ChatGPT.app/Contents/Frameworks/ChatGPT Helper.app/Contents/MacOS/ChatGPT Helper"), "ChatGPT");
+  assert.equal(programName("/usr/local/bin/codex"), "codex");
+  assert.equal(programName("C:\\Program Files\\nodejs\\node.exe"), "node.exe");
+  assert.equal(programName("codex\u0007\u202e"), "codex");
+  assert.equal(programName(""), null);
+});
+
+test("a sign-in of another design of this app that is being cancelled is waited for briefly (INT-1522)", async () => {
+  const base = 43455;
+  const leaving = await holdCallbackPorts(http, () => false, { ports: [base, base + 2] });
+  // The app cancels the other design's sign-in before it starts this one; that agent lets go a moment later.
+  setTimeout(() => leaving.close(), 150);
+  const taken = await holdCallbackPorts(http, () => false, { ports: [base + 4, base + 2], retryMs: 2000 });
+  taken.close();
+});
+
+test("a port the system will not open is told apart from a taken one; the first port may be refused (INT-1522)", async () => {
+  const base = 44455;
+  // As `node:http`, with the system refusing to open one port (EACCES: a reserved range, security software).
+  const refusing = (refused: number) => ({
+    createServer: (handler: http.RequestListener) => {
+      const server = http.createServer(handler);
+      const listen = server.listen.bind(server) as (port: number, host: string) => http.Server;
+      (server as Json).listen = (port: number, host: string) => {
+        if (port !== refused) return listen(port, host);
+        setImmediate(() => server.emit("error", Object.assign(new Error(`listen EACCES: permission denied 127.0.0.1:${port}`), { code: "EACCES" })));
+        return server;
+      };
+      return server;
+    },
+  });
+  // The first port only has to be out of Mastra's reach, and what keeps this process off it keeps Mastra off it too.
+  const fine = await holdCallbackPorts(refusing(base), () => false, { ports: [base, base + 2] });
+  fine.close();
+  const refused = await holdCallbackPorts(refusing(base + 6), () => false, { ports: [base + 4, base + 6] }).then(() => null, (error: Json) => error);
+  assert.equal(refused?.code, "LISTEN_FAILED");
+  assert.equal(refused?.port, base + 6);
+  assert.equal(refused?.errno, "EACCES");
+  assert.equal(classifySignInFailure(refused), "listen");
+});
+
+test("a sign-in's problem carries who holds the port, or the port and the system's code (INT-1522)", async () => {
+  const held = world({ holdPorts: async () => Promise.reject(Object.assign(new Error("port 1457 is in use"), { code: "PORT_BUSY", port: 1457, holder: { kind: "program", name: "Codex" } })) });
+  held.connections.login({ id: "openai-codex" });
+  await settle();
+  assert.deepEqual(held.connections.list().problem, { id: "openai-codex", kind: "port", holder: { kind: "program", name: "Codex" } });
+
+  const refused = world({ holdPorts: async () => Promise.reject(Object.assign(new Error("port 1457 could not be opened"), { code: "LISTEN_FAILED", port: 1457, errno: "EACCES" })) });
+  refused.connections.login({ id: "openai-codex" });
+  await settle();
+  assert.deepEqual(refused.connections.list().problem, { id: "openai-codex", kind: "listen", port: 1457, code: "EACCES" });
 });
 
 test("a key is not in the environment of a command a model runs, nor in a refusal that is printed", () => {

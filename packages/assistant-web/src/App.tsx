@@ -2150,10 +2150,11 @@ function SignInProgress({ login, strings }: { login: NonNullable<Connect['login'
 
 /** A sign-in that could not finish, under its row: why, and the two ways on. */
 function SignInProblem({ problem, busy, strings }: { problem: NonNullable<Connect['problem']>; busy: boolean; strings: Strings }) {
-  const why = { port: strings.connProblemPort, offline: strings.connProblemOffline, failed: strings.connProblemFailed }[problem.kind];
+  // The app words it in full; the kind's own sentence is for an app that does not.
+  const why = problem.text || ({ port: strings.connProblemPort, offline: strings.connProblemOffline } as Record<string, string>)[problem.kind];
   return (
     <div className="flex min-w-0 flex-col gap-2 pt-2">
-      <Wrong>{why ?? strings.connProblemFailed}</Wrong>
+      <Wrong>{why || strings.connProblemFailed}</Wrong>
       <div className="flex flex-wrap items-center gap-2">
         <Button type="button" size="sm" variant="primary" disabled={busy} onClick={() => post({ type: 'conn_login', id: problem.id })}>
           {strings.retry}
@@ -2516,6 +2517,12 @@ export function App({ state }: { state: AssistantState | null }) {
     // Asked for while the agent is not running: it is started, and the page shows once it has answered.
     if (connect && !listed(connect) && !state.running) post({ type: 'connect' });
   };
+  // Going back from the page ends a sign-in still waiting for the browser, which holds a local port
+  // meanwhile (INT-1522). Only a way back the user takes does: the browser taking the focus does not.
+  const closeConn = () => {
+    if (connect?.login) post({ type: 'conn_cancel' });
+    setConnOpen(false);
+  };
   // The built-in agent's sign-ins are on its connections page, not on the app's sign-in card.
   const signIn = Boolean(state.auth) && !connect;
   const confirmNew = state.confirmNew && (
@@ -2542,7 +2549,7 @@ export function App({ state }: { state: AssistantState | null }) {
   // Back to the message box there: the bar's Collapse and a press on the bar's empty part.
   const collapse = () => {
     setCentreOpen(false);
-    setConnOpen(false);
+    if (showConn) closeConn();
   };
   const shell = (
       <ChatShell
@@ -2557,7 +2564,7 @@ export function App({ state }: { state: AssistantState | null }) {
           onConnections={openConn}
           onCollapse={collapse}
           // With nothing connected the page is the panel, and there is no conversation to go back to.
-          onBack={connect && showConn && connect.connected ? () => setConnOpen(false) : undefined}
+          onBack={connect && showConn && connect.connected ? closeConn : undefined}
         />
         {connect && showConn && (
           <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">

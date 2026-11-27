@@ -539,6 +539,12 @@ the same custom addresses and Mastra's same sign-ins. A key, an address or a sig
 one conversation reaches another's agent when that conversation is next shown: it is handed
 everything again.
 
+The ChatGPT plan's sign-in ends with the browser calling a local port (1457; 1455 is held too),
+which the agent holds while it waits. A sign-in waits at most 15 minutes. It is cancelled when the
+user goes back from the Connections page, when another design is shown, and, before a sign-in
+starts, in every design not shown. When the port is taken, the page says who holds it where it
+can tell: another design's sign-in, another running Intcad's, or a program by its name.
+
 The model is picked at the lower right of the message box, in Mastra's own model picker: the
 models of the connection in use, newest first, with a search box and a row that opens the
 Connections page. Another provider is taken with **Switch** on its row there; the model list then
