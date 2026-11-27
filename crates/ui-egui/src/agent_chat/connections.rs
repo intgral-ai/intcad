@@ -322,7 +322,11 @@ impl Snapshot {
                     Some("store") => Some(Step::Store),
                     _ => None,
                 },
-                status: problem.get("status").and_then(Value::as_u64).and_then(|status| u16::try_from(status).ok()).filter(|status| (100..600).contains(status)),
+                status: problem
+                    .get("status")
+                    .and_then(Value::as_u64)
+                    .and_then(|status| u16::try_from(status).ok())
+                    .filter(|status| (100..600).contains(status)),
             })
         });
         let dates = value
@@ -1378,7 +1382,8 @@ mod tests {
         let login = snapshot.login.as_ref().expect("the sign-in under way");
         assert_eq!((login.id.as_str(), login.phase, login.user_code.as_deref(), login.incomplete), ("anthropic", Phase::Code, None, true));
         assert!(!format!("{snapshot:?}").contains("claude.ai"), "the address is not kept");
-        let port = LoginProblem { id: "openai-codex".into(), kind: LoginProblemKind::Port, holder: None, port: None, code: None, step: None, status: None };
+        let port =
+            LoginProblem { id: "openai-codex".into(), kind: LoginProblemKind::Port, holder: None, port: None, code: None, step: None, status: None };
         assert_eq!(snapshot.problem, Some(port));
         assert_eq!(snapshot.dates.len(), 1, "a date that is no text is left out");
         // Something is connected by the saved key and the custom address, though the plan expired.
@@ -1406,13 +1411,22 @@ mod tests {
         assert_eq!(code(json!("unsupported_country_region_territory")), Some("unsupported_country_region_territory".into()));
         assert_eq!(code(json!("x".repeat(MAX_WORD))), Some("x".repeat(MAX_WORD)));
         let tokenish = "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFAZXhhbXBsZS5jb20ifQ.c2lnbmF0dXJl";
-        for none in ["x".repeat(MAX_WORD + 1), tokenish.into(), "a@example.com".into(), "http://localhost:1457/auth/callback?code=ac_1".into(), "Bearer abc".into(), " EACCES\u{7} ".into(), String::new()] {
+        for none in [
+            "x".repeat(MAX_WORD + 1),
+            tokenish.into(),
+            "a@example.com".into(),
+            "http://localhost:1457/auth/callback?code=ac_1".into(),
+            "Bearer abc".into(),
+            " EACCES\u{7} ".into(),
+            String::new(),
+        ] {
             assert_eq!(code(json!(none)), None, "{none}");
         }
         assert_eq!(problem(json!({"id": "openai-codex", "kind": "timeout"})).map(|problem| problem.kind), Some(LoginProblemKind::Timeout));
         // INT-1521: the step and the service's status; a status that is none and a step this
         // version does not know are left out.
-        let at = problem(json!({"id": "openai-codex", "kind": "refused", "step": "exchange", "status": 403, "code": "unsupported_country"})).expect("a problem");
+        let at = problem(json!({"id": "openai-codex", "kind": "refused", "step": "exchange", "status": 403, "code": "unsupported_country"}))
+            .expect("a problem");
         assert_eq!((at.kind, at.step, at.status), (LoginProblemKind::Refused, Some(Step::Exchange), Some(403)));
         let odd = problem(json!({"id": "openai-codex", "kind": "refused", "step": "teleport", "status": 7})).expect("a problem");
         assert_eq!((odd.step, odd.status), (None, None));
