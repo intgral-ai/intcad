@@ -58,16 +58,18 @@ COVERAGE = (
     "xtask/src/kernel_cases.rs",
 )
 
-# The files that pin solidcore, and the repository a pin's lines name.
+# The files that pin solidcore, and the repositories a pin's lines may name: upstream, and Intcad's
+# pinned fork of it when a release needs one reviewed kernel repair.
 PIN_FILES = ("Cargo.toml", "Cargo.lock")
-SOLIDCORE = "github.com/tangency-labs/solidcore"
+SOLIDCORE = ("github.com/tangency-labs/solidcore", "github.com/intgral-ai/solidcore")
 
 
 def pin_moved(diff):
     """Whether a unified diff of PIN_FILES changes a line that names solidcore's repository (an
     added or removed line, not its file headers or context)."""
     return any(
-        line.startswith(("+", "-")) and not line.startswith(("+++ ", "--- ")) and SOLIDCORE in line for line in diff.splitlines()
+        line.startswith(("+", "-")) and not line.startswith(("+++ ", "--- ")) and any(repo in line for repo in SOLIDCORE)
+        for line in diff.splitlines()
     )
 
 

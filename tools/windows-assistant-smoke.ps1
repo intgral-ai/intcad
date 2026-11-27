@@ -540,8 +540,8 @@ function RemainingMilliseconds([datetime]$until) {
 }
 
 function Call([string]$method, $params = @{}, [datetime]$until = [datetime]::UtcNow.AddSeconds(15)) {
-    # `ui.agent_chat` is the one state-changing probe: a package's built-in agent is proven by
-    # stopping and restarting it. It never writes a design or reaches the network.
+    # `ui.agent_chat` is the one controlled probe: while signed out it must be refused, and the
+    # refusal itself is what proves the contract. It never writes a design or reaches the network.
     if ($method -cnotin @('ui.inspect', 'ui.rects', 'ui.screenshot', 'ui.agent_chat')) { throw 'smoke requires read-only observations' }
     $script:calls += 1
     $request = @{ id = $script:calls; method = $method; params = $params }
@@ -555,6 +555,24 @@ function Call([string]$method, $params = @{}, [datetime]$until = [datetime]::Utc
     $reply = $line | ConvertFrom-Json -AsHashtable
     if ($reply.id -ne $script:calls -or $reply.ok -isnot [bool] -or -not $reply.ok) { throw "$method did not return a successful matching reply" }
     $reply.result
+}
+
+function CallRefusal([string]$method, $params = @{}, [datetime]$until = [datetime]::UtcNow.AddSeconds(15)) {
+    if ($method -cnotin @('ui.inspect', 'ui.rects', 'ui.screenshot', 'ui.agent_chat')) { throw 'smoke requires read-only observations' }
+    $script:calls += 1
+    $request = @{ id = $script:calls; method = $method; params = $params }
+    if ($script:calls -eq 1) { $request.token = $script:token }
+    $script:client.SendTimeout = RemainingMilliseconds $until
+    $script:writer.WriteLine(($request | ConvertTo-Json -Compress -Depth 6))
+    $read = $script:reader.ReadLineAsync()
+    if (-not $read.Wait((RemainingMilliseconds $until))) { throw "control read timed out during $method" }
+    $line = $read.Result
+    if (-not $line) { throw "the control channel closed during $method" }
+    $reply = $line | ConvertFrom-Json -AsHashtable
+    if ($reply.id -ne $script:calls -or $reply.ok -isnot [bool] -or $reply.ok) {
+        throw "$method was not refused for a signed-out host (reply $($reply | ConvertTo-Json -Compress))"
+    }
+    $reply
 }
 
 function ReadAssistant($inspection) {
@@ -1091,30 +1109,23 @@ function WaitCleanExit($process, [scriptblock]$close) {
 # A release package carries the built-in agent: the installed app must offer it first, start it
 # out of the package, and start it again after it stopped. The other agents stay offered beside it.
 function CheckBuiltInAgent {
-    $state = Call 'ui.agent_chat'
-    $until = [datetime]::UtcNow.AddSeconds(60)
-    while (-not ($state.connect -and $state.connect.plans) -and [datetime]::UtcNow -lt $until) {
-        Start-Sleep -Milliseconds 500
-        $state = Call 'ui.agent_chat'
+    # The installed agent's files are checked by installed-check.ps1. Its control entries are
+    # controlled: while signed out they must be refused fail-closed, and its conversation cannot
+    # be read. Starting it is covered by the signed-in acceptance (Gate B), not by this probe.
+    $refusals = @(
+        (CallRefusal 'ui.agent_chat' @{ open = $true }),
+        (CallRefusal 'ui.agent_chat' @{}),
+        (CallRefusal 'ui.agent_chat' @{ stop = $true }),
+        (CallRefusal 'ui.agent_chat' @{ connect = $true })
+    )
+    foreach ($refusal in $refusals) {
+        $code = $refusal.errorDetails.code
+        if ($code -cnotin @('AuthUnavailable', 'UnsafeToStart')) {
+            throw "an agent control entry was not refused fail-closed (code $code)"
+        }
     }
-    $agents = @($state.agents)
-    $names = @($agents | ForEach-Object { $_.name })
-    Check ([bool]$agents -and $agents[0].id -eq 'mastra') "the built-in agent is offered first ($($names -join ', '))"
-    Check ($state.currentAgent -eq 'mastra') "the built-in agent is the conversation's agent ($($state.currentAgent))"
-    Check ([bool]($state.connect -and $state.connect.plans)) 'the built-in agent started out of the package and reported its connections'
-    # The control channel's own word for Stop is `stop` (the page uses `disconnect`).
-    [void](Call 'ui.agent_chat' @{ stop = $true })
-    $state = Call 'ui.agent_chat'
-    $stopped = $state.connect
-    Check ($state.state -eq 'off' -and -not ($stopped -and $stopped.plans) -and -not ($stopped -and $stopped.connected)) `
-        "a stopped agent reports no connections (state $($state.state))"
-    [void](Call 'ui.agent_chat' @{ connect = $true })
-    $until = [datetime]::UtcNow.AddSeconds(60)
-    while (-not ($state.connect -and $state.connect.plans) -and [datetime]::UtcNow -lt $until) {
-        Start-Sleep -Milliseconds 500
-        $state = Call 'ui.agent_chat'
-    }
-    Check ([bool]($state.connect -and $state.connect.plans)) 'the built-in agent starts again after it stopped'
+    Write-Host 'ok: the built-in agent control entries are refused while signed out'
+    Write-Host 'NOT VERIFIED: the built-in agent starts, reports connections and starts again (needs account authority)'
 }
 
 function Quit {

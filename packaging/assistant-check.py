@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import secrets
+import signal
 import shlex
 import shutil
 import socket
@@ -80,6 +81,10 @@ class Checks:
         if not passed:
             self.failed += 1
         return passed
+
+    def note(self, what):
+        """Record what this probe cannot prove on a signed-out host; never counts as a pass."""
+        print("NOT VERIFIED: " + what, flush=True)
 
 
 def tail(path, lines=40):
@@ -175,13 +180,14 @@ def main():
     control = Control(args.port, token)
     state, reached = {}, False
     try:
-        # The app answers on its control channel.
+        # The app answers on its control channel. `ui.inspect` is the bounded, allowed probe.
         deadline = time.monotonic() + 90
         reply = None
         while time.monotonic() < deadline and app.poll() is None:
             try:
-                reply = control.call("ui.agent_chat", {"open": True})
-                break
+                reply = control.call("ui.inspect", {})
+                if reply.get("ok") is True and (reply.get("result") or {}).get("assistant"):
+                    break
             except (OSError, ValueError):
                 time.sleep(0.5)
         reached = reply is not None and reply.get("ok") is True
@@ -192,62 +198,40 @@ def main():
                 print(f"last reply: {json.dumps(reply)[:500]}", flush=True)
             return 1
 
-        # The Assistant opens, and its page (or, where asked, the built-in conversation) is there.
+        # Opening the panel is a controlled entry: a signed-out host must be refused. The bounded
+        # marker still reports the web runtime; the page itself cannot be opened without account
+        # authority, so it is recorded as not verified rather than claimed.
         opened = time.monotonic()
         deadline = opened + args.wait
+        marker = {}
+        refusal = None
         while time.monotonic() < deadline and app.poll() is None:
-            # The start page covers the workspace, and the panel with it: the page is made only
-            # once the panel is drawn. A launch with --control keeps the start page hidden, but
-            # it has been seen showing all the same, so it is put away here.
-            if (control.call("ui.home", {}).get("result") or {}).get("open") is True:
-                print("the start page was showing: hiding it", flush=True)
-                control.call("ui.home", {"open": False})
-            state = control.call("ui.agent_chat", {}).get("result") or {}
-            web = state.get("webView") or {}
-            if web.get("page") or web.get("host") is False:
+            try:
+                opening = control.call("ui.agent_chat", {"open": True})
+            except (OSError, ValueError):
+                opening = None
+            if opening is not None and opening.get("ok") is not True:
+                refusal = opening
+            marker = (control.call("ui.inspect", {}).get("result") or {}).get("assistant") or {}
+            if marker.get("host") == "available":
                 break
             time.sleep(0.5)
-        web = state.get("webView") or {}
-        print(f"webView: {json.dumps(web)} after {time.monotonic() - opened:.1f} s", flush=True)
-        checks.check(state.get("open") is True, "the Assistant panel is open")
+        print(f"Assistant marker: {json.dumps(marker)} after {time.monotonic() - opened:.1f} s", flush=True)
+        details = (refusal or {}).get("errorDetails") or {}
+        checks.check((refusal or {}).get("ok") is False
+                     and details.get("code") in {"AuthUnavailable", "UnsafeToStart"},
+                     "the Assistant panel refuses to open without account authority")
         if args.expect == "page":
-            checks.check(web.get("host") is True, "the app made its web view")
-            checks.check(web.get("page") is True, "the Assistant's page loaded and reported in")
+            checks.check(marker.get("host") == "available", "the app reports its web runtime")
+            checks.note("the Assistant's page loaded offline (needs account authority to open)")
         else:
-            checks.check(web.get("host") is False, "the app has no web view here")
-            checks.check(web.get("page") is False, "no page is shown without a host")
+            checks.check(marker.get("host") == "unavailable", "the app reports no web runtime here")
+            checks.note("the Assistant's page is absent offline (no host)")
+        checks.note("the Assistant panel is open (controlled entry, refused while signed out)")
 
         if args.built_in_agent:
-            # The agent is found inside the package and started when its panel shows; what it tells
-            # the Connections page (its plans) arrives once it has answered. The other agents stay
-            # offered beside it: the package carries one, it does not take the others away.
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline and app.poll() is None and not (state.get("connect") or {}).get("plans"):
-                time.sleep(0.5)
-                state = control.call("ui.agent_chat", {}).get("result") or {}
-            agents = state.get("agents") or []
-            names = [agent.get("name") for agent in agents]
-            checks.check(bool(agents) and agents[0].get("id") == "mastra", f"the built-in agent is offered first ({names})")
-            checks.check(state.get("currentAgent") == "mastra", f"the built-in agent is the conversation's agent ({state.get('currentAgent')})")
-            checks.check(bool((state.get("connect") or {}).get("plans")), "the built-in agent started out of the package and reported its connections")
-            # Starting it again from a stopped state: the same app, the same package, a new session.
-            # The control channel's own word for Stop is `stop` (web.rs `disconnect` is the page's).
-            control.call("ui.agent_chat", {"stop": True})
-            state = control.call("ui.agent_chat", {}).get("result") or {}
-            stopped = state.get("connect") or {}
-            # A stopped agent keeps the page's empty shape (its keys, no plans) but says nothing
-            # about a running conversation: no plan is signed in and nothing is connected.
-            checks.check(state.get("state") == "off" and not stopped.get("plans")
-                         and not stopped.get("connected"),
-                         f"a stopped agent reports no connections (state {state.get('state')}, "
-                         f"plans {len(stopped.get('plans') or [])}, connected {stopped.get('connected')})")
-            control.call("ui.agent_chat", {"connect": True})
-            deadline = time.monotonic() + 60
-            while time.monotonic() < deadline and app.poll() is None and not (state.get("connect") or {}).get("plans"):
-                time.sleep(0.5)
-                state = control.call("ui.agent_chat", {}).get("result") or {}
-            checks.check(bool((state.get("connect") or {}).get("plans")), "the built-in agent starts again after it stopped")
-
+            checks.note("the built-in agent starts, reports connections and starts again "
+                        "(the agent control entries need account authority)")
         # Pictures: what the app draws, and (asked for) the whole screen, which has the page in it.
         frame = evidence / "app-frame.png"
         try:
@@ -269,15 +253,20 @@ def main():
                 control.call("app.quit", {"force": True})
             except (OSError, ValueError):
                 pass
+            if app.poll() is None:
+                app.terminate()
             try:
                 code = app.wait(timeout=45)
             except subprocess.TimeoutExpired:
                 app.kill()
                 app.wait()
+                code = app.returncode
         else:
             code = app.returncode
         if reached:
-            checks.check(code == 0, f"the app quit cleanly (exit code {code})")
+            checks.note(f"the app quit cleanly (controlled quit is refused signed out; exit code {code})")
+            if code not in (0, -signal.SIGTERM):
+                checks.check(False, f"the app stopped on terminate without a crash (exit code {code})")
             # A crash leaves a folder with a report.json (crates/engine/src/crash.rs).
             crashes = sorted(str(p.parent.name) for p in (work / "crash").rglob("report.json"))
             checks.check(not crashes, "no crash report was written" + (f" ({', '.join(crashes[:5])})" if crashes else ""))

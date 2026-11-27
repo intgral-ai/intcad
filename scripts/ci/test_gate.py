@@ -793,7 +793,13 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                     with self.subTest(name=name, has_node=has_node):
                         if extension == ".zip":
                             with zipfile.ZipFile(path, "w") as archive:
-                                for entry in (*self.AGENT_ENTRIES, *(("node.exe",) if has_node else ())):
+                                extra = ("node.exe",) if has_node else ()
+                                # A Windows agent with Node also carries the Microsoft runtime its
+                                # native modules load, as the package contents contract requires.
+                                runtime = ("node_modules/@libsql/win32-x64-msvc/VCRUNTIME140.dll",
+                                           "node_modules/@ast-grep/napi-win32-x64-msvc/VCRUNTIME140.dll",
+                                           "vc-runtime-receipt.json", "licenses/VC-RUNTIME-NOTICE.txt") if has_node else ()
+                                for entry in (*self.AGENT_ENTRIES, *extra, *runtime):
                                     archive.writestr(f"{wrapper}/mastra-agent/{entry}", b"x")
                         else:
                             with tarfile.open(path, "w:gz") as archive:
@@ -804,7 +810,8 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                         result = subprocess.run([sys.executable, "-c", self.package_evidence_script()],
                                                 cwd=root, env=env, capture_output=True, text=True)
                         report = json.loads((target / "contents.json").read_text())
-                        self.assertEqual(report["agents"][name]["missing"], [] if has_node else ["mastra-agent/node"])
+                        expected = [] if has_node else ["mastra-agent/node"]
+                        self.assertEqual(report["agents"][name]["missing"], expected)
                         if has_node:
                             self.assertEqual(result.returncode, 0, result.stderr)
                         else:
@@ -837,7 +844,11 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             # Native MSI extraction needs installer tooling; supply only its installed file listing.
             # The real recorder still inspects the ZIP and writes both receipts for the real verdict.
             installed = ["PFiles64/Intcad/intcad.exe", *(
-                f"PFiles64/Intcad/mastra-agent/{entry}" for entry in (*self.AGENT_ENTRIES, "node.exe"))]
+                f"PFiles64/Intcad/mastra-agent/{entry}" for entry in (
+                    *self.AGENT_ENTRIES, "node.exe",
+                    "node_modules/@libsql/win32-x64-msvc/VCRUNTIME140.dll",
+                    "node_modules/@ast-grep/napi-win32-x64-msvc/VCRUNTIME140.dll",
+                    "vc-runtime-receipt.json", "licenses/VC-RUNTIME-NOTICE.txt"))]
             (ci / "package_contents.py").write_text(
                 "import sys\n"
                 f"sys.path.insert(0, {str(HERE)!r})\n"

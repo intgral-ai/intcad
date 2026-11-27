@@ -1,0 +1,45 @@
+INTCAD - MICROSOFT VISUAL C++ RUNTIME TERMS
+
+Last updated: 2026-11-27
+
+This copy of Intcad includes unmodified Microsoft Visual C++ Runtime files ("Runtime Files").
+They are identified in mastra-agent\vc-runtime-receipt.json. The Runtime Files are licensed to
+you by Microsoft Corporation under these terms, not by the Intcad authors. The Intcad
+application itself remains under its own licences (see LICENSE-MIT, LICENSE-APACHE and
+THIRD-PARTY-LICENSES.txt).
+
+1. USE. You may use the Runtime Files only as part of, and only for the purpose of running, this
+   copy of Intcad. You may not use them separately, with another program, or to develop or
+   distribute another product.
+
+2. NO MODIFICATION OR SEPARATE DISTRIBUTION. You may not modify, reverse engineer, decompile or
+   disassemble the Runtime Files, except and only to the extent that applicable law expressly
+   permits it despite this limitation. You may not remove, obscure or alter any copyright,
+   trademark or other notice in or on the Runtime Files.
+
+3. DISTRIBUTION. If you distribute this copy of Intcad to another person or organization, you
+   must distribute the Runtime Files only as part of the complete Intcad package, unmodified and
+   together with this file and the notices listed in mastra-agent\licenses\. You must ensure
+   that recipients receive these terms and agree to them before using Intcad. You may not
+   distribute the Runtime Files as a standalone runtime or as part of a different product.
+
+4. THIRD-PARTY BENEFICIARY. Microsoft Corporation is a third-party beneficiary of these terms
+   and may enforce them against you.
+
+5. NO WARRANTY. THE RUNTIME FILES ARE PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+   NON-INFRINGEMENT. TO THE MAXIMUM EXTENT PERMITTED BY LAW, MICROSOFT AND THE INTCAD AUTHORS ARE
+   NOT LIABLE FOR ANY DAMAGES ARISING FROM USE OF THE RUNTIME FILES.
+
+6. EXPORT AND COMPLIANCE. You must comply with all applicable laws, including export control and
+   sanctions laws, when using or redistributing the Runtime Files.
+
+7. ACCEPTANCE. By selecting "I accept" in the installer, by installing with the documented
+   silent-install acceptance property, or by selecting "I agree" the first time Intcad starts
+   from a portable copy, you agree to these terms on your own behalf and, if you install or use
+   Intcad for an organization, on that organization's behalf. If you do not agree, do not
+   install or use this copy of Intcad.
+
+The Runtime Files are supplied by Microsoft and are not serviced by the Intcad authors except as
+part of an Intcad update. Security updates for them are delivered by updating Intcad to a
+release that carries newer Microsoft runtime files.

@@ -9,7 +9,9 @@ supplies three values as build environment variables:
 | AuthKit verification origin | `INTCAD_AUTHKIT_VERIFICATION_ORIGIN` | bare HTTPS origin (`https://host[:port]`) |
 | Product service origin | `INTCAD_PRODUCT_HTTPS_ORIGIN` | bare HTTPS origin (`https://host[:port]`) |
 
-`apps/solidcraft/src/account.rs` reads them with `option_env!`, so they are fixed in the binary.
+On macOS, the build script writes one compiled account record that the desktop reads.
+On other platforms, `apps/solidcraft/src/account.rs` reads the values with `option_env!`.
+In either case they are fixed in the binary.
 They are not read from preferences, MCP, the control channel, a design file, a provider response
 or a runtime environment lookup. There is no user-editable bearer destination.
 
@@ -45,7 +47,7 @@ The build fails closed instead of producing an anonymous candidate:
 - the release gate is refused when `production_account_config` is empty;
 - `release.yml` refuses production values from any caller other than the release gate, and
   refuses a build that supplies both staging and production values;
-- the values are injected with `option_env!` before compile exactly as in staging.
+- the values are supplied before compile exactly as in staging.
 
 Package evidence (`build.json`, `accountConfig`) records
 `{"source":"environment:production","sourceRevision":"<checkout SHA>","tupleSha256":"<SHA>"}`
@@ -54,19 +56,21 @@ which account its bytes embed.
 
 ## Verifying a candidate binary
 
-A staged build runs this after packaging, and a reviewer can run it on any extracted package:
+A reviewer can run the package check on the extracted desktop executable from the exact source
+checkout. Supply the reviewed JSON snapshot in `STAGING_ACCOUNT_CONFIG` or
+`PRODUCTION_ACCOUNT_CONFIG`, not in the application's build variables. For example, for staging:
 
 ```sh
-INTCAD_WORKOS_PUBLIC_CLIENT_ID=... INTCAD_AUTHKIT_VERIFICATION_ORIGIN=... \
-INTCAD_PRODUCT_HTTPS_ORIGIN=... \
-python3 -I scripts/ci/verify_embedded_account.py <path-to-intcad-binary>
+GITHUB_SHA="$(git rev-parse HEAD)" \
+STAGING_ACCOUNT_CONFIG="$(git show HEAD:.github/config/intcad-staging-account.json)" \
+python3 -I scripts/ci/verify_embedded_account.py --macho-universal /path/to/Intcad.app/Contents/MacOS/Intcad
 ```
 
-It reads the binary, requires all three exact literal values, and prints the tuple SHA-256 and
-the names of anything missing. Compare that SHA with the candidate's `build.json`; the
-production tuple's SHA is also printed by `scripts/ci/staging_account_config.py
-verify-production`. The command does not launch the desktop app, contact WorkOS or the product
-service, and never prints the values themselves.
+Omit `--macho-universal` for Linux and Windows. On macOS the check requires the complete account
+record in both mounted slices before `build.json` is written. Compare the reported tuple SHA-256
+with the package evidence. `scripts/ci/staging_account_config.py verify-production` reports the
+expected production digest. Neither command launches the app, contacts an account service, or
+prints the configured values. The package check does not verify sign-in.
 
 ## Before a staging package run
 

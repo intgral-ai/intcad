@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Packs the boat for the 3D mouse test model in Preferences into assets/models/test_boat.bin, from a
-binary STL of the low-poly boat (about 850 triangles). Needs numpy.
+binary STL of the low-poly boat. Needs numpy. Use the verified regeneration command in README.md
+to replace the tracked asset. To test packing alone, write to scratch:
 
-    python3 assets/models/make_test_boat.py SOURCE.stl assets/models/test_boat.bin
+    python3 assets/models/make_test_boat.py SOURCE.stl target/test-boat-preview.bin
 
 No reduction happens here: the vertices are welded, and each welded vertex is split by the angle
 between the faces that meet there (more than 40 degrees apart is a crease), so smooth surfaces share

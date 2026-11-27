@@ -1,8 +1,14 @@
 """Fast failure-path checks for the desktop Flatpak and snap process probes."""
+import base64
+from contextlib import redirect_stdout
 import importlib.util
+import io
 import itertools
 import json
+import os
 import struct
+import subprocess
+import tempfile
 import zlib
 from pathlib import Path
 import unittest
@@ -17,14 +23,14 @@ SNAP = importlib.util.module_from_spec(SNAP_SPEC)
 SNAP_SPEC.loader.exec_module(SNAP)
 
 
-def healthy_replies():
+def signed_out_replies():
+    """What the offline probe must see: the desktop runs, controlled entries are refused."""
     return [
         {"id": 1, "ok": True, "result": {"renderer": "gpu", "viewport": [250, 126, 1000, 700]}},
-        {"id": 2, "ok": True, "result": {"feature": 1, "bodies": ["Body1"]}},
-        {"id": 3, "ok": True, "result": {
-            "timeline": [{"error": None}],
-            "bodies": [{"volume_mm3": 20 * 30 * 10, "bbox": {"min": [0, 0, 0], "max": [30, 20, 10]}}],
-        }},
+        {"id": 2, "ok": False, "error": "the host has no commit authority for this controlled entry",
+         "errorDetails": {"code": "AuthUnavailable", "retry": "never"}},
+        {"id": 3, "ok": False, "error": "this controlled entry needs a durable commit path that is not available yet",
+         "errorDetails": {"code": "UnsafeToStart", "retry": "never"}},
     ]
 
 
@@ -44,9 +50,10 @@ def rgba_png(width, height, rows):
 
 class Control:
     """A control connection whose first frame can arrive after the port opens."""
-    def __init__(self, viewports, page=True):
+    def __init__(self, viewports, page=True, host="available"):
         self.viewports = iter(viewports)
         self.page = page
+        self.host = host
         self.requests = []
         self.settimeout = Mock()
 
@@ -67,14 +74,20 @@ class Control:
 
     def readline(self):
         request = self.requests[-1]
-        index = request["id"] - 1
-        reply = healthy_replies()[index] if index < 3 else {"id": request["id"], "ok": True, "result": {}}
-        if index == 0:
-            reply["result"]["viewport"] = next(self.viewports)
-        if request["method"] == "ui.home":
-            reply["result"] = {"open": False}
-        elif request["method"] == "ui.agent_chat":
-            reply["result"] = {"open": True, "webView": {"host": True, "page": self.page}}
+        method = request["method"]
+        if method == "ui.inspect":
+            viewport = next(self.viewports, [250, 126, 1000, 700])
+            reply = {"id": request["id"], "ok": True, "result": {
+                "renderer": "gpu",
+                "viewport": viewport,
+                "assistant": {"open": False, "surface_ready": False, "host": self.host, "centred": False},
+            }}
+        elif method == "ui.screenshot":
+            reply = {"id": request["id"], "ok": True, "result": {}}
+        else:
+            reply = {"id": request["id"], "ok": False,
+                     "error": "the host has no commit authority for this controlled entry",
+                     "errorDetails": {"code": "AuthUnavailable", "retry": "never"}}
         return json.dumps(reply) + "\n"
 
 
@@ -98,20 +111,25 @@ class SnapStartup(unittest.TestCase):
         self.assertEqual(renderer, "gpu")
         self.assertEqual(statistics["nonblack"], 4)
         self.assertEqual([request["method"] for request in control.requests], [
-            "ui.inspect", "ui.inspect", "engine.execute", "document.inspect", "ui.home",
-            "ui.agent_chat", "ui.agent_chat", "ui.screenshot", "app.quit"
+            "ui.inspect", "ui.inspect", "engine.execute", "document.inspect",
+            "ui.agent_chat", "ui.inspect", "ui.screenshot"
         ])
 
     def test_ready_startup_does_not_wait(self):
         control = Control([[250, 126, 1000, 700]])
         self.drive(control)
-        self.assertEqual(sum(r["method"] == "ui.inspect" for r in control.requests), 1)
+        first_model = [r["method"] for r in control.requests].index("engine.execute")
+        self.assertEqual(sum(r["method"] == "ui.inspect" for r in control.requests[:first_model]), 1)
 
-    def test_assistant_must_load_its_page(self):
-        control = Control([[250, 126, 1000, 700]], page=False)
-        with self.assertRaisesRegex(RuntimeError, "page"):
-            self.drive(control, [0, 0, 0, 0, 200])
+    def test_signed_out_assistant_open_is_refused_and_marker_reported(self):
+        control = Control([[250, 126, 1000, 700]])
+        self.drive(control)
         self.assertIn("ui.agent_chat", [r["method"] for r in control.requests])
+
+    def test_assistant_web_runtime_must_be_reported(self):
+        control = Control([[250, 126, 1000, 700]], host="unavailable")
+        with self.assertRaisesRegex(RuntimeError, "web runtime"):
+            self.drive(control, [0, 0, 0, 0, 0, 0, 200])
 
     def test_missing_first_frame_times_out_before_modelling(self):
         control = Control(itertools.repeat(None))
@@ -173,33 +191,85 @@ class DesktopProbe(unittest.TestCase):
         with self.assertRaises(ValueError):
             SMOKE.frame_statistics(truncated)
 
-    def test_ui_thread_and_independent_box_measurement_are_required(self):
-        replies = healthy_replies()
-        self.assertEqual(SMOKE.validate_replies(output(replies)), "gpu")
-        replies[2]["result"]["bodies"][0]["volume_mm3"] = 5900
+    def test_signed_out_desktop_runs_and_refuses_controlled_entries(self):
+        replies = signed_out_replies()
+        self.assertEqual(SMOKE.validate_offline(output(replies)), "gpu")
+        # A controlled entry that executed on a signed-out host is a security failure, not a pass.
+        executed = signed_out_replies()
+        executed[1] = {"id": 2, "ok": True, "result": {"bodies": ["Body1"]}}
         with self.assertRaises(ValueError):
-            SMOKE.validate_replies(output(replies))
+            SMOKE.validate_offline(output(executed))
+        # Both fail-closed codes count, in either position.
+        swapped = signed_out_replies()
+        swapped[1]["errorDetails"]["code"] = "UnsafeToStart"
+        swapped[2]["errorDetails"]["code"] = "AuthUnavailable"
+        self.assertEqual(SMOKE.validate_offline(output(swapped)), "gpu")
+        # Nor may any other refusal stand in for a fail-closed one.
+        wrong_code = signed_out_replies()
+        wrong_code[2]["errorDetails"]["code"] = "CapabilityDenied"
+        with self.assertRaises(ValueError):
+            SMOKE.validate_offline(output(wrong_code))
+        # A refusal without the details that name the reason is not proof either.
+        no_details = signed_out_replies()
+        no_details[1].pop("errorDetails")
+        with self.assertRaises(ValueError):
+            SMOKE.validate_offline(output(no_details))
+
+    def test_native_wayland_reports_its_diagnostic_and_no_page(self):
+        replies = [
+            {"id": 4, "ok": False, "error": "the host has no commit authority for this controlled entry",
+             "errorDetails": {"code": "AuthUnavailable", "retry": "never"}},
+            {"id": 5, "ok": True, "result": {"assistant": {"open": False, "surface_ready": False,
+                                                           "host": "native_wayland", "centred": False}}},
+        ]
+        self.assertEqual(SMOKE.validate_signed_out_assistant(replies, "wayland"),
+                         "native-Wayland diagnostic; page NOT VERIFIED offline")
+
+    def test_live_probe_rejects_a_marker_from_the_wrong_backend(self):
+        frame = rgba_png(2, 2, (b"\x00\xff\x00\x00\xff\x00\xff\x00\xff") * 2)
+        for backend, host in (("x11", "native_wayland"), ("xwayland", "native_wayland"),
+                              ("wayland", "available")):
+            replies = signed_out_replies() + [
+                {"id": 4, "ok": False, "errorDetails": {"code": "AuthUnavailable"}},
+                {"id": 5, "ok": True, "result": {"assistant": {
+                    "open": False, "surface_ready": False, "host": host, "centred": False,
+                }}},
+                {"id": 6, "ok": True, "result": {"width": 2, "height": 2}},
+            ]
+            stdout = output(replies) + "\n" + base64.b64encode(frame).decode("ascii")
+            with self.subTest(backend=backend, host=host), \
+                    patch.object(SMOKE.subprocess, "run", return_value=Mock(returncode=0, stdout=stdout, stderr="")), \
+                    self.assertRaisesRegex(ValueError, "Assistant.*host"):
+                SMOKE.probe(backend=backend)
+
+    def test_offline_summary_does_not_claim_modelling_or_page_load(self):
+        stdout = io.StringIO()
+        with (
+            patch.object(SMOKE.shutil, "which", return_value="/fixture/tool"),
+            patch.object(SMOKE.subprocess, "run"),
+            redirect_stdout(stdout),
+        ):
+            SMOKE.run_backend("x11")
+        self.assertIn("signed-out refusals", stdout.getvalue())
+        self.assertIn("page NOT VERIFIED", stdout.getvalue())
+        self.assertNotIn("modelling", stdout.getvalue())
 
     def test_cli_version_or_partial_control_output_is_not_desktop_success(self):
         with self.assertRaises(ValueError):
-            SMOKE.validate_replies("intcad-cli 0.3.0\n")
+            SMOKE.validate_offline("intcad-cli 0.3.0\n")
         with self.assertRaises(ValueError):
-            SMOKE.validate_replies(output(healthy_replies()[:1]))
+            SMOKE.validate_offline(output(signed_out_replies()[:1]))
+        with self.assertRaises(ValueError):
+            SMOKE.validate_offline(output(signed_out_replies()[:2]))
 
-    def test_startup_without_viewport_or_failed_feature_is_not_success(self):
-        for failure in ["viewport", "feature", "control", "bounds"]:
-            with self.subTest(failure=failure):
-                replies = healthy_replies()
-                if failure == "viewport":
-                    replies[0]["result"]["viewport"][2] = 0
-                elif failure == "feature":
-                    replies[2]["result"]["timeline"][0]["error"] = "operation failed"
-                elif failure == "control":
-                    replies[1] = {"id": 2, "ok": False, "error": "startup failure"}
-                else:
-                    replies[2]["result"]["bodies"][0]["bbox"]["max"][0] = 29
+    def test_startup_without_a_usable_viewport_is_not_success(self):
+        for renderer, width in [("gpu", 0), ("", 1000)]:
+            with self.subTest(renderer=renderer, width=width):
+                replies = signed_out_replies()
+                replies[0]["result"]["renderer"] = renderer
+                replies[0]["result"]["viewport"][2] = width
                 with self.assertRaises(ValueError):
-                    SMOKE.validate_replies(output(replies))
+                    SMOKE.validate_offline(output(replies))
 
     def test_flatpak_assistant_needs_an_open_panel_and_a_loaded_page(self):
         good = {"ok": True, "result": {"open": True, "webView": {"host": True, "page": True}}}
@@ -236,6 +306,52 @@ class DesktopProbe(unittest.TestCase):
         self.assertEqual(SMOKE.validate_assistant([page], "xwayland"), "page loaded")
         with self.assertRaises(ValueError):
             SMOKE.validate_assistant([page], "wayland")
+
+
+class SnapLaunch(unittest.TestCase):
+    def test_snap_rechecks_the_namespace_after_confinement_before_launch(self):
+        class CapturedLaunch(Exception):
+            pass
+
+        for expected, launch in ((os.readlink("/proc/self/ns/net"), True), ("net:[0]", False)):
+            with self.subTest(launch=launch), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                app = root / "usr/bin/intcad"
+                app.parent.mkdir(parents=True)
+                app.write_text('#!/bin/sh\nprintf "desktop launched: %s\\n" "$*"\n')
+                app.chmod(0o755)
+                with (
+                    patch.object(SNAP.Path, "is_dir", return_value=True),
+                    patch.object(SNAP.Path, "home", return_value=root),
+                    patch.object(SNAP.os, "readlink", return_value=expected),
+                    patch.object(SNAP.socket, "if_nameindex", return_value=[(1, "lo")]),
+                    patch.object(SNAP.socket, "socket") as socket,
+                    patch.object(SNAP.subprocess, "Popen", side_effect=CapturedLaunch) as start,
+                    self.assertRaises(CapturedLaunch),
+                ):
+                    socket.return_value.__enter__.return_value.connect_ex.return_value = 1
+                    SNAP.run_backend("x11", root)
+                command = start.call_args.args[0]
+                self.assertEqual(command[4:8], ["snap", "run", "--shell", "intcad"])
+                # Execute the exact confined launch body against a harmless stand-in desktop.
+                result = subprocess.run(["bash", *command[8:]], env=dict(os.environ, SNAP=tmp),
+                                        capture_output=True, text=True, timeout=5)
+                if launch:
+                    self.assertEqual(result.stdout, "desktop launched: --control 18839\n", result.stderr)
+                    self.assertEqual(result.returncode, 0)
+                else:
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("Snap network namespace changed", result.stderr)
+                    self.assertNotEqual(result.returncode, 0)
+
+    def test_snap_refuses_launch_when_the_starting_namespace_has_extra_links(self):
+        with (
+            patch.object(SNAP.socket, "if_nameindex", return_value=[(1, "lo"), (2, "eth0")]),
+            patch.object(SNAP.subprocess, "Popen") as start,
+            self.assertRaisesRegex(RuntimeError, "loopback-only network namespace"),
+        ):
+            SNAP.run_backend("x11", Path("."))
+        start.assert_not_called()
 
 
 if __name__ == "__main__":

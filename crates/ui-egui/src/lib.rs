@@ -248,6 +248,7 @@ mod round_pick_tests;
 mod rule_editor;
 #[cfg(test)]
 mod rule_editor_tests;
+pub mod runtime_terms;
 pub mod save_job;
 pub mod scenario;
 pub(crate) mod scene_palette;
