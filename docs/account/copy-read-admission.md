@@ -106,7 +106,9 @@ halves, with no change in behaviour. `admit_copy_path` and `answered` call the s
 
   `STOP_MARGIN` is proposed at 30 s. It is set from a measurement of the time from `stop` to the
   window's answer, taken while meshing and while solving, recorded beside the
-  [desktop bounds](control-safe-stop-bound.md).
+  [desktop bounds](control-safe-stop-bound.md). A first measurement on the FEA stack: one
+  agent's solve over the bridge (a 100 x 20 x 1.5 mm sheet at a 0.4 mm mesh, Linux x86-64)
+  answered 0.06 s after the host stopped it while meshing, and 0.04 s after while solving.
 - **b. Lease renewal.** A stoppable copy read registers its operation with the existing renewal
   job (`AccountPort::control_admitted`), and `authorization_bound` uses the renewed cutoff for it.
   - `DirectControl` already does both, on a fresh admission.
