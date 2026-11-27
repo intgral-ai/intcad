@@ -248,6 +248,7 @@ mod round_pick_tests;
 mod rule_editor;
 #[cfg(test)]
 mod rule_editor_tests;
+pub mod runtime_terms;
 pub mod save_job;
 pub mod scenario;
 pub(crate) mod scene_palette;
@@ -3442,6 +3443,7 @@ impl SolveApp {
                 agent_chat::poll(self, ui.ctx());
                 // Preferences and Keyboard Shortcuts open from Home too (its links, the gear, Ctrl+,).
                 prefs::show(self, ui.ctx());
+                runtime_terms::show(self, ui.ctx());
                 browser::editors(self, ui);
                 return;
             }
@@ -3587,6 +3589,7 @@ impl SolveApp {
         shortcut_box::show(self, ui.ctx());
         agent_chat::ask_here::show(self, ui.ctx());
         prefs::show(self, ui.ctx());
+        runtime_terms::show(self, ui.ctx());
         toolbar_custom::window(self, ui.ctx());
     }
 

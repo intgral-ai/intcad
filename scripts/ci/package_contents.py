@@ -51,6 +51,15 @@ AGENT_REQUIRED = (
 # The modelling skills the agent installs at start: every skill is `<set>/<skill>/SKILL.md` under
 # the agent's `skills/`. A release package whose agent has none cannot do the job INT-1473 asks.
 AGENT_SKILL_SUFFIX = "/SKILL.md"
+# The Microsoft Visual C++ runtime files the Windows x64 agent's native modules load. They ship
+# beside `node.exe` (application-local) and the receipt records their hashes, versions and source.
+# Only a Windows agent carries them; the Linux, macOS and Agent-free packages must not.
+VC_RUNTIME_REQUIRED = (
+    "mastra-agent/node_modules/@libsql/win32-x64-msvc/VCRUNTIME140.dll",
+    "mastra-agent/node_modules/@ast-grep/napi-win32-x64-msvc/VCRUNTIME140.dll",
+    "mastra-agent/vc-runtime-receipt.json",
+    "mastra-agent/licenses/VC-RUNTIME-NOTICE.txt",
+)
 # A universal macOS app carries one agent folder per CPU, named for the target.
 TARGET_SLICE = re.compile(r"^(aarch64|x86_64|i686|arm64|armv7)-(apple-darwin|unknown-linux-gnu|unknown-linux-musl|pc-windows-msvc)$")
 
@@ -370,6 +379,9 @@ def agent_report(names, target=None, roots=None):
         have = found[key]
         prefix = "" if not key[1] else key[1] + "/"
         missing.extend(prefix + required for required in AGENT_REQUIRED if required not in have)
+        # The Microsoft runtime ships only with the Windows agent, whose Node is node.exe.
+        if any(name.rsplit("/", 1)[-1] == "node.exe" for name in have):
+            missing.extend(prefix + required for required in VC_RUNTIME_REQUIRED if required not in have)
         if key not in nodes:
             missing.append(prefix + AGENT_DIR + "/node")
         # INT-1473's work starts from the modelling skills; a slice that holds only some other

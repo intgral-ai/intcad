@@ -81,6 +81,27 @@ Windows x86/arm64, Linux arm64/riscv64, FreeBSD and wasm build packages without 
 workflow; they do not advertise it in 1.0. Signing and notarization hooks remain in the existing
 package scripts. This work does not sign, notarize or publish anything.
 
+## Microsoft Visual C++ runtime (Windows x64)
+
+The Windows x64 agent's native modules (`@libsql/win32-x64-msvc` and
+`@ast-grep/napi-win32-x64-msvc`) import `VCRUNTIME140.dll`. A clean Windows install does not
+carry it, so the package ships the unmodified Microsoft runtime beside each native module. Node
+loads a native module's dependency from that module's own folder, so the file is placed in both
+folders, not only beside `node.exe`.
+
+- `packaging/windows/vc-runtime-files.json` is the receipt: licensed source, toolset version,
+  file name, version, architecture, SHA-256, target paths and the components that load it.
+- `packaging/windows/vc-runtime.ps1 -Action Stage` verifies the receipt and the Microsoft
+  signature before copying; a mismatch fails the build. `-Action Verify` checks an installed MSI
+  or an extracted ZIP against the same receipt.
+- `packaging/windows/VC-RUNTIME-NOTICE.txt`, `VC-RUNTIME-TERMS.txt` and the receipt travel in the
+  package. The MSI shows the terms on its licence page and requires `INTCAD_RUNTIME_TERMS=1` for
+  a silent install; a portable copy shows the terms once on first start.
+- The licensing basis and responsibilities are in
+  `packaging/windows/vc-runtime-compliance.md`. The files are Microsoft's; Intcad ships them
+  unmodified and services them by shipping a newer runtime with a later Intcad release. No
+  system-wide runtime, `System32` file, developer machine or hosted image supplies them.
+
 ## Codex: discovered, not bundled
 
 Codex ACP is the user's own installation. Discovery searches the same places the direct agent
