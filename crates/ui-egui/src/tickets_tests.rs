@@ -239,6 +239,9 @@ fn a_scripted_agent_drafts_is_started_on_one_ticket_and_its_check_leaves_it_wait
     let items = page["items"][&run].as_array().cloned().unwrap_or_default();
     let shaped = |item: &Value| item["rule"].is_string() && item["state"].is_string() && item["count"].is_u64() && item["parts"].is_array() && item["values"].is_array();
     assert!(!items.is_empty() && items.iter().all(shaped), "{}", page["items"]);
+    // Each rule has its name in the page's language beside its id.
+    let named = |item: &Value| item["name"].as_str().is_some_and(|name| Some(name) != item["rule"].as_str() && !name.is_ascii());
+    assert!(items.iter().all(named), "{}", page["items"]);
     assert!(items.iter().any(|item| item["state"] == "unsupported"), "the empty factory table covers nothing: {}", page["items"]);
     assert_eq!(items.len() as u64, check.counts.values().sum::<u64>(), "one item per rule the run counted");
     dump(&mut h, "check-items");

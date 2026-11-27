@@ -154,7 +154,7 @@ function counted(items: CheckItem[]) {
   return counts;
 }
 
-/** The items a check's run reported, under its line in the record: state, parts, what was found against what is required, the item's own name small at the end, and the run at the foot. */
+/** The items a check's run reported, under its line in the record: state, the rule's name, parts, what was found against what is required, the item's own id small at the end, and the run at the foot. */
 function CheckItems({ items, run, words }: { items: CheckItem[]; run?: string; words: Words }) {
   const sorted = [...items].sort((a, b) => rank(a.state) - rank(b.state));
   return (
@@ -165,10 +165,11 @@ function CheckItems({ items, run, words }: { items: CheckItem[]; run?: string; w
             <Badge size="sm" emphasis="subtle" variant={item.state === 'failed' ? 'destructive' : item.state === 'advisory' ? 'warning' : 'neutral'}>
               {itemWord(words, item.state)}
             </Badge>
+            <span className="min-w-0 text-foreground">{item.name ?? item.rule}</span>
             {item.parts.length > 0 && <span className="min-w-0 text-foreground/90">{item.parts.join('、')}</span>}
             {(item.values ?? []).length > 0 && <span className="min-w-0">{(item.values ?? []).join('；')}</span>}
             {item.count > 1 && <span className="tabular-nums">×{item.count}</span>}
-            <span className="ml-auto min-w-0 font-mono break-all text-muted-foreground/70">{item.rule}</span>
+            {(item.name ?? item.rule) !== item.rule && <span className="ml-auto min-w-0 font-mono break-all text-muted-foreground/70">{item.rule}</span>}
           </li>
         ))}
       </ul>

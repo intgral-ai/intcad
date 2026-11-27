@@ -276,8 +276,8 @@ pub(crate) fn mark_stale(app: &mut SolveApp, root: &std::path::Path) {
     }
 }
 
-/// A run's item as the page reads it (`CheckItem` in host.ts): what was found against what is
-/// required in the Review panel's own words.
+/// A run's item as the page reads it (`CheckItem` in host.ts): the rule's name, and what was found
+/// against what is required, in the Review panel's own words.
 #[cfg(not(target_arch = "wasm32"))]
 fn page_item(item: &RunItem) -> serde_json::Value {
     let values: Vec<String> = item
@@ -288,7 +288,8 @@ fn page_item(item: &RunItem) -> serde_json::Value {
             None => trf("ui.dfm_review_value_no_requirement", &[("measured", measured)]),
         })
         .collect();
-    serde_json::json!({ "rule": item.rule, "state": item.state, "count": item.count, "parts": item.parts, "values": values })
+    let name = crate::dfm_review::rule_name(&item.rule);
+    serde_json::json!({ "rule": item.rule, "name": name, "state": item.state, "count": item.count, "parts": item.parts, "values": values })
 }
 
 #[cfg(target_arch = "wasm32")]

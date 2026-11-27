@@ -438,6 +438,8 @@ export interface TicketEvent {
 export interface CheckItem {
   /** The item's own name in the check (a rule's id), shown small. */
   rule: string;
+  /** The rule's name for a person, in the app's language; its id where it has none. */
+  name?: string;
   state: string;
   count: number;
   parts: string[];

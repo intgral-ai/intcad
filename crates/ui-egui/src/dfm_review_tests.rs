@@ -1580,3 +1580,15 @@ fn review_stop_bound_anchors_the_earlier_limit_on_the_wall_clock() {
     // 4 s of grant left, 60 s window: the grant bounds the run.
     assert_eq!(crate::dfm_review::review_stop_at_ms(now, Duration::from_secs(60), Some(remaining)), now + 4_000);
 }
+
+/// Every rule a run can report has a name a designer reads (the catalogues delivered complete are
+/// held to English by their own test); a rule with none, from a newer report, is shown by its id.
+#[test]
+fn every_rule_the_check_can_report_has_a_name() {
+    let rules: Vec<&str> = solidcraft_engine::dfm::rule_ids().collect();
+    assert!(rules.len() > 20 && rules.contains(&"sm.min_flange") && rules.contains(&"app.flat_no_overlap"), "{rules:?}");
+    let _english = crate::i18n::scope("en");
+    let nameless: Vec<&&str> = rules.iter().filter(|rule| crate::dfm_review::rule_name(rule) == **rule).collect();
+    assert!(nameless.is_empty(), "no name for {nameless:?}");
+    assert_eq!(crate::dfm_review::rule_name("sm.not_a_rule"), "sm.not_a_rule");
+}
