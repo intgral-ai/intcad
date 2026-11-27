@@ -534,8 +534,10 @@ a client that gives up sooner only sees its own timeout, though the request goes
 app: then call `pending` (or `inspect_design`) before sending anything again.
 
 In the agent chat, those 300 seconds start when the user presses **Allow**: the app does not count
-the time a request waits on its approval card (up to 240 s), so a call may block that long more.
-A reply that does not come within 360 seconds is not waited for any longer, and the request is
+the time a request waits on its approval card (up to 240 s), so a call may block that long more:
+up to 540 seconds before it returns `still running:`, and a client there needs a per-call timeout
+above that (say 570 s) to see the error. A first reply that does not come within 360 seconds is
+not waited for any longer, and the request is
 not sent again: it may still be running in the app (ask `running`).
 
 `--wait-for-forecast` (with `--connect`) is for a client that waits on a tool call for as long as
