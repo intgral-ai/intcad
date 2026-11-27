@@ -800,6 +800,11 @@ impl IdentityLifecycle {
                 attempt.sends = 0;
             }
             attempt.sends += 1;
+            if attempt.sends >= MAX_SENDS {
+                // If this process dies in transport, the next batch must still cool
+                // down. Reserve through the request timeout; completion replaces it.
+                attempt.next = now.saturating_add(REQUEST_TIMEOUT.as_secs()).saturating_add(batch_cooldown(attempt.cooldown_step));
+            }
             let remaining = BATCH_BUDGET.saturating_sub(Duration::from_secs(now.saturating_sub(attempt.started)));
             let reserved_at = self.clock.monotonic_now();
             self.journal.write_status_attempt(&attempt)?;

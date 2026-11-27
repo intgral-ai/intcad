@@ -572,7 +572,46 @@ fn residual_logout_tracks_a_missing_owned_commit_generation_before_cleanup() {
     let revoke = calls.iter().position(|call| *call == Call::Delete(COMMIT_KEY.to_owned())).unwrap();
     let retain = calls.iter().position(|call| *call == Call::Set(OWNED_KEY.to_owned())).unwrap();
     let delete = calls.iter().position(|call| *call == Call::Delete(access_key(3))).unwrap();
-    assert!(revoke < retain && retain < delete);
+    assert!(retain < revoke && revoke < delete);
+
+    fake.inner.lock().unwrap().fail_delete = None;
+    identity_store(&fake).delete().unwrap();
+    assert!(fake.keys().is_empty());
+}
+
+#[test]
+fn missing_owned_generation_index_write_failure_keeps_the_commit_for_retry() {
+    let fake = RecordingStore::default();
+    let mut store = identity_store(&fake);
+    let saved = record(7, 3);
+    store.store_pending(&saved).unwrap();
+    fake.put(OWNED_KEY, "2");
+    fake.fail_set(Some(OWNED_KEY));
+
+    assert_eq!(store.delete(), Err(IdentityStoreError::Unavailable));
+    assert_eq!(store.load().unwrap(), Some(saved));
+    assert_eq!(fake.entry(OWNED_KEY).as_deref(), Some("2"));
+
+    fake.fail_set(None);
+    identity_store(&fake).delete().unwrap();
+    assert!(fake.keys().is_empty());
+}
+
+#[test]
+fn complete_owned_index_allows_all_deletes_despite_a_failed_update() {
+    let fake = RecordingStore::default();
+    let mut store = identity_store(&fake);
+    store.store_pending(&record(7, 3)).unwrap();
+    fake.put(OWNED_KEY, "3\n2");
+    fake.put(&access_key(2), "orphan");
+    fake.fail_set(Some(OWNED_KEY));
+    fake.inner.lock().unwrap().fail_delete = Some(access_key(3));
+
+    assert_eq!(store.delete(), Err(IdentityStoreError::Unavailable));
+    assert!(store.load().unwrap().is_none());
+    assert!(fake.entry(&access_key(3)).is_some());
+    assert!(fake.entry(&access_key(2)).is_none(), "a later generation delete must still be attempted");
+    assert_eq!(fake.entry(OWNED_KEY).as_deref(), Some("3\n2"), "the failed delete remains indexed");
 
     fake.inner.lock().unwrap().fail_delete = None;
     identity_store(&fake).delete().unwrap();

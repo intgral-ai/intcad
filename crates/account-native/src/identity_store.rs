@@ -380,31 +380,32 @@ impl IdentityStore for CredentialIdentityStore {
     fn delete(&mut self) -> Result<(), IdentityStoreError> {
         let commit = self.store.get(COMMIT_KEY).map_err(|_| IdentityStoreError::Unavailable)?;
         let current = commit.as_deref().and_then(parse_commit).map(|commit| commit.token_generation);
-        // Revoke the commit first: this is the logout linearization point. A corrupt or unreadable
-        // owned list must never leave the old record readable, and a crash during the remaining
-        // deletes leaves no readable record.
-        self.store.delete(COMMIT_KEY).map_err(|_| IdentityStoreError::Unavailable)?;
-        let mut result = Ok(());
-        // Read owned best-effort only after revocation. A corrupt list cannot block cleanup of the
-        // current generation, but unknown orphan keys may remain, so the cleanup result stays
-        // `Unavailable` even when the commit and the current generation are gone. Keep
-        // an unenumerable list rather than reporting false success on the next cleanup.
         let owned = self.read_owned();
+        if matches!(owned, Err(IdentityStoreError::Unavailable)) && current.is_some() {
+            // A retry must still be able to recover the current generation if the index
+            // couldn't be read to check whether it already accounts for that generation.
+            return Err(IdentityStoreError::Unavailable);
+        }
         let indexed = owned.is_ok();
         let mut generations = owned.unwrap_or_default();
-        if self.store.delete(ACTIVE_KEY).is_err() {
-            result = Err(IdentityStoreError::Unavailable);
-        }
         if let Some(generation) = current
             && !generations.contains(&generation)
         {
             generations.push(generation);
+            if indexed {
+                // Do not lose the only durable reference if repairing the index fails.
+                if generations.len() > MAX_OWNED_GENERATIONS {
+                    return Err(IdentityStoreError::Unavailable);
+                }
+                self.write_owned(&generations)?;
+            }
         }
-        if indexed && !generations.is_empty() {
-            // The commit is gone. Record all known generations before touching their keys
-            // so a failed delete, including of an unindexed commit generation, can be retried.
-            self.write_owned(&generations)?;
-        }
+        // Revoking the commit is the cleanup linearization point. A corrupt index still
+        // permits best-effort cleanup of the current generation; leave the corrupt index
+        // intact so unknown orphan keys cannot turn into a later false success.
+        self.store.delete(COMMIT_KEY).map_err(|_| IdentityStoreError::Unavailable)?;
+        let mut result = self.store.delete(ACTIVE_KEY).map_err(|_| IdentityStoreError::Unavailable);
+        let indexed_count = generations.len();
         let mut retained = Vec::new();
         for generation in generations {
             if self.delete_generation(generation).is_err() {
@@ -419,7 +420,7 @@ impl IdentityStore for CredentialIdentityStore {
             if result.is_ok() {
                 self.store.delete(OWNED_KEY).map_err(|_| IdentityStoreError::Unavailable)?;
             }
-        } else {
+        } else if retained.len() < indexed_count {
             self.write_owned(&retained)?;
         }
         result

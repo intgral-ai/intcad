@@ -704,6 +704,15 @@ mod process {
 
     impl SessionVerifier for FileScript {
         fn verify(&self, token: &Secret) -> Verify {
+            if self.0.join("crash-status").exists() {
+                assert!(token.expose_secret() == "old-access");
+                signal_and_pause(&self.0);
+            }
+            if self.0.join("retry-status").exists() {
+                assert!(token.expose_secret() == "old-access");
+                fs::write(self.0.join("status-checked"), []).unwrap();
+                return Ok(VerifiedSession { account_id: "verified".to_owned(), same_login_binding: None });
+            }
             assert!(token.expose_secret() == "new-access");
             if self.0.join("stop-before-verification").exists() {
                 signal_and_pause(&self.0);
@@ -784,10 +793,10 @@ mod process {
 
     pub(super) fn child(root: PathBuf) {
         let mode = std::env::var("INTCAD_IDENTITY_CHILD_MODE").unwrap();
-        assert!(matches!(mode.as_str(), "refresh" | "barrier" | "crash-locked" | "crash-pending"));
+        assert!(matches!(mode.as_str(), "refresh" | "barrier" | "crash-locked" | "crash-pending" | "crash-status"));
         let path = std::env::var_os("INTCAD_IDENTITY_CHILD_STORE").unwrap().into();
         let clock = Arc::new(Clock::default());
-        clock.set_wall(170);
+        clock.set_wall(if mode == "crash-status" { 110 } else { 170 });
         if mode == "crash-locked" {
             let root = root.clone();
             *clock.on_refresh_locked.lock().unwrap() = Some(Box::new(move || signal_and_pause(&root)));
@@ -907,6 +916,40 @@ mod process {
         assert_eq!(lease.token_generation(), if pending { 3 } else { 2 });
         assert!(!f.root.join("response.json").exists());
     }
+
+    pub(super) fn killed_after_final_status_reservation() {
+        let f = Fixture::new();
+        let (_, store) = seed(&f);
+        let journal = f.journal();
+        // Two attempts have completed; the third can start now, with room in the batch.
+        journal
+            .write_status_attempt(&crate::identity_journal::StatusAttempt {
+                domain: store.load().unwrap().unwrap().domain,
+                started: 107,
+                sends: 2,
+                next: 110,
+                cooldown_step: 0,
+            })
+            .unwrap();
+        fs::write(f.root.join("crash-status"), []).unwrap();
+        Peer::spawn(&f.root, "crash-status", &store.path).kill_at_signal(&f.root);
+        fs::remove_file(f.root.join("crash-status")).unwrap();
+        fs::write(f.root.join("retry-status"), []).unwrap();
+
+        let reservation = journal.read_status_attempt().unwrap().unwrap();
+        assert_eq!(reservation.sends, 3);
+        let fresh = lifecycle(&f.root, store, f.clock.clone());
+        f.clock.set_wall(110);
+        assert_eq!(fresh.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::Transient);
+        assert!(!f.root.join("status-checked").exists());
+        assert!(reservation.next >= 115);
+        f.clock.set_wall(reservation.next - 1);
+        assert_eq!(fresh.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::Transient);
+        assert!(!f.root.join("status-checked").exists());
+        f.clock.set_wall(reservation.next);
+        assert_eq!(fresh.ensure(IdentityTrigger::Background, WAIT).unwrap().token_generation(), 1);
+        assert!(f.root.join("status-checked").exists());
+    }
 }
 
 #[cfg(unix)]
@@ -940,6 +983,12 @@ fn process_death_after_refresh_lock_releases_it_without_a_stale_lease() {
 #[test]
 fn process_death_after_pending_commit_recovers_with_the_rotated_refresh() {
     process::killed(true);
+}
+
+#[cfg(unix)]
+#[test]
+fn process_death_after_final_status_reservation_preserves_batch_cooldown() {
+    process::killed_after_final_status_reservation();
 }
 
 #[test]
