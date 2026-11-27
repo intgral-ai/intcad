@@ -43,6 +43,9 @@ const EMPTY_TEXT: f32 = 320.0;
 pub(crate) const MIN_PANEL: f32 = 280.0;
 pub(crate) const MAX_PANEL: f32 = 560.0;
 pub(crate) const DEFAULT_PANEL: f32 = 320.0;
+/// The Tickets panel's first width, room for a ticket's title as in its designs. It opens at it
+/// while the stored width is still the first one, which a width never dragged cannot be told from.
+pub(crate) const TICKETS_PANEL: f32 = 400.0;
 /// The width the view keeps beside the panel. In a window too narrow for both, the panel is not
 /// drawn and the rail still marks its item, so the view never shrinks to nothing.
 pub(crate) const MIN_VIEW: f32 = 240.0;
@@ -200,7 +203,8 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         return;
     }
     let widest = MAX_PANEL.min(room);
-    let want = panel_width(app).min(widest);
+    let stored = panel_width(app);
+    let want = if item == Item::Tickets && stored == DEFAULT_PANEL { TICKETS_PANEL } else { stored }.min(widest);
     // The preference is the one memory of the width. The panel is laid out from it on every
     // frame, so a width set from outside (the control channel, a restored preferences file)
     // shows at once, and a panel squeezed by a narrow window has its chosen width back in a

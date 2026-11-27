@@ -365,6 +365,38 @@ fn the_panel_is_dragged_wider_and_keeps_its_width() {
     assert!((rect_of("rail:panel").unwrap().width() - MAX_PANEL).abs() <= 0.5, "never wider than its greatest width");
 }
 
+/// The Tickets panel opens at its own first width while no width was chosen, and opening it
+/// stores nothing, so the other panels keep theirs. A width chosen before wins, and a drag on the
+/// Tickets panel is that width for every panel.
+#[test]
+fn the_tickets_panel_opens_wider_until_a_width_is_chosen() {
+    let mut h = window(LayoutMode::Floating, 1400);
+    click(&mut h, Item::Tickets);
+    let panel = rect_of("rail:panel").unwrap();
+    assert!((panel.width() - TICKETS_PANEL).abs() <= 1.0, "{panel:?}");
+    assert_eq!(h.app.preferences.right_rail_width, DEFAULT_PANEL, "opening it stores nothing");
+    for other in [Item::Files, Item::Review] {
+        click(&mut h, other);
+        assert!((rect_of("rail:panel").unwrap().width() - DEFAULT_PANEL).abs() <= 1.0, "{other:?}");
+    }
+
+    h.call("ui.prefs", json!({"right_rail_open": "tickets", "right_rail_width": 360.0}));
+    h.settle();
+    assert!((rect_of("rail:panel").unwrap().width() - 360.0).abs() <= 1.0, "a width chosen before wins");
+
+    h.call("ui.prefs", json!({"right_rail_width": DEFAULT_PANEL}));
+    h.settle();
+    let panel = rect_of("rail:panel").unwrap();
+    let grip = [f64::from(panel.left()) - 2.0, f64::from(panel.center().y)];
+    h.step(&json!({"drag": [grip, [grip[0] - 60.0, grip[1]]]})).unwrap();
+    h.settle();
+    let wider = rect_of("rail:panel").unwrap();
+    assert!((wider.width() - (TICKETS_PANEL + 60.0)).abs() <= 3.0, "{panel:?} to {wider:?}");
+    assert!((h.app.preferences.right_rail_width - wider.width()).abs() <= 0.5, "the drag is remembered");
+    click(&mut h, Item::Files);
+    assert!((rect_of("rail:panel").unwrap().width() - wider.width()).abs() <= 0.5, "and is every panel's width");
+}
+
 /// The rail and its panel read in Dark, Light and Black: a quiet name and the open item's name
 /// on the rail, a title and the empty block's sentence in the panel.
 #[test]
