@@ -300,9 +300,8 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
     }
     // Its edges take a drag in a margin of the app's own beside and above the view (a native view
-    // takes every press on it), so the box keeps that margin inside the room.
-    let grip = ctx.global_style().interaction.resize_grab_radius_side;
-    bounds = Rect::from_min_max(pos2(bounds.left() + grip, bounds.top() + grip), pos2(bounds.right() - grip, bounds.bottom()));
+    // takes every press on it): inside the gap the room keeps around the box, which stays put.
+    let grip = ctx.global_style().interaction.resize_grab_radius_side.min(gap);
     let width = wanted.min(bounds.width().max(0.0));
     // A height the person set is as tall as the page may be: it lays out to the view it is given.
     let (height, most) = if set.1 > 0.0 {
