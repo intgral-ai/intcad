@@ -14,12 +14,22 @@ on:
     branches: [main]
   merge_group:
     types: [checks_requested]
+  push:
+    # A stable tag is the formal post-promotion gate: the PR gate runs on the synthetic
+    # merge ref, which never becomes a main commit, so the promoted commit is gated by
+    # the maintainer's tag instead. Branch pushes stay out so merges do not start the
+    # full matrix.
+    tags: ["v*"]
   workflow_dispatch:
   workflow_call:
 
 permissions:
   contents: read
   actions: read
+
+# What the release packages carry is not declared here: the gate reads `DISTRIBUTION` from
+# what the packages job observed in the built installers, so a declaration, an environment
+# flag or a file name cannot substitute for the bytes.
 
 concurrency:
   # Never cancel a running candidate from this gate.  The reusable ci/rig
@@ -50,6 +60,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
           MERGE_BASE: ${{ github.event.merge_group.base_ref }}
           MERGE_HEAD: ${{ github.event.merge_group.head_ref }}
+          REF: ${{ github.ref }}
         run: python3 -I scripts/ci/release_candidate.py --out "$GITHUB_OUTPUT"
 
   ci:
@@ -71,10 +82,16 @@ jobs:
       full_validation: true
 
   packages:
+    name: packages
     needs: [candidate]
     if: needs.candidate.outputs.verify == 'true' && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
     uses: ./.github/workflows/release.yml
     with:
+      gate_bound: true
+      # The candidate must embed the production account tuple, so the installed app can sign
+      # in. The values live in a protected repository variable, never in this repository's
+      # files; an unset variable fails the build closed instead of shipping an anonymous app.
+      production_account_config: ${{ vars.INTCAD_PRODUCTION_ACCOUNT_CONFIG }}
       beta_three_platforms: ${{ github.event_name == 'pull_request' && github.base_ref == 'main' && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.') }}
 
   beta-gate:
@@ -183,7 +200,7 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.candidate.outputs.verify == 'true' && always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
         with:
-          pattern: package-evidence-*
+          pattern: package-evidence-*-a${{ github.run_attempt }}
           path: package-evidence
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: needs.candidate.outputs.verify == 'true' && always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
@@ -208,12 +225,14 @@ jobs:
           HEAD_REF: ${{ github.head_ref || github.ref_name }}
           CANDIDATE_VERIFY: ${{ needs.candidate.outputs.verify }}
           CANDIDATE_REASON: ${{ needs.candidate.outputs.reason }}
+          DISTRIBUTION: ${{ needs.packages.outputs.distribution }}
         run: |
           if [ "$CANDIDATE_VERIFY" != "true" ]; then
             echo "::error::Release gate not started: $CANDIDATE_REASON"
             exit 1
           fi
-          python3 - <<'PY'
+          # Isolated mode: the candidate checkout's root cannot shadow an import.
+          python3 -I - <<'PY'
           import hashlib, json, os, re, subprocess, sys
           from pathlib import Path
           sys.path.insert(0, 'scripts/ci')
@@ -334,12 +353,33 @@ jobs:
                   contents[identity] = data
               except (OSError, ValueError, TypeError, KeyError, AttributeError) as error:
                   problems.append('package contents: ' + str(error))
-          # #14/#15 (the Mastra installed runtime) are not applicable only when
-          # the workflow declares native distribution AND the built installers
-          # prove it: every canonical package inspected, no runtime markers, and
-          # the digests match build.json. A declaration or a name cannot substitute.
-          problems.extend(content.problems(sha, descriptors, contents))
+          # The legacy workflow runtime remains unapproved. The native proof is
+          # not an agent proof: #214's real scanner/grader must be integrated
+          # before a built-in agent distribution can pass this check.
+          distribution = os.environ['DISTRIBUTION']
+          if distribution == 'native':
+              problems.extend(content.problems(sha, descriptors, contents))
+          elif distribution == 'mastra-agent':
+              problems.extend(content.problems(sha, descriptors, contents, distribution))
+          else:
+              problems.append('missing or unapproved package distribution')
           for problem in problems:
               print('FAIL: ' + problem)
           sys.exit(1 if problems else 0)
           PY
+      - name: Attest package pairs accepted by the formal stable gate
+        id: handoff
+        if: >-
+          success() && needs.candidate.outputs.context == 'release-gate'
+          && (github.event_name == 'pull_request' || github.event_name == 'merge_group'
+              || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')))
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISTRIBUTION: ${{ needs.packages.outputs.distribution }}
+        run: python3 -I scripts/ci/release_handoff.py record
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: success() && steps.handoff.outputs.eligible == 'true'
+        with:
+          name: stable-release-handoff-a${{ github.run_attempt }}
+          path: stable-release-handoff.json
+          if-no-files-found: error

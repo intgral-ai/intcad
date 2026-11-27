@@ -152,6 +152,13 @@ class MonorepoSelection(unittest.TestCase):
         self.assertIn("solidcraft-ui-egui", npmrc["rustPackages"])
         self.decision(npmrc, "runtime", "run", "selected_change")
 
+    def test_verification_skill_uses_repository_checks_without_compiling_the_app(self):
+        driver = ".agents/skills/verify-intcad/scripts/desktop-smoke.py"
+        result = self.select(driver, "AGENTS.md", "scripts/ci/affected.py")
+        self.decision(result, "repo", "run", "always")
+        self.decision(result, "rust", "not_applicable", "no_relevant_change")
+        self.assertIn("solidcraft-engine", self.select(driver, "crates/engine/src/lib.rs")["rustPackages"])
+
     def test_pr_policy_does_not_run_on_ordinary_push(self):
         self.decision(self.select(event_name="push"), "pr-policy", "not_applicable", "no_relevant_change")
         self.decision(self.select(event_name="merge_group"), "pr-policy", "run", "always")

@@ -1236,7 +1236,10 @@ impl EventProcessor {
 
         // Leave, FocusIn, and FocusOut can be received by a window that's already
         // been destroyed, which the user presumably doesn't want to deal with.
-        if self.window_exists(window) {
+        let known_window = self.with_window(window, |window| {
+            window.shared_state_lock().cursor_pos = None;
+        });
+        if known_window.is_some() {
             let event = Event::WindowEvent {
                 window_id: mkwid(window),
                 event: WindowEvent::CursorLeft {

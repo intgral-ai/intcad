@@ -41,10 +41,11 @@ const SCAN_LIMITS = [
   "@source not '../../../../../open-source/mastra/packages/playground-ui/src/ee';",
   "@source not '../dist';",
 ];
-// The licence expressions a package may state: exactly the reviewed vocabulary of
-// docs/mastra-distribution.md and packaging/mastra/policy.json, no wider. A package with any
+// The licence expressions a package may state: the reviewed vocabulary of
+// docs/mastra-distribution.md and packaging/mastra/policy.json, and 0BSD, which that document
+// admits for this page alone (tslib, which Mastra's model picker brings in). A package with any
 // other expression stops the build until a person has read its licence and the policy says so.
-const LICENCES = new Set(['Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'BlueOak-1.0.0', 'ISC', 'MIT', 'MIT OR Apache-2.0']);
+const LICENCES = new Set(['0BSD', 'Apache-2.0', 'BSD-2-Clause', 'BSD-3-Clause', 'BlueOak-1.0.0', 'ISC', 'MIT', 'MIT OR Apache-2.0']);
 const COPYLEFT = /GPL|SSPL|CPAL|EUPL|OSL|MPL|EPL|CDDL|CeCILL|CC-BY-SA/i;
 
 function fail(message) {

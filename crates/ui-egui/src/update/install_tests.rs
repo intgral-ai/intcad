@@ -4,11 +4,34 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// A key pair made with `minisign -G -W` for these tests, and its signature of [`SIGNED_SUMS`]
-/// with the trusted comment "SolidCraft v9.9.9".
-const TEST_KEY: &str = "RWSnDqhIJ/zGKMSbsGUl4/prZLXqi3PwpEeY/D8gvdsEUeZRO9yWCoSM";
-const SIGNED_SUMS: &str = "aaaa  solidcraft-linux-x86_64.AppImage\n";
-const SIGNATURE: &str = "untrusted comment: signature from minisign secret key\nRUSnDqhIJ/zGKEyvbowsT8vEGvdv2OL9Rwv4bo2m7pJC54t2UQWXjU0+V7ayPB0Okk1teY53qZSTugz2Dnko35A3Xc1jdNFZCwU=\ntrusted comment: SolidCraft v9.9.9\npCRA0RNYxyt4SSqLbfI3p00xsCE4Rt8ixJWAQfoyb226cz/XdS7A2PRdG7hFmRmfg4h6zmtIt3iRLSKjk6RsAQ==\n";
+// Independent minisign test vectors (Ed25519 over BLAKE2b-512, public fixture seed 00..1f).
+// No production key or external signing tool is needed to run these tests.
+pub(super) const TEST_KEY: &str = "RWRmaXh0dXJlIQOhB7/zzhC+HXDdGOdLwJln5NYwm6UNXx3chmQSVTG4";
+const APPIMAGE: &str = "intcad-linux-x86_64.AppImage";
+const NEW: &[u8] = b"new version";
+const SIGNED_SUMS: &str = "30e4af48343ed4e5b11ac1d072de79d7b02107894975ceda841cce472a63ab33  intcad-linux-x86_64.AppImage\n";
+const SUMS_LINE: &str = "RURmaXh0dXJlIWyqjIneDROGCT0SgknSslWgDxg14/X0KvehB+3n0ldRsH7i5msy+DAwXXWRtT7UC6bWPuDnwYNOWBgBw1jLugs=";
+
+fn signature(line: &str, comment: &str, global: &str) -> String {
+    format!("untrusted comment: fixture\n{line}\ntrusted comment: {comment}\n{global}\n")
+}
+
+fn appimage_signature() -> String {
+    signature(SUMS_LINE, "Intcad v9.9.9", "NW963dVMWpzY9Xvk2lDywVkqdzA15wSnAeihCSA0mlYKZ9x4GQ4Jchoesi/o860+cr4RYPxi2/aKLp0aPvt3Dw==")
+}
+
+pub(super) const UI_SUMS: &str = concat!(
+    "30e4af48343ed4e5b11ac1d072de79d7b02107894975ceda841cce472a63ab33  intcad-linux-x86_64.AppImage\n",
+    "30e4af48343ed4e5b11ac1d072de79d7b02107894975ceda841cce472a63ab33  intcad-linux-aarch64.AppImage\n",
+);
+
+pub(super) fn ui_signature() -> String {
+    signature(
+        "RURmaXh0dXJlIWuBu2ZZRWCqgC3aq6qWy06dpDtp29Zw5JUNkc9i5sWGpMX5WQAOdg9SpcXYzZg9mZtjbtkQXqiW7g28IJ7rPAs=",
+        "Intcad v999.1.0",
+        "4jlVMtNob7n14jmnVQuk4ZsWLWoDifXP37BSsjKSbCwNfId7oJPvssLmXu5kMvHkhK+ccX1jZRAhSNaLmKmWCA==",
+    )
+}
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("solidcraft-update-test-{}-{name}", std::process::id()));
@@ -34,12 +57,30 @@ fn checksum_lists_are_read() {
 
 #[test]
 fn signatures_must_match_the_key_the_list_and_the_release() {
-    assert_eq!(verify_signature(SIGNED_SUMS.as_bytes(), SIGNATURE, TEST_KEY, "v9.9.9"), Ok(()));
-    assert!(verify_signature(SIGNED_SUMS.as_bytes(), SIGNATURE, TEST_KEY, "v9.9.8").is_err(), "an older release's signed list");
-    assert!(verify_signature(b"bbbb  intcad-linux-x86_64.AppImage\n", SIGNATURE, TEST_KEY, "v9.9.9").is_err(), "a changed list");
-    let other = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
-    assert!(verify_signature(SIGNED_SUMS.as_bytes(), SIGNATURE, other, "v9.9.9").is_err(), "another key");
-    assert!(verify_signature(SIGNED_SUMS.as_bytes(), "garbage", TEST_KEY, "v9.9.9").is_err());
+    let signature = appimage_signature();
+    let key = minisign_verify::PublicKey::from_base64(TEST_KEY).unwrap();
+    assert_eq!(verify_signature(SIGNED_SUMS.as_bytes(), &signature, &key, "v9.9.9"), Ok(()));
+    assert!(verify_signature(b"bbbb  intcad-linux-x86_64.AppImage\n", &signature, &key, "v9.9.9").is_err(), "a changed list");
+    // Same key id as the trusted fixture key, but different public key bytes.
+    let other = minisign_verify::PublicKey::from_base64("RWRmaXh0dXJlIXmlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3").unwrap();
+    assert!(verify_signature(SIGNED_SUMS.as_bytes(), &signature, &other, "v9.9.9").is_err(), "another key");
+    assert!(verify_signature(SIGNED_SUMS.as_bytes(), "garbage", &key, "v9.9.9").is_err());
+}
+
+#[test]
+fn a_valid_signature_requires_the_exact_trusted_comment_and_a_stable_v_tag() {
+    for (tag, comment, global) in [
+        ("v9.9.9", "not Intcad v9.9.9", "hyylxS4gj1oERcgkhgyNBv9LAWHcEF6Ky4oMmpdnL6JhoKISCNu8SSo7g9ivWFqik9dAFqMTXwqoFAuBEKmkBA=="),
+        ("v9.9.9", "SolidCraft v9.9.9", "25TRDxoBLltBMDlyKo7l5oiRCb0i+2bg795ycmNCioaM2WErrUcgo3Ta/uMIpPFgO48/FD6azs33jzctnC4HBA=="),
+        ("v9.9.9-rc.1", "Intcad v9.9.9-rc.1", "doszLlgYnmhnsdavb3cx4RnBtpZ07m6ch67uTLbPzH6yjbp1lGFdz1s/AEpV5XF5QeE56wlJ71GLs/NmqUA/BA=="),
+        ("9.9.9", "Intcad 9.9.9", "93xkDpyEd4tB1Rmr3n5n0zSuWpDx7wSciYkc50eDQr3xoHvGdiCjACc7WTCe0OQwFeLbIuqULP+YM47Bvm9qAw=="),
+        ("v9.9.9+build.1", "Intcad v9.9.9+build.1", "2YFOgOJibmmqocWOeZvDw2fOCWcY5Le56d1xwCCIUfVxqSBwMjH+9bsiLhS3sr6MhNKca68YYzkhWJfkzakqBA=="),
+    ] {
+        let sig = signature(SUMS_LINE, comment, global);
+        let key = minisign_verify::PublicKey::from_base64(TEST_KEY).unwrap();
+        key.verify(SIGNED_SUMS.as_bytes(), &minisign_verify::Signature::decode(&sig).unwrap(), false).unwrap();
+        assert!(verify_signature(SIGNED_SUMS.as_bytes(), &sig, &key, tag).is_err(), "{comment}");
+    }
 }
 
 #[test]
@@ -64,14 +105,14 @@ fn methods_per_installation() {
     }
 }
 
-const BASE: &str = "https://github.com/intgral-ai/intcad/releases/download/v9.9.9/";
+const BASE: &str = "https://github.com/intgral-ai/intcad-releases/releases/download/v9.9.9/";
 
 fn release_with(assets: &[(&str, usize)]) -> Release {
     Release {
         tag: "v9.9.9".into(),
         name: "SolidCraft v9.9.9".into(),
         notes: String::new(),
-        page: "https://github.com/intgral-ai/intcad/releases/tag/v9.9.9".into(),
+        page: "https://github.com/intgral-ai/intcad-releases/releases/tag/v9.9.9".into(),
         assets: assets.iter().map(|(n, size)| Asset { name: n.to_string(), url: format!("{BASE}{n}"), size: *size as u64 }).collect(),
     }
 }
@@ -84,13 +125,16 @@ fn net(files: Vec<(String, Vec<u8>)>) -> Net {
     let find2 = find;
     Net {
         feed: None,
+        test_key: Some(TEST_KEY),
         get: Arc::new(move |url: &str| find(&files, url).ok_or_else(|| FetchError::Failed(format!("404 {url}")))),
         download: Arc::new(move |url: &str, to: &Path, progress: &dyn Fn(u64, Option<u64>) -> bool| {
             let body = find2(&f2, url).ok_or_else(|| FetchError::Failed(format!("404 {url}")))?;
             let mut file = std::fs::File::create(to).map_err(|e| FetchError::Failed(e.to_string()))?;
+            let mut done = 0;
             for chunk in body.chunks(4) {
                 file.write_all(chunk).map_err(|e| FetchError::Failed(e.to_string()))?;
-                if !progress(chunk.len() as u64, Some(body.len() as u64)) {
+                done += chunk.len() as u64;
+                if !progress(done, Some(body.len() as u64)) {
                     return Err(FetchError::Failed("cancelled".into()));
                 }
             }
@@ -100,38 +144,92 @@ fn net(files: Vec<(String, Vec<u8>)>) -> Net {
 }
 
 #[test]
+fn the_built_in_trust_path_rejects_an_unsigned_release() {
+    let dir = scratch("built-in-key");
+    let target = dir.join("Intcad.AppImage");
+    std::fs::write(&target, b"old version").unwrap();
+    let name = "intcad-linux-x86_64.AppImage";
+    let content = b"new version";
+    let kind = InstallKind::AppImage(target.clone());
+    let m = Method::AppImage(target.clone());
+    for sums_name in [SUMS, SUMS_LEGACY] {
+        let r = release_with(&[(name, content.len()), (sums_name, 100)]);
+        let sums = format!("{}  {name}\n", hex(content));
+        let mut n = net(vec![(name.into(), content.to_vec()), (sums_name.into(), sums.into_bytes())]);
+        n.test_key = None;
+        n.download = Arc::new(|_, _, _| panic!("unsigned package must not be downloaded"));
+        assert!(matches!(run(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default()), Err(Error::Verification(_))), "{sums_name}");
+        assert_eq!(std::fs::read(&target).unwrap(), b"old version");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_invalid_release_key_rejects_even_a_signed_list() {
+    let dir = scratch("invalid-key");
+    let target = dir.join("Intcad.AppImage");
+    std::fs::write(&target, b"old version").unwrap();
+    let r = release_with(&[(APPIMAGE, NEW.len()), (SUMS, SIGNED_SUMS.len()), (SUMS_SIG, 100)]);
+    let mut n = net(vec![(APPIMAGE.into(), NEW.to_vec()), (SUMS.into(), SIGNED_SUMS.into()), (SUMS_SIG.into(), appimage_signature().into_bytes())]);
+    n.test_key = Some("not a public key");
+    n.download = Arc::new(|_, _, _| panic!("invalid key must prevent the package download"));
+    let result = run(&r, &InstallKind::AppImage(target.clone()), &Method::AppImage(target.clone()), "x86_64", &n, &dir, &Progress::default());
+    assert!(matches!(result, Err(Error::Verification(detail)) if detail.contains("update signing key")));
+    assert_eq!(std::fs::read(&target).unwrap(), b"old version");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_signed_release_can_use_the_legacy_checksum_name() {
+    let dir = scratch("legacy-sums");
+    let target = dir.join("Intcad.AppImage");
+    std::fs::write(&target, b"old version").unwrap();
+    let kind = InstallKind::AppImage(target.clone());
+    let m = Method::AppImage(target.clone());
+    let r = release_with(&[(APPIMAGE, NEW.len()), (SUMS_LEGACY, SIGNED_SUMS.len()), (SUMS_SIG, 100)]);
+
+    let n =
+        net(vec![(APPIMAGE.into(), NEW.to_vec()), (SUMS_LEGACY.into(), SIGNED_SUMS.into()), (SUMS_SIG.into(), appimage_signature().into_bytes())]);
+    let outcome = run(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default()).unwrap();
+    assert_eq!(outcome, Outcome::Restart(target.clone()));
+    assert_eq!(std::fs::read(&target).unwrap(), NEW);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn an_appimage_is_replaced_only_when_it_verifies() {
     let dir = scratch("appimage");
     let target = dir.join("SolidCraft.AppImage");
     std::fs::write(&target, b"old version").unwrap();
-    let new = b"new version".to_vec();
-    let name = "intcad-linux-x86_64.AppImage";
     let kind = InstallKind::AppImage(target.clone());
     let m = Method::AppImage(target.clone());
-    let r = release_with(&[(name, new.len()), (SUMS, 100)]);
+    let r = release_with(&[(APPIMAGE, NEW.len()), (SUMS, SIGNED_SUMS.len()), (SUMS_SIG, 100)]);
+    let sig = appimage_signature().into_bytes();
 
     // A package that doesn't match the list: deleted, the old one untouched.
-    let wrong = format!("{}  {name}\n", hex(b"something else"));
-    let n = net(vec![(name.into(), new.clone()), (SUMS.into(), wrong.into_bytes())]);
+    let n = net(vec![(APPIMAGE.into(), b"bad version".to_vec()), (SUMS.into(), SIGNED_SUMS.into()), (SUMS_SIG.into(), sig.clone())]);
     let err = run(&r, &kind, &m, "x86_64", &n, &dir.join("staging"), &Progress::default()).unwrap_err();
-    assert!(err.contains("doesn't match"), "{err}");
+    assert!(matches!(err, Error::Verification(ref detail) if detail.contains("doesn't match")), "{err}");
     assert_eq!(std::fs::read(&target).unwrap(), b"old version");
     assert!(!dir.join("SolidCraft.AppImage.update").exists(), "the bad download is deleted");
 
     // Not listed at all.
-    let n = net(vec![(name.into(), new.clone()), (SUMS.into(), b"".to_vec())]);
-    assert!(run(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default()).unwrap_err().contains("doesn't list"));
+    let empty_sig = signature(
+        "RURmaXh0dXJlISYKHljc2XpaJTda2dqoPrAxHgNW4rDJZOuE+pNHxtpaO/Q9MTJAr86S+jhkA/fHkCm8KJvH/PJaimm3w6272gk=",
+        "Intcad v9.9.9",
+        "DyxA6s9Qr/JTfx5C9wY8quPM5pE7K798eFTr/F46Dv7NnTWIkcd0bnyB9I/ulpK7uTQC8bEj6uggrJ1ZoC3RCA==",
+    );
+    let n = net(vec![(SUMS.into(), vec![]), (SUMS_SIG.into(), empty_sig.into_bytes())]);
+    assert!(run(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default()).unwrap_err().to_string().contains("doesn't list"));
     // No checksum list in the release: refused before downloading.
-    let bare = release_with(&[(name, new.len())]);
-    assert!(run(&bare, &kind, &m, "x86_64", &n, &dir, &Progress::default()).unwrap_err().contains(SUMS));
+    let bare = release_with(&[(APPIMAGE, NEW.len())]);
+    assert!(run(&bare, &kind, &m, "x86_64", &n, &dir, &Progress::default()).unwrap_err().to_string().contains(SUMS));
 
     // Cancelled before any network work: nothing changes.
-    let good = format!("{}  {name}\n", hex(&new));
-    let n = net(vec![(name.into(), new.clone()), (SUMS.into(), good.clone().into_bytes())]);
     let p = Progress::default();
     p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
     let err = run(&r, &kind, &m, "x86_64", &n, &dir, &p).unwrap_err();
-    assert!(err.contains("cancelled"), "{err}");
+    assert!(matches!(err, Error::Cancelled), "{err}");
     assert_eq!(std::fs::read(&target).unwrap(), b"old version");
 
     // Cancel during the checksum GET: package download never starts (#8908).
@@ -139,33 +237,29 @@ fn an_appimage_is_replaced_only_when_it_verifies() {
     let flag = progress.clone();
     let downloaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let hit = downloaded.clone();
-    let files = Arc::new(vec![(name.into(), new.clone()), (SUMS.into(), good.clone().into_bytes())]);
-    let f2 = files.clone();
-    let find = |files: &[(String, Vec<u8>)], url: &str| files.iter().find(|(n, _)| url == format!("{BASE}{n}")).map(|(_, b)| b.clone());
-    let n = Net {
-        feed: None,
-        get: Arc::new(move |url: &str| {
-            let body = find(&files, url).ok_or_else(|| FetchError::Failed(format!("404 {url}")))?;
-            if url.ends_with(SUMS) {
-                flag.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-            }
-            Ok(body)
-        }),
-        download: Arc::new(move |url: &str, to: &Path, _| {
-            hit.store(true, std::sync::atomic::Ordering::Relaxed);
-            let body = find(&f2, url).ok_or_else(|| FetchError::Failed(format!("404 {url}")))?;
-            std::fs::write(to, body).map_err(|e| FetchError::Failed(e.to_string()))
-        }),
-    };
+    let mut n = net(vec![(APPIMAGE.into(), NEW.to_vec()), (SUMS.into(), SIGNED_SUMS.into()), (SUMS_SIG.into(), sig)]);
+    let get = n.get.clone();
+    n.get = Arc::new(move |url| {
+        let response = get(url);
+        if url.ends_with(SUMS) {
+            flag.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        response
+    });
+    let download = n.download.clone();
+    n.download = Arc::new(move |url, to, report| {
+        hit.store(true, std::sync::atomic::Ordering::Relaxed);
+        download(url, to, report)
+    });
     let err = run(&r, &kind, &m, "x86_64", &n, &dir, &progress).unwrap_err();
-    assert!(err.contains("cancelled"), "{err}");
+    assert!(matches!(err, Error::Cancelled), "{err}");
     assert!(!downloaded.load(std::sync::atomic::Ordering::Relaxed), "package must not start after Cancel");
     assert_eq!(std::fs::read(&target).unwrap(), b"old version");
 
     // Verified: renamed over the old one, executable, restart offered.
     let out = run(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default()).unwrap();
     assert_eq!(out, Outcome::Restart(target.clone()));
-    assert_eq!(std::fs::read(&target).unwrap(), new);
+    assert_eq!(std::fs::read(&target).unwrap(), NEW);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -193,14 +287,14 @@ fn the_portable_zip_swaps_both_executables() {
         z.finish().unwrap();
     }
     let name = "intcad-windows-x64-portable.zip";
-    let r = release_with(&[(name, zip_bytes.len()), (SUMS, 100)]);
-    let n = net(vec![(name.into(), zip_bytes.clone()), (SUMS.into(), format!("{}  {name}\n", hex(&zip_bytes)).into_bytes())]);
-    let out =
-        run(&r, &InstallKind::WindowsPortable, &Method::PortableZip(exe.clone()), "x86_64", &n, &dir.join("staging"), &Progress::default()).unwrap();
+    // Exercise replacement after verification; the signed worker path is covered by the AppImage tests.
+    let package = dir.join(name);
+    std::fs::write(&package, &zip_bytes).unwrap();
+    let out = apply(&Method::PortableZip(exe.clone()), &package).unwrap();
     assert_eq!(out, Outcome::Restart(exe.clone()));
     assert_eq!(std::fs::read(&exe).unwrap(), b"new app");
     assert_eq!(std::fs::read(dir.join("intcad-cli.exe")).unwrap(), b"new cli");
-    assert!(!dir.join("staging").join(name).exists(), "the zip is removed");
+    assert!(!package.exists(), "the zip is removed");
     // A zip without the app is refused and changes nothing.
     std::fs::write(dir.join("empty.zip"), {
         let mut b = Vec::new();
@@ -258,16 +352,13 @@ fn an_updated_appimage_takes_the_release_file_name() {
     let dir = scratch("appimage-name");
     let old = dir.join("intcad-9.9.8-linux-x86_64.AppImage");
     std::fs::write(&old, b"old version").unwrap();
-    let name = "intcad-linux-x86_64.AppImage";
-    let content = b"new version".to_vec();
-    let r = release_with(&[(name, content.len()), (SUMS, 100)]);
-    let sums = format!("{}  {name}\n", hex(&content));
-    let n = net(vec![(name.into(), content.clone()), (SUMS.into(), sums.into_bytes())]);
+    let r = release_with(&[(APPIMAGE, NEW.len()), (SUMS, SIGNED_SUMS.len()), (SUMS_SIG, 100)]);
+    let n = net(vec![(APPIMAGE.into(), NEW.to_vec()), (SUMS.into(), SIGNED_SUMS.into()), (SUMS_SIG.into(), appimage_signature().into_bytes())]);
     let kind = InstallKind::AppImage(old.clone());
     let out = run(&r, &kind, &Method::AppImage(old.clone()), "x86_64", &n, &dir, &Progress::default()).unwrap();
     let want = dir.join("intcad-9.9.9-linux-x86_64.AppImage");
     assert_eq!(out, Outcome::Restart(want.clone()));
-    assert_eq!(std::fs::read(&want).unwrap(), content);
+    assert_eq!(std::fs::read(&want).unwrap(), NEW);
     assert!(!old.exists());
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "nothing else is left behind");
     let _ = std::fs::remove_dir_all(&dir);
@@ -278,20 +369,22 @@ fn installation_refreshes_the_release_and_verifies_the_final_package() {
     let dir = scratch("refresh");
     let target = dir.join("SolidCraft.AppImage");
     let name = "intcad-linux-x86_64.AppImage";
-    let shown = release_with(&[(name, 3), (SUMS, 100)]);
-    let base = "https://github.com/intgral-ai/intcad/releases/download/v10.0.0/";
+    let shown = release_with(&[(name, 3), (SUMS, 100), (SUMS_SIG, 100)]);
+    let base = "https://github.com/intgral-ai/intcad-releases/releases/download/v10.0.0/";
     let feed = serde_json::json!({
         "tag_name": "v10.0.0",
         "assets": [
             {"name": name, "browser_download_url": format!("{base}{name}"), "size": 3},
-            {"name": SUMS, "browser_download_url": format!("{base}{SUMS}")}
+            {"name": SUMS, "browser_download_url": format!("{base}{SUMS}")},
+            {"name": SUMS_SIG, "browser_download_url": format!("{base}{SUMS_SIG}")}
         ]
     })
     .to_string()
     .into_bytes();
     for (case, answer, corrupt, expected, fallback) in [
         ("newest", Ok(feed.clone()), false, "10.0.0", false),
-        ("corrupt newest", Ok(feed), true, "10.0.0", false),
+        ("corrupt newest", Ok(feed.clone()), true, "10.0.0", false),
+        ("signature for the offered release, not the newest", Ok(feed), false, "10.0.0", false),
         ("offline", Err(FetchError::Failed("offline".into())), false, "9.9.9", true),
         ("rate limited", Err(FetchError::RateLimited { retry_after_s: 60 }), false, "9.9.9", true),
         ("oversized", Ok(vec![b' '; super::MAX_RELEASE_BYTES + 1]), false, "9.9.9", true),
@@ -299,18 +392,34 @@ fn installation_refreshes_the_release_and_verifies_the_final_package() {
     ] {
         std::fs::write(&target, b"old").unwrap();
         let chosen_base = if expected == "10.0.0" { base } else { BASE };
+        let replayed = case.starts_with("signature");
+        let (comment, global) = if chosen_base == base && !replayed {
+            ("Intcad v10.0.0", "HSPx0BbjXIe36rv5Sc2AyA0Tekdowyyc9Y4TZLS8WoHE7Tr+bIFkyZLCS30JWcmyy6KQB0rSZS5GEQ4RJRjWCw==")
+        } else {
+            ("Intcad v9.9.9", "vbW5Ex7ZYVzxnHe3hInQPU0JgcBlazTbqouSGuKTwcKZG3bEUMpN9kaDl7zZeSNU04hnYqgiDig9JjByuAGPCA==")
+        };
         let n = Net {
             feed: None,
+            test_key: Some(TEST_KEY),
             get: Arc::new(move |url| {
                 if url == super::LATEST_API {
                     return answer.clone();
                 }
+                if url == format!("{chosen_base}{SUMS_SIG}") {
+                    return Ok(signature(
+                        "RURmaXh0dXJlIUVRVvq7bsUDLEdfMYtuN2uPY0RrQtfappeKj/3TYo0OSUC2R/NVXFUYk70yLSIoj7rtk+7gza5Thc6xl/jLTQQ=",
+                        comment,
+                        global,
+                    )
+                    .into_bytes());
+                }
                 assert_eq!(url, format!("{chosen_base}{SUMS}"), "checksums from the chosen release");
-                Ok(format!("{}  {name}\n", hex(if corrupt { b"bad" } else { b"new" })).into_bytes())
+                Ok(format!("{}  {name}\n", hex(b"new")).into_bytes())
             }),
             download: Arc::new(move |url, to, report| {
+                assert!(!replayed, "a signature for the previously offered version must not start the download");
                 assert_eq!(url, format!("{chosen_base}{name}"), "package from the chosen release");
-                std::fs::write(to, b"new").unwrap();
+                std::fs::write(to, if corrupt { b"bad" } else { b"new" }).unwrap();
                 assert!(report(3, Some(3)));
                 Ok(())
             }),
@@ -325,8 +434,10 @@ fn installation_refreshes_the_release_and_verifies_the_final_package() {
             crate::i18n::format(if fallback { "update.refresh_fallback" } else { "update.refresh_selected" }, &[("version", expected)]),
             "{case}"
         );
-        if corrupt {
-            assert!(result.unwrap_err().contains("doesn't match"));
+        if corrupt || replayed {
+            let err = result.unwrap_err();
+            let detail = if corrupt { "doesn't match" } else { "does not match v10.0.0" };
+            assert!(matches!(err, Error::Verification(ref message) if message.contains(detail)), "{err}");
             assert_eq!(std::fs::read(&target).unwrap(), b"old");
         } else {
             assert_eq!(result.unwrap(), Outcome::Restart(target.clone()), "{case}");
@@ -334,4 +445,54 @@ fn installation_refreshes_the_release_and_verifies_the_final_package() {
         }
     }
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn unauthenticated_lists_stop_the_update_before_the_package_download() {
+    let dir = scratch("signed-refusals");
+    let target = dir.join("Intcad.AppImage");
+    std::fs::write(&target, b"old version").unwrap();
+    let kind = InstallKind::AppImage(target.clone());
+    let m = Method::AppImage(target.clone());
+    let valid_sig = appimage_signature();
+    let not_downloaded =
+        |_: &str, _: &Path, _: &dyn Fn(u64, Option<u64>) -> bool| panic!("package download must not start without an authentic list");
+    for sums_name in [SUMS, SUMS_LEGACY] {
+        let r = release_with(&[(APPIMAGE, NEW.len()), (sums_name, SIGNED_SUMS.len())]);
+        let mut n = net(vec![(sums_name.into(), SIGNED_SUMS.into())]);
+        n.download = Arc::new(not_downloaded);
+        let err = run(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default()).unwrap_err();
+        assert!(matches!(err, Error::Verification(ref detail) if detail.contains("isn't signed")), "{err}");
+    }
+    // Use exactly the bytes that are signed for v9.9.9, so only the version check can fail.
+    let mut r = release_with(&[(APPIMAGE, NEW.len()), (SUMS, SIGNED_SUMS.len()), (SUMS_SIG, 100)]);
+    r.tag = "v9.9.8".into();
+    let mut n = net(vec![(SUMS.into(), SIGNED_SUMS.into()), (SUMS_SIG.into(), valid_sig.clone().into_bytes())]);
+    n.download = Arc::new(not_downloaded);
+    let err = run(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default()).unwrap_err();
+    assert!(matches!(err, Error::Verification(ref detail) if detail.contains("does not match v9.9.8")), "{err}");
+
+    // A signed legacy list cannot authorize different bytes under the preferred name.
+    let r = release_with(&[(APPIMAGE, NEW.len()), (SUMS, SIGNED_SUMS.len()), (SUMS_LEGACY, SIGNED_SUMS.len()), (SUMS_SIG, 100)]);
+    let mut n = net(vec![
+        (SUMS.into(), format!("{SIGNED_SUMS}\n").into_bytes()),
+        (SUMS_LEGACY.into(), SIGNED_SUMS.into()),
+        (SUMS_SIG.into(), valid_sig.into_bytes()),
+    ]);
+    n.download = Arc::new(not_downloaded);
+    let err = run(&r, &kind, &m, "x86_64", &n, &dir, &Progress::default()).unwrap_err();
+    assert!(matches!(err, Error::Verification(ref detail) if detail.contains("isn't signed by")), "{err}");
+    assert_eq!(std::fs::read(&target).unwrap(), b"old version");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The build carries a real production key, not the placeholder: parsing it is the
+/// gate that keeps a release from shipping with one-click installs silently dead.
+/// Restoring the placeholder makes this test fail on purpose.
+#[test]
+fn the_embedded_release_key_is_a_configured_minisign_key() {
+    assert!(!PUBLIC_KEY.contains("NOT CONFIGURED"), "the placeholder is still in the tree");
+    let key = minisign_verify::PublicKey::from_base64(PUBLIC_KEY.trim()).expect("embedded key parses");
+    assert_eq!(PUBLIC_KEY.trim().len(), 56, "one base64 line");
+    let _ = key;
 }

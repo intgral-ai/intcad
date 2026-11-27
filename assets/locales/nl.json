@@ -4197,7 +4197,7 @@
   "ui.agent_chat_limit": "De agent heeft de limiet van {limit} wijzigingen voor één bericht bereikt. Stuur nog een bericht om hem verder te laten gaan.",
   "ui.agent_chat_login_found": "aanmelding gevonden",
   "ui.agent_chat_minimize": "Minimaliseren tot een strook",
-  "ui.agent_chat_mode_all": "Alles",
+  "ui.agent_chat_mode_all": "Auto",
   "ui.agent_chat_mode_ask": "Vragen",
   "ui.agent_chat_mode_edits": "Bewerken",
   "ui.agent_chat_model_custom": "Eigen model gebruiken: {model}",
