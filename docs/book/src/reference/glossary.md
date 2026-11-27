@@ -290,6 +290,20 @@ them. The *first moments* are the mass times the centre of mass.
 - **Elsewhere:** moment of inertia, inertia tensor, mass moment of inertia.
 - **For translators:** not the second moment of area of a cross-section, a different quantity.
 
+### next-step suggestion
+
+One modelling step the connected agent guesses the user will do next, shown as a line over the
+Assistant's message box (or a chip at the end of History) and then drawn over the design as a ghost.
+Tab puts the ghost into the design as one undo step; Esc, another key or an edit takes the
+suggestion away. The suggestion itself never changes the design.
+
+- **In SolidCraft:** the `agent_next_step`, `agent_next_step_pause_s` and `agent_next_step_per_hour` preferences; `nextStep`
+  in `ui.agent_chat`.
+- **Don't use:** prediction (in the interface), autocomplete, hint (for the step itself).
+- **Elsewhere:** next-step prediction, tab completion.
+- **For translators:** a suggestion the user accepts or ignores, not an automatic action. Chinese:
+  建议 (not 提示, which reads as "hint").
+
 ### occurrence
 
 One placed copy of a component inside its parent component.
