@@ -398,8 +398,3 @@ the agent printed meanwhile. Each line goes through `scrub` (`secrets.mjs`) firs
 agent holds, every value in an address's query, a user and password in an address, token fields,
 JWTs, e-mail addresses and any other run of 32 or more letters and digits are taken out. The file
 starts over past 256 KiB.
-
-The agent's requests follow a proxy only as Node does: with `NODE_USE_ENV_PROXY=1`, `HTTPS_PROXY`
-or `HTTP_PROXY`, and `NO_PROXY`. The app passes the first and adds this computer's names to the
-last when its own environment names a proxy (`proxy_env` in `acp_client.rs`). The operating
-system's own proxy setting is not read.

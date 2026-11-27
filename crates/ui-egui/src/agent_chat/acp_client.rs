@@ -99,40 +99,6 @@ const PACKAGED_ENV_REMOVE: &[&str] = &["SOLIDCRAFT_CONTROL_TOKEN", "SOLIDCRAFT_M
 /// The variable that tells the built-in agent where to keep its sign-ins and its own data.
 pub const DATA_DIR_ENV: &str = "MASTRA_APP_DATA_DIR";
 
-/// The variables a proxy is named in, as Node reads them.
-const PROXY_VARIABLES: [&str; 4] = ["https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"];
-/// What never goes through a proxy: this computer (the sign-in's callback, a model on it, MCP).
-const THIS_COMPUTER: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
-
-/// INT-1521: the built-in agent's requests (a sign-in's exchange, the models') follow a proxy the
-/// app's environment names, as the person's other programs do. Node reads those variables only
-/// with `NODE_USE_ENV_PROXY` set, and then sends this computer's addresses through the proxy too
-/// unless `NO_PROXY` names them: they are added to what it names. Nothing is added when no proxy is
-/// named. `var` reads the app's environment.
-fn proxy_env(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Vec<(&'static str, std::ffi::OsString)> {
-    let named = |name: &str| var(name).filter(|value| !value.is_empty());
-    if !PROXY_VARIABLES.iter().any(|name| named(name).is_some()) {
-        return Vec::new();
-    }
-    let given: Vec<String> = ["no_proxy", "NO_PROXY"].iter().filter_map(|name| named(name)).map(|value| value.to_string_lossy().into_owned()).collect();
-    let mut hosts: Vec<String> = Vec::new();
-    for host in given.iter().flat_map(|value| value.split(',')).map(str::trim).chain(THIS_COMPUTER) {
-        if !host.is_empty() && !hosts.iter().any(|known| known == host) {
-            hosts.push(host.to_string());
-        }
-    }
-    let skip = std::ffi::OsString::from(hosts.join(","));
-    vec![("NODE_USE_ENV_PROXY", "1".into()), ("NO_PROXY", skip.clone()), ("no_proxy", skip)]
-}
-
-/// The variables of the app's own the built-in agent is started with: its data folder, usage
-/// reporting off, and the proxy ones ([`proxy_env`]).
-fn builtin_env(data: &std::path::Path) -> Vec<(&'static str, std::ffi::OsString)> {
-    let mut env = vec![(DATA_DIR_ENV, data.as_os_str().to_owned()), (TELEMETRY_OFF_ENV, "1".into())];
-    env.extend(proxy_env(|name| std::env::var_os(name)));
-    env
-}
-
 /// Mastra's own switch for its usage reporting. The built-in agent is always started with it
 /// set, whatever program it is; the agent's entry sets it for itself as well.
 pub const TELEMETRY_OFF_ENV: &str = "MASTRA_TELEMETRY_DISABLED";
@@ -273,8 +239,7 @@ impl AcpBackend {
     /// It is not optional: without it the entry leaves the agent in the user's own home.
     /// Mastra's usage reporting is switched off for it ([`TELEMETRY_OFF_ENV`]).
     pub fn start_builtin(argv: &[String], ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
-        let env = builtin_env(data);
-        let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(name, value)| (*name, value.as_os_str())).collect();
+        let env = [(DATA_DIR_ENV, data.as_os_str()), (TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1"))];
         Self::spawn(argv, ctx, &env, ENV_REMOVE, true)
     }
 
@@ -322,8 +287,7 @@ impl AcpBackend {
     /// that could make it load other code taken out ([`PACKAGED_ENV_REMOVE`]). No MCP bridge.
     fn spawn_packaged(argv: &[String; 2], mut ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
         ctx.bridge = None;
-        let env = builtin_env(data);
-        let env: Vec<(&str, &std::ffi::OsStr)> = env.iter().map(|(name, value)| (*name, value.as_os_str())).collect();
+        let env = [(DATA_DIR_ENV, data.as_os_str()), (TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1"))];
         Self::spawn(argv, ctx, &env, PACKAGED_ENV_REMOVE, true)
     }
 
@@ -1802,26 +1766,6 @@ mod tests {
         other.shutdown(true);
         assert!(!ENV_REMOVE.contains(&"SOLIDCRAFT_MASTRA_SDK") && !ENV_REMOVE.contains(&DATA_DIR_ENV), "{ENV_REMOVE:?}");
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// INT-1521: the built-in agent follows a proxy the app's environment names: Node is told to
-    /// read the variables, and this computer's names are added after the person's own to those it
-    /// reaches directly. With no proxy named, nothing is added.
-    #[test]
-    fn the_built_in_agent_is_told_to_follow_a_proxy_the_environment_names() {
-        let env = |pairs: &'static [(&'static str, &'static str)]| {
-            move |name: &str| pairs.iter().find(|(key, _)| *key == name).map(|(_, value)| std::ffi::OsString::from(value))
-        };
-        let names = |set: Vec<(&str, std::ffi::OsString)>| set.into_iter().map(|(name, value)| format!("{name}={}", value.to_string_lossy())).collect::<Vec<_>>();
-        assert!(proxy_env(env(&[])).is_empty());
-        assert!(proxy_env(env(&[("HTTPS_PROXY", ""), ("NO_PROXY", "corp")])).is_empty(), "an empty variable names no proxy");
-        let local = "localhost,127.0.0.1,::1";
-        assert_eq!(names(proxy_env(env(&[("https_proxy", "http://p:8080")]))), ["NODE_USE_ENV_PROXY=1".to_string(), format!("NO_PROXY={local}"), format!("no_proxy={local}")]);
-        let both = "10.0.0.0/8,.corp.example,localhost,127.0.0.1,::1";
-        assert_eq!(
-            names(proxy_env(env(&[("HTTP_PROXY", "http://p:8080"), ("NO_PROXY", " .corp.example , localhost"), ("no_proxy", "10.0.0.0/8")]))),
-            ["NODE_USE_ENV_PROXY=1".to_string(), format!("NO_PROXY={both}"), format!("no_proxy={both}")]
-        );
     }
 
     /// INT-1473, on the wire: the built-in agent handed a project names it in `session/new`

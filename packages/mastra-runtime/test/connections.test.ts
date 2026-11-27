@@ -514,7 +514,7 @@ test("a sign-in's problem carries who holds the port, or the port and the system
   assert.deepEqual(refused.connections.list().problem, { id: "openai-codex", kind: "listen", port: 1457, code: "EACCES" });
 });
 
-// ---- INT-1521: which step failed, what the token endpoint answered, the log, the proxy ----
+// ---- INT-1521: which step failed, what the token endpoint answered, the log ----
 
 /** A stand-in for a provider's token endpoint: each test says how it answers. */
 async function tokenEndpoint(answer: (request: http.IncomingMessage, response: http.ServerResponse) => void) {
@@ -673,41 +673,6 @@ test("the sign-in log takes out what could let someone in or say whose account i
   for (const kept of ["invalid_grant", '"code":"ECONNREFUSED"', "proxy.corp:8080", "callback http://localhost:1457/auth/callback", "/Users/someone/Library/Application Support/Intcad/mastra/logs/sign-in.log"]) {
     assert.ok(clean.includes(kept), `${kept} is not in: ${clean}`);
   }
-});
-
-test("with the variables the app passes, the exchange goes through the person's proxy and this computer's addresses do not (INT-1521)", async () => {
-  // A stand-in proxy: it records what it is asked for and refuses it, so nothing leaves this computer.
-  const asked: string[] = [];
-  const proxy = net.createServer((socket) =>
-    socket.once("data", (chunk) => {
-      asked.push(String(chunk).split("\r\n")[0]!);
-      socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
-    }),
-  );
-  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", () => resolve()));
-  const local = await tokenEndpoint((_request, response) => response.end("{}"));
-  const entry = new URL(agentFolder + "signin.mjs", import.meta.url).href;
-  const proxyUrl = `http://127.0.0.1:${(proxy.address() as net.AddressInfo).port}`;
-  // As the app starts the agent when its own environment names a proxy (`proxy_env` in acp_client.rs).
-  const env = { PATH: process.env.PATH ?? "", HTTPS_PROXY: proxyUrl, NODE_USE_ENV_PROXY: "1", NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1" };
-  const script = `const { watchExchange, failureCode } = await import(${JSON.stringify(entry)});
-const seen = [];
-const watched = watchExchange(fetch, "https://auth.example.invalid/oauth/token", (answer) => seen.push(answer));
-await watched("https://auth.example.invalid/oauth/token", { method: "POST", signal: AbortSignal.timeout(5000) }).catch(() => {});
-const direct = await fetch(${JSON.stringify(local.url)}).then((response) => response.status, (error) => String(error));
-console.log(JSON.stringify({ failed: seen[0]?.error ? failureCode(seen[0].error) : null, direct }));`;
-  const printed = await new Promise<string>((resolve) => {
-    const child = spawn(process.execPath, ["--no-warnings", "--input-type=module", "-e", script], { env, stdio: ["ignore", "pipe", "inherit"] });
-    let out = "";
-    child.stdout!.on("data", (chunk) => (out += chunk));
-    child.on("exit", () => resolve(out.trim()));
-  });
-  proxy.close();
-  local.close();
-  assert.deepEqual(asked, ["CONNECT auth.example.invalid:443 HTTP/1.1"], "the exchange went through the proxy, and only it");
-  const result = JSON.parse(printed);
-  assert.equal(result.direct, 200, "this computer's address is not sent to the proxy");
-  assert.ok(result.failed, "the refusal by the proxy is seen as a failed exchange");
 });
 
 test("a key is not in the environment of a command a model runs, nor in a refusal that is printed", () => {
