@@ -149,7 +149,7 @@ function Assert-AgentRuntime([string] $Agent) {
   $expected = @($receipt.files | ForEach-Object { $_.targets } | ForEach-Object { Join-Path (Split-Path $Agent -Parent) ($_ -replace '/', '\') })
   if (-not $native.libsql) { throw "libSQL did not load in the installed Agent: $probeLine $err" }
   if (-not $native.astGrep) { throw "ast-grep did not run in the installed Agent: $probeLine $err" }
-  if ($exit -ne 0) { throw "the runtime probe exited $exit: $probeLine $err" }
+  if ($exit -ne 0) { throw "the runtime probe exited ${exit}: $probeLine $err" }
   if ($loaded.Count -eq 0) { throw 'the installed Node loaded no VCRUNTIME140.dll at all' }
   foreach ($path in $loaded) {
     if ($expected -notcontains [IO.Path]::GetFullPath($path)) {
