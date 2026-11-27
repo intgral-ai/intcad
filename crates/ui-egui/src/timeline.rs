@@ -1215,6 +1215,8 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
                 resp.backing_on_hover_text(crate::i18n::tr("ui.history_marker_tip"));
             }
             let content_end = crate::dialogs_assembly::timeline_joints(app, ui, &p, end + 10.0, r);
+            // A next-step guess, in grey after the last item (agent_chat::predict).
+            let content_end = crate::agent_chat::predict::paint_ghost(app, ui, &p, content_end, r);
             // The scroll range follows the drawn content (the buttons don't take layout space themselves).
             ui.allocate_exact_size(vec2((content_end - origin).max(0.0), r.height()), Sense::hover());
             // Drag feedback, and the drop.
