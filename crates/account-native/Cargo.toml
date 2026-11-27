@@ -1,0 +1,29 @@
+[package]
+name = "solidcraft-account-native"
+description = "Native account adapters: the durable operation ledger (no wasm)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+solidcraft-engine = { workspace = true }
+solidcraft-io = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+# Native-only HTTPS client. The crate is cfg(not(wasm32)); `xtask layers` keeps it out of the
+# wasm closure. Certificates come from the operating system; no redirect is followed.
+ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider", "platform-verifier"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# Account credentials in the OS-protected store: Keychain, Credential Manager, Secret Service.
+# Native only (this crate is cfg(not(wasm32))); same version and features as the app (Task 4).
+keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["user"] }
+
+[target.'cfg(windows)'.dependencies]
+dirs-sys = "0.5"

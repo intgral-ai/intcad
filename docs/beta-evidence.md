@@ -104,10 +104,19 @@ Authenticode, GUI startup or a model turn.
 | [42790743092](https://github.com/intgral-ai/open-skyfall-desktop/actions/runs/42790743092) jobs | `7bf03f6d9` | `Format and repository checks`, `Mastra artifact policy`, `Dependency advisories` | success | Repository format/policy/licence checks and the dependency-advisory check passed at this SHA. |
 
 `contents.json` is produced from the package bytes. A declaration such as
-`SOLIDCRAFT_WITH_MASTRA=0` or `SOLIDCRAFT_DISTRIBUTION=native` is not proof. The
-gate requires every canonical package to be inspected, `markers` empty,
-`unchecked` empty and the checked names and SHA-256 values to equal `build.json`.
-Derived packages must also name an inspected Linux source and matching digest.
+`SOLIDCRAFT_WITH_MASTRA=0` or `SOLIDCRAFT_DISTRIBUTION=mastra-agent` is not proof. The
+gate requires every canonical package to be inspected, `unchecked` empty and the
+checked names and SHA-256 values to equal `build.json`. Derived packages must also
+name an inspected Linux source, a matching digest and the source's distribution.
+
+A release declares which distribution it ships, and the bytes must agree:
+
+- `native`: every canonical package has `markers: []`; no runtime of any kind.
+- `mastra-agent`: Linux x86_64, macOS and Windows x64 carry `mastra-agent/` whole
+  (its Node, `agent.json`, the SDK packages, the licences) and no legacy `mastra/`
+  runtime; `agentMarkers` is empty outside that folder. Other architectures stay
+  `native` and carry no agent folder.
+- `mastra`: refused. The legacy workflow runtime has no approval.
 
 ### Beta.1 provenance gap
 
@@ -188,8 +197,8 @@ Every platform also needs these repository-level checks at the exact candidate:
   every package job that was run.
 - Each `build.json` has `sourceRevision` equal to the candidate, the expected
   `target`, a non-null `contractDigest`, and the SHA-256 of every built file.
-- `contents.json` proves native distribution. A workflow declaration is not
-  enough.
+- `contents.json` proves the declared distribution (`native` or `mastra-agent`).
+  A workflow declaration is not enough.
 
 `release.yml` still builds all package jobs, including Arch, Flatpak and Snap.
 A failure in any of them fails `All nonpublishing package builds`. If the Beta
@@ -274,9 +283,12 @@ box from an older run.
       `...-macos` and `...-windows-x64` were downloaded from the same run.
 - [ ] Every `build.json` has `sourceRevision == <SHA>`, the expected `target`,
       the candidate `contractDigest` and the hash of every downloaded artifact.
-- [ ] Every `contents.json` has `distribution: "native"`, `markers: []`,
-      `unchecked: []`, and checked names/hashes equal `build.json`. Any derived
-      package names an inspected Linux source with a matching digest.
+- [ ] Every `contents.json` has `unchecked: []`, checked names/hashes equal
+      `build.json`, and a distribution the gate accepts: `native` with
+      `markers: []`, or `mastra-agent` on the supported targets with
+      `agent.present`, `agent.node` and no `agent.missing`, and `markers: []`.
+      Any derived package names an inspected Linux source with a matching digest
+      and the same distribution.
 - [ ] The Linux tar.gz hash matches `build.json`; the AppImage is present and
       inspected if it is shipped.
 - [ ] `solidcraft-cli --version` and `solidcraft --version` run from the Linux
@@ -348,8 +360,13 @@ done
 
 for f in dist/package-evidence-*/contents.json; do
   jq -e --arg sha "$CANDIDATE" \
-    '.sourceRevision == $sha and .distribution == "native"
-     and (.markers | length == 0) and (.unchecked | length == 0)' "$f"
+    '.sourceRevision == $sha
+     and ((.distribution == "native" and (.markers | length == 0))
+          or (.distribution == "mastra-agent" and (.markers | length == 0)
+              and (.agentMarkers | length == 0)
+              and (.agent.present == true) and (.agent.node == true)
+              and (.agent.missing | length == 0)))
+     and (.unchecked | length == 0)' "$f"
 done
 ```
 

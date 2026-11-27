@@ -528,7 +528,19 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         // The version links to its release notes; measured here so Report a bug leaves it room.
         let version =
             ui.painter().layout_no_wrap(format!("v{}", crate::update::current_version()), FontId::proportional(t.font_small), t.app_bar_text);
-        let (report, report_label) = report_rect(r, captions, tabs_start, label_width, version.size().x, app.header);
+        // The account chip is part of the shared right cluster: reserve its width, or hide it
+        // before it can cover Report a bug, the version link or a narrow tab strip.
+        let chip_width = crate::account::status_chip_width(ui, app);
+        let chip_reserve = chip_width.map_or(0.0, |width| width + 10.0);
+        let chip_fits = chip_width.is_some()
+            && r.width() >= 900.0
+            && r.right() - (captions + chip_reserve) - 28.0 - CLUSTER_BUTTONS - 8.0 - tabs_start >= TABS_KEPT
+            && (app.header.version != VersionPlace::Header || version_room(r, captions + chip_reserve, tabs_start, version.size().x).is_some());
+        // The File menu is the compact fallback when the caption chip has no room. It opens the
+        // same account menu, so sign-in, browser, sign-out and switch stay identical.
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("sc_account_compact"), chip_width.is_some() && !chip_fits));
+        let inset = captions + if chip_fits { chip_reserve } else { 0.0 };
+        let (report, report_label) = report_rect(r, inset, tabs_start, label_width, version.size().x, app.header);
         // Settings' left edge; command search, when the bar holds it, sits just before it and
         // moves the assistant button and the end of the document tabs left by its width.
         let gear_left = report.left() - 68.0;
@@ -601,7 +613,7 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         icons::paint_app_bar(ui.painter(), gear.shrink(7.0), "settings", 1.0);
         crate::scenario::publish_rect("titlebar:preferences", gear);
-        if crate::agent_chat::app_bar_button_shown(app) {
+        if crate::agent_chat::app_bar_button_shown(app) && !crate::right_rail::holds_assistant(app) {
             assistant_button(app, ui, Rect::from_center_size(pos2(report.left() - 86.0 - search_shift, r.center().y), vec2(32.0, 32.0)));
         }
         crate::scenario::publish_handle("titlebar:preferences", gear.center());
@@ -613,9 +625,9 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
         if gresp.backing_on_hover_text(prefs_tip).clicked() {
             crate::prefs::open_at(app, 0);
         }
-        if app.header.version == VersionPlace::Header && version_room(r, captions, tabs_start, version.size().x).is_some() {
+        if app.header.version == VersionPlace::Header && version_room(r, inset, tabs_start, version.size().x).is_some() {
             let galley = version;
-            let vrect = Align2::RIGHT_CENTER.anchor_size(pos2(r.right() - 12.0 - captions, r.center().y), galley.size());
+            let vrect = Align2::RIGHT_CENTER.anchor_size(pos2(r.right() - 12.0 - inset, r.center().y), galley.size());
             let vresp = ui.interact(
                 vrect.expand2(vec2(2.0, 4.0)).intersect(Rect::everything_right_of(report.right())),
                 ui.id().with("sc_version_link"),
@@ -628,9 +640,21 @@ pub fn app_bar(app: &mut SolveApp, ui: &mut egui::Ui) {
             }
             ui.painter().galley(vrect.min, galley, t.app_bar_text);
             crate::scenario::publish_handle("titlebar:version", vrect.center());
+            crate::scenario::publish_rect("titlebar:version", vrect);
             if vresp.clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(url));
             }
+        }
+        let chip_slot = if chip_fits {
+            chip_width.map(|width| {
+                let right = r.right() - captions - 4.0;
+                Rect::from_min_size(pos2(right - width, r.center().y - 9.0), vec2(width, 18.0))
+            })
+        } else {
+            None
+        };
+        if let Some(slot) = chip_slot {
+            crate::account::status_chip(app, ui, slot);
         }
         if app.custom_titlebar {
             crate::titlebar::caption_buttons(app, ui, r);
@@ -745,6 +769,7 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     let mut close = false;
+    let compact_account = ctx.data(|d| d.get_temp::<bool>(egui::Id::new("sc_account_compact")).unwrap_or(false));
     let resp = Container::new(ctx, Surface::Popup)
         .area(egui::Id::new("sc_file_area"))
         .fixed_pos(pos2(ctx.data(|d| d.get_temp::<f32>(egui::Id::new("sc_file_menu_x"))).unwrap_or(100.0), APP_BAR_HEIGHT))
@@ -759,6 +784,15 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     crate::context_menu::list_row(ui, &crate::context_menu::Item::action(label, label, icon).key(key).on_if(enabled)).is_some()
                 };
                 let item = |ui: &mut egui::Ui, label: &str, key: &str, icon: &str| item_if(ui, label, key, icon, true);
+                // Without room for the caption chip, the File menu keeps the permanent account
+                // entry. It comes first so a short window still shows it; it opens the same
+                // shared menu, so every account action stays in one place.
+                if compact_account {
+                    if crate::account::compact_menu_entry(app, ui) {
+                        close = true;
+                    }
+                    ui.separator();
+                }
                 // Insert, Save and Export act on the design, which Home hides.
                 let shown = design_shown(app);
                 if item(ui, app.tr("ui.new_design"), "Ctrl+N", "new") {
@@ -894,7 +928,11 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
             });
         });
     let just_opened = ctx.data(|d| d.get_temp::<u64>(egui::Id::new("sc_file_menu_opened"))) == Some(ctx.cumulative_pass_nr());
-    if close || (!just_opened && resp.response.clicked_elsewhere()) {
+    // The compact account row opens a popup with secondary controls (copy feedback and the manual
+    // address). Only a current click inside that child keeps this custom parent alive; an explicit
+    // File action or a click elsewhere always closes it.
+    let keep_open = crate::ui_kit::Menu::keeps_parent_open(ctx);
+    if close || (!just_opened && resp.response.clicked_elsewhere() && !keep_open) {
         ctx.data_mut(|d| d.insert_temp(id, false));
     }
 }
@@ -2406,21 +2444,12 @@ fn app_bar_separator(ui: &egui::Ui, bar: Rect, x: f32, group: &str) {
 
 /// The chat panel's compact entry point. State stays in agent_chat; the bar only paints it.
 fn assistant_button(app: &mut SolveApp, ui: &mut egui::Ui, at: Rect) {
-    use crate::agent_chat::AssistantMark;
     let resp = ui.interact(at, ui.id().with("assistant_button"), Sense::click());
     crate::scenario::publish_target("titlebar:assistant", at);
     let mark = crate::agent_chat::assistant_mark(app);
     let tip = crate::agent_chat::assistant_tip(app, mark);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &tip));
-    let state = match mark {
-        AssistantMark::Quiet => crate::ui_kit::AssistantEntryState::Quiet,
-        AssistantMark::Ready => crate::ui_kit::AssistantEntryState::Ready,
-        AssistantMark::Busy => crate::ui_kit::AssistantEntryState::Busy,
-        AssistantMark::NeedsAuth => crate::ui_kit::AssistantEntryState::NeedsAuth,
-        AssistantMark::Stopped => crate::ui_kit::AssistantEntryState::Stopped,
-        AssistantMark::Waiting(count) => crate::ui_kit::AssistantEntryState::Waiting(count),
-    };
-    crate::ui_kit::assistant_entry(ui, &resp, state, app.agent_chat.open, ui.ctx().global_style().animation_time > 0.0);
+    crate::ui_kit::assistant_entry(ui, &resp, mark.into(), app.agent_chat.open, ui.ctx().global_style().animation_time > 0.0);
     if resp.backing_on_hover_text(tip).clicked() {
         crate::agent_chat::toggle(app);
     }
@@ -3392,6 +3421,71 @@ pub(crate) fn cancel_unfinished(app: &mut SolveApp) -> bool {
     true
 }
 
+/// Which owner may act on Delete/Backspace in this input batch.
+///
+/// The shortcut pass runs before layout and sees the previous frame's focus. Only a release inside
+/// Files is evidence of a completed Files click; a button press alone is not a focus change. A
+/// Files release before the key keeps the key for Files unless any outside button follows it: a
+/// held press makes the target uncertain and must never authorize CAD deletion. Files buttons
+/// after the key retire it so the later Files handler cannot retarget. Without Files involvement,
+/// settled CAD keeps its Delete. Returns (retire both owners, leave the key for Files).
+fn destructive_ownership(panel: Option<egui::Rect>, files_keys: bool, ctx: &egui::Context) -> (bool, bool) {
+    use egui::{Event, Key};
+    let Some(panel) = panel else { return (false, false) };
+    let (files_buttons, files_releases, outside_buttons, keys) = ctx.input(|i| {
+        let mut files_buttons = Vec::new();
+        let mut files_releases = Vec::new();
+        let mut outside_buttons = Vec::new();
+        let mut keys = Vec::new();
+        for (index, event) in i.events.iter().enumerate() {
+            match event {
+                Event::PointerButton { pos, pressed, .. } => {
+                    if panel.contains(*pos) {
+                        files_buttons.push(index);
+                        if !pressed {
+                            files_releases.push(index);
+                        }
+                    } else {
+                        outside_buttons.push(index);
+                    }
+                }
+                Event::Key { key: Key::Delete | Key::Backspace, pressed: true, .. } => keys.push(index),
+                _ => {}
+            }
+        }
+        (files_buttons, files_releases, outside_buttons, keys)
+    });
+    let pointer_any = !files_buttons.is_empty() || !outside_buttons.is_empty();
+    let mut retire = false;
+    let mut to_files = false;
+    for key in keys {
+        let last_release = files_releases.iter().filter(|index| **index < key).max().copied();
+        if files_buttons.iter().any(|index| *index > key) {
+            // A later Files button can retarget the key in the later Files handler.
+            retire = true;
+        } else if let Some(release) = last_release {
+            // An outside button after the Files release makes ownership uncertain; it must not
+            // authorize CAD deletion (it may be a held press, not a completed click).
+            if outside_buttons.iter().any(|index| *index > release && *index < key) {
+                retire = true;
+            } else {
+                to_files = true;
+            }
+        } else if !pointer_any {
+            // Settled Files without pointer input keeps its accepted behavior; settled CAD is
+            // left to CAD.
+            if files_keys {
+                to_files = true;
+            }
+        } else if files_keys || files_buttons.iter().any(|index| *index < key) {
+            // Files may be taking or losing focus, but no Files release completed: uncertain.
+            retire = true;
+        }
+        // No Files involvement: CAD keeps its settled Delete.
+    }
+    (retire, to_files)
+}
+
 /// Global keyboard shortcuts (when no text field has focus).
 pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     crate::viewport_status::reconcile(app, ctx);
@@ -3412,9 +3506,12 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
         return;
     }
     // File is a custom Area, so it must claim Escape before the underlying editors and
-    // sketch shortcuts. Clear raw events too: egui may replay them on a layout pass.
+    // sketch shortcuts. A file question or the shortcut recorder has first refusal.
+    // Clear raw events too: egui may replay them on a layout pass.
     let file_menu_id = egui::Id::new("sc_file_menu");
-    if !app.native_file_menu
+    if app.file_tree.modal.is_none()
+        && !crate::keymap::capturing(app)
+        && !app.native_file_menu
         && ctx.data(|d| d.get_temp::<bool>(file_menu_id).unwrap_or(false))
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
@@ -3447,7 +3544,9 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
             return;
         }
     }
-    if crate::params_dialog::cancel_on_escape(app, ctx) {
+    // A file question is above the nonmodal Parameters editor. All earlier file-menu and
+    // shortcut-recorder first-refusal handlers still run in their established order.
+    if app.file_tree.modal.is_none() && crate::params_dialog::cancel_on_escape(app, ctx) {
         return;
     }
     // A dimension value that is taking the keyboard: letters belong to it (a parameter name
@@ -3488,6 +3587,12 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
         }
         return;
     }
+    // Frame-entry ownership survives an editor closing or a layout re-pass, but gates only
+    // application key dispatch: reconciliation and Escape first-refusal above must still run.
+    if app.file_tree.modal.is_some() || app.clipboard_input.entry_keyboard_owned {
+        app.viewport.key_hold = None;
+        return;
+    }
     // A quick chord can press and release all modifiers in one frame. Dispatch each key
     // with its own modifiers, not the final frame state (an unbound Ctrl+Shift+A is not A).
     let keys: Vec<_> = ctx.input(|i| {
@@ -3498,17 +3603,39 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
             )
             .collect()
     });
-    // A theme pasted on the Interface page is a theme, not copied components (#8226).
-    crate::prefs::take_theme_paste(app, ctx);
     // Home hides the design: only New, Open and Preferences work there.
     let shown = design_shown(app);
-    if shown {
-        crate::edit_clipboard::handle(app, ctx);
-    } else {
-        crate::edit_clipboard::flush(app, ctx);
+    // The Files tree can have the keyboard only while it is the open panel and the window is wide
+    // enough to draw its body. A content width below the panel-plus-view minimum cannot fit; above
+    // it, the last frame's drawn panel is the pre-layout evidence.
+    let files_rail = crate::right_rail::shown(app) && crate::right_rail::open(app) == Some(crate::right_rail::Item::Files);
+    let files_fit = ctx.content_rect().width() >= crate::right_rail::MIN_VIEW + crate::right_rail::MIN_PANEL;
+    let files_panel = if files_rail && files_fit { app.shell.right_rail_panel } else { None };
+    let files_keys = app.file_tree.focused && files_panel.is_some();
+    // Ordered button events decide destructive ownership; the final pointer may have moved away.
+    let (retire_destructive, destructive_to_files) = destructive_ownership(files_panel, files_keys, ctx);
+    if retire_destructive {
+        // Retire both the effective and replay copies so the later Files handler cannot retarget.
+        ctx.input_mut(|i| {
+            let keep = |event: &egui::Event| !matches!(event, egui::Event::Key { key: egui::Key::Delete | egui::Key::Backspace, .. });
+            i.events.retain(keep);
+            i.raw.events.retain(keep);
+        });
     }
+    // Only clipboard mutation waits for current widget/dialog ownership in `finish_input`.
     for (k, repeat, mods) in keys {
         use egui::Key;
+        // Delete and Backspace are destructive. While Files owns the keys, or a click can move
+        // them into or out of Files in this same batch, neither owner may receive them from the
+        // stale pre-layout focus.
+        if matches!(k, Key::Delete | Key::Backspace) && (retire_destructive || destructive_to_files) {
+            continue;
+        }
+        // A click in the Files tree gives it the keyboard until a click lands elsewhere: the keys
+        // it acts on are for the files, not also for the design or the view.
+        if files_keys && crate::file_tree::takes_key(k, mods) {
+            continue;
+        }
         // Only Esc pressed twice in a row finishes a sketch: any other key in between resets it.
         if k != Key::Escape {
             app.last_escape = None;
@@ -4318,6 +4445,28 @@ mod header_report_tests {
             let report = crate::scenario::handle_at("titlebar:report").expect("the report button is drawn");
             // Its click area starts where the report button ends, so a click on that button reaches the report.
             assert!(version.x > report.x, "width {width}");
+        }
+    }
+
+    #[test]
+    fn the_account_status_chip_never_covers_report_or_version() {
+        for width in [700.0, 900.0, 1200.0, 1600.0] {
+            let mut h = crate::scenario::Harness::new();
+            h.app.home.open = false;
+            h.app.custom_titlebar = true;
+            h.app.account = crate::account::State::with_port(crate::account::tests::signed_in_unknown_port());
+            h.call("ui.resize", json!({"width":width,"height":720}));
+            h.frames(3);
+            let Some(chip) = crate::scenario::rect_of("titlebar:account_status") else {
+                assert!(width < 900.0, "the chip should appear at {width}");
+                continue;
+            };
+            let report = crate::scenario::rect_of("titlebar:report").expect("the report button is drawn");
+            assert!(!chip.intersects(report), "width {width}: {chip:?} overlaps {report:?}");
+            if let Some(version) = crate::scenario::rect_of("titlebar:version") {
+                assert!(chip.left() >= version.right() + 1.0, "width {width}: {chip:?} overlaps {version:?}");
+            }
+            assert!(chip.right() <= width - crate::titlebar::WIDTH - 2.0, "width {width}: {chip:?} runs under the window buttons");
         }
     }
 

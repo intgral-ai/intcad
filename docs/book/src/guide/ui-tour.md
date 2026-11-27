@@ -177,16 +177,33 @@ view.
   being edited (Editing Sketch1, or Editing Extrude1 while that feature's dialog is open). While
   it is on, the sketch's state no longer shows in the view's top-left corner.
 - **Right rail** (Preferences › Interface › **Right rail** turns it off). A narrow rail along
-  the window's right edge with four items, each a small drawing with its name: **Files** for
-  what is in the design's project, and under a rule **Review**, **Simulation** and
-  **Autocomplete**. Click an item to open its panel beside the rail, click it again to close
-  the panel; one panel is open at a time. Drag the panel's left edge to make it wider. The
-  open item and the width are remembered. **Review** runs the sheet-metal DFM check from
+  the window's right edge whose rows are each a small drawing with its name. **Assistant**
+  stands first, over a rule: click it to open the Assistant, click it again to close it. The
+  Assistant stays a panel of its own beside the rail, so it can be open together with any of
+  the four items below. Its row shows at its corner when the Assistant is ready, busy or
+  waiting for a sign-in or an approval. Without the rail (the preference turned off, or in the
+  Render workspace) the same button is at the right of the application bar instead.
+  The four items are **Files** for the folder this window browses, and under a rule
+  **Review**, **Simulation** and **Autocomplete**. Click an item to open its panel beside the
+  rail, click it again to close the panel; one of these panels is open at a time. Drag the
+  panel's left edge to make it wider. The open item and the width are remembered.
+  **Files** browses one local folder: **Open Folder** chooses it (a saved design's folder is
+  used when there is one). Folders open by the arrow, a double click or a drag; designs
+  (`.sc`) open in a tab and any other file opens in its usual program. The `+` makes a file, a
+  folder or a blank design; right-click renames, deletes, copies, cuts, pastes and copies the
+  path or shows the file in the system file manager. Entries can be selected in a run with
+  Shift or one by one with Ctrl/Cmd, dragged into another folder to move them (Ctrl/Cmd copies),
+  and deleted one item at a time through the system trash: a design with unsaved changes asks
+  before its work is discarded, saved as a copy, or the delete is cancelled. Renaming or moving
+  a design, or a folder that holds one, moves its tab and save target with it and keeps unsaved
+  edits. The tree follows changes made outside Intcad, says when an open design's file was
+  changed or removed, and refreshes by itself or from the arrow.
+  **Review** runs the sheet-metal DFM check from
   **Run DFM check** without the Assistant: the report lists its run, its counts and every
   finding with the measured and required value. Click a finding to locate it in the view; a
   label picked in the view selects the same row. Drag the report card onto the Assistant to
   ask about it, and the message reads that run even when a newer check has run since. The
-  other panels have nothing to list yet and say so.
+  Simulation and Autocomplete panels have nothing to list yet and say so.
 - **Command search (S).** Click the ribbon search field or press S to open the search popup
   below it. Results group commands by their ribbon path and show matching features and user
   parameters from this design. With an empty query, recent commands appear first, followed by

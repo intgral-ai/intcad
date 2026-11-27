@@ -18,6 +18,54 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import main_merge  # noqa: E402
 
 
+class PendingFormatCleanup(unittest.TestCase):
+    def test_cleanup_attempts_preserve_the_format_check_status(self):
+        root = Path(__file__).resolve().parents[2]
+        # The throwaway repository must not inherit signing or other Git configuration.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_CONFIG")}
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
+        for failures, check_status, attempts in [(0, 0, 1), (2, 0, 3), (10, 0, 10), (10, 37, 10)]:
+            with self.subTest(failures=failures, check_status=check_status), tempfile.TemporaryDirectory() as temp:
+                scratch = Path(temp)
+                events = scratch / "events"
+                events.touch()
+                startup = scratch / "bash-env"
+                startup.write_text(
+                    """
+rm() {
+  if [[ $1 == -rf && ${!#} == "$TMPDIR"/tmp.* ]]; then
+    echo attempt >> "$CLEANUP_EVENTS"
+    if [[ $(grep -c '^attempt$' "$CLEANUP_EVENTS") -le $CLEANUP_FAILURES ]]; then
+      return 79
+    fi
+  fi
+  command rm "$@"
+}
+sleep() { echo wait >> "$CLEANUP_EVENTS"; }
+cp() {
+  if [[ $CHECK_STATUS != 0 ]]; then return "$CHECK_STATUS"; fi
+  command cp "$@"
+}
+"""
+                )
+                result = subprocess.run(
+                    ["bash", "scripts/test-format-pending.sh"],
+                    cwd=root,
+                    env=dict(
+                        env, BASH_ENV=str(startup), TMPDIR=temp, CLEANUP_EVENTS=str(events),
+                        CLEANUP_FAILURES=str(failures), CHECK_STATUS=str(check_status),
+                    ),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.assertEqual(result.returncode, check_status, result.stdout + result.stderr)
+                if check_status == 0:
+                    self.assertIn("ok: pending format changes merge cleanly", result.stdout)
+                self.assertEqual(events.read_text().splitlines(), ["attempt", "wait"] * (attempts - 1) + ["attempt"])
+                self.assertEqual(bool(list(scratch.glob("tmp.*"))), failures == 10)
+
+
 class Repo:
     def __init__(self, root):
         self.root = root
@@ -134,6 +182,8 @@ class ForkExecution(unittest.TestCase):
             ["npm", "run", "verify:schema", "-w", package],
             ["npm", "run", "check:deps", "-w", package],
             ["npm", "run", "test:artifact-gate", "-w", package],
+            ["node", "packages/mastra-runtime/scripts/test-remove-enterprise.mjs"],
+            ["node", "packages/mastra-runtime/scripts/test-agent-package.mjs"],
         ])
         self.assertEqual(contract[2], expected)
         self.assertEqual(contract[3:], [

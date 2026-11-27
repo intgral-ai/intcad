@@ -1330,8 +1330,9 @@ preference_settings! {
     /// A thin bar along the window's bottom edge: what is being edited, the open sketch's state
     /// and the design's units (#7243). Off by default.
     status_bar: bool = false, PAGE_LAYOUT;
-    /// A rail along the window's right edge with Files, then Review, Simulation and Autocomplete;
-    /// an item opens its panel beside the rail. Off: no rail, as before it was added.
+    /// A rail along the window's right edge with the Assistant's button, Files, then Review,
+    /// Simulation and Autocomplete; an item opens its panel beside the rail. Off: no rail and
+    /// the Assistant's button in the application bar, as before the rail was added.
     right_rail: bool = true, PAGE_LAYOUT;
     /// The rail item whose panel is open (`files`, `review`, `simulation` or `autocomplete`);
     /// empty, or anything else, for none.
@@ -1567,6 +1568,9 @@ preference_settings! {
     agent_chat_side: String = "right".into(), PAGE_ASSISTANT;
     agent_chat_width: f32 = 380.0, PAGE_ASSISTANT;
     agent_chat_minimized: bool = false, PAGE_ASSISTANT;
+    /// Where the host shows the Assistant's page: at the bottom of the window, centred, as one
+    /// message box with the conversation opened above it. Off: the side panel, as before.
+    agent_chat_centre: bool = true, PAGE_ASSISTANT;
     /// Whether the chat is in its own window instead of the side panel, and that window's place
     /// and size as the system last reported them (`[x, y, width, height]`, points; `x` can be
     /// negative or past the main screen when the window sits on another one).
@@ -1592,6 +1596,10 @@ preference_settings! {
     mastra_workflow_id: String = String::new(), PAGE_ASSISTANT;
     /// How to start the Mastra runtime: its command line (empty: not configured).
     mastra_runtime_command: String = String::new(), PAGE_ASSISTANT;
+    /// The custom addresses the built-in agent is handed (the Assistant's Connections page adds
+    /// and removes them). A key is never here: it lives in the system keychain. No page reset
+    /// discards them, as none discards the agents the user added.
+    mastra_custom: Vec<crate::agent_chat::connections::CustomAddress> = Vec::new();
 
     // ---- Sketch / selection modifier bindings (classic defaults; alternate mapping is opt-in) ----
     /// Modifier that suppresses sketch auto-snap while drawing or dragging a sketch point.
@@ -3450,6 +3458,16 @@ fn theme_choices(app: &SolveApp) -> Vec<(String, String)> {
     modes.chain(files).collect()
 }
 
+/// The theme an installation that has never saved its preferences starts in: Black, the app's
+/// own look (INT-1480). `Prefs::default()` stays Dark: that is what a saved choice was made
+/// against and what restoring a page's defaults gives.
+pub const FIRST_RUN_THEME: &str = "black";
+
+/// Turn the first-run theme on. The desktop app calls this when it finds no saved preferences.
+pub fn start_in_first_run_theme(app: &mut SolveApp) {
+    select_theme(app, FIRST_RUN_THEME);
+}
+
 /// Turn a theme on (a mode or a theme file's id); dark follows it.
 fn select_theme(app: &mut SolveApp, id: &str) {
     app.preferences.theme = id.to_string();
@@ -3482,15 +3500,17 @@ fn looks_like_theme(text: &str) -> bool {
 /// Ctrl/Cmd+V on the Appearance page with a theme file's text on the clipboard imports it, like
 /// Import… with a file (#8226). Called before the global Copy and Paste shortcuts, which would
 /// otherwise paste copied components; the paste is taken out of the input once it is a theme's.
-pub fn take_theme_paste(app: &mut SolveApp, ctx: &egui::Context) {
+/// Returns whether the paste was claimed, including a theme-looking text that fails to import:
+/// that still owns the paste so no other clipboard shortcut pastes it instead.
+pub fn take_theme_paste(app: &mut SolveApp, ctx: &egui::Context) -> bool {
     if !app.prefs_window.open || app.prefs_window.section != PAGE_APPEARANCE {
-        return;
+        return false;
     }
     let Some(text) = ctx.input(|i| i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None })) else {
-        return;
+        return false;
     };
     if !looks_like_theme(&text) {
-        return;
+        return false;
     }
     ctx.input_mut(|i| {
         i.events.retain(|e| {
@@ -3498,6 +3518,7 @@ pub fn take_theme_paste(app: &mut SolveApp, ctx: &egui::Context) {
         })
     });
     import_theme_text(app, Ok(text));
+    true
 }
 
 /// Files dropped on the theme Import tile are themes to import, not designs to open (#8226).
@@ -11196,8 +11217,8 @@ mod perspective_fov_tests {
         h.frames(2);
         let distance = h.app.cam.distance;
         let mut raw = |method: &str, params: serde_json::Value| {
-            let (req, _rx) = crate::control::ControlRequest::new(method, params);
-            match crate::control::handle(&mut h.app, &h.ctx, &req) {
+            let (mut req, _rx) = crate::control::ControlRequest::trusted_gui(method, params);
+            match crate::control::handle(&mut h.app, &h.ctx, &mut req) {
                 crate::control::Outcome::Done(v) => v,
                 _ => serde_json::Value::Null,
             }

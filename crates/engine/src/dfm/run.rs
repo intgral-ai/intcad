@@ -513,17 +513,58 @@ pub struct RunResult {
 ///
 /// `on_submitted` receives the validation run id as soon as it exists, so the host can cancel it
 /// from the window while the worker is still computing.
+/// A host reservation for one controlled DFM run: the exact run identity, the billed logical
+/// operation and the measured safe stop. The host persists its operation mapping before passing
+/// this to the service.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reservation {
+    pub run_id: String,
+    pub operation_id: String,
+    pub stop_at_ms: u64,
+}
+
 pub fn run_once(
     port: &Arc<ValidationPort>,
     request: &RunRequest,
     cancel: &AtomicBool,
     on_submitted: &dyn Fn(&str),
 ) -> Result<RunResult, RunStoreError> {
+    run_once_reserved(port, request, cancel, on_submitted, None)
+}
+
+/// Run one check under an exact host reservation. The reserved run id is the only run this worker
+/// may submit or claim; ordinary queued work is never pumped. A non-reserved call keeps the free
+/// GUI path unchanged.
+pub fn run_once_reserved(
+    port: &Arc<ValidationPort>,
+    request: &RunRequest,
+    cancel: &AtomicBool,
+    on_submitted: &dyn Fn(&str),
+    reservation: Option<&Reservation>,
+) -> Result<RunResult, RunStoreError> {
     let store = RunStore::new(&request.project_root);
     let compiled = compile::compile(&request.input, &request.sheets, &request.candidate.candidate_digest)
         .map_err(|error| RunStoreError::Validation(error.to_string()))?;
     let profile_ref = port.register_profile(compiled.profile.clone()).map_err(|error| RunStoreError::Validation(error.to_string()))?;
     if cancel.load(Ordering::Acquire) {
+        if let Some(reservation) = reservation {
+            // The reserved validation run was never submitted, so there is provably no work. A
+            // stopped record under the reserved id lets the host release its hold exactly once.
+            let stamp = validation::timestamp(now_ms());
+            let meta = RunMeta::new(
+                &reservation.run_id,
+                &request.input.project_id,
+                &request.candidate.candidate_digest,
+                &request.input.config_digest,
+                &request.candidate.candidate_digest,
+                &request.started_at,
+                &stamp,
+                RunOutcome::Cancelled,
+                Some("the check was cancelled before it was submitted".into()),
+            );
+            store.write_stopped(&meta)?;
+            return Ok(RunResult { run_id: reservation.run_id.clone(), outcome: RunOutcome::Cancelled, findings: None, reason: meta.reason });
+        }
         return Ok(RunResult {
             run_id: String::new(),
             outcome: RunOutcome::Cancelled,
@@ -533,8 +574,26 @@ pub fn run_once(
     }
     let now = now_ms();
     let key = validation::generate_submission_key(now);
-    let submitted = port.submit(&request.candidate, &profile_ref, &key).map_err(|error| RunStoreError::Validation(error.to_string()))?;
+    let submitted = match reservation {
+        Some(reservation) => port
+            .submit_controlled_for(
+                &request.candidate,
+                &profile_ref,
+                &key,
+                "review",
+                &reservation.run_id,
+                &reservation.operation_id,
+                reservation.stop_at_ms,
+            )
+            .map_err(|error| RunStoreError::Validation(error.to_string()))?,
+        None => port.submit(&request.candidate, &profile_ref, &key).map_err(|error| RunStoreError::Validation(error.to_string()))?,
+    };
     let run_id = submitted.run_id;
+    if let Some(reservation) = reservation
+        && run_id != reservation.run_id
+    {
+        return Err(RunStoreError::Validation("the submitted run does not match the host reservation".into()));
+    }
     let mut meta = RunMeta::new(
         &run_id,
         &request.input.project_id,
@@ -552,7 +611,23 @@ pub fn run_once(
     if cancel.load(Ordering::Acquire) {
         let _ = port.cancel(&run_id);
     }
-    port.pump().map_err(|error| RunStoreError::Validation(error.to_string()))?;
+    match reservation {
+        Some(reservation) => {
+            if let Some(job) =
+                port.start_controlled_run(&run_id, &reservation.operation_id).map_err(|error| RunStoreError::Validation(error.to_string()))?
+            {
+                port.run_claimed_with_stop(&job, Some(reservation.stop_at_ms)).map_err(|error| RunStoreError::Validation(error.to_string()))?;
+            } else {
+                // No claim: only an already terminal run is safe to read without executing. A
+                // non-terminal run owned by another worker must not be marked failed here.
+                let state = port.status(&run_id).map_err(|error| RunStoreError::Validation(error.to_string()))?.state;
+                if !state.is_terminal() {
+                    return Err(RunStoreError::Validation("the reserved run is not claimable by this worker and is not terminal".into()));
+                }
+            }
+        }
+        None => port.pump().map_err(|error| RunStoreError::Validation(error.to_string()))?,
+    }
     let status = port.status(&run_id).map_err(|error| RunStoreError::Validation(error.to_string()))?;
     meta.ended_at = validation::timestamp(now_ms());
     match status.state {
