@@ -1619,6 +1619,18 @@ fn page_strings() -> serde_json::Map<String, serde_json::Value> {
         ("attachViewNow", "ui.tickets_attach_view_now"),
         ("removeFile", "ui.tickets_remove_file"),
         ("checkRan", "ui.tickets_check_ran"),
+        ("roundOf", "ui.tickets_round_of"),
+        ("roundFirst", "ui.tickets_round_first"),
+        ("roundsChecking", "ui.tickets_rounds_checking"),
+        ("roundsFixing", "ui.tickets_rounds_fixing"),
+        ("roundsStopped", "ui.tickets_rounds_stopped_word"),
+        ("stopClean", "ui.tickets_stop_clean"),
+        ("stopAdvisory", "ui.tickets_stop_advisory"),
+        ("stopFailed", "ui.tickets_stop_failed"),
+        ("stopRefused", "ui.tickets_stop_refused"),
+        ("stopPerson", "ui.tickets_stop_person"),
+        ("stopAssistant", "ui.tickets_stop_assistant"),
+        ("didCheckAskedAuto", "ui.tickets_did_check_asked_auto"),
     ]
     .into_iter()
     .map(|(name, key)| (name.to_string(), serde_json::Value::from(tr(key))))

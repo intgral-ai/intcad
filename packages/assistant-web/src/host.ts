@@ -375,8 +375,10 @@ export interface Ticket {
   checksOff?: boolean;
   /** 需重查: changed after it was finished, and why. */
   recheck?: string | null;
-  /** The Assistant says it has finished the work; a person runs the check. */
+  /** The Assistant says it has finished the work; its check is asked for next (by itself with the project's automatic checks on, else by a person). */
   finished?: boolean;
+  /** The Assistant's rounds of check and fix: the round of fixing it is in (0 during the first check), the most, and why they stopped. */
+  rounds?: TicketRounds | null;
   /** The store's reasons, so the page never decides them itself: why it cannot be finished now, the tickets it still waits for, whether finishing leaves it unchecked. */
   whyNotDone?: { kind: 'subs'; ids: string[] } | { kind: 'check' } | { kind: 'recheck'; why: string } | null;
   openWaits?: string[];
@@ -385,6 +387,10 @@ export interface Ticket {
   /** The check bound to it: the run's own outcome word and counts, never a verdict of ours. */
   check: {
     state: 'asked' | 'running' | 'ran' | 'refused';
+    /** Who asked for it: a person, or the Assistant's 「做完了」. */
+    by?: 'person' | 'agent' | 'app';
+    /** What kind of check it is (`dfm`); its word is `kinds` in the state. */
+    kind?: string;
     run?: string;
     outcome?: string;
     counts?: Record<string, number>;
@@ -396,6 +402,13 @@ export interface Ticket {
   revision: number;
   created: string;
   updated: string;
+}
+
+/** The Assistant's rounds of check and fix on a ticket. */
+export interface TicketRounds {
+  round: number;
+  of: number;
+  stopped?: 'clean' | 'advisory' | 'failed' | 'refused' | 'person' | 'assistant';
 }
 
 /** One line of a ticket's record; `at` is RFC 3339 in UTC. A `comment` line's text is its `note`. */
@@ -410,6 +423,10 @@ export interface TicketEvent {
   run?: string;
   /** A comment's files, or the files the Assistant attached when it said it had finished. */
   attachments?: TicketAttachment[];
+  /** On the lines of a check the Assistant asked for: its rounds as that step left them. */
+  rounds?: TicketRounds;
+  /** On a check's lines: what kind of check. */
+  kind?: string;
   revision: number;
 }
 
@@ -445,7 +462,9 @@ export type TicketStringKey =
   | 'runCheck' | 'recheck' | 'finishedNote' | 'needsCheck' | 'deleteWithSubs' | 'confirmWithSubs' | 'together' | 'onlyThis' | 'whyRecheck' | 'withTicket'
   | 'whyStale' | 'checkOff'
   | 'comment' | 'commentPlaceholder' | 'backTitle' | 'backWhy' | 'backConfirm' | 'checkItems'
-  | 'attachFile' | 'attachViewNow' | 'removeFile' | 'checkRan';
+  | 'attachFile' | 'attachViewNow' | 'removeFile' | 'checkRan'
+  | 'roundOf' | 'roundFirst' | 'roundsChecking' | 'roundsFixing' | 'roundsStopped'
+  | 'stopClean' | 'stopAdvisory' | 'stopFailed' | 'stopRefused' | 'stopPerson' | 'stopAssistant' | 'didCheckAskedAuto';
 
 export interface TicketsState {
   view: 'tickets';
@@ -463,6 +482,8 @@ export interface TicketsState {
   freshness: Record<string, string>;
   /** The open ticket's runs, by run id: each rule the run reported. */
   items?: Record<string, CheckItem[]>;
+  /** Each kind of check's word, by kind (`dfm`: 「DFM 检查」). */
+  kinds?: Record<string, string>;
   /** Why a step was refused, in the store's words. */
   error: string | null;
   /** The same refusal as a kind the page says in the person's words; absent for any other. */

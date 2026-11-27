@@ -128,7 +128,19 @@
     "ui.tickets_rounds_findings": "{id}: its check found work to do (round {round} of {of}). Fix it and say finished again:",
     "ui.tickets_rounds_stopped": "{id}: the rounds of fixing have stopped (round {round} of {of}), and a person takes it from here. Write one comment on it: what is left and what you tried. Do not change the model for it.",
     "project_settings.new_tickets": "New part tickets are checked",
-    "project_settings.rounds": "Rounds of fixing at most"
+    "project_settings.rounds": "Rounds of fixing at most",
+    "ui.tickets_round_of": "Round {round} of {of}",
+    "ui.tickets_round_first": "First check",
+    "ui.tickets_rounds_checking": "Checking",
+    "ui.tickets_rounds_fixing": "The Assistant is fixing",
+    "ui.tickets_rounds_stopped_word": "Stopped",
+    "ui.tickets_stop_clean": "nothing left to fix",
+    "ui.tickets_stop_advisory": "only advisories left",
+    "ui.tickets_stop_failed": "something still fails",
+    "ui.tickets_stop_refused": "the check could not run",
+    "ui.tickets_stop_person": "a person stepped in",
+    "ui.tickets_stop_assistant": "the Assistant moved it",
+    "ui.tickets_did_check_asked_auto": "asked for the check on finishing"
   },
   "zh": {
     "ui.tickets_one_at_a_time": "{id} 正在进行。先做完它或等它的检查，再开始另一张。",
@@ -259,7 +271,19 @@
     "ui.tickets_rounds_findings": "{id}：检查还有要改的（第 {round} 轮，共 {of} 轮）。改好后再说做完了：",
     "ui.tickets_rounds_stopped": "{id}：修改的轮数停了（第 {round} 轮，共 {of} 轮），接下来由人处理。请在票上写一条评论：还剩什么、试过什么。不要再为它改模型。",
     "project_settings.new_tickets": "新票默认要检查",
-    "project_settings.rounds": "最多几轮修改"
+    "project_settings.rounds": "最多几轮修改",
+    "ui.tickets_round_of": "第 {round} 轮，共 {of} 轮",
+    "ui.tickets_round_first": "首次检查",
+    "ui.tickets_rounds_checking": "检查中",
+    "ui.tickets_rounds_fixing": "等助手改",
+    "ui.tickets_rounds_stopped_word": "已停",
+    "ui.tickets_stop_clean": "没有要改的了",
+    "ui.tickets_stop_advisory": "只剩建议",
+    "ui.tickets_stop_failed": "还有不合格",
+    "ui.tickets_stop_refused": "检查跑不了",
+    "ui.tickets_stop_person": "有人接手了",
+    "ui.tickets_stop_assistant": "助手改了状态",
+    "ui.tickets_did_check_asked_auto": "做完后请求了检查"
   },
   "ja": {
     "ui.tickets_one_at_a_time": "{id} が進行中です。終えるかチェックを待ってから次を開始してください。",
@@ -390,7 +414,19 @@
     "ui.tickets_rounds_findings": "{id}: チェックで直す点が見つかりました（{of} 回中 {round} 回目）。直したら、もう一度完了と伝えてください:",
     "ui.tickets_rounds_stopped": "{id}: 修正のラウンドは終わりました（{of} 回中 {round} 回目）。ここからは人が引き継ぎます。チケットにコメントを 1 件書いてください: 残っていることと、試したこと。このチケットのためにモデルを変えないでください。",
     "project_settings.new_tickets": "新しい部品チケットはチェックする",
-    "project_settings.rounds": "修正ラウンドの上限"
+    "project_settings.rounds": "修正ラウンドの上限",
+    "ui.tickets_round_of": "{of} 回中 {round} 回目",
+    "ui.tickets_round_first": "最初のチェック",
+    "ui.tickets_rounds_checking": "チェック中",
+    "ui.tickets_rounds_fixing": "アシスタントが修正中",
+    "ui.tickets_rounds_stopped_word": "停止",
+    "ui.tickets_stop_clean": "直す点はありません",
+    "ui.tickets_stop_advisory": "残りは推奨のみ",
+    "ui.tickets_stop_failed": "不合格が残っています",
+    "ui.tickets_stop_refused": "チェックを実行できません",
+    "ui.tickets_stop_person": "人が引き継ぎました",
+    "ui.tickets_stop_assistant": "アシスタントが状態を変えました",
+    "ui.tickets_did_check_asked_auto": "完了時にチェックを依頼"
   },
   "de": {
     "ui.tickets_one_at_a_time": "{id} ist in Arbeit. Schließen Sie es ab oder warten Sie auf seine Prüfung, bevor Sie ein weiteres starten.",
@@ -521,7 +557,19 @@
     "ui.tickets_rounds_findings": "{id}: Die Prüfung hat noch etwas gefunden (Runde {round} von {of}). Behebe es und melde es wieder als fertig:",
     "ui.tickets_rounds_stopped": "{id}: Die Korrekturrunden sind beendet (Runde {round} von {of}); ab hier übernimmt ein Mensch. Schreib einen Kommentar dazu: was offen ist und was du versucht hast. Ändere das Modell dafür nicht mehr.",
     "project_settings.new_tickets": "Neue Bauteil-Tickets werden geprüft",
-    "project_settings.rounds": "Höchstens so viele Korrekturrunden"
+    "project_settings.rounds": "Höchstens so viele Korrekturrunden",
+    "ui.tickets_round_of": "Runde {round} von {of}",
+    "ui.tickets_round_first": "Erste Prüfung",
+    "ui.tickets_rounds_checking": "Prüfung läuft",
+    "ui.tickets_rounds_fixing": "Der Assistent behebt",
+    "ui.tickets_rounds_stopped_word": "Beendet",
+    "ui.tickets_stop_clean": "nichts mehr zu beheben",
+    "ui.tickets_stop_advisory": "nur Hinweise übrig",
+    "ui.tickets_stop_failed": "es fällt noch etwas durch",
+    "ui.tickets_stop_refused": "die Prüfung konnte nicht laufen",
+    "ui.tickets_stop_person": "ein Mensch hat übernommen",
+    "ui.tickets_stop_assistant": "der Assistent hat es verschoben",
+    "ui.tickets_did_check_asked_auto": "hat beim Fertigmelden die Prüfung angefordert"
   },
   "ko": {
     "ui.tickets_one_at_a_time": "{id}이(가) 진행 중입니다. 끝내거나 검사를 기다린 뒤 다른 티켓을 시작하세요.",
@@ -652,7 +700,19 @@
     "ui.tickets_rounds_findings": "{id}: 검사에서 고칠 것이 나왔습니다({of}회 중 {round}회차). 고친 뒤 다시 완료라고 알려 주세요:",
     "ui.tickets_rounds_stopped": "{id}: 수정 회차가 끝났습니다({of}회 중 {round}회차). 이제 사람이 맡습니다. 티켓에 댓글을 하나 남겨 주세요: 남은 것과 시도한 것. 이 티켓 때문에 모델을 더 바꾸지 마세요.",
     "project_settings.new_tickets": "새 부품 티켓은 검사함",
-    "project_settings.rounds": "최대 수정 회차"
+    "project_settings.rounds": "최대 수정 회차",
+    "ui.tickets_round_of": "{of}회 중 {round}회차",
+    "ui.tickets_round_first": "첫 검사",
+    "ui.tickets_rounds_checking": "검사 중",
+    "ui.tickets_rounds_fixing": "어시스턴트가 수정 중",
+    "ui.tickets_rounds_stopped_word": "중지됨",
+    "ui.tickets_stop_clean": "고칠 것이 없음",
+    "ui.tickets_stop_advisory": "권고만 남음",
+    "ui.tickets_stop_failed": "불합격이 남음",
+    "ui.tickets_stop_refused": "검사를 실행할 수 없음",
+    "ui.tickets_stop_person": "사람이 넘겨받음",
+    "ui.tickets_stop_assistant": "어시스턴트가 상태를 바꿈",
+    "ui.tickets_did_check_asked_auto": "완료하며 검사를 요청함"
   },
   "ar": {
     "ui.tickets_one_at_a_time": "{id} قيد التنفيذ. أنهِها أو انتظر فحصها قبل بدء أخرى.",
@@ -783,7 +843,19 @@
     "ui.tickets_rounds_findings": "{id}: وجد الفحص ما يجب إصلاحه (الجولة {round} من {of}). أصلحه ثم قل إنك انتهيت مرة أخرى:",
     "ui.tickets_rounds_stopped": "{id}: توقفت جولات الإصلاح (الجولة {round} من {of})، ومن هنا يتولاها شخص. اكتب تعليقًا واحدًا عليها: ما الذي بقي وما الذي جربته. لا تغيّر النموذج من أجلها.",
     "project_settings.new_tickets": "تُفحص تذاكر الأجزاء الجديدة",
-    "project_settings.rounds": "أقصى عدد لجولات الإصلاح"
+    "project_settings.rounds": "أقصى عدد لجولات الإصلاح",
+    "ui.tickets_round_of": "الجولة {round} من {of}",
+    "ui.tickets_round_first": "الفحص الأول",
+    "ui.tickets_rounds_checking": "جارٍ الفحص",
+    "ui.tickets_rounds_fixing": "المساعد يصلح",
+    "ui.tickets_rounds_stopped_word": "توقف",
+    "ui.tickets_stop_clean": "لا شيء للإصلاح",
+    "ui.tickets_stop_advisory": "بقيت التوصيات فقط",
+    "ui.tickets_stop_failed": "ما زال هناك فشل",
+    "ui.tickets_stop_refused": "تعذّر تشغيل الفحص",
+    "ui.tickets_stop_person": "تدخّل شخص",
+    "ui.tickets_stop_assistant": "نقله المساعد",
+    "ui.tickets_did_check_asked_auto": "طلب الفحص عند الانتهاء"
   },
   "he": {
     "ui.tickets_one_at_a_time": "{id} בעבודה. סיימו אותו או חכו לבדיקה שלו לפני שמתחילים אחר.",
@@ -914,7 +986,19 @@
     "ui.tickets_rounds_findings": "{id}: הבדיקה מצאה מה לתקן (סבב {round} מתוך {of}). תקן ואמור שוב שסיימת:",
     "ui.tickets_rounds_stopped": "{id}: סבבי התיקון נעצרו (סבב {round} מתוך {of}), ומכאן אדם ממשיך. כתוב עליה הערה אחת: מה נשאר ומה ניסית. אל תשנה את המודל בשבילה.",
     "project_settings.new_tickets": "כרטיסי חלקים חדשים נבדקים",
-    "project_settings.rounds": "מספר סבבי תיקון מרבי"
+    "project_settings.rounds": "מספר סבבי תיקון מרבי",
+    "ui.tickets_round_of": "סבב {round} מתוך {of}",
+    "ui.tickets_round_first": "בדיקה ראשונה",
+    "ui.tickets_rounds_checking": "בבדיקה",
+    "ui.tickets_rounds_fixing": "העוזר מתקן",
+    "ui.tickets_rounds_stopped_word": "נעצר",
+    "ui.tickets_stop_clean": "אין מה לתקן",
+    "ui.tickets_stop_advisory": "נשארו רק המלצות",
+    "ui.tickets_stop_failed": "עדיין יש כשל",
+    "ui.tickets_stop_refused": "הבדיקה לא יכלה לרוץ",
+    "ui.tickets_stop_person": "אדם נכנס",
+    "ui.tickets_stop_assistant": "העוזר העביר אותה",
+    "ui.tickets_did_check_asked_auto": "ביקש בדיקה בסיום"
   },
   "vi": {
     "ui.tickets_one_at_a_time": "{id} đang làm. Hãy hoàn thành hoặc chờ kiểm tra của nó trước khi bắt đầu phiếu khác.",
@@ -1045,6 +1129,18 @@
     "ui.tickets_rounds_findings": "{id}: lần kiểm tra còn điểm cần sửa (vòng {round}/{of}). Sửa xong thì báo hoàn thành lại:",
     "ui.tickets_rounds_stopped": "{id}: các vòng sửa đã dừng (vòng {round}/{of}), và từ đây một người sẽ tiếp tục. Hãy viết một bình luận trên phiếu: còn lại gì và bạn đã thử gì. Đừng sửa mô hình cho phiếu này nữa.",
     "project_settings.new_tickets": "Phiếu chi tiết mới được kiểm tra",
-    "project_settings.rounds": "Số vòng sửa tối đa"
+    "project_settings.rounds": "Số vòng sửa tối đa",
+    "ui.tickets_round_of": "Vòng {round}/{of}",
+    "ui.tickets_round_first": "Lần kiểm tra đầu",
+    "ui.tickets_rounds_checking": "Đang kiểm tra",
+    "ui.tickets_rounds_fixing": "Trợ lý đang sửa",
+    "ui.tickets_rounds_stopped_word": "Đã dừng",
+    "ui.tickets_stop_clean": "không còn gì để sửa",
+    "ui.tickets_stop_advisory": "chỉ còn khuyến nghị",
+    "ui.tickets_stop_failed": "vẫn còn điểm không đạt",
+    "ui.tickets_stop_refused": "không chạy được kiểm tra",
+    "ui.tickets_stop_person": "một người đã tiếp quản",
+    "ui.tickets_stop_assistant": "Trợ lý đã đổi trạng thái",
+    "ui.tickets_did_check_asked_auto": "đã yêu cầu kiểm tra khi hoàn thành"
   }
 }

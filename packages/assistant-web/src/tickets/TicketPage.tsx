@@ -11,7 +11,7 @@
 import { Ban, Box, Camera, ChevronDown, ChevronUp, CircleDot, ClipboardCheck, Ellipsis, FileText, Maximize2, Minimize2, Paperclip, PenLine, Pencil, Plus, Trash2, Unlock, X } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useRef, useState } from 'react';
-import type { CheckItem, Ticket, TicketAction, TicketAttachment, TicketEvent, TicketStateName, TicketsState } from '../host';
+import type { CheckItem, Ticket, TicketAction, TicketAttachment, TicketEvent, TicketRounds, TicketStateName, TicketsState } from '../host';
 import { ask, lastTickets, pictureUrl, post } from '../host';
 import { childrenOf, fill, lines, MAX_COMMENT, MAX_REASON, MAX_TEXT, MAX_TITLE, moment, names, ordered, progress, refusalText, stateWord, whyNotAssistant, whyNotDone } from './shared';
 import type { Full, Words } from './shared';
@@ -93,6 +93,39 @@ function actorWord(words: Words, actor: TicketEvent['actor']) {
   return actor === 'person' ? words.actorPerson : actor === 'agent' ? words.actorAgent : words.actorApp;
 }
 
+/** Why the Assistant's rounds stopped, in words. */
+const STOPPED = {
+  clean: 'stopClean',
+  advisory: 'stopAdvisory',
+  failed: 'stopFailed',
+  refused: 'stopRefused',
+  person: 'stopPerson',
+  assistant: 'stopAssistant',
+} as const;
+
+/** The Assistant's rounds as a ticket or a line says them: 「第 2 轮，共 3 轮 · 等助手改」, 「首次检查 · 检查中」, 「已停：只剩建议 · 第 3 轮，共 3 轮」. */
+function roundsText(rounds: TicketRounds | null | undefined, checking: boolean, words: Words) {
+  if (!rounds) return null;
+  const where = roundWhere(rounds, words);
+  if (rounds.stopped) return `${words.roundsStopped}: ${words[STOPPED[rounds.stopped]]} · ${where}`;
+  return `${where} · ${checking ? words.roundsChecking : words.roundsFixing}`;
+}
+
+/** Which round it is: 「首次检查」 or 「第 2 轮，共 3 轮」. */
+function roundWhere(rounds: TicketRounds, words: Words) {
+  return rounds.round > 0 ? fill(words.roundOf, { round: String(rounds.round), of: String(rounds.of) }) : words.roundFirst;
+}
+
+/** Whether a check of the ticket is asked for or running. */
+function checking(ticket: Ticket) {
+  return ticket.check?.state === 'asked' || ticket.check?.state === 'running';
+}
+
+/** A check's own word by its kind (「DFM 检查」), as the host names it. */
+function kindWord(state: TicketsState, words: Words, kind?: string) {
+  return state.kinds?.[kind ?? 'dfm'] ?? words.checkTitle;
+}
+
 /** A run's rules, the ones that found something first. */
 const ITEM_ORDER = ['failed', 'advisory', 'passed', 'checked', 'unsupported'];
 
@@ -149,19 +182,23 @@ function said(event: TicketEvent) {
   return ['finished', 'blocked', 'unblocked', 'moved'].includes(event.action) && event.actor !== 'app' ? event.note : undefined;
 }
 
-function EventRow({ event, words, language, items, counts }: { event: TicketEvent; words: Words; language: string; items?: CheckItem[]; counts?: Record<string, number> }) {
+function EventRow({ event, words, language, items, counts, kind }: { event: TicketEvent; words: Words; language: string; items?: CheckItem[]; counts?: Record<string, number>; kind: string }) {
   const [open, setOpen] = useState(false);
-  const named = event.action in DID ? words[DID[event.action as keyof typeof DID]] : event.action;
+  // The Assistant's 「做完了」 asked for this check: its round goes with the line.
+  const auto = event.action === 'check_asked' && event.actor === 'agent';
+  const named = auto ? words.didCheckAskedAuto : event.action in DID ? words[DID[event.action as keyof typeof DID]] : event.action;
   const did = fill(named, { state: event.to ? stateWord(words, event.to) : '' });
   // A step taken with another ticket. A run is not named on its line (its id is at the foot of its items).
   const together = event.note?.match(/^with (T-\d+)$/);
   const ran = event.action === 'check_ran' || event.action === 'check_started';
-  const extra = ran ? null : together ? fill(words.withTicket, { id: together[1] ?? '' }) : said(event) || event.action === 'comment_view' ? null : event.note;
+  // Where the rounds stood: a check asked for names its round, a result says what came of it.
+  const rounds = !event.rounds ? null : auto ? roundWhere(event.rounds, words) : event.action === 'check_ran' || event.action === 'check_refused' ? roundsText(event.rounds, false, words) : null;
+  const extra = rounds ?? (ran ? null : together ? fill(words.withTicket, { id: together[1] ?? '' }) : said(event) || event.action === 'comment_view' ? null : event.note);
   // The check's one result line: the kind of check, how its run ended (the run's own word when it
   // is not `done`: superseded, cancelled, failed), and what came out.
   const ended = event.note?.split(' · ')[0];
   const result =
-    event.action === 'check_ran' ? [`${words.checkTitle} ${!ended || ended === 'done' ? words.checkRan : ended}`, ...outcome(items ? counted(items) : (counts ?? {}), words)].join(' · ') : null;
+    event.action === 'check_ran' ? [`${kind} ${!ended || ended === 'done' ? words.checkRan : ended}`, ...outcome(items ? counted(items) : (counts ?? {}), words)].join(' · ') : null;
   return (
     <>
       <div className="flex items-center gap-2.5 py-1.5 text-sm text-muted-foreground">
@@ -246,7 +283,15 @@ function Activity({ ticket, state, words }: Page) {
           event.action === 'comment' ? (
             <CommentCard key={at} event={event} words={words} language={state.language} />
           ) : (
-            <EventRow key={at} event={event} words={words} language={state.language} items={event.run ? state.items?.[event.run] : undefined} counts={counts(event.run)} />
+            <EventRow
+              key={at}
+              event={event}
+              words={words}
+              language={state.language}
+              items={event.run ? state.items?.[event.run] : undefined}
+              counts={counts(event.run)}
+              kind={kindWord(state, words, event.kind)}
+            />
           ),
         )}
       </div>
@@ -327,7 +372,7 @@ function checkText({ ticket, state, words }: Page) {
     const outcome = check.outcome === 'done' ? words.checkDone : check.outcome;
     const now = check.run ? state.freshness[check.run] : undefined;
     const nothing = ticket.checks && ticket.unchecked ? words.notChecked : null;
-    return [nothing, `${words.checkTitle} ${check.run ?? ''}`.trim(), outcome, ...parts, now && now !== 'current' ? words.checkStale : null].filter(Boolean).join(' · ');
+    return [nothing, `${kindWord(state, words, check.kind)} ${check.run ?? ''}`.trim(), outcome, ...parts, now && now !== 'current' ? words.checkStale : null].filter(Boolean).join(' · ');
   }
   if (ticket.checksOff && ticket.parts.length > 0) return words.checkOff;
   if (!ticket.checks) return `${words.notChecked} · ${words.noApplicableCheck}`;
@@ -578,7 +623,12 @@ function Properties(page: Page) {
       </Prop>
       {ticket.state === 'blocked' && ticket.blocked && (
         <Prop label={words.stateBlocked}>
-          <span className="whitespace-pre-wrap text-muted-foreground">{ticket.blocked}</span>
+          {/* Rounds that stopped it are said in the page's words, with the check's own reason where it could not run. */}
+          <span className="whitespace-pre-wrap text-muted-foreground">
+            {ticket.rounds?.stopped === 'failed' || ticket.rounds?.stopped === 'refused'
+              ? [roundsText(ticket.rounds, false, words), ticket.rounds.stopped === 'refused' ? ticket.check?.reason : null].filter(Boolean).join(' · ')
+              : ticket.blocked}
+          </span>
         </Prop>
       )}
       <Prop label={words.part}>
@@ -625,6 +675,7 @@ function Properties(page: Page) {
       </Prop>
       <Prop label={words.check}>
         <span className={ticket.check?.state === 'ran' ? undefined : 'text-muted-foreground'}>{checkText(page)}</span>
+        {ticket.rounds && <span className="text-xs text-muted-foreground">{roundsText(ticket.rounds, checking(ticket), words)}</span>}
         {ticket.recheck && (
           <span className="flex min-w-0 items-center gap-1.5">
             <Badge variant="warning" emphasis="subtle" size="sm">
@@ -680,14 +731,17 @@ function Actions(page: Page) {
         </Button>
       </>
     );
-  } else if (ticket.state === 'in_progress' && ticket.worker === 'assistant' && ticket.finished && ticket.checks) {
-    // The Assistant says it is finished; only a person starts the check.
-    note = words.finishedNote;
-    buttons = (
+  } else if (ticket.state === 'in_progress' && ticket.worker === 'assistant' && ticket.checks && (ticket.finished || (ticket.rounds && !ticket.rounds.stopped))) {
+    // The Assistant says it is finished, or works its rounds of check and fix: a person may run the
+    // check at any time (which ends the rounds), except while one runs.
+    const going = ticket.rounds && !ticket.rounds.stopped;
+    note = going ? roundsText(ticket.rounds, checking(ticket), words) : words.finishedNote;
+    buttons = checking(ticket) ? null : (
       <Button size="sm" variant="primary" onClick={step('ticket_ask_check')}>
         {words.runCheck}
       </Button>
     );
+    if (!buttons && note) return <p className="mt-3 text-sm text-muted-foreground">{note}</p>;
   } else if ((ticket.state === 'in_progress' && ticket.worker === 'person') || ticket.state === 'waiting') {
     if (ticket.state === 'in_progress' && ticket.checks) {
       buttons = (
