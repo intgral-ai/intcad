@@ -100,6 +100,11 @@ function world(overrides: Json = {}) {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
 
+/** Waits until `done()` holds, at most two seconds: for a step that takes as long as it takes. */
+async function until(done: () => boolean) {
+  for (const end = Date.now() + 2000; !done(); await settle()) if (Date.now() > end) throw new Error("waited two seconds in vain");
+}
+
 test("with nothing connected the snapshot lists the five plans and five keys, each as not connected", () => {
   const { connections } = world();
   const snapshot = connections.list();
@@ -406,8 +411,7 @@ test("a sign-in left unfinished stops at the time limit, gives the ports back an
   connections.login({ id: "openai-codex" });
   await settle();
   assert.equal(connections.list().login.phase, "browser");
-  await new Promise((resolve) => setTimeout(resolve, 120));
-  assert.equal(held[0]!.closed, true, "the ports are free once the time is up");
+  await until(() => held[0]!.closed);
   assert.equal(told.at(-1)!.login, null);
   assert.deepEqual(told.at(-1)!.problem, { id: "openai-codex", kind: "timeout", step: "wait" });
   // A new sign-in starts as usual afterwards, and the end of the agent's process gives its ports back too.
@@ -416,6 +420,7 @@ test("a sign-in left unfinished stops at the time limit, gives the ports back an
   assert.equal(held.length, 2);
   connections.dispose();
   assert.equal(held[1]!.closed, true);
+  // Twice the time limit: nothing may come of the timer of a sign-in that has ended.
   await new Promise((resolve) => setTimeout(resolve, 80));
   assert.equal(connections.list().problem, null, "a sign-in ended with the process is not timed out afterwards");
 });
@@ -613,7 +618,7 @@ test("a sign-in that fails says at which step, with the token endpoint's status 
     w.connections.login({ id: "openai-codex" });
     await settle();
     w.held[0]?.callback("http://localhost:1457/auth/callback?code=c1&state=s1");
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await until(() => w.connections.list().login === null);
     endpoint.close();
     return w.connections.list().problem;
   };
