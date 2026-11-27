@@ -318,16 +318,16 @@ def test_slash_menu_offers_and_inserts_advertised_commands(assistant):
     expect(modeling).to_be_visible()
     expect(editing).to_be_visible()
 
-    # Selecting a command writes its name, keeps focus, closes the menu and sends nothing.
+    # Selecting a command writes it after the slash, keeps focus, closes the menu and sends nothing.
     modeling.click()
-    expect(box).to_have_value("skill/solidcraft-modeling")
+    expect(box).to_have_value("/skill/solidcraft-modeling")
     expect(box).to_be_focused()
     expect(modeling).to_have_count(0)
     assert actions(assistant) == []
 
     # With the menu closed Enter sends the draft.
     box.press("Enter")
-    assert actions(assistant) == [{"type": "send", "text": "skill/solidcraft-modeling"}]
+    assert actions(assistant) == [{"type": "send", "text": "/skill/solidcraft-modeling"}]
 
     # Typing filters by the text after `/`, case-sensitively.
     box.fill("/skill/solidcraft-m")
@@ -342,7 +342,7 @@ def test_slash_menu_offers_and_inserts_advertised_commands(assistant):
     expect(modeling).to_have_attribute("aria-selected", "false")
     box.press("Enter")
     assert actions(assistant) == []
-    expect(box).to_have_value("skill/solidcraft-editing")
+    expect(box).to_have_value("/skill/solidcraft-editing")
     expect(box).to_be_focused()
     expect(editing).to_have_count(0)
 
@@ -367,7 +367,7 @@ def test_every_enter_variant_selects_while_the_slash_menu_is_open(assistant, com
     expect(assistant.get_by_role("option", name="skill/solidcraft-modeling")).to_be_visible()
     box.press(combo)
     assert actions(assistant) == [], f"{combo} sent instead of selecting"
-    expect(box).to_have_value("skill/solidcraft-modeling")
+    expect(box).to_have_value("/skill/solidcraft-modeling")
     expect(box).to_be_focused()
 
 
@@ -378,12 +378,12 @@ def test_slash_menu_ignores_repeated_and_composing_enter(assistant):
     option = assistant.get_by_role("option", name="skill/solidcraft-modeling")
     expect(option).to_be_visible()
     box.press("Enter")
-    expect(box).to_have_value("skill/solidcraft-modeling")
+    expect(box).to_have_value("/skill/solidcraft-modeling")
     assert actions(assistant) == []
     # A held Enter repeats keydowns; a repeat must never send the inserted draft.
     box.dispatch_event("keydown", {"key": "Enter", "repeat": True})
     assert actions(assistant) == []
-    expect(box).to_have_value("skill/solidcraft-modeling")
+    expect(box).to_have_value("/skill/solidcraft-modeling")
 
     # Enter during IME composition neither selects nor sends, and must not be consumed.
     def press_composing_enter(repeat):
