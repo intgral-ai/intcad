@@ -10,6 +10,10 @@
 //! - Responses are bounded in bytes and time. A transport, integrity, or ambiguous failure is a
 //!   fail-closed [`RefusalCode::AuthUnavailable`]; it never grants execution or settlement.
 //! - HTTP status is transport metadata only. Business meaning comes from the frozen `ErrorCode`.
+//!
+//! P1 TRACE limit: hosts must not enable TRACE during credential requests. The guard cannot
+//! prevent a host from re-enabling raw wire logging, and may overwrite a later host level
+//! change when it restores the previous level.
 
 #[cfg(test)]
 use std::cell::RefCell;

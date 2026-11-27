@@ -16,9 +16,14 @@
 //! it to `None`. A crash during clear leaves either the old attempt or the tombstone, never a
 //! resurrected cleared attempt.
 //!
+//! P1 durability limit: Unix syncs the journal directory and its parent after rename.
+//! Windows syncs only the temporary file; directory-entry durability after rename is not guaranteed.
+//!
 //! [`read_attempt`]: IdentityJournal::read_attempt
 
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -555,3 +555,26 @@ fn failed_logout_cleanup_keeps_owned_index_for_retry() {
     store.delete().unwrap();
     assert!(fake.inner.lock().unwrap().entries.is_empty());
 }
+
+#[test]
+fn residual_logout_tracks_a_missing_owned_commit_generation_before_cleanup() {
+    let fake = RecordingStore::default();
+    let mut store = identity_store(&fake);
+    store.store_pending(&record(7, 3)).unwrap();
+    fake.put(OWNED_KEY, "2");
+    fake.inner.lock().unwrap().fail_delete = Some(access_key(3));
+    fake.take_calls();
+
+    assert_eq!(store.delete(), Err(IdentityStoreError::Unavailable));
+    assert!(store.load().unwrap().is_none());
+    assert_eq!(fake.entry(OWNED_KEY).as_deref(), Some("3"));
+    let calls = fake.take_calls();
+    let revoke = calls.iter().position(|call| *call == Call::Delete(COMMIT_KEY.to_owned())).unwrap();
+    let retain = calls.iter().position(|call| *call == Call::Set(OWNED_KEY.to_owned())).unwrap();
+    let delete = calls.iter().position(|call| *call == Call::Delete(access_key(3))).unwrap();
+    assert!(revoke < retain && retain < delete);
+
+    fake.inner.lock().unwrap().fail_delete = None;
+    identity_store(&fake).delete().unwrap();
+    assert!(fake.keys().is_empty());
+}

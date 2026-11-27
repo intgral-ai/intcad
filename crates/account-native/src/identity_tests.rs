@@ -143,6 +143,7 @@ struct Script {
     replies: Mutex<VecDeque<(&'static str, Reply)>>,
     checks: Mutex<VecDeque<Verify>>,
     on_send: Mutex<Option<SendHook>>,
+    on_verify: Mutex<Option<SendHook>>,
 }
 
 impl IdentityTransport for Arc<Script> {
@@ -160,6 +161,10 @@ impl IdentityTransport for Arc<Script> {
 
 impl SessionVerifier for Arc<Script> {
     fn verify(&self, _: &Secret) -> Verify {
+        let hook = self.on_verify.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
         self.checks.lock().unwrap().pop_front().unwrap()
     }
 }
@@ -313,6 +318,30 @@ fn restarted_background_and_failed_resume_require_verification() {
 }
 
 #[test]
+fn residual_busy_resume_discards_an_in_flight_background_verification() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    let peer = f.restarted();
+    f.verifies(None);
+    let (entered, release) = block_call(&f.script.on_verify);
+    let background = peer.clone();
+    let background = thread::spawn(move || background.ensure(IdentityTrigger::Background, RACE_WAIT));
+    entered.recv_timeout(RACE_WAIT).unwrap();
+
+    assert_eq!(peer.ensure(IdentityTrigger::Resume, Duration::ZERO).unwrap_err(), IdentityError::Busy);
+    release.send(()).unwrap();
+    let stale = background.join().unwrap();
+
+    f.clock.set_wall(101);
+    f.clock.set_monotonic(1);
+    f.verifies(None);
+    let lease = peer.ensure(IdentityTrigger::Background, WAIT).unwrap();
+    assert!(f.script.checks.lock().unwrap().is_empty(), "Background must verify again before leasing");
+    assert_eq!(lease.token_generation(), 1);
+    assert_eq!(stale.unwrap_err(), IdentityError::Transient);
+}
+
+#[test]
 fn rollback_inside_token_lifetime_cannot_lease() {
     let f = Fixture::new();
     f.login().unwrap();
@@ -357,9 +386,13 @@ fn an_expiring_identity_is_refreshed_once_and_activated_with_a_matching_binding(
 }
 
 fn block_transport(script: &Script) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+    block_call(&script.on_send)
+}
+
+fn block_call(hook: &Mutex<Option<SendHook>>) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
     let (entered, wait_for_send) = mpsc::channel();
     let (release, wait_for_release) = mpsc::channel();
-    *script.on_send.lock().unwrap() = Some(Box::new(move || {
+    *hook.lock().unwrap() = Some(Box::new(move || {
         entered.send(()).unwrap();
         wait_for_release.recv_timeout(RACE_WAIT).unwrap();
     }));
@@ -1230,7 +1263,7 @@ fn an_expired_lease_is_not_returned() {
         f.reply(Err(RefreshTransportError::Protocol));
         assert_eq!(f.ensure().unwrap_err(), IdentityError::Protocol);
         assert_eq!(f.refreshes(), 1);
-        f.attempt(1, false, now + 5, u8::MAX);
+        f.attempt(3, true, now + 5, u8::MAX);
         assert_eq!(f.record().expires_at_unix, 200);
     }
 }
@@ -1280,6 +1313,33 @@ fn protocol_failure_needs_explicit_retry_even_in_a_peer() {
 }
 
 #[test]
+fn residual_protocol_failure_is_persisted_while_the_barrier_is_held() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    f.reply(Err(RefreshTransportError::Protocol));
+    let (sent, release) = block_transport(&f.script);
+    let background = f.lifecycle.clone();
+    let background = thread::spawn(move || background.ensure(IdentityTrigger::Background, RACE_WAIT));
+    sent.recv_timeout(RACE_WAIT).unwrap();
+    let peer = f.restarted();
+    let (result, marker) = peer
+        .with_barrier_lock(1, WAIT, || {
+            release.send(()).unwrap();
+            let result = background.join().unwrap();
+            (result, f.journal().read_attempt().unwrap().unwrap())
+        })
+        .unwrap();
+    assert!(matches!(result, Err(IdentityError::Busy | IdentityError::Transient)));
+    assert_eq!((marker.sends, marker.diagnostic_used, marker.cooldown_until_unix), (3, true, 175));
+
+    f.clock.set_wall(175);
+    f.clock.set_monotonic(75);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Protocol);
+    assert_eq!(f.refreshes(), 1);
+}
+
+#[test]
 fn status_attempt_is_throttled_across_resume_background_and_restart() {
     let f = Fixture::new();
     f.login().unwrap();
@@ -1314,6 +1374,37 @@ fn status_retry_after_does_not_consume_workos_sends() {
     f.clock.set_wall(190);
     assert_eq!(f.ensure().unwrap().token_generation(), 2);
     assert_eq!(f.refreshes(), 1);
+}
+
+#[test]
+fn residual_status_backoff_starts_at_failure_even_after_a_full_timeout() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    let peer = f.restarted();
+    for (start, finish, delay) in [(0, 5, 1), (6, 11, 2), (13, 18, 5)] {
+        f.clock.set_wall(100 + start);
+        f.clock.set_monotonic(start);
+        f.script.checks.lock().unwrap().push_back(Err(VerifyError::Transient));
+        let clock = f.clock.clone();
+        *f.script.on_verify.lock().unwrap() = Some(Box::new(move || {
+            clock.set_wall(100 + finish);
+            clock.set_monotonic(finish);
+        }));
+        assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::Transient);
+        assert!(f.script.checks.lock().unwrap().is_empty(), "the next request is allowed when its cooldown expires");
+        f.script.checks.lock().unwrap().push_back(Err(VerifyError::Transient));
+        for time in [finish, finish + delay - 1] {
+            f.clock.set_wall(100 + time);
+            f.clock.set_monotonic(time);
+            assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::Transient);
+            assert_eq!(f.script.checks.lock().unwrap().len(), 1, "status retried before its failure-based cooldown");
+        }
+        f.script.checks.lock().unwrap().clear();
+    }
+    f.clock.set_wall(123);
+    f.clock.set_monotonic(23);
+    f.verifies(None);
+    assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap().token_generation(), 1);
 }
 
 #[test]
@@ -1373,7 +1464,7 @@ fn cooldown_blocks_automatic_retry_and_honours_retry_after() {
         let before = f.record();
         assert_eq!(f.ensure().unwrap_err(), IdentityError::Protocol);
         assert_eq!(f.refreshes(), 2);
-        f.attempt(2, false, 175 + retry_after + u64::from(step) * 5, u8::MAX);
+        f.attempt(3, true, 175 + retry_after + u64::from(step) * 5, u8::MAX);
         assert_eq!(f.record(), before);
     }
 }

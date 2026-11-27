@@ -1,5 +1,5 @@
 //! Native identity rotation. Refresh locks span the provider exchange; the barrier lock
-//! serializes changes to the journal and credential store, but never spans online verification.
+//! serializes credential changes and logout, but never spans online verification.
 
 use std::fmt;
 use std::fs::{File, OpenOptions, TryLockError};
@@ -26,8 +26,10 @@ const MAX_SENDS: u8 = 3;
 const REPLAY_WINDOW: Duration = Duration::from_secs(30);
 const COOLDOWN_BASE: Duration = Duration::from_secs(5);
 const MAX_COOLDOWN_STEP: u8 = 3;
-// Reserved value in the durable attempt format; never eligible for automatic replay.
+// Reserved values in the durable attempt format; neither permits automatic replay.
 const PROTOCOL_BLOCKED: u8 = u8::MAX;
+// The protocol result came from a reservation that had already used the final diagnostic.
+const PROTOCOL_EXHAUSTED: u8 = u8::MAX - 1;
 const LOCK_POLL: Duration = Duration::from_millis(5);
 const MUTATION_WAIT: Duration = Duration::from_secs(1);
 const RECORD_VERSION: u32 = 1;
@@ -274,6 +276,13 @@ struct Snapshot {
     attempt: Option<AttemptRecord>,
 }
 
+#[derive(Default)]
+struct Readiness {
+    epoch: u64,
+    // Both generations matter: an explicit login starts token generations over at 1.
+    generation: Option<(u64, u64)>,
+}
+
 #[derive(Clone)]
 pub struct IdentityLifecycle {
     domain: IdentityDomain,
@@ -287,8 +296,7 @@ pub struct IdentityLifecycle {
     refresh: Arc<Mutex<()>>,
     revoked: Arc<AtomicBool>,
     last_login_generation: Arc<AtomicU64>,
-    // Both generations matter: an explicit login starts token generations over at 1.
-    verified_token_generation: Arc<Mutex<(u64, u64)>>,
+    readiness: Arc<Mutex<Readiness>>,
     last_now_unix: Arc<AtomicU64>,
 }
 
@@ -340,7 +348,7 @@ impl IdentityLifecycle {
             refresh: Arc::new(Mutex::new(())),
             revoked: Arc::new(AtomicBool::new(false)),
             last_login_generation: Arc::new(AtomicU64::new(0)),
-            verified_token_generation: Arc::new(Mutex::new((0, 0))),
+            readiness: Arc::new(Mutex::new(Readiness::default())),
             last_now_unix: Arc::new(AtomicU64::new(0)),
         })
     }
@@ -364,6 +372,7 @@ impl IdentityLifecycle {
             return Err(IdentityError::Protocol);
         }
         let _barrier = self.barrier_lock(&LockWait::new(MUTATION_WAIT))?;
+        let epoch = self.readiness_epoch()?;
         let mut store = self.store()?;
         let old = self.load(store.as_ref())?;
         let revoked = match self.read_revocation() {
@@ -405,7 +414,8 @@ impl IdentityLifecycle {
         self.clear_attempt()?;
         store.activate(&record)?;
         self.journal.write_current_login(&CurrentLoginRecord { version: RECORD_VERSION, domain: record.domain, login_generation })?;
-        self.set_verified((login_generation, 1));
+        // Adoption can finish after Resume, but must not restore pre-Resume readiness.
+        let _ = self.set_verified(epoch, (login_generation, 1));
         self.revoked.store(false, Ordering::Release);
         Ok(())
     }
@@ -413,7 +423,7 @@ impl IdentityLifecycle {
     pub fn ensure(&self, trigger: IdentityTrigger, wait: Duration) -> Result<IdentityLease, IdentityError> {
         self.check_local_barrier()?;
         if trigger == IdentityTrigger::Resume {
-            self.set_verified((0, 0));
+            self.invalidate_readiness()?;
         }
         let wait = LockWait::new(wait);
         {
@@ -421,7 +431,6 @@ impl IdentityLifecycle {
             if trigger == IdentityTrigger::Resume {
                 // Sleep may not be included in the monotonic clock on this platform.
                 *self.attempt_start.lock().map_err(|_| IdentityError::Storage)? = None;
-                self.set_verified((0, 0));
             }
             let snapshot = self.snapshot(self.store()?.as_ref())?;
             if trigger != IdentityTrigger::Resume && self.ready(&snapshot) {
@@ -459,7 +468,7 @@ impl IdentityLifecycle {
 
     pub fn sign_out(&self) -> Result<SignOutOutcome, IdentityError> {
         self.revoked.store(true, Ordering::Release);
-        self.set_verified((0, 0));
+        self.clear_readiness();
         let wait = LockWait::new(MUTATION_WAIT);
         let generation = {
             let _barrier = self.barrier_lock(&wait)?;
@@ -541,7 +550,10 @@ impl IdentityLifecycle {
             // The durable reservation is consumed even when the journal sync used up the window.
             return Err(IdentityError::Transient);
         }
-        let response = self.transport.refresh(self.domain.client_id(), &refresh_token);
+        let response = self
+            .transport
+            .refresh(self.domain.client_id(), &refresh_token)
+            .map(|response| Self::rotated_record(old.record.clone(), response, issued_at_unix));
         self.check_local_barrier()?;
         // Cleanup can hold the barrier lock after the peer publishes revocation.
         // Check before waiting; the snapshot under the lock still gates all writes.
@@ -549,6 +561,8 @@ impl IdentityLifecycle {
         if revoked >= attempt.login_generation {
             return Err(if self.read_current_login()? > revoked { IdentityError::SessionChanged } else { IdentityError::SignedOut });
         }
+        let attempt =
+            if matches!(response, Err(RefreshTransportError::Protocol) | Ok(Err(_))) { self.mark_protocol_blocked(attempt)? } else { attempt };
         let pending = {
             let _barrier = self.barrier_lock(wait)?;
             let mut store = self.store()?;
@@ -559,7 +573,7 @@ impl IdentityLifecycle {
                 Err(RefreshTransportError::Terminal) => {
                     let generation = attempt.login_generation;
                     self.revoked.store(true, Ordering::Release);
-                    self.set_verified((0, 0));
+                    self.clear_readiness();
                     self.publish_logout_barrier(generation)?;
                     drop(store);
                     drop(_barrier);
@@ -567,25 +581,16 @@ impl IdentityLifecycle {
                     return Err(IdentityError::SignedOut);
                 }
                 Err(RefreshTransportError::Transient { retry_after }) => {
-                    self.cool_down(attempt, retry_after, batch_start, false)?;
+                    self.cool_down(attempt, retry_after, batch_start)?;
                     return Err(IdentityError::Transient);
                 }
-                Err(RefreshTransportError::Protocol) => {
-                    self.cool_down(attempt, None, batch_start, true)?;
-                    return Err(IdentityError::Protocol);
+                Err(RefreshTransportError::Protocol) => return Err(IdentityError::Protocol),
+                Ok(Err(error)) => return Err(error),
+                Ok(Ok(record)) => {
+                    store.store_pending(&record)?;
+                    self.clear_attempt()?;
+                    Snapshot { record, attempt: None }
                 }
-                Ok(response) => match Self::rotated_record(current.record, response, issued_at_unix) {
-                    Ok(record) => {
-                        store.store_pending(&record)?;
-                        self.clear_attempt()?;
-                        Snapshot { record, attempt: None }
-                    }
-                    Err(error) => {
-                        // Identity mismatch is not a retryable response; don't write it.
-                        self.cool_down(attempt, None, batch_start, true)?;
-                        return Err(error);
-                    }
-                },
             }
         };
         self.verify_pending(&pending, wait)
@@ -602,7 +607,7 @@ impl IdentityLifecycle {
                 return Err(IdentityError::Transient);
             }
             if trigger == IdentityTrigger::UserRetry {
-                if attempt.diagnostic_used && attempt.sends >= MAX_SENDS {
+                if attempt.cooldown_step != PROTOCOL_BLOCKED && attempt.diagnostic_used && attempt.sends >= MAX_SENDS {
                     return Err(IdentityError::Transient);
                 }
                 // Reserve the last slot for this one explicit send; never open a replay window.
@@ -613,7 +618,7 @@ impl IdentityLifecycle {
                     attempt.cooldown_step = 1;
                 }
             } else {
-                if attempt.cooldown_step == PROTOCOL_BLOCKED {
+                if matches!(attempt.cooldown_step, PROTOCOL_BLOCKED | PROTOCOL_EXHAUSTED) {
                     return Err(IdentityError::Protocol);
                 }
                 if attempt.diagnostic_used || attempt.sends >= MAX_SENDS {
@@ -698,17 +703,18 @@ impl IdentityLifecycle {
     }
 
     fn verify_active(&self, snapshot: &Snapshot, wait: &LockWait) -> Result<Option<IdentityLease>, IdentityError> {
-        self.set_verified((0, 0));
+        let epoch = self.invalidate_readiness()?;
         let verification = self.verify_status(snapshot, wait)?;
         let _barrier = self.barrier_lock(wait)?;
         let current = self.snapshot(self.store()?.as_ref())?;
         Self::check_unchanged(snapshot, &current)?;
+        self.check_readiness_epoch(epoch)?;
         // This is the unchanged, previously bound bearer; a new binding is not required.
         verification?;
         if !self.clock_is_safe(&current.record) {
             return Err(IdentityError::Transient);
         }
-        self.set_verified(Self::generations(&current.record));
+        self.set_verified(epoch, Self::generations(&current.record))?;
         if self.fresh(&current.record) { self.lease(current.record).map(Some) } else { Ok(None) }
     }
 
@@ -717,21 +723,15 @@ impl IdentityLifecycle {
             return Err(IdentityError::Transient);
         }
         self.check_local_barrier()?;
+        let epoch = self.readiness_epoch()?;
         let verified = self.verify_status(snapshot, wait)?;
         let _barrier = self.barrier_lock(wait)?;
         let mut store = self.store()?;
         let current = self.snapshot(store.as_ref())?;
         Self::check_unchanged(snapshot, &current)?;
+        self.check_readiness_epoch(epoch)?;
         let verified = verified?;
-        let binding = verified.same_login_binding.as_deref().ok_or(IdentityError::VerificationPending)?;
-        if current.record.session_binding.as_deref() != Some(binding)
-            || current.record.verified_account_id.as_ref().is_some_and(|account| account != &verified.account_id)
-        {
-            return Err(IdentityError::SessionChanged);
-        }
-        if !safe_token(&verified.account_id, MAX_ACCOUNT_BYTES) {
-            return Err(IdentityError::Protocol);
-        }
+        Self::check_pending_verification(&current.record, &verified)?;
         // Preserve a short-lived rotated pair without publishing an active record
         // that would immediately send another refresh on the next ensure.
         if !self.fresh(&current.record) {
@@ -742,8 +742,21 @@ impl IdentityLifecycle {
         self.check_local_barrier()?;
         store.activate(&active)?;
         active.pending = false;
-        self.set_verified(Self::generations(&active));
+        self.set_verified(epoch, Self::generations(&active))?;
         self.lease(active)
+    }
+
+    fn check_pending_verification(record: &StoredIdentity, verified: &VerifiedSession) -> Result<(), IdentityError> {
+        let binding = verified.same_login_binding.as_deref().ok_or(IdentityError::VerificationPending)?;
+        if record.session_binding.as_deref() != Some(binding)
+            || record.verified_account_id.as_ref().is_some_and(|account| account != &verified.account_id)
+        {
+            return Err(IdentityError::SessionChanged);
+        }
+        if !safe_token(&verified.account_id, MAX_ACCOUNT_BYTES) {
+            return Err(IdentityError::Protocol);
+        }
+        Ok(())
     }
 
     fn ready(&self, snapshot: &Snapshot) -> bool {
@@ -756,14 +769,14 @@ impl IdentityLifecycle {
     }
 
     fn has_verified_generation(&self, generations: (u64, u64)) -> bool {
-        self.verified_token_generation.lock().is_ok_and(|generation| *generation == generations)
+        self.readiness.lock().is_ok_and(|readiness| readiness.generation == Some(generations))
     }
 
     /// Independent domain-wide read-only budget, persisted before transport so
     /// restarting (or changing triggers) cannot reset an in-progress batch.
     fn verify_status(&self, snapshot: &Snapshot, wait: &LockWait) -> Result<Result<VerifiedSession, VerifyError>, IdentityError> {
         wait.require_request()?;
-        let (started, remaining, reserved_at) = {
+        let (mut attempt, remaining, reserved_at) = {
             let _barrier = self.barrier_lock(wait)?;
             let current = self.snapshot(self.store()?.as_ref())?;
             Self::check_unchanged(snapshot, &current)?;
@@ -787,34 +800,39 @@ impl IdentityLifecycle {
                 attempt.sends = 0;
             }
             attempt.sends += 1;
-            let delay = if attempt.sends < MAX_SENDS
-                && now.saturating_sub(attempt.started).saturating_add(retry_delay(attempt.sends) + REQUEST_TIMEOUT.as_secs())
-                    <= BATCH_BUDGET.as_secs()
-            {
-                retry_delay(attempt.sends)
-            } else {
-                let delay = batch_cooldown(attempt.cooldown_step);
-                attempt.cooldown_step = (attempt.cooldown_step + 1).min(MAX_COOLDOWN_STEP);
-                attempt.sends = MAX_SENDS;
-                delay
-            };
-            attempt.next = now.saturating_add(delay);
+            let remaining = BATCH_BUDGET.saturating_sub(Duration::from_secs(now.saturating_sub(attempt.started)));
             let reserved_at = self.clock.monotonic_now();
             self.journal.write_status_attempt(&attempt)?;
-            (attempt.started, BATCH_BUDGET.saturating_sub(Duration::from_secs(now.saturating_sub(attempt.started))), reserved_at)
+            (attempt, remaining, reserved_at)
         };
         wait.require_request()?;
         self.check_local_barrier()?;
-        if self.clock.now_unix_seconds().saturating_sub(started).saturating_add(REQUEST_TIMEOUT.as_secs()) > BATCH_BUDGET.as_secs()
+        if self.clock.now_unix_seconds().saturating_sub(attempt.started).saturating_add(REQUEST_TIMEOUT.as_secs()) > BATCH_BUDGET.as_secs()
             || self.clock.monotonic_now().checked_sub(reserved_at).is_none_or(|elapsed| elapsed.saturating_add(REQUEST_TIMEOUT) > remaining)
         {
             return Err(IdentityError::Transient);
         }
         let result = self.verifier.verify(&Secret::new(snapshot.record.access_token.clone()));
-        if let Err(VerifyError::RetryAfter(delay)) = result {
-            let _barrier = self.barrier_lock(wait)?;
-            let mut attempt = self.journal.read_status_attempt()?.ok_or(IdentityError::Storage)?;
-            attempt.next = attempt.next.max(self.clock.now_unix_seconds().saturating_add(delay.as_secs()));
+        let now = self.clock.now_unix_seconds();
+        let failed =
+            result.as_ref().map_or(true, |verified| snapshot.record.pending && Self::check_pending_verification(&snapshot.record, verified).is_err());
+        let retry_after = if let Err(VerifyError::RetryAfter(delay)) = result { delay.as_secs() } else { 0 };
+        let retry = retry_delay(attempt.sends).max(retry_after);
+        // The refresh locks already serialize all status reservations and completions.
+        let exhausted = attempt.sends >= MAX_SENDS
+            || now.saturating_sub(attempt.started).saturating_add(retry.saturating_add(REQUEST_TIMEOUT.as_secs())) > BATCH_BUDGET.as_secs();
+        // Back off from completion, not reservation. Even a successful last send
+        // leaves the independent inter-batch throttle in place.
+        if failed || exhausted {
+            let delay = if exhausted {
+                let delay = batch_cooldown(attempt.cooldown_step).max(retry_after);
+                attempt.cooldown_step = (attempt.cooldown_step + 1).min(MAX_COOLDOWN_STEP);
+                attempt.sends = MAX_SENDS;
+                delay
+            } else {
+                retry
+            };
+            attempt.next = now.saturating_add(delay);
             self.journal.write_status_attempt(&attempt)?;
         }
         Ok(result)
@@ -824,9 +842,33 @@ impl IdentityLifecycle {
         (record.login_generation, record.token_generation)
     }
 
-    fn set_verified(&self, generations: (u64, u64)) {
-        if let Ok(mut verified) = self.verified_token_generation.lock() {
-            *verified = generations;
+    fn readiness_epoch(&self) -> Result<u64, IdentityError> {
+        Ok(self.readiness.lock().map_err(|_| IdentityError::Storage)?.epoch)
+    }
+
+    fn check_readiness_epoch(&self, epoch: u64) -> Result<(), IdentityError> {
+        if self.readiness_epoch()? == epoch { Ok(()) } else { Err(IdentityError::Transient) }
+    }
+
+    fn invalidate_readiness(&self) -> Result<u64, IdentityError> {
+        let mut readiness = self.readiness.lock().map_err(|_| IdentityError::Storage)?;
+        readiness.epoch = readiness.epoch.checked_add(1).ok_or(IdentityError::Storage)?;
+        readiness.generation = None;
+        Ok(readiness.epoch)
+    }
+
+    fn set_verified(&self, epoch: u64, generations: (u64, u64)) -> Result<(), IdentityError> {
+        let mut readiness = self.readiness.lock().map_err(|_| IdentityError::Storage)?;
+        if readiness.epoch != epoch {
+            return Err(IdentityError::Transient);
+        }
+        readiness.generation = Some(generations);
+        Ok(())
+    }
+
+    fn clear_readiness(&self) {
+        if let Ok(mut readiness) = self.readiness.lock() {
+            readiness.generation = None;
         }
     }
 
@@ -834,7 +876,7 @@ impl IdentityLifecycle {
         let now = self.clock.now_unix_seconds();
         let previous = self.last_now_unix.fetch_max(now, Ordering::AcqRel);
         if now < previous || now < record.issued_at_unix {
-            self.set_verified((0, 0));
+            self.clear_readiness();
             if let Ok(mut start) = self.attempt_start.lock() {
                 *start = None;
             }
@@ -857,7 +899,7 @@ impl IdentityLifecycle {
 
     fn lease(&self, record: StoredIdentity) -> Result<IdentityLease, IdentityError> {
         self.check_local_barrier()?;
-        if record.pending || !self.clock_is_safe(&record) || !self.fresh(&record) {
+        if record.pending || !self.clock_is_safe(&record) || !self.fresh(&record) || !self.has_verified_generation(Self::generations(&record)) {
             return Err(IdentityError::Transient);
         }
         Ok(IdentityLease {
@@ -898,12 +940,11 @@ impl IdentityLifecycle {
         Ok(())
     }
 
-    fn cool_down(&self, mut attempt: AttemptRecord, retry_after: Option<Duration>, start: AttemptStart, protocol: bool) -> Result<(), IdentityError> {
+    fn cool_down(&self, mut attempt: AttemptRecord, retry_after: Option<Duration>, start: AttemptStart) -> Result<(), IdentityError> {
         let step = attempt.cooldown_step.min(MAX_COOLDOWN_STEP);
         let retry_after = retry_after.map_or(0, |delay| delay.as_secs());
         let intra_batch = retry_delay(attempt.sends).max(retry_after);
-        let delay = if !protocol
-            && !attempt.diagnostic_used
+        let delay = if !attempt.diagnostic_used
             && attempt.sends < MAX_SENDS
             && start.fits_request(self.clock.monotonic_now().saturating_add(Duration::from_secs(intra_batch)))
         {
@@ -912,19 +953,38 @@ impl IdentityLifecycle {
             attempt.cooldown_step = (step + 1).min(MAX_COOLDOWN_STEP);
             batch_cooldown(step).max(retry_after)
         };
-        if protocol {
-            attempt.cooldown_step = PROTOCOL_BLOCKED;
-        }
         attempt.cooldown_until_unix = self.clock.now_unix_seconds().saturating_add(delay);
         self.check_local_barrier()?;
         self.journal.write_attempt(&attempt)?;
         Ok(())
     }
 
+    fn mark_protocol_blocked(&self, mut attempt: AttemptRecord) -> Result<AttemptRecord, IdentityError> {
+        // Refresh locks exclude other senders. Serialize only with tombstone writes, not
+        // the barrier lock, which a host commit or keyring cleanup can hold past our budget.
+        let _attempt = self.attempt_lock()?;
+        self.check_local_barrier()?;
+        if self.journal.read_attempt()?.as_ref() != Some(&attempt) {
+            return Err(IdentityError::Transient);
+        }
+        let delay = batch_cooldown(attempt.cooldown_step);
+        attempt.cooldown_step = if attempt.diagnostic_used && attempt.sends >= MAX_SENDS { PROTOCOL_EXHAUSTED } else { PROTOCOL_BLOCKED };
+        attempt.sends = MAX_SENDS;
+        attempt.diagnostic_used = true;
+        attempt.cooldown_until_unix = self.clock.now_unix_seconds().saturating_add(delay);
+        self.journal.write_attempt(&attempt)?;
+        Ok(attempt)
+    }
+
     fn clear_attempt(&self) -> Result<(), IdentityError> {
         *self.attempt_start.lock().map_err(|_| IdentityError::Storage)? = None;
+        let _attempt = self.attempt_lock()?;
         self.journal.clear_attempt()?;
         Ok(())
+    }
+
+    fn attempt_lock(&self) -> Result<FileLock, IdentityError> {
+        lock_file(&self.lock_dir.join("attempt.lock"), &LockWait::new(MUTATION_WAIT))
     }
 
     fn cleanup_revoked(&self, generation: u64, wait: &LockWait) -> SignOutOutcome {

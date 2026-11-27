@@ -389,13 +389,9 @@ impl IdentityStore for CredentialIdentityStore {
         // current generation, but unknown orphan keys may remain, so the cleanup result stays
         // `Unavailable` even when the commit and the current generation are gone. Keep
         // an unenumerable list rather than reporting false success on the next cleanup.
-        let mut generations = match self.read_owned() {
-            Ok(generations) => generations,
-            Err(_) => {
-                result = Err(IdentityStoreError::Unavailable);
-                Vec::new()
-            }
-        };
+        let owned = self.read_owned();
+        let indexed = owned.is_ok();
+        let mut generations = owned.unwrap_or_default();
         if self.store.delete(ACTIVE_KEY).is_err() {
             result = Err(IdentityStoreError::Unavailable);
         }
@@ -404,6 +400,11 @@ impl IdentityStore for CredentialIdentityStore {
         {
             generations.push(generation);
         }
+        if indexed && !generations.is_empty() {
+            // The commit is gone. Record all known generations before touching their keys
+            // so a failed delete, including of an unindexed commit generation, can be retried.
+            self.write_owned(&generations)?;
+        }
         let mut retained = Vec::new();
         for generation in generations {
             if self.delete_generation(generation).is_err() {
@@ -411,8 +412,15 @@ impl IdentityStore for CredentialIdentityStore {
                 result = Err(IdentityStoreError::Unavailable);
             }
         }
-        if retained.is_empty() && result.is_ok() && self.store.delete(OWNED_KEY).is_err() {
-            result = Err(IdentityStoreError::Unavailable);
+        if !indexed {
+            return Err(IdentityStoreError::Unavailable);
+        }
+        if retained.is_empty() {
+            if result.is_ok() {
+                self.store.delete(OWNED_KEY).map_err(|_| IdentityStoreError::Unavailable)?;
+            }
+        } else {
+            self.write_owned(&retained)?;
         }
         result
     }
