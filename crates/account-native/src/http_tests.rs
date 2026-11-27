@@ -276,6 +276,131 @@ fn billing_reads_the_current_bearer_for_admission_dispatch_renewal_and_commit_ch
 }
 
 #[test]
+fn billing_identity_rotates_the_bearer_and_pauses_without_extending_the_operation() {
+    use crate::credentials_tests::RecordingStore;
+    use crate::{
+        IdentityClock, IdentityDomain, IdentityLifecycle, IdentityTransport, RefreshResponse, RefreshTransportError, SessionBilling, SessionVerifier,
+        VerifiedSession, VerifyError,
+    };
+    use solidcraft_engine::entitlement::BillingPort;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    struct IdentityTime(Arc<AtomicU64>);
+    impl IdentityClock for IdentityTime {
+        fn now_unix_seconds(&self) -> u64 {
+            self.0.load(Ordering::Relaxed)
+        }
+        fn monotonic_now(&self) -> Duration {
+            Duration::from_secs(self.now_unix_seconds())
+        }
+    }
+
+    struct Refresh(AtomicBool);
+    impl IdentityTransport for Refresh {
+        fn refresh(&self, _: &str, token: &Secret) -> Result<RefreshResponse, RefreshTransportError> {
+            if token == &Secret::new("rotated_refresh") && !self.0.swap(true, Ordering::Relaxed) {
+                return Err(RefreshTransportError::Transient { retry_after: None });
+            }
+            Ok(RefreshResponse {
+                access_token: Secret::new("identity_bearer"),
+                refresh_token: Secret::new("rotated_refresh"),
+                provider_account_id: "provider_fixture".into(),
+                expires_in: Some(Duration::from_secs(30)),
+            })
+        }
+    }
+
+    struct SeedIdentityVerifier;
+    impl SessionVerifier for SeedIdentityVerifier {
+        fn verify(&self, access: &Secret) -> Result<VerifiedSession, VerifyError> {
+            assert!(access == &Secret::new("identity_bearer"));
+            Ok(VerifiedSession { account_id: "acct_example_0001".into(), same_login_binding: None })
+        }
+    }
+
+    struct SharedWire(Rc<ScriptedTransport>);
+    impl crate::Transport for SharedWire {
+        fn send(&self, request: &crate::WireRequest) -> Result<WireResponse, TransportFailure> {
+            self.0.send(request)
+        }
+    }
+
+    let session = bound_session(Box::new(RecordingStore::default()));
+    let scope = session.authenticated_scope().unwrap();
+    let now = T0 / 1000;
+    let identity_time = Arc::new(AtomicU64::new(now));
+    let path = std::env::temp_dir().join(format!("intcad-billing-identity-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let connection = WireConnection::new(BASE, "1.0.0").unwrap();
+    let mut identity = IdentityLifecycle::new_with_transport(
+        IdentityDomain::new("desktop", "client_fixture", BASE).unwrap(),
+        Box::new(MemorySession::default()),
+        connection.clone(),
+        Box::new(Refresh(AtomicBool::new(false))),
+        Box::new(SeedIdentityVerifier),
+        Box::new(IdentityTime(identity_time.clone())),
+        path.clone(),
+    )
+    .unwrap();
+    identity.set_refresh_preserves_binding(true);
+    identity
+        .adopt_verified_login(
+            "provider_fixture",
+            scope.account().as_str(),
+            Secret::new("fixture_bearer"),
+            Secret::new("initial_refresh"),
+            now - 60,
+            now - 1,
+            scope.session_binding().as_str(),
+        )
+        .unwrap();
+
+    let clock = TestClock::at(T0);
+    let mut admission = admitted_body();
+    admission["execution_grant"]["capability"] = json!("dfm");
+    let renewal = json!({"authorization_id":"grant_example_0001","operation_id":"op_example_0001","capability":"dfm","renewed":true,
+        "remaining_seconds":300,"renew_after_seconds":20,"execution_session_proof":null});
+    let wire = Rc::new(ScriptedTransport::new(vec![
+        ok(200, status_body(1000, 0, 1000)),
+        ok(200, admission),
+        ok(200, status_body(1000, 1, 999)),
+        ok(200, renewal),
+    ]));
+    let mut billing = SessionBilling::new(session.clone(), connection, Box::new(SharedWire(wire.clone())), path.join("account"), clock.clone())
+        .with_identity(identity);
+    billing.preflight().unwrap();
+    assert!(WireCredentials::product_session(&session) == Some(Secret::new("identity_bearer")), "preflight must publish the refreshed bearer");
+    let operation = operation();
+
+    // The identity fixture expires independently of the execution clock. Refusal must
+    // take precedence over operation conflict and leave the admitted operation usable.
+    billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap();
+    clock.millis.set(T0 + 21_000);
+    billing.dispatch(&operation, Duration::from_secs(1)).unwrap();
+    let requests = wire.take_requests();
+    assert_eq!(requests.len(), 4);
+    assert!(requests.iter().all(|request| request.header("Authorization") == Some("Bearer identity_bearer")));
+    assert_eq!(requests[3].header("X-Execution-Session-Proof"), Some("execution_session_proof_example_000000000000000"));
+    assert_eq!(
+        serde_json::from_slice::<Value>(requests[3].body().unwrap()).unwrap(),
+        json!({"operation_id":operation.as_str(),"capability":"dfm","renewal":{"authorization_id":"grant_example_0001"}})
+    );
+
+    identity_time.store(now + 21, Ordering::Relaxed);
+    clock.millis.set(T0 + 42_000); // The next execution renewal is already due.
+    assert_eq!(billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap_err().code, RefusalCode::AuthUnavailable);
+    assert_eq!(billing.check_commit(&operation).unwrap_err().code, RefusalCode::AuthUnavailable);
+
+    identity_time.store(now + 26, Ordering::Relaxed);
+    clock.millis.set(T0 + 321_000);
+    assert!(billing.preflight().is_ok(), "the identity has recovered");
+    assert_eq!(billing.check_commit(&operation).unwrap_err().code, RefusalCode::UnsafeToStart, "the existing deadline still applies");
+    assert!(wire.take_requests().is_empty(), "a paused or expired operation must not send status or renewal");
+    assert_eq!(billing.scope(), Some(scope));
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn billing_preflight_rejects_a_replaced_installation_credential_even_when_scope_is_unchanged() {
     use crate::SessionBilling;
     use crate::credentials_tests::RecordingStore;

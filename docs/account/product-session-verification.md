@@ -80,8 +80,14 @@ The exchange is explicit:
   values through `WorkOsPublicClient::new` and `WireConnection::new`; with any missing or
   malformed value, `sign_in` refuses before any request. No runtime setting, environment
   heuristic, token field, response value or arbitrary URL is accepted.
-- The CLI still configures no product service origin and no shipped provider sign-in; `sign_in`
-  still refuses and no production billing, commit or MCP authority is installed.
+- The CLI has no shipped provider sign-in. With `INTCAD_PRODUCT_HTTPS_ORIGIN` configured at
+  build time, controlled headless MCP and DFM can use the existing desktop credentials and
+  shared lock. If `INTCAD_WORKOS_PUBLIC_CLIENT_ID` is also set, the CLI uses the desktop
+  identity journal for that client ID and origin. It verifies the lease before admission or
+  controlled execution; rotation replaces the bearer, not the stable scope or operation proof.
+  If the client ID is omitted, the CLI can use the existing product bearer if the server still
+  accepts it, but cannot refresh it. If the configured identity cannot be opened or verified,
+  controlled work refuses rather than falling back to a stale bearer.
 - No token is sent to any origin other than the caller-configured `WireConnection`.
 
 ## Durable activation boundary

@@ -14,8 +14,8 @@ use solidcraft_engine::entitlement::{
 
 use crate::http::{LiveProductCredentials, refusal, unavailable};
 use crate::{
-    CredentialHandoff, CredentialSession, FileOperationStore, FixedCredentials, HttpAccountService, Secret, Transport, WireConnection,
-    WireCredentials,
+    CredentialHandoff, CredentialSession, FileOperationStore, FixedCredentials, HttpAccountService, IdentityError, IdentityLifecycle,
+    IdentityTrigger, Secret, Transport, WireConnection, WireCredentials,
 };
 
 struct Binding {
@@ -124,6 +124,7 @@ impl MonotonicClock for Clock {
 /// caller. The entry supplies its independently measured safe-stop bound at dispatch.
 pub struct SessionBilling {
     session: CredentialSession,
+    identity: Result<Option<IdentityLifecycle>, IdentityError>,
     original: Option<Binding>,
     connection: WireConnection,
     transport: Box<dyn Transport>,
@@ -143,11 +144,74 @@ impl SessionBilling {
         clock: impl MonotonicClock + 'static,
     ) -> Self {
         let original = Binding::current(&session);
-        Self { session, original, connection, transport, journal, clock: Clock(Rc::new(clock)), active: None, publish: None, cleanup: None }
+        Self {
+            session,
+            identity: Ok(None),
+            original,
+            connection,
+            transport,
+            journal,
+            clock: Clock(Rc::new(clock)),
+            active: None,
+            publish: None,
+            cleanup: None,
+        }
+    }
+
+    /// Verify and publish a current bearer before controlled work.
+    pub fn with_identity(mut self, identity: IdentityLifecycle) -> Self {
+        self.identity = Ok(Some(identity));
+        self
+    }
+
+    /// Retain the stable session for correlation, but refuse controlled work when a
+    /// configured lifecycle could not be opened. This is not the legacy no-refresh path.
+    pub fn with_unavailable_identity(mut self) -> Self {
+        self.identity = Err(IdentityError::NotConfigured);
+        self
     }
 
     pub fn scope(&self) -> Option<AuthenticatedHostScope> {
         self.original.as_ref().filter(|binding| binding.unchanged(&self.session)).map(|binding| binding.scope.clone())
+    }
+
+    fn ensure_identity(&self) -> Result<(), Refusal> {
+        // The lifecycle reserves up to five seconds for each request. Reserve
+        // room for both a refresh and verification, plus local journal work,
+        // as desktop does. This budget is separate from the execution deadline.
+        const WAIT: Duration = Duration::from_secs(12);
+        let map_error = |error| {
+            refusal(match error {
+                IdentityError::SignedOut | IdentityError::SessionChanged | IdentityError::Rejected | IdentityError::Protocol => {
+                    RefusalCode::AuthRequired
+                }
+                IdentityError::Transient
+                | IdentityError::VerificationPending
+                | IdentityError::Storage
+                | IdentityError::Busy
+                | IdentityError::NotConfigured => RefusalCode::AuthUnavailable,
+            })
+        };
+        let Some(identity) = self.identity.as_ref().map_err(|&error| map_error(error))? else { return Ok(()) };
+        let lease = identity.ensure(IdentityTrigger::Background, WAIT).map_err(map_error)?;
+        identity
+            .with_current_lease(&lease, WAIT, || {
+                let binding = self.original.as_ref().ok_or(IdentityError::SessionChanged)?;
+                let scope = self.session.authenticated_scope().ok_or(IdentityError::SessionChanged)?;
+                if scope != binding.scope
+                    || !lease.matches_binding(scope.account().as_str(), scope.session_binding().as_str())
+                    || !binding.unchanged(&self.session)
+                {
+                    return Err(IdentityError::SessionChanged);
+                }
+                let current = self.session.bound_product_session(&scope, binding.generation).ok_or(IdentityError::SessionChanged)?;
+                if &current != lease.access_token() {
+                    self.session.update_product_session(&scope, lease.access_token()).map_err(|_| IdentityError::Storage)?;
+                }
+                Ok(())
+            })
+            .and_then(|published| published)
+            .map_err(map_error)
     }
 
     fn ledger(&self) -> Result<FileOperationStore, Refusal> {
@@ -165,6 +229,9 @@ impl SessionBilling {
     }
 
     fn check(&self, active: &mut Active, bound: Duration) -> Result<(), Refusal> {
+        // A failed identity check pauses this step without withdrawing the grant or
+        // applying a renewal. The existing operation and its cutoff still apply.
+        self.ensure_identity()?;
         if let Some(error) = &active.withdrawn {
             return Err(error.clone());
         }
@@ -395,6 +462,7 @@ impl SessionBilling {
 
 impl BillingPort for SessionBilling {
     fn preflight(&self) -> Result<(), Refusal> {
+        self.ensure_identity()?;
         self.scope().map(|_| ()).ok_or_else(unavailable)
     }
 
@@ -403,6 +471,7 @@ impl BillingPort for SessionBilling {
     }
 
     fn admit(&mut self, operation: &OperationId, capability: Capability, entry: EntryCategory) -> Result<Grant, Refusal> {
+        self.ensure_identity()?;
         if !matches!((capability, entry), (Capability::Mcp, EntryCategory::HeadlessMcp) | (Capability::Dfm, EntryCategory::CliDfm)) {
             return Err(refusal(RefusalCode::CapabilityDenied));
         }

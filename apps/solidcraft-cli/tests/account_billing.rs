@@ -15,15 +15,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use solidcraft_account_native::{
-    CredentialSession, FileOperationStore, ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession, Secret, SessionBilling,
-    Transport, TransportFailure, WireConnection, WireRequest, WireResponse,
+    CredentialSession, FileOperationStore, IdentityDomain, IdentityLifecycle, IdentityTransport, ProductExchangeError, ProductSession,
+    ProductSessionExchange, ProviderSession, RefreshResponse, RefreshTransportError, Secret, SessionBilling, SessionVerifier, SystemIdentityClock,
+    Transport, TransportFailure, VerifiedSession, VerifyError, WireConnection, WireRequest, WireResponse,
 };
 use solidcraft_cli::account::{McpAccount, McpRoute, compose_mcp_server};
 use solidcraft_cli::validation::{ControlledCheck, NoAuthorityBilling, ProfileScope, profile_scope, run_controlled_check, run_with_billing};
 use solidcraft_engine::entitlement::{
-    AccountId, AuthenticatedHostScope, BillingPort, BillingResult, BudgetTable, Capability, CredentialError, CredentialStore, EntryCategory, Grant,
-    GrantId, HostSessionBinding, InstallationId, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, OperationStore, Refusal,
-    RefusalCode, UpperBound,
+    BillingPort, BillingResult, BudgetTable, Capability, CredentialError, CredentialStore, EntryCategory, Grant, GrantId, MonotonicClock,
+    MonotonicInstant, OperationId, OperationStatus, OperationStore, Refusal, RefusalCode, UpperBound,
 };
 use solidcraft_engine::io::candidate::{self, CandidateFile};
 use solidcraft_engine::schema::snapshot::{CandidateArtifact, CandidateRef, SnapshotSource};
@@ -467,13 +467,6 @@ fn fixture_session() -> CredentialSession {
     let mut session = CredentialSession::new(Box::new(FakeKeyring::default()));
     session.complete_provider_login("provider_fixture", "provider-fixture").unwrap();
     session.activate_product_session(&FixtureExchange).unwrap();
-    session
-        .bind_scope(&AuthenticatedHostScope::new(
-            AccountId::new("acct_cli_fixture"),
-            InstallationId::new("ins_cli_fixture"),
-            HostSessionBinding::new("fixture-binding"),
-        ))
-        .unwrap();
     solidcraft_account_native::CredentialHandoff::installation_credential(&mut session, "ins_cli_fixture", Secret::new("installation-fixture"))
         .unwrap();
     session
@@ -514,11 +507,23 @@ struct Script {
     operation: Rc<RefCell<Option<OperationId>>>,
     capability: Capability,
     entry: EntryCategory,
+    authorization: &'static str,
 }
 
 impl Script {
     fn new(capability: Capability, entry: EntryCategory, steps: impl IntoIterator<Item = Step>) -> Self {
-        Self { steps: Rc::new(RefCell::new(steps.into_iter().collect())), operation: Rc::default(), capability, entry }
+        Self {
+            steps: Rc::new(RefCell::new(steps.into_iter().collect())),
+            operation: Rc::default(),
+            capability,
+            entry,
+            authorization: "Bearer product-fixture",
+        }
+    }
+
+    fn expecting_rotated_bearer(mut self) -> Self {
+        self.authorization = "Bearer rotated-product-fixture";
+        self
     }
 
     fn operation(&self) -> OperationId {
@@ -539,7 +544,7 @@ impl Transport for Script {
         let (status, response) = match step {
             Step::Status | Step::Denied | Step::Withdraw(_) => {
                 assert_eq!((request.method(), url), ("GET", "/v1/status"));
-                assert_eq!(request.header("Authorization"), Some("Bearer product-fixture"));
+                assert_eq!(request.header("Authorization"), Some(self.authorization));
                 assert_eq!(request.header("X-Installation-Credential"), None);
                 if let Step::Withdraw(session) = step {
                     session.revoke_in_process();
@@ -557,7 +562,7 @@ impl Transport for Script {
             }
             Step::Admit | Step::BadGrant | Step::LoseAdmit | Step::RecoverAdmit => {
                 assert_eq!((request.method(), url), ("POST", "/v1/operations"));
-                assert_eq!(request.header("Authorization"), Some("Bearer product-fixture"));
+                assert_eq!(request.header("Authorization"), Some(self.authorization));
                 assert_eq!(request.header("X-Installation-Credential"), Some("installation-fixture"));
                 let data = body();
                 let id = OperationId::parse(data["operation_id"].as_str().unwrap()).unwrap();
@@ -597,7 +602,7 @@ impl Transport for Script {
             }
             Step::Renew => {
                 assert_eq!((request.method(), url), ("POST", "/v1/authorizations"));
-                assert_eq!(request.header("Authorization"), Some("Bearer product-fixture"));
+                assert_eq!(request.header("Authorization"), Some(self.authorization));
                 assert_eq!(request.header("X-Execution-Session-Proof"), Some("proof-fixture"));
                 assert_eq!(request.header("X-Settlement-Credential"), None);
                 let id = self.operation();
@@ -672,6 +677,92 @@ impl Transport for Script {
 
 fn live_billing(session: CredentialSession, script: Script, journal: PathBuf, clock: WireClock) -> SessionBilling {
     SessionBilling::new(session, WireConnection::new("https://test.invalid", "test").unwrap(), Box::new(script), journal, clock)
+}
+
+fn fixture_identity(session: &CredentialSession, root: &Path, offline: bool) -> IdentityLifecycle {
+    struct Refresh(bool);
+    impl IdentityTransport for Refresh {
+        fn refresh(&self, _: &str, _: &Secret) -> Result<RefreshResponse, RefreshTransportError> {
+            if self.0 {
+                return Err(RefreshTransportError::Transient { retry_after: None });
+            }
+            Ok(RefreshResponse {
+                access_token: Secret::new("rotated-product-fixture"),
+                refresh_token: Secret::new("rotated-refresh-fixture"),
+                provider_account_id: "provider_fixture".into(),
+                expires_in: Some(Duration::from_secs(600)),
+            })
+        }
+    }
+
+    struct Verifier;
+    impl SessionVerifier for Verifier {
+        fn verify(&self, access: &Secret) -> Result<VerifiedSession, VerifyError> {
+            assert!(access == &Secret::new("rotated-product-fixture"));
+            Ok(VerifiedSession { account_id: "acct_cli_fixture".into(), same_login_binding: None })
+        }
+    }
+
+    let connection = WireConnection::new("https://test.invalid", "test").unwrap();
+    let mut identity = IdentityLifecycle::new_with_transport(
+        IdentityDomain::new("desktop", "client_fixture", connection.base_url()).unwrap(),
+        Box::new(FakeKeyring::default()),
+        connection,
+        Box::new(Refresh(offline)),
+        Box::new(Verifier),
+        Box::new(SystemIdentityClock::new()),
+        root.to_owned(),
+    )
+    .unwrap();
+    identity.set_refresh_preserves_binding(true);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let scope = session.authenticated_scope().unwrap();
+    identity
+        .adopt_verified_login(
+            "provider_fixture",
+            scope.account().as_str(),
+            Secret::new("product-fixture"),
+            Secret::new("refresh-fixture"),
+            now - 60,
+            now - 1,
+            scope.session_binding().as_str(),
+        )
+        .unwrap();
+    identity
+}
+
+#[test]
+fn dfm_charge_uses_the_refreshed_bearer() {
+    let fixture = fixture("identity-dfm", Probe::Passed);
+    let root = fixture._scratch.dir();
+    let journal = root.join("journal");
+    let session = fixture_session();
+    let identity = fixture_identity(&session, root, false);
+    let script = Script::new(
+        Capability::Dfm,
+        EntryCategory::CliDfm,
+        [Step::Status, Step::Admit, Step::Status, Step::Status, Step::Finalize(BillingResult::Succeeded)],
+    )
+    .expecting_rotated_bearer();
+    let mut billing = live_billing(session, script.clone(), journal.clone(), WireClock::default()).with_identity(identity);
+    run_check(&fixture, &mut billing).unwrap();
+    assert_eq!(FileOperationStore::open(journal).unwrap().load(&script.operation()).unwrap().unwrap().status, OperationStatus::Charged);
+    script.done();
+}
+
+#[test]
+fn failed_identity_refresh_stops_dfm_before_product_or_ledger_work() {
+    let fixture = fixture("identity-offline", Probe::Passed);
+    let root = fixture._scratch.dir();
+    let journal = root.join("journal");
+    let session = fixture_session();
+    let identity = fixture_identity(&session, root, true);
+    let script = Script::new(Capability::Dfm, EntryCategory::CliDfm, []);
+    let mut billing = live_billing(session, script.clone(), journal.clone(), WireClock::default()).with_identity(identity);
+    assert!(run_check(&fixture, &mut billing).unwrap_err().starts_with("AUTH_UNAVAILABLE:"));
+    assert!(!journal.exists());
+    assert_eq!(std::fs::read_dir(root.join("validation/runs")).unwrap().count(), 0);
+    script.done();
 }
 
 #[test]
@@ -888,8 +979,11 @@ fn only_headless_mcp_dispatches_and_settles_via_the_credential_session() {
         Capability::Mcp,
         EntryCategory::HeadlessMcp,
         (0..3).flat_map(|_| [Step::Status, Step::Admit, Step::Status, Step::Status, Step::Finalize(BillingResult::Succeeded)]),
-    );
-    let account = McpAccount::from_session(live_billing(fixture_session(), script.clone(), journal, WireClock::default()));
+    )
+    .expecting_rotated_bearer();
+    let session = fixture_session();
+    let identity = fixture_identity(&session, scratch.dir(), false);
+    let account = McpAccount::from_session(live_billing(session, script.clone(), journal, WireClock::default()).with_identity(identity));
     let mut headless = compose_mcp_server(Box::new(solidcraft_mcp::Headless::default()), None, account, McpRoute::Headless, budget);
     let reply: Value = serde_json::from_str(&headless.handle_line(&request).unwrap()).unwrap();
     assert_ne!(reply["result"]["isError"], true, "{reply}");
