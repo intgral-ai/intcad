@@ -729,6 +729,10 @@ impl<T: Transport> OperationRenewal<T> {
             return Ok(false);
         }
         self.check_binding()?;
+        if self.verified_generation() != Some(verified) {
+            self.pause();
+            return Ok(false);
+        }
         let (grant, sent_at, interval) = response?;
         let interval = interval.ok_or_else(unavailable)?;
         let attempt = RenewalAttempt { sent_at, received_at, old_deadline: self.deadline.clone(), still_valid: true };
@@ -740,6 +744,10 @@ impl<T: Transport> OperationRenewal<T> {
             || candidate.expires_at() < self.deadline.expires_at()
         {
             return Err(refusal(RefusalCode::UnsafeToStart));
+        }
+        if self.verified_generation() != Some(verified) {
+            self.pause();
+            return Ok(false);
         }
         self.deadline = candidate;
         self.next = Some(sent_at.saturating_add(interval));

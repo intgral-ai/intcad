@@ -890,11 +890,15 @@ impl CredentialSession {
         }
 
         let generation = u128::from(generation);
+        // Attempt counters are local to a session. Independent hosts can stage
+        // the same account with the same counter, so mint a fresh owner token.
+        let mut nonce = [0u8; 16];
+        rustls::crypto::ring::default_provider().secure_random.fill(&mut nonce).map_err(|_| unavailable())?;
         let binding = session_binding_digest(
             &account,
             installation.as_ref().map_or("", |installation| installation.installation_id()),
             provider.access_token.expose_secret(),
-            generation,
+            u128::from_le_bytes(nonce),
         );
         let _write = lock_product_authority_write()?;
         let mut state = self.lock()?;
@@ -965,10 +969,37 @@ impl CredentialSession {
     }
 
     pub fn abort_staged_login(&self, staged: StagedLogin) -> Result<(), CredentialError> {
+        self.abort_staged_login_with(staged, || Ok(()))
+    }
+
+    pub(crate) fn abort_staged_login_with(
+        &self,
+        staged: StagedLogin,
+        after_abort: impl FnOnce() -> Result<(), CredentialError>,
+    ) -> Result<(), CredentialError> {
         let _write = lock_product_authority_write()?;
         let mut state = self.lock()?;
         self.check_staged(&state, &staged, true)?;
-        clear_authority_inner(&mut state)
+        let result = (|| {
+            mark_logout(&mut state)?;
+            delete_login_credentials(&mut state)?;
+            after_abort()?;
+            state.store.delete(LOGOUT_KEY).map_err(|_| unavailable())
+        })();
+        if result.is_err() {
+            self.revoke_in_process();
+        }
+        result
+    }
+
+    /// Confirm that the same staged login still owns the credential store.
+    pub fn staged_login_is_current(&self, staged: &StagedLogin) -> bool {
+        (|| {
+            let _write = lock_product_authority_write()?;
+            let state = self.lock()?;
+            self.check_staged(&state, staged, false)
+        })()
+        .is_ok()
     }
 
     /// Detect a crash between credential staging and final commit. Residual stage
@@ -1255,13 +1286,18 @@ fn clear_product_authority_inner(state: &mut SessionState) -> Result<(), Credent
 }
 
 fn clear_authority_inner(state: &mut SessionState) -> Result<(), CredentialError> {
+    delete_login_credentials(state)?;
+    // The previous provider and product authority must both be gone before clearing recovery.
+    state.store.delete(LOGOUT_KEY).map_err(|_| unavailable())?;
+    Ok(())
+}
+
+fn delete_login_credentials(state: &mut SessionState) -> Result<(), CredentialError> {
     clear_product_authority_inner(state)?;
     for key in [PROVIDER_ACCESS_TOKEN_KEY, PROVIDER_ACCOUNT_KEY] {
         state.store.delete(key).map_err(|_| unavailable())?;
     }
     state.provider_account = None;
-    // The previous provider and product authority must both be gone before clearing recovery.
-    state.store.delete(LOGOUT_KEY).map_err(|_| unavailable())?;
     Ok(())
 }
 

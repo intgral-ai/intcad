@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 use solidcraft_engine::entitlement::CredentialStore;
 
-use crate::credentials::{MAX_ACCOUNT_BYTES, safe_token};
+use crate::credentials::{CredentialSession, MAX_ACCOUNT_BYTES, StagedLogin, safe_token, unavailable};
 use crate::http::{Secret, WireConnection};
 use crate::identity_journal::{AttemptRecord, CurrentLoginRecord, IdentityJournal, JournalError, RevocationRecord, StatusAttempt};
 use crate::identity_store::{CredentialIdentityStore, IdentityStore, IdentityStoreError, StoredIdentity};
@@ -394,7 +394,7 @@ impl IdentityLifecycle {
         expires_at_unix: u64,
         session_binding: &str,
     ) -> Result<(), IdentityError> {
-        self.adopt_login_inner(provider_account_id, None, access_token, refresh_token, issued_at_unix, expires_at_unix, session_binding)
+        self.adopt_login_inner(provider_account_id, None, access_token, refresh_token, issued_at_unix, expires_at_unix, session_binding, || true)
     }
 
     /// Adopt an explicit login with the product account that the server already verified.
@@ -410,6 +410,31 @@ impl IdentityLifecycle {
         expires_at_unix: u64,
         session_binding: &str,
     ) -> Result<(), IdentityError> {
+        self.adopt_verified_login_if_current(
+            provider_account_id,
+            verified_account_id,
+            access_token,
+            refresh_token,
+            issued_at_unix,
+            expires_at_unix,
+            session_binding,
+            || true,
+        )
+    }
+
+    /// Check the host's staged login under the identity mutation barrier, before replacing any pair.
+    #[allow(clippy::too_many_arguments)]
+    pub fn adopt_verified_login_if_current(
+        &self,
+        provider_account_id: &str,
+        verified_account_id: &str,
+        access_token: Secret,
+        refresh_token: Secret,
+        issued_at_unix: u64,
+        expires_at_unix: u64,
+        session_binding: &str,
+        current: impl FnOnce() -> bool,
+    ) -> Result<(), IdentityError> {
         self.adopt_login_inner(
             provider_account_id,
             Some(verified_account_id),
@@ -418,6 +443,7 @@ impl IdentityLifecycle {
             issued_at_unix,
             expires_at_unix,
             session_binding,
+            current,
         )
     }
 
@@ -431,6 +457,7 @@ impl IdentityLifecycle {
         issued_at_unix: u64,
         expires_at_unix: u64,
         session_binding: &str,
+        staged_is_current: impl FnOnce() -> bool,
     ) -> Result<(), IdentityError> {
         if !safe_token(provider_account_id, MAX_ACCOUNT_BYTES)
             || verified_account_id.is_some_and(|account| !safe_token(account, MAX_ACCOUNT_BYTES))
@@ -460,6 +487,9 @@ impl IdentityLifecycle {
         let retiring = current.max(old.as_ref().map_or(0, |record| record.login_generation));
         let high_water = self.last_login_generation.load(Ordering::Acquire).max(revoked).max(retiring);
         let login_generation = high_water.checked_add(1).ok_or(IdentityError::Storage)?;
+        if !staged_is_current() {
+            return Err(IdentityError::SessionChanged);
+        }
         // Retire the old login before reusing its generation-1 key names. The tombstone
         // also prevents generation reuse by another process if delete or adoption is interrupted.
         self.write_revocation(retiring.max(revoked))?;
@@ -560,26 +590,49 @@ impl IdentityLifecycle {
     }
 
     pub fn sign_out(&self) -> Result<SignOutOutcome, IdentityError> {
+        let wait = LockWait::new(MUTATION_WAIT);
+        let generation = self.publish_logout(&wait)?;
+        Ok(self.cleanup_revoked(generation, &wait))
+    }
+
+    /// Durably retire the identity without deleting its keyring record.
+    pub fn mark_logout_pending(&self) -> Result<(), IdentityError> {
+        self.publish_logout(&LockWait::new(MUTATION_WAIT)).map(|_| ())
+    }
+
+    fn publish_logout(&self, wait: &LockWait) -> Result<u64, IdentityError> {
         self.revoked.store(true, Ordering::Release);
         self.clear_readiness();
-        let wait = LockWait::new(MUTATION_WAIT);
-        let generation = {
-            let _barrier = self.barrier_lock(&wait)?;
-            // An explicit login may have committed while this sign-out waited.
-            self.revoked.store(true, Ordering::Release);
-            // Publish the known generation without waiting for the keyring to unlock.
-            let mut generation = self.read_current_login()?.max(self.last_login_generation.load(Ordering::Acquire));
-            if generation == 0 {
-                let mut store = self.store()?;
-                generation = self.load(store.as_ref())?.map_or(0, |record| record.login_generation);
-                if generation == 0 {
-                    return Ok(SignOutOutcome { credentials_cleared: store.delete().is_ok() });
+        let _barrier = self.barrier_lock(wait)?;
+        self.publish_logout_locked()
+    }
+
+    fn publish_logout_locked(&self) -> Result<u64, IdentityError> {
+        // An explicit login may have committed while this sign-out waited.
+        self.revoked.store(true, Ordering::Release);
+        self.clear_readiness();
+        // Do not wait for keyring reads when the journal already proves the generation.
+        let mut generation = self.read_current_login()?.max(self.last_login_generation.load(Ordering::Acquire));
+        if generation == 0 {
+            generation = self.load(self.store()?.as_ref())?.map_or(0, |record| record.login_generation);
+        }
+        self.publish_logout_barrier(generation)?;
+        Ok(generation)
+    }
+
+    /// Abort the product stage before retiring its identity. Hold the identity barrier first
+    /// (the same order as publishing a lease) and keep the product write fence through cleanup.
+    pub fn abort_staged_login(&self, credentials: &CredentialSession, staged: StagedLogin) -> Result<(), IdentityError> {
+        let _barrier = self.barrier_lock(&LockWait::new(MUTATION_WAIT))?;
+        credentials
+            .abort_staged_login_with(staged, || {
+                let cleanup = self.publish_logout_locked().and_then(|generation| self.cleanup_revoked_locked(generation));
+                if !cleanup.unwrap_or(false) {
+                    return Err(unavailable());
                 }
-            }
-            self.publish_logout_barrier(generation)?;
-            generation
-        };
-        Ok(self.cleanup_revoked(generation, &wait))
+                Ok(())
+            })
+            .map_err(|_| IdentityError::Storage)
     }
 
     /// Run a short local commit decision if its previously authorized login still
@@ -1122,23 +1175,27 @@ impl IdentityLifecycle {
         // concurrent explicit login must never have its new credentials deleted.
         let cleanup = (|| {
             let _barrier = self.barrier_lock(wait)?;
-            let mut store = self.store()?;
-            if self.read_revocation()?.is_none_or(|revoked| revoked < generation) {
-                return Err(IdentityError::Storage);
-            }
-            if let Some(record) = self.load(store.as_ref())?.filter(|record| record.login_generation > generation) {
-                if self.read_current_login()? > generation {
-                    // Do not remove a newer, fully published login.
-                    return Ok(true);
-                }
-                // An interrupted adoption left an owned pair, not a published login.
-                self.publish_logout_barrier(record.login_generation)?;
-            }
-            let deleted = store.delete().is_ok();
-            let _ = self.clear_attempt();
-            Ok(deleted)
+            self.cleanup_revoked_locked(generation)
         })();
         SignOutOutcome { credentials_cleared: cleanup.unwrap_or(false) }
+    }
+
+    fn cleanup_revoked_locked(&self, generation: u64) -> Result<bool, IdentityError> {
+        let mut store = self.store()?;
+        if self.read_revocation()?.is_none_or(|revoked| revoked < generation) {
+            return Err(IdentityError::Storage);
+        }
+        if let Some(record) = self.load(store.as_ref())?.filter(|record| record.login_generation > generation) {
+            if self.read_current_login()? > generation {
+                // Do not remove a newer, fully published login.
+                return Ok(true);
+            }
+            // An interrupted adoption left an owned pair, not a published login.
+            self.publish_logout_barrier(record.login_generation)?;
+        }
+        let deleted = store.delete().is_ok();
+        let _ = self.clear_attempt();
+        Ok(deleted)
     }
 
     fn current_record(&self, store: &dyn IdentityStore) -> Result<StoredIdentity, IdentityError> {

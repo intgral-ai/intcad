@@ -222,7 +222,9 @@ fn verified_login_stages_the_binding_before_committing_it() {
     let authoritative = writes.iter().position(|key| key == "auth/session_binding").unwrap();
     assert!(staged < authoritative);
     assert_eq!(writes.last().map(String::as_str), Some("login/commit"));
-    assert_eq!(store.entry("auth/session_binding").as_deref(), Some("67b7bf325e5cbe5ff2c03a397824a1896a6c89d677d67b9e395885b0aaca2d77"));
+    let binding = store.entry("auth/session_binding").unwrap();
+    assert_eq!(binding.len(), 64);
+    assert!(binding.bytes().all(|byte| byte.is_ascii_hexdigit()));
     publish_first_installation(&session, "different_product_bearer").unwrap();
     assert_eq!(session.authenticated_scope().unwrap().session_binding().as_str(), store.entry("auth/session_binding").unwrap());
 }
@@ -349,9 +351,13 @@ pub(crate) struct RecordingStore {
     inner: Arc<Mutex<StoreState>>,
     commit_waiting: Arc<AtomicUsize>,
     paused_bearer_write: Arc<Mutex<Option<PausedBearerWrite>>>,
+    close_on_read: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>>,
 }
 
 impl RecordingStore {
+    pub(crate) fn close_gate_on_next_read(&self, gate: Arc<std::sync::atomic::AtomicBool>) {
+        *self.close_on_read.lock().unwrap() = Some(gate);
+    }
     fn set_fail_delete(&self, key: &str) {
         self.inner.lock().unwrap().fail_delete = Some(key.to_owned());
     }
@@ -407,6 +413,9 @@ impl RecordingStore {
 
 impl CredentialStore for RecordingStore {
     fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
+        if let Some(gate) = self.close_on_read.lock().unwrap().take() {
+            gate.store(false, Ordering::Release);
+        }
         let mut state = self.inner.lock().map_err(|_| unavailable())?;
         state.calls.push(Call::Get(key.to_owned()));
         Ok(state.entries.get(key).cloned())

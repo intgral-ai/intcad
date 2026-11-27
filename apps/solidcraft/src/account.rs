@@ -642,7 +642,7 @@ fn run_login<T: DeviceCodeTransport>(task: LoginTask, transport: T, exchange: &d
     let generation_current = || current(&status, attempt) && !credentials.is_revoked();
     match credentials.stage_verified_login_with_installation(&provider, &product, installation, attempt, &generation_current) {
         Ok(staged) => {
-            let adopted = identity.adopt_verified_login(
+            let adopted = identity.adopt_verified_login_if_current(
                 provider.account_id(),
                 staged.account_id(),
                 provider.access_token().clone(),
@@ -650,21 +650,15 @@ fn run_login<T: DeviceCodeTransport>(task: LoginTask, transport: T, exchange: &d
                 unix_seconds(),
                 refresh.expires_at_unix_seconds(),
                 staged.session_binding(),
+                || generation_current() && credentials.staged_login_is_current(&staged),
             );
             if adopted.is_ok()
                 && let Ok(login) = credentials.commit_staged_login(&staged, &generation_current)
             {
                 finish(&status, attempt, LoginPhase::Done, Some(login.account_id));
             } else {
-                // Fence an ambiguous commit write before deleting the refresh pair. Keep
-                // the recovery marker until both halves have been cleaned up.
-                let cleaned = credentials.mark_logout_pending().is_ok()
-                    && identity.sign_out().is_ok_and(|outcome| outcome.credentials_cleared)
-                    && credentials.abort_staged_login(staged).is_ok();
-                if !cleaned {
-                    credentials.revoke_in_process();
-                    let _ = credentials.mark_logout_pending();
-                }
+                // A superseded worker must not write a logout marker or retire a newer pair.
+                let _ = identity.abort_staged_login(&credentials, staged);
                 finish(&status, attempt, LoginPhase::Failed(RefusalCode::AuthUnavailable), None);
             }
         }
@@ -1935,13 +1929,12 @@ impl DesktopAccountPort {
         let worker = std::thread::Builder::new().name("intcad-account-cleanup".into()).spawn(move || {
             // Publish both barriers before deleting the product credentials. If the identity
             // barrier fails, leave the original credentials intact for a cleanup retry.
-            let identity_cleared = identity.is_none_or(|identity| identity.sign_out().is_ok_and(|outcome| outcome.credentials_cleared));
-            let result = if identity_cleared {
-                credentials.sign_out_keeping_revocation().is_ok()
-            } else {
-                let _ = credentials.mark_logout_pending();
-                false
-            };
+            let identity_fenced = identity.as_ref().is_none_or(|identity| identity.mark_logout_pending().is_ok());
+            let product_fenced = credentials.mark_logout_pending().is_ok();
+            let result = identity_fenced
+                && product_fenced
+                && identity.is_none_or(|identity| identity.sign_out().is_ok_and(|outcome| outcome.credentials_cleared))
+                && credentials.sign_out_keeping_revocation().is_ok();
             if let Ok(mut status) = cleanup.lock()
                 && status.pending == Some(generation)
             {
@@ -3239,6 +3232,7 @@ mod tests {
         assert!(port.runtime.credentials.is_revoked());
         assert_eq!(store.get(&identity_refresh_key(&test_config())).unwrap().as_deref(), Some("fixture_refresh"));
         assert!(store.get("auth/product_session").unwrap().is_some());
+        assert!(port.runtime.credentials.logout_pending().unwrap());
     }
 
     #[test]
@@ -3258,7 +3252,63 @@ mod tests {
         assert_eq!(port.poll().unwrap().sign_out_error, Some(RefusalCode::AuthUnavailable));
         assert!(port.runtime.credentials.is_revoked());
         assert_eq!(identity.status(), IdentityStatus::SignedOut);
-        assert!(!store.entries.lock().unwrap().keys().any(|key| key.starts_with("identity/")));
+        assert!(store.get(&identity_refresh_key(&test_config())).unwrap().is_some());
+        assert!(store.get("auth/product_session").unwrap().is_some());
+        let peer = identity_fixture(&test_config(), &store, port.runtime.identity_root.as_ref().unwrap(), ScriptedProduct::default());
+        assert_eq!(peer.status(), IdentityStatus::SignedOut, "the identity barrier survives reopening");
+        store.set_fail_key(None);
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert!(port.poll().unwrap().sign_in_visible);
+        assert!(store.get(&identity_refresh_key(&test_config())).unwrap().is_none());
+        assert!(store.get("auth/product_session").unwrap().is_none());
+    }
+
+    #[test]
+    fn desktop_identity_logout_both_barriers_survive_a_crash_before_delete() {
+        let store = TestStore::default();
+        let session = activate_session(&store);
+        let scope = session.authenticated_scope().unwrap();
+        let scratch = IdentityScratch::new();
+        let config = test_config();
+        let identity = identity_fixture(&config, &store, &scratch.0, ScriptedProduct::default());
+        seed_identity(&identity, &scope, Secret::new("old_bearer"));
+        identity.mark_logout_pending().unwrap();
+        session.mark_logout_pending().unwrap();
+        drop((identity, session));
+        let identity = identity_fixture(&config, &store, &scratch.0, ScriptedProduct::default());
+        let session = CredentialSession::new(Box::new(store.clone()));
+        assert_eq!(identity.ensure(IdentityTrigger::Background, RESTART_STATUS_TIMEOUT).unwrap_err(), IdentityError::SignedOut);
+        assert!(session.logout_pending().unwrap());
+        assert!(session.authenticated_scope().is_none());
+        assert!(store.get(&identity_refresh_key(&config)).unwrap().is_some());
+        assert!(store.get("auth/product_session").unwrap().is_some());
+    }
+
+    #[test]
+    fn desktop_identity_logout_failed_delete_can_retry_after_both_barriers() {
+        let store = TestStore::default();
+        let session = activate_session(&store);
+        let scope = session.authenticated_scope().unwrap();
+        let runtime = fixture_runtime(session, test_config(), &store, ScriptedProduct::default());
+        let identity = runtime.identity.clone().unwrap();
+        seed_identity(&identity, &scope, Secret::new("old_bearer"));
+        let mut startup = runtime.startup();
+        startup.restart = None;
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        store.fail_delete.store(true, Ordering::SeqCst);
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert_eq!(port.poll().unwrap().sign_out_error, Some(RefusalCode::AuthUnavailable));
+        assert!(port.runtime.credentials.is_revoked());
+        assert!(port.runtime.credentials.logout_pending().unwrap());
+        assert_eq!(identity.status(), IdentityStatus::SignedOut);
+        store.fail_delete.store(false, Ordering::SeqCst);
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert!(port.poll().unwrap().sign_in_visible);
+        assert!(store.get(&identity_refresh_key(&test_config())).unwrap().is_none());
+        assert!(store.get("auth/product_session").unwrap().is_none());
     }
 
     #[test]
@@ -3338,6 +3388,54 @@ mod tests {
             assert!(store.get(&refresh_key).unwrap().is_none());
             assert!(!CredentialSession::new(Box::new(store.clone())).product_session_active());
         }
+    }
+
+    #[test]
+    fn desktop_identity_superseded_attempt_cannot_adopt_or_retire_the_new_login() {
+        let store = TestStore::default();
+        let config = test_config();
+        let scratch = IdentityScratch::new();
+        let a = CredentialSession::new(Box::new(store.clone()));
+        let b = CredentialSession::new(Box::new(store.clone()));
+        let identity_a = identity_fixture(&config, &store, &scratch.0, ScriptedProduct::default());
+        let identity_b = identity_fixture(&config, &store, &scratch.0, ScriptedProduct::default());
+        let stage = |session: &CredentialSession, generation, token| {
+            let mut flow = DeviceCodeFlow::new(config.client.clone(), ScriptedDeviceTransport::default(), session.clone(), DeviceCodeMode::Explicit);
+            flow.start().unwrap();
+            assert!(matches!(flow.poll().unwrap(), DeviceCodePoll::Authorized));
+            let provider = flow.authorized_provider().unwrap();
+            let product = ProductSession::from_trusted_exchange("acct_desktop0001", Secret::new(token), None);
+            session.stage_verified_login_with_installation(&provider, &product, None, generation, &|| true).unwrap()
+        };
+        let adopt = |identity: &IdentityLifecycle, staged: &solidcraft_account_native::StagedLogin, token, current: &dyn Fn() -> bool| {
+            let now = unix_seconds();
+            identity.adopt_verified_login_if_current(
+                "provider",
+                staged.account_id(),
+                Secret::new(token),
+                Secret::new("refresh_test"),
+                now,
+                now + 600,
+                staged.session_binding(),
+                current,
+            )
+        };
+        let stage_a = stage(&a, 1, "bearer_a");
+        assert_eq!(adopt(&identity_a, &stage_a, "bearer_a", &|| false), Err(IdentityError::SessionChanged));
+        assert!(store.get(&identity_refresh_key(&config)).unwrap().is_none(), "cancelled adoption makes no write");
+        adopt(&identity_a, &stage_a, "bearer_a", &|| a.staged_login_is_current(&stage_a)).unwrap();
+        let stage_b = stage(&b, 1, "bearer_b");
+        assert!(!a.staged_login_is_current(&stage_a), "independent sessions may have the same attempt counter");
+        adopt(&identity_b, &stage_b, "bearer_b", &|| b.staged_login_is_current(&stage_b)).unwrap();
+        b.commit_staged_login(&stage_b, &|| true).unwrap();
+        assert!(a.commit_staged_login(&stage_a, &|| true).is_err());
+        assert_eq!(adopt(&identity_a, &stage_a, "bearer_a", &|| a.staged_login_is_current(&stage_a)), Err(IdentityError::SessionChanged));
+        assert!(identity_a.abort_staged_login(&a, stage_a).is_err());
+        assert!(!b.logout_pending().unwrap());
+        assert_eq!(WireCredentials::product_session(&b).unwrap().expose_secret(), "bearer_b");
+        let lease = identity_b.ensure(IdentityTrigger::Background, RESTART_STATUS_TIMEOUT).unwrap();
+        assert!(lease.matches_binding(stage_b.account_id(), stage_b.session_binding()));
+        assert_eq!(lease.access_token().expose_secret(), "bearer_b");
     }
 
     #[test]

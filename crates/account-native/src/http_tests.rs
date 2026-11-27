@@ -326,6 +326,7 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
         ResponseOperation,
         GateBefore,
         GateAfter,
+        GateDuringBindingRead,
     }
     for (status, receive_at, change) in [
         (200, 21_000, Change::None),
@@ -337,6 +338,7 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
         (200, 21_000, Change::ResponseOperation),
         (200, 21_000, Change::GateBefore),
         (200, 21_000, Change::GateAfter),
+        (200, 21_000, Change::GateDuringBindingRead),
     ] {
         let clock = TestClock::at(0);
         let store = RecordingStore::default();
@@ -374,7 +376,17 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
             Duration::from_secs(20),
         )
         .unwrap()
-        .with_gate(move || ready.load(std::sync::atomic::Ordering::Acquire).then_some((3, 7)));
+        .with_gate({
+            let store = store.clone();
+            let checks = std::cell::Cell::new(0);
+            move || {
+                checks.set(checks.get() + 1);
+                if change == Change::GateDuringBindingRead && checks.get() == 4 {
+                    store.close_gate_on_next_read(ready.clone());
+                }
+                ready.load(std::sync::atomic::Ordering::Acquire).then_some((3, 7))
+            }
+        });
         clock.millis.set(19_999);
         assert_eq!(renewal.tick(), Ok(false));
         session.update_product_session(&scope, &Secret::new("rotated_bearer")).unwrap();
@@ -387,7 +399,7 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
                 session.revoke_in_process();
                 session.end_revocation();
             }
-            Change::None | Change::ResponseOperation | Change::GateBefore | Change::GateAfter => {}
+            Change::None | Change::ResponseOperation | Change::GateBefore | Change::GateAfter | Change::GateDuringBindingRead => {}
         }
         clock.millis.set(20_000);
         let result = renewal.tick();
@@ -396,7 +408,7 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
             assert_eq!(renewal.deadline().expires_at(), MonotonicInstant::from_millis(80_000));
             clock.millis.set(36_999);
             assert_eq!(renewal.tick(), Ok(false));
-        } else if matches!(change, Change::GateBefore | Change::GateAfter) {
+        } else if matches!(change, Change::GateBefore | Change::GateAfter | Change::GateDuringBindingRead) {
             assert_eq!(result, Ok(false));
             assert_eq!(renewal.deadline(), &deadline);
             assert!(renewal.wait_for_next_tick().is_some(), "verification pause does not retire the operation");
@@ -406,7 +418,10 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
             assert_eq!(renewal.tick(), Ok(false), "a refused or late lease never retries");
         }
         let requests = renewal.transport().wire.take_requests();
-        assert_eq!(requests.len(), usize::from(matches!(change, Change::None | Change::ResponseOperation | Change::GateAfter)));
+        assert_eq!(
+            requests.len(),
+            usize::from(matches!(change, Change::None | Change::ResponseOperation | Change::GateAfter | Change::GateDuringBindingRead))
+        );
         if let Some(request) = requests.first() {
             assert_eq!(request.header("Authorization"), Some("Bearer rotated_bearer"));
             assert_eq!(request.header("X-Execution-Session-Proof"), Some("original_proof"));
