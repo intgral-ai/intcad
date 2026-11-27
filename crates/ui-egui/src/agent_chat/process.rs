@@ -26,6 +26,9 @@ use nix::unistd::Pid;
 const GRACE: Duration = Duration::from_millis(1200);
 const TEARDOWN: Duration = Duration::from_secs(3);
 const SLOTS: usize = 4096;
+// A 12 MiB PDF takes 16 MiB before the prompt's JSON envelope, escaping and LF.
+const BUILTIN_PROMPT_BYTES: usize = 18 << 20;
+const BUILTIN_WRITE_QUEUE_BYTES: usize = 24 << 20;
 const ESSENTIALS: &[&str] = &["SYSTEMROOT", "WINDIR", "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR"];
 
 pub struct ProcessLaunch {
@@ -293,6 +296,7 @@ struct PipeState {
 
 struct Pipes {
     limits: ProcessIoLimits,
+    builtin_acp: bool,
     inbound: Arc<InboundPool>,
     io_started: AtomicBool,
     io_workers: AtomicU8,
@@ -305,8 +309,13 @@ struct Pipes {
 
 impl Pipes {
     fn new(limits: ProcessIoLimits, wake: Arc<dyn Fn() + Send + Sync>) -> Arc<Self> {
+        Self::with_builtin_acp(limits, wake, false)
+    }
+
+    fn with_builtin_acp(limits: ProcessIoLimits, wake: Arc<dyn Fn() + Send + Sync>, builtin_acp: bool) -> Arc<Self> {
         Arc::new(Self {
             limits,
+            builtin_acp,
             inbound: InboundPool::new(limits.queue_bytes, limits.control_lane_bytes),
             io_started: AtomicBool::new(false),
             io_workers: AtomicU8::new(0),
@@ -395,20 +404,19 @@ impl Pipes {
     }
 
     fn send(&self, bytes: Vec<u8>, lane: PipeLane) -> Result<(), ProcessIoError> {
-        self.enqueue(None, bytes, lane)
+        self.enqueue(None, bytes, lane, self.limits.frame_bytes)
     }
     fn send_tracked(&self, ticket: u64, bytes: Vec<u8>, lane: PipeLane) -> Result<(), ProcessIoError> {
-        self.enqueue(Some(ticket), bytes, lane)
+        self.enqueue(Some(ticket), bytes, lane, self.limits.frame_bytes)
     }
-    fn enqueue(&self, ticket: Option<u64>, bytes: Vec<u8>, lane: PipeLane) -> Result<(), ProcessIoError> {
+    fn prompt_bytes(&self) -> usize {
+        if self.builtin_acp { BUILTIN_PROMPT_BYTES } else { self.limits.frame_bytes }
+    }
+    fn enqueue(&self, ticket: Option<u64>, bytes: Vec<u8>, lane: PipeLane, frame_bytes: usize) -> Result<(), ProcessIoError> {
         if self.stop.requested() {
             return Err(ProcessIoError::Closed);
         }
-        if bytes.is_empty()
-            || bytes.last() != Some(&b'\n')
-            || bytes.len() > self.limits.frame_bytes
-            || (lane == PipeLane::Control && bytes.len() > 4096)
-        {
+        if bytes.is_empty() || bytes.last() != Some(&b'\n') || bytes.len() > frame_bytes || (lane == PipeLane::Control && bytes.len() > 4096) {
             return Err(ProcessIoError::OversizedFrame);
         }
         let charge = bytes.capacity();
@@ -422,10 +430,11 @@ impl Pipes {
         if state.input_closed || self.stop.requested() {
             return Err(ProcessIoError::Closed);
         }
-        let data_cap = self.limits.queue_bytes - self.limits.control_lane_bytes;
+        let queue_cap = if self.builtin_acp { BUILTIN_WRITE_QUEUE_BYTES } else { self.limits.queue_bytes };
+        let data_cap = queue_cap - self.limits.control_lane_bytes;
         if state.data_slots + state.control_slots >= SLOTS
             || (lane == PipeLane::Data && state.data_slots >= SLOTS - 1)
-            || charge > self.limits.queue_bytes.saturating_sub(state.data_bytes + state.control_bytes)
+            || charge > queue_cap.saturating_sub(state.data_bytes + state.control_bytes)
             || match lane {
                 PipeLane::Data => charge > data_cap.saturating_sub(state.data_bytes),
                 PipeLane::Control => charge > self.limits.control_lane_bytes.saturating_sub(state.control_bytes),
@@ -1150,11 +1159,11 @@ fn pipe_worker<T: Send + 'static>(name: &str, io: Arc<Pipes>, run: impl FnOnce(T
     Ok(send)
 }
 
-fn spawn_process(mut cmd: Command, limits: ProcessIoLimits, wake: Arc<dyn Fn() + Send + Sync>) -> Result<StrictProcess, String> {
+fn spawn_process(mut cmd: Command, limits: ProcessIoLimits, wake: Arc<dyn Fn() + Send + Sync>, builtin_acp: bool) -> Result<StrictProcess, String> {
     let limits = limits.validate().map_err(|e| e.to_string())?;
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     detach_group(&mut cmd);
-    let io = Pipes::new(limits, wake);
+    let io = if builtin_acp { Pipes::with_builtin_acp(limits, wake, true) } else { Pipes::new(limits, wake) };
     let (handle, ready) = start_owner(io.clone())?;
     // Every fallible thread start precedes OS spawn. Returning a startup Err
     // therefore cannot release caller admission while a child is still owned.
@@ -1247,7 +1256,7 @@ impl AgentProcess {
         let mut cmd = Command::new(&launch.executable);
         essential_env(&mut cmd);
         cmd.args(&launch.args).current_dir(&launch.cwd);
-        spawn_process(cmd, limits, Arc::new(wake))
+        spawn_process(cmd, limits, Arc::new(wake), false)
     }
 
     /// Source-compatible ACP facade; only this legacy path uses discovery and
@@ -1258,11 +1267,27 @@ impl AgentProcess {
         env_remove: &[&str],
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<AgentProcess, String> {
+        Self::spawn_with_env(argv, cwd, env_remove, &[], false, wake)
+    }
+
+    /// [`AgentProcess::spawn`], with variables of the app's own added to what the agent inherits
+    /// (`env_set`: each name and its value). Everything else it gets stays as `spawn` passes it.
+    pub fn spawn_with_env(
+        argv: &[String],
+        cwd: &std::path::Path,
+        env_remove: &[&str],
+        env_set: &[(&str, &std::ffi::OsStr)],
+        builtin_acp: bool,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<AgentProcess, String> {
         let Some((program, args)) = argv.split_first() else { return Err("no agent command".into()) };
         let mut cmd = super::discover::command_for(std::path::Path::new(program));
         cmd.args(args).current_dir(cwd);
         for key in env_remove {
             cmd.env_remove(key);
+        }
+        for (key, value) in env_set {
+            cmd.env(key, value);
         }
         let wake = Arc::new(wake);
         let limits = ProcessIoLimits {
@@ -1273,7 +1298,7 @@ impl AgentProcess {
             stderr_line_scalars: 400,
             stderr_bytes: 65536,
         };
-        let process = spawn_process(cmd, limits, wake.clone())?;
+        let process = spawn_process(cmd, limits, wake.clone(), builtin_acp)?;
         let child = process.handle();
         let to_agent = Some(process.io.clone());
         // Receiver stays source-compatible. Do not put a new unbounded text
@@ -1327,6 +1352,36 @@ impl AgentProcess {
             }
         }
     }
+    /// An ACP prompt is optional work, not a fatal transport error. Serialize against its exact
+    /// wire budget before allocating the frame, then enqueue it in the ordinary FIFO (Stop must
+    /// not overtake the prompt). Capacity, including an in-flight frame, is also bounded.
+    pub(super) fn send_prompt(&self, msg: &impl serde::Serialize) -> Result<(), ProcessIoError> {
+        struct Measure {
+            bytes: usize,
+            limit: usize,
+        }
+        impl Write for Measure {
+            fn write(&mut self, chunk: &[u8]) -> std::io::Result<usize> {
+                self.bytes = self.bytes.saturating_add(chunk.len());
+                if self.bytes > self.limit {
+                    return Err(std::io::Error::other("ACP frame too large"));
+                }
+                Ok(chunk.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let io = self.to_agent.as_ref().ok_or(ProcessIoError::Closed)?;
+        let limit = io.prompt_bytes();
+        let mut measure = Measure { bytes: 1, limit }; // LF
+        serde_json::to_writer(&mut measure, msg).map_err(|_| ProcessIoError::OversizedFrame)?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(measure.bytes).map_err(|_| ProcessIoError::ResourceExhausted)?;
+        serde_json::to_writer(&mut bytes, msg).map_err(|_| ProcessIoError::WriteFailed)?;
+        bytes.push(b'\n');
+        io.enqueue(None, bytes, PipeLane::Data, limit)
+    }
     pub fn pid(&self) -> Option<u32> {
         self.child.pid()
     }
@@ -1341,6 +1396,46 @@ impl AgentProcess {
 impl Drop for AgentProcess {
     fn drop(&mut self) {
         self.shutdown(false);
+    }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn acp_prompt_overflow_does_not_close_the_child() {
+    let mut process =
+        AgentProcess::spawn(&["sh".into(), "-c".into(), "while IFS= read -r line; do echo read; done".into()], &std::env::temp_dir(), &[], || {})
+            .unwrap();
+    // Even without attachments, escaped characters can put a frame over the wire limit.
+    let too_large = serde_json::json!({"method":"session/prompt","params":{"text":"\0".repeat(2 << 20)}});
+    assert_eq!(process.send_prompt(&too_large), Err(ProcessIoError::OversizedFrame));
+    drop(too_large);
+    process.send_prompt(&serde_json::json!({"method":"session/prompt","params":{"text":"hello again"}})).unwrap();
+    assert!(matches!(process.from_agent.recv_timeout(Duration::from_secs(5)), Ok(FromAgent::Line(line)) if line == "read\n"));
+    process.shutdown(true);
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn acp_prompt_budget_counts_the_encoded_json_and_final_lf() {
+    for (builtin, limit) in [(false, 8 << 20), (true, 18 << 20)] {
+        let mut process = AgentProcess::spawn_with_env(
+            &["awk".into(), "{print length($0)+1; fflush()}".into()],
+            &std::env::temp_dir(),
+            &[],
+            &[("LC_ALL", std::ffi::OsStr::new("C"))],
+            builtin,
+            || {},
+        )
+        .unwrap();
+        // Quotes (2), escaped NUL (6), é (2), escaped quote (2), LF (1).
+        let mut text = "\0é\"".to_string();
+        text.push_str(&"a".repeat(limit - 13));
+        process.send_prompt(&text).unwrap();
+        let line = process.from_agent.recv_timeout(Duration::from_secs(10));
+        assert!(matches!(line, Ok(FromAgent::Line(line)) if line.trim().parse() == Ok(limit)));
+        text.push('a');
+        assert_eq!(process.send_prompt(&text), Err(ProcessIoError::OversizedFrame));
+        process.shutdown(true);
     }
 }
 

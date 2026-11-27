@@ -9,8 +9,6 @@ use super::*;
 
 /// Longest raw tool input or output sent to the page (characters), as the panel's own Details.
 const MAX_DETAIL: usize = 8000;
-/// Longest message the page may send (characters).
-const MAX_MESSAGE: usize = 100_000;
 
 /// Why the desktop host has no web view to offer. The panel shows this as a diagnostic, never as
 /// a second conversation: the Assistant has one interface, the page in the host's view.
@@ -36,6 +34,24 @@ pub fn set_host(app: &mut SolveApp, available: bool) {
 /// chat interface.
 pub fn set_problem(app: &mut SolveApp, problem: Problem) {
     app.agent_chat.web_problem = Some(problem);
+}
+
+/// The host shows only the foot of its view at the bottom centre of the window and takes presses
+/// there only (macOS): the panel then gives it a view as tall as the page may grow, and
+/// [`reveal`] says how much of it is shown.
+pub fn set_clips(app: &mut SolveApp, clips: bool) {
+    app.agent_chat.web_clips = clips;
+}
+
+/// With [`set_clips`], the height from the foot of the view [`placement`] gave that is shown and
+/// takes presses this frame, in points; `None`: all of it.
+pub fn reveal(app: &SolveApp) -> Option<f32> {
+    app.agent_chat.web_reveal
+}
+
+/// Whether the panel gave the host a bottom-centre placement this frame.
+pub fn centred_view(app: &SolveApp) -> bool {
+    app.agent_chat.web_centre.is_some()
 }
 
 /// The panel's Retry: ask the host to try to make the view again, keeping the conversation.
@@ -127,6 +143,11 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
     if app.agent_chat.gallery.is_some() {
         return None;
     }
+    // What is shown of it: a layer over the rest of it covers nothing the page shows there.
+    let shown = app
+        .agent_chat
+        .web_reveal
+        .map_or(rect, |height| egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - height), rect.right_bottom()));
     let covered = ctx.memory(|memory| {
         // A panel docked to the window's edge is under every floating layer; a floating panel
         // is under the layers that come after it.
@@ -135,7 +156,7 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
         for other in memory.layer_ids() {
             if other == layer {
                 above = true;
-            } else if above && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(rect)) {
+            } else if above && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(shown)) {
                 covered = true;
             }
         }
@@ -178,8 +199,8 @@ fn picture_key(bytes: &[u8]) -> String {
 }
 
 /// The pictures the page may show now, by the name [`state`] gives each: those sent with the
-/// conversation's messages and those attached to the next one. The host serves the bytes itself;
-/// they are never part of what the page is told.
+/// conversation's messages, those tool calls handed back, and those attached to the next one.
+/// The host serves the bytes itself; they are never part of what the page is told.
 pub fn pictures(app: &SolveApp) -> Vec<(String, Arc<Vec<u8>>)> {
     let chat = &app.agent_chat;
     let sent = chat.items.iter().filter_map(|item| match item {
@@ -190,7 +211,8 @@ pub fn pictures(app: &SolveApp) -> Vec<(String, Arc<Vec<u8>>)> {
         attach::Content::Picture { bytes, .. } => Some(bytes),
         _ => None,
     });
-    sent.flatten().chain(next).map(|bytes| (picture_key(bytes), Arc::clone(bytes))).collect()
+    let handed = chat.tool_pictures.iter().map(|(_, picture)| &picture.bytes);
+    sent.flatten().chain(handed).chain(next).map(|bytes| (picture_key(bytes), Arc::clone(bytes))).collect()
 }
 
 /// The host: files were dropped on the web view. They are attached to the next message as files
@@ -285,6 +307,15 @@ pub fn state(app: &mut SolveApp) -> String {
                     "words": summary::summary(title, input.as_ref(), output.as_deref(), done, units),
                     "input": input.as_ref().map(|value| clipped(&serde_json::to_string_pretty(value).unwrap_or_default())),
                     "output": output.as_deref().map(clipped),
+                    // A picture the call handed back, opened as a message's picture is (`picture`).
+                    "index": index,
+                    "pictures": chat.tool_pictures.iter().filter(|(call, _)| call == id).map(|(_, picture)| json!({"key": picture_key(&picture.bytes), "note": picture.note, "view": false})).collect::<Vec<_>>(),
+                    // A file the call read, as a card: `preview` shows its text in the panel
+                    // (`markdown`: drawn), `open` hands it to the system's program for it (`file`).
+                    "file": chat.read_file_of(id).map(|(file, act)| json!({
+                        "name": file.file_name().map(|name| name.to_string_lossy()),
+                        "act": match act { read_file::Act::Preview { .. } => "preview", read_file::Act::Open => "open" },
+                    })),
                 })
             }
             Item::Plan(steps) => {
@@ -323,6 +354,11 @@ pub fn state(app: &mut SolveApp) -> String {
                 })
             }
             Item::Notice { text, error } => json!({"kind": "notice", "text": text, "error": error}),
+            // A notice to a page that reads no more of it; `problem` says which way out to offer.
+            Item::Problem { kind, prefix, name } => json!({
+                "kind": "notice", "text": kind.words(name), "error": true,
+                "problem": {"kind": kind.id(), "prefix": prefix, "name": name},
+            }),
         })
         .collect();
     let turn = chat.turn.as_ref().map(|turn| {
@@ -401,7 +437,7 @@ pub fn state(app: &mut SolveApp) -> String {
             found.missing.iter().map(listed).collect()
         })
         .unwrap_or_default();
-    let strings: serde_json::Map<String, Value> = [
+    let mut strings: serde_json::Map<String, Value> = [
         ("placeholder", "ui.agent_chat_placeholder"),
         ("placeholderBusy", "ui.agent_chat_placeholder_busy"),
         ("send", "ui.agent_chat_send"),
@@ -424,7 +460,6 @@ pub fn state(app: &mut SolveApp) -> String {
         ("title", "ui.assistant"),
         ("add", "ui.agent_chat_add_tip"),
         ("addFile", "ui.agent_chat_add_file"),
-        ("pastePicture", "ui.agent_chat_paste_picture"),
         ("attachView", "ui.agent_chat_attach_view"),
         ("attachSelection", "ui.agent_chat_attach_selection"),
         ("pickContext", "ui.agent_chat_pick_context"),
@@ -444,6 +479,8 @@ pub fn state(app: &mut SolveApp) -> String {
         ("minimize", "ui.agent_chat_minimize"),
         ("dockLeft", "ui.agent_chat_dock_left"),
         ("dockRight", "ui.agent_chat_dock_right"),
+        ("expand", "ui.expand"),
+        ("collapse", "ui.collapse"),
         ("addAgent", "ui.ai_add_agent"),
         ("settings", "ui.ai_settings"),
         ("switchAgent", "ui.ai_switch_tip"),
@@ -471,6 +508,8 @@ pub fn state(app: &mut SolveApp) -> String {
         ("modelSearch", "ui.agent_chat_model_search"),
         ("modelCustom", "ui.agent_chat_model_custom"),
         ("modelNoMatch", "ui.agent_chat_model_no_match"),
+        ("modelRefine", "ui.agent_chat_model_refine"),
+        ("modelFilter", "ui.agent_chat_model_filter"),
         ("revalidate", "ui.agent_chat_task_revalidate"),
         ("dropHint", "ui.agent_chat_drop_hint"),
         ("removeChip", "ui.agent_chat_remove_chip"),
@@ -511,12 +550,91 @@ pub fn state(app: &mut SolveApp) -> String {
         ("dfmSelected", "ui.dfm_check.selected"),
         ("dfmOff", "ui.dfm_check.off"),
         ("dfmSelect", "ui.dfm_check.selected"),
+        // The built-in agent's connections (`connect`, below): its page, the sign-ins' own
+        // names, and the sentences of a turn its connection refused.
+        ("connTitle", "ui.agent_chat_conn_title"),
+        ("connNoneTitle", "ui.agent_chat_conn_none_title"),
+        ("connBack", "ui.agent_chat_conn_back"),
+        ("connPlans", "ui.agent_chat_conn_plans"),
+        ("connKeys", "ui.agent_chat_conn_keys"),
+        ("connCustom", "ui.agent_chat_conn_custom"),
+        ("connSignedIn", "ui.agent_chat_conn_signed_in"),
+        ("connExpired", "ui.agent_chat_conn_expired"),
+        ("connSigningIn", "ui.agent_chat_conn_signing_in"),
+        ("connSignIn", "ui.agent_chat_conn_sign_in"),
+        ("connSignInAgain", "ui.agent_chat_conn_sign_in_again"),
+        ("connSignOut", "ui.agent_chat_conn_sign_out"),
+        ("connUse", "ui.agent_chat_conn_use"),
+        ("connInUse", "ui.agent_chat_conn_in_use"),
+        ("connShadowed", "ui.agent_chat_conn_shadowed"),
+        ("connKeySaved", "ui.agent_chat_conn_key_saved"),
+        ("connKeyAdd", "ui.agent_chat_conn_key_add"),
+        ("connKeyUpdate", "ui.agent_chat_conn_key_update"),
+        ("connRemove", "ui.agent_chat_conn_remove"),
+        ("connKeyTitle", "ui.agent_chat_conn_key_title"),
+        ("connKeyBody", "ui.agent_chat_conn_key_body"),
+        ("connKeyPlaceholder", "ui.agent_chat_conn_key_placeholder"),
+        ("connSave", "ui.agent_chat_conn_save"),
+        ("connCustomAdd", "ui.agent_chat_conn_custom_add"),
+        ("connCustomName", "ui.agent_chat_conn_custom_name"),
+        ("connCustomUrl", "ui.agent_chat_conn_custom_url"),
+        ("connCustomKey", "ui.agent_chat_conn_custom_key"),
+        ("connCustomModels", "ui.agent_chat_conn_custom_models"),
+        ("connCustomNeedBoth", "ui.agent_chat_conn_custom_need_both"),
+        ("connCustomNeedModel", "ui.agent_chat_conn_custom_need_model"),
+        ("connCustomTooMany", "ui.agent_chat_conn_custom_too_many"),
+        ("connCustomPlainUrl", "ui.agent_chat_conn_custom_plain_url"),
+        ("connCustomExists", "ui.agent_chat_conn_custom_exists"),
+        ("connAdd", "ui.agent_chat_conn_add"),
+        ("connWaiting", "ui.agent_chat_conn_waiting"),
+        ("connStarting", "ui.agent_chat_conn_starting"),
+        ("connReopen", "ui.agent_chat_conn_reopen"),
+        ("connCodeHint", "ui.agent_chat_conn_code_hint"),
+        ("connCodePlaceholder", "ui.agent_chat_conn_code_placeholder"),
+        ("connCodeIncomplete", "ui.agent_chat_conn_code_incomplete"),
+        ("connCodeDone", "ui.agent_chat_conn_code_done"),
+        ("connDeviceHint", "ui.agent_chat_conn_device_hint"),
+        ("connProblemPort", "ui.agent_chat_conn_problem_port"),
+        ("connProblemOffline", "ui.agent_chat_conn_problem_offline"),
+        ("connProblemFailed", "ui.agent_chat_conn_problem_failed"),
+        ("connButton", "ui.agent_chat_conn_button"),
+        ("connButtonNone", "ui.agent_chat_conn_button_none"),
+        ("connButtonTip", "ui.agent_chat_conn_button_tip"),
+        ("planOpenaiCodex", "ui.agent_chat_plan_openai_codex"),
+        ("planAnthropic", "ui.agent_chat_plan_anthropic"),
+        ("planKimiForCoding", "ui.agent_chat_plan_kimi_for_coding"),
+        ("planXai", "ui.agent_chat_plan_xai"),
+        ("planGithubCopilot", "ui.agent_chat_plan_github_copilot"),
+        ("problemAuth", "ui.agent_chat_problem_auth"),
+        ("problemKey", "ui.agent_chat_problem_key"),
+        ("problemQuota", "ui.agent_chat_problem_quota"),
+        ("problemRate", "ui.agent_chat_problem_rate"),
+        ("problemNetwork", "ui.agent_chat_problem_network"),
+        ("problemModel", "ui.agent_chat_problem_model"),
+        // The levels of an agent's reasoning effort, by the value it names them with.
+        ("effort", "ui.agent_chat_effort"),
+        ("effortOff", "ui.agent_chat_effort_off"),
+        ("effortLow", "ui.agent_chat_effort_low"),
+        ("effortMedium", "ui.agent_chat_effort_medium"),
+        ("effortHigh", "ui.agent_chat_effort_high"),
+        ("effortXhigh", "ui.agent_chat_effort_xhigh"),
+        ("effortMax", "ui.agent_chat_effort_max"),
     ]
     .into_iter()
     .map(|(name, key)| (name.to_string(), Value::from(tr(key))))
     .collect();
-    json!({
+    // The group's complete name, with its two controls' own words as values: a locale puts them
+    // in its own order and punctuation. Without an effort control the page shows only the model.
+    let model_effort = if chat.config_options.as_ref().is_some_and(|options| options.iter().any(|option| option.category == "thought_level")) {
+        trf("ui.agent_chat_web_model_effort", &[("model", tr("ui.ai_model")), ("effort", tr("ui.agent_chat_effort"))])
+    } else {
+        tr("ui.ai_model").to_string()
+    };
+    strings.insert("modelEffort".into(), Value::from(model_effort));
+    let mut page = json!({
         "items": items,
+        // A text file open from a file card: the start of its text, read when the card was clicked.
+        "filePreview": chat.file_preview.as_ref().map(|file| json!({"name": file.name, "text": file.text, "markdown": file.markdown})),
         "state": state.id(),
         "waiting": chat.waiting(),
         "stopped": chat.stopped,
@@ -542,6 +660,8 @@ pub fn state(app: &mut SolveApp) -> String {
         "selected": selected,
         "selection": context_json(&selection),
         "radius": radius,
+        // At the bottom centre of the window: the most height the page may take, in points.
+        "centre": chat.web_centre,
         "permissions": mode(app).id(),
         "skill": chat.skill.id(),
         "skills": skill::Skill::ALL.iter().map(|skill| json!({"id": skill.id(), "title": skill.title()})).collect::<Vec<_>>(),
@@ -561,16 +681,27 @@ pub fn state(app: &mut SolveApp) -> String {
         "customModels": custom_models,
         "config": chat.config_options,
         "configPending": chat.config_pending,
+        // The agent's slash commands for this session: its names, shown when the draft starts `/`.
+        "commands": chat.commands,
         "notes": notes,
         "auth": auth,
+        // The built-in agent's connections: an object exactly while it is the agent, so the
+        // page shows its Connections page then and is as it was otherwise.
+        "connect": connections::told_of(app),
         "missing": missing,
         "confirmNew": chat.confirm_new,
         "left": app.preferences.agent_chat_side == "left",
         "dark": crate::theme::is_dark(),
         "strings": strings,
         "dfm": dfm,
-    })
-    .to_string()
+    });
+    // At the bottom centre: the primary presses in the app's window outside the page so far; the
+    // page collapses its conversation on a new one. Apart: the object above is as long as `json!`
+    // expands.
+    if let Some(fields) = page.as_object_mut() {
+        fields.insert("outsidePresses".into(), Value::from(chat.web_presses));
+    }
+    page.to_string()
 }
 
 /// One message from the page, as JSON `{"type": …}`. Only these are acted on, each checked
@@ -578,20 +709,27 @@ pub fn state(app: &mut SolveApp) -> String {
 /// queued, stopping the running step), `stop`, `approve` (`id`, `allow`: true, false or
 /// `"always"`), `permission` (`index`, `option`), `undo` (`index`), `new_chat`, `confirm_new`
 /// (`yes`), `object` (`index`, `ref`, `label`: select the object an answer names), `picture`
-/// (`index`, `at`: open a message's picture in the viewer), `revalidate`. The queue: `send_now`,
+/// (`index`, `at`: open a message's picture in the viewer), `file` (`index`: the card of a file a
+/// tool call read: preview its text in the panel, or open it with the system's program) and
+/// `file_close`, `revalidate`. The queue: `send_now`,
 /// `remove_pending` (`index`, `text`), `edit_pending` (`index`, `was`, `text`); a queued message
 /// has no name of its own, so the page says which text it means and a queue that has moved on
 /// refuses. The composer: `permissions` (`mode`), `attach_view` / `attach_selection` (`on`),
 /// `pick_context`, `remove_picked` (`index`, `label`), `add_file`, `paste_picture`, `remove_file`
 /// (`index`), `skill` (`id`). The agent: `agent` (`id`, one of the listed agents), `connect`,
 /// `disconnect`, `agent_mode` (`id`), `model` (`id`), `custom_model` (`text`), `config` (`id`,
-/// `value`), `auth` (`id`), `refresh`, `add_agent`, `settings`. The panel: `close`, `minimize`,
-/// `side` (`left`); the page cannot move the Assistant to a window of its own. And `surface`
+/// `value`), `auth` (`id`), `refresh`, `add_agent`, `settings`. The built-in agent's connections
+/// ([`connections::act`]): `conn_login` (`id`), `conn_code` (`id`, `code`), `conn_reopen`,
+/// `conn_cancel`, `conn_logout` (`id`), `conn_key` (`provider`, `key`), `conn_key_remove`
+/// (`provider`), `conn_custom` (`name`, `url`, `key`, `models`), `conn_custom_remove` (`id`),
+/// `conn_retry`. The panel: `close`, `minimize`,
+/// `side` (`left`), `size` (`height`: how tall the page is at the bottom centre); the page
+/// cannot move the Assistant to a window of its own. And `surface`
 /// (`color`, `#rrggbb`: the page's own surface, for the frame around it), `copy` (`text`) and
 /// `open_link` (`url`, web addresses only). Anything else is refused with the reason.
 pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::result::Result<(), String> {
     let _language = crate::i18n::scope(&app.preferences.language);
-    if message.len() > MAX_MESSAGE * 4 {
+    if message.len() > MAX_MESSAGE_BYTES {
         return Err("message too long".into());
     }
     let action: Value = serde_json::from_str(message).map_err(|error| format!("not JSON: {error}"))?;
@@ -683,10 +821,38 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             let (at, shown) = (index("index").ok_or("picture: no index")?, index("at").ok_or("picture: no at")?);
             let pictures = match app.agent_chat.items.get(at) {
                 Some(Item::User { pictures, .. }) if shown < pictures.len() => pictures.clone(),
+                // A tool call's one picture.
+                Some(Item::Tool { id, .. }) if shown == 0 && app.agent_chat.tool_pictures.iter().any(|(call, _)| call == id) => {
+                    app.agent_chat.tool_pictures.iter().filter(|(call, _)| call == id).map(|(_, picture)| picture.clone()).collect()
+                }
                 _ => return Err("picture: that message has no such picture".into()),
             };
             app.agent_chat.gallery = Some(Gallery { pictures, at: shown });
         }
+        "file" => {
+            // The page names the row; the file is the one the app kept for that row, looked at
+            // again now: it may have gone, or been replaced by a link, since the agent read it.
+            let at = index("index").ok_or("file: no index")?;
+            let Some(Item::Tool { id, .. }) = app.agent_chat.items.get(at) else { return Err("file: no such tool call".into()) };
+            let (kept, _) = app.agent_chat.read_file_of(id).ok_or("file: that call has no file")?;
+            let name = kept.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            let kept = kept.to_string_lossy().into_owned();
+            let gone =
+                || trf("ui.agent_chat_file_error", &[("name", &name), ("error", &std::io::Error::from(std::io::ErrorKind::NotFound).to_string())]);
+            let now = app.agent_chat.work_dir.as_deref().and_then(|work| read_file::resolve(work, &kept));
+            match now {
+                None => app.agent_chat.notice(gone(), true),
+                Some((file, read_file::Act::Preview { markdown })) => match read_file::preview(&file) {
+                    Ok(text) => app.agent_chat.file_preview = Some(FilePreview { name, text, markdown }),
+                    Err(error) => app.agent_chat.notice(trf("ui.agent_chat_file_error", &[("name", &name), ("error", &error.to_string())]), true),
+                },
+                Some((file, read_file::Act::Open)) => match &app.services.open_file {
+                    Some(open) => open(&file.to_string_lossy()),
+                    None => return Err("file: this build cannot open a file with the system".into()),
+                },
+            }
+        }
+        "file_close" => app.agent_chat.file_preview = None,
         "revalidate" => {
             let offered =
                 app.agent_chat.task.is_some() && app.agent_chat.items.iter().any(|item| matches!(item, Item::Skill { terminal: Some(_), .. }));
@@ -858,11 +1024,17 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             }
             app.agent_chat.authenticate(id);
         }
+        kind if connections::ACTIONS.contains(&kind) => connections::act(app, ctx, kind, &action)?,
         "refresh" => refresh(app, ctx),
         "add_agent" => settings::open_add(app),
         "settings" => crate::prefs::open_at(app, crate::prefs::PAGE_ASSISTANT),
         "close" => app.agent_chat.open = false,
         "minimize" => app.preferences.agent_chat_minimized = true,
+        // At the bottom centre, the page is as tall as it says; the panel keeps it in its bounds.
+        "size" => {
+            let height = action.get("height").and_then(Value::as_f64).filter(|height| height.is_finite()).ok_or("size: no height")?;
+            app.agent_chat.web_height = Some(height.clamp(0.0, 100_000.0) as f32);
+        }
         "side" => {
             let left = action.get("left").and_then(Value::as_bool).ok_or("side: no left")?;
             app.preferences.agent_chat_side = if left { "left" } else { "right" }.into();
@@ -890,28 +1062,17 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
     Ok(())
 }
 
-/// Run `dfm.check` for the button and the chat phrase, and keep one Tool row per run so the page
-/// can show running, done or error.
+/// The button and chat shortcut ask to start a new controlled check, not read a report. The
+/// Assistant entry is not a paid entry: it refuses before dispatch and leaves no operation,
+/// hold or tool row behind.
 fn run_check(app: &mut SolveApp) {
-    let n = app.dfm_chat.next;
-    app.dfm_chat.next = app.dfm_chat.next.saturating_add(1);
-    let id = format!("dfm-check-{n}");
-    app.agent_chat.push(Item::Tool {
-        id: id.clone(),
-        title: tr("ui.dfm_check.title").to_string(),
-        kind: "dfm.check".into(),
-        status: Some(backend::ToolStatus::InProgress),
-        input: None,
-        output: None,
-    });
-    let card = crate::dfm_chat::run(app);
-    let failed = card.status == "error";
-    set_check_item(app, &id, card);
-    if !failed {
-        // The run may already be finished (a small sheet); ask once, then the page polls.
-        poll_check(app);
-    }
-    app.agent_chat.notice(tr("ui.dfm_check.title"), failed);
+    let refusal = super::assistant_dfm_refusal(app);
+    let text = if refusal == solidcraft_engine::entitlement::RefusalCode::UnsafeToStart {
+        tr("ui.dfm_check.assistant_unavailable").to_string()
+    } else {
+        crate::account::refusal_text(app, refusal)
+    };
+    app.agent_chat.notice(text, true);
 }
 
 /// Ask `inspect.dfm` for the live report and update the newest check row. The page calls this
@@ -1176,12 +1337,11 @@ mod tests {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         let before = app.agent_chat.items.len();
         act(&mut app, &egui::Context::default(), r#"{"type":"send","text":"检查一下当前钣金件"}"#).expect("send");
-        assert_eq!(app.agent_chat.items.len(), before + 2, "a check row and its notice");
-        assert_eq!(app.agent_chat.items.iter().filter(|item| matches!(item, Item::Tool { kind, .. } if kind == "dfm.check")).count(), 1);
-        // The command is C's; until it lands the card says why, and the row is an error, not a result.
-        let card = app.dfm_chat.card.as_ref().expect("a card");
-        assert_eq!(card.status, "error");
-        assert!(card.error.as_deref().is_some_and(|why| why.contains("dfm.check")));
+        // The DFM entry refuses a signed-out/unverified session before dispatch: one notice,
+        // no check row and no card. The phrase still routes to that entry.
+        assert_eq!(app.agent_chat.items.len(), before + 1, "a refusal notice");
+        assert!(!app.agent_chat.items.iter().any(|item| matches!(item, Item::Tool { kind, .. } if kind == "dfm.check")));
+        assert!(app.dfm_chat.card.is_none(), "no check ran");
         act(&mut app, &egui::Context::default(), r#"{"type":"dfm_display","mode":"off"}"#).expect("display");
         assert_eq!(app.dfm_chat.display.id(), "off");
         assert!(act(&mut app, &egui::Context::default(), r#"{"type":"dfm_display","mode":"nope"}"#).is_err());

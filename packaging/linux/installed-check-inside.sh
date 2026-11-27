@@ -9,7 +9,7 @@
 #   the app's file must then find every library it names. An AppImage brings no system
 #   libraries, so there the launcher must say which are missing, and they are installed. Then
 #   the test's own tools go on: a display, a software GPU, the checking script's Python.
-# run: the installed app is started and packaging/assistant-check.py opens the Assistant. This
+# run: the installed app is started and packaging/linux/assistant-check.py opens the Assistant. This
 #   system has no network by then, and the step says so before it starts the app.
 set -euo pipefail
 STEP="$1"
@@ -100,7 +100,20 @@ run_step() {
   fi
   echo "ok: this system has no network"
   chmod 777 /evidence
-  local check=(python3 /packaging/assistant-check.py --exe "$exe" --evidence /evidence --screen)
+  local check=(python3 /packaging/linux/assistant-check.py --exe "$exe" --evidence /evidence --screen)
+  # A release package carries the built-in agent: the app must find it in the installed tree and
+  # start it when the Assistant opens. The package check says which packages carry it.
+  case "$exe" in
+    /opt/squashfs-root/AppRun) agent_dir=/opt/squashfs-root/usr/lib/intcad/mastra-agent ;;
+    *) agent_dir="$(dirname "$(command -v intcad)")/../lib/intcad/mastra-agent" ;;
+  esac
+  if [ -f "$agent_dir/agent.json" ]; then
+    echo "ok: the installed package carries the built-in agent at $agent_dir"
+    test -x "$agent_dir/node" || { echo "FAIL: the agent's Node program is not executable: $agent_dir/node" >&2; exit 1; }
+    check+=(--built-in-agent)
+  else
+    echo "note: this package carries no built-in agent"
+  fi
 
   if [ "$session" = x11 ]; then
     export DISPLAY=:99

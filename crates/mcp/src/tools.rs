@@ -572,12 +572,16 @@ fn text_result(v: &Value, is_error: bool) -> Value {
     r
 }
 
-/// Run a tool. Failures are tool results with `isError: true` (the model sees the message);
-/// nothing here panics on hostile arguments.
-pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> Value {
+/// Run a tool without admission. This is the internal unmetered body; the external MCP boundary
+/// must use [`crate::call_tool_with`] (through [`crate::Server::with_billing`]) so a charged call
+/// cannot bypass the operation gate. A default [`crate::Server`] refuses charged tools before
+/// reaching this function; only free helpers and the crate's sealed tests call it directly.
+/// Failures are tool results with `isError: true` (the model sees the message); nothing here
+/// panics on hostile arguments.
+pub(crate) fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> Value {
     let expected = match tool_guard(name, args) {
         Ok(expected) => expected,
-        Err(error) => return guarded_error(error),
+        Err(error) => return guarded_local_error(error),
     };
     let empty = Map::new();
     let a = args.as_object().unwrap_or(&empty);
@@ -585,7 +589,7 @@ pub fn call_tool(b: &mut dyn Backend, name: &str, args: &Value) -> Value {
         return match name {
             "execute" => guarded_execute(b, a, &expected),
             "batch" => guarded_batch(b, a, &expected),
-            _ => guarded_error(document_guard::unsupported("guarded tool")),
+            _ => guarded_local_error(document_guard::unsupported("guarded tool")),
         };
     }
     let r = match name {
@@ -635,10 +639,26 @@ fn guarded_error(error: GuardedCallError) -> Value {
     guarded_text(&body, true)
 }
 
+/// A rejection this host made before any work was sent. The proof is local, so it is safe to
+/// release; a `Rejected` reply decoded from a remote app carries no such proof and must stay
+/// unknown instead.
+fn guarded_local_error(error: GuardedCallError) -> Value {
+    let mut reply = guarded_error(error);
+    reply["noEffect"] = json!(true);
+    reply
+}
+
+/// A local, pre-dispatch argument refusal whose readable text stays the same for tool users.
+fn no_effect_text_result(text: String) -> Value {
+    let mut reply = text_result(&Value::String(text), true);
+    reply["noEffect"] = json!(true);
+    reply
+}
+
 fn guarded_execute(b: &mut dyn Backend, args: &Map<String, Value>, expected: &DocumentStamp) -> Value {
     let expect = match Expect::parse(args) {
         Ok(expect) => expect,
-        Err(error) => return text_result(&json!(error), true),
+        Err(error) => return no_effect_text_result(error),
     };
     let mut params = Value::Object(args.clone());
     if let Some(object) = params.as_object_mut() {
@@ -646,7 +666,7 @@ fn guarded_execute(b: &mut dyn Backend, args: &Map<String, Value>, expected: &Do
     }
     params["expectedDocument"] = stamp_json(expected);
     if let Err(error) = check_supported("engine.execute", &params) {
-        return guarded_error(error);
+        return guarded_local_error(error);
     }
     match b.call_guarded("engine.execute", params) {
         Ok(reply) => {
@@ -661,13 +681,13 @@ fn guarded_execute(b: &mut dyn Backend, args: &Map<String, Value>, expected: &Do
 fn guarded_batch(b: &mut dyn Backend, args: &Map<String, Value>, expected: &DocumentStamp) -> Value {
     let expect = match Expect::parse(args) {
         Ok(expect) => expect,
-        Err(error) => return text_result(&json!(error), true),
+        Err(error) => return no_effect_text_result(error),
     };
     let Some(steps) = args.get("commands").and_then(Value::as_array) else {
-        return guarded_error(document_guard::invalid("commands", "commands must be an array of {command, params}"));
+        return guarded_local_error(document_guard::invalid("commands", "commands must be an array of {command, params}"));
     };
     if steps.len() > MAX_BATCH {
-        return guarded_error(document_guard::invalid("commands", "batch exceeds the 10000 step limit"));
+        return guarded_local_error(document_guard::invalid("commands", "batch exceeds the 10000 step limit"));
     }
     let mut mapped = Vec::with_capacity(steps.len());
     let mut narrows = Vec::new();
@@ -681,7 +701,7 @@ fn guarded_batch(b: &mut dyn Backend, args: &Map<String, Value>, expected: &Docu
                 mapped.push(json!({"command":command,"params":params}));
             }
             Err(error) if error == "missing `command`" => mapped.push(step.clone()),
-            Err(error) => return guarded_error(document_guard::invalid("commands", &error)),
+            Err(error) => return guarded_local_error(document_guard::invalid("commands", &error)),
         }
     }
     let mut params = Value::Object(args.clone());
@@ -691,7 +711,7 @@ fn guarded_batch(b: &mut dyn Backend, args: &Map<String, Value>, expected: &Docu
     params["commands"] = json!(mapped);
     params["expectedDocument"] = stamp_json(expected);
     if let Err(error) = check_supported("engine.batch", &params) {
-        return guarded_error(error);
+        return guarded_local_error(error);
     }
     // A cheap lower bound only; Remote checks its actual scoped/authenticated batch line.
     if params.to_string().len() > solidcraft_engine::MAX_LINE {
@@ -728,7 +748,7 @@ fn guarded_batch(b: &mut dyn Backend, args: &Map<String, Value>, expected: &Docu
 fn execute(b: &mut dyn Backend, a: &Map<String, Value>) -> Value {
     let expect = match Expect::parse(a) {
         Ok(e) => e,
-        Err(e) => return text_result(&Value::String(e), true),
+        Err(e) => return no_effect_text_result(e),
     };
     match dispatch(b, "execute", a) {
         Ok(v) => with_expectation(b, v, expect),
@@ -1535,7 +1555,7 @@ impl Undo {
 fn batch(b: &mut dyn Backend, a: &Map<String, Value>) -> Value {
     let expect = match Expect::parse(a) {
         Ok(e) => e,
-        Err(e) => return text_result(&Value::String(e), true),
+        Err(e) => return no_effect_text_result(e),
     };
     match batch_run(b, a) {
         (reply, true) => text_result(&reply, true),
@@ -2032,16 +2052,16 @@ fn compact(mut v: Value) -> Value {
 fn check_parameters(b: &mut dyn Backend, a: &Map<String, Value>) -> Value {
     let (changes, reports) = match check_parameters_args(a) {
         Ok(x) => x,
-        Err(e) => return text_result(&Value::String(e), true),
+        Err(e) => return no_effect_text_result(e),
     };
     // A name the design has no parameter of is refused before the checkpoint, so nothing
     // changes: `parameters.change` would make one.
     if let Err(e) = known_parameters(b, &changes) {
-        return text_result(&Value::String(e), true);
+        return no_effect_text_result(e);
     }
     let Some(id) = exec(b, "edit.checkpoint", json!({})).ok().and_then(|v| v["checkpoint"].as_u64()) else {
         let e = "check_parameters: this app has no edit.checkpoint to put the design back with; use set_parameter and measure, and set the values back yourself";
-        return text_result(&json!(e), true);
+        return no_effect_text_result(e.into());
     };
     let outcome = try_parameters(b, &changes, &reports);
     let restore = exec(b, "edit.restore_checkpoint", json!({"checkpoint": id}));

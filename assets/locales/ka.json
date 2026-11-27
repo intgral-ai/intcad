@@ -4297,7 +4297,7 @@
   "ui.agent_chat_limit": "აგენტმა ერთი შეტყობინებისთვის {limit} ცვლილების ზღვარს მიაღწია. გაგზავნეთ კიდევ ერთი შეტყობინება, რომ გააგრძელოს.",
   "ui.agent_chat_login_found": "შესვლის მონაცემები ნაპოვნია",
   "ui.agent_chat_minimize": "ზოლად ჩაკეცვა",
-  "ui.agent_chat_mode_all": "ყველა",
+  "ui.agent_chat_mode_all": "ავტო",
   "ui.agent_chat_mode_ask": "კითხვით",
   "ui.agent_chat_mode_edits": "ცვლილებები",
   "ui.agent_chat_model_custom": "საკუთარის გამოყენება: {model}",

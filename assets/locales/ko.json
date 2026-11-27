@@ -3311,7 +3311,7 @@
   "ui.agent_chat_left": "왼쪽",
   "ui.agent_chat_limit": "에이전트가 메시지당 변경 한도 {limit}에 도달했습니다. 계속하게 하려면 메시지를 하나 더 보내세요.",
   "ui.agent_chat_minimize": "얇은 막대로 최소화",
-  "ui.agent_chat_mode_all": "모두",
+  "ui.agent_chat_mode_all": "자동",
   "ui.agent_chat_mode_ask": "확인",
   "ui.agent_chat_mode_edits": "편집",
   "ui.agent_chat_model_custom": "직접 입력 사용: {model}",
