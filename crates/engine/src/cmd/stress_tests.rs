@@ -4,6 +4,8 @@ use super::*;
 use crate::Session;
 
 fn run(s: &mut Session, id: &str, p: Value) -> Value {
+    // A dry run draws the app's one setup preview ([`PREVIEW_LOCK`]).
+    let _preview = (id == CMD && p.get("dry_run").and_then(Value::as_bool) == Some(true)).then(hold_preview);
     match s.execute(id, &p) {
         Ok(v) => v,
         Err(e) => panic!("{id} {p}: {e}"),
@@ -134,10 +136,36 @@ fn every_grade_in_the_table_is_sourced_and_found_by_its_names() {
     assert!(fea::materials::grade("").is_none() && fea::materials::grade("steel").is_none());
 }
 
-/// The one setup preview is the whole app's (`fea::show_preview` replaces any other): a test that
-/// reads it back holds this while its dry run draws, and so do the A13 dry runs, which would
-/// otherwise replace it in between.
+/// The one setup preview is the whole app's (`fea::show_preview` replaces any other), and tests run
+/// side by side: every dry run through [`run`] holds this while it draws, and a test that reads the
+/// preview back holds it across its dry run and its reads ([`hold_preview`]). A dry run refused
+/// before it draws (the tests that call `execute` themselves) needs none.
 static PREVIEW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    /// Whether this test's thread holds [`PREVIEW_LOCK`] already.
+    static HOLDING_PREVIEW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// [`PREVIEW_LOCK`] until dropped, or nothing on a thread that holds it already.
+struct PreviewHold(Option<std::sync::MutexGuard<'static, ()>>);
+
+impl Drop for PreviewHold {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            HOLDING_PREVIEW.with(|h| h.set(false));
+        }
+    }
+}
+
+fn hold_preview() -> PreviewHold {
+    if HOLDING_PREVIEW.with(std::cell::Cell::get) {
+        return PreviewHold(None);
+    }
+    let guard = PREVIEW_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    HOLDING_PREVIEW.with(|h| h.set(true));
+    PreviewHold(Some(guard))
+}
 
 /// U10: the setup preview.
 /// Input: the 100 mm strip held at x = 0, 10 N down at x = 100, as a roller-free setup. Action: a
@@ -147,7 +175,7 @@ static PREVIEW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// faked.
 #[test]
 fn a_dry_run_draws_its_supports_and_loads_until_cleared() {
-    let _one = PREVIEW_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _one = hold_preview();
     let mut s = Session::default();
     let (body, root, tip) = strip(&mut s, 100.0);
     assert!(fea::preview(&s.document_id).is_none());
@@ -2530,7 +2558,7 @@ fn a13_the_forecast_holds_for_the_runs_it_was_fitted_on() {
 /// more nodes, memory and time, in words too; seconds above 0; its line in words.
 #[test]
 fn a13_a_dry_run_says_what_the_run_will_take_from_the_parts_size() {
-    let _one = PREVIEW_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _one = hold_preview();
     let mut s = Session::default();
     let (held, pulled) = plate_with_hole(&mut s);
     let setup = |check: bool| {
