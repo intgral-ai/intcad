@@ -8239,6 +8239,29 @@ fn agent_login_refresh_returns_to_unverified_discovery() {
     assert!(!app.agent_chat.settings.tests.contains_key("qwen"));
 }
 
+/// A look at the computer whose worker is gone must finish, not leave the launch waiting for an
+/// answer that will never come.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_discovery_whose_worker_gone_finishes_with_nothing_found() {
+    let (mut app, _keys, ctx) = app_with_builtin();
+    app.preferences.agent_last = "claude".into();
+    app.preferences.agent_connect_at_start = true;
+    app.agent_chat.connect_at_start = true;
+    let (tx, rx) = channel();
+    app.agent_chat.detecting = Some(rx);
+    drop(tx);
+    poll(&mut app, &ctx);
+    assert!(app.agent_chat.detecting.is_none(), "the look is finished");
+    assert!(app.agent_chat.detection.is_some(), "with nothing found");
+    // And the launch proceeds: `claude` is not among what was found, so it is reported missing
+    // instead of waiting for an answer that will never come.
+    assert!(!app.agent_chat.connect_at_start, "the launch did not stay waiting");
+    let said: Vec<String> =
+        app.agent_chat.items.iter().filter_map(|item| if let Item::Notice { text, .. } = item { Some(text.clone()) } else { None }).collect();
+    assert!(said.iter().any(|text| text.contains("claude")), "{said:?}");
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_sign_in_proven_in_one_tab_holds_in_every_tab() {
@@ -8362,7 +8385,7 @@ fn app_in_a_turn() -> (SolveApp, Sender<ControlRequest>) {
 }
 
 fn ask(tx: &Sender<ControlRequest>, method: &str, params: Value) -> Receiver<Value> {
-    let (req, rx) = ControlRequest::new(method, params);
+    let (req, rx) = ControlRequest::trusted_gui(method, params);
     tx.send(req).unwrap();
     rx
 }
@@ -8714,9 +8737,22 @@ struct Script {
     cancel_observer: Arc<Mutex<Option<CancelObserver>>>,
     /// What this scripted backend claims for a built-in skill.
     support: skill::SkillSupport,
+    /// Every request about the built-in agent's connections, in full (`calls` names them only,
+    /// as a log would).
+    requests: Arc<Mutex<Vec<connections::Request>>>,
+    /// The turn that just ended dispatched a desktop tool that may have changed the design.
+    bridge_effect: Arc<std::sync::atomic::AtomicBool>,
+    /// How often the panel withdrew the turn's desktop authority.
+    retired: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Script {
+    fn set_bridge_effect(&self, effect: bool) {
+        self.bridge_effect.store(effect, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn retirements(&self) -> usize {
+        self.retired.load(std::sync::atomic::Ordering::Relaxed)
+    }
     fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
@@ -8725,6 +8761,9 @@ impl Script {
     }
     fn report(&self, e: Event) {
         self.events.lock().unwrap().push(e);
+    }
+    fn requests(&self) -> Vec<connections::Request> {
+        self.requests.lock().unwrap().clone()
     }
 }
 
@@ -8755,6 +8794,23 @@ impl ChatBackend for Script {
     fn set_config_option(&mut self, id: &str, value: &str) {
         self.calls.lock().unwrap().push(format!("set_config_option: {id}={value}"));
     }
+    fn connections(&mut self, request: connections::Request) {
+        let named = match &request {
+            connections::Request::Login(id) | connections::Request::Logout(id) | connections::Request::Code { id, .. } => format!(" {id}"),
+            _ => String::new(),
+        };
+        self.calls.lock().unwrap().push(format!("{}{named}", request.what().method().replace("_intcad/connections/", "conn: ")));
+        self.requests.lock().unwrap().push(request);
+    }
+    fn forget_session(&mut self) {
+        self.calls.lock().unwrap().push("forget_session".into());
+    }
+    fn turn_had_bridge_effect(&self) -> bool {
+        self.bridge_effect.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn retire_bridge_authority(&mut self) {
+        self.retired.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     fn authenticate(&mut self, _: &str) {}
     fn shutdown(&mut self, _: bool) {}
     fn skill_support(&self, _: skill::Skill) -> skill::SkillSupport {
@@ -8778,7 +8834,7 @@ fn ended(script: &Script, reason: &str) {
 fn guarded_stop_request(app: &mut SolveApp, method: &str, mut params: Value) -> (ControlRequest, Receiver<Value>) {
     let stamp = app.session.document_stamp();
     params["expectedDocument"] = json!({"documentId":stamp.document_id,"revision":stamp.revision.to_string()});
-    let (mut req, reply) = ControlRequest::new(method, params);
+    let (mut req, reply) = ControlRequest::trusted_gui(method, params);
     req.chat_turn = Some(app.agent_chat.turn.as_ref().unwrap().active.clone());
     crate::execution_guard::admit(app, &mut req).unwrap_or_else(|_| panic!("matching admission"));
     (req, reply)
@@ -8840,7 +8896,7 @@ fn guarded_stop_refuses_matching_queue_cursor_and_ahead() {
         send(&mut app, &ctx, "make a box".into());
         let method = if route == "copy" { "document.inspect" } else { "engine.batch" };
         let params = if route == "copy" { json!({}) } else { json!({"commands":[boxed(0.0),boxed(20.0)]}) };
-        let (req, reply) = guarded_stop_request(&mut app, method, params);
+        let (mut req, reply) = guarded_stop_request(&mut app, method, params);
         let expected = req.guarded.as_ref().unwrap().expected.clone();
         let mut gate = None;
         let mut immediate = None;
@@ -8852,7 +8908,7 @@ fn guarded_stop_refuses_matching_queue_cursor_and_ahead() {
                 app.preferences.agent_off_thread = true;
                 gate = Some(crate::history_off_thread_tests::guarded_workers::gate());
             }
-            assert!(crate::agent_cursor::intercept(&mut app, &req));
+            assert!(crate::agent_cursor::intercept(&mut app, &mut req));
         } else if matches!(route, "ahead" | "copy") {
             app.apply_off_thread = Some(std::time::Duration::ZERO);
             app.preferences.agent_off_thread = true;
@@ -8918,7 +8974,7 @@ fn guarded_stop_inactive_direct_calls_ignore_forged_authority() {
             let doc = app.session.doc.clone();
             let history = guarded_stop_history(&app);
             let r = match route {
-                "handle" => match crate::control::handle(&mut app, &ctx, &req) {
+                "handle" => match crate::control::handle(&mut app, &ctx, &mut req) {
                     crate::control::Outcome::Done(r) => r,
                     _ => panic!("not a screenshot"),
                 },
@@ -8989,13 +9045,13 @@ fn guarded_command_chip_stop_allows_next_request() {
         let active = app.agent_chat.turn.as_ref().unwrap().active.clone();
         app.apply_off_thread = Some(std::time::Duration::ZERO);
         app.preferences.agent_off_thread = true;
-        let (req, reply) = guarded_stop_request(&mut app, "engine.execute", boxed(0.0));
+        let (mut req, reply) = guarded_stop_request(&mut app, "engine.execute", boxed(0.0));
         let (next, next_reply) = guarded_stop_request(&mut app, "engine.execute", boxed(20.0));
         let gate = crate::history_off_thread_tests::guarded_workers::gate();
         if cursor {
             app.ui.agent_cursor.show = true;
             crate::scenario::publish_handle("toolbar:solid.box", egui::pos2(100.0, 100.0));
-            assert!(crate::agent_cursor::intercept(&mut app, &req));
+            assert!(crate::agent_cursor::intercept(&mut app, &mut req));
             for _ in 0..8 {
                 app.now += 2.0;
                 crate::agent_cursor::step(&mut app, &ctx);
@@ -9040,14 +9096,14 @@ fn assert_legacy_command_chip_reply(cursor: bool) {
     let active = app.agent_chat.turn.as_ref().unwrap().active.clone();
     app.apply_off_thread = Some(std::time::Duration::ZERO);
     app.preferences.agent_off_thread = true;
-    let (mut req, reply) = ControlRequest::new("engine.execute", boxed(0.0));
+    let (mut req, reply) = ControlRequest::trusted_gui("engine.execute", boxed(0.0));
     req.chat_turn = Some(active.clone());
     assert!(req.guarded.is_none() && req.params.get("expectedDocument").is_none());
     let gate = crate::history_off_thread_tests::guarded_workers::gate();
     if cursor {
         app.ui.agent_cursor.show = true;
         crate::scenario::publish_handle("toolbar:solid.box", egui::pos2(100.0, 100.0));
-        assert!(crate::agent_cursor::intercept(&mut app, &req));
+        assert!(crate::agent_cursor::intercept(&mut app, &mut req));
         for _ in 0..8 {
             app.now += 2.0;
             crate::agent_cursor::step(&mut app, &ctx);
@@ -9081,7 +9137,7 @@ fn assert_legacy_command_chip_reply(cursor: bool) {
     assert!(Arc::ptr_eq(&doc, &app.session.doc));
     assert_eq!(guarded_stop_history(&app), history);
     assert_eq!(app.run("edit.checkpoint", json!({})).unwrap()["checkpoint"], checkpoint + 1);
-    let (mut next, next_reply) = ControlRequest::new("engine.execute", boxed(20.0));
+    let (mut next, next_reply) = ControlRequest::trusted_gui("engine.execute", boxed(20.0));
     next.chat_turn = Some(active);
     app.run_control(&ctx, next);
     assert_eq!(next_reply.try_recv().unwrap()["ok"], true);
@@ -9541,7 +9597,7 @@ fn a_script_resets_chat_only_after_a_replacement_succeeds() {
         for params in [steps.clone(), json!({"commands": steps})] {
             let (mut app, _script, ctx) = app_with_script();
             send(&mut app, &ctx, "first request".into());
-            let (req, reply) = ControlRequest::new("engine.script", params);
+            let (req, reply) = ControlRequest::trusted_gui("engine.script", params);
             app.run_control(&ctx, req);
             assert!(reply.try_recv().is_ok());
             assert_eq!(app.agent_chat.backend.is_none(), replaced);
@@ -10352,6 +10408,43 @@ fn a_typed_model_that_cannot_be_one_is_not_sent() {
     assert_eq!(app.agent_chat.models.first().map(|m| m.id.as_str()), Some("one-more"));
 }
 
+/// A model picked while the agent replies is shown as chosen at once and sent when the reply ends,
+/// before a queued message, so the next message runs on it. The agent would take it only after the
+/// reply anyway, and waiting on it held the picker busy for the whole reply (INT-1500).
+#[test]
+fn a_model_picked_while_the_agent_replies_is_shown_at_once_and_serves_the_next_message() {
+    let (mut app, script, ctx) = app_with_script();
+    app.agent_chat.running_id = "modern".into();
+    script.report(Event::ConfigOptions(modern_options("fast")));
+    poll(&mut app, &ctx);
+    send(&mut app, &ctx, "make a box".into());
+    assert_eq!(app.agent_chat.state(), State::Busy);
+    set_config_option(&mut app, "some.provider.model", "smart");
+    assert_eq!(script.calls(), ["prompt: make a box"], "nothing goes to the agent while it replies");
+    assert!(!app.agent_chat.config_pending, "and the picker is not held busy");
+    assert_eq!(app.agent_chat.model, "smart", "shown as chosen at once");
+    // The agent's own word on its options during the reply does not take the choice back.
+    script.report(Event::ConfigOptions(modern_options("fast")));
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.model, "smart");
+    // A second pick replaces the first.
+    set_config_option(&mut app, "some.provider.model", "fast");
+    set_config_option(&mut app, "some.provider.model", "smart");
+    send(&mut app, &ctx, "now round it".into());
+    ended(&script, "");
+    poll(&mut app, &ctx);
+    let calls = script.calls();
+    let set = calls.iter().position(|call| call == "set_config_option: some.provider.model=smart").expect("sent once the reply ended");
+    assert_eq!(calls.iter().filter(|call| call.starts_with("set_config_option")).count(), 1, "{calls:?}");
+    if let Some(next) = calls.iter().position(|call| call == "prompt: now round it") {
+        assert!(set < next, "before the queued message: {calls:?}");
+    }
+    script.report(Event::ConfigOptionFinished { id: "some.provider.model".into(), result: Ok(modern_options("smart")) });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.model, "smart");
+    assert!(!app.agent_chat.config_pending);
+}
+
 /// An agent with a model option gets a typed model through it. Nothing changes until it answers,
 /// and a refusal leaves the old model with the agent's reason in the chat.
 #[test]
@@ -10833,6 +10926,75 @@ fn modern_snapshots_replace_provider_choices_and_ignore_legacy_updates() {
     set_model(&mut app, "plain");
     set_mode(&mut app, "old-mode");
     assert!(script.calls().is_empty(), "an empty modern snapshot never falls back to stale legacy choices");
+}
+
+#[test]
+fn advertised_commands_fill_the_page_and_new_chat_clears_them() {
+    let (mut app, _script, _ctx) = app_with_script();
+    app.agent_chat.on_event(Event::Session("s1".into()));
+    app.agent_chat.on_event(Event::Commands {
+        session: "s1".into(),
+        commands: vec![
+            acp::AvailableCommand { name: "skill/solidcraft-modeling".into(), description: "Build a part".into() },
+            acp::AvailableCommand { name: "skill/solidcraft-editing".into(), description: String::new() },
+        ],
+    });
+    let state: Value = serde_json::from_str(&web::state(&mut app)).expect("the state is JSON");
+    assert_eq!(
+        state["commands"],
+        json!([
+            {"name": "skill/solidcraft-modeling", "description": "Build a part"},
+            {"name": "skill/solidcraft-editing", "description": ""},
+        ])
+    );
+    // Each update is the agent's whole list, not an addition to it.
+    app.agent_chat.on_event(Event::Commands {
+        session: "s1".into(),
+        commands: vec![acp::AvailableCommand { name: "skill/checking".into(), description: String::new() }],
+    });
+    assert_eq!(app.agent_chat.commands.len(), 1);
+    assert_eq!(app.agent_chat.commands[0].name, "skill/checking");
+    // An update from another session is not this chat's list.
+    app.agent_chat.on_event(Event::Commands {
+        session: "retired".into(),
+        commands: vec![acp::AvailableCommand { name: "skill/other".into(), description: String::new() }],
+    });
+    assert_eq!(app.agent_chat.commands[0].name, "skill/checking");
+    // A new chat starts the agent on another session: the retired one's commands go.
+    new_chat(&mut app);
+    assert!(app.agent_chat.commands.is_empty());
+    let state: Value = serde_json::from_str(&web::state(&mut app)).expect("the state is JSON");
+    assert_eq!(state["commands"], json!([]));
+}
+
+/// The sign-out snapshot and the retired session's late command update can arrive in one poll.
+/// The app has already retired the session by the time the second event is applied, so the
+/// update must not refill the menu, and the next session must start without it.
+#[test]
+fn a_retired_sessions_commands_cannot_fill_the_new_chats_menu() {
+    let (mut app, script, ctx) = app_with_script();
+    app.agent_chat.conn.active = true;
+    app.agent_chat.conn.snapshot = Some(conn_snapshot(|_| {}));
+    app.agent_chat.conn.session = connections::Session::Open;
+    app.agent_chat.state = Some(State::Ready);
+    app.agent_chat.session = Some("s1".into());
+    app.agent_chat.commands = vec![acp::AvailableCommand { name: "skill/before".into(), description: String::new() }];
+    script.report(Event::Connections(conn_snapshot(|_| {})));
+    script.report(Event::Commands {
+        session: "s1".into(),
+        commands: vec![acp::AvailableCommand { name: "skill/late".into(), description: String::new() }],
+    });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.session, None, "the sign-out retired the session");
+    assert!(app.agent_chat.commands.is_empty(), "the retired session's late list cannot refill the menu");
+
+    // Signing in opens s2: Ready does not bring back s1's list.
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    script.report(Event::Session("s2".into()));
+    script.report(Event::Ready { agent: "mastra".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.session.as_deref(), Some("s2"));
+    assert!(app.agent_chat.commands.is_empty(), "a new session starts with no commands until it advertises them");
 }
 
 #[test]
@@ -13443,6 +13605,7 @@ mod mastra_backend_tests {
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
             tools: None,
+            bridge_scope_check: None,
             instructions: String::new(),
             connection_auth: auth,
             frozen_binding: Arc::new(Mutex::new(None)),
@@ -13871,7 +14034,7 @@ mod mastra_backend_tests {
 
         send(&mut app, &ctx, "add a width".into());
         let (request, reply) =
-            ControlRequest::new("engine.execute", json!({"command": "parameters.add", "params": {"name": "w", "expression": "10 mm"}}));
+            ControlRequest::trusted_gui("engine.execute", json!({"command": "parameters.add", "params": {"name": "w", "expression": "10 mm"}}));
         tx.send(request).unwrap();
         super::frame(&mut app);
         assert_eq!(reply.recv_timeout(Duration::from_secs(30)).unwrap()["ok"], true, "the running turn may change the design");
@@ -13895,7 +14058,7 @@ mod mastra_backend_tests {
         assert!(!active.load(std::sync::atomic::Ordering::Relaxed));
         let doc = Arc::clone(&app.session.doc);
         let revision = app.session.document_stamp();
-        let (mut deferred, _reply) = ControlRequest::new(
+        let (mut deferred, _reply) = ControlRequest::trusted_gui(
             "engine.execute",
             json!({
                 "command": "parameters.change",
@@ -13910,7 +14073,7 @@ mod mastra_backend_tests {
 
         // Unguarded requests enforce the same trusted flag; they are not exempt because they
         // carry no expected document.
-        let mut unguarded = ControlRequest::new("document.revision", json!({})).0;
+        let mut unguarded = ControlRequest::trusted_gui("document.revision", json!({})).0;
         unguarded.chat_turn = Some(stopped.clone());
         assert!(crate::execution_guard::admit(&mut app, &mut unguarded).is_err(), "an unguarded stopped-turn request is refused");
         assert!(Arc::ptr_eq(&app.session.doc, &doc));
@@ -13920,7 +14083,8 @@ mod mastra_backend_tests {
         send(&mut app, &ctx, "fresh turn".into());
         let current = app.agent_chat.turn.as_ref().expect("the new turn").active.clone();
         assert!(current.load(std::sync::atomic::Ordering::Relaxed), "the new turn may write");
-        let mut late = ControlRequest::new("engine.execute", json!({"command":"parameters.change","params":{"name":"w","expression":"30 mm"}})).0;
+        let mut late =
+            ControlRequest::trusted_gui("engine.execute", json!({"command":"parameters.change","params":{"name":"w","expression":"30 mm"}})).0;
         late.chat_turn = Some(stopped.clone());
         assert!(crate::execution_guard::admit(&mut app, &mut late).is_err(), "the old turn's flag cannot borrow the new turn's permission");
         assert!(Arc::ptr_eq(&app.session.doc, &doc));
@@ -14043,12 +14207,63 @@ mod mastra_backend_tests {
     }
 
     #[cfg(unix)]
+    #[derive(Default)]
+    struct BridgeTestBilling;
+
+    #[cfg(unix)]
+    impl solidcraft_engine::entitlement::BillingPort for BridgeTestBilling {
+        fn admit(
+            &mut self,
+            operation: &solidcraft_engine::entitlement::OperationId,
+            capability: solidcraft_engine::entitlement::Capability,
+            _entry: solidcraft_engine::entitlement::EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Grant, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::Grant::from_server(
+                solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
+                capability,
+                solidcraft_engine::entitlement::MonotonicInstant::from_millis(60_000),
+            ))
+        }
+
+        fn commit(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::BillingResult, solidcraft_engine::entitlement::Refusal> {
+            Ok(result)
+        }
+
+        fn release(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _reason: solidcraft_engine::entitlement::RefusalCode,
+        ) -> Result<(), solidcraft_engine::entitlement::Refusal> {
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    fn bridge_test_budget() -> solidcraft_engine::entitlement::BudgetTable {
+        let mut budget = solidcraft_engine::entitlement::BudgetTable::unverified_default();
+        budget.set_verified(
+            solidcraft_engine::entitlement::Capability::Mcp,
+            solidcraft_engine::entitlement::EntryCategory::GuiBridgeMcp,
+            Duration::from_secs(30),
+        );
+        budget
+    }
+
+    #[cfg(unix)]
     fn bridge_app(
         mut app: SolveApp,
         script: String,
         limits: Limits,
     ) -> (SolveApp, egui::Context, Arc<Mutex<test_support::Log>>, Arc<std::sync::mpsc::Sender<ControlRequest>>) {
         use super::mastra_worker_support::*;
+        app.install_billing(Box::<BridgeTestBilling>::default(), bridge_test_budget());
+        app.install_review_store(crate::dfm_review::tests::test_operation_store());
+        crate::control::test_support::TestAuthority::new("test-account", "test-installation", "test-session")
+            .install_with_bridge_billing(&mut app, Some(Box::new(BridgeTestBilling)));
         let program = super::mastra_peer_program().unwrap();
         let script_path = program.directory.join("bridge-peer");
         std::fs::write(&script_path, script).unwrap();
@@ -14063,6 +14278,8 @@ mod mastra_backend_tests {
         config.workflow_id = "w".into();
         config.bridge = Some(crate::agent_chat::acp::McpBridge { cli: "/bin/true".into(), port: 1 });
         config.tools = Some(tools.clone());
+        let scope = app.commit_scope.clone().unwrap();
+        config.bridge_scope_check = Some(Box::new(move || Some(scope.clone())));
         let launch = runtime_client::RuntimeLaunch {
             executable: program.executable.clone(),
             args: vec![script_path.into_os_string()],
@@ -14503,6 +14720,7 @@ mod mastra_backend_tests {
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
             tools: None,
+            bridge_scope_check: None,
             instructions: String::new(),
             connection_auth: Arc::new(Mutex::new(None)),
             frozen_binding: Arc::new(Mutex::new(None)),
@@ -15105,6 +15323,7 @@ done
             workflow_id: mastra_backend::DEFAULT_WORKFLOW.into(),
             bridge: None,
             tools: None,
+            bridge_scope_check: None,
             instructions: String::new(),
             connection_auth: Arc::clone(&auth),
             frozen_binding: Arc::new(std::sync::Mutex::new(None)),
@@ -15575,7 +15794,7 @@ fn an_anatomy_turn_refuses_a_write_before_the_gate() {
     let (mut app, _script, ctx) = app_with_script();
     app.agent_chat.skill = skill::Skill::Anatomy;
     send(&mut app, &ctx, "explain the cover".into());
-    let (request, reply) = ControlRequest::new("engine.execute", json!({"command": "solid.box", "params": {"length": 1}}));
+    let (request, reply) = ControlRequest::trusted_gui("engine.execute", json!({"command": "solid.box", "params": {"length": 1}}));
     let (tx, rx) = channel();
     tx.send(request).unwrap();
     app.agent_chat.tools_rx = Some(rx);
@@ -15765,8 +15984,20 @@ fn the_web_page_is_told_the_conversation_in_the_apps_language() {
     assert!(state["agents"].is_array() && state["notes"].is_array() && state["missing"].is_array());
     assert_eq!(state["permissions"], "edits");
     assert_eq!(state["strings"]["send"], "Send");
+    assert_eq!(state["strings"]["modelEffort"], "Model", "without an effort control the group is the model's own word");
     // The host asks outside the app's own passes: the words still follow the app's language.
     h.app.preferences.language = "zh".into();
+    h.app.agent_chat.config_options = Some(vec![acp::ConfigOption {
+        id: "thought".into(),
+        name: "Thinking".into(),
+        description: String::new(),
+        category: "thought_level".into(),
+        current_value: "medium".into(),
+        options: ["off", "medium"]
+            .into_iter()
+            .map(|value| acp::ConfigChoice { value: value.into(), name: value.into(), description: String::new(), group: None })
+            .collect(),
+    }]);
     let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
     let expected = {
         let _language = crate::i18n::scope("zh");
@@ -15775,6 +16006,7 @@ fn the_web_page_is_told_the_conversation_in_the_apps_language() {
     assert_ne!(expected.0, "Send", "the catalog has the word in Chinese");
     assert_eq!(state["strings"]["send"], expected.0);
     assert_eq!(state["items"][5]["label"], expected.1);
+    assert_eq!(state["strings"]["modelEffort"], "模型、思考强度", "a whole group label, in the locale's own punctuation");
 }
 
 /// The page may ask only for what is listed, and each request is checked against the chat as it
@@ -15836,13 +16068,12 @@ fn the_web_page_may_only_ask_for_listed_actions_that_fit_the_chat() {
     h.app.agent_chat.items.push(Item::Changes { steps: 1, doc: other, undone: false });
     assert!(act(&mut h, json!({"type": "undo", "index": 1})).is_err(), "the design has moved on since those changes");
 
-    // The page says what colour its own surface is, for the frame the app draws around it. It
-    // is the page's first word to the app, so the control channel's status tells from it that
-    // the page is up.
+    // A backing colour by itself is not evidence of a live native view.
     assert_eq!(status(&h.app)["webView"]["page"], false);
     act(&mut h, json!({"type": "surface", "color": "#0e0e0e"})).expect("a colour");
     assert_eq!(h.app.agent_chat.web_canvas.map(|colour| colour.to_array()), Some([14, 14, 14, 255]));
     assert_eq!(status(&h.app)["webView"], json!({"host": h.app.agent_chat.web_host, "page": true}));
+    assert_eq!(h.call("ui.inspect", json!({}))["result"]["assistant"]["surface_ready"], false);
 
     // The panel's own controls are the page's too.
     act(&mut h, json!({"type": "side", "left": true})).expect("a listed panel control");
@@ -16125,6 +16356,154 @@ fn the_web_page_edits_the_queue_and_selects_only_what_it_names_rightly() {
     assert_eq!(h.app.agent_chat.gallery.as_ref().map(|gallery| (gallery.at, gallery.pictures.len())), Some((1, 2)));
 }
 
+/// A picture a tool call hands back (a file the agent read) is told to the page by name under
+/// that call, served by the host, and opens in the viewer as a message's picture does. The bytes
+/// are never part of the state. Only the newest few are kept.
+#[test]
+fn a_picture_a_tool_call_hands_back_is_shown_under_the_call_and_opens_in_the_viewer() {
+    let mut h = app_with_cover_and_base();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let ctx = h.ctx.clone();
+    let png = test_png([200, 30, 30, 255], 8);
+    let line = "/work/shots/compare.png (99 bytes, image/png)";
+    let call = |id: &str| Event::Tool {
+        id: id.into(),
+        title: Some("view".into()),
+        kind: None,
+        status: Some(ToolStatus::Completed),
+        input: None,
+        output: Some(line.into()),
+    };
+    h.app.agent_chat.on_event(call("t1"));
+    h.app.agent_chat.on_event(Event::ToolPicture { id: "t1".into(), bytes: png.clone() });
+    // A picture for a call the conversation does not have, and one too large to keep, are dropped.
+    h.app.agent_chat.on_event(Event::ToolPicture { id: "nobody".into(), bytes: png.clone() });
+    h.app.agent_chat.on_event(call("t2"));
+    h.app.agent_chat.on_event(Event::ToolPicture { id: "t2".into(), bytes: vec![0; MAX_PICTURE_BYTES + 1] });
+
+    let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+    let items = state["items"].as_array().expect("items");
+    let at = items.iter().position(|item| item["id"] == "t1").expect("the call");
+    assert_eq!(items[at]["index"], at);
+    assert_eq!(items[at]["output"], line, "the call's line, not the file's bytes");
+    let pictures = items[at]["pictures"].as_array().expect("its pictures");
+    assert_eq!((pictures.len(), &pictures[0]["note"]), (1, &json!("compare.png")), "named as the file is");
+    assert!(pictures[0].as_object().is_some_and(|fields| fields.len() == 3), "a name, a note and a kind; no bytes");
+    let held = web::pictures(&h.app);
+    assert!(held.iter().any(|(key, bytes)| pictures[0]["key"] == key.as_str() && **bytes == png), "the host has those bytes under that name");
+    let other = items.iter().find(|item| item["id"] == "t2").expect("the second call");
+    assert_eq!(other["pictures"], json!([]));
+
+    assert!(web::act(&mut h.app, &ctx, &json!({"type": "picture", "index": at, "at": 1}).to_string()).is_err(), "a call has one");
+    web::act(&mut h.app, &ctx, &json!({"type": "picture", "index": at, "at": 0}).to_string()).expect("its picture");
+    assert_eq!(h.app.agent_chat.gallery.as_ref().map(|gallery| (gallery.at, gallery.pictures.len())), Some((0, 1)));
+
+    for n in 0..MAX_TOOL_PICTURES {
+        let id = format!("more-{n}");
+        h.app.agent_chat.on_event(call(&id));
+        h.app.agent_chat.on_event(Event::ToolPicture { id, bytes: test_png([30, 30, 200, 255], 8) });
+    }
+    assert_eq!(h.app.agent_chat.tool_pictures.len(), MAX_TOOL_PICTURES, "the newest are kept");
+    assert!(!h.app.agent_chat.tool_pictures.iter().any(|(id, _)| id == "t1"), "the oldest went");
+}
+
+/// A file the agent read gets a card under its call when it is one of the agent's own files: the
+/// state names it and says what a click does, never its path or its text. A click previews a text
+/// file in the panel, and hands a document to the system's program; the page only names the row.
+#[test]
+fn a_file_a_tool_call_read_has_a_card_that_previews_or_opens_it() {
+    let mut h = app_with_cover_and_base();
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    let ctx = h.ctx.clone();
+    let root = std::env::temp_dir().join(format!("intcad-file-card-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let work = root.join("work");
+    std::fs::create_dir_all(work.join("display-tests")).unwrap();
+    std::fs::write(work.join("display-tests/test.md"), "# Title\n\n**bold**\n").unwrap();
+    std::fs::write(work.join("display-tests/test.pdf"), b"%PDF-1.4").unwrap();
+    std::fs::write(work.join("display-tests/test.docx"), b"PK").unwrap();
+    std::fs::write(work.join("display-tests/test.png"), test_png([200, 30, 30, 255], 8)).unwrap();
+    std::fs::write(root.join("outside.md"), "secret").unwrap();
+    h.app.agent_chat.work_dir = Some(work.clone());
+    let opened = std::rc::Rc::new(std::cell::RefCell::new(Vec::<std::path::PathBuf>::new()));
+    let seen = opened.clone();
+    h.app.services.open_file = Some(Box::new(move |path| seen.borrow_mut().push(std::path::PathBuf::from(path))));
+
+    // The rows as the built-in agent sends them: `view` with a path in the agent's folder.
+    let read = |id: &str, path: &str, output: &str, status: ToolStatus| Event::Tool {
+        id: id.into(),
+        title: Some("view".into()),
+        kind: Some("read".into()),
+        status: Some(status),
+        input: Some(json!({"path": path})),
+        output: Some(output.into()),
+    };
+    let chat = &mut h.app.agent_chat;
+    chat.on_event(read("md", "display-tests/test.md", "display-tests/test.md (18 bytes)", ToolStatus::Completed));
+    chat.on_event(read("pdf", "display-tests/test.pdf", "display-tests/test.pdf (8 bytes, application/pdf)", ToolStatus::Completed));
+    chat.on_event(read(
+        "docx",
+        "display-tests/test.docx",
+        "display-tests/test.docx (2 bytes) — binary file not readable as text.",
+        ToolStatus::Completed,
+    ));
+    chat.on_event(read("png", "display-tests/test.png", "display-tests/test.png (99 bytes, image/png)", ToolStatus::Completed));
+    chat.on_event(Event::ToolPicture { id: "png".into(), bytes: test_png([200, 30, 30, 255], 8) });
+    chat.on_event(read("out", "../outside.md", "../outside.md (6 bytes)", ToolStatus::Completed));
+    chat.on_event(read("gone", "display-tests/gone.md", "no such file", ToolStatus::Failed));
+    chat.on_event(read("running", "display-tests/test.md", "", ToolStatus::InProgress));
+
+    let state = |h: &mut crate::scenario::Harness| -> Value { serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON") };
+    let first = state(&mut h);
+    let row = |id: &str| first["items"].as_array().expect("items").iter().find(|item| item["id"] == id).cloned().expect("the call");
+    assert_eq!(row("md")["file"], json!({"name": "test.md", "act": "preview"}));
+    assert_eq!(row("pdf")["file"], json!({"name": "test.pdf", "act": "open"}));
+    assert_eq!(row("docx")["file"], json!({"name": "test.docx", "act": "open"}), "unreadable as text, and still a file to open");
+    for none in ["png", "out", "gone", "running"] {
+        assert_eq!(row(none)["file"], Value::Null, "{none}: a picture has its own card, the others no file of the agent's");
+    }
+    assert_eq!(first["filePreview"], Value::Null);
+    let text = first.to_string();
+    assert!(!text.contains("intcad-file-card") && !text.contains("**bold**"), "neither where the file is nor what it holds");
+
+    // A text file: the start of its text, as Markdown; closed again by the page.
+    let index = |id: &str| row(id)["index"].as_u64().expect("its index");
+    web::act(&mut h.app, &ctx, &json!({"type": "file", "index": index("md")}).to_string()).expect("the card's click");
+    assert_eq!(state(&mut h)["filePreview"], json!({"name": "test.md", "text": "# Title\n\n**bold**\n", "markdown": true}));
+    assert!(opened.borrow().is_empty(), "a text file is not handed to the system");
+    web::act(&mut h.app, &ctx, &json!({"type": "file_close"}).to_string()).expect("closing it");
+    assert_eq!(state(&mut h)["filePreview"], Value::Null);
+
+    // A document: the system's program, with the file's real place; nothing shown in the panel.
+    web::act(&mut h.app, &ctx, &json!({"type": "file", "index": index("pdf")}).to_string()).expect("the card's click");
+    assert_eq!(*opened.borrow(), vec![std::fs::canonicalize(work.join("display-tests/test.pdf")).unwrap()]);
+    assert_eq!(state(&mut h)["filePreview"], Value::Null);
+
+    // Rows without a card are refused, whatever the page says.
+    for none in ["png", "out", "gone"] {
+        assert!(web::act(&mut h.app, &ctx, &json!({"type": "file", "index": index(none)}).to_string()).is_err(), "{none}");
+    }
+    assert!(web::act(&mut h.app, &ctx, &json!({"type": "file", "index": 9999}).to_string()).is_err());
+
+    // A file that has gone since it was read: said in the conversation, nothing opened or shown.
+    std::fs::remove_file(work.join("display-tests/test.md")).unwrap();
+    let before = h.app.agent_chat.items.len();
+    web::act(&mut h.app, &ctx, &json!({"type": "file", "index": index("md")}).to_string()).expect("answered with a notice");
+    assert_eq!(h.app.agent_chat.items.len(), before + 1, "one notice");
+    assert_eq!(state(&mut h)["filePreview"], Value::Null);
+    assert_eq!(opened.borrow().len(), 1);
+
+    // A new chat forgets the cards and an open preview.
+    std::fs::write(work.join("display-tests/test.md"), "again").unwrap();
+    web::act(&mut h.app, &ctx, &json!({"type": "file", "index": index("md")}).to_string()).expect("the card's click");
+    assert!(h.app.agent_chat.file_preview.is_some());
+    new_chat(&mut h.app);
+    assert!(h.app.agent_chat.file_preview.is_none() && h.app.agent_chat.tool_files.is_empty());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Send now from the page steers as the panel's own does: the running step is stopped and the
 /// queue goes once the agent has ended it. A message sent with Ctrl+Enter goes the same way,
 /// with what was typed.
@@ -16271,6 +16650,215 @@ fn the_floating_panel_keeps_its_drag_strip_and_the_page_is_told_the_selection() 
     assert_eq!(told(&mut h)["radius"].as_f64(), Some(0.0));
 }
 
+/// Through a window made smaller, then larger, then its old size again, the place given to the
+/// host's view moves and resizes with the Assistant's panel: it stays inside the panel and left
+/// of the right rail, and the panel stays inside the window. The Linux host places its native
+/// view on exactly this rect, so a place that did not follow the window would leave the page
+/// over the model while its panel moved (INT-1487).
+#[test]
+fn the_web_view_follows_its_panel_through_window_resizes() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true}));
+    h.call("ui.set", json!({"layout": "floating"}));
+    h.call("ui.agent_chat", json!({"open": true, "width": 380, "picker": false}));
+    web::set_host(&mut h.app, true);
+    h.frames(3);
+    let mut places = Vec::new();
+    for (width, height) in [(1440.0, 900.0), (1100.0, 700.0), (900.0, 640.0), (1440.0, 900.0)] {
+        h.call("ui.resize", json!({"width": width, "height": height}));
+        h.frames(2);
+        let window = h.ctx.content_rect();
+        let panel = crate::scenario::rect_of("agent_chat:panel").expect("the Assistant's panel in the window");
+        let place = crate::scenario::rect_of("agent_chat:web").expect("the room the panel gives the host's view");
+        assert!(window.contains_rect(panel), "the panel is in the window at {width}x{height}: {panel:?} in {window:?}");
+        assert!(panel.expand(1.0).contains_rect(place), "the page is in its panel at {width}x{height}: {place:?} in {panel:?}");
+        let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
+        assert!(panel.right() <= rail.left() + 1.0, "the panel stands left of the rail at {width}x{height}: {panel:?} {rail:?}");
+        assert!(place.right() < rail.left() + 1.0, "so does the page at {width}x{height}: {place:?} {rail:?}");
+        assert!(place.height() > window.height() / 2.0, "the page fills its panel's height at {width}x{height}: {place:?} in {window:?}");
+        assert!(places.last() != Some(&place), "the page moved with the window at {width}x{height}: {place:?}");
+        places.push(place);
+    }
+    let (first, last) = (places.first().expect("a place"), places.last().expect("a place"));
+    assert!(
+        (first.min - last.min).length() < 0.5 && (first.size() - last.size()).length() < 0.5,
+        "the old size puts it back where it was: {places:?}"
+    );
+    assert_eq!(web::placement(&mut h.app, &h.ctx), places.last().copied(), "the last frame's place is the one the host takes, once");
+}
+
+/// A host that shows only its view's foot (macOS) is given a view as tall as the page may grow,
+/// so the view never changes size as the page opens: the page's height is how much of it is shown
+/// and takes presses, and the app's own layer holds only that (INT-1500).
+#[test]
+fn at_the_bottom_centre_a_host_that_shows_the_views_foot_keeps_the_view_as_tall_as_the_page_may_grow() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
+    h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    h.app.ui.show_navigation_bar = false;
+    web::set_host(&mut h.app, true);
+    web::set_clips(&mut h.app, true);
+    h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the page says how tall it is");
+    h.frames(3);
+    let most = serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["centre"].as_f64().expect("the most") as f32;
+    let view = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let shown = crate::scenario::rect_of("agent_chat:panel").expect("the part shown");
+    assert!((view.height() - most).abs() < 0.5, "the view as tall as the page may grow: {view:?}, most {most}");
+    assert!(
+        (shown.height() - 181.0).abs() < 0.5 && shown.bottom() == view.bottom(),
+        "the page's height of it shown, at its foot: {shown:?} {view:?}"
+    );
+    assert_eq!(web::reveal(&h.app), Some(181.0));
+    assert_eq!(web::placement(&mut h.app, &h.ctx), Some(view), "the whole view goes to the host");
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":420}"#).expect("the conversation opens");
+    h.frames(2);
+    assert_eq!(crate::scenario::rect_of("agent_chat:web"), Some(view), "opening changes what is shown, not the view");
+    assert_eq!(web::reveal(&h.app), Some(420.0_f32.min(most)));
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("and closes");
+    h.frames(2);
+    // Without it the view is the page's height again, as on the other systems.
+    web::set_clips(&mut h.app, false);
+    h.frames(2);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!((place.height() - 181.0).abs() < 0.5, "without: as tall as the page: {place:?}");
+    assert_eq!(web::reveal(&h.app), None);
+}
+
+/// At the bottom centre of the window (the `agent_chat_centre` preference, on by default) the
+/// host's view is the page's message box: centred on the window, not on the room beside the
+/// browser, above the history and left of the rail, as tall as the page says and never more than
+/// half the window, which the page is told. Off, the Assistant is the side panel again (INT-1500).
+#[test]
+fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the_page() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
+    h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    // Centred on the window first; the navigation bar, which it keeps clear of, comes back below.
+    h.app.ui.show_navigation_bar = false;
+    web::set_host(&mut h.app, true);
+    h.frames(3);
+    let told =
+        |h: &mut crate::scenario::Harness| serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["centre"].as_f64();
+    for (width, height) in [(1600.0, 1000.0), (1100.0, 700.0)] {
+        h.call("ui.resize", json!({"width": width, "height": height}));
+        h.frames(2);
+        let window = h.ctx.content_rect();
+        let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+        assert!((place.center().x - window.center().x).abs() < 1.0, "centred on the window at {width}x{height}: {place:?} in {window:?}");
+        assert!(place.width() <= 520.0 + 0.5 && place.width() > 400.0, "the message box's width: {place:?}");
+        let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
+        assert!(place.right() < rail.left(), "left of the rail: {place:?} {rail:?}");
+        let history = h.app.shell.history.expect("the history below the view");
+        assert!(place.bottom() <= history.top() && place.bottom() > history.top() - 40.0, "just above the history: {place:?} {history:?}");
+        let most = told(&mut h).expect("the page is told how tall it may be");
+        assert!(most <= f64::from(window.height()) / 2.0 + 0.5, "at most half the window: {most} of {window:?}");
+        assert_eq!(web::placement(&mut h.app, &h.ctx), Some(place));
+    }
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":260}"#).expect("the page says how tall it is");
+    h.frames(2);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!((place.height() - 260.0).abs() < 0.5, "as tall as the page: {place:?}");
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":5000}"#).expect("however tall");
+    h.frames(2);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!(place.height() <= h.ctx.content_rect().height() / 2.0 + 0.5, "never more than half the window: {place:?}");
+    assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"size"}"#).is_err(), "a size without a height is refused");
+
+    // It is no side panel: in the floating layout the axis view keeps the view's top right, and the
+    // navigation bar leaves the bottom centre to it for the view's bottom right.
+    h.call("ui.set", json!({"layout": "floating"}));
+    h.app.ui.show_navigation_bar = true;
+    for (width, height) in [(1600.0, 1000.0), (1100.0, 700.0)] {
+        h.call("ui.resize", json!({"width": width, "height": height}));
+        h.frames(3);
+        let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+        let layout = h.app.viewport.layout.clone().expect("the view's layout");
+        let axis = layout.axis_view;
+        assert!(
+            axis.right() > layout.content.right() - 40.0 && !axis.intersects(place),
+            "the axis view stays at the view's top right at {width}: {axis:?} {place:?} {:?}",
+            layout.content
+        );
+        let bar = layout.navigation;
+        assert!(bar.right() > layout.content.right() - 40.0, "the navigation bar at the bottom right at {width}: {bar:?}");
+        assert!(bar.left() > place.right() || bar.top() > place.bottom(), "clear of the Assistant at {width}: {bar:?} {place:?}");
+    }
+    // Closed, the bar keeps its place: it does not move as the Assistant comes and goes.
+    let bar = h.app.viewport.layout.clone().expect("the view's layout").navigation;
+    h.call("ui.agent_chat", json!({"open": false}));
+    h.frames(2);
+    assert_eq!(h.app.viewport.layout.clone().expect("the view's layout").navigation, bar, "the bar stays where it was with the Assistant closed");
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(2);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let window = h.ctx.content_rect();
+    h.call("ui.resize", json!({"width": 2200.0, "height": 1200.0}));
+    h.frames(3);
+    let wide = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    assert!((wide.center().x - h.ctx.content_rect().center().x).abs() < 1.0, "a wide window has it centred again: {wide:?}");
+    assert!(place.center().x <= window.center().x + 0.5, "a narrow one moves it left of the bar, never right: {place:?} in {window:?}");
+
+    h.call("ui.prefs", json!({"agent_chat_centre": false}));
+    h.frames(3);
+    let place = crate::scenario::rect_of("agent_chat:web").expect("the side panel's place");
+    assert!(place.height() > h.ctx.content_rect().height() / 2.0, "off: the side panel, as before: {place:?}");
+    assert_eq!(told(&mut h), None, "and the page is not at the centre");
+    let layout = h.app.viewport.layout.clone().expect("the view's layout");
+    assert!(
+        (layout.navigation.center().x - layout.content.center().x).abs() < 1.0,
+        "and the navigation bar back at the bottom centre: {:?}",
+        layout.navigation
+    );
+}
+
+/// At the bottom centre, while the conversation is open, a primary press that reaches the app (the
+/// page's native view takes its own) is outside the Assistant: the model, the rail. The page is
+/// told the count and collapses its opened conversation when it goes up; switching to another app
+/// is no press. With the box closed, or in the side panel, nothing is counted (INT-1500).
+#[test]
+fn at_the_bottom_centre_a_press_in_the_app_outside_the_view_is_told_to_the_page() {
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
+    h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    web::set_host(&mut h.app, true);
+    h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+    h.frames(3);
+    let presses = |h: &mut crate::scenario::Harness| {
+        serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["outsidePresses"].as_u64()
+    };
+    assert_eq!(presses(&mut h), Some(0), "nothing pressed yet");
+    // Closed, a press changes nothing on the page and is not told.
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the closed box");
+    h.frames(2);
+    let closed = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    click_at(&mut h, egui::pos2(closed.center().x, closed.top() - 200.0), egui::PointerButton::Primary);
+    assert_eq!(presses(&mut h), Some(0), "with the box closed a press is not told");
+    // Opened: the page asks for all the room it may take.
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":5000}"#).expect("the conversation opens");
+    h.frames(2);
+    let view = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let model = egui::pos2(view.center().x, view.top() - 120.0);
+    let content = h.app.viewport.layout.clone().expect("the view's layout").content;
+    assert!(content.contains(model) && !view.contains(model), "a point on the model, above the page: {model:?} {view:?} {content:?}");
+    click_at(&mut h, model, egui::PointerButton::Primary);
+    assert_eq!(presses(&mut h), Some(1), "a press on the model");
+    click_at(&mut h, model, egui::PointerButton::Secondary);
+    assert_eq!(presses(&mut h), Some(1), "a secondary press is not counted");
+    let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
+    click_at(&mut h, egui::pos2(rail.center().x, rail.bottom() - 4.0), egui::PointerButton::Primary);
+    assert_eq!(presses(&mut h), Some(2), "a press on the rail");
+
+    h.call("ui.prefs", json!({"agent_chat_centre": false}));
+    h.frames(3);
+    click_at(&mut h, model, egui::PointerButton::Primary);
+    assert_eq!(presses(&mut h), Some(2), "in the side panel a press is not counted");
+}
+
 /// Files dropped on the host's web view are attached to the next message as files dropped on the
 /// panel are, and one that cannot be says why; while they are over the view the page is told.
 #[test]
@@ -16310,6 +16898,2016 @@ fn a_new_tab_shows_its_conversation_in_the_hosts_web_view() {
     crate::documents::switch(&mut h.app, 0);
     h.frames(3);
     assert!(h.app.agent_chat.web_host && crate::scenario::rect_of("agent_chat:web").is_some(), "and back in the first");
+}
+
+// ---- The built-in agent and its connections ----
+
+const BUILTIN_KEY: &str = "sk-builtin-7f2b9456-never-shown";
+const CUSTOM_KEY: &str = "sk-custom-25e93d10-never-shown";
+
+fn builtin_agent() -> agents::Builtin {
+    agents::Builtin { program: "/opt/intcad/mastra-agent".into(), args: Vec::new(), packaged: true, data: None }
+}
+
+/// A snapshot as the built-in agent sends it: its five plans, all signed out, and its five keys,
+/// none saved; `edit` changes what a test is about.
+fn conn_snapshot(edit: impl FnOnce(&mut Value)) -> connections::Snapshot {
+    connections::Snapshot::parse(&conn_told(edit)).expect("a snapshot")
+}
+
+/// [`conn_snapshot`] as the agent writes it.
+fn conn_told(edit: impl FnOnce(&mut Value)) -> Value {
+    let plan = |id: &str, name: &str, prefix: &str| json!({"id": id, "name": name, "state": "out", "account": null, "prefix": prefix});
+    let key = |id: &str, name: &str| json!({"id": id, "name": name, "saved": false, "shadowed": false, "prefix": id});
+    let mut told = json!({
+        "plans": [
+            plan("openai-codex", "ChatGPT Plus/Pro (Codex Subscription)", "openai"),
+            plan("anthropic", "Claude Pro/Max", "anthropic"),
+            plan("kimi-for-coding", "Kimi for Coding", "kimi-for-coding"),
+            plan("xai", "xAI", "xai"),
+            plan("github-copilot", "GitHub Copilot", "github-copilot"),
+        ],
+        "keys": [key("anthropic", "Anthropic"), key("openai", "OpenAI"), key("google", "Google"), key("openrouter", "OpenRouter"), key("deepseek", "DeepSeek")],
+        "custom": [], "login": null, "problem": null, "dates": {},
+    });
+    edit(&mut told);
+    told
+}
+
+/// A program that stands in for the built-in agent's, as `dir/name`. It notes what it was
+/// started with (a line in `<program>.env` for each start) and every line it is sent
+/// (`<program>.in`), answers `initialize`, and answers the `setup` that follows with `snapshot`.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn fake_agent_program(dir: &std::path::Path, name: &str, snapshot: &Value) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::create_dir_all(dir).unwrap();
+    let program = dir.join(name);
+    let answer = json!({"jsonrpc": "2.0", "id": 2, "result": snapshot});
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$MASTRA_APP_DATA_DIR\" >> \"$0.env\"\n\
+         IFS= read -r line; printf '%s\\n' \"$line\" >> \"$0.in\"\n\
+         printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{\"protocolVersion\":1,\"agentInfo\":{{\"name\":\"fake-mastra\"}}}}}}'\n\
+         IFS= read -r line; printf '%s\\n' \"$line\" >> \"$0.in\"\n\
+         printf '%s\\n' '{answer}'\n\
+         while IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$0.in\"; done\n"
+    );
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    program
+}
+
+/// What the app hands the agent with these keys and addresses: its words go with them.
+fn setup_of(keys: &[(&str, &str)], custom: Vec<connections::SetupCustom>) -> connections::Request {
+    connections::Request::Setup(connections::Setup {
+        keys: keys.iter().map(|(provider, key)| (provider.to_string(), key.to_string())).collect(),
+        custom,
+        callback: tr("ui.agent_chat_conn_callback").to_string(),
+    })
+}
+
+fn chatgpt_in(told: &mut Value) {
+    told["plans"][0]["state"] = json!("in");
+    told["plans"][0]["account"] = json!("a@example.com");
+}
+
+/// An app that has the built-in agent, with a keychain that keeps what it is given.
+fn app_with_builtin() -> (SolveApp, Arc<direct_integration::Keys>, egui::Context) {
+    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    let keys = Arc::new(direct_integration::Keys::default());
+    app.services.secrets = Some(keys.clone());
+    app.builtin_agent = Some(builtin_agent());
+    (app, keys, crate::fonts::test_context())
+}
+
+/// Start the built-in agent as `connect` does once its process is up, on a scripted backend, and
+/// wait for the keys to be read and handed over: the first `setup`.
+fn start_builtin(app: &mut SolveApp, ctx: &egui::Context) -> Script {
+    let script = Script::default();
+    let entry = agents::current(app).expect("the built-in agent");
+    assert_eq!(entry.id, "mastra");
+    started_with(app, ctx, Box::new(script.clone()), &entry, agents::Execution::Direct);
+    until_setups(app, ctx, &script, 1);
+    script
+}
+
+/// Poll until the agent was handed its keys `n` times (they are read off the window thread).
+fn until_setups(app: &mut SolveApp, ctx: &egui::Context, script: &Script, n: usize) {
+    direct_integration::until(app, ctx, |_| script.calls().iter().filter(|call| *call == "conn: setup").count() >= n);
+}
+
+/// The built-in agent started, and its first snapshot taken in.
+fn builtin_told(edit: impl FnOnce(&mut Value)) -> (SolveApp, Script, Arc<direct_integration::Keys>, egui::Context) {
+    let (mut app, keys, ctx) = app_with_builtin();
+    let script = start_builtin(&mut app, &ctx);
+    script.report(Event::Connections(conn_snapshot(edit)));
+    poll(&mut app, &ctx);
+    (app, script, keys, ctx)
+}
+
+/// The built-in agent signed in to the ChatGPT plan, with its session open and ready.
+fn builtin_ready() -> (SolveApp, Script, Arc<direct_integration::Keys>, egui::Context) {
+    let (mut app, script, keys, ctx) = builtin_told(chatgpt_in);
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.state(), State::Ready);
+    (app, script, keys, ctx)
+}
+
+fn page_state(app: &mut SolveApp) -> Value {
+    serde_json::from_str(&web::state(app)).expect("the state is JSON")
+}
+
+fn conn_act(app: &mut SolveApp, ctx: &egui::Context, action: Value) -> std::result::Result<(), String> {
+    web::act(app, ctx, &action.to_string())
+}
+
+/// A1: with the built-in agent the agent list shows it first and keeps the agents found on the
+/// computer and the ones the user added beside it; nothing to install is dropped, and the page is
+/// told the connections. Without it, all of that is as it was.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn with_the_built_in_agent_the_list_starts_with_it_and_keeps_the_others() {
+    let mut h = app_with_cover_and_base();
+    let known = discover::KNOWN.iter().find(|known| known.id == "goose").expect("a known agent");
+    h.app.agent_chat.detection = Some(discover::Detection {
+        found: vec![discover::Found {
+            id: "claude",
+            name: "Claude Code",
+            argv: vec!["claude".into()],
+            version: None,
+            login: discover::Login::Unknown,
+            problem: None,
+            install: "",
+        }],
+        missing: vec![discover::Missing { id: "goose", name: known.name, install: known.install, basic: false }],
+        ..Default::default()
+    });
+    h.app.preferences.agents.push(agents::AgentConfig {
+        id: "custom-1".into(),
+        name: "Mine".into(),
+        command: "mine --acp".into(),
+        ..Default::default()
+    });
+    h.app.preferences.agent_default = "custom-1".into();
+    // Without the built-in agent: everything as it was.
+    let state = page_state(&mut h.app);
+    assert_eq!(state["agents"].as_array().map(Vec::len), Some(2));
+    assert_eq!(state["agent"], "custom-1");
+    assert_eq!(state["missing"].as_array().map(Vec::len), Some(1));
+    assert_eq!(state["connect"], Value::Null, "the page is as on develop");
+    assert!(conn_act(&mut h.app, &h.ctx.clone(), json!({"type": "conn_cancel"})).is_err(), "no connections to act on");
+
+    h.app.builtin_agent = Some(builtin_agent());
+    let state = page_state(&mut h.app);
+    // The built-in agent is offered first; the agents found and added stay beside it.
+    assert_eq!(state["agents"].as_array().map(Vec::len), Some(3), "{}", state["agents"]);
+    assert_eq!(state["agents"][0], json!({"id": "mastra", "name": "Mastra", "detail": "mastra-agent", "hint": null}));
+    assert_eq!(state["agent"], "custom-1", "the agent the user set as default is still the one");
+    assert_eq!(state["missing"].as_array().map(Vec::len), Some(1), "an agent that is not installed is still offered for install");
+    assert_eq!(state["detecting"], false);
+    assert_eq!(state["connect"], Value::Null, "the chosen agent has no connections page");
+    let told = status(&h.app);
+    assert_eq!(told["agents"].as_array().map(Vec::len), Some(3));
+    assert_eq!((&told["agents"][0]["id"], &told["currentAgent"]), (&json!("mastra"), &json!("custom-1")));
+    assert_eq!(agents::entries(&h.app).len(), 3);
+    // Picking an agent of before works, and so does picking the built-in one again: its page is
+    // the one that is told the connections.
+    let ctx = h.ctx.clone();
+    conn_act(&mut h.app, &ctx, json!({"type": "agent", "id": "claude"})).expect("a listed agent");
+    assert_eq!(h.app.agent_chat.agent_id.as_deref(), Some("claude"));
+    assert!(h.call("ui.agent_chat", json!({"agent": "mastra"}))["ok"] == json!(true));
+    assert_eq!(agents::current(&h.app).map(|entry| entry.id).as_deref(), Some("mastra"));
+    let state = page_state(&mut h.app);
+    assert!(state["connect"].is_object(), "the built-in agent's page: {}", state["connect"]);
+}
+
+/// A1: Settings keeps the agent list beside the agent the package carries: the list, Add and
+/// Refresh are the way to see and add the other agents, so a package that ships one does not take
+/// them away. The execution choice appears once there is another agent for it to run; with the
+/// package's agent alone there is nothing for it to choose.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn with_the_built_in_agent_settings_still_lists_agents_and_offers_the_execution_choice() {
+    let drawn = |builtin: bool, other: bool| {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.agent_chat.detection = Some(Default::default());
+        if builtin {
+            h.app.builtin_agent = Some(builtin_agent());
+        }
+        if other {
+            h.app.preferences.agents.push(agents::AgentConfig {
+                id: "custom-1".into(),
+                name: "Mine".into(),
+                command: "mine --acp".into(),
+                ..Default::default()
+            });
+        }
+        crate::scenario::clear_handles();
+        h.call("ui.resize", json!({"width": 1600, "height": 4000}));
+        h.call("ui.prefs", json!({"open": "Assistant"}));
+        h.frames(4);
+        let mut execution = false;
+        for shape in &h.shapes {
+            crate::test_support::each_shape(&shape.shape, &mut |shape| {
+                if let egui::Shape::Text(text) = shape {
+                    execution |= text.galley.job.text == tr("ui.mastra_execution");
+                }
+            });
+        }
+        let section = |key: &str| crate::scenario::rect_of(&format!("prefs:section:{key}")).is_some();
+        assert!(section("permissions") && section("instructions") && section("assistant_connecting"), "the rest of the page is drawn");
+        assert!(h.app.agent_chat.detecting.is_none(), "drawing the page started no look");
+        (section("agents"), execution)
+    };
+    assert_eq!(drawn(false, false), (true, true), "without the built-in agent both are shown");
+    assert_eq!(drawn(true, false), (true, false), "with it the list stays; nothing else runs, so no execution choice");
+    assert_eq!(drawn(true, true), (true, true), "another agent beside it brings the execution choice back");
+}
+
+/// A2: preferences an older version wrote (other agents, a default and a last agent, per-agent
+/// maps, the execution choice, connect at start) load beside the built-in agent, the agent is
+/// the built-in one, and what is saved back is what was loaded: starting does not rewrite them.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn preferences_of_an_older_version_load_beside_the_built_in_agent_and_are_not_rewritten() {
+    let mut old = crate::prefs::Prefs {
+        agents: vec![
+            agents::AgentConfig {
+                id: "api-1".into(),
+                name: "Ollama".into(),
+                kind: agents::Kind::Api,
+                base_url: "http://localhost:11434/v1".into(),
+                model: "llama3.2".into(),
+                ..Default::default()
+            },
+            agents::AgentConfig { id: "custom-1".into(), name: "Mine".into(), command: "mine --acp".into(), ..Default::default() },
+        ],
+        agent_default: "claude".into(),
+        agent_last: "claude".into(),
+        agent_connect_at_start: true,
+        chat_execution: agents::Execution::Mastra,
+        mastra_workflow_id: "modeling".into(),
+        mastra_runtime_command: "/opt/mastra-runtime".into(),
+        ..Default::default()
+    };
+    old.agent_permissions.insert("claude".into(), agents::Mode::Ask);
+    old.agent_models.insert("claude".into(), "opus".into());
+    old.agent_always_allow.insert("codex".into(), vec!["mcp__intcad-app__save".into()]);
+    // The file as that version wrote it has no field of this one's.
+    let mut written = serde_json::to_value(&old).unwrap();
+    written.as_object_mut().unwrap().remove("mastra_custom");
+    let stored = json!({"preferences": written}).to_string();
+
+    let (mut app, _keys, ctx) = app_with_builtin();
+    app.load_prefs(&stored);
+    assert!(app.agent_chat.items.is_empty(), "loading says nothing: {:?}", app.agent_chat.items);
+    assert_eq!(app.preferences.agents.len(), 2, "the agents of before are still in the preferences");
+    assert_eq!(agents::current(&app).map(|entry| entry.id).as_deref(), Some("mastra"), "the agent is the built-in one, whatever the default was");
+    let kept = |app: &SolveApp| serde_json::from_str::<Value>(&app.prefs()).unwrap()["preferences"].clone();
+    let mut expected = written.clone();
+    expected["mastra_custom"] = json!([]);
+    assert_eq!(kept(&app), expected, "what is saved back is what was loaded");
+
+    // The launch: the agent the user started last is the one it tries, beside the package's own
+    // agent. `claude` is not installed here, so the launch says so rather than quietly starting
+    // Mastra instead: a start the user did not ask for is not a fallback.
+    begin(&mut app);
+    poll(&mut app, &ctx);
+    // The look at the computer comes first: the agent started last may be one it finds. The
+    // launch waits for the answer instead of calling `claude` missing before the look returns.
+    assert!(app.agent_chat.connect_at_start, "the launch waits for the look");
+    assert!(app.agent_chat.detecting.is_some(), "the look is running");
+    // The look returns having found nothing this machine has.
+    app.agent_chat.detecting = None;
+    app.agent_chat.detection = Some(Default::default());
+    poll(&mut app, &ctx);
+    assert!(!app.agent_chat.connect_at_start);
+    let said: Vec<String> =
+        app.agent_chat.items.iter().filter_map(|item| if let Item::Notice { text, .. } = item { Some(text.clone()) } else { None }).collect();
+    assert!(said.iter().any(|text| text.contains("claude")), "the agent started last is looked for: {said:?}");
+    assert_eq!(app.agent_chat.state(), State::Failed);
+    assert_eq!(kept(&app), expected, "a start that failed rewrote nothing");
+
+    // And a start that works: the agent started last stays the older version's.
+    let script = start_builtin(&mut app, &ctx);
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.state(), State::Ready);
+    assert_eq!(app.preferences.agent_last, "claude");
+    assert_eq!(kept(&app), expected, "connecting rewrote nothing");
+}
+
+/// B1: with nothing connected the conversation needs a sign-in, the page is told the five plans
+/// (in the app's words) and the five keys, and no session was asked for. B14: the agent was
+/// handed its keys before anything else.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn with_nothing_connected_the_built_in_agent_asks_for_a_sign_in_and_opens_no_session() {
+    use backend::Secrets as _;
+    let (mut app, keys, ctx) = app_with_builtin();
+    let script = start_builtin(&mut app, &ctx);
+    assert_eq!(script.calls(), ["conn: setup"], "the keys go first, and nothing else by itself");
+    assert_eq!(app.agent_chat.state(), State::Starting, "until the agent says what is connected");
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["connect"]["connected"]), (&json!("starting"), &json!(false)));
+    assert_eq!(state["connect"]["plans"], json!([]), "nothing is known before the first snapshot");
+
+    script.report(Event::Connections(conn_snapshot(|_| {})));
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.state(), State::NeedsAuth);
+    assert_eq!(script.calls(), ["conn: setup"], "no session was opened");
+    let state = page_state(&mut app);
+    assert_eq!(state["state"], "auth");
+    assert_eq!(state["running"], true);
+    let connect = &state["connect"];
+    assert_eq!(connect["connected"], false);
+    let names = |list: &Value| {
+        list.as_array()
+            .expect("a list")
+            .iter()
+            .map(|row| (row["id"].as_str().unwrap().to_string(), row["name"].as_str().unwrap().to_string()))
+            .collect::<Vec<_>>()
+    };
+    let pair = |id: &str, name: &str| (id.to_string(), name.to_string());
+    assert_eq!(
+        names(&connect["plans"]),
+        [
+            pair("openai-codex", "ChatGPT"),
+            pair("anthropic", "Claude"),
+            pair("kimi-for-coding", "Kimi"),
+            pair("xai", "xAI"),
+            pair("github-copilot", "GitHub Copilot")
+        ],
+        "the five plans, named in the app's words"
+    );
+    assert_eq!(
+        names(&connect["keys"]),
+        [
+            pair("anthropic", "Anthropic"),
+            pair("openai", "OpenAI"),
+            pair("google", "Google"),
+            pair("openrouter", "OpenRouter"),
+            pair("deepseek", "DeepSeek")
+        ],
+        "the five keys, named as the agent names them"
+    );
+    assert_eq!(connect["plans"][0], json!({"id": "openai-codex", "name": "ChatGPT", "state": "out", "account": null, "prefix": "openai"}));
+    assert_eq!(
+        connect["keys"][1],
+        json!({"id": "openai", "name": "OpenAI", "saved": false, "shadowed": false, "prefix": "openai", "title": "API key for OpenAI"})
+    );
+    assert_eq!(
+        (&connect["custom"], &connect["login"], &connect["problem"], &connect["error"], &connect["dates"]),
+        (&json!([]), &Value::Null, &Value::Null, &Value::Null, &json!({}))
+    );
+    // The agent's own sign-in methods are not offered, and the old action cannot reach them.
+    assert_eq!(state["auth"], json!([]));
+    assert!(conn_act(&mut app, &ctx, json!({"type": "auth", "id": "oauth"})).is_err());
+    // A provider name is a value of the title, not another template: braces in it stay as typed.
+    script.report(Event::Connections(conn_snapshot(|told| told["keys"][2]["name"] = json!("Acme {key}"))));
+    poll(&mut app, &ctx);
+    let stated = page_state(&mut app);
+    assert_eq!(stated["connect"]["keys"][2]["title"], "API key for Acme {key}");
+    // The plans and the key titles are in the user's language.
+    app.preferences.language = "zh".into();
+    assert_eq!(page_state(&mut app)["connect"]["plans"][0]["name"], "ChatGPT");
+    let stated = page_state(&mut app);
+    assert_eq!(stated["connect"]["keys"][0]["title"], "Anthropic 的 API key");
+    assert_eq!(stated["connect"]["keys"][2]["title"], "Acme {key} 的 API key");
+    // A message typed now waits for the sign-in; it opens no session either.
+    send(&mut app, &ctx, "make a box".into());
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls(), ["conn: setup"]);
+    assert!(app.agent_chat.queued.is_some() && keys.get("mastra/key/openai").unwrap().is_none());
+}
+
+/// B14: a new start hands the agent the keys kept in the keychain and the custom addresses kept
+/// in preferences, with their keys, before any session; the session follows the snapshot.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_start_hands_over_the_kept_keys_and_custom_addresses_before_any_session() {
+    use backend::Secrets as _;
+    let (mut app, keys, ctx) = app_with_builtin();
+    keys.set("mastra/key/openai", BUILTIN_KEY).unwrap();
+    keys.set("mastra/custom/my-llm", CUSTOM_KEY).unwrap();
+    // A key of an agent of before, under that agent's id, is not the built-in agent's.
+    keys.set("openai", "sk-of-another-agent").unwrap();
+    app.preferences.mastra_custom = vec![
+        connections::CustomAddress { name: "my-llm".into(), url: "http://localhost:11434/v1".into(), models: vec!["llama3.2".into()], key: true },
+        connections::CustomAddress { name: "open".into(), url: "https://llm.example/v1".into(), models: vec!["m".into()], key: false },
+    ];
+    let script = start_builtin(&mut app, &ctx);
+    assert_eq!(script.calls(), ["conn: setup"]);
+    let custom = |name: &str, url: &str, key: Option<&str>, model: &str| connections::SetupCustom {
+        name: name.into(),
+        url: url.into(),
+        api_key: key.map(str::to_string),
+        models: vec![model.into()],
+    };
+    let expected = setup_of(
+        &[("openai", BUILTIN_KEY)],
+        vec![custom("my-llm", "http://localhost:11434/v1", Some(CUSTOM_KEY), "llama3.2"), custom("open", "https://llm.example/v1", None, "m")],
+    );
+    assert_eq!(script.requests(), [expected]);
+    // The sentence the browser shows after the ChatGPT sign-in page calls back goes with it.
+    assert_eq!(
+        script.requests()[0].params()["words"],
+        json!({"callback": "Go back to Intcad: the sign-in finishes there. You can close this page."})
+    );
+    // Something is connected (the key): now, and only now, the session is asked for, once.
+    let saved = |told: &mut Value| told["keys"][1]["saved"] = json!(true);
+    script.report(Event::Connections(conn_snapshot(saved)));
+    script.report(Event::Connections(conn_snapshot(saved)));
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls(), ["conn: setup", "new_session"]);
+    assert_eq!(app.agent_chat.state(), State::Starting);
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.state(), State::Ready);
+    assert_eq!(page_state(&mut app)["connect"]["connected"], true);
+}
+
+/// B14, from the process up: `connect` starts the built-in agent's program with its data folder
+/// in `MASTRA_APP_DATA_DIR`, says `initialize`, hands over the keys, and asks for no session
+/// while the agent says nothing is connected.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[test]
+fn connect_starts_the_built_in_agent_with_its_folder_and_its_keys_and_no_session() {
+    use backend::Secrets as _;
+    let dir = std::env::temp_dir().join(format!("intcad-builtin-connect-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let data = dir.join("settings").join("mastra");
+    let snapshot = json!({
+        "plans": [{"id": "openai-codex", "name": "ChatGPT Plus/Pro (Codex Subscription)", "state": "out", "account": null, "prefix": "openai"}],
+        "keys": [{"id": "openai", "name": "OpenAI", "saved": false, "shadowed": false, "prefix": "openai"}],
+        "custom": [], "login": null, "problem": null, "dates": {},
+    });
+    let program = fake_agent_program(&dir, "mastra-agent", &snapshot);
+
+    let (mut app, keys, ctx) = app_with_builtin();
+    app.builtin_agent = Some(agents::Builtin { program: program.clone(), args: Vec::new(), packaged: true, data: Some(data.clone()) });
+    app.preferences.chat_execution = agents::Execution::Mastra;
+    keys.set("mastra/key/openai", BUILTIN_KEY).unwrap();
+    connect(&mut app, &ctx);
+    direct_integration::until(&mut app, &ctx, |app| app.agent_chat.state() != State::Starting);
+    let said: Vec<&Item> =
+        app.agent_chat.items.iter().filter(|item| matches!(item, Item::Notice { error: true, text } if text.contains("start"))).collect();
+    assert_eq!(app.agent_chat.state(), State::NeedsAuth, "{said:?}");
+    assert!(data.is_dir(), "its data folder is made when it starts");
+    assert_eq!(std::fs::read_to_string(dir.join("mastra-agent.env")).unwrap().trim_end(), data.to_string_lossy());
+    let sent: Vec<Value> =
+        std::fs::read_to_string(dir.join("mastra-agent.in")).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    let methods: Vec<&str> = sent.iter().map(|message| message["method"].as_str().unwrap_or_default()).collect();
+    assert_eq!(methods, ["initialize", "_intcad/connections/setup"], "no session/new while nothing is connected");
+    let words = json!({"callback": tr("ui.agent_chat_conn_callback")});
+    assert_eq!(sent[1]["params"], json!({"keys": {"openai": BUILTIN_KEY}, "custom": [], "words": words}));
+    assert_eq!(page_state(&mut app)["connect"]["plans"][0]["name"], "ChatGPT");
+    assert!(app.preferences.agent_last.is_empty(), "the agent started last is not the built-in one's to set");
+    disconnect(&mut app);
+    assert_eq!(page_state(&mut app)["connect"]["plans"], json!([]), "a stopped agent has said nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The built-in agent is never started without a folder of its own for its data: with none it
+/// would keep its sign-ins in the user's own home and read their agent files there. A folder that
+/// cannot be made, or an app that knows no settings folder at all, fails the start and says why;
+/// the agent's program is not run, and the agent list does not come back.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[test]
+fn the_built_in_agent_is_not_started_without_its_data_folder() {
+    let dir = std::env::temp_dir().join(format!("intcad-builtin-no-folder-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let program = fake_agent_program(&dir, "mastra-agent", &conn_told(|_| {}));
+    // A file where the settings folder should be: nothing can be made inside it, on any system.
+    std::fs::write(dir.join("settings"), b"not a folder").unwrap();
+    for data in [Some(dir.join("settings").join("mastra")), None] {
+        let (mut app, _keys, ctx) = app_with_builtin();
+        app.builtin_agent = Some(agents::Builtin { program: program.clone(), args: Vec::new(), packaged: true, data: data.clone() });
+        app.preferences.chat_execution = agents::Execution::Mastra;
+        connect(&mut app, &ctx);
+        assert_eq!(app.agent_chat.state(), State::Failed, "{data:?}");
+        let why = tr("ui.agent_chat_no_data_folder");
+        assert!(app.agent_chat.items.iter().any(|item| matches!(item, Item::Notice { error: true, text } if text.contains(&*why))), "{data:?}");
+        assert!(!dir.join("mastra-agent.env").exists(), "the agent's program was started: {data:?}");
+        assert!(agents::is_builtin(&app) && agents::current(&app).is_some_and(|entry| entry.id == "mastra"), "{data:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// B1, from opening the Assistant: with the built-in agent, showing the panel starts the agent
+/// without any action, and the page gets the plan rows from the agent's first snapshot. Closed,
+/// or folded to its strip, the panel starts nothing. After a disconnect the agent stays off
+/// however long the panel is shown, and Connect starts it again; a start that failed is not
+/// tried again by itself. No other agent is started by showing the panel.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+#[test]
+fn showing_the_assistant_starts_the_built_in_agent_once_and_no_other_agent() {
+    let dir = std::env::temp_dir().join(format!("intcad-builtin-shown-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let program = fake_agent_program(&dir, "mastra-agent", &conn_told(|_| {}));
+    let starts = |name: &str| std::fs::read_to_string(dir.join(format!("{name}.env"))).map_or(0, |noted| noted.lines().count());
+    let until = |h: &mut crate::scenario::Harness, wanted: State| {
+        let guard = std::time::Instant::now() + direct_integration::GUARD;
+        while h.app.agent_chat.state() != wanted {
+            assert!(std::time::Instant::now() < guard, "the agent did not get to {wanted:?}: {:?}", h.app.agent_chat.state());
+            h.frames(1);
+        }
+    };
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.app.builtin_agent = Some(agents::Builtin { program, args: Vec::new(), packaged: true, data: Some(dir.join("settings").join("mastra")) });
+    h.frames(3);
+    assert!(h.app.agent_chat.state.is_none() && starts("mastra-agent") == 0, "closed, the panel starts nothing");
+    h.call("ui.agent_chat", json!({"open": true, "minimized": true}));
+    h.frames(3);
+    assert!(h.app.agent_chat.state.is_none() && starts("mastra-agent") == 0, "folded to its strip, it starts nothing");
+
+    // Shown: the agent starts, and the page has the rows. Nothing was pressed and nothing sent.
+    h.call("ui.agent_chat", json!({"minimized": false}));
+    until(&mut h, State::NeedsAuth);
+    assert_eq!(starts("mastra-agent"), 1);
+    let state = page_state(&mut h.app);
+    assert_eq!((&state["state"], &state["connect"]["connected"]), (&json!("auth"), &json!(false)));
+    let rows = |list: &Value| list.as_array().expect("rows").iter().map(|row| row["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(rows(&state["connect"]["plans"]), ["openai-codex", "anthropic", "kimi-for-coding", "xai", "github-copilot"]);
+    assert_eq!(rows(&state["connect"]["keys"]), connections::KEY_IDS);
+    assert_eq!(state["connect"]["plans"][0]["name"], "ChatGPT");
+    assert!(state["items"].as_array().is_some_and(|items| !items.iter().any(|item| item["kind"] == "user")), "no message was sent");
+    // More frames start nothing more.
+    h.frames(20);
+    assert_eq!((h.app.agent_chat.state(), starts("mastra-agent")), (State::NeedsAuth, 1));
+
+    // Stopped by the user, it stays stopped: shown for long, closed and opened again.
+    let ctx = h.ctx.clone();
+    web::act(&mut h.app, &ctx, &json!({"type": "disconnect"}).to_string()).expect("a listed action");
+    h.frames(20);
+    h.call("ui.agent_chat", json!({"open": false}));
+    h.frames(3);
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(20);
+    assert_eq!((h.app.agent_chat.state(), starts("mastra-agent")), (State::Off, 1), "after a disconnect it stays off");
+    assert!(h.app.agent_chat.backend.is_none());
+    assert_eq!(page_state(&mut h.app)["connect"]["plans"], json!([]));
+    // Connect still starts it.
+    web::act(&mut h.app, &ctx, &json!({"type": "connect"}).to_string()).expect("a listed action");
+    until(&mut h, State::NeedsAuth);
+    assert_eq!(starts("mastra-agent"), 2);
+    disconnect(&mut h.app);
+
+    // A start that failed is not tried again by itself: Retry is the user's.
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.app.builtin_agent = Some(agents::Builtin { program: dir.join("no-such-program"), args: Vec::new(), packaged: true, data: None });
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(3);
+    assert_eq!(h.app.agent_chat.state(), State::Failed);
+    let said = h.app.agent_chat.items.len();
+    h.frames(20);
+    assert_eq!((h.app.agent_chat.state(), h.app.agent_chat.items.len()), (State::Failed, said), "it was tried once");
+
+    // Another agent is not started by showing the panel.
+    let other = fake_agent_program(&dir, "other-agent", &conn_told(|_| {}));
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    h.app.agent_chat.detection = Some(Default::default());
+    h.app.preferences.agents.push(agents::AgentConfig {
+        id: "custom-1".into(),
+        name: "Mine".into(),
+        command: other.to_string_lossy().into_owned(),
+        ..Default::default()
+    });
+    h.call("ui.agent_chat", json!({"open": true}));
+    h.frames(20);
+    assert_eq!(agents::current(&h.app).map(|entry| entry.id).as_deref(), Some("custom-1"));
+    assert!(h.app.agent_chat.state.is_none() && h.app.agent_chat.backend.is_none(), "{:?}", h.app.agent_chat.state());
+    assert_eq!(starts("other-agent"), 0, "showing the panel started no other agent");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// B3: after `conn_login` the page is told the sign-in under way with the phase the agent gives,
+/// and it stays told. Neither the app nor its ACP client has a timer for a sign-in, so there is
+/// no clock to advance here: what can be shown is that polling on changes nothing and sends
+/// nothing. The address the agent opened is not passed on.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_sign_in_under_way_is_told_to_the_page_and_stays() {
+    let (mut app, script, _keys, ctx) = builtin_told(|_| {});
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_login"})).is_err(), "no id");
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_login", "id": "no-such-plan"})).is_err(), "not a plan");
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_login", "id": "openai"})).is_err(), "a key's id is no plan");
+    conn_act(&mut app, &ctx, json!({"type": "conn_login", "id": "openai-codex"})).expect("a plan the agent offers");
+    assert_eq!(script.calls(), ["conn: setup", "conn: login openai-codex"]);
+    assert_eq!(script.requests().last(), Some(&connections::Request::Login("openai-codex".into())));
+    let browser = |told: &mut Value| {
+        told["login"] =
+            json!({"id": "openai-codex", "phase": "browser", "url": "https://auth.example/authorize?state=s3cr3t", "userCode": null, "error": null})
+    };
+    script.report(Event::Connections(conn_snapshot(browser)));
+    poll(&mut app, &ctx);
+    let expected = json!({"id": "openai-codex", "phase": "browser", "userCode": null, "error": null});
+    for _ in 0..200 {
+        poll(&mut app, &ctx);
+        assert_eq!(page_state(&mut app)["connect"]["login"], expected);
+    }
+    assert!(!web::state(&mut app).contains("auth.example"), "the address is the agent's and the browser's");
+    assert_eq!(app.agent_chat.state(), State::NeedsAuth);
+    assert_eq!(script.calls(), ["conn: setup", "conn: login openai-codex"], "nothing ended the sign-in");
+    // One sign-in at a time: a second is refused here, before the agent would answer `busy`.
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_login", "id": "anthropic"})).is_err());
+    // And if the agent does answer `busy`, the conversation says nothing and the sign-in stays.
+    let before = app.agent_chat.items.len();
+    script.report(Event::ConnectionsFailed { what: connections::What::Login, code: -32000 });
+    poll(&mut app, &ctx);
+    assert_eq!((app.agent_chat.items.len(), app.agent_chat.state()), (before, State::NeedsAuth));
+    assert_eq!(page_state(&mut app)["connect"]["login"], expected);
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_refused"));
+    // The phases the agent can give, each as it gives it.
+    for phase in ["starting", "browser", "device", "code"] {
+        script.report(Event::Connections(conn_snapshot(|told| told["login"] = json!({"id": "xai", "phase": phase}))));
+        poll(&mut app, &ctx);
+        assert_eq!(page_state(&mut app)["connect"]["login"]["phase"], phase);
+    }
+}
+
+/// B4: a snapshot that turns a plan to `in` opens a session when there was none, once; the
+/// agent's `config_option_update` then shows the models, and the page is told it is connected.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_plan_signing_in_opens_the_session_and_its_models_show() {
+    let (mut app, script, _keys, ctx) = builtin_told(|_| {});
+    assert_eq!(app.agent_chat.state(), State::NeedsAuth);
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls(), ["conn: setup", "new_session"]);
+    assert_eq!(app.agent_chat.state(), State::Starting);
+    // The same news again (the answer to `login` and the `changed` notification) opens no second one.
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls(), ["conn: setup", "new_session"]);
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.state(), State::Ready);
+    script.report(Event::ConfigOptions(vec![model_option("openai/gpt-6.2-sol", &["openai/gpt-6.2-sol", "openai/gpt-6.2-mini"])]));
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!(state["state"], "ready");
+    assert_eq!(state["connect"]["connected"], true);
+    assert_eq!(
+        state["connect"]["plans"][0],
+        json!({"id": "openai-codex", "name": "ChatGPT", "state": "in", "account": "a@example.com", "prefix": "openai"})
+    );
+    let models: Vec<&str> =
+        state["config"][0]["options"].as_array().expect("the models").iter().map(|choice| choice["value"].as_str().unwrap()).collect();
+    assert_eq!(models, ["openai/gpt-6.2-sol", "openai/gpt-6.2-mini"]);
+    assert_eq!(state["config"][0]["currentValue"], "openai/gpt-6.2-sol");
+    // A message typed while signing in goes once the session is ready.
+    let (mut app, script, _keys, ctx) = builtin_told(|_| {});
+    send(&mut app, &ctx, "make a box".into());
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    assert!(script.prompts().is_empty(), "not before the session is ready");
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls(), ["conn: setup", "new_session", "prompt: make a box"]);
+    // A session the agent refuses is not asked for again and again: only when it says more.
+    let (mut app, script, _keys, ctx) = builtin_told(chatgpt_in);
+    script.report(Event::AuthRequired { methods: Vec::new() });
+    for _ in 0..5 {
+        poll(&mut app, &ctx);
+    }
+    assert_eq!(script.calls(), ["conn: setup", "new_session"]);
+    assert_eq!(app.agent_chat.state(), State::NeedsAuth);
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls(), ["conn: setup", "new_session", "new_session"]);
+}
+
+fn model_option(current: &str, models: &[&str]) -> backend::ConfigOption {
+    backend::ConfigOption {
+        id: "model".into(),
+        name: "Model".into(),
+        description: String::new(),
+        category: "model".into(),
+        current_value: current.into(),
+        options: models
+            .iter()
+            .map(|model| backend::ConfigChoice { value: model.to_string(), name: model.to_string(), description: String::new(), group: None })
+            .collect(),
+    }
+}
+
+/// B5 and B6: `conn_reopen` and `conn_cancel` go to the agent as they are; after the cancel the
+/// page is told no sign-in, and nothing was added to the conversation.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn reopening_and_cancelling_a_sign_in_go_to_the_agent_and_say_nothing() {
+    let (mut app, script, _keys, ctx) = builtin_told(|_| {});
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_reopen"})).is_err(), "no sign-in is under way");
+    script.report(Event::Connections(conn_snapshot(|told| told["login"] = json!({"id": "openai-codex", "phase": "browser"}))));
+    poll(&mut app, &ctx);
+    conn_act(&mut app, &ctx, json!({"type": "conn_reopen"})).expect("a sign-in is under way");
+    assert_eq!(script.requests().last(), Some(&connections::Request::Reopen));
+    conn_act(&mut app, &ctx, json!({"type": "conn_cancel"})).expect("a listed action");
+    assert_eq!(script.requests().last(), Some(&connections::Request::Cancel));
+    assert_eq!(script.calls(), ["conn: setup", "conn: reopen", "conn: cancel"]);
+    script.report(Event::Connections(conn_snapshot(|_| {})));
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!((&state["connect"]["login"], &state["connect"]["problem"]), (&Value::Null, &Value::Null));
+    assert!(app.agent_chat.items.is_empty(), "cancelling is not an error: {:?}", app.agent_chat.items);
+    assert_eq!(state["items"], json!([]));
+    assert_eq!(app.agent_chat.state(), State::NeedsAuth);
+    // A sign-in that could not finish is told with its kind, and cancel clears it at the agent.
+    script.report(Event::Connections(conn_snapshot(|told| told["problem"] = json!({"id": "openai-codex", "kind": "port"}))));
+    poll(&mut app, &ctx);
+    assert_eq!(page_state(&mut app)["connect"]["problem"], json!({"id": "openai-codex", "kind": "port"}));
+    conn_act(&mut app, &ctx, json!({"type": "conn_cancel"})).expect("cancel also clears the note");
+    assert!(app.agent_chat.items.is_empty());
+}
+
+/// B7 and B8: a pasted code is passed on for the sign-in under way; the agent's word that it is
+/// incomplete, and the code a device sign-in shows, reach the page.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_pasted_code_is_passed_on_and_what_the_agent_says_of_it_reaches_the_page() {
+    let (mut app, script, _keys, ctx) =
+        builtin_told(|told| told["login"] = json!({"id": "anthropic", "phase": "code", "url": "https://claude.example/oauth"}));
+    for refused in [
+        json!({"type": "conn_code", "id": "anthropic"}),
+        json!({"type": "conn_code", "code": "abc"}),
+        json!({"type": "conn_code", "id": "anthropic", "code": "   "}),
+        json!({"type": "conn_code", "id": "anthropic", "code": "c".repeat(4097)}),
+        json!({"type": "conn_code", "id": "openai-codex", "code": "abc"}),
+        json!({"type": "conn_code", "id": "anthropic", "code": 7}),
+    ] {
+        assert!(conn_act(&mut app, &ctx, refused.clone()).is_err(), "{refused}");
+    }
+    assert_eq!(script.calls(), ["conn: setup"], "nothing refused reached the agent");
+    conn_act(&mut app, &ctx, json!({"type": "conn_code", "id": "anthropic", "code": "  abc123#state-xyz\n"}))
+        .expect("a code for the sign-in under way");
+    assert_eq!(script.requests().last(), Some(&connections::Request::Code { id: "anthropic".into(), code: "abc123#state-xyz".into() }));
+    assert_eq!(script.calls(), ["conn: setup", "conn: code anthropic"]);
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_code", "id": "anthropic", "code": "c".repeat(4096)})).is_ok(), "the longest code there is");
+    script.report(Event::Connections(conn_snapshot(|told| told["login"] = json!({"id": "anthropic", "phase": "code", "error": "incomplete"}))));
+    poll(&mut app, &ctx);
+    assert_eq!(page_state(&mut app)["connect"]["login"], json!({"id": "anthropic", "phase": "code", "userCode": null, "error": "incomplete"}));
+    script.report(Event::Connections(conn_snapshot(|told| {
+        told["login"] = json!({"id": "github-copilot", "phase": "device", "userCode": "ABCD-1234"})
+    })));
+    poll(&mut app, &ctx);
+    assert_eq!(page_state(&mut app)["connect"]["login"], json!({"id": "github-copilot", "phase": "device", "userCode": "ABCD-1234", "error": null}));
+    assert!(app.agent_chat.items.is_empty());
+}
+
+/// B9: `conn_logout` goes to the agent; when it then says nothing is connected the conversation
+/// needs a sign-in again and its session is given up, and signing in again opens a new one.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn signing_out_of_the_last_connection_returns_to_the_sign_in() {
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    script.report(Event::ConfigOptions(vec![model_option("openai/gpt-6.2-sol", &["openai/gpt-6.2-sol"])]));
+    poll(&mut app, &ctx);
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_logout", "id": "anthropic"})).is_err(), "not signed in there");
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_logout"})).is_err());
+    conn_act(&mut app, &ctx, json!({"type": "conn_logout", "id": "openai-codex"})).expect("a plan that is signed in");
+    assert_eq!(script.requests().last(), Some(&connections::Request::Logout("openai-codex".into())));
+    assert_eq!(app.agent_chat.state(), State::Ready, "until the agent says so");
+    script.report(Event::Connections(conn_snapshot(|_| {})));
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["connect"]["connected"]), (&json!("auth"), &json!(false)));
+    assert_eq!(state["connect"]["plans"][0]["state"], "out");
+    assert_eq!(state["config"], Value::Null, "the models of the session that was are gone");
+    assert_eq!(script.calls(), ["conn: setup", "new_session", "conn: logout openai-codex", "forget_session"]);
+    assert!(app.agent_chat.items.is_empty(), "signing out is not an error");
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls().last().map(String::as_str), Some("new_session"));
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.state(), State::Ready);
+    // Signing out of one of two leaves the conversation as it is.
+    let both = |told: &mut Value| {
+        chatgpt_in(told);
+        told["keys"][0]["saved"] = json!(true);
+    };
+    script.report(Event::Connections(conn_snapshot(both)));
+    script.report(Event::Connections(conn_snapshot(|told| told["keys"][0]["saved"] = json!(true))));
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.state(), State::Ready);
+    assert_eq!(script.calls().iter().filter(|call| *call == "forget_session").count(), 1);
+}
+
+/// A keychain that takes nothing.
+struct RefusingKeys;
+impl backend::Secrets for RefusingKeys {
+    fn get(&self, _: &str) -> Result<Option<String>, String> {
+        Err(format!("the keychain is locked ({BUILTIN_KEY})"))
+    }
+    fn set(&self, _: &str, secret: &str) -> Result<(), String> {
+        Err(format!("the keychain refused {secret}"))
+    }
+    fn delete(&self, _: &str) -> Result<(), String> {
+        Err("the keychain is locked".into())
+    }
+}
+
+/// Everything the app could show or write a key in: the preferences as saved, the control
+/// channel's status, the page's state, the conversation, and what a log would print of the
+/// requests to the agent.
+fn everywhere_a_key_could_leak(app: &mut SolveApp, script: &Script) -> String {
+    let notices: Vec<String> = app.agent_chat.items.iter().map(|item| format!("{item:?}")).collect();
+    [
+        serde_json::to_string(&app.preferences).unwrap(),
+        app.prefs(),
+        status(app).to_string(),
+        web::state(app),
+        notices.join("\n"),
+        script.calls().join("\n"),
+        format!("{:?}", script.requests()),
+        format!("{:?}", app.agent_chat.conn.error),
+    ]
+    .join("\n")
+}
+
+/// What the page is told of a key save, from the connections it was told before: the count of
+/// answered saves has moved on by one, and the save's `error` (returned) is all else that changed.
+fn answered_save(before: &Value, after: Value) -> Value {
+    assert_eq!(after["keySaves"].as_u64(), before["keySaves"].as_u64().map(|count| count + 1), "the save is answered");
+    let mut rest = after.clone();
+    rest["keySaves"] = before["keySaves"].clone();
+    rest["error"] = before["error"].clone();
+    assert_eq!(&rest, before, "nothing else the page is told changed");
+    after["error"].clone()
+}
+
+/// B10: `conn_key` puts the key in the keychain and hands it to the agent with `setup`, and the
+/// key is nowhere else; `conn_key_remove` takes it out again. A keychain that refuses, or that
+/// is not there, is told to the page in the user's words, without the key.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_key_goes_to_the_keychain_and_the_agent_and_nowhere_else() {
+    use backend::Secrets as _;
+    let (mut app, script, keys, ctx) = builtin_told(|_| {});
+    for refused in [
+        json!({"type": "conn_key", "provider": "openai"}),
+        json!({"type": "conn_key", "key": BUILTIN_KEY}),
+        json!({"type": "conn_key", "provider": "mistral", "key": BUILTIN_KEY}),
+        json!({"type": "conn_key", "provider": "openai-codex", "key": BUILTIN_KEY}),
+        json!({"type": "conn_key", "provider": "openai", "key": "   "}),
+        json!({"type": "conn_key", "provider": "openai", "key": format!("{BUILTIN_KEY}{}", "k".repeat(4096))}),
+        json!({"type": "conn_key", "provider": "openai", "key": format!("{BUILTIN_KEY}\u{7}")}),
+        json!({"type": "conn_key_remove"}),
+        json!({"type": "conn_key_remove", "provider": "mistral"}),
+    ] {
+        let why = conn_act(&mut app, &ctx, refused.clone()).expect_err("out of range");
+        assert!(!why.contains(BUILTIN_KEY), "the reason goes to the host's log: {why}");
+    }
+    assert!(keys.get("mastra/key/openai").unwrap().is_none() && script.calls() == ["conn: setup"], "nothing refused was kept or sent");
+    // A key the page could send and the app does not take is told to the page, so its dialog stops waiting.
+    let before = page_state(&mut app)["connect"].clone();
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "openai", "key": "k".repeat(4097)})).expect_err("too long");
+    assert_eq!(answered_save(&before, page_state(&mut app)["connect"].clone()), tr("ui.agent_chat_conn_refused"));
+
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "openai", "key": format!("  {BUILTIN_KEY}\n")}))
+        .expect("a key for one of the five");
+    assert_eq!(keys.get("mastra/key/openai").unwrap().as_deref(), Some(BUILTIN_KEY), "in the keychain, trimmed");
+    until_setups(&mut app, &ctx, &script, 2);
+    assert_eq!(
+        script.requests().last(),
+        Some(&setup_of(&[("openai", BUILTIN_KEY)], Vec::new())),
+        "and handed to the agent, with every other key there is"
+    );
+    // The agent says the key is saved: something is connected, so the session opens.
+    script.report(Event::Connections(conn_snapshot(|told| told["keys"][1]["saved"] = json!(true))));
+    poll(&mut app, &ctx);
+    assert_eq!(page_state(&mut app)["connect"]["keys"][1]["saved"], true);
+    assert_eq!(script.calls(), ["conn: setup", "conn: setup", "new_session"]);
+    // The key is where it was sent, and nowhere it could be read.
+    let sent = script.requests().iter().map(|request| request.params().to_string()).collect::<Vec<_>>().join("\n");
+    assert!(sent.contains(BUILTIN_KEY), "the check below would pass on an empty string too");
+    let shown = everywhere_a_key_could_leak(&mut app, &script);
+    assert!(shown.contains("mastra") && !shown.contains(BUILTIN_KEY), "{shown}");
+    assert_eq!(app.agent_chat.conn.error, None);
+
+    conn_act(&mut app, &ctx, json!({"type": "conn_key_remove", "provider": "openai"})).expect("a listed provider");
+    assert!(keys.get("mastra/key/openai").unwrap().is_none(), "taken out of the keychain");
+    until_setups(&mut app, &ctx, &script, 3);
+    assert_eq!(script.requests().last(), Some(&setup_of(&[], Vec::new())), "and the agent is handed what is left");
+
+    // A keychain that refuses: the page is told, in the user's words; nothing is handed over.
+    app.services.secrets = Some(Arc::new(RefusingKeys));
+    let calls = script.calls().len();
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": BUILTIN_KEY})).expect("the action itself is in range");
+    let refused = page_state(&mut app)["connect"].clone();
+    assert_eq!(refused["error"], tr("ui.host_ai_key_unavailable"));
+    // The same refusal again: its sentence is the one before, and the count of answered saves
+    // alone tells the dialog that this save has its answer.
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": BUILTIN_KEY})).expect("in range");
+    assert_eq!(answered_save(&refused, page_state(&mut app)["connect"].clone()), tr("ui.host_ai_key_unavailable"));
+    poll(&mut app, &ctx);
+    assert_eq!(script.calls().len(), calls, "no setup without the key kept");
+    assert!(!everywhere_a_key_could_leak(&mut app, &script).contains(BUILTIN_KEY), "not even in the keychain's own words");
+    conn_act(&mut app, &ctx, json!({"type": "conn_key_remove", "provider": "anthropic"})).expect("in range");
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.host_ai_key_unavailable"));
+    // No keychain at all.
+    app.services.secrets = None;
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": BUILTIN_KEY})).expect("in range");
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.ai_no_keychain"));
+    // The next thing that works clears the word.
+    app.services.secrets = Some(keys.clone());
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": BUILTIN_KEY})).expect("in range");
+    let saved = page_state(&mut app)["connect"].clone();
+    assert_eq!(saved["error"], Value::Null);
+    assert_eq!(keys.get("mastra/key/anthropic").unwrap().as_deref(), Some(BUILTIN_KEY));
+    // Saving a key that is kept again (an update) changes nothing else the page is told.
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "anthropic", "key": CUSTOM_KEY})).expect("an update");
+    assert_eq!(answered_save(&saved, page_state(&mut app)["connect"].clone()), Value::Null);
+    assert_eq!(keys.get("mastra/key/anthropic").unwrap().as_deref(), Some(CUSTOM_KEY));
+
+    // A start whose keychain cannot be read says so and still starts, without the key.
+    let (mut app, _keys, ctx) = app_with_builtin();
+    app.services.secrets = Some(Arc::new(RefusingKeys));
+    let script = start_builtin(&mut app, &ctx);
+    assert_eq!(script.requests(), [setup_of(&[], Vec::new())]);
+    assert_eq!(app.agent_chat.conn.error, Some("ui.host_ai_key_unavailable"));
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.host_ai_key_unavailable"));
+    assert!(!everywhere_a_key_could_leak(&mut app, &script).contains(BUILTIN_KEY));
+}
+
+/// B11: `conn_custom` is checked field by field, kept in preferences without its key (which
+/// goes to the keychain) and handed to the agent with it; `conn_custom_remove` takes all of it
+/// away again, by the id the agent gave the address. Every refusal tells the page why, in the
+/// user's words (`connect.error`): none only reaches the host's log. A name that is kept is not
+/// written over, and nothing that was typed is quietly left out.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_custom_address_is_checked_kept_without_its_key_and_handed_over() {
+    use backend::Secrets as _;
+    let (mut app, script, keys, ctx) = builtin_told(|_| {});
+    let good =
+        || json!({"type": "conn_custom", "name": "my-llm", "url": "http://localhost:11434/v1/", "key": CUSTOM_KEY, "models": ["llama3.2", "qwen3"]});
+    let without = |field: &str| {
+        let mut action = good();
+        action.as_object_mut().unwrap().remove(field);
+        action
+    };
+    let with = |field: &str, value: Value| {
+        let mut action = good();
+        action[field] = value;
+        action
+    };
+    let both = "ui.agent_chat_conn_custom_need_both";
+    let model = "ui.agent_chat_conn_custom_need_model";
+    let many = "ui.agent_chat_conn_custom_too_many";
+    let plain = "ui.agent_chat_conn_custom_plain_url";
+    let refusals = [
+        (without("name"), both),
+        (without("url"), both),
+        (with("name", json!("")), both),
+        (with("name", json!("\u{feff}")), both),
+        (with("name", json!("n".repeat(41))), both),
+        (with("url", json!("localhost:11434/v1")), both),
+        (with("url", json!("ftp://localhost/v1")), both),
+        (with("url", json!(format!("https://llm.example/{}", "p".repeat(400)))), both),
+        (with("url", json!(format!("https://user:{CUSTOM_KEY}@llm.example/v1"))), plain),
+        (with("url", json!(format!("https://llm.example/v1?api_key={CUSTOM_KEY}"))), plain),
+        (without("models"), model),
+        (with("models", json!("llama3.2")), model),
+        (with("models", json!([])), model),
+        (with("models", json!((0..17).map(|n| format!("m{n}")).collect::<Vec<_>>())), many),
+        (with("models", json!(["llama3.2", "m".repeat(121)])), many),
+        (with("key", json!(7)), "ui.agent_chat_conn_refused"),
+        (with("key", json!(format!("{CUSTOM_KEY}{}", "k".repeat(4096)))), "ui.agent_chat_conn_refused"),
+        // A key is not sent in the clear to another computer: the app's rule for every key it holds.
+        (with("url", json!("http://192.168.1.20:11434/v1")), "ui.ai_key_needs_https"),
+    ];
+    for (refused, sentence) in refusals {
+        let why = conn_act(&mut app, &ctx, refused.clone()).expect_err("out of range");
+        assert!(!why.contains(CUSTOM_KEY) && !why.contains("localhost") && !why.contains("llm.example"), "{why}");
+        let state = page_state(&mut app);
+        assert_eq!(state["connect"]["error"], tr(sentence), "{refused}: the page is told why");
+        assert!(!state.to_string().contains(CUSTOM_KEY), "a secret typed into the address is shown nowhere");
+        assert_eq!(status(&app)["connect"]["error"], tr(sentence));
+    }
+    assert!(app.preferences.mastra_custom.is_empty() && script.calls() == ["conn: setup"], "nothing refused was kept or sent");
+    assert!(keys.get("mastra/custom/my-llm").unwrap().is_none());
+    // The sentence is the user's language's, whenever it is read.
+    let chinese = {
+        let _language = crate::i18n::scope("zh");
+        tr("ui.ai_key_needs_https").to_string()
+    };
+    app.preferences.language = "zh".into();
+    assert_eq!(page_state(&mut app)["connect"]["error"], chinese);
+    assert_ne!(chinese, tr("ui.ai_key_needs_https"));
+    app.preferences.language = "en".into();
+
+    // What is in range is kept, and the word of the last refusal goes.
+    conn_act(&mut app, &ctx, good()).expect("a custom address in range");
+    assert_eq!(page_state(&mut app)["connect"]["error"], Value::Null);
+    let kept = connections::CustomAddress {
+        name: "my-llm".into(),
+        url: "http://localhost:11434/v1".into(),
+        models: vec!["llama3.2".into(), "qwen3".into()],
+        key: true,
+    };
+    assert_eq!(app.preferences.mastra_custom, std::slice::from_ref(&kept));
+    assert_eq!(keys.get("mastra/custom/my-llm").unwrap().as_deref(), Some(CUSTOM_KEY), "its key is in the keychain");
+    until_setups(&mut app, &ctx, &script, 2);
+    let sent = script.requests().last().expect("the setup").params();
+    assert_eq!(sent["keys"], json!({}));
+    assert_eq!(
+        sent["custom"],
+        json!([{"name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2", "qwen3"], "apiKey": CUSTOM_KEY}])
+    );
+    let saved: Value = serde_json::from_str(&app.prefs()).unwrap();
+    assert_eq!(
+        saved["preferences"]["mastra_custom"],
+        json!([{"name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2", "qwen3"], "key": true}])
+    );
+    assert!(!everywhere_a_key_could_leak(&mut app, &script).contains(CUSTOM_KEY));
+
+    // A name that is kept is not written over (that would drop its key): the page is told.
+    let again = json!({"type": "conn_custom", "name": " my-llm ", "url": "http://localhost:1234/v1", "models": ["phi4"]});
+    conn_act(&mut app, &ctx, again).expect_err("the name is taken");
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_custom_exists"));
+    assert_eq!(app.preferences.mastra_custom, [kept]);
+    assert_eq!(keys.get("mastra/custom/my-llm").unwrap().as_deref(), Some(CUSTOM_KEY), "and its key stays");
+    assert_eq!(script.calls().iter().filter(|call| *call == "conn: setup").count(), 2, "nothing was handed over again");
+
+    // A short address is an address, and plain HTTP to another computer is fine without a key.
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "pi", "url": "http://pi", "models": ["phi4"]})).expect("in range");
+    until_setups(&mut app, &ctx, &script, 3);
+    assert_eq!(script.requests().last().expect("the setup").params()["custom"][1], json!({"name": "pi", "url": "http://pi", "models": ["phi4"]}));
+    // A keychain that refuses keeps the address out too.
+    app.services.secrets = Some(Arc::new(RefusingKeys));
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "keyed", "url": "https://llm.example/v1", "key": CUSTOM_KEY, "models": ["m"]}))
+        .expect("in range");
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.host_ai_key_unavailable"));
+    assert_eq!(app.preferences.mastra_custom.len(), 2);
+    app.services.secrets = Some(keys.clone());
+
+    // Removal goes by the id the agent gave it, which is not the name as it was typed.
+    conn_act(
+        &mut app,
+        &ctx,
+        json!({"type": "conn_custom", "name": "Second LLM", "url": "https://llm.example/v1", "key": CUSTOM_KEY, "models": ["m"]}),
+    )
+    .expect("in range");
+    until_setups(&mut app, &ctx, &script, 4);
+    assert_eq!(page_state(&mut app)["connect"]["error"], Value::Null);
+    let told = |told: &mut Value| {
+        told["custom"] = json!([
+            {"id": "my-llm", "name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2", "qwen3"], "keyed": true, "prefix": "mastracode/my-llm"},
+            {"id": "pi", "name": "pi", "url": "http://pi", "models": ["phi4"], "keyed": false, "prefix": "mastracode/pi"},
+            {"id": "second-llm", "name": "Second LLM", "url": "https://llm.example/v1", "models": ["m"], "keyed": true, "prefix": "mastracode/second-llm"},
+        ])
+    };
+    script.report(Event::Connections(conn_snapshot(told)));
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!(
+        state["connect"]["custom"][2],
+        json!({"id": "second-llm", "name": "Second LLM", "url": "https://llm.example/v1", "models": ["m"], "keyed": true, "prefix": "mastracode/second-llm"})
+    );
+    assert_eq!(state["connect"]["connected"], true, "a custom address is something to talk to");
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_custom_remove", "id": "no-such"})).is_err());
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_custom_remove"})).is_err());
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom_remove", "id": "second-llm"})).expect("an address the agent lists");
+    assert_eq!(app.preferences.mastra_custom.iter().map(|kept| kept.name.as_str()).collect::<Vec<_>>(), ["my-llm", "pi"]);
+    assert!(keys.get("mastra/custom/Second LLM").unwrap().is_none(), "its key goes with it");
+    until_setups(&mut app, &ctx, &script, 5);
+    assert_eq!(script.requests().last().expect("the setup").params()["custom"].as_array().map(Vec::len), Some(2));
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom_remove", "id": "my-llm"})).expect("another one");
+    assert_eq!(app.preferences.mastra_custom.len(), 1);
+    assert!(keys.get("mastra/custom/my-llm").unwrap().is_none());
+
+    // No more than 32 are kept: the next one is refused, and the page is told.
+    until_setups(&mut app, &ctx, &script, 6);
+    for n in 0..31 {
+        conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": format!("a{n}"), "url": "http://pi", "models": ["m"]})).expect("room for it");
+    }
+    assert_eq!(app.preferences.mastra_custom.len(), 32);
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "one-more", "url": "http://pi", "models": ["m"]})).expect_err("full");
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_custom_full"));
+    assert_eq!(app.preferences.mastra_custom.len(), 32);
+    until_setups(&mut app, &ctx, &script, 7);
+}
+
+/// An address in the preferences that cannot be handed over (written by hand, or by another
+/// version of the app) is never shown on the page, so nobody could remove it: it does not take
+/// its name, and it makes way, with its key, for an address of that name that is added.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_address_that_cannot_be_handed_over_takes_neither_its_name_nor_room() {
+    use backend::Secrets as _;
+    let (mut app, _keys, ctx) = app_with_builtin();
+    let keys = Arc::new(direct_integration::Keys::default());
+    app.services.secrets = Some(keys.clone());
+    keys.set("mastra/custom/old", CUSTOM_KEY).unwrap();
+    let address = |name: &str, url: &str, key: bool| connections::CustomAddress { name: name.into(), url: url.into(), models: vec!["m".into()], key };
+    app.preferences.mastra_custom = vec![address("old", "https://llm.example/v1?api_key=in-the-address", true), address("fine", "http://pi", false)];
+    let script = start_builtin(&mut app, &ctx);
+    let handed = |script: &Script| script.requests().last().expect("the setup").params()["custom"].clone();
+    assert_eq!(handed(&script), json!([{"name": "fine", "url": "http://pi", "models": ["m"]}]), "what cannot be handed over is left out");
+    assert_eq!(app.preferences.mastra_custom.len(), 2, "and left alone in the preferences");
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "old", "url": "http://localhost:11434/v1", "models": ["m"]}))
+        .expect("the name is free");
+    assert_eq!(page_state(&mut app)["connect"]["error"], Value::Null);
+    assert_eq!(app.preferences.mastra_custom, [address("fine", "http://pi", false), address("old", "http://localhost:11434/v1", false)]);
+    assert!(keys.get("mastra/custom/old").unwrap().is_none(), "the key of the entry that made way went with it");
+    until_setups(&mut app, &ctx, &script, 2);
+    assert_eq!(
+        handed(&script),
+        json!([{"name": "fine", "url": "http://pi", "models": ["m"]}, {"name": "old", "url": "http://localhost:11434/v1", "models": ["m"]}])
+    );
+    // An address that can be handed over still keeps its name.
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "fine", "url": "http://localhost:1234/v1", "models": ["m"]})).expect_err("taken");
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_custom_exists"));
+}
+
+/// What the agent refuses is told to the page as that, so a key dialog or the address form
+/// stops waiting; never in the agent's words. The next action takes the word away again.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_request_the_agent_refuses_is_told_to_the_page_until_the_next_action() {
+    let (mut app, script, _keys, ctx) = builtin_told(|_| {});
+    for what in [connections::What::Setup, connections::What::Login, connections::What::Code, connections::What::Logout, connections::What::Cancel] {
+        script.report(Event::ConnectionsFailed { what, code: -32602 });
+        poll(&mut app, &ctx);
+        let state = page_state(&mut app);
+        assert_eq!(state["connect"]["error"], "That could not be done. Try again.", "{what:?}");
+        assert_eq!((&state["state"], &state["items"]), (&json!("auth"), &json!([])), "it is not an error of the conversation");
+        // In the user's language whenever it is read, though it arrived outside a frame.
+        app.preferences.language = "zh".into();
+        assert_eq!(page_state(&mut app)["connect"]["error"], "这一步没有做成。请再试一次。");
+        app.preferences.language = "en".into();
+        conn_act(&mut app, &ctx, json!({"type": "conn_cancel"})).expect("a listed action");
+        assert_eq!(page_state(&mut app)["connect"]["error"], Value::Null, "the next action starts clean");
+    }
+    assert_eq!(script.calls().iter().filter(|call| *call == "conn: cancel").count(), 5);
+}
+
+/// D: what the page is given when the built-in agent could not start, ended by itself or was
+/// stopped. The connections are still an object (the agent is still the built-in one) with
+/// nothing in them and `connected: false`, the state says which it was, and the reason is among
+/// the items: the page has the conversation to show, not an empty Connections page.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_built_in_agent_that_failed_or_ended_leaves_the_page_its_notice_and_no_connections() {
+    let nothing =
+        json!({"plans": [], "keys": [], "custom": [], "login": null, "problem": null, "error": null, "keySaves": 0, "dates": {}, "connected": false});
+    let notices = |state: &Value| -> Vec<String> {
+        let items = state["items"].as_array().expect("items");
+        items
+            .iter()
+            .filter(|item| item["kind"] == "notice" && item["error"] == true)
+            .map(|item| item["text"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    // It could not start: its program is not there.
+    let (mut app, _keys, ctx) = app_with_builtin();
+    connect(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["running"], &state["connect"]), (&json!("failed"), &json!(false), &nothing));
+    let said = notices(&state);
+    assert!(said.last().is_some_and(|text| text.starts_with("The agent could not start: ")), "{said:?}");
+
+    // It ended while it was starting: failed, with the end said.
+    let (mut app, _keys, ctx) = app_with_builtin();
+    let script = start_builtin(&mut app, &ctx);
+    script.report(Event::Exited { tail: vec!["[intcad] Mastra Code's SDK is not in /nowhere.".into()] });
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["running"], &state["connect"]), (&json!("failed"), &json!(false), &nothing));
+    let said = notices(&state);
+    assert!(said.last().is_some_and(|text| text.starts_with(tr("ui.agent_chat_exited")) && text.contains("SDK is not in")), "{said:?}");
+
+    // It ended after it had said what is connected: what it said is gone with it.
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    assert_eq!(page_state(&mut app)["connect"]["connected"], true);
+    script.report(Event::Exited { tail: vec!["out of memory".into()] });
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["running"], &state["connect"]), (&json!("exited"), &json!(false), &nothing));
+    let said = notices(&state);
+    assert!(said.last().is_some_and(|text| text.starts_with(tr("ui.agent_chat_exited")) && text.ends_with("out of memory")), "{said:?}");
+    assert_eq!(status(&app)["connect"], nothing);
+
+    // Stopped by the user: off, and nothing to say.
+    let (mut app, _script, _keys, _ctx) = builtin_ready();
+    disconnect(&mut app);
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["running"], &state["connect"]), (&json!("off"), &json!(false), &nothing));
+    assert_eq!(state["items"], json!([]));
+}
+
+/// C: each design's conversation has an agent of its own, and all of them read one keychain,
+/// one list of custom addresses and Mastra's one sign-in file. A key removed in one
+/// conversation is handed to the other's agent again, without the key, when that conversation
+/// is shown; so is a sign-in one agent reports. The conversation that made the change is not
+/// set up twice, and catching up is not handed back as a change.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_change_in_one_conversation_reaches_the_other_ones_agent_when_it_is_shown() {
+    use backend::Secrets as _;
+    let setups = |script: &Script| script.calls().iter().filter(|call| *call == "conn: setup").count();
+    let saved = |told: &mut Value| told["keys"][1]["saved"] = json!(true);
+    let ready = Event::Ready { agent: "Mastra Code 0.1".into(), images: false };
+    let (mut app, keys, ctx) = app_with_builtin();
+    keys.set("mastra/key/openai", BUILTIN_KEY).unwrap();
+    // The first design's conversation: its agent is set up with the key.
+    let a = start_builtin(&mut app, &ctx);
+    a.report(Event::Connections(conn_snapshot(saved)));
+    a.report(ready.clone());
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.state(), State::Ready);
+    // A second design: its conversation is its own, and starts an agent of its own with the same key.
+    crate::documents::open_tab(&mut app, solidcraft_engine::Session::default()).unwrap();
+    assert!(app.agent_chat.backend.is_none() && app.agent_chat.state.is_none(), "the new design has its own conversation");
+    let b = start_builtin(&mut app, &ctx);
+    b.report(Event::Connections(conn_snapshot(saved)));
+    b.report(ready.clone());
+    poll(&mut app, &ctx);
+    assert_eq!(b.requests(), [setup_of(&[("openai", BUILTIN_KEY)], Vec::new())]);
+    assert_eq!(page_state(&mut app)["connect"]["keys"][1]["saved"], true);
+
+    // Back in the first design. Being shown again hands nothing over: nothing has changed.
+    crate::documents::switch(&mut app, 0);
+    for _ in 0..3 {
+        poll(&mut app, &ctx);
+    }
+    assert_eq!((setups(&a), setups(&b)), (1, 1));
+    // The key is removed there: that agent is set up again, without it.
+    conn_act(&mut app, &ctx, json!({"type": "conn_key_remove", "provider": "openai"})).expect("a listed provider");
+    until_setups(&mut app, &ctx, &a, 2);
+    assert_eq!(a.requests().last(), Some(&setup_of(&[], Vec::new())));
+    a.report(Event::Connections(conn_snapshot(|_| {})));
+    poll(&mut app, &ctx);
+    assert_eq!((setups(&a), setups(&b)), (2, 1), "the other design's agent is not shown: it has heard nothing yet");
+
+    // The second design is shown: its agent is set up again, without the key, and says so.
+    crate::documents::switch(&mut app, 1);
+    until_setups(&mut app, &ctx, &b, 2);
+    assert_eq!(b.requests().last(), Some(&setup_of(&[], Vec::new())), "the removed key is not handed over again");
+    b.report(Event::Connections(conn_snapshot(|_| {})));
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!((&state["connect"]["keys"][1]["saved"], &state["state"]), (&json!(false), &json!("auth")), "its page no longer says the key is saved");
+    for _ in 0..3 {
+        poll(&mut app, &ctx);
+    }
+    assert_eq!(setups(&b), 2, "once");
+    // The first design made the change itself: shown again, it is not behind.
+    crate::documents::switch(&mut app, 0);
+    for _ in 0..3 {
+        poll(&mut app, &ctx);
+    }
+    assert_eq!((setups(&a), setups(&b)), (2, 2));
+
+    // A plan signed in there reaches the other agent the same way.
+    a.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    assert_eq!(setups(&a), 2, "the agent that reported the sign-in knows of it");
+    crate::documents::switch(&mut app, 1);
+    until_setups(&mut app, &ctx, &b, 3);
+    // Set up again, that agent reads Mastra's sign-ins afresh and says the same. That is the
+    // change it caught up with, not a new one to hand back.
+    b.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    assert_eq!(page_state(&mut app)["connect"]["plans"][0]["state"], "in");
+    crate::documents::switch(&mut app, 0);
+    for _ in 0..3 {
+        poll(&mut app, &ctx);
+    }
+    assert_eq!((setups(&a), setups(&b)), (2, 3), "catching up is not a change to tell the others of");
+    // A sign-out reported in the second design reaches the first.
+    crate::documents::switch(&mut app, 1);
+    b.report(Event::Connections(conn_snapshot(|_| {})));
+    poll(&mut app, &ctx);
+    crate::documents::switch(&mut app, 0);
+    until_setups(&mut app, &ctx, &a, 3);
+    assert_eq!(setups(&b), 3);
+}
+
+/// B13: with the built-in agent the provider and model are still chosen with the existing
+/// `config` action on the model option, checked as before, and remembered for this agent.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_model_option_is_still_chosen_with_config_for_the_built_in_agent() {
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    let models = ["openai/gpt-6.2-sol", "anthropic/claude-fable-5", "mastracode/my-llm/llama3.2"];
+    script.report(Event::ConfigOptions(vec![model_option(models[0], &models)]));
+    poll(&mut app, &ctx);
+    assert!(conn_act(&mut app, &ctx, json!({"type": "config", "id": "model", "value": "openai/not-listed"})).is_err());
+    conn_act(&mut app, &ctx, json!({"type": "config", "id": "model", "value": models[2]})).expect("a listed model of another connection");
+    assert_eq!(script.calls().last().map(String::as_str), Some("set_config_option: model=mastracode/my-llm/llama3.2"));
+    assert!(page_state(&mut app)["configPending"] == json!(true));
+    script.report(Event::ConfigOptionFinished { id: "model".into(), result: Ok(vec![model_option(models[2], &models)]) });
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!((&state["config"][0]["currentValue"], &state["configPending"]), (&json!(models[2]), &json!(false)));
+    assert_eq!(app.preferences.agent_models.get("mastra").map(String::as_str), Some(models[2]));
+    assert_eq!(app.agent_chat.state(), State::Ready);
+}
+
+fn fail_turn(app: &mut SolveApp, ctx: &egui::Context, script: &Script, kind: connections::TurnKind, prefix: &str) {
+    script.report(Event::TurnProblem(connections::TurnProblem { kind, prefix: prefix.into() }));
+    ended(script, "error");
+    poll(app, ctx);
+}
+
+/// A turn that may have changed the design is not sent again by itself when its plan signs
+/// back in: a new turn would mint a second operation. The message stays for the user to send.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_turn_with_a_desktop_edit_is_not_sent_again_by_itself() {
+    use connections::TurnKind;
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    assert_eq!(script.prompts().len(), 1, "the message was sent once");
+    script.report(Event::Connections(conn_snapshot(|told| told["plans"][0]["state"] = json!("expired"))));
+    poll(&mut app, &ctx);
+    script.set_bridge_effect(true);
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
+    assert!(app.agent_chat.conn.kept.is_none(), "an edit is not kept for an automatic resend");
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    for _ in 0..3 {
+        poll(&mut app, &ctx);
+    }
+    assert!(app.agent_chat.queued.is_none(), "nothing waits to be sent again");
+    assert_eq!(script.prompts().len(), 1, "the message was not sent again by itself");
+}
+
+/// An auth-required event is another path that could send a kept message again. It must not
+/// after a turn that may have edited the design.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_auth_required_event_does_not_send_an_edited_turn_again() {
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    script.set_bridge_effect(true);
+    script.report(Event::AuthRequired { methods: Vec::new() });
+    poll(&mut app, &ctx);
+    assert!(app.agent_chat.queued.is_none(), "an edit is not queued for a later sign-in");
+    assert_eq!(script.prompts().len(), 1);
+    // Without an effect the same event still keeps the message.
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    script.set_bridge_effect(false);
+    script.report(Event::AuthRequired { methods: Vec::new() });
+    poll(&mut app, &ctx);
+    assert!(app.agent_chat.queued.is_some(), "a no-effect turn keeps its retry");
+}
+
+/// Only the built-in package takes the private route. An added ACP agent whose command splits
+/// into two words is still an ordinary agent and keeps its listener and MCP bridge.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_added_two_word_agent_is_not_the_packaged_route() {
+    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.builtin_agent = Some(agents::Builtin {
+        program: "/opt/intcad/mastra-agent/node".into(),
+        args: vec!["/opt/intcad/mastra-agent/agent/main.mjs".into()],
+        packaged: true,
+        data: None,
+    });
+    app.preferences.agents = vec![agents::AgentConfig {
+        id: "custom-1".into(),
+        name: "Mine".into(),
+        command: "npx agent".into(),
+        kind: agents::Kind::Acp,
+        ..Default::default()
+    }];
+    let entries = agents::entries(&app);
+    let builtin = entries.first().expect("the built-in entry");
+    assert_eq!(builtin.argv.len(), 2);
+    assert!(super::packaged_chat_route(&app, builtin, agents::Execution::Direct), "the package takes the private route");
+    let added = entries.iter().find(|entry| entry.id == "custom-1").expect("the added agent");
+    assert_eq!((added.kind, added.argv.len()), (agents::Kind::Acp, 2));
+    assert!(!super::packaged_chat_route(&app, added, agents::Execution::Direct), "an added agent never does");
+}
+
+/// The control: a turn proven to have had no effect is still sent again once its plan is back.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_turn_without_an_effect_is_sent_again_once_its_plan_signs_back_in() {
+    use connections::TurnKind;
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    script.report(Event::Connections(conn_snapshot(|told| told["plans"][0]["state"] = json!("expired"))));
+    poll(&mut app, &ctx);
+    script.set_bridge_effect(false);
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
+    assert!(app.agent_chat.conn.kept.is_some(), "a no-effect turn keeps its retry");
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(script.prompts().len(), 2, "the kept message goes again");
+}
+
+/// A plan that changes hands, and a key or address that changes, retire the turn's desktop
+/// authority at once: the next callback is refused instead of drawing on the old provider.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_provider_change_retires_the_turns_desktop_authority() {
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    assert_eq!(script.retirements(), 0);
+    script.report(Event::Connections(conn_snapshot(|told| told["plans"][0]["state"] = json!("out"))));
+    poll(&mut app, &ctx);
+    assert!(script.retirements() >= 1, "a plan signing out retires the turn's authority");
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    let before_key = script.retirements();
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "openai", "key": "sk-retired-7f2b9456"})).expect("a key save");
+    assert!(script.retirements() > before_key, "a key change retires the turn's authority too");
+}
+
+/// B15: a turn the connection refused is a notice with the reason, the connection's prefix and
+/// its name in the user's words, and the whole sentence in the user's language, for each kind.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_failed_turn_says_why_in_the_users_words() {
+    use connections::TurnKind;
+    let cases = [
+        (TurnKind::Auth, "auth", "ui.agent_chat_problem_auth"),
+        (TurnKind::Quota, "quota", "ui.agent_chat_problem_quota"),
+        (TurnKind::Rate, "rate", "ui.agent_chat_problem_rate"),
+        (TurnKind::Network, "network", "ui.agent_chat_problem_network"),
+        (TurnKind::Model, "model", "ui.agent_chat_problem_model"),
+        (TurnKind::Attachments, "attachments", "ui.agent_chat_problem_attachments"),
+    ];
+    for language in ["en", "zh"] {
+        for (kind, word, sentence) in cases {
+            let (mut app, script, _keys, ctx) = builtin_ready();
+            app.preferences.language = language.into();
+            let _language = crate::i18n::scope(language);
+            send(&mut app, &ctx, "make a box".into());
+            fail_turn(&mut app, &ctx, &script, kind, "openai");
+            let name = tr("ui.agent_chat_plan_openai_codex").to_string();
+            let text = trf(sentence, &[("name", &name)]);
+            assert!(!text.contains("{name}") && !text.starts_with("ui."), "{text}");
+            let state = page_state(&mut app);
+            let notice = state["items"].as_array().expect("items").last().expect("the notice").clone();
+            assert_eq!(
+                notice,
+                json!({"kind": "notice", "error": true, "text": text, "problem": {"kind": word, "prefix": "openai", "name": name}}),
+                "{language} {word}"
+            );
+            if (language, word) == ("zh", "auth") {
+                assert_eq!(notice["text"], "「ChatGPT」的登录已过期。重新登录后，刚才那句话会自动发出。");
+            }
+            assert_eq!(app.agent_chat.state(), State::Ready, "the conversation goes on");
+            assert_eq!(status(&app)["items"].as_array().expect("items").last(), Some(&json!({"notice": text, "error": true})));
+            assert_eq!(script.prompts().len(), 1, "nothing was sent again by itself");
+        }
+    }
+    assert_eq!(
+        tr("ui.agent_chat_problem_quota"),
+        "{name} reports that nothing is left on this plan or key. No other model was chosen for you: pick another model, or open Connections."
+    );
+    // In Chinese the name stands in corner brackets with no space after it: a name that ends in
+    // Chinese reads badly with a space before what follows.
+    {
+        let _language = crate::i18n::scope("zh");
+        let name = [("name", "ChatGPT")];
+        assert_eq!(trf("ui.agent_chat_problem_auth", &name), "「ChatGPT」的登录已过期。重新登录后，刚才那句话会自动发出。");
+        assert_eq!(trf("ui.agent_chat_problem_quota", &name), "「ChatGPT」的额度用完了。不会自动换模型：可以换一个模型，或者打开连接与登录。");
+        assert_eq!(trf("ui.agent_chat_problem_rate", &name), "「ChatGPT」现在限流了。过一会儿再试。");
+        assert_eq!(trf("ui.agent_chat_problem_model", &name), "「ChatGPT」用不了选中的模型。换一个模型。");
+        assert_eq!(trf("ui.agent_chat_problem_network", &name), "连不上模型服务。检查网络，消息没有丢。");
+        assert_eq!(
+            trf("ui.agent_chat_problem_attachments", &name),
+            "「ChatGPT」中选定的模型无法读取这条消息或聊天中的图片或 PDF。请选择兼容的模型、移除新附件，或在文件已进入聊天记录时开启新聊天。"
+        );
+    }
+    // The connection is found by its whole prefix: a custom address's has a slash in it.
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    let custom = |told: &mut Value| {
+        chatgpt_in(told);
+        told["custom"] = json!([{"id": "my-llm", "name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2"], "keyed": false, "prefix": "mastracode/my-llm"}]);
+    };
+    script.report(Event::Connections(conn_snapshot(custom)));
+    poll(&mut app, &ctx);
+    send(&mut app, &ctx, "make a box".into());
+    fail_turn(&mut app, &ctx, &script, TurnKind::Network, "mastracode/my-llm");
+    let state = page_state(&mut app);
+    assert_eq!(
+        state["items"].as_array().expect("items").last().expect("the notice")["problem"],
+        json!({"kind": "network", "prefix": "mastracode/my-llm", "name": "my-llm"})
+    );
+    // A key's failure is named after the key.
+    let (mut app, script, _keys, ctx) = builtin_told(|told| told["keys"][0]["saved"] = json!(true));
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    send(&mut app, &ctx, "make a box".into());
+    fail_turn(&mut app, &ctx, &script, TurnKind::Rate, "anthropic");
+    assert!(matches!(app.agent_chat.items.last(), Some(Item::Problem { name, .. }) if name == "Anthropic"), "{:?}", app.agent_chat.items.last());
+}
+
+/// B16: after an `auth` failure the plan is shown expired, the message is kept, and it is sent
+/// again by itself when a snapshot shows that plan signed in: in the same session while another
+/// connection kept the conversation going, in a new one when the plan was the only connection.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_message_refused_for_its_sign_in_is_sent_again_once_that_plan_is_signed_in() {
+    use connections::TurnKind;
+    let expired = |told: &mut Value| told["plans"][0]["state"] = json!("expired");
+    let expired_with_key = |told: &mut Value| {
+        told["plans"][0]["state"] = json!("expired");
+        told["keys"][0]["saved"] = json!(true);
+    };
+    let in_with_key = |told: &mut Value| {
+        chatgpt_in(told);
+        told["keys"][0]["saved"] = json!(true);
+    };
+    // Another connection is still there: the session stays, and the message goes again in it.
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    script.report(Event::Connections(conn_snapshot(in_with_key)));
+    poll(&mut app, &ctx);
+    send(&mut app, &ctx, "make a box".into());
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
+    // The snapshot of before the failure may still be on its way: it sends nothing.
+    script.report(Event::Connections(conn_snapshot(in_with_key)));
+    poll(&mut app, &ctx);
+    assert_eq!(script.prompts().len(), 1, "seeing the plan signed in before it was seen expired is not a sign-in");
+    script.report(Event::Connections(conn_snapshot(expired_with_key)));
+    poll(&mut app, &ctx);
+    let state = page_state(&mut app);
+    assert_eq!(state["connect"]["plans"][0]["state"], "expired");
+    assert_eq!((&state["state"], script.prompts().len()), (&json!("ready"), 1));
+    // Signing in to another plan is not signing in to this one.
+    script.report(Event::Connections(conn_snapshot(|told| {
+        expired_with_key(told);
+        told["plans"][1]["state"] = json!("in");
+    })));
+    poll(&mut app, &ctx);
+    assert_eq!(script.prompts().len(), 1);
+    script.report(Event::Connections(conn_snapshot(in_with_key)));
+    poll(&mut app, &ctx);
+    assert_eq!(script.prompts().len(), 2, "sent again by itself");
+    assert_eq!(script.prompts()[1], script.prompts()[0], "the same message");
+    assert_eq!(app.agent_chat.state(), State::Busy);
+    assert_eq!(app.agent_chat.items.iter().filter(|item| matches!(item, Item::User { .. })).count(), 1, "it is in the conversation once");
+    assert!(!script.calls().iter().any(|call| call == "forget_session"), "the session was kept");
+    // Once: the next snapshot sends nothing more.
+    ended(&script, "");
+    script.report(Event::Connections(conn_snapshot(in_with_key)));
+    poll(&mut app, &ctx);
+    assert_eq!(script.prompts().len(), 2);
+
+    // The plan was the only connection: sign-in needed, then a new session, then the message.
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    script.report(Event::Connections(conn_snapshot(expired)));
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
+    let state = page_state(&mut app);
+    assert_eq!(
+        (&state["state"], &state["connect"]["connected"], &state["connect"]["plans"][0]["state"]),
+        (&json!("auth"), &json!(false), &json!("expired"))
+    );
+    assert_eq!(state["items"].as_array().expect("items").last().expect("the notice")["problem"]["kind"], "auth");
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    assert_eq!(script.prompts().len(), 1, "not before its session is ready");
+    assert_eq!(app.agent_chat.state(), State::Starting);
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(script.prompts().len(), 2);
+    assert_eq!(script.prompts()[1], script.prompts()[0]);
+    assert_eq!(script.calls(), ["conn: setup", "new_session", "prompt: make a box", "forget_session", "new_session", "prompt: make a box"]);
+
+    // A message typed meanwhile takes the kept one's place: only the new one goes.
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    script.report(Event::Connections(conn_snapshot(expired)));
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
+    send(&mut app, &ctx, "make a plate instead".into());
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    poll(&mut app, &ctx);
+    let sent: Vec<String> = script.calls().into_iter().filter(|call| call.starts_with("prompt: ")).collect();
+    assert_eq!(sent, ["prompt: make a box", "prompt: make a plate instead"]);
+}
+
+/// A turn refused for its API key is told as that, not as a sign-in that expired: the agent says
+/// `auth` for both, and there is no sign-in to do again for a key. On the prefix of a saved key,
+/// of a custom address, or of nothing known, the notice is of the kind `key` with the key's
+/// sentence (in English and in Chinese), and nothing sends the message again by itself, not
+/// even a plan with the same prefix signing in. On a signed-in plan's prefix `auth` stays, with
+/// its resend.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_refused_key_is_told_as_a_key_and_is_not_sent_again_by_itself() {
+    use connections::TurnKind;
+    let last_notice = |app: &mut SolveApp| page_state(app)["items"].as_array().expect("items").last().expect("the notice").clone();
+    // An OpenAI key is saved and a custom address is kept; the ChatGPT plan, which gives the
+    // same `openai` models, is signed out. The Claude plan is signed in.
+    let connected = |told: &mut Value| {
+        told["keys"][1]["saved"] = json!(true);
+        told["plans"][1]["state"] = json!("in");
+        told["custom"] = json!([{"id": "my-llm", "name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2"], "keyed": true, "prefix": "mastracode/my-llm"}]);
+    };
+    for (prefix, name) in [("openai", "OpenAI"), ("mastracode/my-llm", "my-llm"), ("somewhere-else", "somewhere-else")] {
+        let (mut app, script, _keys, ctx) = builtin_told(connected);
+        script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+        poll(&mut app, &ctx);
+        send(&mut app, &ctx, "make a box".into());
+        // The agent's word is `auth`, as for a sign-in.
+        fail_turn(&mut app, &ctx, &script, TurnKind::Auth, prefix);
+        let text = format!("{name} refused the API key. Update the key in Connections, then send the message again.");
+        assert_eq!(
+            last_notice(&mut app),
+            json!({"kind": "notice", "error": true, "text": text, "problem": {"kind": "key", "prefix": prefix, "name": name}})
+        );
+        assert_eq!(status(&app)["items"].as_array().expect("items").last(), Some(&json!({"notice": text, "error": true})));
+        app.preferences.language = "zh".into();
+        assert_eq!(last_notice(&mut app)["text"], format!("「{name}」拒绝了这个 API key。在连接与登录里更新 key，再发一次。"));
+        app.preferences.language = "en".into();
+        assert_eq!(app.agent_chat.state(), State::Ready, "the conversation goes on");
+        // No plan is shown expired by the app, and no snapshot sends the message again: not the
+        // same one, and not the ChatGPT plan (whose models have the key's prefix) signing in.
+        assert_eq!(page_state(&mut app)["connect"]["plans"][0]["state"], "out");
+        script.report(Event::Connections(conn_snapshot(connected)));
+        poll(&mut app, &ctx);
+        script.report(Event::Connections(conn_snapshot(|told| {
+            connected(told);
+            chatgpt_in(told);
+        })));
+        poll(&mut app, &ctx);
+        poll(&mut app, &ctx);
+        assert_eq!(script.prompts().len(), 1, "{prefix}: a refused key is mended by hand, and the message sent by hand");
+        assert_eq!(app.agent_chat.state(), State::Ready);
+    }
+    // Nothing is known of the connections at all: still a key, named as the agent is.
+    let (mut app, script, ctx) = app_with_script();
+    app.builtin_agent = Some(builtin_agent());
+    app.agent_chat.conn.active = true;
+    send(&mut app, &ctx, "make a box".into());
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
+    assert_eq!(last_notice(&mut app)["problem"], json!({"kind": "key", "prefix": "openai", "name": "Mastra"}));
+
+    // On the prefix of a plan that is signed in, `auth` stays the sign-in's: its sentence, and
+    // the message again once the plan is signed in. The entry shows the plan expired first.
+    let (mut app, script, _keys, ctx) = builtin_told(connected);
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    send(&mut app, &ctx, "make a box".into());
+    script.report(Event::Connections(conn_snapshot(|told| {
+        connected(told);
+        told["plans"][1]["state"] = json!("expired");
+    })));
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "anthropic");
+    let name = tr("ui.agent_chat_plan_anthropic").to_string();
+    let text = trf("ui.agent_chat_problem_auth", &[("name", &name)]);
+    assert_eq!(
+        last_notice(&mut app),
+        json!({"kind": "notice", "error": true, "text": text, "problem": {"kind": "auth", "prefix": "anthropic", "name": name}})
+    );
+    assert_eq!(script.prompts().len(), 1);
+    script.report(Event::Connections(conn_snapshot(connected)));
+    poll(&mut app, &ctx);
+    assert_eq!(script.prompts().len(), 2, "signed in again, the message goes by itself");
+    assert_eq!(script.prompts()[1], script.prompts()[0]);
+    // A plan and a key with the same prefix, the plan signed in: the plan serves the models,
+    // so the refusal is the sign-in's.
+    let (mut app, script, _keys, ctx) = builtin_told(|told| {
+        chatgpt_in(told);
+        told["keys"][1]["saved"] = json!(true);
+    });
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    send(&mut app, &ctx, "make a box".into());
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
+    assert_eq!(last_notice(&mut app)["problem"], json!({"kind": "auth", "prefix": "openai", "name": "ChatGPT"}));
+    // The words the page has for the two, in the two languages given.
+    assert_eq!(tr("ui.agent_chat_problem_key"), "{name} refused the API key. Update the key in Connections, then send the message again.");
+    let _language = crate::i18n::scope("zh");
+    assert_eq!(tr("ui.agent_chat_problem_key"), "「{name}」拒绝了这个 API key。在连接与登录里更新 key，再发一次。");
+}
+
+/// B16: after a `network` failure the message is kept and `conn_retry` sends it again, once;
+/// with nothing kept, or while the agent is not ready, the action is refused.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn try_again_sends_the_kept_message_once() {
+    use connections::TurnKind;
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_retry"})).is_err(), "nothing is kept");
+    send(&mut app, &ctx, "make a box".into());
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_retry"})).is_err(), "the message is still being answered");
+    fail_turn(&mut app, &ctx, &script, TurnKind::Network, "openai");
+    // No snapshot sends it again: only the user does.
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    assert_eq!(script.prompts().len(), 1);
+    conn_act(&mut app, &ctx, json!({"type": "conn_retry"})).expect("a message is kept");
+    assert_eq!(script.prompts().len(), 2);
+    assert_eq!(script.prompts()[1], script.prompts()[0], "the same message");
+    assert_eq!(app.agent_chat.state(), State::Busy);
+    assert_eq!(app.agent_chat.items.iter().filter(|item| matches!(item, Item::User { .. })).count(), 1);
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_retry"})).is_err(), "it is being answered");
+    ended(&script, "");
+    poll(&mut app, &ctx);
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_retry"})).is_err(), "answered: nothing is kept any more");
+    // A new chat keeps nothing either.
+    send(&mut app, &ctx, "make a plate".into());
+    fail_turn(&mut app, &ctx, &script, TurnKind::Rate, "openai");
+    new_chat(&mut app);
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    assert!(conn_act(&mut app, &ctx, json!({"type": "conn_retry"})).is_err());
+
+    // Every action is refused for an agent that is not the built-in one, and changes nothing.
+    let (mut app, script, ctx) = app_with_script();
+    for action in [
+        json!({"type": "conn_login", "id": "openai-codex"}),
+        json!({"type": "conn_code", "id": "anthropic", "code": "abc"}),
+        json!({"type": "conn_reopen"}),
+        json!({"type": "conn_cancel"}),
+        json!({"type": "conn_logout", "id": "openai-codex"}),
+        json!({"type": "conn_key", "provider": "openai", "key": BUILTIN_KEY}),
+        json!({"type": "conn_key_remove", "provider": "openai"}),
+        json!({"type": "conn_custom", "name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2"]}),
+        json!({"type": "conn_custom_remove", "id": "my-llm"}),
+        json!({"type": "conn_retry"}),
+    ] {
+        let why = conn_act(&mut app, &ctx, action.clone()).expect_err("not the built-in agent");
+        assert!(!why.contains(BUILTIN_KEY), "{why}");
+    }
+    assert!(script.calls().is_empty() && app.preferences.mastra_custom.is_empty());
+    assert_eq!(page_state(&mut app)["connect"], Value::Null);
+}
+
+/// A keychain that says which thread reads it.
+struct WatchedKeys(Mutex<Vec<std::thread::ThreadId>>);
+impl backend::Secrets for WatchedKeys {
+    fn get(&self, _: &str) -> Result<Option<String>, String> {
+        self.0.lock().unwrap().push(std::thread::current().id());
+        Ok(Some(BUILTIN_KEY.into()))
+    }
+    fn set(&self, _: &str, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+    fn delete(&self, _: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The keychain may ask the user before it answers, and takes as long as they do: the keys for
+/// `setup` are read off the window thread, at the start and after every change.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_built_in_agents_keys_are_read_off_the_window_thread() {
+    let (mut app, _keys, ctx) = app_with_builtin();
+    let watched = Arc::new(WatchedKeys(Mutex::new(Vec::new())));
+    app.services.secrets = Some(watched.clone());
+    let script = start_builtin(&mut app, &ctx);
+    conn_act(&mut app, &ctx, json!({"type": "conn_key_remove", "provider": "openai"})).expect("in range");
+    until_setups(&mut app, &ctx, &script, 2);
+    let readers = watched.0.lock().unwrap().clone();
+    assert_eq!(readers.len(), 10, "each of the five keys, for each setup");
+    assert!(readers.iter().all(|reader| *reader != std::thread::current().id()), "a key was read on the window thread");
+    // Every key the keychain had was handed over, each under its provider.
+    let connections::Request::Setup(setup) = script.requests().remove(0) else { panic!("the first request is the setup") };
+    assert_eq!(setup.keys.iter().map(|(provider, _)| provider.as_str()).collect::<Vec<_>>(), connections::KEY_IDS);
+}
+
+/// A start whose `setup` the agent refuses has failed, and says so without the agent's words
+/// (they could repeat a key); it does not stay "starting" for ever. Connect then reads Retry.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_refused_setup_ends_the_start_as_failed() {
+    let (mut app, _keys, ctx) = app_with_builtin();
+    let script = start_builtin(&mut app, &ctx);
+    script.report(Event::ConnectionsFailed { what: connections::What::Setup, code: acp::METHOD_NOT_FOUND });
+    poll(&mut app, &ctx);
+    assert_eq!(app.agent_chat.state(), State::Failed);
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["running"]), (&json!("failed"), &json!(false)));
+    let said = state["items"].as_array().expect("items").last().expect("why").clone();
+    assert_eq!(
+        said,
+        json!({"kind": "notice", "error": true, "text": trf("ui.agent_chat_failed_start", &[("error", "_intcad/connections/setup (-32601)")])})
+    );
+    assert_eq!(script.calls(), ["conn: setup"], "no session is asked for");
+    // Once the agent has said what is connected, a later refusal changes nothing and says nothing.
+    let (mut app, script, _keys, ctx) = builtin_told(|_| {});
+    script.report(Event::ConnectionsFailed { what: connections::What::Setup, code: -32603 });
+    poll(&mut app, &ctx);
+    assert!(app.agent_chat.state() == State::NeedsAuth && app.agent_chat.items.is_empty());
+    assert_eq!(page_state(&mut app)["connect"]["error"], tr("ui.agent_chat_conn_refused"), "the page is told, the conversation is not");
+}
+
+/// While the built-in agent is stopped a key and a custom address can still be kept (they are
+/// handed over at its next start), and the sign-in actions, which need the agent, are refused.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_key_is_kept_while_the_built_in_agent_is_stopped_and_handed_over_when_it_starts() {
+    use backend::Secrets as _;
+    let (mut app, keys, ctx) = app_with_builtin();
+    for needs_the_agent in [
+        json!({"type": "conn_login", "id": "openai-codex"}),
+        json!({"type": "conn_code", "id": "anthropic", "code": "abc"}),
+        json!({"type": "conn_reopen"}),
+        json!({"type": "conn_cancel"}),
+        json!({"type": "conn_logout", "id": "openai-codex"}),
+        json!({"type": "conn_retry"}),
+    ] {
+        assert!(conn_act(&mut app, &ctx, needs_the_agent.clone()).is_err(), "{needs_the_agent}");
+    }
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "google", "key": BUILTIN_KEY})).expect("in range");
+    conn_act(&mut app, &ctx, json!({"type": "conn_custom", "name": "my-llm", "url": "http://localhost:11434/v1", "models": ["llama3.2"]}))
+        .expect("in range");
+    assert_eq!(keys.get("mastra/key/google").unwrap().as_deref(), Some(BUILTIN_KEY));
+    assert_eq!(app.preferences.mastra_custom.len(), 1);
+    let state = page_state(&mut app);
+    assert_eq!((&state["state"], &state["connect"]["connected"], &state["connect"]["error"]), (&json!("off"), &json!(false), &Value::Null));
+    assert!(app.agent_chat.backend.is_none(), "keeping a key starts nothing");
+    let script = start_builtin(&mut app, &ctx);
+    let custom =
+        connections::SetupCustom { name: "my-llm".into(), url: "http://localhost:11434/v1".into(), api_key: None, models: vec!["llama3.2".into()] };
+    assert_eq!(script.requests(), [setup_of(&[("google", BUILTIN_KEY)], vec![custom])]);
+}
+
+/// The control channel carries out a Connections action exactly as the page does (the same
+/// check, the same reason for a refusal), and its status tells the connections as the page is
+/// told them, without a key.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_control_channel_carries_out_a_connection_action_as_the_page_does() {
+    use backend::Secrets as _;
+    let (mut app, script, keys, ctx) = builtin_told(|_| {});
+    let told = control(&mut app, &ctx, &json!({"connection": {"type": "conn_login", "id": "openai-codex"}})).expect("a plan the agent offers");
+    assert_eq!(script.requests().last(), Some(&connections::Request::Login("openai-codex".into())));
+    assert_eq!(told["state"], "auth");
+    assert_eq!(told["connect"], page_state(&mut app)["connect"], "the status tells what the page is told");
+    assert_eq!((told["connect"]["plans"].as_array().map(Vec::len), &told["connect"]["connected"]), (Some(5), &json!(false)));
+    // What the page would be refused, the control call is refused, for the same reason.
+    for refused in [
+        json!({"type": "conn_nope"}),
+        json!({"type": "send", "text": "not an action of that page"}),
+        json!({"id": "openai-codex"}),
+        json!({"type": "conn_login", "id": "no-such-plan"}),
+        json!({"type": "conn_code", "id": "openai-codex", "code": ""}),
+        json!({"type": "conn_key", "provider": "mistral", "key": BUILTIN_KEY}),
+        json!({"type": "conn_retry"}),
+    ] {
+        let by_control = control(&mut app, &ctx, &json!({"connection": refused})).expect_err("refused");
+        if refused["type"] != "send" {
+            assert_eq!(Err(by_control.clone()), conn_act(&mut app, &ctx, refused.clone()), "{refused}");
+        }
+        assert!(!by_control.contains(BUILTIN_KEY), "{by_control}");
+    }
+    assert_eq!(control(&mut app, &ctx, &json!({"connection": {"type": "conn_nope"}})), Err("unknown action conn_nope".into()));
+    assert_eq!(script.calls(), ["conn: setup", "conn: login openai-codex"], "nothing refused reached the agent");
+    // A key given this way goes where the page's goes, and is not in the reply.
+    let told = control(&mut app, &ctx, &json!({"connection": {"type": "conn_key", "provider": "openai", "key": BUILTIN_KEY}})).expect("in range");
+    assert_eq!(keys.get("mastra/key/openai").unwrap().as_deref(), Some(BUILTIN_KEY));
+    until_setups(&mut app, &ctx, &script, 2);
+    assert!(script.requests().last().expect("the setup").params().to_string().contains(BUILTIN_KEY));
+    assert!(told["connect"].is_object() && !told.to_string().contains(BUILTIN_KEY), "{told}");
+    assert!(!everywhere_a_key_could_leak(&mut app, &script).contains(BUILTIN_KEY));
+    // Without the built-in agent there are no connections to tell or to act on.
+    let (mut app, _script, ctx) = app_with_script();
+    assert_eq!(control(&mut app, &ctx, &json!({})).expect("the status")["connect"], Value::Null);
+    let why = control(&mut app, &ctx, &json!({"connection": {"type": "conn_cancel"}})).expect_err("not the built-in agent");
+    assert_eq!(Err(why), conn_act(&mut app, &ctx, json!({"type": "conn_cancel"})));
+}
+
+/// The names the page has for the words of the Connections page, in the order of the contract's
+/// table (section 5). The page reads them by name: a JSON object has no order to keep.
+const CONNECTION_STRINGS: [&str; 66] = [
+    "connTitle",
+    "connNoneTitle",
+    "connBack",
+    "connPlans",
+    "connKeys",
+    "connCustom",
+    "connSignedIn",
+    "connExpired",
+    "connSigningIn",
+    "connSignIn",
+    "connSignInAgain",
+    "connSignOut",
+    "connUse",
+    "connInUse",
+    "connShadowed",
+    "connKeySaved",
+    "connKeyAdd",
+    "connKeyUpdate",
+    "connRemove",
+    "connKeyTitle",
+    "connKeyBody",
+    "connKeyPlaceholder",
+    "connSave",
+    "connCustomAdd",
+    "connCustomName",
+    "connCustomUrl",
+    "connCustomKey",
+    "connCustomModels",
+    "connCustomNeedBoth",
+    "connCustomNeedModel",
+    "connCustomTooMany",
+    "connCustomPlainUrl",
+    "connCustomExists",
+    "connAdd",
+    "connWaiting",
+    "connStarting",
+    "connReopen",
+    "connCodeHint",
+    "connCodePlaceholder",
+    "connCodeIncomplete",
+    "connCodeDone",
+    "connDeviceHint",
+    "connProblemPort",
+    "connProblemOffline",
+    "connProblemFailed",
+    "connButton",
+    "connButtonNone",
+    "connButtonTip",
+    "planOpenaiCodex",
+    "planAnthropic",
+    "planKimiForCoding",
+    "planXai",
+    "planGithubCopilot",
+    "problemAuth",
+    "problemKey",
+    "problemQuota",
+    "problemRate",
+    "problemNetwork",
+    "problemModel",
+    "effort",
+    "effortOff",
+    "effortLow",
+    "effortMedium",
+    "effortHigh",
+    "effortXhigh",
+    "effortMax",
+];
+
+/// B17 (the app's half): every word of the Connections page is sent under its name, with a text
+/// of its own in each of the six complete languages, and with its `{name}` where the English
+/// has one. (That the page has a name for each is the parity check in
+/// `the_web_page_is_told_the_queue_the_pictures_and_the_names_an_answer_selects`.)
+#[test]
+fn every_word_of_the_connections_page_is_sent_in_each_complete_language() {
+    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    let words = |app: &mut SolveApp, language: &str| {
+        app.preferences.language = language.into();
+        page_state(app)["strings"].clone()
+    };
+    let english = words(&mut app, "en");
+    assert_eq!(english["connTitle"], "Connections");
+    assert_eq!(english["connKeyTitle"], "API key for {name}");
+    assert_eq!(english["problemModel"], "{name} cannot use the selected model. Pick another model.");
+    let chinese = words(&mut app, "zh");
+    assert_eq!(
+        (&chinese["connTitle"], &chinese["connUse"], &chinese["planGithubCopilot"]),
+        (&json!("连接与登录"), &json!("切换"), &json!("GitHub Copilot"))
+    );
+    // A whole group label, translated as one sentence: no locale leaves a placeholder for the page.
+    app.agent_chat.config_options = Some(vec![acp::ConfigOption {
+        id: "thought".into(),
+        name: "Thinking".into(),
+        description: String::new(),
+        category: "thought_level".into(),
+        current_value: "medium".into(),
+        options: Vec::new(),
+    }]);
+    let english = words(&mut app, "en");
+    assert_eq!(english["modelEffort"], "Model, Reasoning effort");
+    for language in ["en", "zh", "ar", "he", "ja", "vi"] {
+        let told = words(&mut app, language);
+        let label = told["modelEffort"].as_str().unwrap_or_else(|| panic!("{language}: modelEffort is not sent"));
+        assert!(!label.contains('{') && !label.contains('}'), "{language}: modelEffort = {label}");
+        if language != "en" {
+            assert_ne!(label, "Model, Reasoning effort", "{language}: modelEffort is not translated");
+        }
+    }
+    for language in ["en", "zh", "ar", "he", "ja", "vi"] {
+        let told = words(&mut app, language);
+        for name in CONNECTION_STRINGS {
+            let word = told[name].as_str().unwrap_or_else(|| panic!("{language}: {name} is not sent"));
+            assert!(!word.is_empty() && !word.starts_with("ui."), "{language}: {name} = {word}");
+            let source = english[name].as_str().expect("the English");
+            assert_eq!(word.contains("{name}"), source.contains("{name}"), "{language}: {name} keeps its placeholder");
+            // A translation is its own text, except a name that is the same in every language.
+            if language != "en" && !name.starts_with("plan") {
+                assert_ne!(word, source, "{language}: {name} is not translated");
+            }
+        }
+    }
 }
 
 // ---- Preview, then accept or reject (the "Cursor for CAD" spec, feature 1) ----
@@ -16357,6 +18955,21 @@ fn step_text(session: &mut solidcraft_engine::Session, name: &str) -> String {
     let text = std::fs::read_to_string(&path).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     text.lines().filter(|l| !l.starts_with("FILE_NAME")).collect::<Vec<_>>().join("\n")
+}
+
+/// A controlled bridge request is refused before the preview copy computes anything. Ordinary
+/// GUI preview stays on the existing path; the refusal is an inert, in-process check.
+#[test]
+fn a_controlled_request_is_refused_before_preview_computation() {
+    let (mut app, _tx, _script, _ctx) = previewed_turn("middle box");
+    assert!(review::running(&app.agent_chat));
+    let (req, reply) = ControlRequest::trusted_bridge("engine.execute", boxed(0.0));
+    super::hand_over(&mut app, req);
+    let reply = reply.recv_timeout(std::time::Duration::from_secs(30)).expect("a refusal before the copy computes");
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+    assert!(review::computing(&app.agent_chat).is_none(), "nothing started on the copy");
+    assert_eq!(body_count(&app.session), 0, "the open design was not touched");
 }
 
 /// Off (the default), a turn changes the open design as before and no card asks anything.
@@ -16944,8 +19557,8 @@ fn ask_here_sends_no_view_picture_and_waits_for_the_card() {
 }
 
 /// PIL-305: the automatic check reads the project's `ci.toml` switch when it decides. A design
-/// opened from a project whose checks are on must run its check even when no project command has
-/// refreshed the switch yet (the open path adopts the session without `finish_command`).
+/// opened from a project whose checks are on still decides the trigger even when no project
+/// command has refreshed the switch yet (the open path adopts the session without `finish_command`).
 #[test]
 fn an_accepted_preview_reads_the_projects_check_switch() {
     let dir = std::env::temp_dir().join(format!("solidcraft-dfm-switch-{}", std::process::id()));
@@ -16960,7 +19573,7 @@ fn an_accepted_preview_reads_the_projects_check_switch() {
     let id = review_card(&app).id;
     review::accept(&mut app, id).unwrap();
     assert!(app.agent_chat.dfm.auto_enabled(), "the project says checks run by themselves");
-    assert_eq!(app.agent_chat.dfm.fired, before + 1, "so the accept runs one check");
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "accept decides one trigger, not execution authority");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -16979,6 +19592,23 @@ fn a_project_with_checks_on(app: &mut SolveApp) -> std::path::PathBuf {
     dir
 }
 
+/// The project's automatic-check setting is not execution authority for a committed edit,
+/// including when it came from a preview accepted by the user.
+#[test]
+fn assistant_dfm_automatic_dispatch_has_no_verified_scope() {
+    for trigger in [
+        dfm_runtime::Trigger::Edits { document_id: "doc".into(), turn: "turn".into(), revision: "rev".into() },
+        dfm_runtime::Trigger::AcceptedPreview { document_id: "doc".into(), turn: "preview".into(), revision: "rev".into() },
+    ] {
+        let (mut app, _, _) = app_with_script();
+        let dir = a_project_with_checks_on(&mut app);
+        app.account = crate::account::State::with_port(crate::account::tests::signed_in_unknown_port());
+        let submitted = submit_dfm(&app, trigger);
+        std::fs::remove_dir_all(dir).unwrap();
+        assert!(!submitted, "a committed edit does not authorize an automatic DFM run");
+    }
+}
+
 /// The page's Accept button posts `review`; the host turns it into the same accept the panel's
 /// button calls, so the page can finish a previewed turn.
 #[test]
@@ -16990,24 +19620,24 @@ fn the_web_page_accepts_a_waiting_preview() {
     let id = review_card(&app).id;
     web::act(&mut app, &ctx, &json!({"type": "review", "id": id, "accept": true}).to_string()).expect("the page may accept");
     assert_eq!(review_card(&app).outcome, review::Outcome::Accepted);
-    assert_eq!(app.agent_chat.dfm.fired, before + 1, "and the accepted change runs one check");
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "the accepted change decides one trigger");
     assert!(
         web::act(&mut app, &ctx, &json!({"type": "review", "id": id, "accept": true}).to_string()).is_err(),
         "a second accept has nothing to accept"
     );
 }
 
-/// PIL-305: accepting a preview submits exactly one check; a rejection or a stale accept submits
-/// none. The trigger is the same one direct commits use.
+/// PIL-305: accepting a preview decides exactly one check trigger; a rejection or a stale accept
+/// decides none. Dispatch requires separate authority.
 #[test]
-fn an_accepted_preview_runs_one_check_and_a_rejection_or_stale_accept_runs_none() {
+fn an_accepted_preview_triggers_one_check_and_a_rejection_or_stale_accept_triggers_none() {
     let (mut app, tx, script, _ctx) = previewed_turn("a box");
     let _project = a_project_with_checks_on(&mut app);
     let before = app.agent_chat.dfm.fired;
     finish_previewed(&mut app, &tx, &script, &[("engine.execute", boxed(0.0))]);
     let id = review_card(&app).id;
     review::accept(&mut app, id).unwrap();
-    assert_eq!(app.agent_chat.dfm.fired, before + 1, "accept commits and runs one check");
+    assert_eq!(app.agent_chat.dfm.fired, before + 1, "accept commits and decides one trigger");
 
     let (mut app, tx, script, _ctx) = previewed_turn("a box");
     let _project = a_project_with_checks_on(&mut app);
@@ -17025,4 +19655,56 @@ fn an_accepted_preview_runs_one_check_and_a_rejection_or_stale_accept_runs_none(
     app.run("solid.cylinder", json!({"radius": 2, "height": 5, "base": [100, 0, 0]})).unwrap();
     assert!(review::accept(&mut app, id).is_err(), "the design moved since the preview");
     assert_eq!(app.agent_chat.dfm.fired, before, "a stale accept runs nothing");
+}
+
+/// INT-1473: the built-in agent is handed the Files panel's folder only when that folder is the
+/// project the shown design belongs to; any other pairing hands over nothing.
+#[test]
+fn the_agent_is_handed_the_files_folder_only_when_it_is_the_designs_project() {
+    let root = std::env::temp_dir().join(format!("sc-agent-chat-project-{}", std::process::id()));
+    let project = root.join("bracket");
+    let parts = project.join("parts");
+    let elsewhere = root.join("elsewhere");
+    for dir in [&project.join(".intcad"), &parts, &elsewhere] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(project.join(".intcad").join("project.toml"), "").unwrap();
+    let design = project.join("bracket.sc").to_string_lossy().into_owned();
+    let deeper = parts.join("tab.sc").to_string_lossy().into_owned();
+    let loose = elsewhere.join("loose.sc").to_string_lossy().into_owned();
+
+    assert_eq!(handed_project(Some(&design), Some(&project)), Some(project.clone()));
+    assert_eq!(handed_project(Some(&deeper), Some(&project)), Some(project.clone()), "a design in a subfolder belongs to the project above");
+    assert_eq!(handed_project(Some(&deeper), Some(&parts)), None, "the panel on a folder inside the project is not the project");
+    assert_eq!(handed_project(Some(&design), Some(&elsewhere)), None, "the panel on another folder");
+    assert_eq!(handed_project(Some(&loose), Some(&elsewhere)), None, "a design in no project");
+    assert_eq!(handed_project(None, Some(&project)), None, "no design shown");
+    assert_eq!(handed_project(Some(&design), None), None, "no folder in the panel");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The Windows smoke reads exactly these three fields: an open page that has spoken proves its
+/// surface, a closed page keeps that proof while its view lives, and a missing runtime or a
+/// failed build never gives one.
+#[test]
+fn assistant_inspection_carries_the_marker_the_windows_smoke_reads() {
+    let mut h = crate::scenario::Harness::new();
+    web::set_host(&mut h.app, true);
+    let inspect = |h: &mut crate::scenario::Harness| h.call("ui.inspect", json!({}))["result"]["assistant"].clone();
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "available", "centred": false}));
+    h.app.agent_chat.open = true;
+    h.frames(3);
+    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": false, "host": "available", "centred": false}), "no page has spoken yet");
+    h.app.agent_chat.web_canvas = Some(crate::theme::Tokens::get().panel);
+    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": true, "host": "available", "centred": false}), "the page said its surface");
+    h.app.agent_chat.open = false;
+    assert_eq!(
+        inspect(&mut h),
+        json!({"open": false, "surface_ready": true, "host": "available", "centred": false}),
+        "a closed page keeps the proof while its view lives"
+    );
+    web::set_problem(&mut h.app, web::Problem::Failed);
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "failed", "centred": false}));
+    web::set_problem(&mut h.app, web::Problem::NativeWayland);
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "native_wayland", "centred": false}));
 }

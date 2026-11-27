@@ -130,7 +130,8 @@ mod tests {
         h.app.saving = Some(super::Saving { command: "file.save_as", done });
         let (tx, rx) = std::sync::mpsc::channel();
         h.app.control_rx = Some(rx);
-        let (req, reply) = crate::control::ControlRequest::new("engine.script", json!([{"command": "solid.sphere", "params": {"diameter": 4}}]));
+        let (req, reply) =
+            crate::control::ControlRequest::trusted_gui("engine.script", json!([{"command": "solid.sphere", "params": {"diameter": 4}}]));
         tx.send(req).unwrap();
         h.app.drain_control(&h.ctx);
         assert!(reply.try_recv().is_err(), "held while the save is written");

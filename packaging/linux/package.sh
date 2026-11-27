@@ -9,7 +9,7 @@
 #   $DIST/intcad-<version>-linux-<arch>.rpm             Fedora, openSUSE, RHEL, ...
 #   $DIST/intcad-<version>-linux-<arch>.tar.gz          plain FHS-style tree (bin/, share/)
 #
-# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"] [--with-mastra]
+# Usage: packaging/linux/package.sh [--skip-build] [--formats "appimage deb rpm tar"] [--with-mastra] [--with-mastra-agent|--without-mastra-agent]
 #
 # Needs: cargo; nfpm for deb/rpm (https://nfpm.goreleaser.com); appimagetool for the AppImage
 # (downloaded into $CARGO_TARGET_DIR if missing). Build on an old distro (CI: Ubuntu 22.04,
@@ -24,12 +24,15 @@ HERE="$ROOT/packaging/linux"
 SKIP_BUILD=0
 FORMATS="appimage deb rpm tar"
 WITH_MASTRA="${SOLIDCRAFT_WITH_MASTRA:-0}"
+WITH_MASTRA_AGENT="${SOLIDCRAFT_WITH_MASTRA_AGENT:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-build) SKIP_BUILD=1; shift ;;
     --formats) FORMATS="$2"; shift 2 ;;
     --with-mastra) WITH_MASTRA=1; shift ;;
     --without-mastra) WITH_MASTRA=0; shift ;;
+    --with-mastra-agent) WITH_MASTRA_AGENT=1; shift ;;
+    --without-mastra-agent) WITH_MASTRA_AGENT=0; shift ;;
     -h | --help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -64,6 +67,8 @@ else
 fi
 WORK="$CARGO_TARGET_DIR/linux-package"
 STAGE="$WORK/root"
+# An earlier run may have left the built-in agent's folder, which nothing may write.
+if [ -d "$WORK" ]; then chmod -R u+w "$WORK"; fi
 rm -rf "$WORK"
 
 # ---- stage an FHS tree (shared by every format) -------------------------------------------------
@@ -113,12 +118,46 @@ else
   warn "the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)"
 fi
 
+# ---- Built-in agent (the release's default) -----------------------------------------------------
+# Its own folder beside `mastra/`: the app starts the Node in it with agent/main.mjs, and looks for
+# it in the package before anything else. stage-agent.sh checks the folder before copying it, the
+# staged tree is looked through for anything like a secret or a stored sign-in, and the agent is
+# then started from the stage against stand-ins. `--without-mastra-agent` leaves it out.
+#
+# The agent is built for x86_64 Linux only. A package for another CPU carries none and says so;
+# it must not declare one the app could not run.
+AGENT_TARGET=x86_64-unknown-linux-gnu
+if [ "$WITH_MASTRA_AGENT" = 1 ]; then
+  case "$ARCH" in
+    x86_64)
+      "$HERE/../mastra/stage-agent.sh" --target "$AGENT_TARGET" --dest "$STAGE/usr/lib/intcad/mastra-agent"
+      install -Dm644 "$STAGE/usr/lib/intcad/mastra-agent/licenses/THIRD-PARTY-LICENSES.txt" "$STAGE/usr/share/doc/intcad/MASTRA-AGENT-THIRD-PARTY-LICENSES.txt"
+      install -Dm644 "$STAGE/usr/lib/intcad/mastra-agent/licenses/NODE-LICENSE.txt" "$STAGE/usr/share/doc/intcad/MASTRA-AGENT-NODE-LICENSE.txt"
+      # Nothing in the folder may be written once it is installed: the agent keeps what it
+      # writes in the user's data folder. Every format carries these modes.
+      chmod -R a-w "$STAGE/usr/lib/intcad/mastra-agent"
+      node "$ROOT/packages/mastra-runtime/scripts/agent-package.mjs" check --read-only --target "$AGENT_TARGET" "$STAGE/usr/lib/intcad/mastra-agent"
+      node "$ROOT/packages/mastra-runtime/scripts/agent-package.mjs" scan "$STAGE"
+      # The agent as the packages will carry it, started and answering against stand-ins.
+      node "$ROOT/packages/mastra-runtime/scripts/agent-smoke.mjs" "$STAGE/usr/lib/intcad/mastra-agent"
+      ;;
+    *) echo "error: the built-in agent's folder is built for Linux x86_64 only; pass --without-mastra-agent for Linux $ARCH" >&2; exit 2 ;;
+  esac
+else
+  warn "the built-in agent is not bundled (--without-mastra-agent); a release package carries it"
+fi
+
 has() { case " $FORMATS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 # ---- .tar.gz ------------------------------------------------------------------------------------
 if has tar; then
   mkdir -p "$WORK/tar"
   cp -R "$STAGE/usr" "$WORK/tar/$BASENAME"
+  # A tarball is unpacked by the person who downloads it, into a folder of their own, and the
+  # repacks built from it (Flatpak, Arch, Snap) extract and rewrite their copies. It therefore
+  # carries the ordinary 755/644 modes; the installed packages made below keep the agent's
+  # read-only modes, and the AppImage's squashfs is read-only by construction.
+  chmod -R u+w "$WORK/tar/$BASENAME"
   tar -C "$WORK/tar" -czf "$DIST/$BASENAME.tar.gz" "$BASENAME"
   echo "wrote $DIST/$BASENAME.tar.gz"
 fi
@@ -163,8 +202,13 @@ if has appimage; then
   # Update information: AppImageUpdate and the like fetch only the changed blocks of a newer
   # release through the .zsync published next to each AppImage. `latest` is the newest published
   # release that is not a pre-release.
-  REPO="${GITHUB_REPOSITORY:-intgral-ai/intcad}"
-  UPDATE_INFO="gh-releases-zsync|${REPO%%/*}|${REPO#*/}|latest|intcad-*-linux-$ARCH.AppImage.zsync"
+  #
+  # It is embedded in every AppImage and read by an anonymous AppImageUpdate, so it must name the
+  # public distribution repository. Never derive it from `GITHUB_REPOSITORY`: a package built in
+  # the private source repository would then tell every user's updater to fetch from a repository
+  # they cannot read.
+  DIST_REPO="${SOLIDCRAFT_DIST_REPO:-intgral-ai/intcad-releases}"
+  UPDATE_INFO="gh-releases-zsync|${DIST_REPO%%/*}|${DIST_REPO#*/}|latest|intcad-*-linux-$ARCH.AppImage.zsync"
   # Extract-and-run: works without FUSE (containers, CI). With zsyncmake on the host appimagetool
   # also writes the .zsync, into its working directory, hence the cd.
   (cd "$DIST" && ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" --no-appstream -u "$UPDATE_INFO" "$APPDIR" "$OUT")

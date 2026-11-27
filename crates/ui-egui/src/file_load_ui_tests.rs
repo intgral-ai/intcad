@@ -343,10 +343,12 @@ fn a_control_open_answers_after_loading_without_freezing_the_window() {
     let mut w = Win::new();
     let (tx, rx) = std::sync::mpsc::channel();
     w.app.control_rx = Some(rx);
-    let (open, open_rx) = crate::control::ControlRequest::new("engine.execute", json!({"command": "doc.open", "params": {"path": path}}));
-    let (count, count_rx) = crate::control::ControlRequest::new("document.inspect", json!({}));
-    let (edit, edit_rx) =
-        crate::control::ControlRequest::new("engine.execute", json!({"command": "solid.box", "params": {"length": 1, "width": 1, "height": 1}}));
+    let (open, open_rx) = crate::control::ControlRequest::trusted_gui("engine.execute", json!({"command": "doc.open", "params": {"path": path}}));
+    let (count, count_rx) = crate::control::ControlRequest::trusted_gui("document.inspect", json!({}));
+    let (edit, edit_rx) = crate::control::ControlRequest::trusted_gui(
+        "engine.execute",
+        json!({"command": "solid.box", "params": {"length": 1, "width": 1, "height": 1}}),
+    );
     for r in [open, count, edit] {
         tx.send(r).unwrap();
     }
@@ -397,7 +399,8 @@ fn a_control_import_passes_up_and_names_on() {
         w.app.preferences.stand_up_unknown = crate::prefs::StandUpUnknown::Ask;
         let (tx, rx) = std::sync::mpsc::channel();
         w.app.control_rx = Some(rx);
-        let (req, reply_rx) = crate::control::ControlRequest::new("engine.execute", json!({"command": "file.insert_step", "params": params.clone()}));
+        let (req, reply_rx) =
+            crate::control::ControlRequest::trusted_gui("engine.execute", json!({"command": "file.insert_step", "params": params.clone()}));
         tx.send(req).unwrap();
         let mut reply = None;
         for _ in 0..100_000 {
@@ -441,7 +444,8 @@ fn a_control_import_passes_its_matrix_and_name_on() {
     let mut w = Win::new();
     let (tx, rx) = std::sync::mpsc::channel();
     w.app.control_rx = Some(rx);
-    let (req, reply_rx) = crate::control::ControlRequest::new("engine.execute", json!({"command": "file.insert_step", "params": params.clone()}));
+    let (req, reply_rx) =
+        crate::control::ControlRequest::trusted_gui("engine.execute", json!({"command": "file.insert_step", "params": params.clone()}));
     tx.send(req).unwrap();
     let mut reply = None;
     for _ in 0..100_000 {
@@ -470,7 +474,7 @@ fn an_opened_design_is_drawn_whole_when_meshing_has_no_thread() {
     let mut w = Win::new();
     let (tx, rx) = std::sync::mpsc::channel();
     w.app.control_rx = Some(rx);
-    let (open, open_rx) = crate::control::ControlRequest::new("engine.execute", json!({"command": "doc.open", "params": {"path": path}}));
+    let (open, open_rx) = crate::control::ControlRequest::trusted_gui("engine.execute", json!({"command": "doc.open", "params": {"path": path}}));
     tx.send(open).unwrap();
     crate::open_meshing::without_threads(|| {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
@@ -501,7 +505,7 @@ fn an_opened_design_shows_its_bodies_as_they_are_meshed() {
     let mut w = Win::new();
     let (tx, rx) = std::sync::mpsc::channel();
     w.app.control_rx = Some(rx);
-    let (open, open_rx) = crate::control::ControlRequest::new("engine.execute", json!({"command": "doc.open", "params": {"path": path}}));
+    let (open, open_rx) = crate::control::ControlRequest::trusted_gui("engine.execute", json!({"command": "doc.open", "params": {"path": path}}));
     tx.send(open).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while open_rx.try_recv().is_err() {
@@ -555,7 +559,7 @@ fn a_screenshot_after_an_open_waits_for_the_whole_design() {
     let mut w = Win::new();
     let (tx, rx) = std::sync::mpsc::channel();
     w.app.control_rx = Some(rx);
-    let (open, open_rx) = crate::control::ControlRequest::new("engine.execute", json!({"command": "doc.open", "params": {"path": path}}));
+    let (open, open_rx) = crate::control::ControlRequest::trusted_gui("engine.execute", json!({"command": "doc.open", "params": {"path": path}}));
     tx.send(open).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while open_rx.try_recv().is_err() {
@@ -566,8 +570,8 @@ fn a_screenshot_after_an_open_waits_for_the_whole_design() {
     if !crate::open_meshing::active(&w.app) {
         return; // Meshed already: nothing to wait for on this machine.
     }
-    let (shot, _shot_rx) = crate::control::ControlRequest::new("ui.screenshot", json!({}));
-    let (count, count_rx) = crate::control::ControlRequest::new("document.inspect", json!({}));
+    let (shot, _shot_rx) = crate::control::ControlRequest::trusted_gui("ui.screenshot", json!({}));
+    let (count, count_rx) = crate::control::ControlRequest::trusted_gui("document.inspect", json!({}));
     tx.send(shot).unwrap();
     tx.send(count).unwrap();
     w.frame(vec![]);
@@ -614,7 +618,7 @@ fn open_timed(path: &str) -> (Win, (f64, &'static str)) {
     w.app.frame_watch.slowest = (0.0, "idle");
     let (tx, rx) = std::sync::mpsc::channel();
     w.app.control_rx = Some(rx);
-    let (open, open_rx) = crate::control::ControlRequest::new("engine.execute", json!({"command": "doc.open", "params": {"path": path}}));
+    let (open, open_rx) = crate::control::ControlRequest::trusted_gui("engine.execute", json!({"command": "doc.open", "params": {"path": path}}));
     tx.send(open).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     let mut answered = false;
@@ -672,7 +676,7 @@ fn cancelling_a_step_open_releases_the_slot_before_the_worker_returns() {
     let (started_tx, started_rx) = std::sync::mpsc::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     w.app.file_load.worker_gate = Some((started_tx, release_rx));
-    let (first, first_reply) = crate::control::ControlRequest::new("engine.execute", json!({"command":"doc.open", "params":{"path":path}}));
+    let (first, first_reply) = crate::control::ControlRequest::trusted_gui("engine.execute", json!({"command":"doc.open", "params":{"path":path}}));
     assert!(crate::file_load::control(&mut w.app, first).is_none());
     started_rx.recv_timeout(std::time::Duration::from_secs(60)).unwrap();
     for _ in 0..3 {
@@ -686,7 +690,7 @@ fn cancelling_a_step_open_releases_the_slot_before_the_worker_returns() {
     assert!(cancelled["error"].as_str().unwrap().contains("cancelled"));
     assert!(std::sync::Arc::ptr_eq(&blank, &w.app.session.doc));
 
-    let (second, second_reply) = crate::control::ControlRequest::new("engine.execute", json!({"command":"doc.open", "params":{"path":path}}));
+    let (second, second_reply) = crate::control::ControlRequest::trusted_gui("engine.execute", json!({"command":"doc.open", "params":{"path":path}}));
     assert!(crate::file_load::control(&mut w.app, second).is_none());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let reply = loop {

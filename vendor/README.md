@@ -25,6 +25,21 @@ Changes:
   doesn't run tests). On a Mac: `cargo test --manifest-path vendor/accesskit_macos/Cargo.toml`
   (it writes a `Cargo.lock` there; don't commit it).
 
+## egui-winit 0.36.2 (MIT OR Apache-2.0, Emil Ernerfeldt and contributors)
+
+Required Rust sources and manifests from the published 0.36.2 crate, upstream revision
+`49682f8baa058bf49e011035cfbd6e825f88a5ef`. Licence texts are from the upstream 0.36.2 tag.
+No examples, images or bundled documentation are copied.
+
+SolidCraft changes:
+- `src/lib.rs`: a default-off, viewport-qualified context-temporary opt-in preserves exactly
+  one empty Paste when native clipboard text is absent/empty. The existing keyboard branch
+  still returns without a V key; nonempty text and CRLF normalization are unchanged.
+- Only Intcad's ROOT viewport opts in. The UI, not the adapter, arbitrates ownership; the
+  adapter never receives Files focus, reads file lists or invokes application callbacks.
+- Focused tests exercise the decision called by that keyboard branch and viewport isolation.
+  They do not replace native keyboard/Finder acceptance.
+
 ## egui-wgpu 0.36.2 (MIT OR Apache-2.0, Emil Ernerfeldt and contributors)
 
 Original package sources from https://github.com/emilk/egui/tree/0.36.2/crates/egui-wgpu,

@@ -30,7 +30,7 @@ fn a_created_project_reopens_with_the_same_identity_and_settings() {
     assert!(made.design.is_file());
     assert!(root.join(".intcad/project.toml").is_file());
     assert!(root.join(".intcad/ci.toml").is_file());
-    assert!(root.join(".intcad/specs/requirements.toml").is_file());
+    assert!(root.join("requirements.md").is_file());
     assert!(root.join(".intcad/checks/runs").is_dir());
     assert!(root.join(".intcad/.gitignore").is_file());
     let id = made.project.manifest().id.clone();
@@ -46,6 +46,125 @@ fn a_created_project_reopens_with_the_same_identity_and_settings() {
     assert!(reopened.ci().enabled);
     assert_eq!(reopened.ci().data.kind, DataKind::Generic);
     assert_eq!(reopened.ci().on_manual_edit, ManualEdit::Stale);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Every path inside `dir`, relative and with `/`, sorted.
+fn listing(dir: &Path) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut queue = vec![dir.to_path_buf()];
+    while let Some(at) = queue.pop() {
+        for entry in fs::read_dir(&at).expect("list") {
+            let path = entry.expect("entry").path();
+            paths.push(path.strip_prefix(dir).expect("inside").to_string_lossy().replace('\\', "/"));
+            if path.is_dir() {
+                queue.push(path);
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+/// INT-1508: the Spec files are ordinary files at the project's root, where the Files panel and
+/// the Assistant see them; `.intcad/` holds only the app's own files.
+#[test]
+fn a_new_project_has_its_spec_files_at_the_root_and_none_in_intcad() {
+    let dir = scratch("spec-root");
+    let made = create(&dir, "Bracket", "Bracket").expect("create");
+    let root = made.project.root();
+    let expected = [
+        ".intcad",
+        ".intcad/.gitignore",
+        ".intcad/checks",
+        ".intcad/checks/runs",
+        ".intcad/ci.toml",
+        ".intcad/critical.toml",
+        ".intcad/project.toml",
+        "Bracket.sc",
+        "design-intent.md",
+        "requirements.md",
+    ];
+    assert_eq!(listing(root), expected.map(String::from).to_vec(), "the Spec files at the root, only the app's own files in .intcad/");
+    for &(name, text) in SPEC_TEMPLATES {
+        assert_eq!(read(&root.join(name)), text);
+    }
+    // A list a person or an agent can cite line by line, with nothing filled in for them.
+    let requirements = read(&root.join("requirements.md"));
+    let lines: Vec<&str> = requirements.lines().filter(|line| line.starts_with("- ")).collect();
+    assert!(lines.len() >= 5, "{requirements}");
+    assert!(lines.iter().all(|line| line.ends_with(':')), "{requirements}");
+    assert!(!requirements.chars().any(|c| c.is_ascii_digit()), "no example values: {requirements}");
+    assert!(read(&root.join("design-intent.md")).contains("## Must not change"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A folder that already holds a Spec file keeps it byte for byte: making a project beside a
+/// design writes only the names that are free, and never through a link.
+#[test]
+fn attach_never_writes_over_spec_files_already_in_the_folder() {
+    let dir = scratch("spec-kept");
+    let design = dir.join("Plate.sc");
+    fs::write(&design, b"design").expect("design");
+    let theirs = "# Our requirements\n\n- Wall at least 2 mm\n";
+    fs::write(dir.join("requirements.md"), theirs).expect("requirements");
+    attach(&design).expect("attach");
+    assert_eq!(read(&dir.join("requirements.md")), theirs, "the user's file is untouched");
+    assert_eq!(read(&dir.join("design-intent.md")), SPEC_TEMPLATES[1].1, "a free name gets its template");
+
+    let both = scratch("spec-kept-both");
+    let design = both.join("Plate.sc");
+    fs::write(&design, b"design").expect("design");
+    fs::write(both.join("requirements.md"), theirs).expect("requirements");
+    fs::create_dir(both.join("design-intent.md")).expect("a folder of that name");
+    attach(&design).expect("attach");
+    assert_eq!(read(&both.join("requirements.md")), theirs);
+    assert!(both.join("design-intent.md").is_dir());
+    assert_eq!(listing(&both.join("design-intent.md")), Vec::<String>::new());
+
+    #[cfg(unix)]
+    {
+        let linked = scratch("spec-kept-link");
+        let design = linked.join("Plate.sc");
+        fs::write(&design, b"design").expect("design");
+        let elsewhere = linked.join("elsewhere.md");
+        std::os::unix::fs::symlink(&elsewhere, linked.join("requirements.md")).expect("a link to nowhere");
+        attach(&design).expect("attach");
+        assert!(!elsewhere.exists(), "nothing is written through a link");
+        assert!(fs::symlink_metadata(linked.join("requirements.md")).expect("link").file_type().is_symlink());
+        let _ = fs::remove_dir_all(&linked);
+    }
+    let _ = fs::remove_dir_all(&dir);
+    let _ = fs::remove_dir_all(&both);
+}
+
+/// A project made by an earlier version, with its Spec templates inside `.intcad/`, opens as it is:
+/// nothing is moved, copied to the root or rewritten.
+#[test]
+fn an_older_project_with_its_spec_in_intcad_opens_unchanged() {
+    let dir = scratch("spec-old");
+    let made = create(&dir, "Bracket", "Bracket").expect("create");
+    let root = made.project.root().to_path_buf();
+    for &(name, _) in SPEC_TEMPLATES {
+        fs::remove_file(root.join(name)).expect("as an earlier version made it");
+    }
+    fs::create_dir(root.join(".intcad/specs")).expect("specs");
+    let old = [
+        (".intcad/design-intent.md", "# Design intent\n\nWhat this design is for, and what must not change.\n"),
+        (".intcad/design-intent.toml", "schema_version = 1\n"),
+        (".intcad/specs/requirements.toml", "schema_version = 1\n"),
+    ];
+    for (path, text) in old {
+        fs::write(root.join(path), text).expect("old file");
+    }
+    let before = listing(&root);
+    let reopened = Project::open(&root).expect("open");
+    assert_eq!(reopened.manifest().id, made.project.manifest().id);
+    assert!(Project::of(&made.design).expect("of").is_some());
+    assert_eq!(listing(&root), before, "no file added or moved");
+    for (path, text) in old {
+        assert_eq!(read(&root.join(path)), text);
+    }
     let _ = fs::remove_dir_all(&dir);
 }
 

@@ -6,6 +6,7 @@
 mod app_icons;
 mod assets;
 mod book;
+mod control_origins;
 mod external_corpus;
 mod features;
 mod i18n;
@@ -18,9 +19,11 @@ mod layers;
 mod licences;
 mod lists;
 mod mesh_decisions;
+mod parallel;
 mod pending;
 mod render_assets;
 mod runtime_artifact;
+mod rustfmt;
 mod skills;
 mod test;
 mod test_nextest;
@@ -36,6 +39,7 @@ usage: cargo xtask <command>
 
 commands:
   ui-containers   enforce the universal container for all UI hosts
+  control-origins enforce that production control requests use a trusted host origin
   layers          enforce the crate dependency layering (plan/architecture.md §3)
   assets          check that every non-code asset file is attributed in ATTRIBUTION.md
   app-icons       regenerate shared app-icon exports for Linux, FreeBSD and Windows
@@ -105,6 +109,9 @@ commands:
   fold-pending    fold assets/locales/pending/*.json into the catalogs and attribution/pending/*.md
                   into ATTRIBUTION.md, and delete them (the Generated files workflow runs this on
                   main; pull requests add the pending files instead of editing the shared ones)
+  fmt [--check]   rustfmt over the workspace and its path dependencies (what `cargo fmt --all`
+                  formats), a few files at a time: `cargo fmt --all` itself cannot start on
+                  Windows, where its one command line is too long; --check only reports
   lists [--fix]   check that files many changes add to are sorted one item per line (the
                   message catalogs in assets/locales, tests/KNOWN_FAILING_TESTS); --fix sorts
                   the catalogs
@@ -133,7 +140,7 @@ commands:
                   check in headless Chrome that the web app works offline and updates to a new
                   build (a stand-in app, or the web build in DIR such as dist/web)
   ci              fmt --check, assets, icons, licences --check, runtime-artifact policy, lists, skills, layers, ui-containers,
-                  mesh-decisions, clippy -D warnings, then the tests
+                  control-origins, mesh-decisions, clippy -D warnings, then the tests
                   with the wasm check alongside, then web-offline-test when Chrome is installed
                   (stops at the first failing step)
 ";
@@ -144,6 +151,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("layers") => cmd_layers(),
         Some("ui-containers") => ui_containers::run(&root()),
+        Some("control-origins") => control_origins::run(&root()),
         Some("assets") => assets::run(&root()),
         Some("icons") => icons::run(&root()),
         Some("app-icons") => app_icons::run(&root()),
@@ -163,6 +171,12 @@ fn main() -> ExitCode {
         Some("skills") => skills::run(&root()),
         Some("mesh-decisions") => mesh_decisions::run(&root()),
         Some("runtime-artifact") => runtime_artifact::run(&root(), &rest),
+        Some("fmt") => match rest[..] {
+            [] => rustfmt::run(&root(), false),
+            ["--check"] => rustfmt::run(&root(), true),
+            // A mistyped --check must not rewrite files.
+            _ => Err("usage: cargo xtask fmt [--check]".into()),
+        },
         Some("lists") => lists::run(&root(), rest.contains(&"--fix")),
         Some("test") => {
             let (cargo_args, test_args) = rest.iter().position(|a| *a == "--").map_or((&rest[..], &[][..]), |i| (&rest[..i], &rest[i + 1..]));
@@ -220,6 +234,21 @@ pub fn metadata() -> Result<serde_json::Value, String> {
     serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: bad JSON: {e}"))
 }
 
+/// The locked resolved graph, including registry dependencies and their target conditions.
+pub fn metadata_resolved() -> Result<serde_json::Value, String> {
+    let out = cargo().args(["metadata", "--format-version", "1", "--locked"]).output().map_err(|e| format!("cargo metadata: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("cargo metadata failed:\n{}", String::from_utf8_lossy(&out.stderr)));
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: bad JSON: {e}"))
+}
+
+/// Fail when a native-only dependency reaches a browser or wasm root.
+fn closure_guard() -> Result<Vec<layers::Violation>, String> {
+    let graph = layers::from_resolve(&metadata_resolved()?)?;
+    Ok(layers::closure_check(&graph))
+}
+
 /// The full action matrix (apps/solidcraft-cli/tests/action_matrix.rs), with the ci profile.
 fn cmd_action_matrix(bless: bool, results: Option<&str>, from: Option<&str>) -> Result<(), String> {
     let mut c = cargo();
@@ -272,16 +301,24 @@ fn cmd_layers() -> Result<(), String> {
         println!("{:<28} {:<14} {}", c.name, layers::describe(layers::classify(&c.name)), ws.join(", "));
     }
     let violations = layers::check(&crates);
+    let closure = closure_guard()?;
     println!();
-    if violations.is_empty() {
+    println!("Native-only dependency closures:");
+    if closure.is_empty() {
+        println!("OK: no native-only crate reaches a browser or wasm root.");
+    }
+    for v in &closure {
+        println!("  - {v}");
+    }
+    if violations.is_empty() && closure.is_empty() {
         println!("OK: {} crates, no layering violations.", crates.len());
         Ok(())
     } else {
-        println!("{} violation(s):", violations.len());
+        println!("{} violation(s):", violations.len() + closure.len());
         for v in &violations {
             println!("  - {v}");
         }
-        Err(format!("{} layering violation(s)", violations.len()))
+        Err(format!("{} layering violation(s)", violations.len() + closure.len()))
     }
 }
 
@@ -428,6 +465,13 @@ fn cmd_wasm() -> Result<(), String> {
 /// The wasm check and how many crates it covers. It uses the ci profile so the host build
 /// scripts and proc macros built for clippy and the tests are reused.
 fn wasm_check() -> Result<(Command, usize), String> {
+    // The graph, not only the member list: a native-only registry dependency must not reach the
+    // browser or the wasm closure.
+    let closure = closure_guard()?;
+    if !closure.is_empty() {
+        let text: Vec<String> = closure.iter().map(ToString::to_string).collect();
+        return Err(format!("{} native-only dependency closure violation(s): {}", closure.len(), text.join("; ")));
+    }
     let crates = layers::from_metadata(&metadata()?)?;
     let mut set: Vec<String> =
         crates.iter().filter(|c| matches!(layers::classify(&c.name), Some(layers::Class::Layer(_)))).map(|c| c.name.clone()).collect();
@@ -443,9 +487,7 @@ fn wasm_check() -> Result<(Command, usize), String> {
 /// The quick gates first, so they fail fast; the wasm check (and doc tests) run while the test
 /// binaries do, which leaves cargo's build lock free.
 fn cmd_ci() -> Result<(), String> {
-    let mut c = cargo();
-    c.args(["fmt", "--all", "--", "--check"]);
-    run(c, "cargo fmt --check")?;
+    rustfmt::run(&root(), true)?;
     assets::run(&root())?;
     icons::run(&root())?;
     licences::run(&root(), true)?;
@@ -454,6 +496,7 @@ fn cmd_ci() -> Result<(), String> {
     skills::run(&root())?;
     cmd_layers()?;
     ui_containers::run(&root())?;
+    control_origins::run(&root())?;
     mesh_decisions::run(&root())?;
     let mut c = cargo();
     c.args(["clippy", "--workspace", "--all-targets", "--profile", "ci", "--", "-D", "warnings"]);

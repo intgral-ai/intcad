@@ -4186,7 +4186,7 @@
   "ui.agent_chat_limit": "Ajan, bir mesaj için {limit} değişiklik sınırına ulaştı. Devam etmesi için başka bir mesaj gönderin.",
   "ui.agent_chat_login_found": "oturum bulundu",
   "ui.agent_chat_minimize": "Bir çubuğa küçült",
-  "ui.agent_chat_mode_all": "Tümü",
+  "ui.agent_chat_mode_all": "Otomatik",
   "ui.agent_chat_mode_ask": "Sor",
   "ui.agent_chat_mode_edits": "Düzenle",
   "ui.agent_chat_model_custom": "Özel olanı kullan: {model}",

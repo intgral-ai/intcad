@@ -1,0 +1,34 @@
+{
+  "en": {
+    "ui.agent_chat_centre": "At the bottom centre of the window",
+    "ui.agent_chat_centre_tip": "The Assistant is one message box at the bottom of the window, centred; Expand opens the conversation above it. Off: the side panel."
+  },
+  "ja": {
+    "ui.agent_chat_centre": "ウィンドウの下中央に表示",
+    "ui.agent_chat_centre_tip": "アシスタントをウィンドウ下部の中央に、メッセージ欄ひとつで表示します。「展開」でその上に会話が開きます。オフ: サイドパネル。"
+  },
+  "zh": {
+    "ui.agent_chat_centre": "放在窗口底部正中",
+    "ui.agent_chat_centre_tip": "助手在窗口底部正中，只显示一个输入框；点“展开”在上方打开对话。关闭：侧边栏。"
+  },
+  "ar": {
+    "ui.agent_chat_centre": "في أسفل منتصف النافذة",
+    "ui.agent_chat_centre_tip": "يظهر المساعد مربع رسالة واحدًا في أسفل النافذة وفي منتصفها؛ ويفتح «توسيع» المحادثة فوقه. إيقاف: اللوحة الجانبية."
+  },
+  "he": {
+    "ui.agent_chat_centre": "בתחתית החלון, במרכז",
+    "ui.agent_chat_centre_tip": "העוזר מוצג כתיבת הודעה אחת בתחתית החלון, במרכז; ”הרחבה” פותחת את השיחה מעליה. כבוי: החלונית הצדדית."
+  },
+  "vi": {
+    "ui.agent_chat_centre": "Ở giữa cạnh dưới cửa sổ",
+    "ui.agent_chat_centre_tip": "Trợ lý là một ô nhập tin nhắn ở giữa cạnh dưới cửa sổ; Mở rộng sẽ mở cuộc trò chuyện phía trên. Tắt: bảng bên."
+  },
+  "de": {
+    "ui.agent_chat_centre": "Unten in der Mitte des Fensters",
+    "ui.agent_chat_centre_tip": "Der Assistent ist ein Nachrichtenfeld unten in der Mitte des Fensters; Aufklappen öffnet das Gespräch darüber. Aus: die Seitenleiste."
+  },
+  "ko": {
+    "ui.agent_chat_centre": "창 아래쪽 가운데",
+    "ui.agent_chat_centre_tip": "어시스턴트를 창 아래쪽 가운데에 메시지 입력란 하나로 표시합니다. 펼치기를 누르면 그 위에 대화가 열립니다. 끄기: 사이드 패널."
+  }
+}
