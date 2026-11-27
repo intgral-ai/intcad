@@ -128,6 +128,23 @@ The desktop preflights the complete encoded prompt, including the JSON-RPC envel
 A built-in prompt is limited to 18 MiB, enough for one 12 MiB PDF and ordinary text. It is refused
 locally if it does not fit; agent-to-desktop limits do not change.
 
+Two more, for the app's guesses of the user's next step (2026-11-26, G87 to G90 of
+`docs/design/autocomplete-tests.md`):
+
+- `session/close`, offered as `agentCapabilities.sessionCapabilities.close`. Mastra Code's ACP agent
+  has none, and keeps each session (a whole runtime, with its storage, workers and folder) until the
+  connection closes. A closed session is ended as every session is then: its turn cancelled and
+  aborted, its listeners removed, its runtime cleaned up. A prompt or a second close on it is
+  refused, and so is a close of a session that is not open. The app closes only guessing sessions.
+- A `session/new` with `_meta.intcad.nextStep: true` (only `true` counts; `isNextStep`, `session.mjs`)
+  is a guess. It gets the app's note alone (no `LANGUAGE`, no brief, no `NO_PROJECT`, and no project
+  even if one is sent), no MCP at all (`disableMcp`; the servers the request names are not started),
+  no design tools (a `cadBridge` catalog is ignored), and no per-session plan tracking. An input
+  processor clears model-visible tools at every step. Before the first guess the installed Core
+  must also pass an offline stream check with a stub model; otherwise the session is refused.
+  It is put in Mastra Code's read-only mode `fast` (Explore) before the reply as a second safeguard.
+  An agent without that mode refuses the session and ends it.
+
 ### The note and the project (INT-1473)
 
 `session/new` may carry two things of the app's own:
@@ -140,7 +157,7 @@ locally if it does not fit; agent-to-desktop limits do not change.
 Every session, with a project or without, works in a new, empty folder of its own,
 `<data>/sessions/s-<pid>-…` (`sessionFolder` in `session.mjs`), removed when the session is
 cleaned up, that is when the app closes its connection to the agent (New chat leaves the old
-session open). A start removes the folders of an agent process that is no longer running
+session open), or the session itself (`session/close`, sent only for guesses of the next step). A start removes the folders of an agent process that is no longer running
 (`sweepSessionFolders`). The `cwd` the app names is used only for the MCP servers it hands over.
 Mastra Code reads agent files (`AGENTS.md`, `CLAUDE.md`, on every turn), MCP servers (`.mcp.json`,
 `.claude/settings.local.json`) and skills from a session's folder: in one folder shared by every
