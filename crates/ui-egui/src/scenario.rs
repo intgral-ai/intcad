@@ -100,8 +100,8 @@ pub fn rect_of(name: &str) -> Option<egui::Rect> {
     RECTS.with(|h| h.borrow().iter().rfind(|(n, _)| n == name).map(|x| x.1))
 }
 
-#[cfg(test)]
-pub(crate) fn rects(prefix: &str) -> Vec<(String, egui::Rect)> {
+/// Every painted part's rect from this frame whose name starts with `prefix`.
+pub fn rects(prefix: &str) -> Vec<(String, egui::Rect)> {
     RECTS.with(|r| r.borrow().iter().filter(|(name, _)| name.starts_with(prefix)).cloned().collect())
 }
 
@@ -201,6 +201,9 @@ impl Harness {
         // width from the view and the ribbon. It stays on that window, which is also the one the
         // `right_rail` preference keeps; the rail's own tests turn the rail on.
         h.app.preferences.right_rail = false;
+        // The same for the Assistant: the suite's web view tests measure the side panel, which
+        // the `agent_chat_centre` preference keeps; the centred box has its own tests.
+        h.app.preferences.agent_chat_centre = false;
         h.install();
         h.ctx.enable_accesskit();
         h.frames(3);
@@ -314,7 +317,7 @@ impl Harness {
             self.app.control_rx = Some(rx);
             tx
         });
-        let (req, rx) = ControlRequest::new(method, params);
+        let (req, rx) = ControlRequest::trusted_gui(method, params);
         if tx.send(req).is_err() {
             return (json!({"ok": false, "error": "the request queue is closed"}), 0);
         }
@@ -338,8 +341,8 @@ impl Harness {
         {
             self.size = egui::vec2(w as f32, h as f32);
         }
-        let (req, _rx) = ControlRequest::new(method, params);
-        let out = match handle(&mut self.app, &self.ctx, &req) {
+        let (mut req, _rx) = ControlRequest::trusted_gui(method, params);
+        let out = match handle(&mut self.app, &self.ctx, &mut req) {
             Outcome::Done(v) => v,
             Outcome::Screenshot { .. } => json!({"ok": true, "result": null}),
         };

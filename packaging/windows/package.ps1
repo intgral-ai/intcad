@@ -28,6 +28,8 @@
 .EXAMPLE
   pwsh packaging/windows/package.ps1 -Arch x64
   pwsh packaging/windows/package.ps1 -Arch x64 -WithMastra   # opt-in; fails closed until #15 approves
+  pwsh packaging/windows/package.ps1 -Arch x64 -WithMastraAgent   # the built-in agent's folder, as a release package carries it (docs/mastra-packaging.md)
+  pwsh packaging/windows/package.ps1 -Arch x64 -WithMastraAgent:$false   # leave the agent out
   pwsh packaging/windows/package.ps1 -Arch arm64     # cross-compiled; needs the MSVC ARM64 build tools
   pwsh packaging/windows/package.ps1 -Arch x64 -Phase stage     # then sign target/windows-package/x64/*.exe
   pwsh packaging/windows/package.ps1 -Arch x64 -Phase package
@@ -36,11 +38,13 @@ param(
   [ValidateSet('x64', 'x86', 'arm64')] [string] $Arch = 'x64',
   [switch] $SkipBuild,
   [ValidateSet('all', 'stage', 'package')] [string] $Phase = 'all',
-  [switch] $WithMastra
+  [switch] $WithMastra,
+  [switch] $WithMastraAgent
 )
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if ($env:SOLIDCRAFT_WITH_MASTRA -eq '1') { $WithMastra = $true }
+if ($env:SOLIDCRAFT_WITH_MASTRA_AGENT -eq '1') { $WithMastraAgent = $true }
 
 function Invoke-Native([string] $What, [scriptblock] $Block) {
   Write-Output "==> $What"
@@ -92,6 +96,10 @@ foreach ($check in @(@('intcad.exe', 2), @('intcad-cli.exe', 3))) {
   $h = Get-PeHeader (Join-Path $CheckDir $check[0])
   if ($h.Machine -ne $Machine) { throw "$($check[0]) is for machine 0x$('{0:X}' -f $h.Machine), expected 0x$('{0:X}' -f $Machine) ($Arch)" }
   if ($h.Subsystem -ne $check[1]) { throw "$($check[0]) has PE subsystem $($h.Subsystem), expected $($check[1])" }
+  # The package claims the C runtime is linked statically, so a build whose
+  # +crt-static silently failed must not ship: it would need a VC++
+  # redistributable the package does not install.
+  & (Join-Path $PSScriptRoot 'check-static-crt.ps1') -Path (Join-Path $CheckDir $check[0])
   Write-Output "ok $($check[0]): $Arch, PE subsystem $($h.Subsystem)"
 }
 & (Join-Path $PSScriptRoot 'check-icon.ps1') -Path (Join-Path $CheckDir 'intcad.exe')
@@ -116,6 +124,22 @@ if ($Phase -ne 'package') {
     New-Item -ItemType Directory -Force -Path (Join-Path $Stage 'mastra') | Out-Null
     Write-Output 'the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)'
   }
+  # The built-in agent's folder (the release's default): its own folder beside `mastra\`. The app
+  # starts the node.exe in it with agent\main.mjs, and looks for it in the package first.
+  # stage-agent.ps1 checks the folder before copying it; the staged tree is then looked through
+  # for anything like a secret or a stored sign-in.
+  if ($WithMastraAgent) {
+    if ($Arch -ne 'x64') { throw "the built-in agent's folder is built for Windows x64 only; pass -WithMastraAgent:`$false for Windows $Arch" }
+    Invoke-Native 'stage the built-in agent' { & (Join-Path $PSScriptRoot '..\mastra\stage-agent.ps1') -Target $Target -Dest (Join-Path $Stage 'mastra-agent') }
+    Invoke-Native 'scan the staged package' { node (Join-Path $Root 'packages\mastra-runtime\scripts\agent-package.mjs') scan $Stage }
+    # The agent as the packages will carry it, started and answering against stand-ins. On a
+    # copy: nothing here keeps a running agent from writing into the folder it runs from.
+    $AgentRun = Join-Path $TargetDir "windows-package\mastra-agent-run"
+    Remove-Item -Recurse -Force $AgentRun -ErrorAction SilentlyContinue
+    Copy-Item -Recurse (Join-Path $Stage 'mastra-agent') $AgentRun
+    Invoke-Native 'run the built-in agent against stand-ins' { node (Join-Path $Root 'packages\mastra-runtime\scripts\agent-smoke.mjs') $AgentRun }
+    Remove-Item -Recurse -Force $AgentRun
+  }
 }
 if ($Phase -eq 'stage') {
   Write-Output "staged for signing: $Stage"
@@ -128,11 +152,12 @@ if (-not (Test-Path $Icon)) { throw "Missing package icon: $Icon" }
 # ---- MSI ---------------------------------------------------------------------------------------
 $Msi = Join-Path $Dist "intcad-$Version-windows-$Arch.msi"
 $HasMastra = if ($WithMastra -and (Test-Path (Join-Path $Stage 'mastra\runtime.json'))) { 1 } else { 0 }
+$HasMastraAgent = if (Test-Path (Join-Path $Stage 'mastra-agent\agent.json')) { 1 } else { 0 }
 Invoke-Native 'wix build' {
   wix build (Join-Path $Root 'assets/platforms/windows/solidcraft.wxs') -arch $Arch `
     -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
     -culture en-US -loc (Join-Path $Root 'assets/platforms/windows/solidcraft.en-us.wxl') `
-    -d "Version=$MsiVersion" -d "DisplayVersion=$Version" -d "BinDir=$Stage" -d "IconPath=$Icon" -d "HasMastra=$HasMastra" `
+    -d "Version=$MsiVersion" -d "DisplayVersion=$Version" -d "BinDir=$Stage" -d "IconPath=$Icon" -d "HasMastra=$HasMastra" -d "HasMastraAgent=$HasMastraAgent" `
     -o $Msi
 }
 Invoke-Native 'MSI shortcut icon validation (ICE50)' {
@@ -150,6 +175,7 @@ foreach ($f in 'README.md', 'LICENSE-MIT', 'LICENSE-APACHE', 'NOTICE', 'THIRD-PA
 Copy-Item (Join-Path $Stage 'ASSISTANT-THIRD-PARTY-NOTICES.txt') $Portable
 Copy-Item (Join-Path $Stage 'WEB-VIEW-PLATFORM-NOTICES.txt') $Portable
 if (Test-Path (Join-Path $Stage 'mastra')) { Copy-Item -Recurse (Join-Path $Stage 'mastra') $Portable }
+if (Test-Path (Join-Path $Stage 'mastra-agent')) { Copy-Item -Recurse (Join-Path $Stage 'mastra-agent') $Portable }
 $Zip = Join-Path $Dist "intcad-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip

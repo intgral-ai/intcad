@@ -4186,7 +4186,7 @@
   "ui.agent_chat_limit": "Agent dosáhl limitu {limit} změn na jednu zprávu. Pošlete další zprávu, aby mohl pokračovat.",
   "ui.agent_chat_login_found": "přihlášení nalezeno",
   "ui.agent_chat_minimize": "Minimalizovat do pruhu",
-  "ui.agent_chat_mode_all": "Vše",
+  "ui.agent_chat_mode_all": "Auto",
   "ui.agent_chat_mode_ask": "Ptát se",
   "ui.agent_chat_mode_edits": "Úpravy",
   "ui.agent_chat_model_custom": "Použít vlastní: {model}",

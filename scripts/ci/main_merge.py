@@ -287,7 +287,11 @@ def runtime_commands():
             ["npm", "run", "build", "-w", RUNTIME_PACKAGE],
             ["npm", "run", "verify:schema", "-w", RUNTIME_PACKAGE],
             ["npm", "run", "check:deps", "-w", RUNTIME_PACKAGE],
-            ["npm", "run", "test:artifact-gate", "-w", RUNTIME_PACKAGE]]
+            ["npm", "run", "test:artifact-gate", "-w", RUNTIME_PACKAGE],
+            # The built-in agent's folder: plain scripts, on made-up folders (no npm script for
+            # them: the runtime's package.json is a recorded artifact file).
+            ["node", "packages/mastra-runtime/scripts/test-remove-enterprise.mjs"],
+            ["node", "packages/mastra-runtime/scripts/test-agent-package.mjs"]]
 
 
 def contract_ts_commands():

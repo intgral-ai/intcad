@@ -18,8 +18,23 @@
 
 use serde_json::{Value, json};
 
+use crate::entitlement::{AuthorizationBound, MonotonicInstant, SafeStopPlan, UpperBound};
 use crate::schema::ParamCheck;
 use crate::{EngineError, find_command};
+
+/// Plan a controlled batch's safe stop before its first step.
+///
+/// Every step needs a verified upper bound and the measured remaining authorization must cover
+/// their sum. A refusal means the whole batch must not run: there is no partial "try the first
+/// few steps" path, because a started batch must still reach a safe stop before its original
+/// authorization expires. Free human CAD does not call this planner.
+pub fn safe_stop_plan(
+    now: MonotonicInstant,
+    bound: Option<AuthorizationBound<'_>>,
+    step_bounds: &[UpperBound],
+) -> Result<SafeStopPlan, crate::entitlement::Refusal> {
+    crate::entitlement::plan_safe_stop(now, bound, step_bounds)
+}
 
 /// The first step a batch would refuse at its turn.
 #[derive(Clone, Debug, PartialEq)]
@@ -143,6 +158,36 @@ mod tests {
         let steps = vec![json!({"id": "solid.box", "params": {"length": 1, "width": 1, "height": 1}}), step("view.pick", json!({"x": 1, "y": 1}))];
         assert_eq!(check(&steps, ParamCheck::Off, &["view.pick"]), None);
         assert_eq!(check(&steps, ParamCheck::Off, &[]).map(|r| r.index), Some(1), "outside the registry without the runner");
+    }
+
+    #[test]
+    fn a_batch_with_an_unmeasured_step_is_refused_before_the_first_one() {
+        let deadline = crate::entitlement::ConservativeDeadline::new(MonotonicInstant::from_millis(0), std::time::Duration::from_secs(60));
+        let steps = circles();
+        let bounds: Vec<_> = (0..steps.len())
+            .map(|index| if index == steps.len() - 1 { UpperBound::Unverified } else { UpperBound::Verified(std::time::Duration::from_secs(1)) })
+            .collect();
+        let refusal = safe_stop_plan(MonotonicInstant::from_millis(0), Some(AuthorizationBound::Deadline(&deadline)), &bounds).unwrap_err();
+        assert_eq!(refusal.code, crate::entitlement::RefusalCode::UnsafeToStart);
+    }
+
+    #[test]
+    fn a_batch_whose_remaining_time_is_shorter_than_its_steps_is_refused() {
+        let deadline = crate::entitlement::ConservativeDeadline::new(MonotonicInstant::from_millis(0), std::time::Duration::from_secs(8));
+        let bounds = [UpperBound::Verified(std::time::Duration::from_secs(5)), UpperBound::Verified(std::time::Duration::from_secs(5))];
+        let refusal = safe_stop_plan(MonotonicInstant::from_millis(0), Some(AuthorizationBound::Deadline(&deadline)), &bounds).unwrap_err();
+        assert_eq!(refusal.code, crate::entitlement::RefusalCode::UnsafeToStart);
+    }
+
+    #[test]
+    fn a_batch_that_fits_has_a_stop_before_its_bound() {
+        let deadline = crate::entitlement::ConservativeDeadline::new(MonotonicInstant::from_millis(0), std::time::Duration::from_secs(60));
+        let bounds = [UpperBound::Verified(std::time::Duration::from_secs(10)), UpperBound::Verified(std::time::Duration::from_secs(20))];
+        let plan = safe_stop_plan(MonotonicInstant::from_millis(1_000), Some(AuthorizationBound::Deadline(&deadline)), &bounds).unwrap();
+        assert_eq!(plan.upper_bound, std::time::Duration::from_secs(30));
+        assert_eq!(plan.next_safe_stop, MonotonicInstant::from_millis(31_000));
+        assert!(plan.next_safe_stop < deadline.expires_at());
+        assert!(check(&circles(), ParamCheck::Off, &[]).is_none(), "the existing preflight still runs independently");
     }
 
     #[test]

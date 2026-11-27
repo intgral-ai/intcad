@@ -9,15 +9,17 @@ Run: PYTHONDONTWRITEBYTECODE=1 python3 -I scripts/ci/test_gate.py
 import copy
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
+import zipfile
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
@@ -652,7 +654,7 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                 self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", text)
 
     def script(self):
-        match = re.search(r"(?ms)^          python3 - <<'PY'\n(.*?)^          PY$", self.text())
+        match = re.search(r"(?ms)^          python3 -I - <<'PY'\n(.*?)^          PY$", self.text())
         self.assertIsNotNone(match, "release-gate needs a source-bound execution/evidence aggregate")
         return "\n".join(line[10:] for line in match[1].splitlines()) + "\n"
 
@@ -690,7 +692,10 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                     (run / name).write_text(text)
             default = dict(ci="failure" if beta else "success", packages="success", fea="success",
                            **{"kernel-rig": "success", "beta-gate": "success" if beta else "skipped"})
+            # The workflow exports the declared distribution to this step; the fixture models
+            # that environment so the gate reads the same inputs as a real run.
             env = dict(os.environ, GITHUB_SHA=sha, EVENT_NAME="pull_request", BASE_REF="main", HEAD_REF=head,
+                       DISTRIBUTION="native",
                        NEEDS_JSON=json.dumps({job: {"result": status} for job, status in
                 (statuses or default).items()}))
             return subprocess.run([sys.executable, "-c", self.script()], cwd=root, env=env,
@@ -785,11 +790,109 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("packages: real job result", result.stdout + result.stderr)
 
-    def test_package_descriptor_records_actual_bytes_checkout_target_and_contract(self):
+    def package_evidence_script(self):
         text = (ROOT / ".github/workflows/release.yml").read_text()
         match = re.search(r"(?ms)^        shell: python \{0\}\n        run: \|\n(.*?)^      -", text)
         self.assertIsNotNone(match, "package producers need actual checkout/byte metadata")
-        script = "\n".join(line[10:] for line in match[1].splitlines()) + "\n"
+        return "\n".join(line[10:] for line in match[1].splitlines()) + "\n"
+
+    AGENT_ENTRIES = (
+        "agent/main.mjs", "agent.json", "licenses/THIRD-PARTY-LICENSES.txt",
+        "licenses/NODE-LICENSE.txt", "node_modules/@mastra/code-sdk/package.json",
+        "node_modules/@agentclientprotocol/sdk/package.json",
+        "skills/modelling-skills/example/SKILL.md",
+    )
+
+    def test_standalone_package_workflow_refuses_built_in_agent_without_node(self):
+        with tempfile.TemporaryDirectory(prefix="package-verdict-test-") as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "-q", "--allow-empty", "-m", "build source"], check=True)
+            sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            target = root / "dist/release"
+            target.mkdir(parents=True)
+            (root / "scripts").mkdir()
+            (root / "scripts/ci").symlink_to(HERE, target_is_directory=True)
+            cases = (
+                ("release-linux-x86_64", "x86_64-unknown-linux-gnu", "intcad-0.1.3-linux-x86_64", ".tar.gz"),
+                ("release-linux-x86_64", "x86_64-unknown-linux-gnu", "intcad-0.1.3-beta.1-linux-x86_64", ".tar.gz"),
+                ("release-windows-x64", "x86_64-pc-windows-msvc", "intcad-0.1.3-beta.1-windows-x64-portable", ".zip"),
+            )
+            for package, triple, wrapper, extension in cases:
+                env = dict(os.environ, GITHUB_SHA=sha, PACKAGE_ID=package,
+                           PACKAGE_TARGET=triple, SOLIDCRAFT_DISTRIBUTION="mastra-agent")
+                name = wrapper + extension
+                path = target / name
+                for has_node in (True, False):
+                    with self.subTest(name=name, has_node=has_node):
+                        if extension == ".zip":
+                            with zipfile.ZipFile(path, "w") as archive:
+                                for entry in (*self.AGENT_ENTRIES, *(("node.exe",) if has_node else ())):
+                                    archive.writestr(f"{wrapper}/mastra-agent/{entry}", b"x")
+                        else:
+                            with tarfile.open(path, "w:gz") as archive:
+                                for entry in (*self.AGENT_ENTRIES, *(("node",) if has_node else ())):
+                                    info = tarfile.TarInfo(f"{wrapper}/lib/intcad/mastra-agent/{entry}")
+                                    info.size = 1
+                                    archive.addfile(info, io.BytesIO(b"x"))
+                        result = subprocess.run([sys.executable, "-c", self.package_evidence_script()],
+                                                cwd=root, env=env, capture_output=True, text=True)
+                        report = json.loads((target / "contents.json").read_text())
+                        self.assertEqual(report["agents"][name]["missing"], [] if has_node else ["mastra-agent/node"])
+                        if has_node:
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                        else:
+                            self.assertNotEqual(result.returncode, 0, "missing Node must fail the package job")
+                            self.assertIn("no Node program", result.stderr)
+                path.unlink()
+
+    def test_standalone_windows_portable_zip_with_cli_in_version_still_needs_node(self):
+        with tempfile.TemporaryDirectory(prefix="windows-package-verdict-test-") as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "-q", "--allow-empty", "-m", "build source"], check=True)
+            sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            target = root / "dist/release"
+            target.mkdir(parents=True)
+            ci = root / "scripts/ci"
+            ci.mkdir(parents=True)
+            (ci / "release_content.py").symlink_to(HERE / "release_content.py")
+
+            msi = "intcad-0.1.3-preview-cli-build-windows-x64.msi"
+            wrapper = "intcad-0.1.3-preview-cli-build-windows-x64-portable"
+            portable = wrapper + ".zip"
+            (target / msi).write_bytes(b"placeholder MSI")
+            with zipfile.ZipFile(target / portable, "w") as archive:
+                archive.writestr(f"{wrapper}/intcad.exe", b"x")
+                for entry in self.AGENT_ENTRIES:
+                    archive.writestr(f"{wrapper}/mastra-agent/{entry}", b"x")
+
+            # Native MSI extraction needs installer tooling; supply only its installed file listing.
+            # The real recorder still inspects the ZIP and writes both receipts for the real verdict.
+            installed = ["PFiles64/Intcad/intcad.exe", *(
+                f"PFiles64/Intcad/mastra-agent/{entry}" for entry in (*self.AGENT_ENTRIES, "node.exe"))]
+            (ci / "package_contents.py").write_text(
+                "import sys\n"
+                f"sys.path.insert(0, {str(HERE)!r})\n"
+                "import package_contents\n"
+                f"package_contents.names_msi = lambda path: {{{msi!r}: {installed!r}}}[path.name]\n"
+                "package_contents.main()\n"
+            )
+            env = dict(os.environ, GITHUB_SHA=sha, PACKAGE_ID="release-windows-x64",
+                       PACKAGE_TARGET="x86_64-pc-windows-msvc", SOLIDCRAFT_DISTRIBUTION="mastra-agent")
+            result = subprocess.run([sys.executable, "-c", self.package_evidence_script()],
+                                    cwd=root, env=env, capture_output=True, text=True)
+            report = json.loads((target / "contents.json").read_text())
+            self.assertTrue(report["agents"][msi]["node"])
+            self.assertEqual(report["agents"][msi]["missing"], [])
+            self.assertEqual(report["agents"][portable]["missing"], ["mastra-agent/node"])
+            self.assertNotEqual(result.returncode, 0, "the complete MSI must not hide the ZIP's missing Node")
+            self.assertIn(portable + ": the mastra-agent/ folder has no Node program", result.stderr)
+
+    def test_package_descriptor_records_actual_bytes_checkout_target_and_contract(self):
+        script = self.package_evidence_script()
         with tempfile.TemporaryDirectory(prefix=".package-metadata-test-", dir=ROOT) as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "-q", str(root)], check=True)
@@ -798,14 +901,19 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
             target = root / "dist/release"
             target.mkdir(parents=True)
-            (root / "scripts/ci").mkdir(parents=True)
-            shutil.copyfile(HERE / "package_contents.py", root / "scripts/ci/package_contents.py")
-            env = dict(os.environ, GITHUB_SHA=sha, PACKAGE_ID="release-linux-x86_64", PACKAGE_TARGET="x86_64-unknown-linux-gnu")
+            (root / "scripts").mkdir()
+            (root / "scripts/ci").symlink_to(HERE, target_is_directory=True)
+            env = dict(os.environ, GITHUB_SHA=sha, PACKAGE_ID="release-linux-x86_64",
+                       PACKAGE_TARGET="x86_64-unknown-linux-gnu", SOLIDCRAFT_DISTRIBUTION="native")
             command = [sys.executable, "-c", script]
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0, "empty packages must not get a descriptor")
             self.assertFalse((target / "build.json").exists())
-            (target / "fixture.tar.gz").write_bytes(b"abc")
+            fixture = target / "fixture.tar.gz"
+            with tarfile.open(fixture, "w:gz") as archive:
+                payload = tarfile.TarInfo("bin/intcad")
+                payload.size = 3
+                archive.addfile(payload, io.BytesIO(b"abc"))
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads((target / "build.json").read_text())
@@ -813,7 +921,7 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             self.assertEqual(data["target"], "x86_64-unknown-linux-gnu")
             self.assertIsNone(data["contractDigest"], "absent #5 is never a fabricated digest")
             self.assertEqual(data["artifacts"], [dict(name="fixture.tar.gz",
-                sha256="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")])
+                sha256=hashlib.sha256(fixture.read_bytes()).hexdigest())])
             manifest = root / "schema/mastra-runtime/v1/manifest.json"
             manifest.parent.mkdir(parents=True)
             manifest.write_bytes(b"{}\n")
@@ -825,7 +933,7 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads((target / "build.json").read_text())["contractDigest"],
-                             "sha256:" + hashlib.sha256(b"{}\n").hexdigest())
+                              "sha256:" + hashlib.sha256(b"{}\n").hexdigest())
             result = subprocess.run(command, cwd=root, env={**env, "GITHUB_SHA": "0" * 40}, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("sourceRevision mismatch", result.stderr)
@@ -834,14 +942,43 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0, "modified tracked bytes cannot be attributed to clean HEAD")
             self.assertIn("dirty", result.stderr)
 
+    def test_standalone_native_package_rejects_runtime_markers_and_unreadable_archive(self):
+        with tempfile.TemporaryDirectory(prefix="native-package-verdict-test-") as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(["git", "-C", str(root), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                            "commit", "-q", "--allow-empty", "-m", "build source"], check=True)
+            sha = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
+            target = root / "dist/release"
+            target.mkdir(parents=True)
+            (root / "scripts").mkdir()
+            (root / "scripts/ci").symlink_to(HERE, target_is_directory=True)
+            env = dict(os.environ, GITHUB_SHA=sha, PACKAGE_ID="release-linux-x86_64",
+                       PACKAGE_TARGET="x86_64-unknown-linux-gnu", SOLIDCRAFT_DISTRIBUTION="native")
+            archive = target / "fixture.tar.gz"
+            command = [sys.executable, "-c", self.package_evidence_script()]
+            with tarfile.open(archive, "w:gz") as package:
+                entry = tarfile.TarInfo("lib/intcad/mastra-agent/node")
+                entry.size = 1
+                package.addfile(entry, io.BytesIO(b"x"))
+            result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("a runtime marker or a Node outside the agent", result.stderr)
+            archive.write_bytes(b"not a tar archive")
+            result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("an artifact not inspected", result.stderr)
+
     def test_intermediate_native_artifact_handoffs_are_bound_to_final_checkout(self):
         text = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertIn("ref: ${{ github.sha }}", text)
         # These are native build inputs, not a staged runtime or installed test.
-        self.assertEqual(text.count("name: icons-${{ github.sha }}"), 2)
-        self.assertIn("name: macos-bin-${{ matrix.arch }}-${{ github.sha }}", text)
-        self.assertIn("name: macos-bin-aarch64-${{ github.sha }}", text)
-        self.assertIn("name: macos-bin-x86_64-${{ github.sha }}", text)
+        # The staging workflow wiring test separately checks the prefix expression.
+        names = text.replace("name: ${{ env.ARTIFACT_PREFIX }}", "name: ")
+        self.assertEqual(names.count("name: icons-${{ github.sha }}"), 2)
+        self.assertIn("name: macos-bin-${{ matrix.arch }}-${{ github.sha }}", names)
+        self.assertIn("name: macos-bin-aarch64-${{ github.sha }}", names)
+        self.assertIn("name: macos-bin-x86_64-${{ github.sha }}", names)
 
     def test_every_actual_package_build_result_is_required_without_allowing_skips(self):
         text = (ROOT / ".github/workflows/release.yml").read_text().split("\n  package-builds:\n", 1)[1]
