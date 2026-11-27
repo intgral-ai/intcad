@@ -498,7 +498,10 @@ fn the_tickets_panel_gives_its_place_to_the_web_view() {
     assert_eq!(open(&h.app), Some(Item::Tickets));
     let panel = rect_of("rail:panel").unwrap();
     let (place, _) = h.app.tickets.web_place.expect("the panel gives its place to the web view");
-    assert!(panel.contains_rect(place) && place.width() >= panel.width() - 16.0 && place.top() <= panel.top() + 8.0, "the whole panel, its title row included: {place:?} in {panel:?}");
+    assert!(
+        panel.contains_rect(place) && place.width() >= panel.width() - 16.0 && place.top() <= panel.top() + 8.0,
+        "the whole panel, its title row included: {place:?} in {panel:?}"
+    );
     assert!(h.widget(Item::Tickets.empty()).is_none(), "nothing drawn under the web view");
     crate::tickets::set_host(&mut h.app, false);
     h.settle();

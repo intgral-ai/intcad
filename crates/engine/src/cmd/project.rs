@@ -197,7 +197,9 @@ fn settings_set(s: &mut Session, p: &Value) -> Result<Value> {
 fn ci_set(s: &mut Session, p: &Value) -> Result<Value> {
     let params: CiParams = serde_json::from_value(p.clone()).map_err(|error| bad("project.ci_set", error.to_string()))?;
     let mut project = open_project(s, "project.ci_set")?;
-    project.update_checks(params.enabled, params.skip, params.new_tickets, params.rounds).map_err(|error| bad("project.ci_set", error.to_string()))?;
+    project
+        .update_checks(params.enabled, params.skip, params.new_tickets, params.rounds)
+        .map_err(|error| bad("project.ci_set", error.to_string()))?;
     describe(&project)
 }
 

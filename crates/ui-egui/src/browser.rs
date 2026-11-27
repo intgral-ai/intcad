@@ -1900,7 +1900,13 @@ fn occurrence_rows_inner(
             radio: Some(active),
             badges,
             mark: acts.lit.placement(&app.session.doc, path, placement.component),
-            dot: app.session.doc.components.iter().find(|c| c.id == placement.component).and_then(|c| crate::tickets::part_dot(app, "component", &c.name)),
+            dot: app
+                .session
+                .doc
+                .components
+                .iter()
+                .find(|c| c.id == placement.component)
+                .and_then(|c| crate::tickets::part_dot(app, "component", &c.name)),
             ..Default::default()
         },
     );

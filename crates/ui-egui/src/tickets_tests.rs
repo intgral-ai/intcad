@@ -247,7 +247,9 @@ fn a_scripted_agent_drafts_is_started_on_one_ticket_and_its_check_leaves_it_wait
     crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_open", "id": "T-2"}).to_string()).unwrap();
     let page: Value = serde_json::from_str(&crate::tickets::page_state(&mut h.app)).unwrap();
     let items = page["items"][&run].as_array().cloned().unwrap_or_default();
-    let shaped = |item: &Value| item["rule"].is_string() && item["state"].is_string() && item["count"].is_u64() && item["parts"].is_array() && item["values"].is_array();
+    let shaped = |item: &Value| {
+        item["rule"].is_string() && item["state"].is_string() && item["count"].is_u64() && item["parts"].is_array() && item["values"].is_array()
+    };
     assert!(!items.is_empty() && items.iter().all(shaped), "{}", page["items"]);
     // Each rule has its name in the page's language beside its id.
     let named = |item: &Value| item["name"].as_str().is_some_and(|name| Some(name) != item["rule"].as_str() && !name.is_ascii());
@@ -493,7 +495,10 @@ fn a_comment_reaches_the_record_the_page_and_the_next_hand_over_with_its_files()
     assert_eq!(seen(&root, &id), revision, "a comment moves no revision");
     let page: Value = serde_json::from_str(&crate::tickets::page_state(&mut h.app)).unwrap();
     let line = page["record"].as_array().unwrap().last().unwrap().clone();
-    assert_eq!((line["action"].as_str(), line["actor"].as_str(), line["note"].as_str()), (Some("comment"), Some("person"), Some("侧板这次不要动，孔位见截图。")));
+    assert_eq!(
+        (line["action"].as_str(), line["actor"].as_str(), line["note"].as_str()),
+        (Some("comment"), Some("person"), Some("侧板这次不要动，孔位见截图。"))
+    );
     let files = line["attachments"].as_array().unwrap();
     assert_eq!((files[0]["name"].as_str(), files[0]["picture"].is_null()), (Some("供应商回复.pdf"), true));
     assert!(files[1]["picture"].is_string(), "the view's picture has a thumbnail: {}", files[1]);
@@ -515,7 +520,10 @@ fn a_comment_reaches_the_record_the_page_and_the_next_hand_over_with_its_files()
     let sent = agent.prompts().pop().unwrap_or_default();
     let (first, reason, reply) = (sent.find("侧板这次不要动"), sent.find("外壳改高了 2 mm"), sent.find("收到。"));
     assert!(sent.contains("Comments, oldest first") && first < reason && reason < reply && first.is_some(), "{sent}");
-    assert!(sent.contains("- the person, ") && sent.contains("- the person, moving it to confirmed, ") && sent.contains("- the Assistant, "), "{sent}");
+    assert!(
+        sent.contains("- the person, ") && sent.contains("- the person, moving it to confirmed, ") && sent.contains("- the Assistant, "),
+        "{sent}"
+    );
     let names = h.app.agent_chat.items.iter().rev().find_map(|item| match item {
         crate::agent_chat::Item::User { files, .. } => Some(files.clone()),
         _ => None,
@@ -611,7 +619,8 @@ fn the_tickets_view_is_told_the_stores_tickets_in_the_pages_shape() {
     agent(Draft { title: "Hinge clearance 3 mm".into(), checks: Some(false), ..Draft::default() });
     // A parent with sub-tickets in three states.
     let bracket = person(Draft { title: "Bracket set".into(), ..Draft::default() });
-    let left = person(Draft { title: "Left bracket".into(), parent: Some(bracket.clone()), parts: vec![part("component", "Left")], ..Draft::default() });
+    let left =
+        person(Draft { title: "Left bracket".into(), parent: Some(bracket.clone()), parts: vec![part("component", "Left")], ..Draft::default() });
     let right = person(Draft { title: "Right bracket".into(), parent: Some(bracket.clone()), ..Draft::default() });
     tickets::work_myself(&root, &left, seen_now(&left)).unwrap();
     tickets::set_state(&root, &right, seen_now(&right), TicketState::Done, None).unwrap();
@@ -657,7 +666,11 @@ fn the_tickets_view_is_told_the_stores_tickets_in_the_pages_shape() {
     assert_eq!(list["strings"]["title"], "部件票", "in the app's language");
     assert_eq!((list["assistant"].as_bool(), list["expanded"].as_bool(), list["selection"].clone()), (Some(true), Some(false), json!([])));
     let parent = ticket(&list, &enclosure);
-    assert_eq!((parent["state"].as_str(), parent["checks"].as_bool(), parent["unchecked"].as_bool()), (Some("draft"), Some(false), Some(true)), "no parts, no check");
+    assert_eq!(
+        (parent["state"].as_str(), parent["checks"].as_bool(), parent["unchecked"].as_bool()),
+        (Some("draft"), Some(false), Some(true)),
+        "no parts, no check"
+    );
     assert_eq!(parent["whyNotDone"], json!({"kind": "subs", "ids": ["T-2", "T-3"]}));
     let off = ticket(&list, "T-4");
     assert_eq!((off["checks"].as_bool(), off["checksOff"].as_bool()), (Some(false), Some(true)));
@@ -672,10 +685,21 @@ fn the_tickets_view_is_told_the_stores_tickets_in_the_pages_shape() {
     assert_eq!((ticket(&list, &label)["state"].as_str(), ticket(&list, &label)["whyNotDone"].clone()), (Some("waiting"), Value::Null));
     assert_eq!(ticket(&list, &old)["deleted"], true);
     let said = ticket(&list, &flange);
-    assert_eq!((said["finished"].as_bool(), said["worker"].as_str(), said["whyNotDone"]["kind"].as_str()), (Some(true), Some("assistant"), Some("check")));
+    assert_eq!(
+        (said["finished"].as_bool(), said["worker"].as_str(), said["whyNotDone"]["kind"].as_str()),
+        (Some(true), Some("assistant"), Some("check"))
+    );
 
     let mut pages = vec![("list", list)];
-    let opened = [("enclosure", &enclosure), ("joint", &joint), ("label", &label), ("rivets", &rivets), ("agents", &agents), ("flange", &flange), ("bracket", &bracket)];
+    let opened = [
+        ("enclosure", &enclosure),
+        ("joint", &joint),
+        ("label", &label),
+        ("rivets", &rivets),
+        ("agents", &agents),
+        ("flange", &flange),
+        ("bracket", &bracket),
+    ];
     for (name, id) in opened {
         request(&mut h, json!({"type": "ticket_open", "id": id})).unwrap();
         pages.push((name, told(&mut h)));
@@ -685,8 +709,12 @@ fn the_tickets_view_is_told_the_stores_tickets_in_the_pages_shape() {
     let large = &pages.last().unwrap().1;
     assert_eq!((large["expanded"].as_bool(), large["selected"].as_str()), (Some(true), Some(flange.as_str())));
     assert!(pages[2].1["record"].as_array().is_some_and(|record| record.len() == 1 && record[0]["action"] == "created"));
-    let record: Vec<(String, String)> =
-        pages[5].1["record"].as_array().unwrap().iter().map(|e| (e["action"].as_str().unwrap().into(), e["actor"].as_str().unwrap().into())).collect();
+    let record: Vec<(String, String)> = pages[5].1["record"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["action"].as_str().unwrap().into(), e["actor"].as_str().unwrap().into()))
+        .collect();
     let agent_steps = ["drafted", "confirmed", "moved", "finished", "done"].map(|a| (a.to_string(), "agent".to_string()));
     assert_eq!(record, agent_steps, "every step of the Assistant's is its own line, as the Assistant's");
     assert_eq!(pages[4].1["record"].as_array().and_then(|r| r.last()).map(|e| e["action"].clone()), Some(json!("check_off")));
@@ -695,7 +723,12 @@ fn the_tickets_view_is_told_the_stores_tickets_in_the_pages_shape() {
     request(&mut h, json!({"type": "ticket_open", "id": joint})).unwrap();
     request(&mut h, json!({"type": "ticket_done", "id": joint, "revision": 1, "ask": 7})).unwrap();
     let refused = told(&mut h);
-    assert!(refused["error"].as_str().is_some_and(|e| e.contains("check has not run")) && refused["answered"].as_array().and_then(|all| all.last()).is_some_and(|last| last["ok"] == false), "{}", refused["error"]);
+    assert!(
+        refused["error"].as_str().is_some_and(|e| e.contains("check has not run"))
+            && refused["answered"].as_array().and_then(|all| all.last()).is_some_and(|last| last["ok"] == false),
+        "{}",
+        refused["error"]
+    );
     pages.push(("refused-done", refused));
     // A parent deleted goes to 已删除 with its sub-tickets, and comes back with them.
     request(&mut h, json!({"type": "ticket_close"})).unwrap();
@@ -733,7 +766,10 @@ fn the_tickets_views_requests_are_answered_and_a_refusal_says_why() {
         message["ask"] = json!(ask);
         let _ = crate::tickets::receive(&mut h.app, &ctx, &message.to_string());
         let state = told(h);
-        let answer = state["answered"].as_array().and_then(|all| all.iter().find(|a| a["ask"] == json!(ask)).cloned()).unwrap_or_else(|| panic!("{message} answered"));
+        let answer = state["answered"]
+            .as_array()
+            .and_then(|all| all.iter().find(|a| a["ask"] == json!(ask)).cloned())
+            .unwrap_or_else(|| panic!("{message} answered"));
         (answer["ok"] == true, state["error"].as_str().map(str::to_string))
     };
     let seen_now = |id: &str| tickets::load(&root, id).unwrap().revision;
@@ -742,7 +778,12 @@ fn the_tickets_views_requests_are_answered_and_a_refusal_says_why() {
     h.settle();
 
     // Two requests before one state (a save, then a click elsewhere): both are answered.
-    crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_edit", "id": parent, "revision": 1, "text": "From requirements.md", "ask": 901}).to_string()).unwrap();
+    crate::tickets::receive(
+        &mut h.app,
+        &ctx,
+        &json!({"type": "ticket_edit", "id": parent, "revision": 1, "text": "From requirements.md", "ask": 901}).to_string(),
+    )
+    .unwrap();
     crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_open", "id": sub, "ask": 902}).to_string()).unwrap();
     let both: Vec<Value> = told(&mut h)["answered"].as_array().unwrap().iter().map(|a| a["ask"].clone()).collect();
     assert!(both.contains(&json!(901)) && both.contains(&json!(902)), "{both:?}");
@@ -757,7 +798,10 @@ fn the_tickets_views_requests_are_answered_and_a_refusal_says_why() {
     assert!(page(&mut h, json!({"type": "ticket_restore", "id": parent})).0, "撤销");
     assert!(!tickets::load(&root, &sub).unwrap().deleted, "and came back with it");
     // A refused done says why; so does handing over a ticket that waits for another.
-    let base = tickets::create(&root, Draft { title: "Base".into(), parts: vec![Part { kind: "body".into(), id: "Base".into() }], ..Draft::default() }).unwrap().id;
+    let base =
+        tickets::create(&root, Draft { title: "Base".into(), parts: vec![Part { kind: "body".into(), id: "Base".into() }], ..Draft::default() })
+            .unwrap()
+            .id;
     let (ok, why) = page(&mut h, json!({"type": "ticket_done", "id": base, "revision": 1}));
     assert!(!ok && why.as_deref().is_some_and(|why| why.contains("check has not run")), "{why:?}");
     assert!(page(&mut h, json!({"type": "ticket_waits", "id": sub, "revision": seen_now(&sub), "waits": [base]})).0);
@@ -791,8 +835,11 @@ fn the_tickets_views_requests_are_answered_and_a_refusal_says_why() {
     h.frames(3);
     let state = told(&mut h);
     assert!(state["adding"][0]["picture"].is_string() && state["adding"][0]["path"] == "attachments/photo-2.png", "{}", state["adding"]);
-    let made = page(&mut h, json!({"type": "ticket_create", "title": "Vents", "text": "", "requirements": [], "parts": [{"kind": "body", "id": "Lid"}],
-                                    "attachments": ["attachments/photo-2.png"], "parent": parent}));
+    let made = page(
+        &mut h,
+        json!({"type": "ticket_create", "title": "Vents", "text": "", "requirements": [], "parts": [{"kind": "body", "id": "Lid"}],
+                                    "attachments": ["attachments/photo-2.png"], "parent": parent}),
+    );
     assert!(made.0 && h.app.tickets.adding.is_empty());
     let vents = tickets::load(&root, "T-4").unwrap();
     assert_eq!((vents.parent.as_deref(), vents.parts.len(), vents.attachments.len()), (Some(parent.as_str()), 1, 1));
@@ -854,7 +901,10 @@ fn a_ticket_opened_large_lies_over_the_window_and_the_assistant_gives_way_until_
     h.frames(1);
     let large = crate::tickets::placement(&mut h.app, &ctx).expect("the tickets view over the window");
     let window = ctx.content_rect();
-    assert!(large.width() > rail.width() * 2.0 && large.left() <= window.left() + 8.0 && large.right() >= window.right() - 8.0, "{large:?} over {window:?}");
+    assert!(
+        large.width() > rail.width() * 2.0 && large.left() <= window.left() + 8.0 && large.right() >= window.right() - 8.0,
+        "{large:?} over {window:?}"
+    );
     assert!(large.top() > window.top() && large.bottom() >= window.bottom() - 8.0, "below the application bar, to the bottom: {large:?}");
     assert_eq!(assistant(&mut h), None, "the Assistant's view gives way");
     assert!(told(&mut h)["expanded"] == true);
@@ -968,13 +1018,20 @@ fn the_assistant_gets_a_tickets_files_its_draft_card_and_view_and_a_changed_part
     });
     assert_eq!(tries, 0, "{drafted} was tried once already");
     // A second draft asking for the view, with a picture to take: it is attached.
-    let again = agent_calls(&mut h, "ticket.draft", json!({"title": "Vent slots too close to the edge", "view": true}))["ticket"]["id"].as_str().unwrap().to_string();
+    let again = agent_calls(&mut h, "ticket.draft", json!({"title": "Vent slots too close to the edge", "view": true}))["ticket"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     // (Frames may have tried it already without a renderer; the test takes that try back.)
     crate::tickets::refresh(&mut h.app);
     h.app.tickets.viewed.retain(|id| id != &again);
     crate::tickets::attach_wanted_view(&mut h.app, |_| Ok(png()));
     let viewed = tickets::load(&root, &again).unwrap();
-    assert_eq!((viewed.wants_view, viewed.attachments.clone()), (false, vec![format!("attachments/{again}-view.png")]), "the view's picture is attached");
+    assert_eq!(
+        (viewed.wants_view, viewed.attachments.clone()),
+        (false, vec![format!("attachments/{again}-view.png")]),
+        "the view's picture is attached"
+    );
     assert!(std::fs::read(root.join(format!("attachments/{again}-view.png"))).unwrap().starts_with(b"\x89PNG"));
 
     // A done ticket whose run the model moved past: 需重查, its state kept.
@@ -983,7 +1040,12 @@ fn the_assistant_gets_a_tickets_files_its_draft_card_and_view_and_a_changed_part
     tickets::work_myself(&root, &done, 1).unwrap();
     tickets::ask_check(&root, &done, 2).unwrap();
     tickets::check_started(&root, &done, "run-9").unwrap();
-    tickets::check_ran(&root, &done, tickets::RunResult { run: "run-9".into(), outcome: "done".into(), counts: [("checked".to_string(), 3)].into(), freshness: "current".into() }).unwrap();
+    tickets::check_ran(
+        &root,
+        &done,
+        tickets::RunResult { run: "run-9".into(), outcome: "done".into(), counts: [("checked".to_string(), 3)].into(), freshness: "current".into() },
+    )
+    .unwrap();
     tickets::done(&root, &done, seen(&root, &done)).unwrap();
     h.settle();
     h.app.tickets.freshness.insert("run-9".into(), "staleModel".into());
@@ -1073,24 +1135,36 @@ fn the_assistants_finished_runs_its_check_by_itself_and_the_findings_come_back_u
     assert_eq!(ticket.rounds, Some(tickets::Rounds { round: 1, of: 3, stopped: None }));
     let sent = agent.prompts().last().cloned().unwrap_or_default();
     assert!(sent.contains(&format!("{id}: its check found work to do (round 1 of 3)")), "{sent}");
-    assert!(sent.contains("advisory · sm.bend_relief · Body1 · ") && sent.contains("1.2 mm") && sent.contains("2 mm"), "part, numbers and rule: {sent}");
+    assert!(
+        sent.contains("advisory · sm.bend_relief · Body1 · ") && sent.contains("1.2 mm") && sent.contains("2 mm"),
+        "part, numbers and rule: {sent}"
+    );
     assert!(sent.contains("sm.hole_to_edge") && sent.contains("Round 1 of 3 of fixing"), "{sent}");
     dump_zh(&mut h, "rounds-1-findings", &id);
 
-    agent_calls(&mut h, "sheet.manage_rules", json!({"name": "SPCC 2.0", "thickness": "2 mm", "bend_radius": "2 mm", "k_factor": 0.44, "active": true}));
+    agent_calls(
+        &mut h,
+        "sheet.manage_rules",
+        json!({"name": "SPCC 2.0", "thickness": "2 mm", "bend_radius": "2 mm", "k_factor": 0.44, "active": true}),
+    );
     says_finished(&mut h, &agent, &id, "Bend relief 2 mm, holes 3 mm from the edge");
     assert_eq!(started(&h), 2, "a second check, by itself");
     let ticket = tickets::load(&root, &id).unwrap();
     assert_eq!(ticket.state, TicketState::Waiting);
     assert_eq!(ticket.rounds, Some(tickets::Rounds { round: 1, of: 3, stopped: Some(tickets::Stop::Clean) }));
-    let asked: Vec<(Actor, Option<u32>)> =
-        tickets::events(&root, Some(&id)).unwrap().iter().filter(|e| e.action == "check_asked").map(|e| (e.actor, e.rounds.as_ref().map(|r| r.round))).collect();
+    let asked: Vec<(Actor, Option<u32>)> = tickets::events(&root, Some(&id))
+        .unwrap()
+        .iter()
+        .filter(|e| e.action == "check_asked")
+        .map(|e| (e.actor, e.rounds.as_ref().map(|r| r.round)))
+        .collect();
     assert_eq!(asked, [(Actor::Agent, Some(0)), (Actor::Agent, Some(1))], "the Assistant's work asked for both, with the round");
     let page = told(&mut h);
     assert_eq!(self::ticket(&page, &id)["rounds"], json!({"round": 1, "of": 3, "stopped": "clean"}));
     // The check's kind is carried on the ticket and its lines, and the page is told its word.
     assert_eq!((self::ticket(&page, &id)["check"]["kind"].as_str(), page["kinds"]["dfm"].is_string()), (Some("dfm"), true));
-    let kinds: Vec<Option<tickets::CheckKind>> = tickets::events(&root, Some(&id)).unwrap().iter().filter(|e| e.action.starts_with("check_")).map(|e| e.kind).collect();
+    let kinds: Vec<Option<tickets::CheckKind>> =
+        tickets::events(&root, Some(&id)).unwrap().iter().filter(|e| e.action.starts_with("check_")).map(|e| e.kind).collect();
     assert!(kinds.len() == 6 && kinds.iter().all(|kind| *kind == Some(tickets::CheckKind::Dfm)), "{kinds:?}");
     let prompts = agent.prompts().len();
     h.frames(6);
@@ -1120,18 +1194,31 @@ fn after_the_last_round_advisories_leave_it_waiting_and_a_failure_blocks_it_each
         let sent = agent.prompts().last().cloned().unwrap_or_default();
         assert!(sent.contains("a person takes it from here") && sent.contains(left.1), "{name}: {sent}");
         if state == TicketState::Blocked {
-            assert!(ticket.blocked.as_deref().is_some_and(|why| why.contains("after 3 of 3 rounds") && why.contains("1 failed")), "{:?}", ticket.blocked);
-            let refused = h.call("engine.execute", json!({"command": "ticket.update", "params": {"id": id, "action": "state", "to": "done", "text": "x"}}));
+            assert!(
+                ticket.blocked.as_deref().is_some_and(|why| why.contains("after 3 of 3 rounds") && why.contains("1 failed")),
+                "{:?}",
+                ticket.blocked
+            );
+            let refused =
+                h.call("engine.execute", json!({"command": "ticket.update", "params": {"id": id, "action": "state", "to": "done", "text": "x"}}));
             assert_eq!(refused["ok"], false, "the Assistant does not finish what failed: {refused}");
         }
-        agent_calls(&mut h, "ticket.update", json!({"id": id, "action": "comment", "text": format!("Left: {} on Body1. Tried: relief 1.5, 2 and 2.5 mm.", left.1)}));
+        agent_calls(
+            &mut h,
+            "ticket.update",
+            json!({"id": id, "action": "comment", "text": format!("Left: {} on Body1. Tried: relief 1.5, 2 and 2.5 mm.", left.1)}),
+        );
         agent.end_turn();
         h.frames(6);
         let last = tickets::events(&root, Some(&id)).unwrap().pop().unwrap();
         assert_eq!((last.action.as_str(), last.actor), ("comment", Actor::Agent));
         assert_eq!(started(&h), 4, "{name}: nothing more starts");
         // Taken up again by itself, the Assistant gets no more rounds: its finished starts nothing.
-        let back = if state == TicketState::Blocked { json!({"id": id, "action": "unblock"}) } else { json!({"id": id, "action": "state", "to": "in_progress"}) };
+        let back = if state == TicketState::Blocked {
+            json!({"id": id, "action": "unblock"})
+        } else {
+            json!({"id": id, "action": "state", "to": "in_progress"})
+        };
         agent_calls(&mut h, "ticket.update", back);
         says_finished(&mut h, &agent, &id, "One more try");
         assert_eq!(started(&h), 4, "{name}: the Assistant cannot buy itself more rounds");
@@ -1270,7 +1357,8 @@ fn the_automatic_check_takes_the_review_entrys_admission_billed_once_or_refused(
         agent_calls(&mut h, command, params);
     }
     says_finished(&mut h, &agent, &id, "Tray made");
-    let ran = |root: &std::path::Path| tickets::load(root, &id).unwrap().check.is_some_and(|c| matches!(c.state, CheckState::Ran | CheckState::Refused));
+    let ran =
+        |root: &std::path::Path| tickets::load(root, &id).unwrap().check.is_some_and(|c| matches!(c.state, CheckState::Ran | CheckState::Refused));
     let began = std::time::Instant::now();
     while !ran(&root) && began.elapsed() < Duration::from_secs(60) {
         h.frames(30);
@@ -1278,7 +1366,12 @@ fn the_automatic_check_takes_the_review_entrys_admission_billed_once_or_refused(
     }
     let ticket = tickets::load(&root, &id).unwrap();
     let check = ticket.check.clone().unwrap();
-    assert_eq!((check.state, check.by, billing.commits()), (CheckState::Ran, Actor::Agent, 1), "one billed Review operation: {:?}", h.app.dfm_review.error);
+    assert_eq!(
+        (check.state, check.by, billing.commits()),
+        (CheckState::Ran, Actor::Agent, 1),
+        "one billed Review operation: {:?}",
+        h.app.dfm_review.error
+    );
     assert_eq!(check.run, h.app.dfm_review.mapped_run, "the run the Review entry reserved");
     // The generic data fails nothing; what it leaves as 「建议」 goes back to the Assistant.
     let advisory = check.counts.get("advisory").copied().unwrap_or(0);

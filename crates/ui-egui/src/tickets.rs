@@ -181,7 +181,9 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
         let rect = if app.custom_titlebar { rect.intersect(crate::titlebar::inside_resize_zones(ctx)) } else { rect };
         let popup = ctx.memory(|memory| {
             memory.layer_ids().any(|other| {
-                other.order >= egui::Order::Foreground && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(rect))
+                other.order >= egui::Order::Foreground
+                    && memory.areas().is_visible(&other)
+                    && memory.area_rect(other.id).is_some_and(|area| area.intersects(rect))
             })
         });
         return (rect.is_positive() && !popup && !crate::agent_chat::gallery_open(app)).then_some(rect);
@@ -236,8 +238,13 @@ pub fn refresh(app: &mut SolveApp) {
         app.tickets.stamp = Some(stamp);
         let bound: Vec<(String, CheckKind)> =
             app.tickets.tickets.iter().filter_map(|t| t.check.as_ref().and_then(|c| Some((c.run.clone()?, c.kind)))).collect();
-        let opened: Vec<(String, CheckKind)> =
-            app.tickets.record.iter().filter(|e| e.action == "check_ran").filter_map(|e| Some((e.run.clone()?, e.kind.unwrap_or_default()))).collect();
+        let opened: Vec<(String, CheckKind)> = app
+            .tickets
+            .record
+            .iter()
+            .filter(|e| e.action == "check_ran")
+            .filter_map(|e| Some((e.run.clone()?, e.kind.unwrap_or_default())))
+            .collect();
         let mut runs = bound.clone();
         runs.extend(opened.iter().filter(|run| !bound.contains(run)).cloned());
         let mut freshness = BTreeMap::new();
@@ -313,7 +320,8 @@ fn picture_path(path: &str) -> bool {
 fn read_pictures(state: &mut State, root: &std::path::Path) {
     let live = state.tickets.iter().filter(|t| !t.deleted).flat_map(|t| t.attachments.iter());
     let comments = state.record.iter().flat_map(|e| e.attachments.iter());
-    let named: Vec<String> = live.chain(state.adding.iter()).chain(comments).chain(state.commenting.iter()).filter(|path| picture_path(path)).cloned().collect();
+    let named: Vec<String> =
+        live.chain(state.adding.iter()).chain(comments).chain(state.commenting.iter()).filter(|path| picture_path(path)).cloned().collect();
     let held = &mut state.pictures;
     held.retain(|path, _| named.contains(path));
     for path in &named {
@@ -356,7 +364,8 @@ pub(crate) fn drafted_card(app: &SolveApp, input: Option<&serde_json::Value>, ou
 /// The tree's dot for a part (`kind` component or body, by its name): the state colour of the
 /// first ticket by number that bears on it and is neither done nor deleted; none without one.
 pub(crate) fn part_dot(app: &SolveApp, kind: &str, name: &str) -> Option<egui::Color32> {
-    let ticket = app.tickets.tickets.iter().find(|t| !t.deleted && t.state != TicketState::Done && t.parts.iter().any(|p| p.kind == kind && p.id == name))?;
+    let ticket =
+        app.tickets.tickets.iter().find(|t| !t.deleted && t.state != TicketState::Done && t.parts.iter().any(|p| p.kind == kind && p.id == name))?;
     let t = crate::theme::Tokens::get();
     Some(match ticket.state {
         TicketState::InProgress => t.agent_busy,
@@ -383,7 +392,9 @@ fn selected_parts(app: &SolveApp) -> Vec<tickets::Part> {
     let mut out: Vec<tickets::Part> = Vec::new();
     for sel in &app.session.selection {
         let part = match sel {
-            Sel::Body { name } | Sel::Face { body: name, .. } | Sel::Edge { body: name, .. } => tickets::Part { kind: "body".into(), id: name.clone() },
+            Sel::Body { name } | Sel::Face { body: name, .. } | Sel::Edge { body: name, .. } => {
+                tickets::Part { kind: "body".into(), id: name.clone() }
+            }
             Sel::Occurrence { path } => {
                 let Some(occurrence) = path.last().and_then(|id| doc.occurrences.iter().find(|o| o.id == *id)) else { continue };
                 let Some(component) = doc.components.iter().find(|c| c.id == occurrence.component) else { continue };
@@ -590,10 +601,8 @@ const HANDED_CHARACTERS: usize = 4000;
 #[cfg(not(target_arch = "wasm32"))]
 fn comments(root: &std::path::Path, id: &str) -> (String, Vec<String>) {
     let record = tickets::record(root, id).unwrap_or_default();
-    let said: Vec<&Event> = record
-        .iter()
-        .filter(|e| e.action == "comment" || (e.action == "moved" && e.actor == tickets::Actor::Person && e.note.is_some()))
-        .collect();
+    let said: Vec<&Event> =
+        record.iter().filter(|e| e.action == "comment" || (e.action == "moved" && e.actor == tickets::Actor::Person && e.note.is_some())).collect();
     let mut kept: Vec<String> = Vec::new();
     let mut files: Vec<String> = Vec::new();
     let mut left = HANDED_CHARACTERS;
@@ -603,7 +612,8 @@ fn comments(root: &std::path::Path, id: &str) -> (String, Vec<String>) {
             tickets::Actor::Agent => "the Assistant",
             tickets::Actor::App => "the app",
         };
-        let moved = if event.action == "moved" { format!(", moving it to {}", event.to.map(|to| to.as_str()).unwrap_or_default()) } else { String::new() };
+        let moved =
+            if event.action == "moved" { format!(", moving it to {}", event.to.map(|to| to.as_str()).unwrap_or_default()) } else { String::new() };
         let mut line = format!("- {who}{moved}, {}: {}", event.at, event.note.as_deref().unwrap_or_default());
         if !event.attachments.is_empty() {
             line += &format!(" [files: {}]", event.attachments.join(", "));
@@ -812,7 +822,8 @@ fn read_run(app: &mut SolveApp, kind: CheckKind, run: &str) -> Option<Report> {
 /// newest run, whose report was produced, is `done` though the service may still say it runs.
 #[cfg(not(target_arch = "wasm32"))]
 fn report(card: &crate::dfm_chat::Card) -> Report {
-    let counts = card.counts().as_object().map(|counts| counts.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64()?))).collect()).unwrap_or_default();
+    let counts =
+        card.counts().as_object().map(|counts| counts.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64()?))).collect()).unwrap_or_default();
     let ran = card.report_produced && card.status == "running" && matches!(card.outcome.as_deref(), None | Some("current"));
     let status = if ran { "done".to_string() } else { card.status.clone() };
     let outcome = card.outcome.clone().filter(|outcome| outcome != "current").unwrap_or_else(|| status.clone());
@@ -825,13 +836,17 @@ fn run_items(card: &crate::dfm_chat::Card) -> Vec<RunItem> {
     card.rules
         .iter()
         .map(|rule| {
-            let mut item = RunItem { rule: rule.rule_id.clone(), state: rule.state.clone(), count: rule.count, parts: Vec::new(), values: Vec::new() };
+            let mut item =
+                RunItem { rule: rule.rule_id.clone(), state: rule.state.clone(), count: rule.count, parts: Vec::new(), values: Vec::new() };
             for finding in card.findings.iter().filter(|f| f.rules.contains(&rule.rule_id)) {
                 if !finding.body.is_empty() && !item.parts.contains(&finding.body) {
                     item.parts.push(finding.body.clone());
                 }
                 if let Some(measured) = &finding.measured {
-                    let value = (format!("{} {}", measured.value, measured.unit), finding.requirement.as_ref().map(|req| format!("{} {}", req.value, req.unit)));
+                    let value = (
+                        format!("{} {}", measured.value, measured.unit),
+                        finding.requirement.as_ref().map(|req| format!("{} {}", req.value, req.unit)),
+                    );
                     if !item.values.contains(&value) {
                         item.values.push(value);
                     }
@@ -859,7 +874,11 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
         None => {
             // A run the store says is going on with none in flight (the app was closed while it ran)
             // is written off, so the ticket does not wait on it for ever.
-            let lost = app.tickets.tickets.iter().find(|t| t.state == TicketState::InProgress && !t.deleted && t.check.as_ref().is_some_and(|c| c.state == CheckState::Running));
+            let lost = app
+                .tickets
+                .tickets
+                .iter()
+                .find(|t| t.state == TicketState::InProgress && !t.deleted && t.check.as_ref().is_some_and(|c| c.state == CheckState::Running));
             if let Some(id) = lost.map(|t| t.id.clone()) {
                 let ticket = apply(app, |root| tickets::check_refused(root, &id, "its run was lost: the app was closed while it ran"));
                 tell(app, ticket.as_ref(), None);
@@ -887,9 +906,10 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             let Some(result) = run_result(app, kind, &run) else { return };
             app.tickets.checking = None;
             // A person moved the ticket meanwhile (its check ended with the move): nothing binds.
-            let moved = app.tickets.tickets.iter().find(|t| t.id == id).is_none_or(|t| {
-                t.state != TicketState::InProgress || t.deleted || t.check.as_ref().is_none_or(|c| c.state != CheckState::Running)
-            });
+            let moved =
+                app.tickets.tickets.iter().find(|t| t.id == id).is_none_or(|t| {
+                    t.state != TicketState::InProgress || t.deleted || t.check.as_ref().is_none_or(|c| c.state != CheckState::Running)
+                });
             if moved {
                 return;
             }
@@ -926,9 +946,7 @@ fn tell(app: &mut SolveApp, ticket: Option<&Ticket>, report: Option<&Report>) {
     let Some(rounds) = &ticket.rounds else { return };
     let (round, of) = (rounds.round.to_string(), rounds.of.to_string());
     let mut text = match rounds.stopped {
-        None if ticket.state == TicketState::InProgress => {
-            trf("ui.tickets_rounds_findings", &[("id", &ticket.id), ("round", &round), ("of", &of)])
-        }
+        None if ticket.state == TicketState::InProgress => trf("ui.tickets_rounds_findings", &[("id", &ticket.id), ("round", &round), ("of", &of)]),
         Some(tickets::Stop::Advisory | tickets::Stop::Failed | tickets::Stop::Refused) => {
             trf("ui.tickets_rounds_stopped", &[("id", &ticket.id), ("round", &round), ("of", &of)])
         }
@@ -938,7 +956,8 @@ fn tell(app: &mut SolveApp, ticket: Option<&Ticket>, report: Option<&Report>) {
         let mut work: Vec<&RunItem> = report.items.iter().filter(|item| matches!(item.state.as_str(), "failed" | "advisory")).collect();
         work.sort_by_key(|item| item.state != "failed");
         for item in work {
-            let values = page_item(item)["values"].as_array().map(|v| v.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; ")).unwrap_or_default();
+            let values =
+                page_item(item)["values"].as_array().map(|v| v.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join("; ")).unwrap_or_default();
             text += &format!("\n- {} · {} · {} · {values}", item.state, item.rule, item.parts.join(", "));
         }
     } else if let Some(reason) = ticket.check.as_ref().and_then(|check| check.reason.as_deref()) {
@@ -1338,39 +1357,43 @@ enum Target {
 /// ticket being created (`None`).
 #[cfg(not(target_arch = "wasm32"))]
 fn attach(app: &mut SolveApp, to: Option<Target>) {
-    app.pick_file(tr("ui.tickets_attachments"), &["pdf", "png", "jpg", "jpeg", "gif", "webp", "step", "stp", "dxf", "txt", "md"], move |app, path| {
-        let (Some(path), Some(root)) = (path, root(app)) else { return };
-        let taken = match tickets::take_in(&root, std::path::Path::new(&path)) {
-            Ok(taken) => taken,
-            Err(error) => {
-                app.tickets.error = Some(error.to_string());
-                return;
-            }
-        };
-        let id = match to {
-            None => {
-                if !app.tickets.adding.contains(&taken) {
-                    app.tickets.adding.push(taken);
+    app.pick_file(
+        tr("ui.tickets_attachments"),
+        &["pdf", "png", "jpg", "jpeg", "gif", "webp", "step", "stp", "dxf", "txt", "md"],
+        move |app, path| {
+            let (Some(path), Some(root)) = (path, root(app)) else { return };
+            let taken = match tickets::take_in(&root, std::path::Path::new(&path)) {
+                Ok(taken) => taken,
+                Err(error) => {
+                    app.tickets.error = Some(error.to_string());
+                    return;
                 }
-                read_pictures(&mut app.tickets, &root);
-                return;
-            }
-            Some(Target::Comment(id)) => {
-                // Only while that ticket is still the open one: its box is where the file goes.
-                if app.tickets.selected.as_ref() == Some(&id) {
-                    take_for_comment(app, &root, taken);
+            };
+            let id = match to {
+                None => {
+                    if !app.tickets.adding.contains(&taken) {
+                        app.tickets.adding.push(taken);
+                    }
+                    read_pictures(&mut app.tickets, &root);
+                    return;
                 }
-                return;
+                Some(Target::Comment(id)) => {
+                    // Only while that ticket is still the open one: its box is where the file goes.
+                    if app.tickets.selected.as_ref() == Some(&id) {
+                        take_for_comment(app, &root, taken);
+                    }
+                    return;
+                }
+                Some(Target::Ticket(id)) => id,
+            };
+            let Ok(ticket) = tickets::load(&root, &id) else { return };
+            let mut files = ticket.attachments.clone();
+            if !files.contains(&taken) {
+                files.push(taken);
             }
-            Some(Target::Ticket(id)) => id,
-        };
-        let Ok(ticket) = tickets::load(&root, &id) else { return };
-        let mut files = ticket.attachments.clone();
-        if !files.contains(&taken) {
-            files.push(taken);
-        }
-        edit(app, &id, ticket.revision, tickets::Edit { attachments: Some(files), ..tickets::Edit::default() });
-    });
+            edit(app, &id, ticket.revision, tickets::Edit { attachments: Some(files), ..tickets::Edit::default() });
+        },
+    );
 }
 
 /// Add a file taken into the project to the comment being written, at most
@@ -1489,7 +1512,12 @@ fn show_parts(app: &mut SolveApp, id: &str) {
             "body" => world.body(&part.id).is_some().then(|| Sel::Body { name: part.id.clone() }).into_iter().collect(),
             _ => {
                 let components: Vec<u64> = doc.components.iter().filter(|c| c.name == part.id).map(|c| c.id).collect();
-                doc.occurrences.iter().filter(|o| components.contains(&o.component)).filter_map(|o| placement_path(doc, o.id)).map(|path| Sel::Occurrence { path }).collect()
+                doc.occurrences
+                    .iter()
+                    .filter(|o| components.contains(&o.component))
+                    .filter_map(|o| placement_path(doc, o.id))
+                    .map(|path| Sel::Occurrence { path })
+                    .collect()
             }
         };
         if found.is_empty() {

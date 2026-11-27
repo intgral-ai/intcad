@@ -132,7 +132,11 @@ fn the_assistants_ticket_goes_from_draft_to_done_by_the_allowed_moves_and_each_s
     let id = draft(&root, bracket(), Actor::Agent).unwrap().id;
 
     // A draft cannot be handed over, checked, or finished by the agent.
-    for refused in [start(&root, &id, seen(&root, &id)).err(), ask_check(&root, &id, seen(&root, &id)).err(), finished(&root, &id, Some("Changed the part as asked."), &[], false).err()] {
+    for refused in [
+        start(&root, &id, seen(&root, &id)).err(),
+        ask_check(&root, &id, seen(&root, &id)).err(),
+        finished(&root, &id, Some("Changed the part as asked."), &[], false).err(),
+    ] {
         assert!(matches!(refused, Some(TicketError::Refused(_))), "{refused:?}");
     }
     assert_eq!(seen(&root, &id), 1, "a refused move changes nothing");
@@ -432,8 +436,10 @@ fn deleting_and_declining_keep_the_ticket_and_its_record_and_restoring_brings_it
 
     // A parent goes to 已删除 with its live sub-tickets and comes back with them; a sub-ticket
     // deleted on its own before stays deleted.
-    let subs: Vec<String> =
-        ["Lid hinge", "Lid seal", "Lid label"].iter().map(|t| draft(&root, Draft { parent: Some(other.clone()), ..titled(t) }, Actor::Agent).unwrap().id).collect();
+    let subs: Vec<String> = ["Lid hinge", "Lid seal", "Lid label"]
+        .iter()
+        .map(|t| draft(&root, Draft { parent: Some(other.clone()), ..titled(t) }, Actor::Agent).unwrap().id)
+        .collect();
     decline(&root, &subs[2], 1).unwrap();
     decline(&root, &other, seen(&root, &other)).unwrap();
     let gone: Vec<(bool, Option<String>)> = subs.iter().map(|id| load(&root, id).map(|t| (t.deleted, t.deleted_with)).unwrap()).collect();
@@ -551,7 +557,11 @@ fn comments_by_a_person_and_the_agent_are_recorded_in_order_and_leave_the_revisi
     comment(&root, &id, Actor::Agent, "孔位按 5 mm 改。", &[], false).unwrap();
     let said: Vec<(Actor, Option<String>)> =
         events(&root, Some(&id)).unwrap().into_iter().filter(|e| e.action == "comment").map(|e| (e.actor, e.note)).collect();
-    assert_eq!(said, [(Actor::Person, Some("Keep the side plates as they are.".into())), (Actor::Agent, Some("孔位按 5 mm 改。".into()))], "in the order written");
+    assert_eq!(
+        said,
+        [(Actor::Person, Some("Keep the side plates as they are.".into())), (Actor::Agent, Some("孔位按 5 mm 改。".into()))],
+        "in the order written"
+    );
     assert_eq!(seen(&root, &id), revision, "a comment writes no ticket and moves no revision");
 
     // A save made on the revision a person saw is still taken after a comment, and so is the next.
@@ -614,7 +624,12 @@ fn the_agents_own_move_to_waiting_blocked_or_done_takes_a_text_kept_as_its_comme
 
 /// A run's result with these counts.
 fn counted(run: &str, counts: &[(&str, u64)]) -> RunResult {
-    RunResult { run: run.into(), outcome: "done".into(), counts: counts.iter().map(|(k, n)| (k.to_string(), *n)).collect(), freshness: "current".into() }
+    RunResult {
+        run: run.into(),
+        outcome: "done".into(),
+        counts: counts.iter().map(|(k, n)| (k.to_string(), *n)).collect(),
+        freshness: "current".into(),
+    }
 }
 
 /// The Assistant says it is finished, and the app asks for the check and runs it with `result`.
@@ -750,7 +765,12 @@ fn the_projects_ticket_settings_set_a_new_tickets_check_and_the_rounds_and_old_f
     let (mut s, root) = project(&scratch);
     // A ci.toml written before the two settings existed reads as checked by default, three rounds.
     let path = root.join(crate::project::FOLDER).join(crate::project::CI);
-    let old: String = std::fs::read_to_string(&path).unwrap().lines().filter(|line| !["new_tickets", "rounds", "# Part tickets", "# the Assistant"].iter().any(|start| line.starts_with(start))).map(|line| format!("{line}\n")).collect();
+    let old: String = std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .filter(|line| !["new_tickets", "rounds", "# Part tickets", "# the Assistant"].iter().any(|start| line.starts_with(start)))
+        .map(|line| format!("{line}\n"))
+        .collect();
     assert!(!old.contains("rounds"), "{old}");
     std::fs::write(&path, &old).unwrap();
     let project = crate::project::Project::open(&root).unwrap();
@@ -795,7 +815,10 @@ fn a_persons_move_back_keeps_its_reason_on_the_line() {
     set_state(&root, &id, seen(&root, &id), State::Done, None).unwrap();
     set_state(&root, &id, seen(&root, &id), State::InProgress, Some(" The housing grew 2 mm. ".into())).unwrap();
     let line = events(&root, Some(&id)).unwrap().pop().unwrap();
-    assert_eq!((line.action.as_str(), line.from, line.to, line.note.as_deref()), ("moved", Some(State::Done), Some(State::InProgress), Some("The housing grew 2 mm.")));
+    assert_eq!(
+        (line.action.as_str(), line.from, line.to, line.note.as_deref()),
+        ("moved", Some(State::Done), Some(State::InProgress), Some("The housing grew 2 mm."))
+    );
     let long = "x".repeat(MAX_REASON + 1);
     assert!(refusal(set_state(&root, &id, seen(&root, &id), State::Done, Some(long))).contains("longer than"));
 }
@@ -887,17 +910,17 @@ fn a_version_1_folder_is_read_and_a_later_step_writes_version_2() {
         tickets.iter().map(|t| (t.id.as_str(), t.parent.as_deref(), t.parts.len(), t.worker, t.checks, t.schema_version)).collect();
     assert_eq!(
         shape,
-        [
-            ("T-1", None, 0, None, true, 2),
-            ("T-2", None, 1, Some(Worker::Assistant), true, 2),
-            ("T-3", None, 1, Some(Worker::Assistant), true, 2),
-        ]
+        [("T-1", None, 0, None, true, 2), ("T-2", None, 1, Some(Worker::Assistant), true, 2), ("T-3", None, 1, Some(Worker::Assistant), true, 2),]
     );
     let bracket = &tickets[1];
     assert_eq!(bracket.parts, [part("component", "Bracket")]);
     assert_eq!((bracket.check.clone(), bracket.finished), (None, true), "the agent's ask became its 'finished': no run starts without a person");
     assert_eq!(tickets[2].check.as_ref().and_then(|c| c.run.as_deref()), Some("run-7"));
-    assert_eq!(tickets[2].check.as_ref().map(|c| (c.kind, c.by)), Some((CheckKind::Dfm, Actor::Person)), "a check without a kind is a DFM check, a person's");
+    assert_eq!(
+        tickets[2].check.as_ref().map(|c| (c.kind, c.by)),
+        Some((CheckKind::Dfm, Actor::Person)),
+        "a check without a kind is a DFM check, a person's"
+    );
     assert!(tickets.iter().all(|t| !t.deleted && t.waits.is_empty() && t.attachments.is_empty() && t.recheck.is_none()));
     assert_eq!(events(&root, None).unwrap().len(), 4, "the record of layout 1 reads as it is");
     // The file is left as it was until a step changes the ticket; then it is layout 2.
@@ -958,10 +981,7 @@ fn the_agents_commands_draft_set_states_and_say_finished_but_start_no_check_and_
                "parts": [{"kind": "component", "id": "Lid"}, {"kind": "component", "id": "Base"}], "attachments": ["sketch.png"]}),
     );
     let ticket = &joint["ticket"];
-    assert_eq!(
-        (ticket["parent"].as_str(), ticket["parts"].as_array().map(Vec::len), ticket["checks"].as_bool()),
-        (Some("T-1"), Some(2), Some(true))
-    );
+    assert_eq!((ticket["parent"].as_str(), ticket["parts"].as_array().map(Vec::len), ticket["checks"].as_bool()), (Some("T-1"), Some(2), Some(true)));
     // Only a person switches a ticket's check off: the agent's draft does not carry the switch.
     for checks in [json!(false), json!(true)] {
         let error = s.execute("ticket.draft", &json!({"title": "Unchecked", "checks": checks})).unwrap_err().to_string();

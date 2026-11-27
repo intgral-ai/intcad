@@ -578,7 +578,11 @@ fn commit(root: &Path, ticket: &Ticket, from: Option<State>, line: Line) -> Resu
         attachments: line.attachments,
         view: line.view,
         rounds: line.rounds,
-        kind: ticket.check.as_ref().map(|check| check.kind).filter(|_| matches!(line.action, "check_asked" | "check_started" | "check_ran" | "check_refused")),
+        kind: ticket
+            .check
+            .as_ref()
+            .map(|check| check.kind)
+            .filter(|_| matches!(line.action, "check_asked" | "check_started" | "check_ran" | "check_refused")),
         revision: ticket.revision,
     };
     let appended = append(root, &event);
@@ -1033,7 +1037,8 @@ pub fn why_not_done(ticket: &Ticket, all: &[Ticket]) -> Option<NotDone> {
 
 /// Whether finishing `ticket` now leaves it unchecked: no check applies, or its run checked nothing.
 pub fn unchecked(ticket: &Ticket) -> bool {
-    !applies(ticket) || ticket.check.as_ref().is_none_or(|check| CHECKED_STATES.iter().all(|state| check.counts.get(*state).copied().unwrap_or(0) == 0))
+    !applies(ticket)
+        || ticket.check.as_ref().is_none_or(|check| CHECKED_STATES.iter().all(|state| check.counts.get(*state).copied().unwrap_or(0) == 0))
 }
 
 /// A person accepts a draft they saw at revision `seen`; `with_subs`: its sub-tickets that are
@@ -1609,8 +1614,11 @@ pub fn store_view(root: &Path, id: &str, png: &[u8]) -> Result<String, TicketErr
 /// (ticket, the line's `at`): of one ticket, or of all.
 pub fn views_wanted(root: &Path, ticket: Option<&str>) -> Result<Vec<(String, String)>, TicketError> {
     let record = events(root, ticket)?;
-    let added: Vec<(&str, &str)> =
-        record.iter().filter(|event| event.action == "comment_view").filter_map(|event| Some((event.ticket.as_str(), event.note.as_deref()?))).collect();
+    let added: Vec<(&str, &str)> = record
+        .iter()
+        .filter(|event| event.action == "comment_view")
+        .filter_map(|event| Some((event.ticket.as_str(), event.note.as_deref()?)))
+        .collect();
     Ok(record
         .iter()
         .filter(|event| event.view && !added.contains(&(event.ticket.as_str(), event.at.as_str())))
@@ -1703,8 +1711,17 @@ pub fn check_started(root: &Path, id: &str, run: &str) -> Result<Ticket, TicketE
         if by == Actor::Agent && going(ticket) {
             line.rounds = ticket.rounds.clone();
         }
-        ticket.check =
-            Some(Check { state: CheckState::Running, by, kind, run, outcome: None, counts: BTreeMap::new(), freshness: None, reason: None, at: now() });
+        ticket.check = Some(Check {
+            state: CheckState::Running,
+            by,
+            kind,
+            run,
+            outcome: None,
+            counts: BTreeMap::new(),
+            freshness: None,
+            reason: None,
+            at: now(),
+        });
         Ok(())
     })
 }
@@ -1718,7 +1735,8 @@ pub fn check_refused(root: &Path, id: &str, reason: &str) -> Result<Ticket, Tick
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "a check runs for the ticket in progress"));
         }
-        let (run, by, kind) = ticket.check.as_ref().map_or((None, Actor::Person, CheckKind::default()), |check| (check.run.clone(), check.by, check.kind));
+        let (run, by, kind) =
+            ticket.check.as_ref().map_or((None, Actor::Person, CheckKind::default()), |check| (check.run.clone(), check.by, check.kind));
         ticket.check = Some(Check {
             state: CheckState::Refused,
             by,

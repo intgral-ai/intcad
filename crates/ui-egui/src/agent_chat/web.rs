@@ -1102,7 +1102,10 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
         }
         "ticket_show" => {
             // The card of a ticket the agent drafted: the Tickets panel opens on it.
-            let id = text("id").map(str::trim).filter(|id| solidcraft_engine::project::tickets::number(id).is_some()).ok_or("ticket_show: no ticket id")?;
+            let id = text("id")
+                .map(str::trim)
+                .filter(|id| solidcraft_engine::project::tickets::number(id).is_some())
+                .ok_or("ticket_show: no ticket id")?;
             crate::tickets::show(app, id);
         }
         "open_link" => {

@@ -16633,12 +16633,18 @@ fn at_the_bottom_centre_the_person_drags_the_boxs_edges_to_resize_it() {
     };
     let start = place();
     assert!((start.width() - 520.0).abs() < 0.5 && (start.height() - 181.0).abs() < 0.5, "today's size: {start:?}");
-    assert!(edge("top").bottom() <= start.top() && edge("left").right() <= start.left() && edge("right").left() >= start.right(), "the edges lie outside the view");
+    assert!(
+        edge("top").bottom() <= start.top() && edge("left").right() <= start.left() && edge("right").left() >= start.right(),
+        "the edges lie outside the view"
+    );
 
     // The top edge up: taller, on the same foot and width; the page's own height no longer moves it.
     drag(&mut h, "top", 0.0, -150.0);
     let tall = place();
-    assert!((tall.height() - 331.0).abs() < 1.0 && tall.bottom() == start.bottom() && tall.width() == start.width(), "taller: {tall:?} from {start:?}");
+    assert!(
+        (tall.height() - 331.0).abs() < 1.0 && tall.bottom() == start.bottom() && tall.width() == start.width(),
+        "taller: {tall:?} from {start:?}"
+    );
     web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the page asks to shrink");
     h.frames(2);
     assert_eq!(place(), tall, "the height the person set holds");

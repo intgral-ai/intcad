@@ -314,7 +314,10 @@ mod tests {
         assert!(dfm.observe("doc-1", 80, false).is_none(), "no check while work is in flight");
         assert!(dfm.observe("doc-1", 81, true).is_none(), "a late edit of the turn: wait for a stable revision");
         let trigger = dfm.observe("doc-1", 81, true).expect("one check for the finished ticket");
-        assert_eq!(trigger, Trigger::TicketFinished { document_id: "doc-1".into(), turn: "turn-9".into(), revision: "81".into(), ticket: "T-2".into() });
+        assert_eq!(
+            trigger,
+            Trigger::TicketFinished { document_id: "doc-1".into(), turn: "turn-9".into(), revision: "81".into(), ticket: "T-2".into() }
+        );
         assert!(dfm.observe("doc-1", 81, true).is_none(), "once per turn");
         let mut off = runtime();
         off.set_auto_enabled(false);
