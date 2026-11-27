@@ -63,6 +63,8 @@ pub(crate) struct RevocationRecord {
     pub domain: String,
     pub login_generation: u64,
     pub revoked_at_unix: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fence_id: Option<[u8; 16]>,
 }
 
 /// Published only after an explicit login has committed active credentials.
@@ -72,6 +74,8 @@ pub(crate) struct CurrentLoginRecord {
     pub version: u32,
     pub domain: String,
     pub login_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_binding: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

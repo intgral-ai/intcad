@@ -466,6 +466,15 @@ pub struct StagedLogin {
     owner: std::sync::Weak<Mutex<SessionState>>,
 }
 
+/// The product login and exact marker owned by a logout worker.
+pub struct CredentialLogoutFence {
+    owner: std::sync::Weak<Mutex<SessionState>>,
+    epoch: u64,
+    commit: Option<String>,
+    binding: Option<String>,
+    marker: String,
+}
+
 impl StagedLogin {
     pub fn account_id(&self) -> &str {
         &self.account
@@ -746,6 +755,46 @@ impl CredentialSession {
     pub fn mark_logout_pending(&self) -> Result<(), CredentialError> {
         let mut state = self.lock()?;
         mark_logout(&mut state)
+    }
+
+    /// Hold login replacement out while attempting both logout fences.
+    pub(crate) fn fence_logout_with<T>(
+        &self,
+        identity_fence: impl FnOnce() -> T,
+    ) -> Result<(T, Result<CredentialLogoutFence, CredentialError>), CredentialError> {
+        let _write = lock_product_authority_write()?;
+        let mut state = self.lock()?;
+        let identity = identity_fence();
+        let product = (|| {
+            let commit = state.store.get(LOGIN_COMMIT_KEY)?;
+            let binding = state.store.get(SESSION_BINDING_KEY)?;
+            let mut id = [0; 16];
+            rustls::crypto::ring::default_provider().secure_random.fill(&mut id).map_err(|_| unavailable())?;
+            let marker = format!("sign_out/{:032x}", u128::from_le_bytes(id));
+            state.store.set(LOGOUT_KEY, &marker).map_err(|error| store_failure(&mut state, error))?;
+            Ok(CredentialLogoutFence { owner: Arc::downgrade(&self.inner), epoch: self.authority_generation(), commit, binding, marker })
+        })();
+        Ok((identity, product))
+    }
+
+    pub(crate) fn sign_out_fenced_with(
+        &self,
+        fence: CredentialLogoutFence,
+        after_product_delete: impl FnOnce() -> Result<(), CredentialError>,
+    ) -> Result<(), CredentialError> {
+        let _write = lock_product_authority_write()?;
+        let mut state = self.lock()?;
+        if !fence.owner.ptr_eq(&Arc::downgrade(&self.inner))
+            || self.authority_generation() != fence.epoch
+            || state.store.get(LOGOUT_KEY)?.as_deref() != Some(&fence.marker)
+            || state.store.get(LOGIN_COMMIT_KEY)? != fence.commit
+            || state.store.get(SESSION_BINDING_KEY)? != fence.binding
+        {
+            return Err(attempt_superseded());
+        }
+        delete_login_credentials(&mut state)?;
+        after_product_delete()?;
+        state.store.delete(LOGOUT_KEY).map_err(|_| unavailable())
     }
 
     /// Mark a durable sign-out before deleting anything. The marker is intentionally written

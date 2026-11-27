@@ -1929,12 +1929,15 @@ impl DesktopAccountPort {
         let worker = std::thread::Builder::new().name("intcad-account-cleanup".into()).spawn(move || {
             // Publish both barriers before deleting the product credentials. If the identity
             // barrier fails, leave the original credentials intact for a cleanup retry.
-            let identity_fenced = identity.as_ref().is_none_or(|identity| identity.mark_logout_pending().is_ok());
-            let product_fenced = credentials.mark_logout_pending().is_ok();
-            let result = identity_fenced
-                && product_fenced
-                && identity.is_none_or(|identity| identity.sign_out().is_ok_and(|outcome| outcome.credentials_cleared))
-                && credentials.sign_out_keeping_revocation().is_ok();
+            let result = match identity {
+                Some(identity) => identity
+                    .mark_logout_pending_with_credentials(&credentials)
+                    .and_then(|(identity_fence, product_fence)| {
+                        identity.sign_out_fenced_with_credentials(identity_fence, &credentials, product_fence)
+                    })
+                    .is_ok(),
+                None => credentials.sign_out_keeping_revocation().is_ok(),
+            };
             if let Ok(mut status) = cleanup.lock()
                 && status.pending == Some(generation)
             {
@@ -2597,6 +2600,7 @@ mod tests {
     struct TestStore {
         entries: Arc<Mutex<BTreeMap<String, String>>>,
         fail_delete: Arc<AtomicBool>,
+        fail_product_delete: Arc<AtomicBool>,
         fail_get: Arc<AtomicBool>,
         block_delete: Arc<Mutex<VecDeque<Receiver<()>>>>,
         block_get: Arc<Mutex<Option<Receiver<()>>>>,
@@ -2617,6 +2621,7 @@ mod tests {
             Self {
                 entries: Arc::new(Mutex::new(BTreeMap::new())),
                 fail_delete: Arc::new(AtomicBool::new(false)),
+                fail_product_delete: Arc::new(AtomicBool::new(false)),
                 fail_get: Arc::new(AtomicBool::new(false)),
                 block_delete: Arc::new(Mutex::new(VecDeque::new())),
                 block_get: Arc::new(Mutex::new(None)),
@@ -2726,7 +2731,7 @@ mod tests {
                 self.delete_waiting.fetch_add(1, Ordering::SeqCst);
                 let _ = gate.recv();
             }
-            if self.fail_delete.load(Ordering::SeqCst) {
+            if self.fail_delete.load(Ordering::SeqCst) || (key == "auth/product_session" && self.fail_product_delete.load(Ordering::SeqCst)) {
                 return Err(store_error());
             }
             self.entries.lock().unwrap().remove(key);
@@ -3296,18 +3301,52 @@ mod tests {
         let mut startup = runtime.startup();
         startup.restart = None;
         let mut port = DesktopAccountPort::new(runtime, &startup);
-        store.fail_delete.store(true, Ordering::SeqCst);
+        store.fail_product_delete.store(true, Ordering::SeqCst);
         port.sign_out().unwrap();
         wait_for_cleanup(&port);
         assert_eq!(port.poll().unwrap().sign_out_error, Some(RefusalCode::AuthUnavailable));
         assert!(port.runtime.credentials.is_revoked());
         assert!(port.runtime.credentials.logout_pending().unwrap());
         assert_eq!(identity.status(), IdentityStatus::SignedOut);
-        store.fail_delete.store(false, Ordering::SeqCst);
+        assert!(store.get(&identity_refresh_key(&test_config())).unwrap().is_some(), "failed product deletion must retain the fenced identity");
+        store.fail_product_delete.store(false, Ordering::SeqCst);
         port.sign_out().unwrap();
         wait_for_cleanup(&port);
         assert!(port.poll().unwrap().sign_in_visible);
         assert!(store.get(&identity_refresh_key(&test_config())).unwrap().is_none());
+        assert!(store.get("auth/product_session").unwrap().is_none());
+    }
+
+    #[test]
+    fn desktop_identity_old_logout_fences_cannot_clean_a_newer_login() {
+        let store = TestStore::default();
+        let config = test_config();
+        let scratch = IdentityScratch::new();
+        let old = activate_session(&store);
+        let old_identity = identity_fixture(&config, &store, &scratch.0, ScriptedProduct::default());
+        seed_identity(&old_identity, &old.authenticated_scope().unwrap(), Secret::new("old_bearer"));
+        old.revoke_in_process();
+        let (old_fence, old_product) = old_identity.mark_logout_pending_with_credentials(&old).unwrap();
+        let standalone_fence = old_identity.mark_logout_pending().unwrap();
+        // Re-fence both so the combined cleanup also starts with a matched pair.
+        let (old_fence, old_product) = {
+            drop((old_fence, old_product));
+            old_identity.mark_logout_pending_with_credentials(&old).unwrap()
+        };
+        let new = activate_session(&store);
+        let new_identity = identity_fixture(&config, &store, &scratch.0, ScriptedProduct::default());
+        let new_scope = new.authenticated_scope().unwrap();
+        seed_identity(&new_identity, &new_scope, Secret::new("new_bearer"));
+        assert!(matches!(old_identity.sign_out_fenced(standalone_fence), Err(IdentityError::SessionChanged)));
+        assert!(matches!(old_identity.sign_out_fenced_with_credentials(old_fence, &old, old_product), Err(IdentityError::SessionChanged)));
+        assert!(old.is_revoked());
+        assert!(!new.logout_pending().unwrap());
+        assert_eq!(new.authenticated_scope(), Some(new_scope));
+        assert_eq!(new_identity.ensure(IdentityTrigger::Background, RESTART_STATUS_TIMEOUT).unwrap().access_token().expose_secret(), "new_bearer");
+        new.revoke_in_process();
+        let (new_fence, new_product) = new_identity.mark_logout_pending_with_credentials(&new).unwrap();
+        new_identity.sign_out_fenced_with_credentials(new_fence, &new, new_product).unwrap();
+        assert!(store.get(&identity_refresh_key(&config)).unwrap().is_none());
         assert!(store.get("auth/product_session").unwrap().is_none());
     }
 

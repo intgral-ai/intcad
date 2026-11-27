@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
 use solidcraft_engine::entitlement::CredentialStore;
 
-use crate::credentials::{CredentialSession, MAX_ACCOUNT_BYTES, StagedLogin, safe_token, unavailable};
+use crate::credentials::{CredentialLogoutFence, CredentialSession, MAX_ACCOUNT_BYTES, StagedLogin, safe_token, unavailable};
 use crate::http::{Secret, WireConnection};
 use crate::identity_journal::{AttemptRecord, CurrentLoginRecord, IdentityJournal, JournalError, RevocationRecord, StatusAttempt};
 use crate::identity_store::{CredentialIdentityStore, IdentityStore, IdentityStoreError, StoredIdentity};
@@ -243,6 +243,15 @@ impl From<VerifyError> for IdentityError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SignOutOutcome {
     pub credentials_cleared: bool,
+}
+
+/// Proof of the exact durable logout barrier published for one login.
+pub struct IdentityLogoutFence {
+    domain: String,
+    current: Option<CurrentLoginRecord>,
+    generation: u64,
+    binding: Option<String>,
+    id: [u8; 16],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -513,7 +522,12 @@ impl IdentityLifecycle {
         // Clear the old attempt before publishing a leaseable record.
         self.clear_attempt()?;
         store.activate(&record)?;
-        self.journal.write_current_login(&CurrentLoginRecord { version: RECORD_VERSION, domain: record.domain, login_generation })?;
+        self.journal.write_current_login(&CurrentLoginRecord {
+            version: RECORD_VERSION,
+            domain: record.domain,
+            login_generation,
+            session_binding: record.session_binding,
+        })?;
         // Adoption can finish after Resume, but must not restore pre-Resume readiness.
         let _ = self.set_verified(epoch, (login_generation, 1));
         self.revoked.store(false, Ordering::Release);
@@ -596,8 +610,97 @@ impl IdentityLifecycle {
     }
 
     /// Durably retire the identity without deleting its keyring record.
-    pub fn mark_logout_pending(&self) -> Result<(), IdentityError> {
-        self.publish_logout(&LockWait::new(MUTATION_WAIT)).map(|_| ())
+    pub fn mark_logout_pending(&self) -> Result<IdentityLogoutFence, IdentityError> {
+        self.revoked.store(true, Ordering::Release);
+        self.clear_readiness();
+        let _barrier = self.barrier_lock(&LockWait::new(MUTATION_WAIT))?;
+        self.mark_logout_pending_locked()
+    }
+
+    /// Publish both barriers while excluding cooperating login writers. Both
+    /// writes are attempted even when one fails. The caller receives no cleanup
+    /// handle unless both writes complete.
+    pub fn mark_logout_pending_with_credentials(
+        &self,
+        credentials: &CredentialSession,
+    ) -> Result<(IdentityLogoutFence, CredentialLogoutFence), IdentityError> {
+        self.revoked.store(true, Ordering::Release);
+        self.clear_readiness();
+        let wait = LockWait::new(MUTATION_WAIT);
+        let _barrier = match self.barrier_lock(&wait) {
+            Ok(barrier) => barrier,
+            Err(error) => {
+                let _ = credentials.mark_logout_pending();
+                return Err(error);
+            }
+        };
+        let (identity, product) = credentials.fence_logout_with(|| self.mark_logout_pending_locked()).map_err(|_| IdentityError::Storage)?;
+        Ok((identity?, product.map_err(|_| IdentityError::Storage)?))
+    }
+
+    fn mark_logout_pending_locked(&self) -> Result<IdentityLogoutFence, IdentityError> {
+        self.revoked.store(true, Ordering::Release);
+        self.clear_readiness();
+        let current = self.journal.read_current_login()?;
+        let current_generation = self.current_login_generation(current.clone())?;
+        let mut generation = current_generation.max(self.last_login_generation.load(Ordering::Acquire));
+        let mut binding = current.as_ref().and_then(|current| current.session_binding.clone());
+        // The journal fences a known login even when the keyring is locked. A readable
+        // orphan from an interrupted adoption must also be included in the fence.
+        if let Ok(Some(record)) = self.store().and_then(|store| self.load(store.as_ref()))
+            && record.login_generation >= generation
+        {
+            generation = record.login_generation;
+            binding = record.session_binding;
+        }
+        generation = generation.max(self.read_revocation()?.unwrap_or(0));
+        let mut id = [0; 16];
+        rustls::crypto::ring::default_provider().secure_random.fill(&mut id).map_err(|_| IdentityError::Storage)?;
+        self.write_revocation_with_fence(generation, Some(id))?;
+        self.write_revocation_with_fence(generation, Some(id))?;
+        Ok(IdentityLogoutFence { domain: self.domain.storage_key().to_owned(), current, generation, binding, id })
+    }
+
+    pub fn sign_out_fenced(&self, fence: IdentityLogoutFence) -> Result<SignOutOutcome, IdentityError> {
+        let _barrier = self.barrier_lock(&LockWait::new(MUTATION_WAIT))?;
+        let mut store = self.store()?;
+        self.check_logout_fence(&fence, store.as_ref())?;
+        Ok(SignOutOutcome { credentials_cleared: self.delete_fenced_identity(store.as_mut()) })
+    }
+
+    /// Delete the product credentials first, keeping their logout marker until
+    /// identity deletion succeeds. Both ownership checks are held across deletion.
+    pub fn sign_out_fenced_with_credentials(
+        &self,
+        fence: IdentityLogoutFence,
+        credentials: &CredentialSession,
+        product: CredentialLogoutFence,
+    ) -> Result<(), IdentityError> {
+        let _barrier = self.barrier_lock(&LockWait::new(MUTATION_WAIT))?;
+        let mut store = self.store()?;
+        self.check_logout_fence(&fence, store.as_ref())?;
+        credentials
+            .sign_out_fenced_with(product, || self.delete_fenced_identity(store.as_mut()).then_some(()).ok_or_else(unavailable))
+            .map_err(|_| IdentityError::Storage)
+    }
+
+    fn check_logout_fence(&self, fence: &IdentityLogoutFence, store: &dyn IdentityStore) -> Result<(), IdentityError> {
+        if fence.domain != self.domain.storage_key()
+            || self.journal.read_current_login()? != fence.current
+            || self.journal.read_revocation()?.is_none_or(|record| {
+                record.domain != fence.domain || record.login_generation != fence.generation || record.fence_id != Some(fence.id)
+            })
+            || self.load(store)?.is_some_and(|record| record.login_generation > fence.generation || record.session_binding != fence.binding)
+        {
+            return Err(IdentityError::SessionChanged);
+        }
+        Ok(())
+    }
+
+    fn delete_fenced_identity(&self, store: &mut dyn IdentityStore) -> bool {
+        let deleted = store.delete().is_ok();
+        let _ = self.clear_attempt();
+        deleted
     }
 
     fn publish_logout(&self, wait: &LockWait) -> Result<u64, IdentityError> {
@@ -1262,11 +1365,16 @@ impl IdentityLifecycle {
     }
 
     fn write_revocation(&self, login_generation: u64) -> Result<(), IdentityError> {
+        self.write_revocation_with_fence(login_generation, None)
+    }
+
+    fn write_revocation_with_fence(&self, login_generation: u64, fence_id: Option<[u8; 16]>) -> Result<(), IdentityError> {
         self.journal.write_revocation(&RevocationRecord {
             version: RECORD_VERSION,
             domain: self.domain.storage_key().to_owned(),
             login_generation,
             revoked_at_unix: self.clock.now_unix_seconds(),
+            fence_id,
         })?;
         Ok(())
     }

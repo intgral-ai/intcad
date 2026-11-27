@@ -49,8 +49,8 @@ pub use account_paths::AccountPaths;
 pub use billing::SessionBilling;
 pub use contract::{ContractArtifacts, ContractPin, VerifiedContract};
 pub use credentials::{
-    ACCOUNT_KEYRING_SERVICE, BlockedProductExchange, CredentialSession, KeyringStore, MemorySession, NoPersistentStore, ProductExchangeError,
-    ProductLogin, ProductSession, ProductSessionExchange, ProviderLogin, ProviderRefresh, ProviderSession, StagedLogin,
+    ACCOUNT_KEYRING_SERVICE, BlockedProductExchange, CredentialLogoutFence, CredentialSession, KeyringStore, MemorySession, NoPersistentStore,
+    ProductExchangeError, ProductLogin, ProductSession, ProductSessionExchange, ProviderLogin, ProviderRefresh, ProviderSession, StagedLogin,
 };
 pub use device_code::{
     DeviceCodeError, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodePrompt, DeviceCodeTransport, UreqDeviceCodeTransport,
@@ -61,8 +61,8 @@ pub use http::{
     Transport, TransportFailure, UreqTransport, WireConnection, WireCredentials, WireRequest, WireResponse,
 };
 pub use identity::{
-    IdentityClock, IdentityDomain, IdentityError, IdentityLease, IdentityLifecycle, IdentityStatus, IdentityTrigger, SessionVerifier, SignOutOutcome,
-    SystemIdentityClock, VerifiedSession, VerifyError,
+    IdentityClock, IdentityDomain, IdentityError, IdentityLease, IdentityLifecycle, IdentityLogoutFence, IdentityStatus, IdentityTrigger,
+    SessionVerifier, SignOutOutcome, SystemIdentityClock, VerifiedSession, VerifyError,
 };
 pub use identity_status::StatusSessionVerifier;
 pub use identity_transport::{IdentityTransport, RefreshResponse, RefreshTransportError};

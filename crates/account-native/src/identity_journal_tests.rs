@@ -50,11 +50,11 @@ fn attempt(attempt_id: u64) -> AttemptRecord {
 }
 
 fn revocation(revoked_at_unix: u64) -> RevocationRecord {
-    RevocationRecord { version: 1, domain: "https://account.example.test".to_owned(), login_generation: 7, revoked_at_unix }
+    RevocationRecord { version: 1, domain: "https://account.example.test".to_owned(), login_generation: 7, revoked_at_unix, fence_id: None }
 }
 
 fn current(login_generation: u64) -> CurrentLoginRecord {
-    CurrentLoginRecord { version: 1, domain: "https://account.example.test".to_owned(), login_generation }
+    CurrentLoginRecord { version: 1, domain: "https://account.example.test".to_owned(), login_generation, session_binding: None }
 }
 
 #[test]
