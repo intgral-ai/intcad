@@ -145,7 +145,8 @@ export interface Connect {
   custom: { id: string; name: string; url: string; models: string[]; keyed: boolean; prefix: string }[];
   login: { id: string; phase: 'starting' | 'browser' | 'device' | 'code'; userCode: string | null; error: 'incomplete' | null } | null;
   /** The last sign-in that could not finish. */
-  problem: { id: string; kind: 'port' | 'offline' | 'failed' } | null;
+  /** `text`: why, worded by the app in full (who holds the port, which step failed). */
+  problem: { id: string; kind: 'port' | 'listen' | 'timeout' | 'offline' | 'refused' | 'failed'; text?: string } | null;
   /** A key or custom address the app could not keep, in the user's language. */
   error: string | null;
   /** The key saves the app has answered (kept or refused), counted: a save is answered once it moves on. */

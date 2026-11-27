@@ -3,9 +3,11 @@
 // outside `src/`, so they are loaded by address from the compiled test's own place.
 
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import http from "node:http";
+import net from "node:net";
 import { tmpdir } from "node:os";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { Agent as CoreAgent } from "@mastra/core/agent";
 
 type Json = Record<string, any>;
@@ -28,6 +30,8 @@ const { classifyFailure, classifySignInFailure } = await load("problems.mjs");
 const { intcadAgent } = await load("agent.mjs");
 const { PlanGate } = await load("plan.mjs");
 const { keepKeysFromCommands, keyVariables, withoutParams } = await load("secrets.mjs");
+// INT-1521. Loaded so that its tests fail, not the whole file, while the file is missing.
+const signinModule: Json = await load("signin.mjs").catch(() => ({}));
 
 const PROVIDERS = [
   { id: "openai-codex", name: "ChatGPT Plus/Pro (Codex Subscription)" },
@@ -89,11 +93,17 @@ function world(overrides: Json = {}) {
     dates: () => DATES,
     changed: (snapshot: Json) => void told.push(snapshot),
     refresh: async (why?: Json) => void ((refreshed += 1), whys.push(why)),
+    ...(overrides.limitMs ? { limitMs: overrides.limitMs } : {}),
   });
   return { connections, signedIn, told, opened, written, env, held, custom: () => custom, refreshed: () => refreshed, whys };
 }
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+/** Waits until `done()` holds, at most two seconds: for a step that takes as long as it takes. */
+async function until(done: () => boolean) {
+  for (const end = Date.now() + 2000; !done(); await settle()) if (Date.now() > end) throw new Error("waited two seconds in vain");
+}
 
 test("with nothing connected the snapshot lists the five plans and five keys, each as not connected", () => {
   const { connections } = world();
@@ -198,7 +208,7 @@ test("a custom address that cannot be used is left out and the rest is taken; na
   await assert.rejects(connections.setup({ keys: { openai: "x".repeat(5000) } }), { code: "INVALID" });
 });
 
-test("a browser sign-in holds the local ports, opens the browser, waits without a limit and ends when the browser calls back", async () => {
+test("a browser sign-in holds the local ports, opens the browser, waits for it and ends when the browser calls back", async () => {
   let finish: (value?: unknown) => void = () => {};
   const { connections, told, opened, held, refreshed } = world({
     login: async (_id: string, callbacks: Json) => {
@@ -215,7 +225,7 @@ test("a browser sign-in holds the local ports, opens the browser, waits without 
   await settle();
   assert.deepEqual(connections.list().login, { id: "openai-codex", phase: "browser", url: "https://auth.example/authorize?state=s1", userCode: null, error: null });
   assert.deepEqual(opened, ["https://auth.example/authorize?state=s1"]);
-  // Nothing in here counts time: however long the browser takes, the sign-in is still under way.
+  // However long the browser takes within the time limit (15 minutes), the sign-in is still under way.
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(connections.list().login.phase, "browser");
   assert.equal(held.length, 1);
@@ -323,12 +333,12 @@ test("a sign-in that cannot finish says why: the port, the network, or anything 
   const offline = world({ login: async () => Promise.reject(new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo"), { code: "ENOTFOUND" }) })) });
   offline.connections.login({ id: "xai" });
   await settle();
-  assert.deepEqual(offline.connections.list().problem, { id: "xai", kind: "offline" });
+  assert.deepEqual(offline.connections.list().problem, { id: "xai", kind: "offline", step: "open" });
 
   const other = world({ login: async () => Promise.reject(new Error("Token exchange failed")) });
   other.connections.login({ id: "anthropic" });
   await settle();
-  assert.deepEqual(other.connections.list().problem, { id: "anthropic", kind: "failed" });
+  assert.deepEqual(other.connections.list().problem, { id: "anthropic", kind: "failed", step: "open" });
   // The next attempt starts clean.
   other.connections.cancel();
   assert.equal(other.connections.list().problem, null);
@@ -388,6 +398,259 @@ test("the two local ports are held until closed, only the awaited callback is ta
   const second = await holdCallbackPorts(http, () => false, { ports: [base, base + 6] });
   again.close();
   second.close();
+});
+
+test("a sign-in left unfinished stops at the time limit, gives the ports back and says so (INT-1522)", async () => {
+  const { connections, held, told } = world({
+    limitMs: 40,
+    login: (_id: string, callbacks: Json) => {
+      callbacks.onAuth({ url: "https://auth.example/authorize?state=s1" });
+      return callbacks.onManualCodeInput();
+    },
+  });
+  connections.login({ id: "openai-codex" });
+  await settle();
+  assert.equal(connections.list().login.phase, "browser");
+  await until(() => held[0]!.closed);
+  assert.equal(told.at(-1)!.login, null);
+  assert.deepEqual(told.at(-1)!.problem, { id: "openai-codex", kind: "timeout", step: "wait" });
+  // A new sign-in starts as usual afterwards, and the end of the agent's process gives its ports back too.
+  connections.login({ id: "openai-codex" });
+  await settle();
+  assert.equal(held.length, 2);
+  connections.dispose();
+  assert.equal(held[1]!.closed, true);
+  // Twice the time limit: nothing may come of the timer of a sign-in that has ended.
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.equal(connections.list().problem, null, "a sign-in ended with the process is not timed out afterwards");
+});
+
+/** Listens on `port` of 127.0.0.1 with a server that is not a sign-in's: another program. */
+async function foreignListener(port: number): Promise<net.Server> {
+  const server = net.createServer((socket) => socket.end());
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => resolve());
+  });
+  return server;
+}
+
+test("a taken port says who holds it: a sign-in of this app, of another Intcad, or another program (INT-1522)", async () => {
+  const base = 42455;
+  // Another program: not named, only told apart from an Intcad.
+  const foreign = await foreignListener(base + 2);
+  const byProgram = await holdCallbackPorts(http, () => false, { ports: [base, base + 2] }).then(() => null, (error: Json) => error);
+  foreign.close();
+  assert.equal(byProgram?.code, "PORT_BUSY");
+  assert.equal(byProgram?.port, base + 2);
+  assert.equal(byProgram?.holder, null);
+
+  // A sign-in of this same app (another design's agent: same parent), which never ends.
+  const ours = await holdCallbackPorts(http, () => false, { ports: [base + 4, base + 6] });
+  const byUs = await holdCallbackPorts(http, () => false, { ports: [base + 8, base + 6] }).then(() => null, (error: Json) => error);
+  assert.equal(byUs?.code, "PORT_BUSY");
+  assert.deepEqual(byUs?.holder, { kind: "here" });
+  ours.close();
+
+  // A sign-in of another Intcad: its agent has another parent.
+  const entry = new URL(agentFolder + "callback.mjs", import.meta.url).href;
+  const child = spawn(
+    process.execPath,
+    ["--input-type=module", "-e", `const http = await import("node:http"); const { holdCallbackPorts } = await import(${JSON.stringify(entry)}); await holdCallbackPorts(http, () => false, { ports: [${base + 10}, ${base + 12}] }); console.log("held");`],
+    { stdio: ["ignore", "pipe", "inherit"] },
+  );
+  try {
+    await new Promise<void>((resolve) => child.stdout!.once("data", () => resolve()));
+    const byOther = await holdCallbackPorts(http, () => false, { ports: [base + 14, base + 12] }).then(() => null, (error: Json) => error);
+    assert.equal(byOther?.code, "PORT_BUSY");
+    assert.deepEqual(byOther?.holder, { kind: "intcad" });
+  } finally {
+    child.kill();
+  }
+});
+
+test("a sign-in that finds the first port free again by the time it has the second takes both (INT-1522)", async () => {
+  const base = 43455;
+  // Another design's sign-in holds both ports and lets go of them just after this one found the
+  // first taken (its cancel was on the way): this one has the second, and must have the first too,
+  // or Mastra Code would listen there itself.
+  const leaving = await holdCallbackPorts(http, () => false, { ports: [base, base + 2] });
+  const letGo = {
+    createServer: (handler: http.RequestListener) => {
+      const server = http.createServer(handler);
+      server.once("error", (error: Json) => error?.code === "EADDRINUSE" && leaving.close());
+      return server;
+    },
+  };
+  const taken = await holdCallbackPorts(letGo, () => false, { ports: [base, base + 2] });
+  const firstFree = await foreignListener(base).then((server) => (server.close(), true), () => false);
+  taken.close();
+  assert.equal(firstFree, false, "the first port is held too");
+});
+
+test("a port the system will not open is told apart from a taken one; the first port may be refused (INT-1522)", async () => {
+  const base = 44455;
+  // As `node:http`, with the system refusing to open one port (EACCES: a reserved range, security software).
+  const refusing = (refused: number) => ({
+    createServer: (handler: http.RequestListener) => {
+      const server = http.createServer(handler);
+      const listen = server.listen.bind(server) as (port: number, host: string) => http.Server;
+      (server as Json).listen = (port: number, host: string) => {
+        if (port !== refused) return listen(port, host);
+        setImmediate(() => server.emit("error", Object.assign(new Error(`listen EACCES: permission denied 127.0.0.1:${port}`), { code: "EACCES" })));
+        return server;
+      };
+      return server;
+    },
+  });
+  // The first port only has to be out of Mastra's reach, and what keeps this process off it keeps Mastra off it too.
+  const fine = await holdCallbackPorts(refusing(base), () => false, { ports: [base, base + 2] });
+  fine.close();
+  const refused = await holdCallbackPorts(refusing(base + 6), () => false, { ports: [base + 4, base + 6] }).then(() => null, (error: Json) => error);
+  assert.equal(refused?.code, "LISTEN_FAILED");
+  assert.equal(refused?.port, base + 6);
+  assert.equal(refused?.errno, "EACCES");
+  assert.equal(classifySignInFailure(refused), "listen");
+});
+
+test("a sign-in's problem carries who holds the port, or the port and the system's code (INT-1522)", async () => {
+  const held = world({ holdPorts: async () => Promise.reject(Object.assign(new Error("port 1457 is in use"), { code: "PORT_BUSY", port: 1457, holder: { kind: "intcad" } })) });
+  held.connections.login({ id: "openai-codex" });
+  await settle();
+  assert.deepEqual(held.connections.list().problem, { id: "openai-codex", kind: "port", holder: { kind: "intcad" } });
+
+  const refused = world({ holdPorts: async () => Promise.reject(Object.assign(new Error("port 1457 could not be opened"), { code: "LISTEN_FAILED", port: 1457, errno: "EACCES" })) });
+  refused.connections.login({ id: "openai-codex" });
+  await settle();
+  assert.deepEqual(refused.connections.list().problem, { id: "openai-codex", kind: "listen", port: 1457, code: "EACCES" });
+});
+
+// ---- INT-1521: which step failed, and what the token endpoint answered ----
+
+/** A stand-in for a provider's token endpoint: each test says how it answers. */
+async function tokenEndpoint(answer: (request: http.IncomingMessage, response: http.ServerResponse) => void) {
+  const server = http.createServer(answer);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const url = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}/oauth/token`;
+  const close = () => (server.closeAllConnections(), server.close());
+  // Closed when the tests end too, so a test that fails half way leaves nothing listening.
+  after(close);
+  return { url, close };
+}
+
+/** What Mastra Code's ChatGPT sign-in does with the code once the browser has called back (its `exchangeAuthorizationCode` and what follows). */
+async function exchange(fetcher: (url: string, init: Json) => Promise<Response>, url: string, limitMs = 15000) {
+  const response = await fetcher(url, {
+    method: "POST",
+    signal: AbortSignal.timeout(limitMs),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "grant_type=authorization_code&code=c1",
+  });
+  if (!response.ok) throw new Error("Token exchange failed");
+  const json = (await response.json()) as Json;
+  if (!json.access_token || !json.refresh_token) throw new Error("Token exchange failed");
+  return json;
+}
+
+test("the token endpoint's answer is seen: taken, refused with its code, stalled, or not there (INT-1521)", async () => {
+  const { watchExchange, failureCode } = signinModule;
+  const seen: Json[] = [];
+  const at = (url: string) => watchExchange(fetch, url, (answer: Json) => seen.push(answer));
+  // Taken: the answer is the SDK's to read, and nothing of it is read here.
+  const ok = await tokenEndpoint((_request, response) => response.end(JSON.stringify({ access_token: "a", refresh_token: "r" })));
+  assert.equal((await exchange(at(ok.url), ok.url)).access_token, "a");
+  ok.close();
+  assert.deepEqual(seen.pop(), { status: 200 });
+  // Refused with an error body: the status and the provider's code, never its description.
+  const refused = await tokenEndpoint((_request, response) => {
+    response.statusCode = 400;
+    response.end(JSON.stringify({ error: "invalid_grant", error_description: "Code expired for a@example.com" }));
+  });
+  await assert.rejects(exchange(at(refused.url), refused.url), /Token exchange failed/);
+  refused.close();
+  assert.deepEqual(seen.pop(), { status: 400, code: "invalid_grant", kind: "refused" });
+  // A refusal with the code inside an object, and one that is a page, not JSON, still read with their status.
+  const region = await tokenEndpoint((_request, response) => {
+    response.statusCode = 403;
+    response.end(JSON.stringify({ error: { code: "unsupported_country_region_territory", message: "Country, region, or territory not supported" } }));
+  });
+  await assert.rejects(exchange(at(region.url), region.url));
+  region.close();
+  assert.deepEqual(seen.pop(), { status: 403, code: "unsupported_country_region_territory", kind: "refused" });
+  const page = await tokenEndpoint((_request, response) => ((response.statusCode = 403), response.end("<html><body>Access denied</body></html>")));
+  await assert.rejects(exchange(at(page.url), page.url));
+  page.close();
+  assert.deepEqual(seen.pop(), { status: 403, code: null, kind: "refused" });
+  // Stalled past the limit, and nobody there.
+  const stalled = await tokenEndpoint(() => {});
+  await assert.rejects(exchange(at(stalled.url), stalled.url, 100));
+  stalled.close();
+  assert.equal(failureCode(seen.pop()!.error), "timeout");
+  const gone = await tokenEndpoint(() => {});
+  gone.close();
+  await assert.rejects(exchange(at(gone.url), gone.url));
+  assert.equal(failureCode(seen.pop()!.error), "ECONNREFUSED");
+  // What a proxy that refuses the tunnel gives (Node 22.23.4): nothing that says more.
+  const tunnel = Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new DOMException("Request was cancelled.", "Error")) });
+  assert.equal(failureCode(tunnel), "no-connection");
+  // Any other address is passed on untouched and not seen.
+  const other = await tokenEndpoint((_request, response) => response.end("{}"));
+  assert.equal((await at("http://127.0.0.1:9/oauth/token")(other.url, {})).status, 200);
+  other.close();
+  assert.equal(seen.length, 0);
+});
+
+/** A ChatGPT sign-in as Mastra Code goes through it, with its exchange at `url` through `fetcher`. */
+const chatgptSignIn = (fetcher: () => (url: string, init: Json) => Promise<Response>, url: string, after?: () => void) => async (_id: string, callbacks: Json) => {
+  callbacks.onAuth({ url: "https://auth.example/authorize?state=s1" });
+  await callbacks.onManualCodeInput();
+  await exchange(fetcher(), url);
+  after?.();
+};
+
+test("a sign-in that fails says at which step, with the token endpoint's status and code (INT-1521)", async () => {
+  const { watchExchange } = signinModule;
+  const steps = async (answer: (request: http.IncomingMessage, response: http.ServerResponse) => void, overrides: Json = {}) => {
+    const endpoint = await tokenEndpoint(answer);
+    let watched: (url: string, init: Json) => Promise<Response> = fetch;
+    const w = world({ login: chatgptSignIn(() => watched, endpoint.url, overrides.after), ...overrides });
+    watched = watchExchange(fetch, endpoint.url, (seen: Json) => w.connections.exchanged(seen));
+    w.connections.login({ id: "openai-codex" });
+    await settle();
+    w.held[0]?.callback("http://localhost:1457/auth/callback?code=c1&state=s1");
+    await until(() => w.connections.list().login === null);
+    endpoint.close();
+    return w.connections.list().problem;
+  };
+  const refused = (body: Json) => (_request: http.IncomingMessage, response: http.ServerResponse) => ((response.statusCode = 400), response.end(JSON.stringify(body)));
+  assert.deepEqual(await steps(refused({ error: "invalid_grant" })), { id: "openai-codex", kind: "refused", step: "exchange", status: 400, code: "invalid_grant" });
+  // Taken, but the answer holds no token: the exchange still, with the status it had.
+  assert.deepEqual(await steps((_request, response) => response.end("{}")), { id: "openai-codex", kind: "failed", step: "exchange", status: 200, code: "missing_tokens" });
+  // Taken, and the sign-in could not be saved: a file error after the exchange.
+  const unsaved = await steps((_request, response) => response.end(JSON.stringify({ access_token: "a", refresh_token: "r" })), {
+    after: () => {
+      throw Object.assign(new Error("EACCES: permission denied, rename 'auth.json.tmp'"), { code: "EACCES", syscall: "rename" });
+    },
+  });
+  assert.deepEqual(unsaved, { id: "openai-codex", kind: "failed", step: "store", code: "EACCES" });
+  // Before the browser opened, and while waiting for it.
+  const early = world({ login: async () => Promise.reject(new Error("crypto is not available")) });
+  early.connections.login({ id: "openai-codex" });
+  await settle();
+  assert.deepEqual(early.connections.list().problem, { id: "openai-codex", kind: "failed", step: "open" });
+  const waiting = world({ login: async (_id: string, callbacks: Json) => (callbacks.onAuth({ url: "https://auth.example/a?state=s1" }), Promise.reject(new Error("Unexpected"))) });
+  waiting.connections.login({ id: "openai-codex" });
+  await settle();
+  assert.deepEqual(waiting.connections.list().problem, { id: "openai-codex", kind: "failed", step: "wait" });
+
+  // A ChatGPT token refresh answered while another plan's sign-in exchanges its code is not that sign-in's.
+  const claude = world({ login: async (_id: string, callbacks: Json) => (callbacks.onAuth({ url: "https://claude.example/authorize" }), await callbacks.onPrompt({}), Promise.reject(new Error("Token exchange failed"))) });
+  claude.connections.login({ id: "anthropic" });
+  await settle();
+  claude.connections.code({ id: "anthropic", code: "abc#def" });
+  claude.connections.exchanged({ status: 400, code: "invalid_grant", kind: "refused" });
+  await settle();
+  assert.deepEqual(claude.connections.list().problem, { id: "anthropic", kind: "failed", step: "exchange" });
 });
 
 test("a key is not in the environment of a command a model runs, nor in a refusal that is printed", () => {

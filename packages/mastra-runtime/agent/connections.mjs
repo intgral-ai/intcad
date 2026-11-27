@@ -5,7 +5,8 @@
 // Nothing in this file talks to Mastra directly: what it needs is passed in (`deps`), so the tests
 // run it against stand-ins and no test signs in anywhere.
 
-import { classifySignInFailure } from './problems.mjs';
+import { signInProblem } from './problems.mjs';
+import { failureCode } from './signin.mjs';
 
 /** The plan sign-ins offered, in the order the page lists them, with the provider part of their model ids. */
 export const PLANS = [
@@ -31,6 +32,11 @@ const PASTED = new Set(['anthropic']);
 const CALLED_BACK = new Set(['openai-codex']);
 
 const MAX_KEY = 4096;
+
+// How long a sign-in may wait for the person (INT-1522): one left open held the ChatGPT ports for
+// 16 hours. The longest of the providers' own limits seen is 15 minutes (a device code), so no
+// sign-in a provider would still take is cut short.
+export const SIGN_IN_LIMIT_MS = 15 * 60 * 1000;
 
 /**
  * A custom address's id, from its name: lower case, and a hyphen for every run of anything else.
@@ -83,6 +89,7 @@ export class Connections {
    * @param deps.dates       () => Map of release dates by model id
    * @param deps.changed     (snapshot) => tells the app
    * @param deps.refresh     () => Promise: every open session re-reads which models it may use
+   * @param deps.limitMs     how long a sign-in may wait, for the tests (`SIGN_IN_LIMIT_MS`)
    */
   constructor(deps) {
     this.#deps = deps;
@@ -179,12 +186,32 @@ export class Connections {
     const id = params?.id;
     if (!PLANS.some(([plan]) => plan === id) || !this.#deps.providers().some(provider => provider.id === id)) throw invalid(`unknown sign-in: ${id}`);
     if (this.#login) throw Object.assign(new Error('busy'), { code: 'BUSY' });
-    const login = { id, phase: 'starting', url: null, userCode: null, error: null, abort: new AbortController(), pasted: null, ports: null };
+    // `step`: how far it got (INT-1521), `open` until the browser is opened, `wait` until it calls
+    // back (or the code is pasted), `exchange` until the provider's token endpoint has taken the code,
+    // `store` after. `exchange`: what that endpoint answered (signin.mjs `watchExchange`).
+    const login = { id, phase: 'starting', url: null, userCode: null, error: null, abort: new AbortController(), pasted: null, ports: null, timer: null, step: 'open', exchange: null };
     this.#login = login;
     this.#problem = null;
+    // The time is up as at a cancel, whatever Mastra is waiting on, and the ports are free at once.
+    login.timer = setTimeout(() => {
+      if (this.#login !== login) return;
+      this.#end(login);
+      this.#problem = { id, kind: 'timeout', step: login.step };
+      this.#tell();
+    }, this.#deps.limitMs ?? SIGN_IN_LIMIT_MS);
+    login.timer.unref?.();
     this.#tell();
     void this.#run(login);
     return this.snapshot();
+  }
+
+  /** Ends a sign-in under way, as cancel, the time limit and the end of the process do. */
+  #end(login) {
+    if (this.#login === login) this.#login = null;
+    clearTimeout(login.timer);
+    login.abort.abort();
+    login.pasted?.reject(new Error('Login cancelled'));
+    login.ports?.close();
   }
 
   async #run(login) {
@@ -199,6 +226,7 @@ export class Connections {
           login.url = info.url;
           login.userCode = userCode && !String(info.url).includes(userCode) ? userCode : null;
           login.phase = login.userCode ? 'device' : PASTED.has(id) ? 'code' : 'browser';
+          login.step = 'wait';
           this.#deps.openUrl(info.url);
           this.#tell();
         },
@@ -219,6 +247,7 @@ export class Connections {
           // handing it to Mastra would end the sign-in as failed.
           const expected = login.url ? new URL(login.url).searchParams.get('state') : null;
           if (expected && new URL(url).searchParams.get('state') !== expected) return false;
+          login.step = 'exchange';
           calledBack.resolve(url);
           return true;
         });
@@ -232,11 +261,12 @@ export class Connections {
       this.#expired.delete(id);
       await this.#deps.refresh();
     } catch (error) {
-      // Cancelled: the user asked for it, there is nothing to report.
+      // Cancelled, or its time was up: that has been said already.
       if (this.#login !== login) return;
       this.#login = null;
-      this.#problem = { id, kind: classifySignInFailure(error) };
+      this.#problem = { id, ...this.#failedAt(login, error) };
     } finally {
+      clearTimeout(login.timer);
       login.ports?.close();
       this.#tell();
     }
@@ -255,6 +285,7 @@ export class Connections {
       login.error = 'incomplete';
     } else {
       login.error = null;
+      login.step = 'exchange';
       login.pasted.resolve(code);
     }
     this.#tell();
@@ -268,13 +299,8 @@ export class Connections {
 
   cancel() {
     const login = this.#login;
-    this.#login = null;
     this.#problem = null;
-    if (login) {
-      login.abort.abort();
-      login.pasted?.reject(new Error('Login cancelled'));
-      login.ports?.close();
-    }
+    if (login) this.#end(login);
     this.#tell();
     return this.snapshot();
   }
@@ -322,13 +348,42 @@ export class Connections {
     this.#tell();
   }
 
+  /**
+   * What the ChatGPT sign-in's token endpoint answered (signin.mjs `watchExchange`): kept with the
+   * ChatGPT sign-in that is exchanging its code, and nothing else (a token refresh has no sign-in,
+   * and another plan's sign-in is not this endpoint's).
+   */
+  exchanged(answer) {
+    const login = this.#login;
+    if (login?.id !== 'openai-codex' || login.step !== 'exchange') return;
+    login.exchange = answer;
+    if (!answer.error && !answer.kind) login.step = 'store';
+  }
+
+  /**
+   * Why a sign-in failed, and at which step: before the browser was opened (`open`, and the ports),
+   * waiting for it (`wait`), with the token endpoint (`exchange`: its status and code, or no answer
+   * and why), or saving what it gave (`store`).
+   */
+  #failedAt(login, error) {
+    const problem = signInProblem(error);
+    if (problem.kind === 'port' || problem.kind === 'listen') return problem;
+    const answer = login.exchange;
+    if (answer?.error) return { kind: 'offline', step: 'exchange', code: failureCode(answer.error) };
+    if (answer?.kind) return { kind: answer.kind, step: 'exchange', status: answer.status, code: answer.code };
+    if (answer) {
+      // Taken, and then what failed was saving it (a file error), or the answer itself (Mastra
+      // Code's words for no tokens and for no ChatGPT account in them).
+      if (typeof error?.syscall === 'string') return { kind: 'failed', step: 'store', code: typeof error.code === 'string' ? error.code : null };
+      const code = /account id/i.test(error?.message) ? 'no_account_id' : /Token exchange failed/.test(error?.message) ? 'missing_tokens' : null;
+      return { kind: 'failed', step: 'exchange', status: answer.status, code };
+    }
+    return { ...problem, step: login.step };
+  }
+
   /** Ends a sign-in that is under way, when the process is about to go. */
   dispose() {
-    const login = this.#login;
-    this.#login = null;
-    login?.abort.abort();
-    login?.pasted?.reject(new Error('Login cancelled'));
-    login?.ports?.close();
+    if (this.#login) this.#end(this.#login);
   }
 }
 

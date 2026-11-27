@@ -21,6 +21,7 @@ import { deniedFolders, keepFilesFrom } from './fence.mjs';
 import { attachmentReader, releaseDates } from './models.mjs';
 import { keepKeysFromCommands, keyVariables, withoutParams } from './secrets.mjs';
 import { predictionToolGuard, sessionBuilder, sweepSessionFolders } from './session.mjs';
+import { OPENAI_TOKEN_URL, watchExchange } from './signin.mjs';
 import { installSkillSets, setsToInstall } from './skills.mjs';
 
 // ACP's SDK prints a request it refuses, parameters and all. See secrets.mjs.
@@ -188,6 +189,8 @@ const connections = new Connections({
     await agent?.refreshSessions(why);
   },
 });
+// What the ChatGPT sign-in's token endpoint answers is told to the sign-in under way (signin.mjs).
+globalThis.fetch = watchExchange(globalThis.fetch, OPENAI_TOKEN_URL, answer => connections.exchanged(answer));
 // Until the app hands over its custom addresses there are none: Mastra's own settings file is not read for them.
 customSource.setCustomProvidersSource(() => []);
 

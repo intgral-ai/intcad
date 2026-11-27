@@ -17410,12 +17410,106 @@ fn reopening_and_cancelling_a_sign_in_go_to_the_agent_and_say_nothing() {
     assert!(app.agent_chat.items.is_empty(), "cancelling is not an error: {:?}", app.agent_chat.items);
     assert_eq!(state["items"], json!([]));
     assert_eq!(app.agent_chat.state(), State::NeedsAuth);
-    // A sign-in that could not finish is told with its kind, and cancel clears it at the agent.
+    // A sign-in that could not finish is told with its kind and its sentence, and cancel clears it at the agent.
     script.report(Event::Connections(conn_snapshot(|told| told["problem"] = json!({"id": "openai-codex", "kind": "port"}))));
     poll(&mut app, &ctx);
-    assert_eq!(page_state(&mut app)["connect"]["problem"], json!({"id": "openai-codex", "kind": "port"}));
+    assert_eq!(
+        page_state(&mut app)["connect"]["problem"],
+        json!({"id": "openai-codex", "kind": "port", "text": tr("ui.agent_chat_conn_problem_port")})
+    );
     conn_act(&mut app, &ctx, json!({"type": "conn_cancel"})).expect("cancel also clears the note");
     assert!(app.agent_chat.items.is_empty());
+}
+
+/// INT-1522: the page is told why a sign-in could not finish in a whole sentence: who holds the
+/// port (a sign-in of this app, of another Intcad, another program), the port and the system's
+/// code when it would not be opened, and a sign-in whose time ran out.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_sign_in_that_could_not_finish_is_told_in_a_sentence_that_says_who_or_what() {
+    let (mut app, script, _keys, ctx) = builtin_told(|_| {});
+    let mut said = |problem: Value| {
+        script.report(Event::Connections(conn_snapshot(|told| told["problem"] = problem)));
+        poll(&mut app, &ctx);
+        page_state(&mut app)["connect"]["problem"]["text"].as_str().expect("a sentence").to_string()
+    };
+    let port = |holder: Value| json!({"id": "openai-codex", "kind": "port", "holder": holder});
+    assert_eq!(said(port(json!({"kind": "here"}))), tr("ui.agent_chat_conn_problem_port_here"));
+    assert_eq!(said(port(json!({"kind": "intcad"}))), tr("ui.agent_chat_conn_problem_port_intcad"));
+    assert_eq!(said(port(json!(null))), tr("ui.agent_chat_conn_problem_port"));
+    let refused = said(json!({"id": "openai-codex", "kind": "listen", "port": 1457, "code": "EACCES"}));
+    assert!(refused.contains("1457") && refused.contains("EACCES"), "{refused}");
+    assert_eq!(said(json!({"id": "openai-codex", "kind": "timeout"})), tr("ui.agent_chat_conn_problem_timeout"));
+    assert_eq!(said(json!({"id": "openai-codex", "kind": "something new"})), tr("ui.agent_chat_conn_problem_failed"));
+}
+
+/// INT-1521: the sentence says at which step a sign-in failed (it could not start, it stopped
+/// waiting for the browser, the sign-in service refused or could not be reached at the last step,
+/// the result could not be saved), with the service's HTTP status and its error code; nothing else
+/// of the answer.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_sign_in_that_failed_says_at_which_step_with_the_status_and_code() {
+    let (mut app, script, _keys, ctx) = builtin_told(|_| {});
+    let mut said = |problem: Value| {
+        script.report(Event::Connections(conn_snapshot(|told| told["problem"] = problem)));
+        poll(&mut app, &ctx);
+        page_state(&mut app)["connect"]["problem"]["text"].as_str().unwrap_or_default().to_string()
+    };
+    let at = |step: &str, kind: &str, more: Value| {
+        let mut problem = json!({"id": "openai-codex", "kind": kind, "step": step});
+        for (name, value) in more.as_object().into_iter().flatten() {
+            problem[name] = value.clone();
+        }
+        problem
+    };
+    let refused = said(at("exchange", "refused", json!({"status": 400, "code": "invalid_grant"})));
+    assert_eq!(refused, "The sign-in service refused the last step of the sign-in (HTTP 400, invalid_grant). Try again.");
+    let forbidden = said(at("exchange", "refused", json!({"status": 403, "code": "unsupported_country_region_territory"})));
+    assert!(forbidden.contains("(HTTP 403, unsupported_country_region_territory)"), "{forbidden}");
+    let unreachable = said(at("exchange", "offline", json!({"code": "ECONNREFUSED"})));
+    assert!(unreachable.contains("(ECONNREFUSED)") && unreachable.contains("proxy or VPN"), "{unreachable}");
+    assert!(said(at("exchange", "failed", json!({"status": 200, "code": "missing_tokens"}))).contains("(HTTP 200, missing_tokens)"));
+    assert!(said(at("store", "failed", json!({"code": "EACCES"}))).contains("could not save the sign-in (EACCES)"));
+    assert_eq!(said(at("open", "failed", json!({}))), "The sign-in could not start. Try again.");
+    assert_eq!(said(at("wait", "failed", json!({}))), "The sign-in stopped while it was waiting for the browser. Try again.");
+    // Away from the last step, no answer reads as the network as before.
+    assert_eq!(said(at("wait", "offline", json!({}))), tr("ui.agent_chat_conn_problem_offline"));
+}
+
+/// INT-1522: a sign-in left waiting holds the local port the browser calls back to. Showing
+/// another design ends the one of the design left (also one asked for and not answered yet), and
+/// a sign-in started in another design first ends any still under way in the designs not shown.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_sign_in_ends_when_its_design_is_left_and_before_another_design_signs_in() {
+    let (mut app, first, _keys, ctx) = builtin_told(|_| {});
+    conn_act(&mut app, &ctx, json!({"type": "conn_login", "id": "openai-codex"})).expect("a plan");
+    assert_eq!(first.requests().last(), Some(&connections::Request::Login("openai-codex".into())));
+    // Left before the agent has answered: it may be holding the port already.
+    crate::documents::open_tab(&mut app, solidcraft_engine::Session::default()).expect("a new tab");
+    assert_eq!(first.requests().last(), Some(&connections::Request::Cancel), "the design left ends its sign-in");
+    crate::documents::switch(&mut app, 0);
+    poll(&mut app, &ctx);
+    first.report(Event::Connections(conn_snapshot(|told| told["login"] = json!({"id": "openai-codex", "phase": "browser"}))));
+    poll(&mut app, &ctx);
+    crate::documents::switch(&mut app, 1);
+    assert_eq!(first.requests().iter().filter(|request| **request == connections::Request::Cancel).count(), 2);
+
+    // The cancel has not been answered (the agent's snapshot still says the sign-in is under way)
+    // when the other design signs in: it is sent again first.
+    let second = start_builtin(&mut app, &ctx);
+    second.report(Event::Connections(conn_snapshot(|_| {})));
+    poll(&mut app, &ctx);
+    conn_act(&mut app, &ctx, json!({"type": "conn_login", "id": "openai-codex"})).expect("a plan");
+    assert_eq!(first.requests().iter().filter(|request| **request == connections::Request::Cancel).count(), 3);
+    assert_eq!(second.requests().last(), Some(&connections::Request::Login("openai-codex".into())));
+    // A design left with no sign-in under way sends nothing.
+    second.report(Event::Connections(conn_snapshot(|_| {})));
+    poll(&mut app, &ctx);
+    let before = second.requests().len();
+    crate::documents::switch(&mut app, 0);
+    assert_eq!(second.requests().len(), before);
 }
 
 /// B7 and B8: a pasted code is passed on for the sign-in under way; the agent's word that it is

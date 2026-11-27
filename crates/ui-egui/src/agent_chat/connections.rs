@@ -156,8 +156,15 @@ pub struct Login {
 /// Why the last sign-in could not finish.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoginProblemKind {
+    /// The local port the browser calls back to is taken.
     Port,
+    /// The system would not open that port.
+    Listen,
+    /// The person did not come back from the browser in the sign-in's time.
+    Timeout,
     Offline,
+    /// The sign-in service refused the last step.
+    Refused,
     Failed,
 }
 
@@ -165,16 +172,62 @@ impl LoginProblemKind {
     pub fn id(self) -> &'static str {
         match self {
             LoginProblemKind::Port => "port",
+            LoginProblemKind::Listen => "listen",
+            LoginProblemKind::Timeout => "timeout",
             LoginProblemKind::Offline => "offline",
+            LoginProblemKind::Refused => "refused",
             LoginProblemKind::Failed => "failed",
         }
     }
 }
 
+/// How far a sign-in that failed had got (INT-1521).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Before the browser was opened.
+    Open,
+    /// Waiting for the browser.
+    Wait,
+    /// The last step, with the sign-in service.
+    Exchange,
+    /// Saving what it gave.
+    Store,
+}
+
+/// Who holds the port a sign-in needs, as far as the agent could tell.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PortHolder {
+    /// A sign-in of another design of this app.
+    Here,
+    /// A sign-in of another Intcad.
+    Intcad,
+}
+
+/// Longest error code read from a sign-in's problem (characters).
+const MAX_WORD: usize = 64;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoginProblem {
     pub id: String,
     pub kind: LoginProblemKind,
+    /// For [`LoginProblemKind::Port`]: who holds it, when the agent found out.
+    pub holder: Option<PortHolder>,
+    /// For [`LoginProblemKind::Listen`]: the port and the system's code for the refusal (`EACCES`).
+    /// At [`Step::Exchange`]: the sign-in service's error code, or the system's when it had none.
+    pub port: Option<u16>,
+    pub code: Option<String>,
+    pub step: Option<Step>,
+    /// The sign-in service's HTTP status at [`Step::Exchange`].
+    pub status: Option<u16>,
+}
+
+/// An error code from the agent for a sentence (`invalid_grant`, `EACCES`): 1 to 64 letters,
+/// digits, `_`, `.` or `-`, else none. What the page is told of a failed sign-in passes here, so a
+/// token, a code, an address or an e-mail address the agent might hand over is not shown.
+fn word(value: &Value, name: &str) -> Option<String> {
+    let word = value.get(name)?.as_str()?;
+    let fits = (1..=MAX_WORD).contains(&word.len()) && word.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
+    fits.then(|| word.to_string())
 }
 
 /// Everything the agent says about its connections, as it last said it.
@@ -244,13 +297,36 @@ impl Snapshot {
             })
         });
         let problem = value.get("problem").filter(|problem| problem.is_object()).and_then(|problem| {
+            let holder = problem.get("holder").and_then(|holder| match holder.get("kind").and_then(Value::as_str) {
+                Some("here") => Some(PortHolder::Here),
+                Some("intcad") => Some(PortHolder::Intcad),
+                _ => None,
+            });
             Some(LoginProblem {
                 id: text(problem, "id").filter(|id| !id.is_empty())?,
                 kind: match problem.get("kind").and_then(Value::as_str) {
                     Some("port") => LoginProblemKind::Port,
+                    Some("listen") => LoginProblemKind::Listen,
+                    Some("timeout") => LoginProblemKind::Timeout,
                     Some("offline") => LoginProblemKind::Offline,
+                    Some("refused") => LoginProblemKind::Refused,
                     _ => LoginProblemKind::Failed,
                 },
+                holder,
+                port: problem.get("port").and_then(Value::as_u64).and_then(|port| u16::try_from(port).ok()),
+                code: word(problem, "code"),
+                step: match problem.get("step").and_then(Value::as_str) {
+                    Some("open") => Some(Step::Open),
+                    Some("wait") => Some(Step::Wait),
+                    Some("exchange") => Some(Step::Exchange),
+                    Some("store") => Some(Step::Store),
+                    _ => None,
+                },
+                status: problem
+                    .get("status")
+                    .and_then(Value::as_u64)
+                    .and_then(|status| u16::try_from(status).ok())
+                    .filter(|status| (100..600).contains(status)),
             })
         });
         let dates = value
@@ -739,6 +815,8 @@ pub(crate) struct Conn {
     pub active: bool,
     /// The agent's last snapshot (`None`: it has sent none since it started).
     pub snapshot: Option<Snapshot>,
+    /// A sign-in was asked for and no snapshot has come since: it may be under way already.
+    login_asked: bool,
     /// What the last action could not do: the catalog id of its sentence. It is worded where it
     /// is shown, as a failed turn is, because it can be set outside a frame.
     pub error: Option<&'static str>,
@@ -793,6 +871,7 @@ impl Conn {
         }
         self.snapshot = Some(snapshot);
         self.refused = false;
+        self.login_asked = false;
     }
 
     /// Keep the message of a turn that failed for `problem`.
@@ -1019,12 +1098,54 @@ fn page(conn: &Conn) -> Value {
         "keys": keys,
         "custom": custom,
         "login": login,
-        "problem": snapshot.problem.as_ref().map(|problem| json!({"id": problem.id, "kind": problem.kind.id()})),
+        "problem": snapshot.problem.as_ref().map(|problem| json!({"id": problem.id, "kind": problem.kind.id(), "text": problem_text(problem)})),
         "error": conn.error.map(tr),
         "keySaves": conn.key_saves,
         "dates": snapshot.dates,
         "connected": snapshot.connected(),
     })
+}
+
+/// Why a sign-in could not finish, as the page says it under the plan's row: which step and, at
+/// the step with the sign-in service, its status and code (INT-1521).
+fn problem_text(problem: &LoginProblem) -> String {
+    let detail = [problem.status.map(|status| format!("HTTP {status}")), problem.code.clone()].into_iter().flatten().collect::<Vec<_>>().join(", ");
+    let with = |id: &'static str| trf(id, &[("detail", if detail.is_empty() { "?" } else { &detail })]);
+    match (problem.kind, &problem.holder) {
+        (LoginProblemKind::Port, Some(PortHolder::Here)) => tr("ui.agent_chat_conn_problem_port_here").to_string(),
+        (LoginProblemKind::Port, Some(PortHolder::Intcad)) => tr("ui.agent_chat_conn_problem_port_intcad").to_string(),
+        (LoginProblemKind::Port, None) => tr("ui.agent_chat_conn_problem_port").to_string(),
+        (LoginProblemKind::Listen, _) => {
+            let port = problem.port.map(|port| port.to_string()).unwrap_or_else(|| "1457".into());
+            trf("ui.agent_chat_conn_problem_listen", &[("port", &port), ("code", problem.code.as_deref().unwrap_or("?"))])
+        }
+        (LoginProblemKind::Timeout, _) => tr("ui.agent_chat_conn_problem_timeout").to_string(),
+        (LoginProblemKind::Refused, _) => with("ui.agent_chat_conn_problem_exchange_refused"),
+        (LoginProblemKind::Offline, _) if problem.step == Some(Step::Exchange) => with("ui.agent_chat_conn_problem_exchange_offline"),
+        (LoginProblemKind::Offline, _) => tr("ui.agent_chat_conn_problem_offline").to_string(),
+        (LoginProblemKind::Failed, _) => match problem.step {
+            Some(Step::Open) => tr("ui.agent_chat_conn_problem_step_open").to_string(),
+            Some(Step::Wait) => tr("ui.agent_chat_conn_problem_step_wait").to_string(),
+            Some(Step::Exchange) if !detail.is_empty() => with("ui.agent_chat_conn_problem_exchange_failed"),
+            Some(Step::Store) => with("ui.agent_chat_conn_problem_store"),
+            _ => tr("ui.agent_chat_conn_problem_failed").to_string(),
+        },
+    }
+}
+
+/// End the sign-in this conversation's agent has under way, or was asked for and has not
+/// answered yet: the conversation is leaving the window (another design is shown), or another
+/// design's sign-in needs the port it holds (INT-1522).
+pub(crate) fn cancel_sign_in(chat: &mut super::AgentChat) {
+    let conn = &mut chat.conn;
+    let under_way = conn.login_asked || conn.snapshot.as_ref().is_some_and(|snapshot| snapshot.login.is_some());
+    if !conn.active || !under_way {
+        return;
+    }
+    conn.login_asked = false;
+    if let Some(backend) = chat.backend.as_mut() {
+        backend.connections(Request::Cancel);
+    }
 }
 
 /// The snapshot of the running built-in agent, for the actions that ask it for something.
@@ -1098,6 +1219,9 @@ pub(super) fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &
             if snapshot.login.is_some() {
                 return Err("conn_login: a sign-in is already under way".into());
             }
+            // A sign-in left under way in another design would hold the port this one needs.
+            crate::documents::cancel_background_sign_ins(app);
+            app.agent_chat.conn.login_asked = true;
             send(app, Request::Login(id.to_string()));
         }
         "conn_code" => {
@@ -1258,10 +1382,54 @@ mod tests {
         let login = snapshot.login.as_ref().expect("the sign-in under way");
         assert_eq!((login.id.as_str(), login.phase, login.user_code.as_deref(), login.incomplete), ("anthropic", Phase::Code, None, true));
         assert!(!format!("{snapshot:?}").contains("claude.ai"), "the address is not kept");
-        assert_eq!(snapshot.problem, Some(LoginProblem { id: "openai-codex".into(), kind: LoginProblemKind::Port }));
+        let port =
+            LoginProblem { id: "openai-codex".into(), kind: LoginProblemKind::Port, holder: None, port: None, code: None, step: None, status: None };
+        assert_eq!(snapshot.problem, Some(port));
         assert_eq!(snapshot.dates.len(), 1, "a date that is no text is left out");
         // Something is connected by the saved key and the custom address, though the plan expired.
         assert!(snapshot.connected() && !snapshot.plan_in("openai"));
+    }
+
+    /// INT-1522: who holds the sign-in's port, and the port and code of one the system would not
+    /// open, are read; a code is a short word, and anything else of them is left out.
+    #[test]
+    fn a_sign_in_problem_says_who_holds_the_port_or_what_the_system_answered() {
+        let problem = |value: Value| Snapshot::parse(&json!({"plans": [], "keys": [], "problem": value})).and_then(|snapshot| snapshot.problem);
+        let holder = |value: Value| problem(json!({"id": "openai-codex", "kind": "port", "holder": value})).and_then(|problem| problem.holder);
+        assert_eq!(holder(json!({"kind": "here"})), Some(PortHolder::Here));
+        assert_eq!(holder(json!({"kind": "intcad"})), Some(PortHolder::Intcad));
+        for none in [json!({"kind": "program", "name": "Codex"}), json!({"kind": "someone"}), json!("Codex"), json!(null)] {
+            assert_eq!(holder(none.clone()), None, "{none}");
+        }
+        let listen = problem(json!({"id": "openai-codex", "kind": "listen", "port": 1457, "code": "EACCES"})).expect("a problem");
+        assert_eq!((listen.kind, listen.port, listen.code.as_deref()), (LoginProblemKind::Listen, Some(1457), Some("EACCES")));
+        let odd = problem(json!({"id": "openai-codex", "kind": "listen", "port": 99999, "code": 13})).expect("a problem");
+        assert_eq!((odd.port, odd.code), (None, None));
+        // INT-1521: a code is a short word or nothing: no token, code, address or e-mail address
+        // reaches the sentence the page shows.
+        let code = |code: Value| problem(json!({"id": "openai-codex", "kind": "refused", "code": code})).and_then(|problem| problem.code);
+        assert_eq!(code(json!("unsupported_country_region_territory")), Some("unsupported_country_region_territory".into()));
+        assert_eq!(code(json!("x".repeat(MAX_WORD))), Some("x".repeat(MAX_WORD)));
+        let tokenish = "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFAZXhhbXBsZS5jb20ifQ.c2lnbmF0dXJl";
+        for none in [
+            "x".repeat(MAX_WORD + 1),
+            tokenish.into(),
+            "a@example.com".into(),
+            "http://localhost:1457/auth/callback?code=ac_1".into(),
+            "Bearer abc".into(),
+            " EACCES\u{7} ".into(),
+            String::new(),
+        ] {
+            assert_eq!(code(json!(none)), None, "{none}");
+        }
+        assert_eq!(problem(json!({"id": "openai-codex", "kind": "timeout"})).map(|problem| problem.kind), Some(LoginProblemKind::Timeout));
+        // INT-1521: the step and the service's status; a status that is none and a step this
+        // version does not know are left out.
+        let at = problem(json!({"id": "openai-codex", "kind": "refused", "step": "exchange", "status": 403, "code": "unsupported_country"}))
+            .expect("a problem");
+        assert_eq!((at.kind, at.step, at.status), (LoginProblemKind::Refused, Some(Step::Exchange), Some(403)));
+        let odd = problem(json!({"id": "openai-codex", "kind": "refused", "step": "teleport", "status": 7})).expect("a problem");
+        assert_eq!((odd.step, odd.status), (None, None));
     }
 
     /// What comes from the agent's process is hostile: nothing of it panics, a row that does not

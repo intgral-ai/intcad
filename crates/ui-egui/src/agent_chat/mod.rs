@@ -2015,6 +2015,8 @@ pub(crate) fn leave_document(app: &mut SolveApp) {
         cancel(app);
     }
     end_turn(app);
+    // A sign-in left waiting would hold its port while the design is out of sight (INT-1522).
+    connections::cancel_sign_in(&mut app.agent_chat);
     let chat = &mut app.agent_chat;
     chat.steering = false;
     chat.last = None;

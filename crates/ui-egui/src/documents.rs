@@ -723,6 +723,13 @@ pub(crate) fn reset_chat(app: &mut SolveApp) {
     app.agent_chat.swap_document(&mut crate::agent_chat::AgentChat::default());
 }
 
+/// A sign-in in a hidden design would hold the port the shown design's sign-in needs (INT-1522).
+pub(crate) fn cancel_background_sign_ins(app: &mut SolveApp) {
+    for slot in app.docs.background_mut() {
+        crate::agent_chat::connections::cancel_sign_in(&mut slot.agent_chat);
+    }
+}
+
 /// Hidden conversations must also stop when AI is disabled or the application quits.
 pub(crate) fn disconnect_background_chats(app: &mut SolveApp, wait: bool) {
     for slot in app.docs.background_mut() {

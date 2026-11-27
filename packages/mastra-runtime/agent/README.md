@@ -5,11 +5,13 @@ its SDK and unchanged, with what the Assistant's Connections page needs added in
 
 - `connections.mjs`: which plans are signed in, which keys and custom addresses the app handed
   over, the one sign-in that may be under way, and the methods the page's buttons end in;
-- `callback.mjs`: how the ChatGPT browser sign-in waits for the browser without a time limit;
+- `callback.mjs`: how the ChatGPT browser sign-in waits for the browser beyond Mastra Code's 60
+  seconds, and whether an Intcad holds its port when it is taken;
 - `agent.mjs`: the methods on the ACP agent, a model list a person can read, sessions that follow a
   sign-in or sign-out, and the reason on a turn that fails;
 - `models.mjs`, `problems.mjs`: the order of the model list, and the kinds of failure;
 - `secrets.mjs`: what keeps a key out of the commands a model runs and out of what is printed;
+- `signin.mjs`: what the ChatGPT sign-in's token endpoint answered, for a sign-in that fails;
 - `skills.mjs`: the skill sets the package carries (`modelling-skills`: the repository's
   `skills/solidcraft-modeling`, `-editing`, `-checking` and `-mechanisms`; `context-skills`:
   `../agent-skills/intcad-context`, written for this agent alone), how the build copies
@@ -96,7 +98,13 @@ sends the same snapshot as the notification `_intcad/connections/changed` whenev
 - `login.phase`: `starting`; `browser` (the address is open, nothing to type); `device` (`userCode`
   is typed on that page); `code` (the page will show a code that is pasted back). `login.error` is
   `incomplete` after a pasted code that has not the shape of one.
-- `problem.kind`, for a sign-in that could not finish: `port`, `offline`, `failed`.
+- `problem.kind`, for a sign-in that could not finish: `port` (with `holder` when it is Intcad's:
+  `{ kind: 'here' }` a sign-in of another design of the same app, `{ kind: 'intcad' }` one of
+  another Intcad; none for another program), `listen` (the system would not open the port: `port`,
+  `code`, such as `EACCES`), `timeout` (15 minutes passed), `offline`, `failed`, and for the
+  ChatGPT sign-in's token endpoint `refused`. `step`: how far it got: `open` (before the browser
+  is opened), `wait`, `exchange` (with the token endpoint: its `status` and its error `code`, or for `offline` the
+  system's code, `timeout` or `no-connection`), `store` (saving it: the file error's `code`).
 - `dates`: release dates of the models of connected providers, from Mastra's registry.
 
 A session's `model` option lists only models one can talk to, newest first. After a sign-in, a
@@ -327,11 +335,12 @@ one folder per skill and a note per set, before Mastra is loaded (`skills.mjs`).
 `MASTRA_APP_DATA_DIR` (run by hand) nothing of this is changed, and no skill is installed. The browser is the exception: it is started with the user's own home
 folder, so it is the browser they use, with the profile they are signed in with.
 
-## The ChatGPT sign-in does not time out
+## The ChatGPT sign-in waits for the browser
 
 That sign-in ends with the browser calling a local address (port 1455, or 1457). Mastra Code's own
 listener for the call gives up after 60 seconds, and a call that arrives later is lost. Intcad
-waits until the user has signed in or cancels, without changing Mastra's files:
+waits until the user has signed in or cancels, or 15 minutes have passed (every sign-in has that
+limit: one left open once held the ports for 16 hours), without changing Mastra's files:
 
 1. `callback.mjs` takes both ports before the sign-in starts.
 2. Mastra Code, finding both taken, still builds the sign-in address (pointing at 1457) and then
@@ -343,8 +352,15 @@ waits until the user has signed in or cancels, without changing Mastra's files:
 The page the browser then shows sends the user back to the app. It does not say "signed in":
 the code is exchanged after it.
 
-`cancel`, the end of the sign-in, or the end of the process frees the ports. If another program
-holds 1457, the sign-in cannot be received and fails with `problem.kind` `port`.
+`cancel`, the end of the sign-in, its time limit, or the end of the process frees the ports. The
+app cancels a sign-in when its design is left and, before a sign-in starts, any still under way in
+another design; the page cancels one when the user goes back from it. If 1457 is taken, the
+sign-in cannot be received and fails at once with `problem.kind` `port`. Who holds it is asked at
+`/intcad-sign-in`, where Intcad's own listener answers `{ app: 'intcad', parent }` (the agent's
+parent process, the app); another program is not named. The first port may be taken or refused
+by the system as well: what keeps this process off it keeps Mastra Code off it too. When the
+first was taken and the second is had, the first is tried once more, since whoever held it may
+have let go of both meanwhile.
 
 ## What was checked, and what was not
 
@@ -362,5 +378,15 @@ The sign-in address points at port 1457 where Mastra Code's own points at 1455. 
 signing in (2026-11-18), OpenAI's sign-in service treats the two alike (it goes on to its sign-in
 page) and refuses an address with any other port.
 
-Not checked: any sign-in completed with a real account through this agent, a turn answered by a
-real provider, and the Kimi plan's model prefix.
+A ChatGPT sign-in with a real account was completed on 2026-11-27 on macOS in a copy built
+locally from `develop` (seen by its sign-in file, not by this folder's tests). Not checked here: a
+turn answered by a real provider, and the Kimi plan's model prefix.
+
+## What a sign-in leaves to go by
+
+Mastra Code's SDK keeps nothing of a failed exchange: it prints the HTTP status and throws "Token
+exchange failed". The entry wraps `fetch` for the ChatGPT sign-in's token endpoint only
+(`signin.mjs`): the answer's status, and for a refusal the provider's own error code (1 to 64
+letters, digits, `_`, `.` or `-` from the JSON, never its description), are handed to the sign-in
+under way; the body of an answer that was taken is never read. The app shows a code only when it
+is such a word (`word` in `connections.rs`).
