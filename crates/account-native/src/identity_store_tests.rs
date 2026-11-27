@@ -10,6 +10,7 @@ use crate::identity_store::{CredentialIdentityStore, IdentityStore, IdentityStor
 const COMMIT_KEY: &str = "identity/session/commit";
 const ACTIVE_KEY: &str = "identity/session/active";
 const OWNED_KEY: &str = "identity/session/owned";
+const LOGOUT_REPAIR_KEY: &str = "identity/session/logout-repair";
 
 fn access_key(generation: u64) -> String {
     format!("identity/session/{generation}/access")
@@ -67,6 +68,7 @@ struct StoreState {
     calls: Vec<Call>,
     fail_set: Option<String>,
     fail_delete: Option<String>,
+    fail_generation_deletes: bool,
 }
 
 /// A local recording fake of the engine credential store: no network, no OS keyring.
@@ -125,7 +127,7 @@ impl CredentialStore for RecordingStore {
     fn delete(&mut self, key: &str) -> Result<(), CredentialError> {
         let mut state = self.inner.lock().map_err(|_| unavailable())?;
         state.calls.push(Call::Delete(key.to_owned()));
-        if state.fail_delete.as_deref() == Some(key) {
+        if state.fail_delete.as_deref() == Some(key) || (state.fail_generation_deletes && key.ends_with("/access")) {
             return Err(unavailable());
         }
         state.entries.remove(key);
@@ -612,6 +614,62 @@ fn complete_owned_index_allows_all_deletes_despite_a_failed_update() {
     assert!(fake.entry(&access_key(3)).is_some());
     assert!(fake.entry(&access_key(2)).is_none(), "a later generation delete must still be attempted");
     assert_eq!(fake.entry(OWNED_KEY).as_deref(), Some("3\n2"), "the failed delete remains indexed");
+
+    fake.inner.lock().unwrap().fail_delete = None;
+    identity_store(&fake).delete().unwrap();
+    assert!(fake.keys().is_empty());
+}
+
+fn full_owned_index(fake: &RecordingStore) -> CredentialIdentityStore {
+    let mut store = identity_store(fake);
+    store.store_pending(&record(7, 65)).unwrap();
+    fake.put(OWNED_KEY, &(1..=64).map(|generation| generation.to_string()).collect::<Vec<_>>().join("\n"));
+    for generation in 1..=64 {
+        fake.put(&access_key(generation), "orphan");
+    }
+    store
+}
+
+#[test]
+fn a_full_owned_index_can_still_complete_logout() {
+    let fake = RecordingStore::default();
+    let mut store = full_owned_index(&fake);
+    fake.take_calls();
+
+    store.delete().unwrap();
+    assert!(store.load().unwrap().is_none());
+    assert!(fake.keys().is_empty());
+    let calls = fake.take_calls();
+    let revoke = calls.iter().position(|call| *call == Call::Delete(COMMIT_KEY.to_owned())).unwrap();
+    let repair = calls.iter().position(|call| *call == Call::Set(LOGOUT_REPAIR_KEY.to_owned())).unwrap();
+    assert!(repair < revoke, "a crash after revocation must not lose the missing generation");
+    assert!(!calls.contains(&Call::Set(OWNED_KEY.to_owned())));
+    for generation in 1..=65 {
+        assert!(calls[revoke + 1..].contains(&Call::Delete(access_key(generation))));
+    }
+}
+
+#[test]
+fn a_full_owned_index_retains_a_failed_commit_generation() {
+    let fake = RecordingStore::default();
+    let mut store = full_owned_index(&fake);
+    fake.inner.lock().unwrap().fail_generation_deletes = true;
+
+    assert_eq!(store.delete(), Err(IdentityStoreError::Unavailable));
+    assert!(store.load().unwrap().is_none());
+    assert_eq!(fake.entry(OWNED_KEY).unwrap().lines().count(), 64);
+    assert_eq!(fake.entry(LOGOUT_REPAIR_KEY).as_deref(), Some("65"));
+    assert!(fake.entry(&access_key(65)).is_some());
+
+    // Free all normal slots while the unindexed commit generation still fails.
+    {
+        let mut state = fake.inner.lock().unwrap();
+        state.fail_generation_deletes = false;
+        state.fail_delete = Some(access_key(65));
+    }
+    assert_eq!(identity_store(&fake).delete(), Err(IdentityStoreError::Unavailable));
+    assert!(fake.entry(OWNED_KEY).is_none());
+    assert_eq!(fake.entry(LOGOUT_REPAIR_KEY).as_deref(), Some("65"));
 
     fake.inner.lock().unwrap().fail_delete = None;
     identity_store(&fake).delete().unwrap();

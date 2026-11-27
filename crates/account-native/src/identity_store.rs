@@ -32,6 +32,8 @@ const RECORD_VERSION: u32 = 1;
 const COMMIT_KEY: &str = "identity/session/commit";
 const ACTIVE_KEY: &str = "identity/session/active";
 const OWNED_KEY: &str = "identity/session/owned";
+// A single generation that did not fit in the owned index during logout.
+const LOGOUT_REPAIR_KEY: &str = "identity/session/logout-repair";
 const COMMIT_MAGIC: &str = "intcad-identity/1";
 const ACTIVE_MAGIC: &str = "intcad-identity-active/1";
 /// Windows Credential Manager caps one value at 2560 bytes. Each token stays well below the cap
@@ -250,6 +252,14 @@ impl CredentialIdentityStore {
         self.store.set(OWNED_KEY, &value).map_err(|_| IdentityStoreError::Unavailable)
     }
 
+    fn read_logout_repair(&self) -> Result<Option<u64>, IdentityStoreError> {
+        self.store
+            .get(LOGOUT_REPAIR_KEY)
+            .map_err(|_| IdentityStoreError::Unavailable)?
+            .map(|value| parse_generation(&value).filter(|&generation| generation != 0).ok_or(IdentityStoreError::Corrupt))
+            .transpose()
+    }
+
     fn delete_generation(&mut self, generation: u64) -> Result<(), IdentityStoreError> {
         for suffix in ["access", "refresh", "meta"] {
             self.store.delete(&Self::generation_key(generation, suffix)).map_err(|_| IdentityStoreError::Unavailable)?;
@@ -386,18 +396,27 @@ impl IdentityStore for CredentialIdentityStore {
             // couldn't be read to check whether it already accounts for that generation.
             return Err(IdentityStoreError::Unavailable);
         }
+        let mut repair = self.read_logout_repair()?;
         let indexed = owned.is_ok();
         let mut generations = owned.unwrap_or_default();
         if let Some(generation) = current
             && !generations.contains(&generation)
+            && repair != Some(generation)
         {
-            generations.push(generation);
-            if indexed {
-                // Do not lose the only durable reference if repairing the index fails.
-                if generations.len() > MAX_OWNED_GENERATIONS {
+            // Save a durable reference before removing the commit. A full index
+            // gets one separate repair entry, without changing its normal bound.
+            if indexed && generations.len() >= MAX_OWNED_GENERATIONS {
+                if repair.is_some() {
+                    // Never overwrite an unresolved repair for a different generation.
                     return Err(IdentityStoreError::Unavailable);
                 }
-                self.write_owned(&generations)?;
+                self.store.set(LOGOUT_REPAIR_KEY, &generation.to_string()).map_err(|_| IdentityStoreError::Unavailable)?;
+                repair = Some(generation);
+            } else {
+                generations.push(generation);
+                if indexed {
+                    self.write_owned(&generations)?;
+                }
             }
         }
         // Revoking the commit is the cleanup linearization point. A corrupt index still
@@ -406,6 +425,7 @@ impl IdentityStore for CredentialIdentityStore {
         self.store.delete(COMMIT_KEY).map_err(|_| IdentityStoreError::Unavailable)?;
         let mut result = self.store.delete(ACTIVE_KEY).map_err(|_| IdentityStoreError::Unavailable);
         let indexed_count = generations.len();
+        let repair_is_indexed = repair.is_some_and(|generation| generations.contains(&generation));
         let mut retained = Vec::new();
         for generation in generations {
             if self.delete_generation(generation).is_err() {
@@ -413,6 +433,16 @@ impl IdentityStore for CredentialIdentityStore {
                 result = Err(IdentityStoreError::Unavailable);
             }
         }
+        let repair_result = if let Some(generation) = repair {
+            let deleted = if repair_is_indexed {
+                if retained.contains(&generation) { Err(IdentityStoreError::Unavailable) } else { Ok(()) }
+            } else {
+                self.delete_generation(generation)
+            };
+            deleted.and_then(|()| self.store.delete(LOGOUT_REPAIR_KEY).map_err(|_| IdentityStoreError::Unavailable))
+        } else {
+            Ok(())
+        };
         if !indexed {
             return Err(IdentityStoreError::Unavailable);
         }
@@ -423,6 +453,6 @@ impl IdentityStore for CredentialIdentityStore {
         } else if retained.len() < indexed_count {
             self.write_owned(&retained)?;
         }
-        result
+        result.and(repair_result)
     }
 }
