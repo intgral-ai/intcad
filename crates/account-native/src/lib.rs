@@ -65,6 +65,7 @@ pub use identity::{
     SystemIdentityClock, VerifiedSession, VerifyError,
 };
 pub use identity_status::StatusSessionVerifier;
+pub use identity_transport::{IdentityTransport, RefreshResponse, RefreshTransportError};
 pub use ledger::{FileOperationStore, InMemoryOperationStore};
 pub use session_verification::ServerVerifiedProductSession;
 pub use solidcraft_engine::entitlement::{

@@ -147,6 +147,8 @@ pub enum IdentityTrigger {
 
 pub struct IdentityLease {
     access_token: Secret,
+    session_binding: Option<String>,
+    verified_account_id: Option<String>,
     login_generation: u64,
     token_generation: u64,
     expires_at_unix: u64,
@@ -155,6 +157,10 @@ pub struct IdentityLease {
 impl IdentityLease {
     pub fn access_token(&self) -> &Secret {
         &self.access_token
+    }
+
+    pub fn matches_binding(&self, account: &str, binding: &str) -> bool {
+        self.verified_account_id.as_deref() == Some(account) && self.session_binding.as_deref() == Some(binding)
     }
 
     pub fn login_generation(&self) -> u64 {
@@ -312,20 +318,34 @@ impl IdentityLifecycle {
         clock: Box<dyn IdentityClock>,
         journal_root: PathBuf,
     ) -> Result<Self, IdentityError> {
+        Self::new_with_transport(
+            domain,
+            credentials,
+            connection,
+            Box::new(UreqIdentityTransport::new(UreqRefreshHttp::new())),
+            verifier,
+            clock,
+            journal_root,
+        )
+    }
+
+    /// Compose the same durable lifecycle with an injected refresh transport.
+    pub fn new_with_transport(
+        domain: IdentityDomain,
+        credentials: Box<dyn CredentialStore + Send>,
+        connection: WireConnection,
+        transport: Box<dyn IdentityTransport>,
+        verifier: Box<dyn SessionVerifier>,
+        clock: Box<dyn IdentityClock>,
+        journal_root: PathBuf,
+    ) -> Result<Self, IdentityError> {
         let origin = WireConnection::product_origin(&domain.product_origin, connection.client_version()).map_err(|_| IdentityError::NotConfigured)?;
         let connection_origin =
             WireConnection::product_origin(connection.base_url(), connection.client_version()).map_err(|_| IdentityError::NotConfigured)?;
         if origin.base_url() != connection_origin.base_url() {
             return Err(IdentityError::NotConfigured);
         }
-        Self::with_identity_store(
-            domain,
-            Box::new(CredentialIdentityStore::new(credentials)),
-            Box::new(UreqIdentityTransport::new(UreqRefreshHttp::new())),
-            verifier,
-            clock,
-            journal_root,
-        )
+        Self::with_identity_store(domain, Box::new(CredentialIdentityStore::new(credentials)), transport, verifier, clock, journal_root)
     }
 
     pub(crate) fn with_identity_store(
@@ -456,8 +476,8 @@ impl IdentityLifecycle {
             session_binding: Some(session_binding.to_owned()),
             pending: true,
         };
-        store.store_pending(&record)?;
         self.observe(login_generation);
+        store.store_pending(&record)?;
         // Clear the old attempt before publishing a leaseable record.
         self.clear_attempt()?;
         store.activate(&record)?;
@@ -469,6 +489,12 @@ impl IdentityLifecycle {
     }
 
     pub fn ensure(&self, trigger: IdentityTrigger, wait: Duration) -> Result<IdentityLease, IdentityError> {
+        self.ensure_with_recovery(trigger, wait, || {})
+    }
+
+    /// Notify a host when there is no cached lease and recovery may do network work.
+    /// The callback must not call back into this lifecycle.
+    pub fn ensure_with_recovery(&self, trigger: IdentityTrigger, wait: Duration, recovering: impl FnOnce()) -> Result<IdentityLease, IdentityError> {
         self.check_local_barrier()?;
         if trigger == IdentityTrigger::Resume {
             self.invalidate_readiness()?;
@@ -486,6 +512,7 @@ impl IdentityLifecycle {
             }
         }
 
+        recovering();
         #[cfg(test)]
         self.clock.before_refresh_lock(trigger);
         let _local = self.lock_refresh(&wait)?;
@@ -514,6 +541,12 @@ impl IdentityLifecycle {
         self.refresh(snapshot, trigger, &wait)
     }
 
+    /// An explicit status read bypasses cached readiness but obeys the background retry budget.
+    pub fn recheck_status(&self, wait: Duration) -> Result<IdentityLease, IdentityError> {
+        self.invalidate_readiness()?;
+        self.ensure(IdentityTrigger::Background, wait)
+    }
+
     pub fn sign_out(&self) -> Result<SignOutOutcome, IdentityError> {
         self.revoked.store(true, Ordering::Release);
         self.clear_readiness();
@@ -522,14 +555,14 @@ impl IdentityLifecycle {
             let _barrier = self.barrier_lock(&wait)?;
             // An explicit login may have committed while this sign-out waited.
             self.revoked.store(true, Ordering::Release);
-            let mut generation = self.read_current_login()?;
+            // Publish the known generation without waiting for the keyring to unlock.
+            let mut generation = self.read_current_login()?.max(self.last_login_generation.load(Ordering::Acquire));
             if generation == 0 {
-                let store = self.store()?;
-                generation =
-                    self.load(store.as_ref())?.map_or_else(|| self.last_login_generation.load(Ordering::Acquire), |record| record.login_generation);
-            }
-            if generation == 0 {
-                return Ok(SignOutOutcome { credentials_cleared: true });
+                let mut store = self.store()?;
+                generation = self.load(store.as_ref())?.map_or(0, |record| record.login_generation);
+                if generation == 0 {
+                    return Ok(SignOutOutcome { credentials_cleared: store.delete().is_ok() });
+                }
             }
             self.publish_logout_barrier(generation)?;
             generation
@@ -551,6 +584,20 @@ impl IdentityLifecycle {
             return Err(IdentityError::SessionChanged);
         }
         Ok(commit())
+    }
+
+    /// Publish a verified lease into a host credential store only while both of its
+    /// generations are current. The callback must not call back into the lifecycle.
+    pub fn with_current_lease<T>(&self, lease: &IdentityLease, wait: Duration, publish: impl FnOnce() -> T) -> Result<T, IdentityError> {
+        let _barrier = self.barrier_lock(&LockWait::new(wait))?;
+        let snapshot = self.snapshot(self.store()?.as_ref())?;
+        if Self::generations(&snapshot.record) != (lease.login_generation, lease.token_generation) {
+            return Err(IdentityError::SessionChanged);
+        }
+        if !self.ready(&snapshot) {
+            return Err(IdentityError::Transient);
+        }
+        Ok(publish())
     }
 
     pub fn status(&self) -> IdentityStatus {
@@ -758,7 +805,12 @@ impl IdentityLifecycle {
         Self::check_unchanged(snapshot, &current)?;
         self.check_readiness_epoch(epoch)?;
         // This is the unchanged, previously bound bearer; a new binding is not required.
-        verification?;
+        let verified = verification?;
+        if current.record.verified_account_id.as_ref().is_some_and(|account| account != &verified.account_id)
+            || verified.same_login_binding.as_ref().is_some_and(|binding| current.record.session_binding.as_ref() != Some(binding))
+        {
+            return Err(IdentityError::SessionChanged);
+        }
         if !self.clock_is_safe(&current.record) {
             return Err(IdentityError::Transient);
         }
@@ -894,6 +946,9 @@ impl IdentityLifecycle {
                 retry
             };
             attempt.next = now.saturating_add(delay);
+            let _barrier = self.barrier_lock(wait)?;
+            let current = self.snapshot(self.store()?.as_ref())?;
+            Self::check_unchanged(snapshot, &current)?;
             self.journal.write_status_attempt(&attempt)?;
         }
         Ok(result)
@@ -965,6 +1020,8 @@ impl IdentityLifecycle {
         }
         Ok(IdentityLease {
             access_token: Secret::new(record.access_token),
+            session_binding: record.session_binding,
+            verified_account_id: record.verified_account_id,
             login_generation: record.login_generation,
             token_generation: record.token_generation,
             expires_at_unix: record.expires_at_unix,
@@ -1057,8 +1114,13 @@ impl IdentityLifecycle {
             if self.read_revocation()?.is_none_or(|revoked| revoked < generation) {
                 return Err(IdentityError::Storage);
             }
-            if self.load(store.as_ref())?.is_some_and(|record| record.login_generation > generation) {
-                return Ok(self.read_current_login()? > generation);
+            if let Some(record) = self.load(store.as_ref())?.filter(|record| record.login_generation > generation) {
+                if self.read_current_login()? > generation {
+                    // Do not remove a newer, fully published login.
+                    return Ok(true);
+                }
+                // An interrupted adoption left an owned pair, not a published login.
+                self.publish_logout_barrier(record.login_generation)?;
             }
             let deleted = store.delete().is_ok();
             let _ = self.clear_attempt();

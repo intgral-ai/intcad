@@ -82,7 +82,15 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let mut switch_clicked = false;
 
     FileView::section(ui, &title, t.space_10, |ui| {
-        if view.signed_in {
+        if view.sign_in_state.recovering() {
+            FileView::detail(ui, app.tr("account.identity_recovering"));
+            if let Some(label) = &view.account_label {
+                FileView::detail(ui, label);
+            }
+            let response = ui.add_enabled_ui(pending.is_none(), |ui| button(ui, &sign_out_label, Button::Small)).inner;
+            publish("account:sign_out", &response);
+            sign_out_clicked = response.clicked();
+        } else if view.signed_in {
             match view.account_label.as_deref() {
                 Some(label) => FileView::detail(ui, &crate::i18n::format("account.signed_in_as", &[("account", label)])),
                 None => FileView::detail(ui, &signed_in),
@@ -174,7 +182,7 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
 /// account support says "Sign in"; a signed-in account reports its credit state.
 pub(crate) fn chip_label(app: &SolveApp, view: &AccountView) -> Option<String> {
     if !view.signed_in {
-        if needs_sign_out_attention(view) {
+        if view.sign_in_state.recovering() || needs_sign_out_attention(view) {
             return Some(app.tr("account.title").to_string());
         }
         return view.sign_in_visible.then(|| app.tr("account.sign_in").to_string());
@@ -261,7 +269,7 @@ pub(crate) fn menu_available(app: &SolveApp) -> bool {
         return false;
     }
     let view = app.account.view();
-    view.signed_in || view.sign_in_visible || needs_sign_out_attention(view)
+    view.signed_in || view.sign_in_visible || view.sign_in_state.recovering() || needs_sign_out_attention(view)
 }
 
 /// The File menu's compact fallback when the caption chip lacks room. It opens the same
@@ -297,7 +305,15 @@ pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let mut sign_in_action = false;
     let mut sign_out_clicked = false;
     let mut switch_clicked = false;
-    if view.signed_in {
+    if view.sign_in_state.recovering() {
+        FileView::detail(ui, app.tr("account.identity_recovering"));
+        if let Some(label) = &view.account_label {
+            FileView::detail(ui, label);
+        }
+        let response = ui.add_enabled_ui(pending.is_none(), |ui| button(ui, app.tr("account.sign_out"), Button::Small)).inner;
+        publish("account:sign_out", &response);
+        sign_out_clicked = response.clicked();
+    } else if view.signed_in {
         match view.account_label.as_deref() {
             Some(label) => {
                 crate::ui_kit::text(ui, &crate::i18n::format("account.signed_in_as", &[("account", label)]), Text::Note("account_menu_signed_in"));
@@ -518,6 +534,7 @@ fn sign_in_controls(
 ) -> bool {
     let pending = app.account.pending_action();
     let label = match view.sign_in_state {
+        SignInState::Recovering | SignInState::PendingVerification => return false,
         SignInState::Starting => {
             FileView::detail(ui, app.tr("account.sign_in_starting"));
             return false;

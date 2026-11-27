@@ -1,0 +1,7 @@
+{
+  "en": {"account.identity_recovering": "Checking your sign-in…"},
+  "de": {"account.identity_recovering": "Ihre Anmeldung wird überprüft…"},
+  "ja": {"account.identity_recovering": "サインインを確認しています…"},
+  "ko": {"account.identity_recovering": "로그인 확인 중…"},
+  "zh": {"account.identity_recovering": "正在验证登录…"}
+}

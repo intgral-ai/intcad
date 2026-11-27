@@ -28,7 +28,7 @@ const MAX_RETRY_AFTER_SECONDS: u64 = 3600;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One successful WorkOS refresh. The tokens are secrets; `Debug` never reveals them.
-pub(crate) struct RefreshResponse {
+pub struct RefreshResponse {
     pub access_token: Secret,
     pub refresh_token: Secret,
     pub provider_account_id: String,
@@ -49,7 +49,7 @@ impl fmt::Debug for RefreshResponse {
 
 /// The stable refresh failure classification the lifecycle acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RefreshTransportError {
+pub enum RefreshTransportError {
     /// Recoverable: keep the credentials and retry within the budget.
     Transient { retry_after: Option<Duration> },
     /// A confirmed `invalid_grant`: the refresh token is retired.
@@ -59,7 +59,7 @@ pub(crate) enum RefreshTransportError {
 }
 
 /// The refresh seam. The lifecycle depends only on this trait.
-pub(crate) trait IdentityTransport: Send + Sync {
+pub trait IdentityTransport: Send + Sync {
     fn refresh(&self, client_id: &str, refresh_token: &Secret) -> Result<RefreshResponse, RefreshTransportError>;
 }
 
