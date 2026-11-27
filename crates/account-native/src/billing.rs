@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use solidcraft_engine::entitlement::{
     AccountService, Admission, AuthenticatedHostScope, BillingPort, BillingResult, Capability, ConservativeDeadline, EntryCategory, FreshIntent,
@@ -13,10 +13,14 @@ use solidcraft_engine::entitlement::{
 };
 
 use crate::http::{LiveProductCredentials, refusal, unavailable};
+use crate::identity::REQUEST_TIMEOUT;
 use crate::{
     CredentialHandoff, CredentialSession, FileOperationStore, FixedCredentials, HttpAccountService, IdentityError, IdentityLifecycle,
     IdentityTrigger, Secret, Transport, WireConnection, WireCredentials,
 };
+
+// Leave time for refresh plus verification, each of which reserves a full request.
+const IDENTITY_WAIT: Duration = Duration::from_secs(12);
 
 struct Binding {
     scope: AuthenticatedHostScope,
@@ -176,10 +180,10 @@ impl SessionBilling {
     }
 
     fn ensure_identity(&self) -> Result<(), Refusal> {
-        // The lifecycle reserves up to five seconds for each request. Reserve
-        // room for both a refresh and verification, plus local journal work,
-        // as desktop does. This budget is separate from the execution deadline.
-        const WAIT: Duration = Duration::from_secs(12);
+        self.ensure_identity_with(IDENTITY_WAIT).map(|_| ())
+    }
+
+    fn ensure_identity_with(&self, budget: Duration) -> Result<Option<(u64, u64)>, Refusal> {
         let map_error = |error| {
             refusal(match error {
                 IdentityError::SignedOut | IdentityError::SessionChanged | IdentityError::Rejected | IdentityError::Protocol => {
@@ -192,10 +196,11 @@ impl SessionBilling {
                 | IdentityError::NotConfigured => RefusalCode::AuthUnavailable,
             })
         };
-        let Some(identity) = self.identity.as_ref().map_err(|&error| map_error(error))? else { return Ok(()) };
-        let lease = identity.ensure(IdentityTrigger::Background, WAIT).map_err(map_error)?;
+        let Some(identity) = self.identity.as_ref().map_err(|&error| map_error(error))? else { return Ok(None) };
+        let started = Instant::now();
+        let lease = identity.ensure(IdentityTrigger::Background, budget).map_err(map_error)?;
         identity
-            .with_current_lease(&lease, WAIT, || {
+            .with_current_lease(&lease, budget.saturating_sub(started.elapsed()), || {
                 let binding = self.original.as_ref().ok_or(IdentityError::SessionChanged)?;
                 let scope = self.session.authenticated_scope().ok_or(IdentityError::SessionChanged)?;
                 if scope != binding.scope
@@ -208,7 +213,7 @@ impl SessionBilling {
                 if &current != lease.access_token() {
                     self.session.update_product_session(&scope, lease.access_token()).map_err(|_| IdentityError::Storage)?;
                 }
-                Ok(())
+                Ok(Some((lease.login_generation(), lease.token_generation())))
             })
             .and_then(|published| published)
             .map_err(map_error)
@@ -228,50 +233,82 @@ impl SessionBilling {
         )
     }
 
-    fn check(&self, active: &mut Active, bound: Duration) -> Result<(), Refusal> {
-        // A failed identity check pauses this step without withdrawing the grant or
-        // applying a renewal. The existing operation and its cutoff still apply.
-        self.ensure_identity()?;
+    fn check(&self, active: &mut Active, bound: Duration, starting: bool) -> Result<(), Refusal> {
         if let Some(error) = &active.withdrawn {
             return Err(error.clone());
         }
-        let check = (|| {
+        let check: Result<(), Refusal> = (|| {
             let unsafe_start = || refusal(RefusalCode::UnsafeToStart);
-            if !active.binding.unchanged(&self.session) {
-                return Err(unavailable());
-            }
-            active.deadline.remaining(self.clock.now()).ok_or_else(unsafe_start)?;
+            let remaining = || active.deadline.remaining(self.clock.now()).ok_or_else(unsafe_start);
+            let binding = || {
+                if active.binding.unchanged(&self.session) { Ok(()) } else { Err(refusal(RefusalCode::AuthRequired)) }
+            };
+            let reserve_request = || {
+                if self.identity.as_ref().is_ok_and(Option::is_some) && remaining()? <= REQUEST_TIMEOUT {
+                    return Err(unavailable());
+                }
+                Ok(())
+            };
+            binding()?;
+            let generations = self.ensure_identity_with(remaining()?.saturating_sub(REQUEST_TIMEOUT).min(IDENTITY_WAIT))?;
+            let still_verified = || {
+                let Ok(Some(identity)) = &self.identity else { return true };
+                let scope = &active.binding.scope;
+                identity.verified_generation_for(scope.account().as_str(), scope.session_binding().as_str()) == generations
+            };
+            let freshness = || if still_verified() { Ok(()) } else { Err(unavailable()) };
+            reserve_request()?;
             let mut service = self.service(active.binding.wire(&self.session, Some(&active.proof)), AdmissionSecrets::default());
             service.controlled_status(&active.binding.scope, active.grant.capability())?;
-            let now = self.clock.now();
-            active.deadline.remaining(now).ok_or_else(unsafe_start)?;
-            if !active.binding.unchanged(&self.session) {
-                return Err(unavailable());
-            }
-            if active.renewal.is_some_and(|due| now >= due) {
-                let (grant, sent_at, interval) = service.exchange_renewal(
+            remaining()?;
+            binding()?;
+            // A status read can span expiry. Do not refresh now and use a status
+            // response for the preceding bearer: retry from the start of the gate.
+            freshness()?;
+            let renewal = if active.renewal.is_some_and(|due| self.clock.now() >= due) {
+                reserve_request()?;
+                let (grant, sent_at, interval) = service.exchange_renewal_gated(
                     &active.binding.scope,
                     &active.operation,
                     active.grant.id(),
                     active.grant.capability(),
                     Some(&active.deadline),
+                    still_verified,
                 )?;
                 let received_at = self.clock.now();
                 let attempt = RenewalAttempt { sent_at, received_at, old_deadline: active.deadline.clone(), still_valid: true };
                 let duration = grant.expires_at().as_duration().saturating_sub(sent_at.as_duration());
-                active.deadline = active.deadline.renewed(&attempt, duration).map_err(|_| unsafe_start())?;
-                active.renewal = interval.map(|interval| sent_at.saturating_add(interval));
+                Some((
+                    active.deadline.renewed(&attempt, duration).map_err(|_| unsafe_start())?,
+                    interval.map(|interval| sent_at.saturating_add(interval)),
+                ))
+            } else {
+                None
+            };
+            let final_gate = || {
+                remaining()?;
+                binding()?;
+                freshness()?;
+                let deadline = renewal.as_ref().map_or(&active.deadline, |(deadline, _)| deadline);
+                if deadline.remaining(self.clock.now()).is_none_or(|remaining| remaining < bound) {
+                    return Err(unsafe_start());
+                }
+                Ok(())
+            };
+            final_gate()?;
+            if starting {
+                self.ledger()?.mark_started(&active.operation, solidcraft_engine::validation::now_ms()).map_err(|_| unavailable())?;
+                final_gate()?;
             }
-            if !active.binding.unchanged(&self.session) {
-                return Err(unavailable());
-            }
-            let remaining = active.deadline.remaining(self.clock.now()).ok_or_else(unsafe_start)?;
-            if remaining < bound {
-                return Err(unsafe_start());
+            if let Some((deadline, due)) = renewal {
+                active.deadline = deadline;
+                active.renewal = due;
             }
             Ok(())
         })();
-        if let Err(error) = &check {
+        if let Err(error) = &check
+            && error.code != RefusalCode::AuthUnavailable
+        {
             active.withdrawn = Some(error.clone());
         }
         check
@@ -283,7 +320,7 @@ impl SessionBilling {
             return self.check_commit(operation);
         }
         if !active.binding.unchanged(&self.session) {
-            return Err(unavailable());
+            return Err(refusal(RefusalCode::AuthRequired));
         }
         active.deadline.remaining(self.clock.now()).map(|_| ()).ok_or_else(|| refusal(RefusalCode::UnsafeToStart))
     }
@@ -566,8 +603,7 @@ impl BillingPort for SessionBilling {
             if &active.operation != operation || active.dispatched {
                 return Err(refusal(RefusalCode::OperationConflict));
             }
-            self.ledger()?.mark_started(operation, solidcraft_engine::validation::now_ms()).map_err(|_| unavailable())?;
-            self.check(&mut active, bound)?;
+            self.check(&mut active, bound, true)?;
             active.dispatched = true;
             Ok(())
         })();
@@ -578,7 +614,7 @@ impl BillingPort for SessionBilling {
     fn check_commit(&mut self, operation: &OperationId) -> Result<(), Refusal> {
         let mut active = self.active.take().ok_or_else(unavailable)?;
         let result = if &active.operation == operation && active.dispatched {
-            self.check(&mut active, Duration::ZERO)
+            self.check(&mut active, Duration::ZERO, false)
         } else {
             Err(refusal(RefusalCode::OperationConflict))
         };
@@ -610,6 +646,9 @@ impl BillingPort for SessionBilling {
         if self.active.as_ref().is_some_and(|active| &active.operation == operation)
             && let Err(error) = self.check_before_settlement(operation)
         {
+            if error.code == RefusalCode::AuthUnavailable {
+                return Err(error);
+            }
             if result == BillingResult::Unknown {
                 self.settle_active(operation, SettlementIntent::Commit(BillingResult::Unknown))?;
             } else {

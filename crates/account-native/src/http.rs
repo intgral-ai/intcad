@@ -1002,21 +1002,10 @@ impl<T: Transport> HttpAccountService<T> {
         authorization_id: &GrantId,
         capability: Capability,
     ) -> Result<Grant, Refusal> {
-        self.exchange_renewal(scope, operation, authorization_id, capability, None).map(|(grant, _, _)| grant)
+        self.exchange_renewal_gated(scope, operation, authorization_id, capability, None, || true).map(|(grant, _, _)| grant)
     }
 
-    pub(crate) fn exchange_renewal(
-        &mut self,
-        scope: &AuthenticatedHostScope,
-        operation: &OperationId,
-        authorization_id: &GrantId,
-        capability: Capability,
-        prior: Option<&ConservativeDeadline>,
-    ) -> Result<(Grant, MonotonicInstant, Option<Duration>), Refusal> {
-        self.exchange_renewal_gated(scope, operation, authorization_id, capability, prior, || true)
-    }
-
-    fn exchange_renewal_gated(
+    pub(crate) fn exchange_renewal_gated(
         &mut self,
         scope: &AuthenticatedHostScope,
         operation: &OperationId,

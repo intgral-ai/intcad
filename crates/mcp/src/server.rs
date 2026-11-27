@@ -60,6 +60,15 @@ A call whose error starts `still running:` was not cancelled: don't send it agai
 struct Accounting {
     billing: Box<dyn solidcraft_engine::entitlement::BillingPort>,
     budget: solidcraft_engine::entitlement::BudgetTable,
+    pending: Option<Box<PendingTool>>,
+}
+
+struct PendingTool {
+    name: String,
+    args: Value,
+    scope: Option<PathScope>,
+    context: crate::ToolCallContext,
+    gate: crate::account::PausedGate,
 }
 
 /// What may authorize a charged tool call at this server boundary.
@@ -150,7 +159,7 @@ impl Server {
         billing: Box<dyn solidcraft_engine::entitlement::BillingPort>,
         budget: solidcraft_engine::entitlement::BudgetTable,
     ) -> Self {
-        self.authority = Authority::Metered(Accounting { billing, budget });
+        self.authority = Authority::Metered(Accounting { billing, budget, pending: None });
         self
     }
     pub fn backend(&mut self) -> &mut dyn Backend {
@@ -290,6 +299,30 @@ impl Server {
                 let scope = self.scope.clone();
                 let forwarded = matches!(self.authority, Authority::Forwarded);
                 let helper = crate::account::tool_is_free(name).then_some(name);
+                if let Authority::Metered(accounting) = &mut self.authority
+                    && let Some(paused) = &accounting.pending
+                {
+                    if name == "pending" {
+                        if let Some(paused) = accounting.pending.take() {
+                            let PendingTool { name, args, scope, context, gate } = *paused;
+                            self.backend.begin_tool_call(None, None);
+                            let mut reply = vfs::scoped(scope.clone(), || {
+                                crate::account::resume_tool(self.backend.as_mut(), &name, &args, &context, accounting.billing.as_mut(), gate)
+                            });
+                            self.backend.end_tool_call();
+                            if let Some((context, gate)) = reply.take_pause() {
+                                accounting.pending = Some(Box::new(PendingTool { name, args, scope, context, gate }));
+                            } else if !reply.is_error() {
+                                for file in design_files(&name, &args).iter().filter(|f| std::path::Path::new(f).is_absolute()) {
+                                    self.scope = self.scope.take().map(|s| s.with_design_file(file));
+                                }
+                            }
+                            return Ok(reply.into_value());
+                        }
+                    } else if helper.is_none() {
+                        return Ok(crate::account::pending_refusal(&paused.context).into_value());
+                    }
+                }
                 // A tool that would make more than one controlled backend call cannot yet carry
                 // the parent's validated admission into its substeps. Refuse it before any work;
                 // Task 9 replaces this with safe parent-admission reuse.
@@ -307,11 +340,14 @@ impl Server {
                 self.backend.begin_tool_call(begin_context, helper);
                 let authority = &mut self.authority;
                 let backend = self.backend.as_mut();
-                let mut result = vfs::scoped(scope, || match authority {
+                let mut result = vfs::scoped(scope.clone(), || match authority {
                     Authority::Metered(accounting) => match context {
                         Some(context) => {
-                            let reply =
+                            let mut reply =
                                 crate::account::call_tool_with(backend, name, &args, &context, &accounting.budget, accounting.billing.as_mut());
+                            if let Some((context, gate)) = reply.take_pause() {
+                                accounting.pending = Some(Box::new(PendingTool { name: name.to_owned(), args: args.clone(), scope, context, gate }));
+                            }
                             reply.into_value()
                         }
                         None if name == "screenshot" && accounting.billing.checks_live_window() && args.get("path").is_some() => {

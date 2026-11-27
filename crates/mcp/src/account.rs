@@ -158,9 +158,34 @@ pub struct MeteredReply {
     operation: OperationId,
     outcome: CallOutcome,
     context: ToolCallContext,
+    paused: Option<PausedGate>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PausedGate {
+    Dispatch(Duration),
+    Commit { value: Value, outcome: CallOutcome },
+}
+
+pub(crate) fn pending_refusal(context: &ToolCallContext) -> MeteredReply {
+    MeteredReply::refused(
+        context,
+        Refusal::new(RefusalCode::AuthUnavailable, "a controlled operation is paused; call pending before starting new work"),
+    )
 }
 
 impl MeteredReply {
+    pub(crate) fn take_pause(&mut self) -> Option<(ToolCallContext, PausedGate)> {
+        self.paused.take().map(|gate| (self.context.clone(), gate))
+    }
+
+    fn paused(context: &ToolCallContext, mut error: Refusal, gate: PausedGate) -> Self {
+        error.message.push_str("; call pending to resume this operation, do not resend the tool");
+        let mut reply = Self::refused(context, error);
+        reply.paused = Some(gate);
+        reply
+    }
+
     pub fn value(&self) -> &Value {
         &self.value
     }
@@ -195,7 +220,7 @@ impl MeteredReply {
             "errorDetails": {"code": "OP_REFUSED", "reason": error.code.as_str()},
             "operationId": operation.as_str(),
         });
-        Self { value: error_result(body), operation, outcome: CallOutcome::Refused(error.code), context: context.clone() }
+        Self { value: error_result(body), operation, outcome: CallOutcome::Refused(error.code), context: context.clone(), paused: None }
     }
 
     fn already_exists(context: &ToolCallContext) -> Self {
@@ -205,7 +230,7 @@ impl MeteredReply {
             "errorDetails": {"code": "OP_ALREADY_EXISTS"},
             "operationId": operation.as_str(),
         });
-        Self { value: error_result(body), operation, outcome: CallOutcome::AlreadyExists, context: context.clone() }
+        Self { value: error_result(body), operation, outcome: CallOutcome::AlreadyExists, context: context.clone(), paused: None }
     }
 
     /// A retry of an operation that already completed. It keeps the original id and never
@@ -218,7 +243,7 @@ impl MeteredReply {
             "errorDetails": {"code": "OP_SUCCEEDED", "retry": "never"},
             "operationId": operation.as_str(),
         });
-        Self { value: error_result(body), operation, outcome: CallOutcome::Succeeded, context: context.clone() }
+        Self { value: error_result(body), operation, outcome: CallOutcome::Succeeded, context: context.clone(), paused: None }
     }
 
     fn unknown(context: &ToolCallContext, message: &str) -> Self {
@@ -228,7 +253,7 @@ impl MeteredReply {
             "errorDetails": {"code": "OP_OUTCOME_UNKNOWN", "retry": "never"},
             "operationId": operation.as_str(),
         });
-        Self { value: error_result(body), operation, outcome: CallOutcome::Unknown, context: context.clone() }
+        Self { value: error_result(body), operation, outcome: CallOutcome::Unknown, context: context.clone(), paused: None }
     }
 }
 
@@ -259,7 +284,7 @@ pub fn call_tool_with(
             return MeteredReply::refused(context, screenshot_path_refusal());
         }
         let value = crate::tools::call_tool(backend, name, args);
-        return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone() };
+        return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone(), paused: None };
     }
     // A charged tool cannot borrow a free human/web origin to skip admission. Only the free
     // helper catalog above is free; everything else needs a host-minted operation.
@@ -275,7 +300,7 @@ pub fn call_tool_with(
         }
         let value = crate::tools::call_tool(backend, name, args);
         let outcome = classify_reply(&value);
-        return MeteredReply { value, operation, outcome, context: context.clone() };
+        return MeteredReply { value, operation, outcome, context: context.clone(), paused: None };
     }
     let bound = match billing.preflight().and_then(|()| check_preflight(context, budget, billing.checks_live_window())) {
         Ok(bound) => bound,
@@ -291,21 +316,46 @@ pub fn call_tool_with(
             Err(refusal) => return MeteredReply::refused(context, refusal),
         },
     };
-    if let Err(refusal) = billing.dispatch(&operation, bound) {
-        return match billing.release(&operation, refusal.code) {
-            Ok(()) => MeteredReply::refused(context, refusal),
-            Err(_) => MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown"),
-        };
-    }
+    let mut context = context.clone();
+    context.admission = Some(admission);
+    resume_tool(backend, name, args, &context, billing, PausedGate::Dispatch(bound))
+}
+
+pub(crate) fn resume_tool(
+    backend: &mut dyn Backend,
+    name: &str,
+    args: &Value,
+    context: &ToolCallContext,
+    billing: &mut dyn BillingPort,
+    gate: PausedGate,
+) -> MeteredReply {
+    let operation = context.operation.clone();
+    let release = |billing: &mut dyn BillingPort, refusal: Refusal| match billing.release(&operation, refusal.code) {
+        Ok(()) => MeteredReply::refused(context, refusal),
+        Err(_) => MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown"),
+    };
     // As in Direct Control, the reply is staged and withheld on refusal. Local model
     // changes and file writes made by the dispatched command are not rolled back here.
-    let result_value = crate::tools::call_tool(backend, name, args);
-    let outcome = classify_reply(&result_value);
+    let (result_value, outcome) = match gate {
+        PausedGate::Dispatch(bound) => {
+            if let Err(refusal) = billing.dispatch(&operation, bound) {
+                return if refusal.code == RefusalCode::AuthUnavailable {
+                    MeteredReply::paused(context, refusal, PausedGate::Dispatch(bound))
+                } else {
+                    release(billing, refusal)
+                };
+            }
+            let value = crate::tools::call_tool(backend, name, args);
+            let outcome = classify_reply(&value);
+            (value, outcome)
+        }
+        PausedGate::Commit { value, outcome } => (value, outcome),
+    };
     if let Err(refusal) = billing.check_commit(&operation) {
-        return if billing.release(&operation, refusal.code).is_ok() {
-            MeteredReply::refused(context, refusal)
+        return if refusal.code == RefusalCode::AuthUnavailable {
+            MeteredReply::paused(context, refusal, PausedGate::Commit { value: result_value, outcome })
         } else {
-            MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown")
+            release(billing, refusal)
         };
     }
     let settle = settle(billing, &operation, &outcome);
@@ -320,9 +370,7 @@ pub fn call_tool_with(
             _ => {}
         }
     }
-    let mut reply_context = context.clone();
-    reply_context.admission = Some(admission);
-    let mut reply = MeteredReply { value: result_value, operation: operation.clone(), outcome, context: reply_context };
+    let mut reply = MeteredReply { value: result_value, operation: operation.clone(), outcome, context: context.clone(), paused: None };
     if let Err(error) = settle {
         let disposition = match (context.deadline.as_ref(), context.now) {
             (Some(deadline), Some(now)) => missing_operation_state(Some(deadline), now, error.code),
@@ -366,7 +414,7 @@ pub fn call_tool_forwarded(backend: &mut dyn Backend, name: &str, args: &Value, 
     let operation = context.operation.clone();
     if tool_is_free(name) {
         let value = crate::tools::call_tool(backend, name, args);
-        return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone() };
+        return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone(), paused: None };
     }
     if context.entry.is_free() {
         return MeteredReply::refused(context, Refusal::new(RefusalCode::CapabilityDenied, "a charged tool cannot run from a free origin"));
@@ -384,7 +432,7 @@ pub fn call_tool_forwarded(backend: &mut dyn Backend, name: &str, args: &Value, 
     }
     let value = crate::tools::call_tool(backend, name, args);
     let outcome = classify_reply(&value);
-    MeteredReply { value, operation, outcome, context: context.clone() }
+    MeteredReply { value, operation, outcome, context: context.clone(), paused: None }
 }
 
 /// Whether this charged tool would need more than one controlled backend call, which the
