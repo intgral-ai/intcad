@@ -47,6 +47,36 @@ pub enum PromptPart {
     },
 }
 
+/// What a session has used, as the agent reports it: ACP's `usage_update` (the context in use and
+/// the session's cost so far) and a prompt reply's `usage` (that turn's tokens). Each part is
+/// `None` until the agent says it; nothing is estimated here.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Usage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    /// Tokens in the session's context when the agent last said.
+    pub context_tokens: Option<u64>,
+    /// The session's cost so far: the amount and its currency (`USD`).
+    pub cost: Option<(f64, String)>,
+}
+
+impl Usage {
+    /// Nothing reported.
+    pub fn is_empty(&self) -> bool {
+        *self == Usage::default()
+    }
+
+    /// Take what `newer` says, keeping what it leaves out.
+    pub fn merge(&mut self, newer: Usage) {
+        self.input_tokens = newer.input_tokens.or(self.input_tokens);
+        self.output_tokens = newer.output_tokens.or(self.output_tokens);
+        self.total_tokens = newer.total_tokens.or(self.total_tokens);
+        self.context_tokens = newer.context_tokens.or(self.context_tokens);
+        self.cost = newer.cost.or(self.cost.take());
+    }
+}
+
 /// What a backend reports to the panel.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
@@ -135,6 +165,10 @@ pub enum Event {
     /// The built-in agent's connections, as it now reports them: the answer to a
     /// [`ChatBackend::connections`] request, or its own word that something changed.
     Connections(super::connections::Snapshot),
+    /// A plan sign-out request finished; an unsolicited snapshot cannot acknowledge it.
+    ConnectionsLogout(super::connections::Snapshot),
+    /// Acknowledgement of the separate guessing process's setup, not a notification.
+    PredictionSetup(super::connections::Snapshot),
     /// A [`ChatBackend::connections`] request the agent refused (`code`: its JSON-RPC error code,
     /// 0 for an answer that was no snapshot). Its words are not passed on: they could repeat a key.
     ConnectionsFailed {
@@ -172,6 +206,10 @@ pub struct StartContext {
 pub trait ChatBackend {
     /// What arrived since the last call.
     fn poll(&mut self) -> Vec<Event>;
+    /// Poll even without inbound traffic when a pending operation reaches its deadline.
+    fn poll_wake_after(&self) -> Option<std::time::Duration> {
+        None
+    }
     /// Send a message (the panel only sends one after [`Event::Ready`] and while no turn runs).
     fn prompt(&mut self, parts: &[PromptPart]);
     /// Stop the message being answered; open permission questions count as cancelled.
@@ -192,6 +230,15 @@ pub trait ChatBackend {
     /// The trusted cancellation flag of the turn about to start. Backends that bridge tool calls
     /// attach it at the host boundary; model/runtime arguments never supply it.
     fn set_turn_control(&mut self, _active: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
+    /// A fresh desktop-owned check for the private bridge of the next prompt.
+    fn set_bridge_scope_check(&mut self, _check: Option<solidcraft_engine::entitlement::BridgeScopeCheck>) {}
+    /// Whether the turn that just ended gave the desktop a tool call that may have changed the
+    /// design. Such a turn is not sent again by itself after a sign-in.
+    fn turn_had_bridge_effect(&self) -> bool {
+        false
+    }
+    /// Withdraw the turn's desktop tool authority now, for a provider, key or account change.
+    fn retire_bridge_authority(&mut self) {}
     /// The authenticated host scope this backend can bind to forwarded Intcad operations.
     ///
     /// `None` means the backend has no proven account/installation/session binding and must fail
@@ -223,6 +270,21 @@ pub trait ChatBackend {
     /// Stop using the open session without ending the agent: what it still sends for that
     /// session is no longer taken in. [`ChatBackend::new_session`] opens the next one.
     fn forget_session(&mut self) {}
+    /// Retire the guessing session, including one still opening.
+    fn retire_prediction_session(&mut self) {}
+    /// The agent says it is signed in with an API key (not a plan, and not unknown).
+    fn key_sign_in(&self) -> bool {
+        false
+    }
+    /// The open session may be used on what the agent is signed in with now (one made for an API key
+    /// may not be used on a plan).
+    fn session_fits_sign_in(&self) -> bool {
+        true
+    }
+    /// What the session used since the last call, when the agent reports it (`None`: nothing new).
+    fn take_usage(&mut self) -> Option<Usage> {
+        None
+    }
     /// Its process, for status and tests.
     fn pid(&self) -> Option<u32> {
         None
