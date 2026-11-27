@@ -220,7 +220,9 @@ pub struct McpBridge {
 }
 
 /// The built-in agent's id: Mastra Code, which waits up to 7 days on an MCP call (1.19.1). No
-/// agent found or added has it.
+/// agent found or added has it. It has a bridge only when it is started from
+/// `SOLIDCRAFT_MASTRA_AGENT`: the one a package carries reaches the window over its own stdio
+/// (`packaged_chat_route`), where a call waits up to an hour from the send (`host_bridge.rs`).
 pub const BUILTIN_AGENT_ID: &str = super::connections::AGENT_ID;
 
 /// Whether the agent `id`'s bridge waits for the app's forecast of a long run ([`McpBridge`]):

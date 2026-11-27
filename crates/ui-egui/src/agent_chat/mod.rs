@@ -1545,7 +1545,8 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(hint) = entry.problem_hint() {
         chat.notice(hint, true);
     }
-    // The built-in agent waits for a long stress estimate's forecast time; others keep `pending` (#197).
+    // On a bridge, the built-in agent waits for a long stress estimate's forecast time; others keep
+    // `pending` (#197). The packaged route has no bridge: its calls wait up to an hour.
     let forecast_wait = acp::waits_for_forecast(&entry.id);
     let bridge = if packaged_route { None } else { cli.zip(chat.tools_port).map(|(cli, port)| acp::McpBridge { cli, port, forecast_wait }) };
     chat.tools_available = Some(packaged_route || bridge.is_some());

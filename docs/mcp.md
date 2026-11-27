@@ -539,7 +539,9 @@ A reply that does not come within 360 seconds is not waited for any longer, and 
 not sent again: it may still be running in the app (ask `running`).
 
 `--wait-for-forecast` (with `--connect`) is for a client that waits on a tool call for as long as
-it takes. The agent chat starts its built-in agent's server with it; other agents' clients have
+it takes. The agent chat starts its built-in agent's server with it when that agent is started from
+`SOLIDCRAFT_MASTRA_AGENT`; the built-in agent an Intcad package carries has no server of this kind,
+and its calls wait up to an hour for the app. Other agents' clients have
 timeouts of their own and keep `still running:` and `pending`. A request the app forecasts the time
 of (a stress estimate, once a run has meshed and counted its nodes) is then waited for as long as
 the latest forecast says, twice that and a minute, up to an hour after the app said it still runs,

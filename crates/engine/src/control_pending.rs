@@ -108,8 +108,9 @@ pub fn forecast_after(method: &str, params: &Value) -> Option<u64> {
     (id == "inspect.stress_estimate").then(crate::fea::forecast_seq)
 }
 
-/// What the app still expects a request to take at the most, in seconds, by the latest forecast
-/// made after `after` ([`forecast_after`]), and that forecast's number. `None` until there is one.
+/// What the app still expects a request to take, in seconds, by the latest forecast made after
+/// `after` ([`forecast_after`]), counting a third mesh that may follow, and that forecast's number.
+/// `None` until there is one.
 pub fn expected(after: u64) -> Option<(u64, f64)> {
     crate::fea::forecast().and_then(|f| expected_of(&f, after))
 }
