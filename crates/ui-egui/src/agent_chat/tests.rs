@@ -19461,6 +19461,58 @@ fn an_accepted_preview_triggers_one_check_and_a_rejection_or_stale_accept_trigge
     assert_eq!(app.agent_chat.dfm.fired, before, "a stale accept runs nothing");
 }
 
+/// INT-1473: the built-in agent is handed the Files panel's folder only when that folder is the
+/// project the shown design belongs to; any other pairing hands over nothing.
+#[test]
+fn the_agent_is_handed_the_files_folder_only_when_it_is_the_designs_project() {
+    let root = std::env::temp_dir().join(format!("sc-agent-chat-project-{}", std::process::id()));
+    let project = root.join("bracket");
+    let parts = project.join("parts");
+    let elsewhere = root.join("elsewhere");
+    for dir in [&project.join(".intcad"), &parts, &elsewhere] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(project.join(".intcad").join("project.toml"), "").unwrap();
+    let design = project.join("bracket.sc").to_string_lossy().into_owned();
+    let deeper = parts.join("tab.sc").to_string_lossy().into_owned();
+    let loose = elsewhere.join("loose.sc").to_string_lossy().into_owned();
+
+    assert_eq!(handed_project(Some(&design), Some(&project)), Some(project.clone()));
+    assert_eq!(handed_project(Some(&deeper), Some(&project)), Some(project.clone()), "a design in a subfolder belongs to the project above");
+    assert_eq!(handed_project(Some(&deeper), Some(&parts)), None, "the panel on a folder inside the project is not the project");
+    assert_eq!(handed_project(Some(&design), Some(&elsewhere)), None, "the panel on another folder");
+    assert_eq!(handed_project(Some(&loose), Some(&elsewhere)), None, "a design in no project");
+    assert_eq!(handed_project(None, Some(&project)), None, "no design shown");
+    assert_eq!(handed_project(Some(&design), None), None, "no folder in the panel");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The Windows smoke reads exactly these three fields: an open page that has spoken proves its
+/// surface, a closed page keeps that proof while its view lives, and a missing runtime or a
+/// failed build never gives one.
+#[test]
+fn assistant_inspection_carries_the_marker_the_windows_smoke_reads() {
+    let mut h = crate::scenario::Harness::new();
+    web::set_host(&mut h.app, true);
+    let inspect = |h: &mut crate::scenario::Harness| h.call("ui.inspect", json!({}))["result"]["assistant"].clone();
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "available", "centred": false}));
+    h.app.agent_chat.open = true;
+    h.frames(3);
+    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": false, "host": "available", "centred": false}), "no page has spoken yet");
+    h.app.agent_chat.web_canvas = Some(crate::theme::Tokens::get().panel);
+    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": true, "host": "available", "centred": false}), "the page said its surface");
+    h.app.agent_chat.open = false;
+    assert_eq!(
+        inspect(&mut h),
+        json!({"open": false, "surface_ready": true, "host": "available", "centred": false}),
+        "a closed page keeps the proof while its view lives"
+    );
+    web::set_problem(&mut h.app, web::Problem::Failed);
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "failed", "centred": false}));
+    web::set_problem(&mut h.app, web::Problem::NativeWayland);
+    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "native_wayland", "centred": false}));
+}
+
 /// A13 (V-A13): a stress estimate asks once, and its card says what the run will take: before the
 /// user allows it, from the part's size (a dry run on a copy of the design, no program started);
 /// once a run has meshed the part, the nodes it counted, the solver's memory and the time left.
@@ -19555,55 +19607,4 @@ fn a_stress_estimates_card_says_what_the_run_will_take_before_and_after_meshing(
     end_turn(&mut app);
     assert!(app.agent_chat.stress_card.is_none());
     assert_eq!(counted(&app), Some(Some(line.to_string())), "the card keeps its last line");
-
-/// INT-1473: the built-in agent is handed the Files panel's folder only when that folder is the
-/// project the shown design belongs to; any other pairing hands over nothing.
-#[test]
-fn the_agent_is_handed_the_files_folder_only_when_it_is_the_designs_project() {
-    let root = std::env::temp_dir().join(format!("sc-agent-chat-project-{}", std::process::id()));
-    let project = root.join("bracket");
-    let parts = project.join("parts");
-    let elsewhere = root.join("elsewhere");
-    for dir in [&project.join(".intcad"), &parts, &elsewhere] {
-        std::fs::create_dir_all(dir).unwrap();
-    }
-    std::fs::write(project.join(".intcad").join("project.toml"), "").unwrap();
-    let design = project.join("bracket.sc").to_string_lossy().into_owned();
-    let deeper = parts.join("tab.sc").to_string_lossy().into_owned();
-    let loose = elsewhere.join("loose.sc").to_string_lossy().into_owned();
-
-    assert_eq!(handed_project(Some(&design), Some(&project)), Some(project.clone()));
-    assert_eq!(handed_project(Some(&deeper), Some(&project)), Some(project.clone()), "a design in a subfolder belongs to the project above");
-    assert_eq!(handed_project(Some(&deeper), Some(&parts)), None, "the panel on a folder inside the project is not the project");
-    assert_eq!(handed_project(Some(&design), Some(&elsewhere)), None, "the panel on another folder");
-    assert_eq!(handed_project(Some(&loose), Some(&elsewhere)), None, "a design in no project");
-    assert_eq!(handed_project(None, Some(&project)), None, "no design shown");
-    assert_eq!(handed_project(Some(&design), None), None, "no folder in the panel");
-    let _ = std::fs::remove_dir_all(&root);
-}
-
-/// The Windows smoke reads exactly these three fields: an open page that has spoken proves its
-/// surface, a closed page keeps that proof while its view lives, and a missing runtime or a
-/// failed build never gives one.
-#[test]
-fn assistant_inspection_carries_the_marker_the_windows_smoke_reads() {
-    let mut h = crate::scenario::Harness::new();
-    web::set_host(&mut h.app, true);
-    let inspect = |h: &mut crate::scenario::Harness| h.call("ui.inspect", json!({}))["result"]["assistant"].clone();
-    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "available", "centred": false}));
-    h.app.agent_chat.open = true;
-    h.frames(3);
-    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": false, "host": "available", "centred": false}), "no page has spoken yet");
-    h.app.agent_chat.web_canvas = Some(crate::theme::Tokens::get().panel);
-    assert_eq!(inspect(&mut h), json!({"open": true, "surface_ready": true, "host": "available", "centred": false}), "the page said its surface");
-    h.app.agent_chat.open = false;
-    assert_eq!(
-        inspect(&mut h),
-        json!({"open": false, "surface_ready": true, "host": "available", "centred": false}),
-        "a closed page keeps the proof while its view lives"
-    );
-    web::set_problem(&mut h.app, web::Problem::Failed);
-    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "failed", "centred": false}));
-    web::set_problem(&mut h.app, web::Problem::NativeWayland);
-    assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "native_wayland", "centred": false}));
 }
