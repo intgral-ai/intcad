@@ -209,6 +209,58 @@ fn batch_shared_core_uses_distinct_step_and_history_invokers() {
 }
 
 #[test]
+fn batch_gate_stops_before_the_next_step_and_rolls_back() {
+    let steps = [
+        json!({"command":"parameters.change","params":{"name":"width","expression":"20"}}),
+        json!({"command":"parameters.change","params":{"name":"height","expression":"5"}}),
+        json!({"command":"parameters.list"}),
+    ];
+    let mut c = BatchCoreContext::default();
+    let mut gate = |_: &mut BatchCoreContext, index: usize| if index == 0 { Ok(()) } else { Err("the authorization expired".into()) };
+    let body = batch::run_document_steps_gated(
+        &mut c,
+        &steps,
+        &json!({}),
+        batch_core_step,
+        batch_core_history,
+        batch::CheckpointPolicy::BestEffort,
+        Some(&mut gate),
+    );
+    assert_eq!(
+        body,
+        json!({"completed":1,"results":[{"applied":{"name":"width","expression":"20"}}],"undone":1,"rolled_back":true,"stopped":true,
+            "not_run":[1,2],"failed":{"index":1,"command":"parameters.change","stage":"safe_stop","error":"the authorization expired"}})
+    );
+    assert!(c.calls.iter().any(|(kind, id, _)| *kind == "history" && id == "edit.restore_checkpoint"));
+    assert_eq!(c.calls.iter().filter(|(kind, id, _)| *kind == "history" && id == "edit.checkpoint").count(), 1);
+}
+
+#[test]
+fn batch_gate_without_rollback_retains_the_completed_steps() {
+    let steps = [
+        json!({"command":"parameters.change","params":{"name":"width","expression":"20"}}),
+        json!({"command":"parameters.change","params":{"name":"height","expression":"5"}}),
+    ];
+    let mut c = BatchCoreContext::default();
+    let mut gate = |_: &mut BatchCoreContext, index: usize| if index == 0 { Ok(()) } else { Err("stop".into()) };
+    let body = batch::run_document_steps_gated(
+        &mut c,
+        &steps,
+        &json!({"rollback":false}),
+        batch_core_step,
+        batch_core_history,
+        batch::CheckpointPolicy::BestEffort,
+        Some(&mut gate),
+    );
+    assert_eq!(
+        body,
+        json!({"completed":1,"results":[{"applied":{"name":"width","expression":"20"}}],"undone":0,"rolled_back":false,"stopped":true,
+            "not_run":[1],"failed":{"index":1,"command":"parameters.change","stage":"safe_stop","error":"stop"}})
+    );
+    assert_eq!(c.calls.iter().filter(|(kind, _, _)| *kind == "step").count(), 1, "no step applies after the stop");
+}
+
+#[test]
 fn batch_shared_core_preserves_failure_facts() {
     let steps = [
         json!({"id":"parameters.change","params":{"name":"width","expression":"20"}}),

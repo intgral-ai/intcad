@@ -1,0 +1,70 @@
+{
+  "en": {
+    "account.menu_tooltip": "Open the Intcad account menu",
+    "account.sign_in_waiting": "Waiting for approval in the browser…",
+    "account.sign_in_code": "Enter this code on the sign-in page: {code}",
+    "account.sign_in_open_browser": "Open sign-in page",
+    "account.sign_in_expired": "The sign-in code expired.",
+    "account.sign_in_retry": "Try sign-in again",
+    "account.chat_prompt": "Sign in to your Intcad account to use AI Chat. The selected model's own sign-in stays separate.",
+    "account.review_prompt": "Sign in to your Intcad account to run Review checks."
+  },
+  "de": {
+    "account.menu_tooltip": "Intcad-Kontomenü öffnen",
+    "account.sign_in_waiting": "Warte auf die Bestätigung im Browser…",
+    "account.sign_in_code": "Gib diesen Code auf der Anmeldeseite ein: {code}",
+    "account.sign_in_open_browser": "Anmeldeseite öffnen",
+    "account.sign_in_expired": "Der Anmeldecode ist abgelaufen.",
+    "account.sign_in_retry": "Anmeldung erneut versuchen",
+    "account.chat_prompt": "Melde dich bei deinem Intcad-Konto an, um den KI-Chat zu nutzen. Die Anmeldung des gewählten Modells bleibt getrennt.",
+    "account.review_prompt": "Melde dich bei deinem Intcad-Konto an, um Prüfungen auszuführen."
+  },
+  "ja": {
+    "account.menu_tooltip": "Intcad アカウントメニューを開く",
+    "account.sign_in_waiting": "ブラウザーでの承認を待っています…",
+    "account.sign_in_code": "サインインページで次のコードを入力してください: {code}",
+    "account.sign_in_open_browser": "サインインページを開く",
+    "account.sign_in_expired": "サインインコードの有効期限が切れました。",
+    "account.sign_in_retry": "サインインを再試行",
+    "account.chat_prompt": "AI チャットを使用するには Intcad アカウントでサインインしてください。選択したモデル独自のサインインは別です。",
+    "account.review_prompt": "レビュー検査を実行するには Intcad アカウントでサインインしてください。"
+  },
+  "zh": {
+    "account.menu_tooltip": "打开 Intcad 账户菜单",
+    "account.sign_in_waiting": "正在等待浏览器中的批准…",
+    "account.sign_in_code": "请在登录页面输入此代码：{code}",
+    "account.sign_in_open_browser": "打开登录页面",
+    "account.sign_in_expired": "登录代码已过期。",
+    "account.sign_in_retry": "重新尝试登录",
+    "account.chat_prompt": "登录 Intcad 账户以使用 AI 聊天。所选模型自己的登录是分开的。",
+    "account.review_prompt": "登录 Intcad 账户以运行审查检查。"
+  },
+  "ko": {
+    "account.menu_tooltip": "Intcad 계정 메뉴 열기",
+    "account.sign_in_waiting": "브라우저에서 승인을 기다리는 중…",
+    "account.sign_in_code": "로그인 페이지에 이 코드를 입력하십시오: {code}",
+    "account.sign_in_open_browser": "로그인 페이지 열기",
+    "account.sign_in_expired": "로그인 코드가 만료되었습니다.",
+    "account.sign_in_retry": "로그인 다시 시도",
+    "account.chat_prompt": "AI 채팅을 사용하려면 Intcad 계정에 로그인하십시오. 선택한 모델의 자체 로그인은 별개입니다.",
+    "account.review_prompt": "검토 검사를 실행하려면 Intcad 계정에 로그인하십시오."
+  },
+  "ar": {
+    "account.menu_tooltip": "فتح قائمة حساب Intcad",
+    "account.sign_in_open_browser": "فتح صفحة تسجيل الدخول",
+    "account.chat_prompt": "سجّل الدخول إلى حسابك في Intcad لاستخدام المحادثة بالذكاء الاصطناعي. يظل تسجيل الدخول الخاص بالنموذج المحدد منفصلًا.",
+    "account.review_prompt": "سجّل الدخول إلى حسابك في Intcad لتشغيل فحوصات المراجعة."
+  },
+  "he": {
+    "account.menu_tooltip": "פתיחת תפריט חשבון Intcad",
+    "account.sign_in_open_browser": "פתיחת עמוד ההתחברות",
+    "account.chat_prompt": "התחבר לחשבון Intcad שלך כדי להשתמש בצ׳אט עם בינה מלאכותית. ההתחברות למודל שבחרת נשארת נפרדת.",
+    "account.review_prompt": "התחבר לחשבון Intcad שלך כדי להריץ בדיקות סקירה."
+  },
+  "vi": {
+    "account.menu_tooltip": "Mở menu tài khoản Intcad",
+    "account.sign_in_open_browser": "Mở trang đăng nhập",
+    "account.chat_prompt": "Đăng nhập vào tài khoản Intcad của bạn để dùng Trò chuyện AI. Việc đăng nhập vào mô hình đã chọn vẫn được thực hiện riêng.",
+    "account.review_prompt": "Đăng nhập vào tài khoản Intcad của bạn để chạy các phép kiểm tra trong mục Rà soát."
+  }
+}

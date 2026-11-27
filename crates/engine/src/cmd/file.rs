@@ -642,6 +642,23 @@ impl Session {
         self.saved_visibility = done.saved_visibility.clone();
     }
 
+    /// The design's file, or a folder above it, was renamed or moved inside the application:
+    /// take the new path and keep the unsaved edits. A name borrowed from the file follows the
+    /// file's new name; a name the user chose stays. Answers whether the design's name changed.
+    pub fn follow_file_move(&mut self, from: &str, to: &str) -> bool {
+        self.path = Some(to.to_string());
+        self.disk = solidcraft_io::design_lock::stamp(to);
+        let stem = |path: &str| std::path::Path::new(path).file_stem().map(|s| s.to_string_lossy().into_owned());
+        let (Some(old), Some(new)) = (stem(from), stem(to)) else { return false };
+        if old == new || self.user_named || self.doc.name != old {
+            return false;
+        }
+        rename_design(self, &old, &new);
+        // The saved copy follows too, so a clean design stays clean until it is edited.
+        std::sync::Arc::make_mut(&mut self.saved).name = new;
+        true
+    }
+
     /// Another program or computer wrote the design's file since it was opened or last saved:
     /// saving to it would replace that work (#5467). A file that is gone has not changed.
     pub fn disk_changed(&self) -> bool {
@@ -1329,6 +1346,44 @@ mod tests {
         assert_eq!(direct.doc.name, "Bracket");
         assert_eq!(adopted.undo.iter().map(|u| u.doc.name.clone()).collect::<Vec<_>>(), vec!["Bracket copy".to_string(); adopted.undo.len()]);
         assert_eq!(solidcraft_io::read_design(&std::fs::read(&b).unwrap()).unwrap(), *adopted.doc);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file or folder renamed inside the application moves the design's file and, for a name
+    /// borrowed from the file, its name; unsaved edits stay unsaved. A name the person chose
+    /// stays whatever the file is called.
+    #[test]
+    fn following_a_file_move_keeps_edits_and_borrowed_names_follow_the_file() {
+        let dir = std::env::temp_dir().join(format!("solidcraft-follow-move-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("Bracket.sc");
+        let renamed = dir.join("Bracket v2.sc");
+        let mut s = Session::default();
+        s.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        s.execute("file.save_as", &json!({"path": old.to_string_lossy()})).unwrap();
+        std::fs::rename(&old, &renamed).unwrap();
+        assert!(s.follow_file_move(old.to_str().unwrap(), renamed.to_str().unwrap()));
+        assert_eq!(s.path.as_deref(), renamed.to_str());
+        assert!(!s.is_dirty(), "a clean design stays clean");
+        assert_eq!(s.doc.name, "Bracket v2", "the borrowed name follows the file");
+        assert!(!s.disk_changed(), "the moved file is the design's known file");
+
+        s.execute("solid.box", &json!({"length": 4, "width": 4, "height": 4})).unwrap();
+        let again = dir.join("Bracket v3.sc");
+        std::fs::rename(&renamed, &again).unwrap();
+        assert!(s.follow_file_move(renamed.to_str().unwrap(), again.to_str().unwrap()));
+        assert!(s.is_dirty(), "the unsaved edit is still there");
+        assert_eq!(s.doc.name, "Bracket v3");
+
+        let chosen = dir.join("Gearbox.sc");
+        let mut named = Session::default();
+        named.execute("file.new", &json!({"name": "Gearbox lid"})).unwrap();
+        named.execute("file.save_as", &json!({"path": chosen.to_string_lossy()})).unwrap();
+        let moved = dir.join("Gearbox v2.sc");
+        std::fs::rename(&chosen, &moved).unwrap();
+        assert!(!named.follow_file_move(chosen.to_str().unwrap(), moved.to_str().unwrap()), "the chosen name stays");
+        assert_eq!(named.doc.name, "Gearbox lid");
+        assert_eq!(named.path.as_deref(), moved.to_str());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

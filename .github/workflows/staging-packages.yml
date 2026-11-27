@@ -1,0 +1,29 @@
+name: Staging desktop packages (nonpublishing)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    environment: staging
+    outputs:
+      config: ${{ steps.config.outputs.config }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - id: config
+        name: Snapshot the committed public staging account configuration
+        run: python -I scripts/ci/staging_account_config.py snapshot
+
+  packages:
+    needs: snapshot
+    uses: ./.github/workflows/release.yml
+    with:
+      beta_three_platforms: true
+      staging_account_config: ${{ needs.snapshot.outputs.config }}

@@ -30,6 +30,29 @@ use solidcraft_ui_egui::agent_chat::web;
 use wry::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
 use wry::http::{Request, Response, header};
 
+#[cfg(target_os = "linux")]
+mod shape;
+
+#[cfg(target_os = "linux")]
+#[derive(serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct PageShape {
+    width: f64,
+    height: f64,
+    popup: Option<u32>,
+    surfaces: Vec<[f64; 12]>,
+}
+
+#[cfg(target_os = "linux")]
+impl PageShape {
+    fn decode(value: serde_json::Value, bytes: usize) -> Option<Self> {
+        if bytes > 4096 {
+            return None;
+        }
+        serde_json::from_value::<Self>(value).ok().filter(|report| report.surfaces.len() <= 8)
+    }
+}
+
 /// The page's own address: a scheme only this web view serves, from the files below.
 const SCHEME: &str = "openskyfall-assistant";
 const PAGE: &str = "openskyfall-assistant://localhost/index.html";
@@ -250,11 +273,17 @@ struct Placed {
     rect: egui::Rect,
     zoom: f32,
     pixels_per_point: f32,
+    /// How much of the view, from its foot, is shown and takes presses (`web::reveal`); `None`: all.
+    reveal: Option<f32>,
 }
 
 #[derive(Default)]
 pub struct AssistantWeb {
     view: Option<wry::WebView>,
+    /// The frame that shows only the view's foot (macOS, `assistant_clip`). Without it the view
+    /// changes size as the page grows, as it does on the other systems.
+    #[cfg(target_os = "macos")]
+    clip: Option<crate::assistant_clip::Clip>,
     /// What the page sent since the last frame.
     inbox: Rc<RefCell<Vec<String>>>,
     /// Files dragged over the view or dropped on it since the last frame.
@@ -282,6 +311,14 @@ pub struct AssistantWeb {
     /// which costs the page its input method; a GDK window keeps focus.
     #[cfg(target_os = "linux")]
     gtk_window: Option<gtk::Window>,
+    #[cfg(target_os = "linux")]
+    gtk_scale: Option<i32>,
+    #[cfg(target_os = "linux")]
+    gtk_shape: Option<PageShape>,
+    #[cfg(target_os = "linux")]
+    applied_shape: Option<(i32, i32, i32, u64)>,
+    #[cfg(target_os = "linux")]
+    gtk_shape_dirty: Rc<Cell<bool>>,
     /// GTK had something to do in a turn since the last frame. Set by the page's draw, its IPC
     /// and its presses, not by every idle timer GTK happens to have: an Assistant at rest must
     /// not keep the app at 60 fps.
@@ -319,6 +356,10 @@ impl AssistantWeb {
     /// The view goes before the window it is a child of does.
     pub fn close(&mut self) {
         self.view = None;
+        #[cfg(target_os = "macos")]
+        {
+            self.clip = None;
+        }
         #[cfg(target_os = "linux")]
         {
             self.gtk_window = None;
@@ -425,6 +466,11 @@ impl AssistantWeb {
             self.view = None;
             self.placed = None;
             self.shown = false;
+            #[cfg(target_os = "linux")]
+            {
+                self.gtk_shape = None;
+                self.applied_shape = None;
+            }
             web::set_host(solve, true);
             ctx.request_repaint();
         }
@@ -480,7 +526,7 @@ impl AssistantWeb {
             self.show(false);
             return;
         };
-        let at = Placed { rect, zoom: ctx.zoom_factor(), pixels_per_point: ctx.pixels_per_point() };
+        let at = Placed { rect, zoom: ctx.zoom_factor(), pixels_per_point: ctx.pixels_per_point(), reveal: web::reveal(solve) };
         #[cfg(target_os = "linux")]
         self.latest.set(Some(at));
         let backing = web::backing(solve, ctx);
@@ -492,19 +538,41 @@ impl AssistantWeb {
             ctx.request_repaint();
             return;
         }
-        if self.placed != Some(at)
+        #[cfg(target_os = "macos")]
+        web::set_clips(solve, self.clip.is_some());
+        #[cfg(target_os = "linux")]
+        let scale_changed = {
+            use gtk::prelude::WidgetExt;
+            let scale = self.gtk_window.as_ref().map(WidgetExt::scale_factor);
+            let changed = scale != self.gtk_scale;
+            self.gtk_scale = scale;
+            changed && web::centred_view(solve)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let scale_changed = false;
+        if (self.placed != Some(at) || scale_changed)
             && let Some(view) = &self.view
         {
             #[cfg(target_os = "linux")]
             if let Some(window) = self.gtk_window.as_ref() {
                 place_gtk(window, at);
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            if let Some(clip) = &self.clip {
+                use wry::WebViewExtMacOS;
+                let zoom = f64::from(at.zoom);
+                let (rect, shown) = (at.rect, at.reveal.unwrap_or(at.rect.height()));
+                let points = |value: f32| f64::from(value) * zoom;
+                clip.place(&view.webview(), points(rect.left()), points(rect.top()), points(rect.width()), points(rect.height()), points(shown));
+            } else if let Err(error) = view.set_bounds(place(at)) {
+                note(&format!("could not be moved: {error}"));
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             if let Err(error) = view.set_bounds(place(at)) {
                 note(&format!("could not be moved: {error}"));
             }
             // The page is drawn at the app's own size: a point of the page is a point of the app.
-            if self.placed.is_none_or(|before| (before.zoom, before.pixels_per_point) != (at.zoom, at.pixels_per_point))
+            if (scale_changed || self.placed.is_none_or(|before| (before.zoom, before.pixels_per_point) != (at.zoom, at.pixels_per_point)))
                 && let Err(error) = view.zoom(page_zoom(view, at))
             {
                 note(&format!("could not be zoomed: {error}"));
@@ -522,15 +590,30 @@ impl AssistantWeb {
             self.backed = Some(backing);
         }
         self.show(true);
+        #[cfg(target_os = "linux")]
+        self.shape_gtk(web::centred_view(solve), at);
         self.tell(solve);
     }
 
     fn receive(&mut self, solve: &mut SolveApp, ctx: &egui::Context, message: &str) {
-        let value = serde_json::from_str::<serde_json::Value>(message).unwrap_or_default();
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(message) else {
+            #[cfg(target_os = "linux")]
+            self.set_gtk_shape(None, ctx);
+            return;
+        };
         match value.get("type").and_then(serde_json::Value::as_str) {
             // The page (re)started: it knows nothing yet.
             Some("ready") => {
                 self.told.clear();
+                #[cfg(target_os = "linux")]
+                {
+                    self.gtk_shape = None;
+                    self.applied_shape = None;
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Some("painted-footprint") => {
+                self.set_gtk_shape(PageShape::decode(value, message.len()), ctx);
             }
             Some("focus") => self.focused = value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false),
             Some("log") => note(&value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(600).collect::<String>()),
@@ -539,6 +622,24 @@ impl AssistantWeb {
                     note(&format!("refused: {reason}"));
                 }
             }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_gtk_shape(&mut self, report: Option<PageShape>, ctx: &egui::Context) {
+        use gtk::prelude::WidgetExt;
+        if report.as_ref().is_none_or(|p| p.popup.is_some() || p.surfaces.is_empty())
+            && let Some(native) = self.gtk_window.as_ref().and_then(WidgetExt::window)
+        {
+            // Remove the old shape even when placement is about to be deferred. Repeated
+            // popup requests are intentional; a previous script evaluation might not have run.
+            native.shape_combine_region(None, 0, 0);
+            native.display().flush();
+        }
+        if self.gtk_shape != report || report.as_ref().is_some_and(|p| p.popup.is_some()) {
+            self.gtk_shape = report;
+            self.applied_shape = None;
+            ctx.request_repaint();
         }
     }
 
@@ -623,6 +724,8 @@ impl AssistantWeb {
         // See-through outside what the page draws, where a view can be: the page rounds its own
         // corners, and the panel's frame (its border and shadow) shows around them.
         let builder = if SEE_THROUGH { builder.with_transparent(true) } else { builder.with_background_color(opaque(backing)) };
+        #[cfg(target_os = "linux")]
+        let builder = builder.with_initialization_script("window.__assistantX11Shape = true;");
         // A browser's own keys are not the Assistant's (Windows): F5 would load the page again
         // and Ctrl+P print it. The keys of text editing stay (WebView2's
         // `AreBrowserAcceleratorKeysEnabled`, as Microsoft describes it).
@@ -661,7 +764,32 @@ impl AssistantWeb {
             Ok(view) => {
                 #[cfg(target_os = "linux")]
                 {
+                    use gtk::prelude::{WidgetExt, WidgetExtManual};
+                    if let Some(window) = gtk_window.as_ref() {
+                        let dirty = self.gtk_shape_dirty.clone();
+                        let repaint = ctx.clone();
+                        window.connect_map_event(move |_, _| {
+                            dirty.set(true);
+                            repaint.request_repaint();
+                            gtk::glib::Propagation::Proceed
+                        });
+                        let dirty = self.gtk_shape_dirty.clone();
+                        let repaint = ctx.clone();
+                        window.connect_configure_event(move |_, _| {
+                            dirty.set(true);
+                            repaint.request_repaint();
+                            false
+                        });
+                    }
                     self.gtk_window = gtk_window;
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    use wry::WebViewExtMacOS;
+                    self.clip = crate::assistant_clip::Clip::new(&view.webview());
+                    if self.clip.is_none() {
+                        note("could not be put in a frame of its own: it changes size as the page grows");
+                    }
                 }
                 if let Err(error) = view.zoom(page_zoom(&view, at)) {
                     note(&format!("could not be zoomed: {error}"));
@@ -749,7 +877,13 @@ impl AssistantWeb {
         #[cfg(target_os = "linux")]
         if let Some(window) = &self.gtk_window {
             use gtk::prelude::WidgetExt;
+            self.applied_shape = None;
             if shown { window.show_all() } else { window.hide() }
+        }
+        // A hidden frame takes no press either.
+        #[cfg(target_os = "macos")]
+        if let Some(clip) = &self.clip {
+            clip.show(shown);
         }
         if let Some(view) = &self.view {
             if let Err(error) = view.set_visible(shown) {
@@ -769,6 +903,49 @@ impl AssistantWeb {
             }
         }
         self.shown = shown;
+    }
+
+    #[cfg(target_os = "linux")]
+    fn shape_gtk(&mut self, centred: bool, at: Placed) {
+        use gtk::prelude::WidgetExt;
+        let (Some(view), Some(window)) = (&self.view, &self.gtk_window) else { return };
+        let Some(native) = window.window() else { return };
+        // X11 placement and GTK widget allocation are asynchronous. The region belongs to
+        // this GDK window: use its configured bounds, not a potentially older widget allocation.
+        let (width, height, scale) = (native.width(), native.height(), window.scale_factor());
+        let zoom = page_zoom(view, at);
+        let key = (width, height, scale, if centred { zoom.to_bits() } else { 0 });
+        if !self.gtk_shape_dirty.replace(false) && self.applied_shape == Some(key) {
+            return;
+        }
+        let report = self.gtk_shape.as_ref().filter(|_| centred);
+        let popup = report.and_then(|report| report.popup);
+        let fits = report.is_some_and(|p| shape::matches_allocation(p.width, p.height, zoom, width, height));
+        let region = report.filter(|_| popup.is_none() && fits).and_then(|p| shape::mask(&p.surfaces, zoom, width, height)).map(|spans| {
+            let rectangles: Vec<_> = spans.into_iter().map(|[x, y, w, h]| gtk::cairo::RectangleInt::new(x, y, w, h)).collect();
+            gtk::cairo::Region::create_rectangles(&rectangles)
+        });
+        native.shape_combine_region(region.as_ref(), 0, 0);
+        if centred && std::env::var_os("SOLIDCRAFT_ASSISTANT_SHAPE_TRACE").is_some() {
+            let allocation = window.allocation();
+            let page = report.map(|p| (p.width, p.height, p.surfaces.len()));
+            let rectangles = region.as_ref().map(gtk::cairo::Region::num_rectangles);
+            note(&format!(
+                "shape: native={width}x{height} allocation={}x{} scale={scale} zoom={zoom} page={page:?} fits={fits} popup={popup:?} \
+                 rectangles={rectangles:?} shaped={}",
+                allocation.width(),
+                allocation.height(),
+                native.is_shaped(),
+            ));
+        }
+        // Flush before making a portal visible. No new window, focus request or input grab.
+        if let Some(token) = popup {
+            native.display().flush();
+            if let Err(error) = view.evaluate_script(&format!("window.__assistantX11Unmasked?.({token})")) {
+                note(&format!("could not acknowledge the popup's native bounds: {error}"));
+            }
+        }
+        self.applied_shape = Some(key);
     }
 }
 
@@ -947,6 +1124,120 @@ fn opaque(colour: egui::Color32) -> wry::RGBA {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_keeps_complete_surfaces_without_their_empty_corners_or_gap() {
+        // Two independently rounded surfaces at 125% in a larger allocation. The small
+        // header's bottom-right corner is square; neither it nor the composer touches y=12.
+        let surfaces = [[0., 0., 16., 8., 4., 4., 4., 4., 0., 0., 4., 4.], [0., 12., 16., 20., 4., 4., 4., 4., 4., 4., 4., 4.]];
+        let spans = shape::spans(&surfaces, 1.25, 20, 25);
+        let contains = |x, y| spans.iter().any(|[left, top, width, height]| x >= *left && x < left + width && y >= *top && y < top + height);
+        assert!(!contains(0, 0));
+        assert!(!contains(19, 0));
+        assert!(contains(10, 0));
+        assert!(contains(19, 9));
+        assert!(!contains(10, 12));
+        assert!(contains(5, 15));
+        assert!(contains(10, 24));
+        assert!(!contains(0, 24));
+        assert!(!contains(19, 24));
+        assert!(!contains(20, 20));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_clips_at_allocation_and_rejects_invalid_surfaces() {
+        let surfaces = [
+            [-2., -2., 4., 4., 0., 0., 0., 0., 0., 0., 0., 0.],
+            [0., 0., 100., 100., f64::INFINITY, 0., 0., 0., 0., 0., 0., 0.],
+            [20., 20., 25., 25., 0., 0., 0., 0., 0., 0., 0., 0.],
+        ];
+        assert_eq!(shape::spans(&surfaces, 2.0, 6, 6), [[0, 0, 6, 6]]);
+        assert!(shape::spans(&surfaces, f64::NAN, 6, 6).is_empty());
+        assert!(shape::spans(&surfaces[1..], 1.0, 6, 6).is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_excludes_the_backing_row_above_a_fractional_top() {
+        // At 125% the header starts at y=0.75; the opaque native row starting at y=0
+        // must not be included. The second surface must not fill it back in.
+        let surfaces = [[0., 0.6, 16., 8., 4., 4., 4., 4., 0., 0., 0., 0.], [0., 8., 16., 20., 4., 4., 4., 4., 4., 4., 4., 4.]];
+        let spans = shape::spans(&surfaces, 1.25, 20, 25);
+        assert!(spans.iter().all(|&[_, y, _, _]| y >= 1), "{spans:?}");
+        assert!(spans.iter().any(|&[x, y, width, _]| y == 1 && x <= 10 && x + width > 10), "{spans:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_keeps_only_full_pixels_on_rounded_sides() {
+        let surface = [[0.2, 0.6, 16., 20., 0., 0., 4., 4., 0., 0., 4., 4.]];
+        let spans = shape::spans(&surface, 1.25, 20, 25);
+        let covers = |x, y| spans.iter().any(|&[l, t, w, h]| l <= x && x < l + w && t <= y && y < t + h);
+        // The top-right arc crosses y=1 at x≈16.56: column 15 fits the whole row,
+        // while 16 is partially covered. The square left side keeps its old rounding.
+        assert!(!covers(15, 0));
+        assert!(covers(15, 1));
+        assert!(!covers(16, 1));
+        assert!(covers(0, 1));
+        // The straight right edge keeps its last pixel once the arc ends.
+        assert!(covers(19, 6));
+        // The bottom-left arc is narrowest at the bottom of the last row (x=5.25).
+        assert!(!covers(5, 24));
+        assert!(covers(6, 24));
+        assert!(covers(19, 24));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_starting_fixture_covers_full_width_at_125_percent() {
+        // The bundled page's collapsed status/header and ring at 520×137 CSS pixels.
+        let surfaces = [[0., 0., 520., 73., 23., 23., 23., 23., 0., 0., 0., 0.], [0., 49., 520., 137., 23., 23., 23., 23., 23., 23., 23., 23.]];
+        assert!(shape::matches_allocation(520., 137., 1.25, 650, 171));
+        let spans = shape::mask(&surfaces, 1.25, 650, 171).expect("the starting fixture has a native region, not a rectangular fallback");
+        let covers = |x, y| spans.iter().any(|&[l, t, w, h]| l <= x && x < l + w && t <= y && y < t + h);
+        for y in [30, 72, 120] {
+            assert!((0..650).all(|x| covers(x, y)), "the straight row {y} keeps its full width");
+        }
+        assert!((0..171).all(|y| covers(325, y)), "overlapping surfaces keep the centre column");
+        assert!(!covers(647, 168) && !covers(645, 2), "the named CAD corner probes stay outside the native region");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_allocation_allows_one_css_pixel_of_rounding_not_two() {
+        assert!(shape::matches_allocation(520., 137., 1.25, 650, 171));
+        assert!(shape::matches_allocation(519., 137., 1.25, 650, 171));
+        assert!(!shape::matches_allocation(520., 135., 1.25, 650, 171));
+        assert!(!shape::matches_allocation(518.4, 137., 1.25, 650, 171));
+        assert!(!shape::matches_allocation(520., 137., f64::NAN, 650, 171));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_empty_report_keeps_the_glow_and_clipped_edge_covers_its_corners() {
+        assert!(shape::mask(&[], 1., 100, 100).is_none(), "the glow has the whole allocation");
+        let header = [[0., 20., 100., 40., 16., 16., 16., 16., 0., 0., 0., 0.]];
+        let spans = shape::mask(&header, 1., 100, 100).unwrap();
+        assert!(
+            spans.iter().any(|&[x, y, width, height]| x == 0 && width == 100 && y + height == 40),
+            "a square clipped edge keeps both bottom corners"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn centre_shape_rejects_oversized_or_malformed_reports() {
+        let surface = serde_json::json!([0, 0, 10, 10, 2, 2, 2, 2, 0, 0, 0, 0]);
+        let mut valid = serde_json::json!({"width":10,"height":10,"popup":null,"surfaces":[surface.clone()]});
+        assert!(PageShape::decode(valid.clone(), 512).is_some());
+        assert!(PageShape::decode(valid.clone(), 4097).is_none());
+        valid["surfaces"] = serde_json::json!(vec![surface; 9]);
+        assert!(PageShape::decode(valid.clone(), 1024).is_none());
+        valid["surfaces"] = serde_json::json!([[0., 0., 10., 10., f64::NAN, 2., 2., 2., 0., 0., 0., 0.]]);
+        assert!(PageShape::decode(valid, 512).is_none());
+    }
+
     fn get_with(path: &str, pictures: &Pictures) -> Response<Cow<'static, [u8]>> {
         serve(&Request::builder().uri(format!("openskyfall-assistant://localhost{path}")).body(Vec::new()).unwrap(), pictures)
     }
@@ -1081,8 +1372,18 @@ mod tests {
     /// leaves the page outside the panel (INT-1472).
     #[test]
     fn the_delayed_placement_uses_the_panels_latest_place() {
-        let made = Placed { rect: egui::Rect::from_min_max(egui::pos2(1221.0, 165.8), egui::pos2(1591.0, 944.8)), zoom: 1.0, pixels_per_point: 1.25 };
-        let tiled = Placed { rect: egui::Rect::from_min_max(egui::pos2(638.6, 165.8), egui::pos2(1008.6, 1062.4)), zoom: 1.0, pixels_per_point: 2.0 };
+        let made = Placed {
+            rect: egui::Rect::from_min_max(egui::pos2(1221.0, 165.8), egui::pos2(1591.0, 944.8)),
+            zoom: 1.0,
+            pixels_per_point: 1.25,
+            reveal: None,
+        };
+        let tiled = Placed {
+            rect: egui::Rect::from_min_max(egui::pos2(638.6, 165.8), egui::pos2(1008.6, 1062.4)),
+            zoom: 1.0,
+            pixels_per_point: 2.0,
+            reveal: None,
+        };
         assert_eq!(delayed_place(Some(tiled), made), tiled, "the window was tiled after the view was made");
         assert_eq!(delayed_place(None, made), made, "before the host recorded a place, the made one stands");
     }

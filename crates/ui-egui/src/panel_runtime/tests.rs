@@ -1502,8 +1502,8 @@ fn current_context_app() -> (crate::SolveApp, FixtureProbe) {
     (app, probe)
 }
 fn context_control(app: &mut crate::SolveApp, method: &str, params: serde_json::Value) -> serde_json::Value {
-    let (request, _) = crate::control::ControlRequest::new(method, params);
-    match crate::control::handle(app, &egui::Context::default(), &request) {
+    let (mut request, _) = crate::control::ControlRequest::trusted_gui(method, params);
+    match crate::control::handle(app, &egui::Context::default(), &mut request) {
         crate::control::Outcome::Done(value) => value,
         _ => panic!("unexpected screenshot"),
     }

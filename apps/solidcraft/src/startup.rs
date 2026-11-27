@@ -41,6 +41,15 @@ pub fn settings_directory(override_path: Option<&std::ffi::OsStr>, default: Opti
     }
 }
 
+/// Whether the desktop may restore an account session at startup.
+///
+/// All three facts must be proved together: the platform credential store is usable, a product
+/// session (not a provider token) is active, and the host can name the authenticated account,
+/// installation and session binding. A missing one means no restore, no refresh and no work.
+pub fn can_restore_account_session(secure_store_available: bool, product_session_active: bool, scope_provable: bool) -> bool {
+    secure_store_available && product_session_active && scope_provable
+}
+
 /// Whether an environment value switches something on.
 pub fn env_on(v: Option<&str>) -> bool {
     v.map(str::trim).is_some_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
@@ -406,6 +415,14 @@ mod tests {
 
     fn cards() -> Vec<AdapterChoice> {
         ["Integrated", "Discrete small", "Discrete large"].into_iter().map(|name| AdapterChoice { name: name.into(), compatible: true }).collect()
+    }
+
+    #[test]
+    fn account_session_restore_requires_secure_store_active_product_and_provable_scope() {
+        assert!(!can_restore_account_session(false, true, true), "no secure store never restores");
+        assert!(!can_restore_account_session(true, false, true), "a provider-only login never restores");
+        assert!(!can_restore_account_session(true, true, false), "an unprovable identity never restores");
+        assert!(can_restore_account_session(true, true, true));
     }
 
     #[test]
