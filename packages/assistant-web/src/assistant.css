@@ -27,10 +27,15 @@ body,
   background: transparent;
 }
 
-/* Mastra's sizes are for a browser page at arm's length from a wide column; in a narrow panel
-   beside a model they read small. Every size is in rem, so this is the one place they scale. */
+/* Enlarge Mastra's rem sizes in the side panel for external agents. The built-in agent keeps
+   Mastra's own sizes (`data-sizes`), as does the bottom-centre composer for every agent. */
 html {
   font-size: 125%;
+}
+
+html.centre,
+html[data-sizes='mastra'] {
+  font-size: 100%;
 }
 
 /* The page is a panel of the app, not a document: no rubber-band scroll of the whole view. */
@@ -74,4 +79,65 @@ body {
     outline-offset: 2px;
     border-radius: 2px;
   }
+}
+
+/* At the bottom centre of the window the page floats over the model: only its message box is drawn. */
+html.centre,
+html.centre body,
+html.centre #root {
+  background: transparent !important;
+}
+/* The message box there has no scroll bar: Mastra's input scrolls in its own scroll area, whose bar
+   (drawn by the page, not the system) shows beside a one-line message while the pointer is over it.
+   A long message still scrolls with the wheel and the keys. */
+html.centre div:has(> div > div > [data-slot='composer-input']) > [data-slot='scroll-area-scrollbar'] {
+  display: none !important;
+}
+/* Closed, the conversation waits out of sight (Centre in App.tsx). Mastra's rows skip drawing off
+   screen and hold a 10rem stand-in, so out of sight every row was 10rem tall, and on Expand the rows
+   took their real heights and the conversation moved under the reader. Closed, they are drawn; open,
+   Mastra's skipping holds the heights they were drawn at. */
+html.centre [data-centre-body][inert] [data-slot='message-scroller-item'] {
+  content-visibility: visible;
+}
+/* Expand there: the fold over the message box grows from the line's height to the conversation's
+   with Mastra's own motion tokens (its composer header opens the same way), the conversation fading
+   in at its foot as the line fades out; Collapse the other way. No motion where the system asks for
+   less. The conversation keeps its height throughout, anchored to the fold's foot, so nothing in it
+   moves. */
+.centre-fold {
+  overflow: hidden;
+  transition: height var(--duration-slow) var(--ease-out-custom);
+}
+.centre-fold-body {
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--duration-normal) var(--ease-out-custom),
+    visibility 0s linear var(--duration-normal);
+}
+.centre-fold-body[data-open] {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity var(--duration-slow) var(--ease-out-custom);
+}
+.centre-fold-line {
+  transition: opacity var(--duration-fast) var(--ease-out-custom);
+}
+.centre-fold-line[data-open] {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .centre-fold,
+  .centre-fold-body,
+  .centre-fold-body[data-open],
+  .centre-fold-line {
+    transition: none;
+  }
+}
+/* While the view grows to the height the page asked for there, what it would cut off at the top
+   waits unseen (Centre's `fit` in App.tsx). Not `visibility`: a popup must still take the focus. */
+html.centre [data-centre-wait] {
+  opacity: 0 !important;
+  pointer-events: none !important;
 }

@@ -303,6 +303,8 @@ mod tests {
             crate::theme::set_dark(dark);
             let mut w = Win::new(1600.0);
             w.app.home.open = false;
+            // Beside the right rail the Assistant's button is the rail's first row, not the bar's.
+            w.app.preferences.right_rail = false;
             w.frame(vec![]);
             w.frame(vec![]);
             let t = Tokens::get();

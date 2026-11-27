@@ -33,13 +33,24 @@ unset WGPU_BACKEND WGPU_BACKENDS
 # The control channel's token (docs/control-protocol.md), set here so this client knows it.
 SOLIDCRAFT_CONTROL_TOKEN=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
 export SOLIDCRAFT_CONTROL_TOKEN
-intcad --control 18837 >"$work/app.log" 2>&1 &
+# Its own process group: a release app runs the built-in agent as a child, and stopping the app
+# must stop it too. Without the group, `kill` ends only the app and the agent keeps the files in
+# "$work" busy for a moment, which the cleanup then cannot remove.
+setsid intcad --control 18837 >"$work/app.log" 2>&1 &
 app=$!
 cleanup() {
-  kill "$app" 2>/dev/null || true
+  kill -TERM -"$app" 2>/dev/null || kill "$app" 2>/dev/null || true
   wait "$app" 2>/dev/null || true
+  # Bounded: a child that was started before the group existed, or one still closing its files.
+  for _ in $(seq 1 50); do
+    pgrep -f -- "$work" >/dev/null 2>&1 || break
+    sleep .1
+  done
   cat "$work/app.log" >&2
-  rm -rf -- "$work"
+  rm -rf -- "$work" 2>/dev/null || {
+    sleep .5
+    rm -rf -- "$work"
+  }
 }
 trap cleanup EXIT
 ready=0

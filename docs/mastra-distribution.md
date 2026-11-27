@@ -75,6 +75,12 @@ license string is not rights clearance. The current policy vocabulary is
 `MIT OR Apache-2.0`. A `LicenseEvidence` whose `verdict` is not `"verified"` is
 recorded evidence, not licence permission.
 
+The Assistant's page (`packages/assistant-web`, built by its own `tools/build.mjs`) uses the
+same vocabulary and one expression more, `0BSD`, approved by the owner on 2026-11-18 for
+`tslib`: Mastra's model picker reaches it through `cmdk`. `0BSD` asks for no notice and sets no
+condition. The runtime's policy (`packaging/mastra/policy.json`) is unchanged and does not
+admit it.
+
 JSON is bounded to 16,777,216 bytes (16 MiB) per file, including BuildEvidence;
 serde's recursion limit remains enabled (128). Each array has at most 100,000
 entries. Declared input **plus** output sizes total at most 68,719,476,736 bytes

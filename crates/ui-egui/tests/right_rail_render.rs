@@ -62,6 +62,20 @@ fn the_right_rail_and_its_panels_render_in_both_layouts_and_three_themes() {
     let sketch = || -> Box<dyn FnOnce(&mut Harness)> { Box::new(|h: &mut Harness| drop(h.app.run("sketch.create", json!({"plane": "XY"})))) };
     let open = |item: &'static str, theme: &str| (json!({"theme": theme, "right_rail_open": item}), Some(item));
 
+    // A folder with a design, a document and a subfolder, so the Files panel renders a real tree.
+    let files_dir = std::env::temp_dir().join(format!("intcad-right-rail-files-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&files_dir);
+    std::fs::create_dir_all(files_dir.join("parts")).unwrap();
+    std::fs::write(files_dir.join("bracket.sc"), "").unwrap();
+    std::fs::write(files_dir.join("README.md"), "").unwrap();
+    std::fs::write(files_dir.join("parts/pin.sc"), "").unwrap();
+    let files_root = || -> Box<dyn FnOnce(&mut Harness)> {
+        let dir = files_dir.to_string_lossy().into_owned();
+        Box::new(move |h: &mut Harness| {
+            h.call("ui.files", json!({"root": dir}));
+            h.frames(20);
+        })
+    };
     let mut shots: Vec<Shot> = Vec::new();
     for layout in ["floating", "docked"] {
         let name = |what: &str| format!("{layout}-{what}");
@@ -69,7 +83,8 @@ fn the_right_rail_and_its_panels_render_in_both_layouts_and_three_themes() {
         let (prefs, item) = open("review", "dark");
         shots.push((name("review"), wide, layout, prefs, item, nothing()));
         let (prefs, item) = open("files", "dark");
-        shots.push((name("files-assistant-right"), wide, layout, prefs, item, assistant("right")));
+        shots.push((name("files-assistant-right"), wide, layout, prefs.clone(), item, files_root()));
+        shots.push((name("files"), wide, layout, prefs, item, files_root()));
         let (prefs, item) = open("autocomplete", "dark");
         shots.push((name("autocomplete-assistant-left"), wide, layout, prefs, item, assistant("left")));
         let prefs = json!({"theme": "dark", "right_rail_open": "simulation", "status_bar": true});
@@ -80,6 +95,8 @@ fn the_right_rail_and_its_panels_render_in_both_layouts_and_three_themes() {
     let (prefs, item) = open("review", "black");
     shots.push(("black-review".into(), wide, "floating", prefs, item, nothing()));
     shots.push(("black-closed".into(), wide, "floating", json!({"theme": "black"}), None, nothing()));
+    shots.push(("black-assistant-open".into(), wide, "floating", json!({"theme": "black"}), None, assistant("right")));
+    shots.push(("light-assistant-open".into(), wide, "floating", json!({"theme": "light"}), None, assistant("right")));
     let prefs = json!({"theme": "dark", "language": "zh", "right_rail_open": "files"});
     shots.push(("chinese-files".into(), wide, "floating", prefs, Some("files"), nothing()));
     let prefs = json!({"theme": "dark", "language": "ar", "right_rail_open": "autocomplete"});
@@ -98,8 +115,14 @@ fn the_right_rail_and_its_panels_render_in_both_layouts_and_three_themes() {
         if let Some(panel) = panel {
             assert!(inside(&image, panel) && panel.right() <= rail.left() + 1.0, "{name}: {panel:?} beside {rail:?}");
         }
-        for item in ["files", "review", "simulation", "autocomplete"] {
-            assert!(scenario::rect_of(&format!("rail:item:{item}")).is_some_and(|r| rail.contains_rect(r)), "{name}: {item}");
+        for row in ["rail:assistant", "rail:item:files", "rail:item:review", "rail:item:simulation", "rail:item:autocomplete"] {
+            assert!(scenario::rect_of(row).is_some_and(|r| rail.contains_rect(r)), "{name}: {row}");
+        }
+        assert!(scenario::rect_of("titlebar:assistant").is_none(), "{name}: the application bar has no Assistant button beside the rail");
+        if name.ends_with("files") && name.contains("floating") {
+            for row in ["files:row:parts", "files:row:bracket.sc", "files:row:README.md"] {
+                assert!(scenario::rect_of(row).is_some_and(|r| panel.is_some_and(|p| p.contains_rect(r))), "{name}: {row}");
+            }
         }
         if let Some(sheet) = h.app.viewport.rect {
             let side = panel.map_or(rail.left(), |panel| panel.left());
@@ -108,4 +131,5 @@ fn the_right_rail_and_its_panels_render_in_both_layouts_and_three_themes() {
         image.save(dir.join(format!("{name}.png"))).unwrap();
     }
     theme::set_dark(previous);
+    let _ = std::fs::remove_dir_all(&files_dir);
 }

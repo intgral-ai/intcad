@@ -4186,7 +4186,7 @@
   "ui.agent_chat_limit": "Agen mencapai batas {limit} perubahan untuk satu pesan. Kirim pesan lain agar agen melanjutkan.",
   "ui.agent_chat_login_found": "login ditemukan",
   "ui.agent_chat_minimize": "Kecilkan menjadi strip",
-  "ui.agent_chat_mode_all": "Semua",
+  "ui.agent_chat_mode_all": "Otomatis",
   "ui.agent_chat_mode_ask": "Tanya",
   "ui.agent_chat_mode_edits": "Edit",
   "ui.agent_chat_model_custom": "Gunakan kustom: {model}",

@@ -1,0 +1,53 @@
+# INT-1454 Phase 0 — risks, blockers and decision candidates
+
+Severity is about the sync, not about IntCAD's current health. Each risk names the evidence that
+created it and the guard that would catch it.
+
+## 1. Risk register
+
+| # | Risk | Evidence | Severity | Guard / mitigation |
+| --- | --- | --- | --- | --- |
+| R1 | Engine integration is the largest conflict surface | upstream `crates/engine` +144,001 lines; IntCAD added ~16k lines (validation subsystem, DFM commands); 35 files changed on both sides | **High** | single owner for `crates/engine`; adopt upstream file-by-file; keep IntCAD modules as separate files; oracle + action matrix |
+| R2 | UI cannot be taken from upstream and must be adapted by hand | upstream `ui-egui` 537 changed files (63 also changed by IntCAD); 200 of 626 files import brand crates; post-brand chrome files are licence-uncertain | **High** | treat UI as an adaptation unit; port only non-brand logic; record "backend migrated, UI not exposed"; GUI E2E on IntCAD's own flows |
+| R3 | Kernel is a snapshot replacement with disjoint history | v0.44.1 vendors `524be9e1…`; IntCAD pins `8ddce901…`, 3,501 commits behind, `merge-base` exits 1; the pin predates `solidcore-ops/-tess/-step`, so the new kernel cannot compile at it | **High** | replace the payload as one atomic PR; run `cargo xtask kernel-cases --known-failing` and the oracle; any expected-value change needs before/after evidence |
+| R4 | File persistence behaviour changes for real user files | upstream added `crates/format`; IntCAD has its own `crates/doc/src/format/pending` flow; `doc/src/format.rs` changed on both sides | **High** | adopt the upstream implementation only; test save→reopen→data integrity; raise a Compatibility Decision if the written format becomes unreadable by older builds |
+| R5 | Known-failing list will move under a new kernel | 42 entries, many state "as on SMLib"/"solidcore refuses…" | Medium | refresh with `cargo xtask known-failing --junit`; a line is removed only when its test passes; never add a line to hide a regression |
+| R6 | MCP contract collision | 7 of 9 upstream-touched `crates/mcp` files are also IntCAD-modified; IntCAD rewrote the server | Medium | single owner; keep IntCAD HostDispatch/gating; compare tool names and schemas before/after |
+| R7 | Two pins of the same solidcore repository | `solidcore` at `8ddce901…`, `solidcore-record` at `f5e8e9a2…` | Medium | converge on the vendored snapshot's single tree; check for duplicate crate sources in `Cargo.lock` |
+| R8 | Build feedback is CI-bound | disk ≈188 GiB of the 200 GiB budget → heavy local builds forbidden | Medium | area checks locally, full lanes on CI; one heavy build at a time after cleanup |
+| R9 | Brand-blocked UI assets create feature gaps | 603 files / 87,233 text lines: `ui-kit` (115), `look` (455), `theme` (5), app icons, branding | Medium | record gaps in the ledger; draw icons in-house; never copy brand material, including post-brand chrome-file changes (CD-6) |
+| R13 | Plugin runtime is a new subsystem, not a sync | `craft-plugin*` + Wasmtime, 26 commits; IntCAD has only a metadata list | Medium | CD-5 before any work; do not port the engine adapter piecemeal |
+| R14 | Toolchain is unpinned while upstream assumes 1.99.1 | develop has no `rust-toolchain.toml`; CI uses `@stable` | Medium | land the pin first (P1); otherwise a compiler change silently redefines the baseline |
+| R10 | Ledger can silently miss commits | 4,939 non-merge commits; 2,654 touch paths retired at v0.44.1 | Medium | path/commit coverage script plus a reviewer independent of the implementer; "Already Covered"/"Not Applicable" need cited evidence |
+| R11 | PR #145 is dirty and tempting to reuse | draft, `mergeable_state=dirty`, 4,017 commits, 10,399 files | Low | keep it draft; take only verified findings, never code |
+| R12 | Scope creep beyond `develop` | release/tag/website are out of scope | Low | stop at `develop`; no tag, no package release |
+
+## 2. Blockers
+
+| Blocker | Unit(s) | Why | Unblock |
+| --- | --- | --- | --- |
+| Brand-restricted UI kit, look, theme, app icons | INT-1493 UI work | `LICENSE-BRAND` §1 forbids use outside SolidCraft | cannot be lifted; design in-house equivalents or record a gap |
+| Upstream UI screenshots and docs that show SolidCraft chrome | docs/evidence | not licence-blocked but identity-confusing | capture IntCAD's own evidence |
+
+## 3. Compatibility Decisions — decided 2026-11-17
+
+All seven were approved by the owner; the binding text is in [ledger.md §7](ledger.md). Summary:
+
+| ID | Decision |
+| --- | --- |
+| CD-1 | Adopt format 58 and the single upstream persistence implementation; verify old-open, save/reopen, integrity |
+| CD-2 | MCP tool map first; pure renames replaced outright; semantic/permission changes need a new CD; aliases share one resolve/authorise/execute path |
+| CD-3 | Keep the control channel default **on**; absorb applicable fixes only |
+| CD-4 | **Reject** opt-in plaintext HTTP; keep HTTPS/loopback |
+| CD-5 | Plugin runtime **deferred** (Blocked with unblock conditions) |
+| CD-6 | **No** brand-era UI kit/look/theme/chrome/assets; logic only |
+| CD-7 | Adopt the vendored solidcore closure; remove rev pins; one kernel |
+
+Any further change to these is a new decision, not an implementation detail.
+
+## 4. What would stop the sync from starting
+
+Phase 0 gate fails only if: the SHAs cannot be reproduced; the ledger cannot be verified; licence
+status of a unit is unclear and it is load-bearing; or the baseline CI is not green. Current
+status: SHAs frozen and reproducible, baseline green, licence boundary defined. The ledger and its
+independent review remain the gate.

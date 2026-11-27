@@ -63,6 +63,15 @@ that was running when it went away says the app did not answer and may have quit
 after running the call or not, so inspect the design before sending a change again.
 A `batch` that could not be sent says the app is not running, so it is safe to send again.
 
+Reaching the app is **transport, not authority**. A discovered port, a successful TCP connection
+or the launch token does not authenticate an account or grant a charged operation. Charged tools
+stay closed with `AUTH_UNAVAILABLE` before dispatch in headless and bridged CLI sessions until a
+reviewed authenticated account protocol, live authorization and same-id settlement are installed.
+Free helpers (protocol, catalog, render, screenshot, diagnostics and `running`) keep working.
+The local launch token file and `SOLIDCRAFT_CONTROL_TOKEN` are sent only to a loopback
+destination; a non-loopback `--connect` destination receives only a token passed explicitly for
+it, or none.
+
 stdout carries only protocol messages; errors go to stderr. Bridged screenshots are written to a
 temporary file by the app and read back by the server, so both must run on the same machine.
 
