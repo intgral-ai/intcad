@@ -14,6 +14,7 @@ mod credentials;
 mod device_code;
 mod form;
 mod http;
+mod identity;
 mod identity_journal;
 mod identity_store;
 mod identity_transport;
@@ -31,6 +32,8 @@ mod http_tests;
 mod identity_journal_tests;
 #[cfg(test)]
 mod identity_store_tests;
+#[cfg(test)]
+mod identity_tests;
 #[cfg(test)]
 mod identity_transport_tests;
 #[cfg(test)]
@@ -52,6 +55,10 @@ pub use device_code::{
 pub use http::{
     BootstrapPlatform, CredentialHandoff, FixedCredentials, HttpAccountService, HttpConfigError, InstallationBootstrap, OperationRenewal, Secret,
     Transport, TransportFailure, UreqTransport, WireConnection, WireCredentials, WireRequest, WireResponse,
+};
+pub use identity::{
+    IdentityClock, IdentityDomain, IdentityError, IdentityLease, IdentityLifecycle, IdentityStatus, IdentityTrigger, SessionVerifier, SignOutOutcome,
+    SystemIdentityClock, VerifiedSession, VerifyError,
 };
 pub use ledger::{FileOperationStore, InMemoryOperationStore};
 pub use session_verification::ServerVerifiedProductSession;
