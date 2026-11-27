@@ -374,7 +374,8 @@ fn panel(app: &mut SolveApp, ui: &mut egui::Ui, item: Item) {
     } else if item == Item::Autocomplete {
         let rest = crate::agent_chat::predict::panel::show(app, ui, body);
         if let Some(rest) = rest {
-            empty(ui, rest, item);
+            // In the panel's middle, as the other panels' blocks are, but never over the switch.
+            empty_below(ui, body, rest.top(), item);
         }
     } else {
         empty(ui, body, item);
@@ -385,7 +386,14 @@ fn panel(app: &mut SolveApp, ui: &mut egui::Ui, item: Item) {
 /// The empty block, centred in `area`: the item's drawing, what is missing, and the sentence
 /// under it. Each of the two texts is a label of its own for a screen reader.
 fn empty(ui: &mut egui::Ui, area: Rect, item: Item) {
+    empty_below(ui, area, area.top(), item);
+}
+
+/// The empty block, centred in `area` but drawn nowhere above `top`.
+fn empty_below(ui: &mut egui::Ui, area: Rect, top: f32, item: Item) {
     let t = Tokens::get();
+    // The part of `area` it may be drawn in.
+    let shown = Rect::from_min_max(pos2(area.left(), top.clamp(area.top(), area.bottom())), area.max);
     let wrap = (area.width() - t.space_16 * 2.0).clamp(0.0, EMPTY_TEXT);
     let centred = |text: &str, size: f32, ink: Color32| {
         let mut job = egui::text::LayoutJob::simple(text.to_string(), FontId::proportional(size), ink, wrap);
@@ -395,12 +403,12 @@ fn empty(ui: &mut egui::Ui, area: Rect, item: Item) {
     let (title, note) = (centred(item.empty(), t.font_label, t.text), centred(item.note(), t.font_small, t.text_dim));
     let height = EMPTY_ICON + t.space_12 + title.size().y + t.space_6 + note.size().y;
     let x = area.center().x;
-    let mut y = (area.center().y - height / 2.0).max(area.top() + t.space_24);
-    let painter = ui.painter().with_clip_rect(area);
+    let mut y = (area.center().y - height / 2.0).max(shown.top() + t.space_24);
+    let painter = ui.painter().with_clip_rect(shown);
     drawing(&painter, item, pos2(x, y + EMPTY_ICON / 2.0), EMPTY_ICON, t.text_dim);
     y += EMPTY_ICON + t.space_12;
     for (galley, text, gap, ink, what) in [(title, item.empty(), t.space_6, t.text, "empty"), (note, item.note(), 0.0, t.text_dim, "note")] {
-        let rect = Rect::from_center_size(pos2(x, y + galley.size().y / 2.0), galley.size()).intersect(area);
+        let rect = Rect::from_center_size(pos2(x, y + galley.size().y / 2.0), galley.size()).intersect(shown);
         let advance = galley.size().y + gap;
         painter.galley(pos2(x, y), galley, ink);
         let response = ui.interact(rect, egui::Id::new(("sc_right_rail_empty", item.id(), what)), Sense::hover());
