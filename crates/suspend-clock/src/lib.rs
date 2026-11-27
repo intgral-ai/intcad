@@ -82,15 +82,19 @@ fn native_read() -> Option<Duration> {
     fn resolve() -> Option<QueryInterruptTimePrecise> {
         use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 
-        // SAFETY: both names are NUL-terminated ASCII. Kernel32 stays loaded for the process
-        // lifetime; the exact name identifies the realtimeapiset.h export with the ABI above.
-        // windows-sys has no safe API for this optional entry point.
-        let kernel = unsafe { GetModuleHandleA(c"kernel32.dll".as_ptr().cast()) };
-        if kernel.is_null() {
-            return None;
+        // Some supported Windows builds export the function from KernelBase but not Kernel32.
+        // Only inspect already-loaded system modules; do not load a DLL by name.
+        for module in [c"kernel32.dll", c"kernelbase.dll"] {
+            // SAFETY: the names are NUL-terminated ASCII and these core OS modules stay loaded
+            // for the process lifetime. The exact export name identifies the ABI above.
+            let handle = unsafe { GetModuleHandleA(module.as_ptr().cast()) };
+            if !handle.is_null()
+                && let Some(symbol) = unsafe { GetProcAddress(handle, c"QueryInterruptTimePrecise".as_ptr().cast()) }
+            {
+                return Some(unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, QueryInterruptTimePrecise>(symbol) });
+            }
         }
-        let symbol = unsafe { GetProcAddress(kernel, c"QueryInterruptTimePrecise".as_ptr().cast()) }?;
-        Some(unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, QueryInterruptTimePrecise>(symbol) })
+        None
     }
 
     let query = (*QUERY.get_or_init(resolve))?;
