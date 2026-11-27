@@ -145,12 +145,14 @@ pub struct StressEstimateParams {
     /// default, so runs compare) or `auto` (zero to this run's highest stress).
     #[serde(default)]
     pub scale: Option<String>,
-    /// Solve the first model again with a mesh 1.5 times finer and say, for the highest stress,
-    /// the highest stress away from supports and loads and the largest deflection, whether each
-    /// settled (moved 2.5 % or less) or is still changing, and how far off it may still be; the
-    /// finer result is shown. Skipped when the finer mesh would need more memory than this computer can spare (the smaller of 6 GB
-    /// and half the memory available; `SOLIDCRAFT_FEA_MAX_NODES` caps its nodes instead).
-    /// Default: true.
+    /// Solve the first model again with a mesh 1.5 times finer, and when the peak away from
+    /// supports and loads moved more than 1 %, with one 2.25 times finer; give the highest stress,
+    /// the highest stress away from supports and loads, the largest deflection and each probe an
+    /// error band: extrapolated from three meshes (Richardson, at the order they converge), or
+    /// from two, "within ±x %" of the converged value; settled when the band is within 3 %. The
+    /// finest result is shown. A mesh that would need more memory than this computer can spare
+    /// (the smaller of 6 GB and half the memory available; `SOLIDCRAFT_FEA_MAX_NODES` caps its
+    /// nodes instead) is not solved. Default: true.
     #[serde(default)]
     pub mesh_check: Option<bool>,
     /// Keep the mesher's and solver's files (default: they are removed when the run ends).
@@ -206,7 +208,7 @@ pub struct StressRun {
     pub seconds: f64,
     /// The solver's threads (OpenMP; its equation solver runs on one, where it is reliable).
     pub solver_threads: usize,
-    /// This is the mesh check's finer solve (the one shown).
+    /// This is one of the mesh check's finer solves (the finest is shown, first).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mesh_check_run: bool,
     /// The fixed support or load the highest stress sits at (within 1.5 elements of its nodes).
@@ -291,7 +293,7 @@ pub struct StressProbeRun {
     /// `shell` or `solid`.
     pub elements: String,
     pub mesh_size_mm: f64,
-    /// The mesh check's finer solve.
+    /// One of the mesh check's finer solves.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mesh_check_run: bool,
     pub von_mises_mpa: f64,
@@ -329,7 +331,7 @@ pub struct StressProbe {
     pub along: Option<StressAlong>,
     /// The displacement, mm.
     pub displacement_mm: [f64; 3],
-    /// Its von Mises stress on the first mesh and the finer one, when the mesh check ran.
+    /// Its von Mises stress on each mesh of the mesh check, with its band, when the check ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh_check: Option<StressSettling>,
     /// Its von Mises stress in every solve.
@@ -394,39 +396,62 @@ pub struct StressPrograms {
     pub solver: Option<String>,
 }
 
-/// One number on the first mesh and the finer one.
+/// One number on each mesh of the mesh check, and how far it may be from the value an infinitely
+/// fine mesh would give.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct StressSettling {
-    /// `highest stress`, `highest stress away from supports and loads` or `largest deflection`.
+    /// `highest stress`, `highest stress away from supports and loads`, `largest deflection` or,
+    /// for a probe, `von Mises stress at the probe`.
     pub quantity: String,
     /// `MPa` or `mm`.
     pub unit: String,
-    pub first: f64,
-    pub finer: f64,
-    /// (finer − first) / first, %.
-    pub change_percent: f64,
-    /// `settled` (moved 2.5 % or less), `still changing`, or, at a support or load, that it
-    /// depends on the mesh.
+    /// Its value on each mesh, first (coarsest) to finest: two or three.
+    pub values: Vec<f64>,
+    /// Each step's change, %: second against first, then third against second.
+    pub changes_percent: Vec<f64>,
+    /// `settled` (its band within 3 %; with three meshes at an order of convergence of 0.5 or
+    /// more), `still changing`, `keeps rising: likely a sharp inside corner or an idealised
+    /// support` (it grows without settling: no band), or, at a support or load, that it depends on
+    /// the mesh.
     pub status: String,
-    /// How far off the finer value may still be, %: twice its change (one 1.5× step leaves up to
-    /// that for the slowest a smooth stress converges). Absent at a support or load.
+    /// The value to quote with `band_percent`: extrapolated from three meshes (`extrapolated`),
+    /// else the finest mesh's. Absent at a support or load and when it keeps rising.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub may_be_off_percent: Option<f64>,
+    pub estimate: Option<f64>,
+    /// How far `estimate` may be from the converged value, % of it: "within ±band_percent %".
+    /// With three meshes 1.25 times the distance between the extrapolated and the finest value;
+    /// with two, the change over (1.5 − 1); never under 0.5 %. Absent at a support or load and when
+    /// it keeps rising.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band_percent: Option<f64>,
+    /// The order of convergence the three meshes show (about 2 for a smooth stress).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_order: Option<f64>,
+    /// `estimate` is Richardson's extrapolation from three meshes, not a mesh's own value.
+    pub extrapolated: bool,
+    /// How the band was found, in words.
+    pub basis: String,
+    /// The number with its band, for a sentence: "about 108 MPa, within ±1.2 %".
+    pub quote: String,
 }
 
-/// Whether the numbers settle when the mesh is refined.
+/// How far the numbers are from the values an infinitely fine mesh would give: the first model
+/// solved again on meshes 1.5 and 2.25 times finer.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct StressMeshCheck {
-    /// `ran`, `skipped` (the finer mesh would need more memory than this computer's limit) or
+    /// `ran`, `skipped` (the second mesh would need more memory than this computer's limit) or
     /// `off` (mesh_check: false).
     pub status: String,
-    /// Why it was skipped (the finer mesh's predicted nodes and memory against the limit) or off.
+    /// Why it was skipped (the second mesh's predicted nodes and memory against the limit) or off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The element sizes solved, first to finest, mm: two or three.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub meshes_mm: Vec<f64>,
+    /// Why there was no third mesh: not needed (the lead peak moved 1 % or less), or over the
+    /// memory limit (then the bands rest on two meshes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub first_mesh_mm: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finer_mesh_mm: Option<f64>,
+    pub third_mesh: Option<String>,
     pub quantities: Vec<StressSettling>,
     /// The mesh check in one line.
     pub line: String,
@@ -459,17 +484,23 @@ pub struct StressEstimateResult {
     pub setup: Vec<String>,
     /// One or two sentences for the user.
     pub summary: String,
-    /// The solves, the shown one first (the mesh check's finer one when it ran).
+    /// The solves, the shown one first (the mesh check's finest when it ran), then the mesh
+    /// check's other finer one, then the first meshes.
     pub runs: Vec<StressRun>,
     /// The share of the yield strength given (0.5 is half of it) of the number the summary leads
     /// with: the highest stress away from supports and loads when the highest overall sits at one
-    /// (`peak_at_support`), otherwise the shown run's highest stress. How far from yield, in one
-    /// number.
+    /// (`peak_at_support`), otherwise the highest stress; as the mesh check quotes it (`estimate`,
+    /// extrapolated from three meshes where it says so) when it gives a band, else the shown run's.
+    /// How far from yield, in one number, within ±`band_percent` %.
     pub fraction_of_yield: f64,
     /// The shown run's highest stress overall as a share of the yield strength given, including a
-    /// peak at an idealised support or load that depends on the mesh. Equal to
-    /// `fraction_of_yield` when no peak sits at a support.
+    /// peak at an idealised support or load that depends on the mesh.
     pub fraction_of_yield_overall: f64,
+    /// The band of the number the summary leads with, and so of `fraction_of_yield`: within ± this
+    /// % of the converged value. Absent when the mesh check gave none (skipped, off, a peak that
+    /// keeps rising).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band_percent: Option<f64>,
     /// The shell and solid results side by side, with `elements: both`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell_vs_solid: Option<String>,
@@ -482,7 +513,8 @@ pub struct StressEstimateResult {
     /// What the supports carry against the loads applied (shown run).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equilibrium: Option<StressEquilibrium>,
-    /// Whether the numbers settle with a finer mesh. Absent on a dry run.
+    /// How far the numbers are from settling: each one's band over two or three meshes. Absent on
+    /// a dry run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh_check: Option<StressMeshCheck>,
     /// The stress and strain at each point of `probes` that could be read (a point that could not

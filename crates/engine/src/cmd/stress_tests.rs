@@ -450,90 +450,138 @@ fn numbers_in_sentences_keep_three_figures_across_a_decade() {
     assert_eq!(sig(f64::NAN), "?");
 }
 
-/// U3: the mesh check's statuses and what they mean.
-/// Input: fake first and finer runs (no programs): the overall peak 100 MPa at "the clamp", the
-/// peak away from it 50 MPa, deflection 8 mm; finer runs that move by 2 % and by 12 %.
-/// Action: `settling`, `check_warnings`, `check_line`, `wording`.
-/// Observable: each quantity's status and change; the warnings; the summary's first numbers.
-/// Pass: 2 % reads "settled" (3 % no longer does: one step's change can leave twice as much)
-/// and 12 % "still changing", each with how far off it may be; the warning that the value at the
-/// support depends on the mesh appears only when the overall peak is at a support, still
-/// changing, and the away peak settled; an away peak still changing gets the sharp-corner
-/// warning; a skipped or switched-off check says the settling is unknown and warns nothing; when
-/// the peak is at a support, the summary leads with the away peak.
+/// U3: the mesh check's statuses and bands, and what they mean (PIL-294 A6).
+/// Input: fake runs (no programs): the overall peak 100 MPa at "the clamp", the peak away from it
+/// 50 MPa, deflection 8 mm; then finer runs where the away peak moves 1 % (two meshes), 2 % (two
+/// meshes, the third not solved), converges at order 2 to 52 MPa over three meshes, or keeps
+/// rising (50, 55, 62 MPa). Action: `settling`, `third_wanted`, `check_warnings`, `check_line`,
+/// `wording`, `lead_quoted`. Observable: each quantity's status, quote and band; the warnings; the
+/// summary's lead number and share of yield.
+/// Pass: two meshes and 1 %: settled within ±2.0 % (twice the change), no third mesh wanted; 1.2 %
+/// wants one; a peak at the clamp never settles and wants none; 2 % on two meshes is still changing
+/// within ±3.9 % with the sharp-corner warning; the order-2 series is settled about 52.0 MPa
+/// within ±0.9 %, and the summary leads with it and shares 21.7 % of yield; the rising series has
+/// no band and is called "keeps rising"; the clamp's peak gets the depends-on-the-mesh warning
+/// only when it moved and the away peak settled; skipped or off says the bands are unknown.
 #[test]
-fn the_mesh_check_says_settled_or_still_changing_and_flags_a_peak_held_up_by_a_support() {
+fn the_mesh_check_gives_each_number_a_band_and_flags_a_peak_held_up_by_a_support() {
     let near = |_: P| "the top".to_string();
     let first = peaked_run(100.0, Some("the clamp"), Some(50.0), 8.0);
-    let warnings = |finer: &fea::Run| {
-        let check = Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, finer) };
-        check_warnings(&check, finer, &near).join("\n")
-    };
-    // Everything 2 %: settled, no warnings.
-    let calm = peaked_run(102.0, Some("the clamp"), Some(51.0), 8.16);
-    let items = settling(&first, &calm);
+    let two = |finer: &fea::Run| Check::Ran { meshes: vec![1.5, 1.0], items: settling(&[&first, finer]), third: Third::Ran };
+    let warnings = |finer: &fea::Run| check_warnings(&two(finer), finer, &near).join("\n");
+    // Everything 1 % on two meshes: settled within twice the change; no warnings; no third mesh.
+    let calm = peaked_run(101.0, Some("the clamp"), Some(50.5), 8.08);
+    let items = settling(&[&first, &calm]);
     assert_eq!(items.iter().map(|s| s.quantity).collect::<Vec<_>>(), [OVERALL, AWAY, DEFLECTION]);
     for s in &items {
-        // The overall peak sits at the clamp, so it is never labelled settled, however little it moved.
-        let label = if s.quantity == OVERALL { "at a support or load: depends on the mesh" } else { "settled" };
-        assert!((s.change() - 2.0).abs() < 1e-9 && s.settled() && s.status() == label, "{s:?}");
-        let off = if s.quantity == OVERALL { None } else { Some(4.0) };
-        assert!(s.may_be_off().map(|r| (r * 1e6).round() / 1e6) == off, "{s:?}");
+        // The overall peak sits at the clamp, so it is never settled and has no band.
+        if s.quantity == OVERALL {
+            assert!(s.status() == "at a support or load: depends on the mesh" && s.band().is_none() && !s.settled(), "{s:?}");
+        } else {
+            assert!((s.change() - 1.0).abs() < 1e-9 && s.settled() && s.status() == "settled", "{s:?}");
+            assert!(s.band().is_some_and(|b| (b - 0.02 / 1.01).abs() < 1e-12) && s.quote().ends_with("within ±2.0 %"), "{}", s.quote());
+        }
     }
     assert_eq!(warnings(&calm), "");
-    // The peak at the clamp moves 12 %, the away peak 2 %: the singular-support warning.
-    let singular = peaked_run(112.0, Some("the clamp"), Some(51.0), 8.16);
-    let items = settling(&first, &singular);
-    assert!((items[0].change() - 12.0).abs() < 1e-9 && items[0].status() == "at a support or load: depends on the mesh");
+    assert_eq!(third_wanted(&items), Err(Third::NotNeeded { quantity: AWAY, moved: items[1].change() }));
+    assert_eq!(third_wanted(&settling(&[&first, &peaked_run(101.0, Some("the clamp"), Some(50.6), 8.0)])), Ok(()), "1.2 % wants a third");
+    let at_clamp = |max: f64| peaked_run(max, Some("the clamp"), None, 8.0);
+    assert_eq!(third_wanted(&settling(&[&at_clamp(100.0), &at_clamp(130.0)])), Err(Third::AtSupport));
+    // The peak at the clamp moves 12 %, the away peak 1 %: the singular-support warning.
+    let singular = peaked_run(112.0, Some("the clamp"), Some(50.5), 8.08);
     let w = warnings(&singular);
     for needed in
-        ["The value at the clamp depends on the mesh", "100 to 112 MPa", "+12.0%", "Lead with the stress away from it: 51.0 MPa", "settled (+2.0%)"]
+        ["The value at the clamp depends on the mesh", "100 → 112 MPa", "Lead with the stress away from it: about 50.5 MPa, within ±2.0 %", "settled"]
     {
         assert!(w.contains(needed), "`{needed}` missing: {w}");
     }
     // The same peak, not at a support: no singular-support warning.
-    let w = warnings(&peaked_run(112.0, None, Some(51.5), 8.24));
+    assert!(!warnings(&peaked_run(112.0, None, Some(50.5), 8.08)).contains("depends on the mesh"));
+    // At the clamp, the away peak 2 % on two meshes (its third not solved): still changing within
+    // ±3.9 %, the sharp-corner warning, no singular-support one.
+    let w = warnings(&peaked_run(112.0, Some("the clamp"), Some(51.0), 8.08));
+    for needed in ["has not settled over two meshes (50.0 → 51.0 MPa)", "about 51.0 MPa, within ±3.9 %", "sharp inside corner", "fillet"] {
+        assert!(w.contains(needed), "`{needed}` missing: {w}");
+    }
     assert!(!w.contains("depends on the mesh"), "{w}");
-    // At the clamp and still changing, but the away peak still changing too: no singular-support
-    // warning; the sharp-corner one instead.
-    let w = warnings(&peaked_run(112.0, Some("the clamp"), Some(56.0), 8.24));
-    assert!(!w.contains("depends on the mesh") && w.contains("sharp inside corner") && w.contains("fillet"), "{w}");
-    // At the clamp, settled: nothing.
-    assert_eq!(warnings(&peaked_run(102.0, Some("the clamp"), Some(51.0), 8.0)), "");
     // A deflection still changing says so.
-    assert!(warnings(&peaked_run(103.0, Some("the clamp"), Some(51.5), 9.0)).contains("largest deflection moved by +12.5%"));
+    assert!(
+        warnings(&peaked_run(101.0, Some("the clamp"), Some(50.5), 9.0))
+            .contains("The largest deflection has not settled over two meshes (8.00 → 9.00 mm)")
+    );
+
+    // Three meshes, the away peak converging at order 2 to 52 MPa: extrapolated, settled.
+    let quad = |h: f64| 52.0 - 2.0 * h * h;
+    let (b, c) = (1.0 / 1.5, 1.0 / 2.25);
+    let second = peaked_run(110.0, Some("the clamp"), Some(quad(b)), 8.01);
+    let third = peaked_run(118.0, Some("the clamp"), Some(quad(c)), 8.012);
+    let items = settling(&[&first, &second, &third]);
+    let three = Check::Ran { meshes: vec![1.5, 1.0, 1.0 / 1.5], items: items.clone(), third: Third::Ran };
+    let away = items.iter().find(|s| s.quantity == AWAY).unwrap_or_else(|| panic!("{items:?}"));
+    let e = away.estimate().unwrap_or_else(|| panic!("{away:?}"));
+    assert!(e.extrapolated() && (e.value - 52.0).abs() < 1e-9 && e.order.is_some_and(|p| (p - 2.0).abs() < 1e-9), "{e:?}");
+    assert!(away.settled() && away.quote() == "about 52.0 MPa, within ±0.9 %", "{}", away.quote());
+    let deflection = items.iter().find(|s| s.quantity == DEFLECTION).unwrap_or_else(|| panic!("{items:?}"));
+    assert!(deflection.settled() && deflection.status() == "settled", "{deflection:?}");
+    assert!(check_warnings(&three, &third, &near).join("\n").contains("The value at the clamp depends on the mesh"));
+    let line = check_line(&three);
+    assert!(
+        line.starts_with("meshes 1.50 → 1.00 → 0.667 mm: highest stress 100 → 110 → 118 MPa (at a support or load: depends on the mesh); "),
+        "{line}"
+    );
+    assert!(line.contains("highest stress away from supports and loads 50.0 → 51.1 → 51.6 MPa: about 52.0 MPa, within ±0.9 % (settled)"), "{line}");
+    let (lead, item) = lead_quoted(&third, &three);
+    assert!((lead - 52.0).abs() < 1e-9 && item.is_some_and(|s| s.quantity == AWAY), "{lead}");
+    let material = Material { name: "6061-T6".into(), e_mpa: 69000.0, nu: 0.33, yield_mpa: 240.0, source: "a handbook".into() };
+    let done = [first.clone_run()];
+    let (summary, assumptions, _) = wording(&material, &[], &[], &Outcome { done: &done, shown: &third, check: &three }, 1.5, &near);
+    for needed in [
+        "away from the supports and loads, the highest von Mises stress is about 52.0 MPa (within ±0.9 %)",
+        "that is about 21.7% of the yield strength given",
+        "The highest overall, 118 MPa on the finest mesh, sits at the clamp",
+        "Mesh check: meshes 1.50 → 1.00 → 0.667 mm",
+    ] {
+        assert!(summary.contains(needed), "`{needed}` missing: {summary}");
+    }
+    assert!(summary.find("52.0").unwrap_or(usize::MAX) < summary.find("118").unwrap_or(0), "the away peak comes first: {summary}");
+    assert!(assumptions.iter().any(|a| a.starts_with("Shown: the mesh check's finest mesh") && a.contains("extrapolated")), "{assumptions:?}");
+
+    // Three meshes, the away peak rising 50, 55, 62: no band, keeps rising, the finest quoted.
+    let rising = Check::Ran {
+        meshes: vec![1.5, 1.0, 1.0 / 1.5],
+        items: settling(&[&first, &peaked_run(110.0, Some("the clamp"), Some(55.0), 8.0), &peaked_run(118.0, Some("the clamp"), Some(62.0), 8.0)]),
+        third: Third::Ran,
+    };
+    let shown = peaked_run(118.0, Some("the clamp"), Some(62.0), 8.0);
+    let w = check_warnings(&rising, &shown, &near).join("\n");
+    assert!(w.contains("keeps rising as the mesh is refined (50.0 → 55.0 → 62.0 MPa)") && w.contains("sharp inside corner"), "{w}");
+    assert!(check_line(&rising).contains("50.0 → 55.0 → 62.0 MPa (keeps rising: likely a sharp inside corner or an idealised support)"));
+    let (summary, _, _) = wording(&material, &[], &[], &Outcome { done: &done, shown: &shown, check: &rising }, 1.5, &near);
+    assert!(summary.contains("62.0 MPa on the finest mesh, and it keeps rising: likely a sharp inside corner"), "{summary}");
+    assert_eq!(lead_quoted(&shown, &rising).0, 62.0);
+
+    // Why there was no third mesh, in the line.
+    let not_needed = Check::Ran { meshes: vec![1.5, 1.0], items: settling(&[&first, &calm]), third: Third::NotNeeded { quantity: AWAY, moved: 1.0 } };
+    assert!(check_line(&not_needed).ends_with("no third mesh was needed: the highest stress away from supports and loads moved +1.0%, within 1%"));
+    let over = Third::Skipped { nodes: 600_000.0, bytes: 1.4e10, limit: Limit::Memory(6.0e9) };
+    let over_line = check_line(&Check::Ran { meshes: vec![1.5, 1.0], items: settling(&[&first, &calm]), third: over });
+    assert!(
+        over_line.contains("the third mesh (0.667 mm) was not solved, so the bands rest on two meshes: it would have about 600,000 nodes"),
+        "{over_line}"
+    );
     // Skipped or off: unknown, no warnings.
     let skipped = Check::Skipped { nodes: 673_000.0, bytes: 1.08e10, limit: Limit::Memory(6.0e9) };
     for check in [skipped.clone(), Check::Off] {
         assert!(check_warnings(&check, &singular, &near).is_empty());
         assert!(check_line(&check).contains("unknown"), "{}", check_line(&check));
+        assert_eq!(lead_quoted(&singular, &check), (50.5, None));
     }
     assert!(check_line(&skipped).contains("about 670,000 nodes (about 11 GB)"), "{}", check_line(&skipped));
-    let line = check_line(&Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &singular) });
-    assert!(line.starts_with("mesh 1.50 → 1.00 mm: highest stress 100 → 112 MPa (+12.0%, at a support or load: depends on the mesh)"), "{line}");
-    // At the clamp and moved only 2 %: the line still never says settled for it (R1's clamp moved
-    // +0.4 % over one step yet climbs to 151 MPa at 0.35 mm).
-    let calm_line = check_line(&Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &calm) });
-    assert!(calm_line.contains("(+2.0%, at a support or load: depends on the mesh)"), "{calm_line}");
-    assert!(calm_line.contains("(+2.0%, settled, may be off by about 4.0%)"), "{calm_line}");
-    // The words lead with the stress away from the clamp.
-    let material = Material { name: "6061-T6".into(), e_mpa: 69000.0, nu: 0.33, yield_mpa: 240.0, source: "a handbook".into() };
-    let check = Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &singular) };
-    let done = [first.clone_run()];
-    let outcome = Outcome { done: &done, shown: &singular, check: &check };
-    let (summary, assumptions, _) = wording(&material, &[], &[], &outcome, 1.5, &near);
-    assert!(summary.contains("away from the supports and loads, the highest von Mises stress is about 51.0 MPa"), "{summary}");
-    assert!(summary.find("51.0").unwrap_or(usize::MAX) < summary.find("112").unwrap_or(0), "the away peak comes first: {summary}");
-    assert!(summary.contains("sits at the clamp") && summary.contains("still changing with the mesh"), "{summary}");
-    assert!(summary.contains("Mesh check: mesh 1.50 → 1.00 mm"), "{summary}");
-    assert!(assumptions.iter().any(|a| a.starts_with("Shown: the mesh check's finer mesh")), "{assumptions:?}");
-    // A peak at the clamp that moved only 2 % is still never called settled in the words: one
-    // step of refinement misses its slow climb (R1's clamp: +0.4 % from 1.5 to 1.0 mm, yet 151
-    // MPa at 0.35 mm against 145).
-    let check = Check::Ran { first_h: 1.5, finer_h: 1.0, items: settling(&first, &calm) };
-    let outcome = Outcome { done: &done, shown: &calm, check: &check };
-    let (summary, _, _) = wording(&material, &[], &[], &outcome, 1.5, &near);
-    assert!(summary.contains("moved +2.0% with a finer mesh, but a value at an idealised support or load can keep creeping up"), "{summary}");
+    // A peak at the clamp that moved only 1 % is still never called settled in the words: one step
+    // of refinement misses its slow climb (R1's clamp: +0.4 % from 1.5 to 1.0 mm, yet 151 MPa at
+    // 0.35 mm against 145).
+    let (summary, _, _) = wording(&material, &[], &[], &Outcome { done: &done, shown: &calm, check: &two(&calm) }, 1.5, &near);
+    assert!(summary.contains("it went 100 → 101 MPa with the mesh, but a value at an idealised support or load can keep creeping up"), "{summary}");
     assert!(!summary.contains("it settled"), "{summary}");
 }
 
@@ -665,7 +713,18 @@ fn the_new_words_never_pass_or_fail_the_part_or_give_a_factor_of_safety() {
         let mut finer = peaked_run(stress * 1.2, Some("root"), Some(stress / 1.9), 9.0);
         finer.equilibrium = Some(fea::Equilibrium { reaction: [0.0, 0.0, 9.0], applied: [0.0, 0.0, -10.0], scale: 10.0, moment: None });
         for check in [
-            Check::Ran { first_h: 2.0, finer_h: 1.33, items: settling(&first, &finer) },
+            Check::Ran { meshes: vec![2.0, 1.33], items: settling(&[&first, &finer]), third: Third::NotNeeded { quantity: AWAY, moved: 0.5 } },
+            Check::Ran {
+                meshes: vec![2.0, 1.33],
+                items: settling(&[&first, &finer]),
+                third: Third::Skipped { nodes: 9.0e5, bytes: 1.4e10, limit: Limit::Memory(6.0e9) },
+            },
+            Check::Ran {
+                meshes: vec![2.0, 1.33, 0.89],
+                items: settling(&[&first, &finer, &peaked_run(stress * 1.5, Some("root"), Some(stress / 1.5), 9.5)]),
+                third: Third::Ran,
+            },
+            Check::Ran { meshes: vec![2.0, 1.33], items: settling(&[&first, &finer]), third: Third::AtSupport },
             Check::Skipped { nodes: 9.0e5, bytes: 1.4e10, limit: Limit::Nodes(2.0e5) },
             Check::Off,
         ] {
@@ -708,10 +767,10 @@ fn the_distance_away_from_supports_is_at_least_two_thicknesses_however_fine_the_
     assert_eq!(section_size(Elements::Solid, false, 1.0, Some(3000.0), 0.0), 0.0);
 }
 
-/// The finer mesh check run, its peaks and its equilibrium as the reply reports them.
+/// A quantity's mesh check status and its first step's change (%), as the reply reports them.
 fn mesh_check_status(r: &Value, quantity: &str) -> (String, f64) {
     let q = r["mesh_check"]["quantities"].as_array().into_iter().flatten().find(|q| q["quantity"] == quantity);
-    q.map_or((String::new(), f64::NAN), |q| (q["status"].as_str().unwrap_or("").to_string(), q["change_percent"].as_f64().unwrap_or(f64::NAN)))
+    q.map_or((String::new(), f64::NAN), |q| (q["status"].as_str().unwrap_or("").to_string(), q["changes_percent"][0].as_f64().unwrap_or(f64::NAN)))
 }
 
 fn number(v: &Value) -> f64 {
@@ -1071,9 +1130,12 @@ fn r6_both_elements_run_the_mesh_check_on_the_shells_and_compare_with_the_solids
         times(&r),
         r["warnings"]
     );
-    assert_eq!(shape, vec![("shell".to_string(), true), ("shell".to_string(), false), ("solid".to_string(), false)], "{r}");
+    // The mesh check's finer shell runs (one, or two with a third mesh), then the first meshes.
+    let checks = shape.iter().take_while(|(_, check)| *check).count();
+    assert!((1..=2).contains(&checks) && shape.iter().all(|(e, check)| e == "shell" || !check), "{r}");
+    assert_eq!(shape[checks..], [("shell".to_string(), false), ("solid".to_string(), false)], "{r}");
     assert_eq!(r["mesh_check"]["status"], "ran", "{r}");
-    assert_eq!(number(&r["mesh_check"]["first_mesh_mm"]), number(&runs[1]["mesh_size_mm"]), "{r}");
+    assert_eq!(number(&r["mesh_check"]["meshes_mm"][0]), number(&runs[checks]["mesh_size_mm"]), "{r}");
     let (status, _) = mesh_check_status(&r, "highest stress");
     assert_eq!(status, "at a support or load: depends on the mesh", "{r}");
     assert_eq!(r["mesh_check"]["quantities"].as_array().map(Vec::len), Some(3), "{r}");
@@ -1082,7 +1144,7 @@ fn r6_both_elements_run_the_mesh_check_on_the_shells_and_compare_with_the_solids
         let (carry, applied) = (number(&x["supports_carry_n"]), number(&x["loads_applied_n"]));
         assert!((carry / applied - 1.0).abs() < 0.01, "{x}");
     }
-    let (shell, solid) = (number(&runs[1]["max_deflection_mm"]), number(&runs[2]["max_deflection_mm"]));
+    let (shell, solid) = (number(&runs[checks]["max_deflection_mm"]), number(&runs[checks + 1]["max_deflection_mm"]));
     assert!((shell / solid - 1.0).abs() <= 0.06, "shell {shell} vs solid {solid}");
 }
 
@@ -1181,7 +1243,7 @@ fn g1_the_mesh_check_is_skipped_with_its_reason_when_the_finer_run_would_be_over
     for needed in [
         "skipped: the finer mesh would have about 150,000 nodes (about ",
         "over the limit of 100,000 nodes set by SOLIDCRAFT_FEA_MAX_NODES",
-        "so whether the numbers have settled is unknown",
+        "so how far the numbers are from settling is unknown",
     ] {
         assert!(line.contains(needed), "`{needed}` missing: {line}");
     }
@@ -2191,13 +2253,103 @@ fn a4_the_l_brackets_support_balances_at_every_mesh() {
     }
 }
 
+/// Peterson's stepped flat bar (V-6 and V-7), made with the app's commands: a wide part 60 x 28 mm
+/// (D) and a narrow part 80 x 20 mm (d), 4 mm thick, along X, with a fillet of radius `fillet` mm
+/// at each inside corner of the step (none: a sharp corner). The setup: the wide end at x = 0
+/// held, 4000 N along +X on the narrow end at x = 140, S355.
+fn stepped_bar(s: &mut Session, fillet: f64) -> Value {
+    run(s, "solid.box", json!({"length": 60, "width": 28, "height": 4, "corner": [0, -14, 0], "body_name": "Bar"}));
+    run(s, "solid.box", json!({"length": 80, "width": 20, "height": 4, "corner": [60, -10, 0], "operation": "join", "targets": ["Bar"]}));
+    if fillet > 0.0 {
+        run(s, "solid.fillet", json!({"edges": [[60, 10, 2], [60, -10, 2]], "radius": fillet, "body": "Bar"}));
+    }
+    json!({"body": "Bar", "supports": [{"face": [0, 0, 2]}], "loads": [{"face": [140, 0, 2], "force": [4000, 0, 0]}], "material": "S355"})
+}
+
+/// The converged von Mises peak at V-6's fillet, MPa: the finite-element model's own limit, from
+/// meshes finer than the estimate's default. A quarter of the bar on two symmetry planes (across
+/// its width and through its thickness), the curvature sizing refined with the element size, gave
+/// 108.44, 109.96, 109.75 and 109.63 MPa at 2.0, 1.33, 0.889 and 0.593 mm (8,735 to 155,191 nodes;
+/// Richardson on the last three: 109.47, order 1.4). Peterson's 107.3 MPa is a two-dimensional
+/// chart's; the model sits 2 % over it, within V-6's 3 %, so the band is checked against the model's
+/// own limit (PIL-294 A6, agreed 2026-11-20).
+const V6_CONVERGED_MPA: f64 = 109.6;
+/// Peterson's Chart 3.1 curve fit for V-6 (Kt 2.146 on 50 MPa), MPa.
+const V6_PETERSON_MPA: f64 = 107.3;
+
+/// V-6 and V-A6, real: Peterson's stepped flat bar in tension, at the default settings.
+/// Input: `stepped_bar` with 2 mm fillets: D 28, d 20, r 2 mm (D/d 1.4, r/d 0.1), 4 mm thick, the
+/// wide end held, 4000 N along the bar on the narrow end, S355; no mesh size, the mesh check on.
+/// By hand: the nominal stress on the narrow section is 4000 / (20 × 4) = 50 MPa. Peterson's Chart
+/// 3.1 curve fit (W. D. Pilkey and D. F. Pilkey, Peterson's Stress Concentration Factors, 3rd ed.,
+/// Wiley 2008) at t/r = 2 and 2t/D = 0.286 gives Kt = 2.146, so 107.3 MPa at the fillet.
+/// Real: the app's modelling, gmsh, CalculiX. Faked: nothing.
+/// Pass: three meshes solved (the away peak moved more than 1 % on the first step); the away peak at
+/// a fillet, settled, its band at most 3 % and holding the model's converged 109.6 MPa; the quoted
+/// value within 3 % of 107.3; `fraction_of_yield` its share of 355 MPa, with the same band; the
+/// summary gives the band.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn v6_a_shoulder_fillets_peak_is_settled_within_its_band() {
+    let mut s = Session::default();
+    let p = stepped_bar(&mut s, 2.0);
+    let started = std::time::Instant::now();
+    let r = run(&mut s, CMD, p);
+    let check = &r["mesh_check"];
+    let away = check["quantities"].as_array().into_iter().flatten().find(|q| q["quantity"] == AWAY).cloned().unwrap_or_default();
+    let (estimate, band) = (number(&away["estimate"]), number(&away["band_percent"]));
+    eprintln!(
+        "V-6 {} | away {} (values {}, order {}) | {} s in all, runs {:?} s, nodes {:?}; peak near {}",
+        check["line"],
+        away["quote"],
+        away["values"],
+        away["observed_order"],
+        started.elapsed().as_secs(),
+        times(&r),
+        r["runs"].as_array().map(|a| a.iter().map(|x| x["nodes"].clone()).collect::<Vec<_>>()),
+        r["peak_away"]["near"]
+    );
+    assert_eq!(check["meshes_mm"].as_array().map(Vec::len), Some(3), "{check}");
+    assert!(r["peak_away"]["near"].as_str().is_some_and(|n| n.contains("fillet")), "{}", r["peak_away"]);
+    assert_eq!(away["status"], "settled", "{away}");
+    assert!(band <= 3.0, "{away}");
+    assert!((estimate - V6_CONVERGED_MPA).abs() <= estimate * band / 100.0, "{estimate} ±{band}% misses {V6_CONVERGED_MPA}: {away}");
+    assert!((estimate / V6_PETERSON_MPA - 1.0).abs() <= 0.03, "{estimate} against Peterson's {V6_PETERSON_MPA}");
+    assert!((number(&r["fraction_of_yield"]) - estimate / 355.0).abs() < 2e-3 && number(&r["band_percent"]) == band, "{r}");
+    assert!(r["summary"].as_str().is_some_and(|t| t.contains(&format!("(within ±{band:.1} %)"))), "{}", r["summary"]);
+}
+
+/// V-7 and V-A6, real: the same bar with a sharp inside corner at the step (no fillet), at the
+/// default settings. The stress at a re-entrant corner has no finite value: the peak grows as the
+/// mesh is refined (95.6, 103.4, 121.6 MPa measured). Real: the app's modelling, gmsh, CalculiX.
+/// Faked: nothing. Pass: three meshes; the away peak keeps rising, never settled, with no band and
+/// no estimate; a warning says so; the reply's `band_percent` is absent.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn v7_a_sharp_corners_peak_keeps_rising_and_is_never_settled() {
+    let mut s = Session::default();
+    let p = stepped_bar(&mut s, 0.0);
+    let r = run(&mut s, CMD, p);
+    let check = &r["mesh_check"];
+    let away = check["quantities"].as_array().into_iter().flatten().find(|q| q["quantity"] == AWAY).cloned().unwrap_or_default();
+    eprintln!("V-7 {} | runs {:?} s; warnings {}", check["line"], times(&r), r["warnings"]);
+    assert_eq!(check["meshes_mm"].as_array().map(Vec::len), Some(3), "{check}");
+    assert_eq!(away["status"], RISING, "{away}");
+    assert!(away["band_percent"].is_null() && away["estimate"].is_null(), "{away}");
+    assert!(r["band_percent"].is_null(), "{r}");
+    assert!(r["warnings"].to_string().contains("keeps rising as the mesh is refined"), "{}", r["warnings"]);
+    assert!(r["summary"].as_str().is_some_and(|t| t.contains("MPa on the finest mesh, and it keeps rising")), "{}", r["summary"]);
+}
+
 /// A7 (V-A7), real: the same request gives the same mesh, numbers and words.
 /// Input: R2's plate with a hole (solids, 1.5 mm), the angle bracket as shells and as solids (its
-/// default meshes), each set up afresh and run twice; mesh check off. Real: the app's modelling,
-/// gmsh, CalculiX. Faked: nothing.
-/// Observable: the whole reply but the seconds each solve took.
-/// Pass: the two replies of each are identical: node and element counts, every number, every
-/// line and warning.
+/// default meshes), mesh check off; and V-6's filleted bar at the default settings with the mesh
+/// check on (three meshes, the extrapolated band); each set up afresh and run twice. Real: the
+/// app's modelling, gmsh, CalculiX. Faked: nothing.
+/// Observable: the whole reply but the seconds each solve took and the setup's line naming this
+/// computer's memory limit (the memory free when it ran).
+/// Pass: the two replies of each are identical: node and element counts, every number and band,
+/// every line and warning.
 #[test]
 #[ignore = "runs gmsh and CalculiX"]
 fn a7_the_same_request_gives_the_same_numbers_and_words() {
@@ -2206,6 +2358,9 @@ fn a7_the_same_request_gives_the_same_numbers_and_words() {
             if let Some(o) = x.as_object_mut() {
                 o.remove("seconds");
             }
+        }
+        if let Some(setup) = r["setup"].as_array_mut() {
+            setup.retain(|l| !l.as_str().is_some_and(|t| t.starts_with("Mesh check:")));
         }
         r
     };
@@ -2221,10 +2376,11 @@ fn a7_the_same_request_gives_the_same_numbers_and_words() {
                    "mesh_check": false})
         }
     };
-    let cases: [(&str, Box<dyn Fn(&mut Session) -> Value>); 3] = [
+    let cases: [(&str, Box<dyn Fn(&mut Session) -> Value>); 4] = [
         ("plate with a hole", Box::new(plate)),
         ("bracket as shells", Box::new(bracket("shell"))),
         ("bracket as solids", Box::new(bracket("solid"))),
+        ("filleted bar with its mesh check", Box::new(|s: &mut Session| stepped_bar(s, 2.0))),
     ];
     for (name, setup) in cases {
         let once = || {
@@ -2234,11 +2390,12 @@ fn a7_the_same_request_gives_the_same_numbers_and_words() {
         };
         let (a, b) = (once(), once());
         eprintln!(
-            "A7 {name}: {} nodes, {} MPa, {} mm; {}; identical: {}",
+            "A7 {name}: {} nodes, {} MPa, {} mm; {}; mesh check {}; identical: {}",
             a["runs"][0]["nodes"],
             a["runs"][0]["max_von_mises_mpa"],
             a["runs"][0]["max_deflection_mm"],
             a["equilibrium"]["line"],
+            a["mesh_check"]["line"],
             a == b
         );
         assert_eq!(a, b, "{name}");
