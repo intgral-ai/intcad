@@ -17445,8 +17445,8 @@ fn a_sign_in_that_could_not_finish_is_told_in_a_sentence_that_says_who_or_what()
 
 /// INT-1521: the sentence says at which step a sign-in failed (it could not start, it stopped
 /// waiting for the browser, the sign-in service refused or could not be reached at the last step,
-/// the result could not be saved), with the service's HTTP status and its error code, a refusal for
-/// the region or the plan as that, and where the sign-in's log is; nothing else of the answer.
+/// the result could not be saved), with the service's HTTP status and its error code, and where
+/// the sign-in's log is; nothing else of the answer.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_sign_in_that_failed_says_at_which_step_with_the_status_and_code_and_where_the_log_is() {
@@ -17465,9 +17465,8 @@ fn a_sign_in_that_failed_says_at_which_step_with_the_status_and_code_and_where_t
     };
     let refused = said(at("exchange", "refused", json!({"status": 400, "code": "invalid_grant"})));
     assert_eq!(refused, "The sign-in service refused the last step of the sign-in (HTTP 400, invalid_grant). Try again.");
-    let region = said(at("exchange", "region", json!({"status": 403, "code": "unsupported_country_region_territory"})));
-    assert_eq!(region, "The sign-in service does not offer this sign-in where you are (HTTP 403, unsupported_country_region_territory).");
-    assert!(said(at("exchange", "plan", json!({"status": 403, "code": "usage_not_included"}))).contains("plan does not include"));
+    let forbidden = said(at("exchange", "refused", json!({"status": 403, "code": "unsupported_country_region_territory"})));
+    assert!(forbidden.contains("(HTTP 403, unsupported_country_region_territory)"), "{forbidden}");
     let unreachable = said(at("exchange", "offline", json!({"code": "ECONNREFUSED"})));
     assert!(unreachable.contains("(ECONNREFUSED)") && unreachable.contains("proxy or VPN"), "{unreachable}");
     assert!(said(at("exchange", "failed", json!({"status": 200, "code": "missing_tokens"}))).contains("(HTTP 200, missing_tokens)"));

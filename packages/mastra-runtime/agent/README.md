@@ -104,9 +104,8 @@ sends the same snapshot as the notification `_intcad/connections/changed` whenev
   `{ kind: 'here' }` a sign-in of another design of the same app, `{ kind: 'intcad' }` one of
   another Intcad; none for another program), `listen` (the system would not open the port: `port`,
   `code`, such as `EACCES`), `timeout` (15 minutes passed), `offline`, `failed`, and for the
-  ChatGPT sign-in's token endpoint `refused`, `region`, `plan` (the endpoint's answer names the
-  region or the plan). `step`: how far it got: `open` (before the browser is opened), `wait`,
-  `exchange` (with the token endpoint: its `status` and its error `code`, or for `offline` the
+  ChatGPT sign-in's token endpoint `refused`. `step`: how far it got: `open` (before the browser
+  is opened), `wait`, `exchange` (with the token endpoint: its `status` and its error `code`, or for `offline` the
   system's code, `timeout` or `no-connection`), `store` (saving it: the file error's `code`).
   `log`: the path of the sign-in log, when the agent keeps one (below).
 - `dates`: release dates of the models of connected providers, from Mastra's registry.
@@ -390,7 +389,7 @@ turn answered by a real provider, and the Kimi plan's model prefix.
 Mastra Code's SDK keeps nothing of a failed exchange: it prints the HTTP status and throws "Token
 exchange failed". The entry wraps `fetch` for the ChatGPT sign-in's token endpoint only
 (`signin.mjs`): the answer's status, and for a refusal the provider's own error code (a short word
-from the JSON, never its description) and whether it names the region or the plan, are handed to
+from the JSON, never its description), are handed to
 the sign-in under way; the body of an answer that was taken is never read. With
 `MASTRA_APP_DATA_DIR` set, each sign-in writes `logs/sign-in.log` there: the Node version and the
 names of the proxy variables it was given, each step, what the endpoint answered, and every line

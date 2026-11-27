@@ -546,8 +546,8 @@ starts, in every design not shown. When the port is taken, the page says who hol
 can tell: another design's sign-in, another running Intcad's, or another program.
 
 A sign-in that fails says at which step: it could not start, it stopped waiting for the browser,
-the sign-in service refused the last step (with its HTTP status and error code, and as a refusal
-for the region or the plan where the answer names one) or could not be reached, or the result
+the sign-in service refused the last step (with its HTTP status and error code) or could not be
+reached, or the result
 could not be saved. Each sign-in is written down, with secrets taken out, in `logs/sign-in.log` in
 the agent's data folder, and the page says where.
 

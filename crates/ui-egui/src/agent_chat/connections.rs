@@ -163,10 +163,8 @@ pub enum LoginProblemKind {
     /// The person did not come back from the browser in the sign-in's time.
     Timeout,
     Offline,
-    /// The sign-in service refused the last step; for the region or for the plan when it said so.
+    /// The sign-in service refused the last step.
     Refused,
-    Region,
-    Plan,
     Failed,
 }
 
@@ -178,8 +176,6 @@ impl LoginProblemKind {
             LoginProblemKind::Timeout => "timeout",
             LoginProblemKind::Offline => "offline",
             LoginProblemKind::Refused => "refused",
-            LoginProblemKind::Region => "region",
-            LoginProblemKind::Plan => "plan",
             LoginProblemKind::Failed => "failed",
         }
     }
@@ -314,8 +310,6 @@ impl Snapshot {
                     Some("timeout") => LoginProblemKind::Timeout,
                     Some("offline") => LoginProblemKind::Offline,
                     Some("refused") => LoginProblemKind::Refused,
-                    Some("region") => LoginProblemKind::Region,
-                    Some("plan") => LoginProblemKind::Plan,
                     _ => LoginProblemKind::Failed,
                 },
                 holder,
@@ -1125,8 +1119,6 @@ fn problem_text(problem: &LoginProblem) -> String {
         }
         (LoginProblemKind::Timeout, _) => tr("ui.agent_chat_conn_problem_timeout").to_string(),
         (LoginProblemKind::Refused, _) => with("ui.agent_chat_conn_problem_exchange_refused"),
-        (LoginProblemKind::Region, _) => with("ui.agent_chat_conn_problem_exchange_region"),
-        (LoginProblemKind::Plan, _) => with("ui.agent_chat_conn_problem_exchange_plan"),
         (LoginProblemKind::Offline, _) if problem.step == Some(Step::Exchange) => with("ui.agent_chat_conn_problem_exchange_offline"),
         (LoginProblemKind::Offline, _) => tr("ui.agent_chat_conn_problem_offline").to_string(),
         (LoginProblemKind::Failed, _) => match problem.step {
@@ -1419,9 +1411,9 @@ mod tests {
         assert_eq!(problem(json!({"id": "openai-codex", "kind": "timeout"})).map(|problem| problem.kind), Some(LoginProblemKind::Timeout));
         // INT-1521: the step, the service's status and the log's path; a status that is none, a
         // step this version does not know and a path with a line break in it are left out.
-        let at = problem(json!({"id": "openai-codex", "kind": "region", "step": "exchange", "status": 403, "code": "unsupported_country", "log": "/a/sign-in.log"}))
+        let at = problem(json!({"id": "openai-codex", "kind": "refused", "step": "exchange", "status": 403, "code": "unsupported_country", "log": "/a/sign-in.log"}))
             .expect("a problem");
-        assert_eq!((at.kind, at.step, at.status, at.log.as_deref()), (LoginProblemKind::Region, Some(Step::Exchange), Some(403), Some("/a/sign-in.log")));
+        assert_eq!((at.kind, at.step, at.status, at.log.as_deref()), (LoginProblemKind::Refused, Some(Step::Exchange), Some(403), Some("/a/sign-in.log")));
         let odd = problem(json!({"id": "openai-codex", "kind": "refused", "step": "teleport", "status": 7, "log": "/a\nb"})).expect("a problem");
         assert_eq!((odd.step, odd.status, odd.log), (None, None, None));
     }

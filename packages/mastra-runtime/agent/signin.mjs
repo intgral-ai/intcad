@@ -18,8 +18,8 @@ const MAX_LOG = 256 * 1024;
 const word = value => (typeof value === 'string' && /^[A-Za-z0-9_.-]{1,64}$/.test(value) ? value : null);
 
 /**
- * What a refusal says: its status, the provider's error code (a short word, never its description)
- * and whether it is about the region or the plan. Only the code leaves this function.
+ * What a refusal says: its status and the provider's error code (a short word, never its
+ * description). Only the code leaves this function.
  */
 function refusalOf(status, body) {
   let json = null;
@@ -28,14 +28,8 @@ function refusalOf(status, body) {
   } catch {
     // Not JSON (a proxy's or a firewall's page): the status says what there is.
   }
-  const code = word(json?.error?.code) ?? word(json?.error) ?? word(json?.code) ?? word(json?.error?.type) ?? word(json?.detail?.code);
-  const text = `${code ?? ''} ${body}`;
-  const kind = /unsupported_country|unsupported_region|country,? region,? or territory|not (yet )?(available|supported) in your (country|region)/i.test(text)
-    ? 'region'
-    : /usage_not_included|plan_not_supported|no_active_subscription|upgrade (your|to a) plan|plan does not include/i.test(text)
-      ? 'plan'
-      : 'refused';
-  return { status, code, kind };
+  const code = word(json?.error?.code) ?? word(json?.error) ?? word(json?.code) ?? word(json?.error?.type);
+  return { status, code, kind: 'refused' };
 }
 
 /**
@@ -51,7 +45,7 @@ export function failureCode(error) {
 
 /**
  * `fetch`, with what the answer to `url` was told to `onAnswer`: `{ status }` when it was taken,
- * `{ status, code, kind }` when it was refused (refusalOf), `{ error }` when there was none. The body
+ * `{ status, code, kind: 'refused' }` when it was refused (refusalOf), `{ error }` when there was none. The body
  * of a refusal is read from a copy, which leaves the answer as it is; that of an answer taken is
  * never read here.
  */

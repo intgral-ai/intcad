@@ -395,8 +395,8 @@ export class Connections {
 
   /**
    * Why a sign-in failed, and at which step: before the browser was opened (`open`, and the ports),
-   * waiting for it (`wait`), with the token endpoint (`exchange`: its status and code, a refusal for
-   * the region or the plan, or no answer and why), or saving what it gave (`store`).
+   * waiting for it (`wait`), with the token endpoint (`exchange`: its status and code, or no answer
+   * and why), or saving what it gave (`store`).
    */
   #failedAt(login, error) {
     const problem = signInProblem(error);

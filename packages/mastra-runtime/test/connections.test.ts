@@ -541,7 +541,7 @@ async function exchange(fetcher: (url: string, init: Json) => Promise<Response>,
   return json;
 }
 
-test("the token endpoint's answer is seen: taken, refused with its code, refused for the region, stalled, or not there (INT-1521)", async () => {
+test("the token endpoint's answer is seen: taken, refused with its code, stalled, or not there (INT-1521)", async () => {
   const { watchExchange, failureCode } = signinModule;
   const seen: Json[] = [];
   const at = (url: string) => watchExchange(fetch, url, (answer: Json) => seen.push(answer));
@@ -558,22 +558,18 @@ test("the token endpoint's answer is seen: taken, refused with its code, refused
   await assert.rejects(exchange(at(refused.url), refused.url), /Token exchange failed/);
   refused.close();
   assert.deepEqual(seen.pop(), { status: 400, code: "invalid_grant", kind: "refused" });
-  // Refused for the region; and a refusal that is a page, not JSON, still reads as one with its status.
+  // A refusal with the code inside an object, and one that is a page, not JSON, still read with their status.
   const region = await tokenEndpoint((_request, response) => {
     response.statusCode = 403;
     response.end(JSON.stringify({ error: { code: "unsupported_country_region_territory", message: "Country, region, or territory not supported" } }));
   });
   await assert.rejects(exchange(at(region.url), region.url));
   region.close();
-  assert.deepEqual(seen.pop(), { status: 403, code: "unsupported_country_region_territory", kind: "region" });
+  assert.deepEqual(seen.pop(), { status: 403, code: "unsupported_country_region_territory", kind: "refused" });
   const page = await tokenEndpoint((_request, response) => ((response.statusCode = 403), response.end("<html><body>Access denied</body></html>")));
   await assert.rejects(exchange(at(page.url), page.url));
   page.close();
   assert.deepEqual(seen.pop(), { status: 403, code: null, kind: "refused" });
-  const plan = await tokenEndpoint((_request, response) => ((response.statusCode = 403), response.end(JSON.stringify({ detail: { code: "usage_not_included" } }))));
-  await assert.rejects(exchange(at(plan.url), plan.url));
-  plan.close();
-  assert.deepEqual(seen.pop(), { status: 403, code: "usage_not_included", kind: "plan" });
   // Stalled past the limit, and nobody there.
   const stalled = await tokenEndpoint(() => {});
   await assert.rejects(exchange(at(stalled.url), stalled.url, 100));
