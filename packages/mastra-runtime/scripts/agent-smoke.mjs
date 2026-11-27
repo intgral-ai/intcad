@@ -17,6 +17,8 @@
  *     streams;
  *   - a session that lists the skills of every set the agent carries (agent/skills.mjs), as
  *     commands and in what the model is told, and a model that reads each one's SKILL.md;
+ *   - a skill command sent as the app sends one chosen from the Assistant's menu, with a mode's
+ *     note after the user's words, which reaches the model as the skill's text;
  *   - sessions opened as the app opens the built-in agent's (INT-1473: an empty folder of its own,
  *     the app's note, the project under `_meta.intcad`), one per case V1 to V8 of the PRD that a
  *     stand-in can show: the note and the brief reach the model (V1), a new file is in the next
@@ -861,6 +863,28 @@ async function main(args) {
       all &&= same && read && commands.includes(`skill/${skill}`) && out.toldModel.includes(skill);
     }
     return all;
+  });
+
+  // A command chosen from the Assistant's menu, sent as the app sends it with a mode's note
+  // (`with_notes` in crates/ui-egui/src/agent_chat/mod.rs): the command, the user's words, then
+  // the note. The model gets the skill's text with the words and the note as its arguments. The
+  // control is the order the app used before: the note first, and the command reaches the model as
+  // typed.
+  await run("a chosen skill command is expanded with the app's notes after the words", {}, async ({ out, prompt, agent, service }) => {
+    await agent.waitFor((message) => message.params?.update?.sessionUpdate === "available_commands_update", 30000).catch(() => null);
+    const note = "[Host skill text-to-cad v1] Inspect the current design before the first write.";
+    const told = async (text) => {
+      const asked = service.seen.requests;
+      const turn = await prompt(text);
+      const user = service.seen.bodies.slice(asked).find((body) => body.stream && body.messages?.at(-1)?.role === "user")?.messages.at(-1);
+      return { stop: turn.stop, user: textOf(user) };
+    };
+    const skill = '<skill name="solidcraft-modeling">';
+    const now = await told(`/skill/solidcraft-modeling an L bracket, 6 mm thick\n\n${note}`);
+    out.now = { stop: now.stop, expanded: now.user.startsWith(skill), arguments: now.user.includes(`ARGUMENTS: an L bracket, 6 mm thick\n\n${note}`) };
+    const before = await told(`${note}\n\n/skill/solidcraft-modeling an L bracket, 6 mm thick`);
+    out.before = { stop: before.stop, expanded: before.user.includes(skill) };
+    return now.stop === "end_turn" && out.now.expanded && out.now.arguments && before.stop === "end_turn" && !out.before.expanded;
   });
 
   await run("a refused command does not run", { permission: refuse }, async (context) => {

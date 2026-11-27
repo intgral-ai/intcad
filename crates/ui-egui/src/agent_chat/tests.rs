@@ -10997,6 +10997,103 @@ fn a_retired_sessions_commands_cannot_fill_the_new_chats_menu() {
     assert!(app.agent_chat.commands.is_empty(), "a new session starts with no commands until it advertises them");
 }
 
+const MODELLING: &str = "skill/solidcraft-modeling";
+
+/// What the built-in agent makes of a message: Mastra Code (`@mastra/code-sdk` 1.19.1,
+/// `expandSkillCommand` in `src/acp/skills.ts`) joins the prompt's text parts with line breaks and
+/// turns it into a skill's text only when, after leading white space, the whole text starts with
+/// `/skill/<name>`; everything after the name is the skill's arguments. `None`: sent as it is.
+fn mastra_skill(parts: &[PromptPart]) -> Option<(String, String)> {
+    let content = parts.iter().filter_map(|p| if let PromptPart::Text(t) = p { Some(t.as_str()) } else { None }).collect::<Vec<_>>().join("\n");
+    let rest = content.trim_start().strip_prefix("/skill/")?;
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    Some((rest[..end].to_string(), rest[end..].trim().to_string()))
+}
+
+/// Choose `/skill/solidcraft-modeling` from the menu in `skill`'s mode, add words, and send it after
+/// the user changed the design by hand, so the message has every note the mode gives it.
+/// Returns the command Mastra Code would run and its arguments.
+fn send_a_chosen_command(skill: skill::Skill) -> (String, String) {
+    let (mut app, script, ctx) = app_with_script();
+    app.agent_chat.skill = skill;
+    app.agent_chat.on_event(Event::Session("s1".into()));
+    app.agent_chat.on_event(Event::Commands {
+        session: "s1".into(),
+        commands: vec![acp::AvailableCommand { name: MODELLING.into(), description: "Build a part".into() }],
+    });
+    // The agent saw this design, and the user changed it by hand since.
+    app.agent_chat.seen = Some(app.session.doc.clone());
+    app.run("solid.box", json!({"length": 5, "width": 5, "height": 5})).unwrap();
+    let typed = format!("/{MODELLING} an L bracket, 6 mm thick");
+    send(&mut app, &ctx, typed.clone());
+    assert!(
+        matches!(app.agent_chat.items.iter().rev().find(|i| matches!(i, Item::User { .. })), Some(Item::User { text, .. }) if *text == typed),
+        "{skill:?}: the conversation shows the words as typed"
+    );
+    let prompts = script.prompts();
+    let sent = prompts.last().expect("the message was sent");
+    let expanded = mastra_skill(sent).unwrap_or_else(|| panic!("{skill:?}: the command is not at the start: {}", text_of(sent)));
+    let (_, args) = &expanded;
+    assert!(args.starts_with("an L bracket, 6 mm thick\n\n"), "{skill:?}: the user's words come first: {args}");
+    assert!(args.contains("[The user changed the design by hand since your last reply"), "{skill:?}: the design note is still told: {args}");
+    if let Some(note) = skill.prompt_note() {
+        assert!(args.contains(&note), "{skill:?}: the mode's note is still told: {args}");
+    }
+    expanded
+}
+
+/// A slash command chosen from the Assistant's menu is run in plain Chat after a design change:
+/// the "what changed" note goes after the user's words, not before the command.
+#[test]
+fn a_chosen_command_is_expanded_in_plain_chat_after_a_design_change() {
+    assert_eq!(send_a_chosen_command(skill::Skill::Plain).0, "solidcraft-modeling");
+}
+
+#[test]
+fn a_chosen_command_is_expanded_in_text_to_cad() {
+    assert_eq!(send_a_chosen_command(skill::Skill::TextToCad).0, "solidcraft-modeling");
+}
+
+#[test]
+fn a_chosen_command_is_expanded_in_anatomy() {
+    assert_eq!(send_a_chosen_command(skill::Skill::Anatomy).0, "solidcraft-modeling");
+}
+
+/// Every mode the Assistant offers, so a mode added later (the stress estimate) is held to it too.
+#[test]
+fn a_chosen_command_is_expanded_in_every_mode() {
+    for skill in skill::Skill::ALL {
+        assert_eq!(send_a_chosen_command(skill).0, "solidcraft-modeling", "{skill:?}");
+    }
+}
+
+/// The notes stay before the words unless an advertised command starts the message: a command
+/// name in the middle, one the agent did not advertise, a longer name, or the name without its
+/// slash leaves them first, as before.
+#[test]
+fn only_an_advertised_command_at_the_start_puts_the_notes_after_the_words() {
+    let commands = [acp::AvailableCommand { name: MODELLING.into(), description: String::new() }];
+    let notes = ["[note one]", "[note two]"];
+    assert_eq!(with_notes("/skill/solidcraft-modeling go", &notes, &commands), "/skill/solidcraft-modeling go\n\n[note one]\n[note two]");
+    assert_eq!(with_notes("  /skill/solidcraft-modeling", &notes, &commands), "  /skill/solidcraft-modeling\n\n[note one]\n[note two]");
+    assert_eq!(with_notes("/skill/solidcraft-modeling\nmore", &notes, &commands), "/skill/solidcraft-modeling\nmore\n\n[note one]\n[note two]");
+    for text in [
+        "make it with /skill/solidcraft-modeling",
+        "/skill/solidcraft-editing go",
+        "/skill/solidcraft-modelingx go",
+        "skill/solidcraft-modeling go",
+        "/",
+    ] {
+        assert_eq!(with_notes(text, &notes, &commands), format!("[note one]\n[note two]\n\n{text}"), "{text}");
+    }
+    assert_eq!(
+        with_notes("/skill/solidcraft-modeling go", &notes, &[]),
+        "[note one]\n[note two]\n\n/skill/solidcraft-modeling go",
+        "no command advertised"
+    );
+    assert_eq!(with_notes("/skill/solidcraft-modeling go", &[], &commands), "/skill/solidcraft-modeling go", "no notes");
+}
+
 #[test]
 fn modern_acknowledgements_stay_with_their_document_without_resuming_its_queue() {
     let (mut app, first, ctx) = app_with_script();

@@ -2407,8 +2407,31 @@ fn start_turn(app: &mut SolveApp, text: String, image: bool, at: Option<usize>, 
     start_turn_with(app, text, image, at, files, None);
 }
 
-/// Start a message; `note` goes before the text for the agent, not into the conversation, and so
-/// does what changed in the design since the agent's last turn ([`changed_note`]). The
+/// The user's words with the app's notes for the agent. The notes go first, except after a slash
+/// command of the agent's own that starts the message: an ACP agent runs a command only there
+/// (Mastra Code turns `/skill/<name>` into the skill's text only when the whole message starts
+/// with it, and takes everything after the name as its arguments), so the notes follow the words.
+fn with_notes(text: &str, notes: &[&str], commands: &[acp::AvailableCommand]) -> String {
+    if notes.is_empty() {
+        return text.to_string();
+    }
+    let notes = notes.join("\n");
+    if starts_with_command(text, commands) { format!("{text}\n\n{notes}") } else { format!("{notes}\n\n{text}") }
+}
+
+/// Whether `text` starts with `/` and the name of one of the agent's advertised commands, followed
+/// by white space or nothing (`/skill/solidcraft-modeling make a bracket`, as the Assistant's menu
+/// leaves it). A name the agent has not advertised, or one in the middle of the words, is not one.
+fn starts_with_command(text: &str, commands: &[acp::AvailableCommand]) -> bool {
+    let Some(rest) = text.trim_start().strip_prefix('/') else { return false };
+    commands.iter().any(|command| {
+        !command.name.is_empty() && rest.strip_prefix(command.name.as_str()).is_some_and(|after| after.chars().next().is_none_or(char::is_whitespace))
+    })
+}
+
+/// Start a message; `note` goes to the agent with the text, not into the conversation, and so
+/// does what changed in the design since the agent's last turn ([`changed_note`]): before the
+/// text, or after it when it starts with a slash command ([`with_notes`]). The
 /// files are named after the text (text files in full), and pictures go as images to an agent
 /// that takes them. `at` is the message's place in the conversation, where its picture is kept.
 fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usize>, files: Vec<attach::Attachment>, note: Option<&str>) {
@@ -2433,7 +2456,7 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     #[cfg(target_arch = "wasm32")]
     let skill_note = skill.prompt_note();
     let notes: Vec<&str> = skill_note.iter().map(String::as_str).chain(reviewed.as_deref()).chain(note).chain(changed.as_deref()).collect();
-    let lead = if notes.is_empty() { text.clone() } else { format!("{}\n\n{text}", notes.join("\n")) };
+    let lead = with_notes(&text, &notes, &app.agent_chat.commands);
     // The whole message stays within the cap: the files' text gets what the words leave.
     let budget = MAX_PROMPT.saturating_sub(lead.chars().count() + FILE_NAMES_ROOM);
     let about_files = attach::note(&files, pictures, documents, budget);

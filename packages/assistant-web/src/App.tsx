@@ -1192,9 +1192,10 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
     input.current?.focus();
   }
 
-  // A command goes into the draft as the agent named it; it is never sent by choosing it.
+  // A command goes into the draft as the agent named it, after the slash: an agent runs a command
+  // only as `/<name>` at the start of the message. It is never sent by choosing it.
   function choose(name: string) {
-    setText(name);
+    setText(`/${name}`);
     setMenuClosed(true);
     input.current?.focus();
   }
