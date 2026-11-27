@@ -165,6 +165,10 @@ pub enum Event {
     /// The built-in agent's connections, as it now reports them: the answer to a
     /// [`ChatBackend::connections`] request, or its own word that something changed.
     Connections(super::connections::Snapshot),
+    /// A plan sign-out request finished; an unsolicited snapshot cannot acknowledge it.
+    ConnectionsLogout(super::connections::Snapshot),
+    /// Acknowledgement of the separate guessing process's setup, not a notification.
+    PredictionSetup(super::connections::Snapshot),
     /// A [`ChatBackend::connections`] request the agent refused (`code`: its JSON-RPC error code,
     /// 0 for an answer that was no snapshot). Its words are not passed on: they could repeat a key.
     ConnectionsFailed {
@@ -262,6 +266,8 @@ pub trait ChatBackend {
     /// Stop using the open session without ending the agent: what it still sends for that
     /// session is no longer taken in. [`ChatBackend::new_session`] opens the next one.
     fn forget_session(&mut self) {}
+    /// Retire the guessing session, including one still opening.
+    fn retire_prediction_session(&mut self) {}
     /// The agent says it is signed in with an API key (not a plan, and not unknown).
     fn key_sign_in(&self) -> bool {
         false

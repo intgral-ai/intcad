@@ -139,9 +139,11 @@ Two more, for the app's guesses of the user's next step (2026-11-26, G87 to G90 
 - A `session/new` with `_meta.intcad.nextStep: true` (only `true` counts; `isNextStep`, `session.mjs`)
   is a guess. It gets the app's note alone (no `LANGUAGE`, no brief, no `NO_PROJECT`, and no project
   even if one is sent), no MCP at all (`disableMcp`; the servers the request names are not started),
-  no design tools (a `cadBridge` catalog is ignored), and no plan first. It is put in Mastra Code's
-  read-only mode `fast` (Explore) before the reply, so the reply's `mode` option and
-  `modes.currentModeId` say `fast`. An agent without that mode refuses the session and ends it.
+  no design tools (a `cadBridge` catalog is ignored), and no per-session plan tracking. An input
+  processor clears model-visible tools at every step. Before the first guess the installed Core
+  must also pass an offline stream check with a stub model; otherwise the session is refused.
+  It is put in Mastra Code's read-only mode `fast` (Explore) before the reply as a second safeguard.
+  An agent without that mode refuses the session and ends it.
 
 ### The note and the project (INT-1473)
 

@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
+import { Agent as CoreAgent } from "@mastra/core/agent";
 
 type Json = Record<string, any>;
 
@@ -25,6 +26,7 @@ const { holdCallbackPorts } = await load("callback.mjs");
 const { attachmentReader, isChatModel, orderModelOptions, releaseDates } = await load("models.mjs");
 const { classifyFailure, classifySignInFailure } = await load("problems.mjs");
 const { intcadAgent } = await load("agent.mjs");
+const { PlanGate } = await load("plan.mjs");
 const { keepKeysFromCommands, keyVariables, withoutParams } = await load("secrets.mjs");
 
 const PROVIDERS = [
@@ -930,7 +932,7 @@ test("Copilot requires advertised vision for SDK-listed models on its signed-in 
 
 // ---- The session builder (session.mjs): Mastra Code's ACP session, without a vector store ---------
 
-const { LANGUAGE, NO_PROJECT, sessionBuilder } = await load("session.mjs");
+const { LANGUAGE, NO_PROJECT, predictionToolGuard, sessionBuilder } = await load("session.mjs");
 const { permissionRules } = await load("reads.mjs");
 
 /**
@@ -969,6 +971,7 @@ function fakeSdk(overrides: { failed?: Json[]; cad?: Json } = {}) {
   };
   const sdk = {
     RequestError,
+    verifyPredictionTools: predictionToolGuard(CoreAgent),
     createMastraCode: async (config: Json) => {
       calls.configs.push(config);
       return result;
@@ -1057,12 +1060,54 @@ test("G88 a guess of the next step is made with no MCP and no design tools, what
   assert.equal(Object.hasOwn(guess, "extraTools"), false);
   const rest = { ...chat };
   delete rest.extraTools;
-  assert.deepEqual(guess, { ...rest, mcpServers: {}, disableMcp: true, hostInstructions: note });
+  const { inputProcessors: processors, ...guessOptions } = guess;
+  assert.equal(processors.length, 1);
+  assert.deepEqual(guessOptions, { ...rest, mcpServers: {}, disableMcp: true, disablePlugins: true, hostInstructions: note });
   assert.deepEqual(guess.initialState.permissionRules, permissionRules(null));
   // The servers a guess names are not even checked: one Mastra Code's builder refuses is ignored.
   await build({ cwd: "/p", mcpServers: [{ name: "old", type: "sse", url: "http://127.0.0.1:1/sse", headers: [] }], _meta: meta({ nextStep: true }) });
   assert.deepEqual(calls.configs[2].mcpServers, {});
   assert.equal(asked.length, 1);
+});
+
+test("G88 the actual model request has no tools for a prediction, but ordinary chat keeps its tools", async () => {
+  const { sdk, calls } = fakeSdk();
+  const build = sessionBuilder(sdk);
+  for (const nextStep of [true, false]) {
+    await build({ cwd: "/p", mcpServers: [], _meta: { intcad: { nextStep } } });
+    const seen: Json[] = [];
+    const model: Json = {
+      specificationVersion: "v2", provider: "stub", modelId: "offline", supportedUrls: {},
+      async doGenerate(request: Json) {
+        seen.push(request);
+        return { content: [{ type: "text", text: "done" }], finishReason: "stop",
+          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, warnings: [] };
+      },
+    };
+    const agent = new CoreAgent({
+      id: `tool-guard-${nextStep}`, name: "boundary check", instructions: "Answer in words.", model: model as never,
+      tools: { inspect_file: { id: "inspect_file", description: "fixture tool", execute: async () => "fixture" } },
+      inputProcessors: calls.configs.at(-1).inputProcessors ?? [],
+    });
+    await agent.generate("Suggest a step.");
+    assert.equal(seen.length, 1, "the model stub received one request");
+    assert.deepEqual((seen[0]?.tools ?? []).map((tool: Json) => tool.name), nextStep ? [] : ["inspect_file"]);
+  }
+});
+
+test("built-in predictions fail closed if Core leaves tools in its stream request", async () => {
+  class IgnoresInputProcessors extends CoreAgent {
+    constructor(config: Pick<ConstructorParameters<typeof CoreAgent>[0], "id" | "name" | "instructions" | "model"> & { tools: Json }) {
+      super({ ...config, inputProcessors: [] });
+    }
+  }
+  await predictionToolGuard(CoreAgent)();
+  const { sdk, calls } = fakeSdk();
+  const build = sessionBuilder({ ...sdk, verifyPredictionTools: predictionToolGuard(IgnoresInputProcessors) });
+  await assert.rejects(build({ cwd: "/p", mcpServers: [], _meta: { intcad: { nextStep: true } } }), /tool-free predictions/u);
+  assert.equal(calls.configs.length, 0, "do not create a prediction session if the guard fails");
+  await build({ cwd: "/p", mcpServers: [] });
+  assert.equal(calls.configs.length, 1, "ordinary chat does not depend on the guard");
 });
 
 // ---- session/close and the guesses' read-only mode (agent.mjs), G89 and G90 -----------------------
@@ -1144,6 +1189,7 @@ function guessingAgent(entries: Json[]) {
       entry.turns.add(turn);
       const state: Json = { cancelled: false };
       try {
+        await entry.session.sendMessage?.({ content: request.prompt[0]?.text });
         const reason = await new Promise((resolve) => {
           state.resolve = resolve;
           entry.state = state;
@@ -1220,4 +1266,23 @@ test("G90 a guess of the next step is put in the read-only mode before the reply
   assert.deepEqual(lacking.done, { switched: [], aborted: 0, cleanedUp: 1 });
   assert.equal(lacking.listening(), 0);
   assert.deepEqual([...agent.sessions.keys()], ["s1", "s2"]);
+});
+
+test("prediction sessions never allocate plan state or subscribe to task updates", async (t) => {
+  const guess = openSession();
+  const chat = openSession();
+  const prompted = t.mock.method(PlanGate.prototype, "prompted");
+  const agent = guessingAgent([guess.entry, chat.entry]);
+  guess.entry.session.sendMessage = async () => {};
+  chat.entry.session.sendMessage = async () => {};
+  await agent.newSession({ cwd: "/p", mcpServers: [], _meta: { intcad: { nextStep: true } } });
+  await agent.newSession({ cwd: "/p", mcpServers: [] });
+  const guessTurn = agent.prompt({ sessionId: "s1", prompt: [{ type: "text", text: "a guess" }] });
+  const chatTurn = agent.prompt({ sessionId: "s2", prompt: [{ type: "text", text: "a chat" }] });
+  await settle();
+  const listeners = guess.listening();
+  await Promise.all([agent.closeSession({ sessionId: "s1" }), agent.closeSession({ sessionId: "s2" }), guessTurn, chatTurn]);
+  assert.deepEqual(prompted.mock.calls.map((call: Json) => call.arguments[0]), ["s2"]);
+  assert.equal(listeners, 1, "only the SDK's own listener");
+  assert.equal(guess.listening(), 0);
 });

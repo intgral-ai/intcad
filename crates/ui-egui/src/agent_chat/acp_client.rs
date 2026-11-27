@@ -23,6 +23,7 @@ enum Pending {
     CloseSession,
     Initialize,
     SessionNew,
+    RetiredSessionNew,
     Prompt,
     Authenticate,
     SetMode,
@@ -602,6 +603,13 @@ impl AcpBackend {
                         }
                         None => out.push(Event::Error("session/new: no sessionId".into())),
                     },
+                    (Pending::RetiredSessionNew, result) => {
+                        if acp::closes_sessions(&self.init)
+                            && let Some(session) = result.ok().and_then(|v| v.get("sessionId")?.as_str().map(str::to_owned))
+                        {
+                            self.request(Pending::CloseSession, "session/close", json!({"sessionId": session}));
+                        }
+                    }
                     (Pending::Prompt, Ok(v)) => {
                         if let Some(usage) = acp::turn_usage(&v) {
                             self.usage.merge(usage);
@@ -626,6 +634,8 @@ impl AcpBackend {
                         }
                     }
                     (Pending::Connections(what), Ok(v)) => out.push(match connections::Snapshot::parse(&v) {
+                        Some(snapshot) if what == connections::What::Setup && self.lean.is_some() => Event::PredictionSetup(snapshot),
+                        Some(snapshot) if what == connections::What::Logout => Event::ConnectionsLogout(snapshot),
                         Some(snapshot) => Event::Connections(snapshot),
                         None => Event::ConnectionsFailed { what, code: 0 },
                     }),
@@ -969,6 +979,21 @@ impl ChatBackend for AcpBackend {
         self.pending.retain(|_, request| *request != Pending::SetConfig);
     }
 
+    fn retire_prediction_session(&mut self) {
+        self.cancel();
+        if let Some(session) = self.session.take().filter(|_| acp::closes_sessions(&self.init)) {
+            self.request(Pending::CloseSession, "session/close", json!({"sessionId": session}));
+        }
+        self.cancelling = None;
+        self.pending.retain(|_, request| !matches!(request, Pending::Prompt | Pending::SetConfig));
+        for request in self.pending.values_mut() {
+            if *request == Pending::SessionNew {
+                *request = Pending::RetiredSessionNew;
+            }
+        }
+        self.config_pending = None;
+        self.modern_config = false;
+    }
     fn pid(&self) -> Option<u32> {
         self.proc.pid()
     }
@@ -1274,6 +1299,28 @@ mod tests {
         ids.into_iter().map(|(_, what)| *what).collect()
     }
 
+    #[test]
+    fn retiring_a_guess_closes_even_a_late_session_open_without_publishing_ready() {
+        let mut backend = builtin_backend(false).unwrap();
+        backend.lean_sessions("guess");
+        let mut events = Vec::new();
+        backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentCapabilities":{"sessionCapabilities":{"close":{}}}})) }, &mut events);
+        backend.connections(setup("fake"));
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(connections_snapshot("in")) }, &mut events);
+        assert!(matches!(events.pop(), Some(Event::PredictionSetup(_))));
+        ChatBackend::new_session(&mut backend);
+        let stale = backend.next_id;
+        backend.retire_prediction_session();
+        ChatBackend::new_session(&mut backend);
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"current"})) }, &mut events);
+        assert!(matches!(events.last(), Some(Event::Ready { .. })));
+        events.clear();
+        backend.handle(Incoming::Reply { id: stale, result: Ok(json!({"sessionId":"stale"})) }, &mut events);
+        assert!(events.is_empty(), "stale session must not become ready");
+        assert_eq!(backend.session.as_deref(), Some("current"));
+        assert_eq!(sent(&backend), [Pending::CloseSession]);
+    }
+
     /// B14, on the wire: after `initialize` the built-in agent is handed its keys, and no session
     /// is asked for until the panel opens one (the agent refuses a session while nothing is
     /// connected). A `setup` given before `initialize` is answered waits for that answer.
@@ -1348,7 +1395,7 @@ mod tests {
         assert_eq!(Request::Setup(all).params(), worded);
         let mut events = Vec::new();
         backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(connections_snapshot("in")) }, &mut events);
-        assert!(matches!(events.as_slice(), [Event::Connections(snapshot)] if snapshot.connected()), "{events:?}");
+        assert!(matches!(events.as_slice(), [Event::ConnectionsLogout(snapshot)] if snapshot.connected()), "{events:?}");
         events.clear();
         let changed = json!({"jsonrpc": "2.0", "method": "_intcad/connections/changed", "params": connections_snapshot("expired")}).to_string();
         backend.handle(acp::parse_builtin(&changed).unwrap(), &mut events);

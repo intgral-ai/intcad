@@ -1175,7 +1175,15 @@ impl AgentChat {
             }
             Event::AuthStatus(s) => self.auth_status = Some(s),
             Event::Connections(snapshot) => self.conn.take_in(snapshot),
+            Event::ConnectionsLogout(snapshot) => {
+                self.conn.logout_pending = false;
+                self.conn.take_in(snapshot);
+            }
+            Event::PredictionSetup(_) => {}
             Event::ConnectionsFailed { what, code } => {
+                if what == connections::What::Logout {
+                    self.conn.logout_pending = false;
+                }
                 // Without the first snapshot the agent cannot be used: starting has failed. Later
                 // refusals change nothing here (a second sign-in while one is under way, say).
                 if what == connections::What::Setup && self.conn.snapshot.is_none() {

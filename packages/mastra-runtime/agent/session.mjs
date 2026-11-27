@@ -133,17 +133,64 @@ export function hostOf(request) {
   return { project, instructions: [note, LANGUAGE, brief].filter(Boolean).join("\n\n") };
 }
 
-/**
- * `sdk` is what the entry loaded from Mastra Code: `createMastraCode`, `loadSettings`,
- * `resolveDefaultThinkingLevel`, `resolveSubagentsSetting`, `withCleanupFailure`, and ACP's
- * `RequestError`. Returns the function the ACP agent calls for `session/new`.
- */
+const noPredictionTools = {
+  id: 'intcad-prediction-no-tools',
+  processInputStep: () => ({ tools: {}, activeTools: [], toolChoice: 'none' }),
+};
+
+/** Check the installed Core once in this process, with no provider or credentials. */
+export function predictionToolGuard(CoreAgent) {
+  let verified;
+  return () => (verified ??= (async () => {
+    let requests = 0;
+    const probe = new CoreAgent({
+      id: 'intcad-prediction-tool-check',
+      name: 'Intcad prediction tool check',
+      instructions: 'Reply with text.',
+      tools: { inspect_file: { id: 'inspect_file', description: 'Offline probe tool', execute: () => 'offline' } },
+      inputProcessors: [noPredictionTools],
+      model: {
+        specificationVersion: 'v2', provider: 'intcad-offline', modelId: 'tool-check', supportedUrls: {},
+        async doStream(request) {
+          const empty = Array.isArray(request.tools) ? request.tools.length === 0 : request.tools === undefined;
+          if (!empty || (request.toolChoice && request.toolChoice.type !== 'none')) {
+            // `consumeStream` can report errors as chunks rather than rejecting.
+            requests = Number.NaN;
+          } else {
+            requests += 1;
+          }
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: 'stream-start', warnings: [] });
+                controller.enqueue({ type: 'finish', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 } });
+                controller.close();
+              },
+            }),
+          };
+        },
+      },
+    });
+    const response = await probe.stream('Check the tool boundary.');
+    await response.consumeStream();
+    if (requests !== 1) throw new Error('the probe did not make exactly one tool-free model request');
+  })());
+}
+
+/** Returns the function the ACP agent calls for `session/new`, using the installed SDK. */
 export function sessionBuilder(sdk) {
   const { RequestError } = sdk;
   return async function createSession(request) {
     // Intcad's: a guess of the next step has no MCP servers, whatever the request names, so they
     // are neither checked nor started.
     const nextStep = isNextStep(request);
+    if (nextStep) {
+      try {
+        await sdk.verifyPredictionTools();
+      } catch (error) {
+        throw new Error('The built-in agent could not verify tool-free predictions.', { cause: error });
+      }
+    }
     const names = new Set();
     const servers = nextStep ? [] : request.mcpServers.map(server => {
       if ('type' in server && server.type === 'sse') throw RequestError.invalidParams(undefined, 'Legacy SSE MCP servers are unsupported; use HTTP or stdio');
@@ -175,6 +222,12 @@ export function sessionBuilder(sdk) {
         unixSocketPubSub: false,
         // Intcad's: a guess loads no MCP server at all, also none from the agent's home.
         disableMcp: nextStep,
+        // Fast mode alone still exposes inspection tools. Replace the effective tool set
+        // on every model step, regardless of the SDK's workspace and controller defaults.
+        ...(nextStep ? {
+          inputProcessors: [noPredictionTools],
+          disablePlugins: true,
+        } : {}),
         // Intcad's: no hooks. Intcad configures none, and a hook is a command run without asking.
         disableHooks: true,
         // Project environment files must not mutate other ACP sessions.

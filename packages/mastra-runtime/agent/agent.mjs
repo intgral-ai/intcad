@@ -121,8 +121,8 @@ export function intcadAgent({
 
     /**
      * What Mastra Code's `dispose` does for each session, for one: a turn under way is cancelled
-     * and aborted, the session stops listening, and its runtime is cleaned up. (The plan gate keeps
-     * a few flags per session and has no way to forget one; they stay.)
+     * and aborted, the session stops listening, and its runtime is cleaned up. Only ordinary
+     * chats keep flags in the plan gate; prediction sessions never register there.
      */
     async #end(sessionId, entry) {
       this.sessions.delete(sessionId);
@@ -172,10 +172,8 @@ export function intcadAgent({
       const entry = this.sessions.get(response.sessionId);
       if (!entry) return response;
       const nextStep = isNextStep(request);
-      // A guess only looks at the design: in the read-only mode Mastra sends the model none of the
-      // tools that write, run commands or reach MCP servers. Switched before the reply, so the app
-      // never sees the session in another mode. Without that mode there is no safe guess, and the
-      // session is ended rather than left open in one that writes.
+      // Keep the prediction in Explore mode as defense in depth. The session builder separately
+      // removes all model-visible tools. Switch before the reply, or end the session on failure.
       if (nextStep) {
         try {
           if (!entry.modes?.some(mode => mode?.id === READ_ONLY_MODE)) throw new RequestError(INTERNAL, `this agent has no read-only mode (${READ_ONLY_MODE}) for a next-step session`);
@@ -233,7 +231,7 @@ export function intcadAgent({
           if (supported === false) {
             throw new RequestError(INTERNAL, `${model} cannot read the pictures or documents in this chat`, { intcad: { kind: 'attachments', prefix: connections.prefixOf(model) } });
           }
-          this.#gate.prompted(sessionId);
+          if (!nextStep) this.#gate.prompted(sessionId);
           turn.submitted = true;
           turn.files = [];
           let mayBeRetained = true;
@@ -259,7 +257,7 @@ export function intcadAgent({
         };
         entry.plansFirst = true;
       }
-      this.#showTasks(entry, response.sessionId);
+      if (!nextStep) this.#showTasks(entry, response.sessionId);
       await this.#settle(entry, true);
       return {
         ...response,

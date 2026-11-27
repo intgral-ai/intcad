@@ -1300,9 +1300,16 @@ fn g44_permission_requests_are_declined_in_both_questions() {
 
 /// Edit and wait, asking one first question and having it answered with nothing, at `t`.
 fn one_question(app: &mut SolveApp, ctx: &egui::Context, guesser: &Fake, t: f64, n: usize) {
+    one_question_with_model(app, ctx, guesser, t, n, None);
+}
+
+fn one_question_with_model(app: &mut SolveApp, ctx: &egui::Context, guesser: &Fake, t: f64, n: usize, model: Option<&str>) {
     edit(app, 20.0 * (n as f64 + 10.0));
     frame(app, ctx, t, vec![]);
     frame(app, ctx, t + 1.5, vec![]);
+    if let Some(model) = model.filter(|_| app.agent_chat.predict.link == Link::Starting) {
+        guesser.say(Event::ConfigOptions(vec![option_of("model", model, &[model])]));
+    }
     guesser.ready();
     frame(app, ctx, t + 1.6, vec![]);
     guesser.answer(r#"{"step": "", "reason": ""}"#);
@@ -3019,11 +3026,56 @@ fn g82_the_hourly_cap_follows_the_guess_models_connection() {
         frame(&mut app, &ctx, 0.05, vec![]);
         app.agent_chat.predict.connections = snapshot;
         for n in 0..60 {
-            one_question(&mut app, &ctx, &guesser, 10.0 + 25.0 * n as f64, n);
+            one_question_with_model(&mut app, &ctx, &guesser, 10.0 + 25.0 * n as f64, n, Some(model));
         }
         assert_eq!(guesser.firsts().len(), if paid_by_use { 60 } else { 20 }, "{name}: {}", status(&app));
-        assert_eq!(status(&app)["keySignIn"], paid_by_use, "{name}");
     }
+}
+
+#[test]
+fn g82_replacement_model_is_confirmed_before_admitting_the_first_question() {
+    let plan = "openai/gpt-5.4-mini";
+    let key = "anthropic/claude-haiku";
+    for (before, after, sent) in [(key, plan, 0), (plan, key, 1)] {
+        let (mut app, _chat, guesser, ctx) = plate();
+        let snapshot = connections_of(&[("openai-codex", "in", "openai")], &[("anthropic", true, false)], &[]);
+        as_builtin(&mut app, &guesser, snapshot);
+        app.preferences.agent_next_step_model = SAME_MODEL.into();
+        frame(&mut app, &ctx, 0.0, vec![]);
+        guesser.say(Event::ConfigOptions(vec![option_of("model", before, &[before, after])]));
+        guesser.ready();
+        frame(&mut app, &ctx, 0.1, vec![]);
+        app.agent_chat.predict.hour.extend([0.0; 20]);
+        app.preferences.agent_next_step_model = after.into();
+        frame(&mut app, &ctx, 2.0, vec![]);
+        assert_eq!(sessions_opened(&guesser), 2, "a capped old plan must not prevent replacement");
+        assert!(guesser.prompts().is_empty());
+        guesser.say(Event::ConfigOptions(vec![option_of("model", after, &[before, after])]));
+        guesser.ready();
+        frame(&mut app, &ctx, 2.1, vec![]);
+        assert_eq!(guesser.firsts().len(), sent, "{before} → {after}");
+    }
+}
+
+#[test]
+fn g83_a_connections_notification_is_not_a_setup_acknowledgement() {
+    use crate::agent_chat::connections::{Setup, What};
+    let (mut app, _chat, guesser, ctx) = plate();
+    as_builtin(&mut app, &guesser, plan_in());
+    frame(&mut app, &ctx, 0.0, vec![]);
+    guesser.ready();
+    frame(&mut app, &ctx, 0.1, vec![]);
+    app.agent_chat.conn.last_setup = Some(Setup::default());
+    app.agent_chat.conn.setups += 1;
+    frame(&mut app, &ctx, 2.0, vec![]);
+    guesser.say(Event::Connections(plan_in()));
+    frame(&mut app, &ctx, 2.1, vec![]);
+    assert_eq!(sessions_opened(&guesser), 1, "no replacement before an actual setup reply");
+    assert!(guesser.prompts().is_empty());
+    guesser.say(Event::ConnectionsFailed { what: What::Setup, code: -32603 });
+    frame(&mut app, &ctx, 2.2, vec![]);
+    assert!(matches!(app.agent_chat.predict.link, Link::Failed { .. }));
+    assert!(guesser.prompts().is_empty());
 }
 
 /// The setups the guessing backend was handed, by the providers of their keys.
@@ -3049,6 +3101,7 @@ fn g83_the_guessing_process_follows_the_chats_setup() {
         assert!(setups_handed(&guesser).is_empty(), "nothing while nothing changed: {:?}", guesser.calls());
         if signed_out {
             app.builtin_changes += 1;
+            app.agent_chat.conn.test_setup_at(app.builtin_changes);
         } else {
             app.agent_chat.conn.last_setup = Some(crate::agent_chat::connections::Setup::default());
             app.agent_chat.conn.setups += 1;
@@ -3061,14 +3114,91 @@ fn g83_the_guessing_process_follows_the_chats_setup() {
         // The pause is over: the session opened before the change is not asked; a new one is.
         frame(&mut app, &ctx, 2.0, vec![]);
         assert!(guesser.prompts().is_empty(), "{:?}", guesser.calls());
+        assert_eq!(sessions_opened(&guesser), 1, "wait for the setup reply");
+        guesser.say(Event::PredictionSetup(plan_in()));
+        frame(&mut app, &ctx, 2.05, vec![]);
         assert_eq!(sessions_opened(&guesser), 2, "{:?}", guesser.calls());
         guesser.ready();
         frame(&mut app, &ctx, 2.1, vec![]);
         assert_eq!(guesser.firsts().len(), 1, "{:?}", guesser.calls());
         let calls = guesser.calls();
         let at = |what: &str| calls.iter().rposition(|c| c.starts_with(what)).unwrap();
+        assert!(at("retire_prediction_session") < at("connections: Setup"));
         assert!(at("connections: Setup") < at("new_session") && at("new_session") < at("prompt: "), "{calls:?}");
     }
+}
+
+#[test]
+fn g83_a_superseded_ack_cannot_open_a_session_while_keys_are_pending() {
+    let (mut app, _chat, guesser, ctx) = plate();
+    as_builtin(&mut app, &guesser, plan_in());
+    frame(&mut app, &ctx, 0.0, vec![]);
+    guesser.ready();
+    frame(&mut app, &ctx, 0.1, vec![]);
+    app.agent_chat.conn.setups += 1;
+    frame(&mut app, &ctx, 2.0, vec![]);
+    assert_eq!(setups_handed(&guesser).len(), 1);
+    app.builtin_changes += 1;
+    frame(&mut app, &ctx, 2.1, vec![]);
+    guesser.say(Event::PredictionSetup(plan_in()));
+    frame(&mut app, &ctx, 2.2, vec![]);
+    assert_eq!(setups_handed(&guesser).len(), 1, "do not resend old keys");
+    assert_eq!(sessions_opened(&guesser), 1);
+    app.agent_chat.conn.test_setup_at(app.builtin_changes);
+    app.agent_chat.conn.setups += 1;
+    frame(&mut app, &ctx, 2.3, vec![]);
+    assert_eq!(setups_handed(&guesser).len(), 2);
+    assert_eq!(sessions_opened(&guesser), 1, "latest setup still awaiting its own ACK");
+    assert!(guesser.prompts().is_empty());
+    guesser.say(Event::PredictionSetup(plan_in()));
+    frame(&mut app, &ctx, 2.4, vec![]);
+    assert_eq!(sessions_opened(&guesser), 2);
+    guesser.ready();
+    frame(&mut app, &ctx, 2.5, vec![]);
+    assert_eq!(guesser.firsts().len(), 1);
+}
+
+#[test]
+fn g83_plan_sign_out_blocks_predictions_before_the_chat_receives_its_reply() {
+    let (mut app, _chat, guesser, ctx) = plate();
+    let snapshot = plan_in();
+    as_builtin(&mut app, &guesser, snapshot.clone());
+    app.preferences.agent_default = crate::agent_chat::connections::AGENT_ID.into();
+    app.agent_chat.conn.active = true;
+    app.agent_chat.conn.snapshot = Some(snapshot);
+    frame(&mut app, &ctx, 0.0, vec![]);
+    guesser.ready();
+    frame(&mut app, &ctx, 0.1, vec![]);
+    super::super::connections::act(&mut app, &ctx, "conn_logout", &json!({"id":"openai-codex"})).unwrap();
+    frame(&mut app, &ctx, 2.0, vec![]);
+    assert!(guesser.prompts().is_empty(), "the old session cannot send while the sign-out is pending");
+    assert_eq!(guesser.calls().iter().filter(|c| *c == "retire_prediction_session").count(), 1);
+    assert!(setups_handed(&guesser).is_empty(), "don't read the sign-in store until logout completes");
+    let signed_out = connections_of(&[("openai-codex", "out", "openai")], &[("openai", true, false)], &[]);
+    app.agent_chat.on_event(Event::Connections(signed_out.clone()));
+    super::super::connections::settle(&mut app);
+    frame(&mut app, &ctx, 2.1, vec![]);
+    assert!(setups_handed(&guesser).is_empty(), "a chat notification is not a logout reply");
+    app.agent_chat.on_event(Event::ConnectionsLogout(signed_out.clone()));
+    super::super::connections::settle(&mut app);
+    frame(&mut app, &ctx, 2.2, vec![]);
+    assert_eq!(setups_handed(&guesser).len(), 1);
+    assert_eq!(sessions_opened(&guesser), 1, "still waiting for the guessing process to acknowledge setup");
+    guesser.say(Event::PredictionSetup(signed_out));
+    frame(&mut app, &ctx, 2.3, vec![]);
+    assert_eq!(sessions_opened(&guesser), 2);
+}
+
+#[test]
+fn g83_a_pending_builtin_setup_does_not_keep_the_previous_agent_alive() {
+    let (mut app, _chat, old_guesser, ctx) = plate();
+    frame(&mut app, &ctx, 0.0, vec![]);
+    run_builtin(&mut app);
+    app.agent_chat.argv = vec!["test-builtin-agent".into()];
+    app.builtin_changes += 1;
+    frame(&mut app, &ctx, 2.0, vec![]);
+    assert!(old_guesser.calls().iter().any(|call| call == "shutdown"));
+    assert!(old_guesser.prompts().is_empty());
 }
 
 /// The `initialize` reply of a built-in agent stand-in: Mastra Code's name, with or without

@@ -853,10 +853,13 @@ On the built-in agent the suggestions run in a second process of it, started as 
 the package, with its data folder and the keys the chat's agent has) but with none of the design's
 tools. Its sessions are marked as guesses: they get the guessing note alone, load no MCP server
 (also none from the agent's own settings), are given no project folder, and open in the agent's
-read-only mode, **Explore**, whose tools only look at files. They run on a small model of the
-connection in use (for example gpt-5.4-mini on an OpenAI key) at the lowest reasoning effort; the
-chat's own model and mode are not changed. Each key, address or sign-in change the chat's agent is
-handed reaches the suggestions' process too, before its next question.
+read-only mode, **Explore**, with no model-visible tools (including Explore's file tools).
+They run on a small model of the connection in use (for example gpt-5.4-mini on an OpenAI key)
+at the lowest reasoning effort; the chat's own model and mode are not changed.
+Each key, address or sign-in change the chat's agent is
+handed reaches the suggestions' process too. The old session is retired, and predictions resume
+only after that process acknowledges the latest setup. The hourly cap is checked against the
+model confirmed for the new session before its first question is sent.
 
 The Autocomplete panel lists the latest suggestions and what became of each. Their time, tokens,
 cost (as the agent reports them), whether they were billed and their outcome are in `ui.agent_chat`

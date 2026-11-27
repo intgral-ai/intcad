@@ -751,6 +751,8 @@ pub(crate) struct Conn {
     pub refused: bool,
     /// The keys being read from the keychain for the next `setup`, and whether one could not be read.
     reading: Option<std::sync::mpsc::Receiver<(Setup, bool)>>,
+    /// The agent can update the shared sign-in store before its sign-out reply arrives.
+    pub(super) logout_pending: bool,
     pub kept: Option<Kept>,
     /// The count of changes ([`SolveApp::builtin_changes`]) this conversation's agent was last
     /// set up at. Behind it, the agent holds keys, addresses or sign-ins that are no longer so.
@@ -772,6 +774,15 @@ impl Conn {
     /// The keys of a setup are being read: the setup follows.
     pub(super) fn reading_keys(&self) -> bool {
         self.reading.is_some()
+    }
+
+    pub(super) fn setup_current(&self, changes: u64) -> bool {
+        self.set_up_at == changes && !self.reading_keys() && !self.logout_pending
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_setup_at(&mut self, changes: u64) {
+        self.set_up_at = changes;
     }
 
     /// Take in what the agent now says of its connections.
@@ -1114,6 +1125,10 @@ pub(super) fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &
             if !told(app).ok_or_else(silent)?.plans.iter().any(|plan| plan.id == id && plan.state != PlanState::Out) {
                 return Err("conn_logout: not a plan that is signed in".into());
             }
+            if app.agent_chat.conn.logout_pending {
+                return Err("conn_logout: a sign-out is already under way".into());
+            }
+            app.agent_chat.conn.logout_pending = true;
             send(app, Request::Logout(id.to_string()));
         }
         "conn_key" => {

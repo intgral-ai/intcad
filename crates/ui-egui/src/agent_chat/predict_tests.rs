@@ -63,6 +63,9 @@ impl ChatBackend for Fake {
     fn new_session(&mut self) {
         self.calls.lock().unwrap().push("new_session".into());
     }
+    fn retire_prediction_session(&mut self) {
+        self.calls.lock().unwrap().push("retire_prediction_session".into());
+    }
     fn answer_permission(&mut self, key: u64, option: Option<&str>) {
         self.calls.lock().unwrap().push(format!("permission: {key} {option:?}"));
     }
@@ -731,7 +734,8 @@ pub(super) fn as_builtin(app: &mut SolveApp, guesser: &Fake, snapshot: crate::ag
     guesser.events.lock().unwrap().clear();
     run_builtin(app);
     app.agent_chat.predict.builtin = true;
-    guesser.say(Event::Connections(snapshot));
+    app.agent_chat.predict.setup_wait = Some(0.0);
+    guesser.say(Event::PredictionSetup(snapshot));
 }
 
 pub(super) fn configs(guesser: &Fake) -> Vec<String> {

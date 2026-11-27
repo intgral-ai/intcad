@@ -302,16 +302,15 @@ pub struct Predictor {
     /// What the session had cost when its second question went out: the agent reports the session's
     /// cost so far.
     cost_before: f64,
-    /// The built-in agent's guessing process: what it last said of its connections, and the model a
-    /// session of it was last on (kept across sessions, for the hourly cap before a new one says).
+    /// What the guessing process confirmed about its connections in its latest setup reply.
     connections: Option<super::connections::Snapshot>,
-    known_model: String,
     /// The chat's setups (`Conn::setups`) and the app's connection changes
     /// (`SolveApp::builtin_changes`) the guessing process has been handed (decision 30); `renew`:
     /// a session opened before the last one is not used.
     setups_seen: u64,
     changes_seen: u64,
     renew: bool,
+    setup_wait: Option<f64>,
 }
 
 impl Drop for Predictor {
@@ -377,6 +376,7 @@ impl Predictor {
         self.argv.clear();
         self.asked = None;
         self.opened = false;
+        self.setup_wait = None;
         self.new_session_state();
     }
 
@@ -396,7 +396,12 @@ impl Predictor {
             self.link = Link::Starting;
             self.renew = false;
             self.new_session_state();
+            self.opened_choice.clone_from(&self.choice);
         }
+    }
+
+    fn fresh_for_choice(&self) -> bool {
+        self.link == Link::Fresh && self.opened_choice == self.choice && !self.renew
     }
 
     /// Set the next part of the session's configuration it still needs (`options`: what it
@@ -423,7 +428,6 @@ impl Predictor {
     fn note_model(&mut self, options: &[ConfigOption]) {
         if let Some(o) = options.iter().find(|o| o.category == "model" || o.id == "model") {
             self.model = o.current_value.clone();
-            self.known_model.clone_from(&o.current_value);
         }
     }
 
@@ -432,8 +436,7 @@ impl Predictor {
     /// model's connection (decision 29).
     fn key_sign_in(&self) -> bool {
         if self.builtin {
-            let model = if self.model.is_empty() { &self.known_model } else { &self.model };
-            return self.connections.as_ref().is_some_and(|snapshot| paid_by_use(snapshot, model));
+            return self.connections.as_ref().is_some_and(|snapshot| paid_by_use(snapshot, &self.model));
         }
         self.backend.as_ref().is_some_and(|b| b.key_sign_in())
     }
@@ -837,6 +840,16 @@ fn may_ask(app: &SolveApp) -> bool {
     available(app) && (strip_shown(app) || in_page(app))
 }
 
+fn credentials_current(app: &SolveApp) -> bool {
+    let p = &app.agent_chat.predict;
+    !p.builtin
+        || (p.setup_wait.is_none()
+            && !p.renew
+            && app.agent_chat.conn.setup_current(app.builtin_changes)
+            && p.setups_seen == app.agent_chat.conn.setups
+            && p.changes_seen == app.builtin_changes)
+}
+
 fn chat_holds_view(app: &SolveApp) -> bool {
     let chat = &app.agent_chat;
     chat.state() != State::Ready || chat.turn.is_some() || chat.preview.is_some() || !chat.pending.is_empty() || chat.queued.is_some()
@@ -850,6 +863,7 @@ pub(super) fn available(app: &SolveApp) -> bool {
     let chat = &app.agent_chat;
     app.preferences.agent_next_step
         && supported(app)
+        && credentials_current(app)
         && !chat_holds_view(app)
         && chat.skill == super::skill::Skill::Plain
         && keys_belong_to_model(app)
@@ -891,6 +905,17 @@ fn wake_in(app: &SolveApp, now: f64) -> Option<f64> {
     }
     if let Some(work) = &p.work {
         return Some(work.remaining().max(0.05));
+    }
+    if let Some(at) = p.setup_wait {
+        return Some((at + ASK_TIMEOUT_S - now).max(0.05));
+    }
+    if p.builtin
+        && p.told
+        && p.fresh_for_choice()
+        && p.ask.as_ref().is_some_and(|ask| !ask.sent)
+        && let Some(at) = p.hour.front()
+    {
+        return Some((at + HOUR_S - now).max(0.05));
     }
     let waiting = p.ask.is_none() && p.shown.is_none() && p.seen.as_ref().is_some_and(|k| !p.was_asked(k)) && p.link.live() && may_ask(app);
     // Once the pause is over, the guessing session's own answer wakes the window.
@@ -937,12 +962,12 @@ pub(crate) fn step(app: &mut SolveApp, ctx: &egui::Context, now: f64, acted: boo
         p.seen_selection = selection.clone();
     }
     start_session(app, ctx, now);
-    follow_setup(app);
+    follow_setup(app, now);
     poll(app, ctx, now, &key, &selection);
     compute(app, now);
     let p = &app.agent_chat.predict;
     let due = p.ask.is_none() && p.shown.is_none() && !p.was_asked(&key) && p.link.live() && now - p.last_action >= pause(app);
-    if due && may_ask(app) && within_hour(app, now) {
+    if due && may_ask(app) && (p.builtin || within_hour(app, now)) {
         ask(app, now, key);
     }
 }
@@ -976,6 +1001,7 @@ fn start_session(app: &mut SolveApp, ctx: &egui::Context, now: f64) {
     if !supported(app) {
         return;
     }
+    let waiting_for_keys = runs_builtin(app) && !app.agent_chat.conn.setup_current(app.builtin_changes);
     let argv = app.agent_chat.argv.clone();
     let ready = app.agent_chat.state() == State::Ready;
     let p = &mut app.agent_chat.predict;
@@ -983,6 +1009,9 @@ fn start_session(app: &mut SolveApp, ctx: &egui::Context, now: f64) {
         p.stop();
         p.failures = 0;
         p.argv = argv.clone();
+    }
+    if waiting_for_keys {
+        return;
     }
     if let Link::Failed { at, .. } = p.link {
         if !ready || now - at < retry_wait(p.failures) {
@@ -1014,6 +1043,7 @@ fn start_session(app: &mut SolveApp, ctx: &egui::Context, now: f64) {
     p.setups_seen = setups;
     p.changes_seen = changes;
     p.renew = false;
+    p.setup_wait = builtin.as_ref().map(|_| now);
     p.new_session_state();
     match start_backend(&argv, ctx, builtin) {
         Ok(b) => {
@@ -1050,22 +1080,48 @@ fn paid_by_use(snapshot: &super::connections::Snapshot, model: &str) -> bool {
 /// each new setup, and the last one again after a plan was signed in or out (a setup makes the agent
 /// read its sign-ins again). Not while the chat's keys are being read: that setup follows. A session
 /// opened before is not used.
-fn follow_setup(app: &mut SolveApp) {
+fn follow_setup(app: &mut SolveApp, now: f64) {
     let (setups, changes) = (app.agent_chat.conn.setups, app.builtin_changes);
-    let p = &app.agent_chat.predict;
-    if !p.builtin || p.backend.is_none() || (p.setups_seen == setups && p.changes_seen == changes) || app.agent_chat.conn.reading_keys() {
+    let current = app.agent_chat.conn.setup_current(changes);
+    let p = &mut app.agent_chat.predict;
+    if !p.builtin || p.backend.is_none() {
         return;
     }
-    let setup = app.agent_chat.conn.last_setup.clone().unwrap_or_default();
-    let p = &mut app.agent_chat.predict;
+    if p.setup_wait.is_some_and(|at| now - at >= ASK_TIMEOUT_S) {
+        if let Some(mut backend) = p.backend.take() {
+            backend.shutdown(false);
+        }
+        p.setup_wait = None;
+        fail(p, now, "prediction setup timed out".into(), false);
+        return;
+    }
+    if matches!(p.link, Link::Failed { .. }) || (current && !p.renew && p.setups_seen == setups && p.changes_seen == changes) {
+        return;
+    }
+    if !p.renew {
+        if p.ask.as_ref().is_some_and(|ask| !ask.sent && ask.kind == Kind::Step) {
+            p.asked = None;
+        }
+        p.withdraw("dismissed");
+        p.ask = None;
+        if let Some(b) = p.backend.as_mut() {
+            b.retire_prediction_session();
+        }
+        p.opened = false;
+        p.link = Link::Starting;
+        p.new_session_state();
+        p.renew = true;
+    }
+    if !current || p.setup_wait.is_some() {
+        return;
+    }
     p.setups_seen = setups;
     p.changes_seen = changes;
+    p.setup_wait = Some(now);
+    let setup = app.agent_chat.conn.last_setup.clone().unwrap_or_default();
     if let Some(b) = p.backend.as_mut() {
         log::info!("next-step suggestions: the guessing agent is set up again");
         b.connections(super::connections::Request::Setup(setup));
-    }
-    if matches!(p.link, Link::Starting | Link::Fresh) {
-        p.renew = true;
     }
 }
 
@@ -1190,7 +1246,7 @@ fn ask(app: &mut SolveApp, now: f64, key: Key) {
     }
     p.asked = Some(key.clone());
     p.ask = Some(Ask { id, kind: Kind::Step, started: now, prompt, sent: false, reply: String::new(), dropped: false, key, selection, brief });
-    send_question(p);
+    send_ready_question(app, now);
 }
 
 /// Ask for the commands of the step just shown, in the session that gave it.
@@ -1207,7 +1263,7 @@ fn ask_commands(app: &mut SolveApp, now: f64, id: u64, key: Key) {
     let selection = Vec::new();
     p.ask =
         Some(Ask { id, kind: Kind::Commands, started: now, prompt, sent: false, reply: String::new(), dropped: false, key, selection, brief: None });
-    send_question(p);
+    send_ready_question(app, now);
 }
 
 /// Where each number of a suggestion's commands comes from: the app's own reading, whatever the
@@ -1276,22 +1332,36 @@ fn compute(app: &mut SolveApp, now: f64) {
 
 /// Send the question waiting: the first in a fresh session, the second in the first's. A session
 /// that is not (or no longer) the right one for it is replaced by a fresh one first.
-fn send_question(p: &mut Predictor) {
+fn send_ready_question(app: &mut SolveApp, now: f64) {
+    if !credentials_current(app) {
+        return;
+    }
+    let p = &app.agent_chat.predict;
+    let cap_ready_step = p.builtin && p.fresh_for_choice() && p.ask.as_ref().is_some_and(|ask| ask.kind == Kind::Step && !ask.sent);
+    if cap_ready_step && !within_hour(app, now) {
+        return;
+    }
+    send_question(&mut app.agent_chat.predict, now);
+}
+
+fn send_question(p: &mut Predictor, now: f64) {
+    let fresh = p.fresh_for_choice();
     let Some(ask) = p.ask.as_mut().filter(|a| !a.sent) else { return };
     let Some(b) = p.backend.as_mut() else { return };
     let right = b.session_fits_sign_in()
         && match ask.kind {
-            Kind::Step => p.link == Link::Fresh && p.opened_choice == p.choice && !p.renew,
+            Kind::Step => fresh,
             Kind::Commands => true,
         };
     match p.link {
         Link::Fresh | Link::Used if right => {
             b.prompt(&[PromptPart::Text(ask.prompt.clone())]);
             ask.sent = true;
+            ask.started = now;
             let (id, kind) = (ask.id, ask.kind);
             // A suggestion counts once in its hour, when it is first sent.
             if kind == Kind::Step {
-                p.hour.push_back(ask.started);
+                p.hour.push_back(now);
             }
             p.link = Link::Used;
             let model = (!p.model.is_empty()).then(|| p.model.clone());
@@ -1314,14 +1384,17 @@ fn send_question(p: &mut Predictor) {
 fn session_ready(p: &mut Predictor) {
     if p.link == Link::Starting {
         p.link = Link::Fresh;
-        p.opened_choice = p.choice.clone();
+        if !p.builtin {
+            p.opened_choice.clone_from(&p.choice);
+        }
     }
 }
 
 /// What the guessing session said. `key` and `selection`: the design and selection now, which a
 /// late answer must still match to be shown.
 fn poll(app: &mut SolveApp, ctx: &egui::Context, now: f64, key: &Key, selection: &[solidcraft_engine::Sel]) {
-    let may_send = may_ask(app);
+    let (setups, changes) = (app.agent_chat.conn.setups, app.builtin_changes);
+    let setup_current = app.agent_chat.conn.setup_current(changes);
     let choice = app.preferences.agent_next_step_model.clone();
     let mut ended: Option<String> = None;
     let p = &mut app.agent_chat.predict;
@@ -1337,33 +1410,42 @@ fn poll(app: &mut SolveApp, ctx: &egui::Context, now: f64, key: &Key, selection:
             // The built-in agent opens no session by itself, and refuses one while nothing is
             // connected (`connections` on the snapshot): the first is asked for once it can be.
             // What it says of its connections is kept: the hourly cap follows it.
-            Event::Connections(snapshot) if p.builtin => {
+            Event::PredictionSetup(snapshot) if p.builtin && p.setup_wait.take().is_some() => {
+                if !setup_current || p.setups_seen != setups || p.changes_seen != changes {
+                    ctx.request_repaint();
+                    continue;
+                }
                 let connected = snapshot.connected();
                 p.connections = Some(snapshot);
                 if !p.opened {
                     if connected {
                         p.opened = true;
-                        if let Some(b) = p.backend.as_mut() {
-                            b.new_session();
-                        }
+                        p.open_next();
                     } else {
                         fail(p, now, tr("ui.next_step_sign_in").to_string(), true);
                     }
                 }
             }
+            Event::ConnectionsFailed { what: super::connections::What::Setup, .. } if p.builtin => {
+                fail(p, now, "prediction setup refused".into(), false);
+            }
             // A fresh session's configuration: set what it needs before its question. While a
             // setting is out, the agent's own news of it (`config_option_update`) is only read:
             // the backend takes one setting at a time.
-            Event::ConfigOptions(options) => {
+            Event::ConfigOptions(options) if !p.builtin || p.opened => {
                 if p.link == Link::Starting && !p.tuning {
+                    let choice = if p.builtin { p.opened_choice.clone() } else { choice.clone() };
                     p.tune(&options, &choice);
                 } else {
                     p.note_model(&options);
                 }
             }
-            Event::ConfigOptionFinished { id, result } => {
+            Event::ConfigOptionFinished { id, result } if !p.builtin || p.opened => {
                 let more = match result {
-                    Ok(options) => p.tune(&options, &choice),
+                    Ok(options) => {
+                        let choice = if p.builtin { p.opened_choice.clone() } else { choice.clone() };
+                        p.tune(&options, &choice)
+                    }
                     Err(e) => {
                         // The guess still runs, on what the session has.
                         log::warn!("next-step suggestions: the agent did not take {id}: {e}");
@@ -1377,7 +1459,7 @@ fn poll(app: &mut SolveApp, ctx: &egui::Context, now: f64, key: &Key, selection:
                     }
                 }
             }
-            Event::Ready { .. } => {
+            Event::Ready { .. } if !p.builtin || p.opened => {
                 if p.tuning {
                     p.ready = true;
                 } else {
@@ -1419,12 +1501,13 @@ fn poll(app: &mut SolveApp, ctx: &egui::Context, now: f64, key: &Key, selection:
         p.note_usage(u);
     }
     // A request waiting for a fresh session must also respect the current UI state.
-    if may_send {
-        send_question(p);
-    } else if p.ask.as_ref().is_some_and(|ask| !ask.sent) {
-        p.withdraw("dismissed");
+    if may_ask(app) {
+        send_ready_question(app, now);
+    } else if app.agent_chat.predict.ask.as_ref().is_some_and(|ask| !ask.sent) {
+        app.agent_chat.predict.withdraw("dismissed");
     }
     // An answer that never comes is given up, and a session for a shown step that never opens.
+    let p = &mut app.agent_chat.predict;
     if let Some(ask) = p.ask.as_ref()
         && (ask.sent || ask.kind == Kind::Commands)
         && !ask.dropped
@@ -1446,6 +1529,7 @@ fn poll(app: &mut SolveApp, ctx: &egui::Context, now: f64, key: &Key, selection:
 
 fn fail(p: &mut Predictor, now: f64, why: String, sign_in: bool) {
     log::warn!("next-step suggestions paused: {why}");
+    p.setup_wait = None;
     if let Some(ask) = p.ask.take() {
         let ms = elapsed_ms(ask.started, now);
         // Nothing came of the question: once the session is back, the design is asked about again.
