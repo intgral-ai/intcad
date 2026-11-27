@@ -360,6 +360,69 @@ pub fn session_new_params(cwd: &std::path::Path, bridge: Option<&McpBridge>, ini
     params
 }
 
+/// A guessing session's `session/new` parameters, from the chat's ([`session_new_params`]): no MCP
+/// tool of any kind may be called in it. The user's own Claude Code may have Intcad's server set up
+/// and allowed without asking, and a guess must not reach the design by it. The user's servers are
+/// not loaded either: a session opened ahead has the time to connect them, and their instructions
+/// then went with every question.
+pub fn without_mcp(mut params: Value) -> Value {
+    if let Some(options) = params.pointer_mut("/_meta/claudeCode/options").and_then(Value::as_object_mut) {
+        if let Some(off) = options.get_mut("disallowedTools").and_then(Value::as_array_mut) {
+            off.push(json!("mcp__*"));
+        }
+        options.insert("strictMcpConfig".into(), json!(true));
+    }
+    params
+}
+
+/// The `session/new` parameters of a lean guessing session (next-step design, decision 16), for
+/// Claude Code offering to override its system prompt: `note` is then the whole system prompt,
+/// the session has no tools, and none of the user's own Claude Code setup (skills, plugins,
+/// CLAUDE.md, settings) is loaded. `None` for any other agent, or one without the offer.
+pub fn lean_session_params(cwd: &std::path::Path, init: &Value, note: &str) -> Option<Value> {
+    if !(is_claude_code(init) && takes_override(init)) {
+        return None;
+    }
+    Some(json!({
+        "cwd": cwd.to_string_lossy(),
+        "mcpServers": [],
+        "systemPrompt": {"mode": "override", "content": [{"type": "text", "text": note}]},
+        "_meta": {"claudeCode": {"options": {
+            "allowDangerouslySkipPermissions": false,
+            "disallowedTools": CLAUDE_DISALLOWED_TOOLS,
+            // The two go together: with only the tools off, Claude Code sent ~460k tokens.
+            "tools": [],
+            "settingSources": [],
+            // The user's own MCP servers (claude.ai connectors too) load a few seconds after the
+            // session opens, and their tools then went with the question: 418k tokens.
+            "strictMcpConfig": true,
+        }}},
+    }))
+}
+
+/// The `session/new` parameters of a guessing session of the built-in agent (next-step design,
+/// decision 27): `note` alone, not behind the chat's note; no MCP server and no project; and marked
+/// `nextStep`, so the agent opens it in its read-only mode with no MCP and no design tool.
+pub fn next_step_session_params(cwd: &std::path::Path, note: &str) -> Value {
+    json!({
+        "cwd": cwd.to_string_lossy(),
+        "mcpServers": [],
+        "_meta": {"systemPrompt": {"append": note}, "intcad": {"nextStep": true}},
+    })
+}
+
+/// The agent is the Claude Code adapter (its package name, old or new).
+fn is_claude_code(init: &Value) -> bool {
+    init.pointer("/agentInfo/name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.ends_with("claude-agent-acp") || name.ends_with("claude-code-acp"))
+}
+
+/// The agent offers `systemPrompt` with `mode: "override"`.
+fn takes_override(init: &Value) -> bool {
+    init.pointer("/agentCapabilities/sessionCapabilities/systemPrompt/mode/override").is_some_and(|offer| !offer.is_null())
+}
+
 /// The agent offers ACP's `systemPrompt` field on its sessions.
 fn takes_standard_note(init: &Value) -> bool {
     init.pointer("/agentCapabilities/sessionCapabilities/systemPrompt").is_some_and(|offer| !offer.is_null())
@@ -368,6 +431,11 @@ fn takes_standard_note(init: &Value) -> bool {
 /// Antigravity offers its own key under `_meta` and doesn't read the Claude adapter's.
 fn takes_antigravity_note(init: &Value) -> bool {
     init.pointer("/agentCapabilities/_meta/antigravity/systemPrompt/append").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// The agent takes `session/close` (its answer to `initialize`).
+pub fn closes_sessions(init: &Value) -> bool {
+    init.pointer("/agentCapabilities/sessionCapabilities/close").is_some_and(|offer| !offer.is_null())
 }
 
 pub fn prompt_params(session: &str, parts: &[super::backend::PromptPart]) -> Value {
@@ -607,7 +675,10 @@ pub enum Incoming {
     /// Only [`parse_builtin`] reads it.
     Connections(super::connections::Snapshot),
     /// The agent says whether it is logged in (an extension both adapters send).
-    AuthStatus(String),
+    AuthStatus {
+        label: Option<String>,
+        kind: Option<String>,
+    },
     /// The agent switched to another of its modes.
     ModeChanged(String),
     /// The agent switched to another model.
@@ -632,8 +703,40 @@ pub enum Incoming {
         rpc: Value,
         method: String,
     },
-    /// Anything else (usage, unknown updates): nothing to show.
+    /// What the session has used (`usage_update`): its context and its cost so far.
+    Usage {
+        session: String,
+        usage: super::backend::Usage,
+    },
+    /// Anything else (unknown updates): nothing to show.
     Ignored,
+}
+
+/// A token count the agent sent: a whole, non-negative number.
+fn count(v: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|k| v.get(*k)).and_then(Value::as_u64)
+}
+
+/// A prompt reply's `usage` (that turn's tokens), camelCase as ACP writes it or snake_case.
+pub fn turn_usage(reply: &Value) -> Option<super::backend::Usage> {
+    let u = reply.get("usage").filter(|u| u.is_object())?;
+    let usage = super::backend::Usage {
+        input_tokens: count(u, &["inputTokens", "input_tokens"]),
+        output_tokens: count(u, &["outputTokens", "output_tokens"]),
+        total_tokens: count(u, &["totalTokens", "total_tokens"]),
+        ..Default::default()
+    };
+    (!usage.is_empty()).then_some(usage)
+}
+
+/// A `usage_update`: the tokens in the context (`used`) and the session's cost so far.
+fn session_usage(u: &Value) -> super::backend::Usage {
+    let cost = u.get("cost").and_then(|c| {
+        let amount = c.get("amount").and_then(Value::as_f64).filter(|a| a.is_finite() && *a >= 0.0)?;
+        let currency: String = c.get("currency").and_then(Value::as_str).unwrap_or("USD").chars().filter(char::is_ascii_alphabetic).take(8).collect();
+        Some((amount, currency))
+    });
+    super::backend::Usage { context_tokens: count(u, &["used"]), cost, ..Default::default() }
 }
 
 /// The longest text kept from one tool call's output.
@@ -831,7 +934,8 @@ fn read(line: &str, builtin: bool) -> Option<Incoming> {
             Some(super::connections::Snapshot::parse(&params).map_or(Incoming::Ignored, Incoming::Connections))
         }
         (Some("_auth/status_update"), None) => {
-            params.get("authStatus").and_then(|s| s.get("label")).and_then(Value::as_str).map(|l| Incoming::AuthStatus(l.to_string()))
+            let text = |k: &str| params.get("authStatus").and_then(|s| s.get(k)).and_then(Value::as_str).map(str::to_string);
+            Some(Incoming::AuthStatus { label: text("label"), kind: text("kind") })
         }
         _ => Some(Incoming::Ignored),
     }
@@ -889,6 +993,7 @@ fn update(u: &Value, session: &str) -> Incoming {
                 .collect();
             Incoming::Commands { session: session.into(), commands }
         }
+        Some("usage_update") => Incoming::Usage { session: session.to_string(), usage: session_usage(u) },
         Some("plan") => Incoming::Plan {
             session: session.to_string(),
             steps: u
@@ -967,6 +1072,28 @@ mod tests {
         let no = json!({"agentCapabilities": {"promptCapabilities": {"image": true}}});
         assert!(takes_documents(&yes) && takes_images(&yes));
         assert!(!takes_documents(&no) && !takes_documents(&json!({})));
+    }
+
+    /// INT-1458: a guess's cost is what the agent reports, from `usage_update` and the prompt
+    /// reply's `usage`; nothing is made up when it reports nothing.
+    #[test]
+    fn usage_is_read_from_usage_updates_and_prompt_replies() {
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"usage_update","used":5120,"size":200000,"cost":{"amount":0.0123,"currency":"USD"}}}}"#;
+        match parse(line) {
+            Some(Incoming::Usage { session, usage }) => {
+                assert_eq!(session, "s");
+                assert_eq!(usage.context_tokens, Some(5120));
+                assert_eq!(usage.cost, Some((0.0123, "USD".into())));
+            }
+            other => panic!("{other:?}"),
+        }
+        let reply = json!({"stopReason": "end_turn", "usage": {"inputTokens": 1830, "outputTokens": 42, "totalTokens": 1872}});
+        let u = turn_usage(&reply).unwrap();
+        assert_eq!((u.input_tokens, u.output_tokens, u.total_tokens, u.cost), (Some(1830), Some(42), Some(1872), None));
+        assert_eq!(turn_usage(&json!({"stopReason": "end_turn"})), None);
+        // A cost that is not a number, or negative, is not a cost.
+        let bad = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"usage_update","cost":{"amount":-1}}}}"#;
+        assert!(matches!(parse(bad), Some(Incoming::Usage { usage, .. }) if usage.is_empty()));
     }
 
     #[test]

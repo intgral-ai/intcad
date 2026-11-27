@@ -128,7 +128,7 @@ pub fn resolve(id: &str) -> Option<&'static str> {
 
 /// The id a request or batch step names: `command` first, then `id`, as the control channel and
 /// the engine accept them. `command` wins when both are present, matching the control channel.
-fn command_of(v: &Value) -> Option<&str> {
+pub(crate) fn command_of(v: &Value) -> Option<&str> {
     v.get("command").and_then(Value::as_str).or_else(|| v.get("id").and_then(Value::as_str))
 }
 
