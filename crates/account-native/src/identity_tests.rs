@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -10,6 +10,18 @@ use std::time::Duration;
 use crate::http::Secret;
 use crate::identity::*;
 use crate::identity_journal::{AttemptRecord, IdentityJournal};
+
+fn test_domain() -> IdentityDomain {
+    IdentityDomain::new("test", "client", "https://product.example").unwrap()
+}
+
+fn journal(root: PathBuf) -> Result<IdentityJournal, crate::identity_journal::JournalError> {
+    IdentityJournal::new(root, test_domain().storage_key())
+}
+
+fn journal_path(root: &Path) -> PathBuf {
+    root.join("identity").join(test_domain().storage_key())
+}
 use crate::identity_store::{IdentityStore, IdentityStoreError, StoredIdentity};
 use crate::identity_transport::{IdentityTransport, RefreshResponse, RefreshTransportError};
 
@@ -120,7 +132,7 @@ impl IdentityStore for Store {
 
     fn delete(&mut self) -> Result<(), IdentityStoreError> {
         let mut state = self.0.lock().unwrap();
-        let revoked = IdentityJournal::new(self.1.clone()).unwrap().read_revocation().unwrap();
+        let revoked = journal(self.1.clone()).unwrap().read_revocation().unwrap();
         state.events.push(("delete", revoked.map(|record| record.login_generation)));
         if let Some(hook) = state.on_delete.take() {
             hook();
@@ -257,7 +269,7 @@ impl Fixture {
     }
 
     fn journal(&self) -> IdentityJournal {
-        IdentityJournal::new(self.root.clone()).unwrap()
+        journal(self.root.clone()).unwrap()
     }
 
     fn attempt(&self, sends: u8, diagnostic_used: bool, until: u64, step: u8) -> AttemptRecord {
@@ -277,7 +289,7 @@ impl Drop for Fixture {
 fn missing_barrier_blocks_surviving_credentials_and_explicit_login_repairs_it() {
     let f = Fixture::new();
     f.login().unwrap();
-    let slot = f.root.join("identity/revoked.0");
+    let slot = journal_path(&f.root).join("revoked.0");
     assert_eq!(f.journal().read_revocation().unwrap().unwrap().login_generation, 0);
     assert!(f.ensure().is_ok());
     std::fs::remove_file(&slot).unwrap();
@@ -291,7 +303,7 @@ fn missing_barrier_blocks_surviving_credentials_and_explicit_login_repairs_it() 
 fn torn_first_barrier_fails_closed_and_explicit_login_repairs_it() {
     let f = Fixture::new();
     f.login().unwrap();
-    std::fs::write(f.root.join("identity/revoked.0"), b"torn").unwrap();
+    std::fs::write(journal_path(&f.root).join("revoked.0"), b"torn").unwrap();
     assert_eq!(f.ensure().unwrap_err(), IdentityError::Storage);
     assert_eq!(f.lifecycle.status(), IdentityStatus::Recovering);
     f.login().unwrap();
@@ -499,7 +511,7 @@ fn a_current_logout_is_resolved_without_a_store_read() {
     assert_eq!(f.store.lock().unwrap().reads, reads);
 
     // A durable revocation is enough even when no current generation was published.
-    std::fs::remove_file(f.root.join("identity/current.0")).unwrap();
+    std::fs::remove_file(journal_path(&f.root).join("current.0")).unwrap();
     assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::SignedOut);
     assert_eq!(peer.status(), IdentityStatus::SignedOut);
     assert_eq!(f.store.lock().unwrap().reads, reads);
@@ -539,7 +551,7 @@ fn a_torn_first_current_publication_can_be_repaired_by_a_new_login() {
     let f = Fixture::new();
     f.login().unwrap();
     let journal = f.journal();
-    let slot = f.root.join("identity/current.0");
+    let slot = journal_path(&f.root).join("current.0");
     std::fs::write(slot, b"intcad-identity-journal/1\n1\n").unwrap();
     assert!(matches!(journal.read_current_login(), Err(crate::identity_journal::JournalError::Corrupt)));
 
@@ -558,7 +570,7 @@ fn a_torn_first_current_publication_can_be_repaired_by_a_new_login() {
 fn an_activated_login_without_a_published_generation_is_not_leaseable() {
     let f = Fixture::new();
     f.login().unwrap();
-    let target = f.root.join("identity/current.1");
+    let target = journal_path(&f.root).join("current.1");
     std::fs::create_dir(&target).unwrap(); // Block publication of login 2.
     assert_eq!(f.login().unwrap_err(), IdentityError::Storage);
     assert!(!f.record().pending);
@@ -845,7 +857,7 @@ mod process {
         }
 
         // A separate process holds the actual domain file lock throughout the exchange.
-        let lock = OpenOptions::new().read(true).write(true).open(f.root.join("identity/refresh.lock")).unwrap();
+        let lock = OpenOptions::new().read(true).write(true).open(journal_path(&f.root).join("refresh.lock")).unwrap();
         assert!(matches!(lock.try_lock(), Err(TryLockError::WouldBlock)));
         let entered = observe_background_contender(&f.clock);
         let clock = f.clock.clone();
@@ -1079,10 +1091,10 @@ fn a_barrier_write_failure_keeps_the_record() {
     f.reply(Err(RefreshTransportError::Terminal));
     let root = f.root.clone();
     *f.script.on_send.lock().unwrap() = Some(Box::new(move || {
-        std::fs::remove_file(root.join("identity/revoked.0")).unwrap();
-        std::fs::create_dir(root.join("identity/revoked.0")).unwrap();
+        std::fs::remove_file(journal_path(&root).join("revoked.0")).unwrap();
+        std::fs::create_dir(journal_path(&root).join("revoked.0")).unwrap();
         // Reads still succeed; the directory only blocks the next durable write.
-        assert_eq!(IdentityJournal::new(root).unwrap().read_revocation().unwrap().unwrap().login_generation, 1);
+        assert_eq!(journal(root).unwrap().read_revocation().unwrap().unwrap().login_generation, 1);
     }));
     let before = f.record();
     let events_before = f.store.lock().unwrap().events.len();
@@ -1112,7 +1124,7 @@ fn losing_either_revocation_slot_after_logout_cannot_resurrect_failed_cleanup() 
         f.login().unwrap();
         f.store.lock().unwrap().fail_delete = true;
         assert!(!f.lifecycle.sign_out().unwrap().credentials_cleared);
-        std::fs::remove_file(f.root.join("identity").join(slot)).unwrap();
+        std::fs::remove_file(journal_path(&f.root).join(slot)).unwrap();
         let peer = f.restarted();
         assert_eq!(peer.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::SignedOut);
         assert_eq!(peer.status(), IdentityStatus::SignedOut);
@@ -1184,7 +1196,7 @@ fn an_unavailable_store_never_creates_a_memory_session() {
     assert_eq!(f.ensure().unwrap_err(), IdentityError::Storage);
     assert_eq!(f.lifecycle.status(), IdentityStatus::Recovering);
     assert_eq!(f.refreshes(), 0);
-    assert!(std::fs::read_dir(f.root.join("identity")).unwrap().all(|entry| { entry.unwrap().file_name().to_string_lossy().ends_with(".lock") }));
+    assert!(std::fs::read_dir(journal_path(&f.root)).unwrap().all(|entry| { entry.unwrap().file_name().to_string_lossy().ends_with(".lock") }));
     assert!(f.store.lock().unwrap().events.is_empty());
 }
 
@@ -1296,7 +1308,7 @@ fn a_contended_refresh_file_lock_obeys_zero_wait_without_sending() {
     let f = Fixture::new();
     f.login().unwrap();
     f.due();
-    let lock = std::fs::File::create(f.root.join("identity/refresh.lock")).unwrap();
+    let lock = std::fs::File::create(journal_path(&f.root).join("refresh.lock")).unwrap();
     lock.try_lock().unwrap();
     assert_eq!(f.lifecycle.ensure(IdentityTrigger::Background, Duration::ZERO).unwrap_err(), IdentityError::Busy);
     assert_eq!(f.refreshes(), 0);
@@ -1504,7 +1516,7 @@ fn the_third_send_inside_the_batch_budget_is_the_last() {
         f.clock.set_monotonic(mono);
         let root = f.root.clone();
         *f.script.on_send.lock().unwrap() = Some(Box::new(move || {
-            let marker = IdentityJournal::new(root).unwrap().read_attempt().unwrap().unwrap();
+            let marker = journal(root).unwrap().read_attempt().unwrap().unwrap();
             assert_eq!((marker.sends, marker.diagnostic_used, marker.first_possible_send_unix), (sends, false, 170));
         }));
         f.transient(None);
@@ -1597,7 +1609,7 @@ fn a_restarted_attempt_gets_one_diagnostic_not_a_new_batch() {
     f.clock.set_wall(175);
     let root = f.root.clone();
     *f.script.on_send.lock().unwrap() = Some(Box::new(move || {
-        let marker = IdentityJournal::new(root).unwrap().read_attempt().unwrap().unwrap();
+        let marker = journal(root).unwrap().read_attempt().unwrap().unwrap();
         assert_eq!((marker.sends, marker.diagnostic_used), (2, true));
     }));
     f.transient(None);
@@ -1662,7 +1674,7 @@ fn a_user_retry_inside_the_replay_window_still_consumes_the_one_shot() {
     f.clock.set_monotonic(75);
     let root = f.root.clone();
     *f.script.on_send.lock().unwrap() = Some(Box::new(move || {
-        let attempt = IdentityJournal::new(root).unwrap().read_attempt().unwrap().unwrap();
+        let attempt = journal(root).unwrap().read_attempt().unwrap().unwrap();
         assert_eq!((attempt.sends, attempt.diagnostic_used, attempt.first_possible_send_unix), (3, true, 175));
     }));
     f.transient(None);
@@ -1691,7 +1703,7 @@ fn resume_cannot_replay_a_background_attempt_started_before_it_acquires_the_refr
     let clock = f.clock.clone();
     *f.clock.on_resume_before_lock.lock().unwrap() = Some(Box::new(move || {
         assert_eq!(lifecycle.ensure(IdentityTrigger::Background, WAIT).unwrap_err(), IdentityError::Transient);
-        let attempt = IdentityJournal::new(root).unwrap().read_attempt().unwrap().unwrap();
+        let attempt = journal(root).unwrap().read_attempt().unwrap().unwrap();
         assert_eq!((attempt.sends, attempt.diagnostic_used, attempt.cooldown_until_unix), (1, false, 171));
         clock.set_wall(171);
     }));
@@ -1717,7 +1729,7 @@ fn a_replay_reservation_crossing_the_batch_deadline_is_consumed_without_sending(
     let clock = f.clock.clone();
     let root = f.root.clone();
     *f.clock.on_attempt_write.lock().unwrap() = Some(Box::new(move || {
-        let attempt = IdentityJournal::new(root).unwrap().read_attempt().unwrap().unwrap();
+        let attempt = journal(root).unwrap().read_attempt().unwrap().unwrap();
         assert_eq!((attempt.sends, attempt.diagnostic_used), (2, false));
         clock.set_monotonic(90);
     }));

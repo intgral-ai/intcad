@@ -83,13 +83,11 @@ pub fn show_summary(app: &mut SolveApp, ui: &mut Ui) -> bool {
 
     FileView::section(ui, &title, t.space_10, |ui| {
         if view.sign_in_state.recovering() {
-            FileView::detail(ui, app.tr("account.identity_recovering"));
-            if let Some(label) = &view.account_label {
-                FileView::detail(ui, label);
+            let (retry, sign_out) = identity_recovery_controls(app, ui, &view);
+            if retry {
+                app.account.request(Action::RefreshStatus);
             }
-            let response = ui.add_enabled_ui(pending.is_none(), |ui| button(ui, &sign_out_label, Button::Small)).inner;
-            publish("account:sign_out", &response);
-            sign_out_clicked = response.clicked();
+            sign_out_clicked = sign_out;
         } else if view.signed_in {
             match view.account_label.as_deref() {
                 Some(label) => FileView::detail(ui, &crate::i18n::format("account.signed_in_as", &[("account", label)])),
@@ -306,13 +304,11 @@ pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
     let mut sign_out_clicked = false;
     let mut switch_clicked = false;
     if view.sign_in_state.recovering() {
-        FileView::detail(ui, app.tr("account.identity_recovering"));
-        if let Some(label) = &view.account_label {
-            FileView::detail(ui, label);
+        let (retry, sign_out) = identity_recovery_controls(app, ui, &view);
+        if retry {
+            app.account.request(Action::RefreshStatus);
         }
-        let response = ui.add_enabled_ui(pending.is_none(), |ui| button(ui, app.tr("account.sign_out"), Button::Small)).inner;
-        publish("account:sign_out", &response);
-        sign_out_clicked = response.clicked();
+        sign_out_clicked = sign_out;
     } else if view.signed_in {
         match view.account_label.as_deref() {
             Some(label) => {
@@ -370,6 +366,22 @@ pub(crate) fn show_menu(app: &mut SolveApp, ui: &mut Ui) -> bool {
 
 fn needs_sign_out_attention(view: &AccountView) -> bool {
     view.sign_out_pending || view.sign_out_recovery || view.sign_out_error.is_some()
+}
+
+fn identity_recovery_controls(app: &SolveApp, ui: &mut Ui, view: &AccountView) -> (bool, bool) {
+    let message = if view.sign_in_state == SignInState::PendingVerification { "account.identity_pending" } else { "account.identity_recovering" };
+    FileView::detail(ui, app.tr(message));
+    if let Some(label) = &view.account_label {
+        FileView::detail(ui, label);
+    }
+    ui.add_enabled_ui(app.account.pending_action().is_none(), |ui| {
+        let retry = button(ui, app.tr("account.identity_retry"), Button::Small);
+        publish("account:identity_retry", &retry);
+        let sign_out = button(ui, app.tr("account.sign_out"), Button::Small);
+        publish("account:sign_out", &sign_out);
+        (retry.clicked(), sign_out.clicked())
+    })
+    .inner
 }
 
 fn sign_out_controls(app: &SolveApp, ui: &mut Ui, view: &AccountView) -> bool {
@@ -535,6 +547,10 @@ fn sign_in_controls(
     let pending = app.account.pending_action();
     let label = match view.sign_in_state {
         SignInState::Recovering | SignInState::PendingVerification => return false,
+        SignInState::IdentityExpired => {
+            FileView::detail(ui, app.tr("account.identity_expired"));
+            "account.sign_in"
+        }
         SignInState::Starting => {
             FileView::detail(ui, app.tr("account.sign_in_starting"));
             return false;

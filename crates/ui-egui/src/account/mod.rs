@@ -47,6 +47,7 @@ pub enum SignInState {
     Failed,
     Recovering,
     PendingVerification,
+    IdentityExpired,
 }
 
 impl SignInState {

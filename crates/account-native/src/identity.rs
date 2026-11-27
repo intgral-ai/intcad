@@ -345,7 +345,8 @@ impl IdentityLifecycle {
         if origin.base_url() != connection_origin.base_url() {
             return Err(IdentityError::NotConfigured);
         }
-        Self::with_identity_store(domain, Box::new(CredentialIdentityStore::new(credentials)), transport, verifier, clock, journal_root)
+        let store = CredentialIdentityStore::new(credentials, domain.storage_key());
+        Self::with_identity_store(domain, Box::new(store), transport, verifier, clock, journal_root)
     }
 
     pub(crate) fn with_identity_store(
@@ -356,14 +357,15 @@ impl IdentityLifecycle {
         clock: Box<dyn IdentityClock>,
         journal_root: PathBuf,
     ) -> Result<Self, IdentityError> {
-        let lock_dir = journal_root.join("identity");
+        let lock_dir = journal_root.join("identity").join(domain.storage_key());
+        let journal = Arc::new(IdentityJournal::new(journal_root, domain.storage_key())?);
         Ok(Self {
             domain,
             store: Arc::new(Mutex::new(store)),
             transport: Arc::from(transport),
             verifier: Arc::from(verifier),
             clock: Arc::from(clock),
-            journal: Arc::new(IdentityJournal::new(journal_root)?),
+            journal,
             lock_dir,
             attempt_start: Arc::new(Mutex::new(None)),
             refresh: Arc::new(Mutex::new(())),
@@ -544,7 +546,17 @@ impl IdentityLifecycle {
     /// An explicit status read bypasses cached readiness but obeys the background retry budget.
     pub fn recheck_status(&self, wait: Duration) -> Result<IdentityLease, IdentityError> {
         self.invalidate_readiness()?;
-        self.ensure(IdentityTrigger::Background, wait)
+        self.ensure(IdentityTrigger::UserRetry, wait)
+    }
+
+    /// A non-network readiness check for renewal of an already admitted operation.
+    pub fn verified_generation_for(&self, account: &str, binding: &str) -> Option<(u64, u64)> {
+        let _barrier = self.barrier_lock(&LockWait::new(Duration::ZERO)).ok()?;
+        let snapshot = self.snapshot(self.store().ok()?.as_ref()).ok()?;
+        (snapshot.record.verified_account_id.as_deref() == Some(account)
+            && snapshot.record.session_binding.as_deref() == Some(binding)
+            && self.ready(&snapshot))
+        .then(|| Self::generations(&snapshot.record))
     }
 
     pub fn sign_out(&self) -> Result<SignOutOutcome, IdentityError> {

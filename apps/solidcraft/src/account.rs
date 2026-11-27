@@ -640,26 +640,30 @@ fn run_login<T: DeviceCodeTransport>(task: LoginTask, transport: T, exchange: &d
         return;
     }
     let generation_current = || current(&status, attempt) && !credentials.is_revoked();
-    match credentials.persist_verified_login_with_installation(&provider, &product, installation, attempt, &generation_current) {
-        Ok(login) => {
-            let adopted = credentials.authenticated_scope().ok_or(IdentityError::Storage).and_then(|scope| {
-                identity.adopt_verified_login(
-                    provider.account_id(),
-                    scope.account().as_str(),
-                    provider.access_token().clone(),
-                    refresh.refresh_token().clone(),
-                    unix_seconds(),
-                    refresh.expires_at_unix_seconds(),
-                    scope.session_binding().as_str(),
-                )
-            });
-            if adopted.is_ok() {
+    match credentials.stage_verified_login_with_installation(&provider, &product, installation, attempt, &generation_current) {
+        Ok(staged) => {
+            let adopted = identity.adopt_verified_login(
+                provider.account_id(),
+                staged.account_id(),
+                provider.access_token().clone(),
+                refresh.refresh_token().clone(),
+                unix_seconds(),
+                refresh.expires_at_unix_seconds(),
+                staged.session_binding(),
+            );
+            if adopted.is_ok()
+                && let Ok(login) = credentials.commit_staged_login(&staged, &generation_current)
+            {
                 finish(&status, attempt, LoginPhase::Done, Some(login.account_id));
             } else {
-                credentials.revoke_in_process();
-                let identity_cleared = identity.sign_out().is_ok_and(|outcome| outcome.credentials_cleared);
-                if credentials.sign_out_keeping_revocation().is_ok() && identity_cleared {
-                    credentials.end_revocation();
+                // Fence an ambiguous commit write before deleting the refresh pair. Keep
+                // the recovery marker until both halves have been cleaned up.
+                let cleaned = credentials.mark_logout_pending().is_ok()
+                    && identity.sign_out().is_ok_and(|outcome| outcome.credentials_cleared)
+                    && credentials.abort_staged_login(staged).is_ok();
+                if !cleaned {
+                    credentials.revoke_in_process();
+                    let _ = credentials.mark_logout_pending();
                 }
                 finish(&status, attempt, LoginPhase::Failed(RefusalCode::AuthUnavailable), None);
             }
@@ -763,6 +767,7 @@ impl ControlRenewalJob {
         operation: solidcraft_engine::entitlement::OperationId,
         grant: solidcraft_engine::entitlement::Grant,
         fixture_schedule: Option<(solidcraft_engine::entitlement::ConservativeDeadline, Duration)>,
+        identity_gate: Option<(IdentityLifecycle, Arc<AtomicBool>)>,
         setup: impl FnOnce() -> (T, WireConnection, Box<dyn MonotonicClock>) + Send + 'static,
         mut wait_until_due: impl FnMut(Duration, &AtomicBool) -> bool + Send + 'static,
     ) -> std::io::Result<Self> {
@@ -773,6 +778,7 @@ impl ControlRenewalJob {
         let generation = session.authority_generation();
         let credentials = session;
         let (worker_scope, worker_operation, worker_grant) = (scope.clone(), operation.clone(), grant.clone());
+        let renewal_scope = scope.clone();
         let worker = std::thread::Builder::new().name("intcad-control-renewal".into()).spawn(move || {
             let (transport, connection, clock) = setup();
             let driver = match fixture_schedule {
@@ -800,6 +806,18 @@ impl ControlRenewalJob {
             let Ok(mut driver) = driver else {
                 return;
             };
+            let gate_retired = retired.clone();
+            let gate = move || {
+                if gate_retired.load(Ordering::Acquire) {
+                    return None;
+                }
+                let Some((identity, ready)) = identity_gate.as_ref() else { return Some((0, 0)) };
+                if !ready.load(Ordering::Acquire) {
+                    return None;
+                }
+                identity.verified_generation_for(renewal_scope.account().as_str(), renewal_scope.session_binding().as_str())
+            };
+            driver = driver.with_gate(gate);
             while let Some(wait) = driver.wait_for_next_tick() {
                 if retired.load(Ordering::SeqCst)
                     || !wait_until_due(wait, &retired)
@@ -1046,7 +1064,8 @@ impl AccountRuntime {
         let secure_store = self.credentials.is_persistent();
         // A present marker is recoverable when it is readable; an unreadable one keeps the
         // process fully closed because revocation/safety cannot be confirmed.
-        let logout = match self.credentials.logout_pending() {
+        let logout = match self.credentials.logout_pending().and_then(|pending| if pending { Ok(true) } else { self.credentials.interrupted_login() })
+        {
             Ok(true) => StartupLogout::ReadableTombstone,
             Ok(false) => StartupLogout::Clear,
             Err(_) => StartupLogout::Unreadable,
@@ -1552,6 +1571,7 @@ struct DesktopAccountPort {
     identity_binding: Option<RestartBinding>,
     next_identity_poll: Instant,
     authority_handed_off: bool,
+    identity_expired: bool,
     workers: Vec<std::thread::JoinHandle<()>>,
     login_attempt: u64,
     login_status: Arc<Mutex<LoginStatus>>,
@@ -1585,6 +1605,7 @@ impl DesktopAccountPort {
             identity_binding: startup.restart.clone(),
             next_identity_poll: Instant::now(),
             authority_handed_off: false,
+            identity_expired: false,
             workers: Vec::new(),
             login_attempt: 0,
             login_status: Arc::new(Mutex::new(LoginStatus::default())),
@@ -1760,7 +1781,11 @@ impl DesktopAccountPort {
             }
             LoginPhase::Failed(code) => {
                 cleared = true;
-                self.view = AccountView { sign_in_state: SignInState::Failed, sign_in_error: Some(code), ..AccountView::signed_out() };
+                self.view = if self.runtime.credentials.is_revoked() {
+                    AccountView { sign_out_error: Some(code), ..AccountView::unavailable() }
+                } else {
+                    AccountView { sign_in_state: SignInState::Failed, sign_in_error: Some(code), ..AccountView::signed_out() }
+                };
                 Some(())
             }
         };
@@ -1812,7 +1837,14 @@ impl DesktopAccountPort {
             self.logout = StartupLogout::Clear;
         }
         self.view = if self.secure_store && !pending && error.is_none() && completed {
-            if self.runtime.identity.is_some() { AccountView::signed_out() } else { AccountView::unavailable() }
+            if self.runtime.identity.is_some() {
+                AccountView {
+                    sign_in_state: if self.identity_expired { SignInState::IdentityExpired } else { SignInState::Idle },
+                    ..AccountView::signed_out()
+                }
+            } else {
+                AccountView::unavailable()
+            }
         } else {
             AccountView { sign_out_pending: pending, sign_out_error: error, ..AccountView::unavailable() }
         };
@@ -1842,6 +1874,7 @@ impl DesktopAccountPort {
     /// worker. The worker's result is applied only for its own generation, so a late result from
     /// an older switch can never clear a newer cleanup state.
     fn revoke(&mut self, event: LifecycleEvent) -> Result<(), Refusal> {
+        self.identity_expired = false;
         if !self.secure_store || (self.runtime.config.is_some() && self.runtime.identity.is_none()) {
             return Err(account_unavailable("no secure credential store is available"));
         }
@@ -1902,14 +1935,13 @@ impl DesktopAccountPort {
         let worker = std::thread::Builder::new().name("intcad-account-cleanup".into()).spawn(move || {
             // Publish both barriers before deleting the product credentials. If the identity
             // barrier fails, leave the original credentials intact for a cleanup retry.
-            let result = credentials.mark_logout_pending().is_ok()
-                && match identity {
-                    Some(identity) => match identity.sign_out() {
-                        Ok(outcome) => outcome.credentials_cleared && credentials.sign_out_keeping_revocation().is_ok(),
-                        Err(_) => false,
-                    },
-                    None => credentials.sign_out_keeping_revocation().is_ok(),
-                };
+            let identity_cleared = identity.is_none_or(|identity| identity.sign_out().is_ok_and(|outcome| outcome.credentials_cleared));
+            let result = if identity_cleared {
+                credentials.sign_out_keeping_revocation().is_ok()
+            } else {
+                let _ = credentials.mark_logout_pending();
+                false
+            };
             if let Ok(mut status) = cleanup.lock()
                 && status.pending == Some(generation)
             {
@@ -1998,6 +2030,8 @@ impl DesktopAccountPort {
                         self.identity_binding = None;
                         self.lifecycle = Some(LifecycleEvent::SignedOut);
                         self.view = AccountView { sign_out_error: Some(error.code), ..AccountView::unavailable() };
+                    } else {
+                        self.identity_expired = true;
                     }
                 }
                 (IdentityStatus::PendingVerification { account_id }, _) => {
@@ -2132,6 +2166,7 @@ impl AccountPort for DesktopAccountPort {
                 operation.clone(),
                 grant.clone(),
                 None,
+                self.runtime.identity.clone().map(|identity| (identity, Arc::clone(&self.runtime.identity_ready))),
                 move || (transport(), connection, clock()),
                 move |interval, cancelled| wait(interval, cancelled),
             )
@@ -2506,6 +2541,14 @@ mod tests {
         identity_fixture_with(config, store, root, product, Box::new(FixtureRefresh))
     }
 
+    fn fixture_domain(config: &DesktopAccountConfig) -> IdentityDomain {
+        IdentityDomain::new("desktop", config.client.client_id(), config.product.base_url()).unwrap()
+    }
+
+    fn identity_refresh_key(config: &DesktopAccountConfig) -> String {
+        format!("identity/{}/session/1/refresh", fixture_domain(config).storage_key())
+    }
+
     fn identity_fixture_with(
         config: &DesktopAccountConfig,
         store: &TestStore,
@@ -2513,7 +2556,7 @@ mod tests {
         product: ScriptedProduct,
         transport: Box<dyn solidcraft_account_native::IdentityTransport>,
     ) -> IdentityLifecycle {
-        let domain = IdentityDomain::new("desktop", config.client.client_id(), config.product.base_url()).unwrap();
+        let domain = fixture_domain(config);
         let mut lifecycle = IdentityLifecycle::new_with_transport(
             domain,
             Box::new(store.clone()),
@@ -2566,6 +2609,7 @@ mod tests {
         block_get: Arc<Mutex<Option<Receiver<()>>>>,
         block_set: Arc<Mutex<Option<(String, Receiver<()>)>>>,
         fail_set: Arc<Mutex<Option<String>>>,
+        fail_value: Arc<Mutex<Option<(String, String)>>>,
         persistent: Arc<AtomicBool>,
         get_calls: Arc<AtomicUsize>,
         set_calls: Arc<AtomicUsize>,
@@ -2585,6 +2629,7 @@ mod tests {
                 block_get: Arc::new(Mutex::new(None)),
                 block_set: Arc::new(Mutex::new(None)),
                 fail_set: Arc::new(Mutex::new(None)),
+                fail_value: Arc::new(Mutex::new(None)),
                 persistent: Arc::new(AtomicBool::new(true)),
                 get_calls: Arc::new(AtomicUsize::new(0)),
                 set_calls: Arc::new(AtomicUsize::new(0)),
@@ -2616,6 +2661,10 @@ mod tests {
         /// Fail writes of `key` while set; clear with `None` to allow a retry.
         fn set_fail_key(&self, key: Option<&str>) {
             *self.fail_set.lock().unwrap() = key.map(str::to_owned);
+        }
+
+        fn fail_next_value(&self, key: &str, value: &str) {
+            *self.fail_value.lock().unwrap() = Some((key.to_owned(), value.to_owned()));
         }
 
         /// Model a failed secure-store probe without changing what is readable.
@@ -2652,6 +2701,12 @@ mod tests {
 
         fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
             self.set_calls.fetch_add(1, Ordering::SeqCst);
+            let mut fail_value = self.fail_value.lock().unwrap();
+            if fail_value.as_ref().is_some_and(|(k, value)| k == key && value == secret) {
+                *fail_value = None;
+                return Err(store_error());
+            }
+            drop(fail_value);
             if self.fail_set.lock().unwrap().as_deref() == Some(key) {
                 return Err(store_error());
             }
@@ -3182,8 +3237,167 @@ mod tests {
         wait_for_cleanup(&port);
         assert_eq!(port.poll().unwrap().sign_out_error, Some(RefusalCode::AuthUnavailable));
         assert!(port.runtime.credentials.is_revoked());
-        assert_eq!(store.get("identity/session/1/refresh").unwrap().as_deref(), Some("fixture_refresh"));
+        assert_eq!(store.get(&identity_refresh_key(&test_config())).unwrap().as_deref(), Some("fixture_refresh"));
         assert!(store.get("auth/product_session").unwrap().is_some());
+    }
+
+    #[test]
+    fn desktop_identity_logout_write_failure_still_revokes_identity() {
+        let store = TestStore::default();
+        let session = activate_session(&store);
+        let scope = session.authenticated_scope().unwrap();
+        let runtime = fixture_runtime(session, test_config(), &store, ScriptedProduct::default());
+        let identity = runtime.identity.clone().unwrap();
+        seed_identity(&identity, &scope, Secret::new("old_bearer"));
+        let mut startup = runtime.startup();
+        startup.restart = None;
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        store.set_fail_key(Some("auth/logout_pending"));
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert_eq!(port.poll().unwrap().sign_out_error, Some(RefusalCode::AuthUnavailable));
+        assert!(port.runtime.credentials.is_revoked());
+        assert_eq!(identity.status(), IdentityStatus::SignedOut);
+        assert!(!store.entries.lock().unwrap().keys().any(|key| key.starts_with("identity/")));
+    }
+
+    #[test]
+    fn desktop_identity_domains_share_a_root_and_store_without_sharing_authority() {
+        let scratch = IdentityScratch::new();
+        let store = TestStore::default();
+        let mut lifecycles = Vec::new();
+        for origin in ["https://first.example", "https://second.example"] {
+            let config = DesktopAccountConfig::new("client_test", origin, "https://auth.example").unwrap();
+            let (entered, sends) = channel();
+            let (release, released) = channel();
+            release.send(()).unwrap();
+            let product = ScriptedProduct::scripted(vec![Ok(WireResponse::new(200, status_body_for("acct_desktop_0001").to_string().into_bytes()))]);
+            let identity =
+                identity_fixture_with(&config, &store, &scratch.0, product, Box::new(GatedRefresh { entered, release: Mutex::new(released) }));
+            assert_eq!(identity.status(), IdentityStatus::SignedOut);
+            let now = unix_seconds();
+            identity
+                .adopt_verified_login(
+                    "provider_account",
+                    "acct_desktop_0001",
+                    Secret::new("old"),
+                    Secret::new("fixture_refresh"),
+                    now - 600,
+                    now - 1,
+                    "binding",
+                )
+                .unwrap();
+            let lease = identity.ensure(IdentityTrigger::Background, RESTART_STATUS_TIMEOUT).unwrap();
+            sends.try_recv().unwrap();
+            assert_eq!(lease.token_generation(), 2);
+            lifecycles.push(identity);
+        }
+        assert!(lifecycles[0].sign_out().unwrap().credentials_cleared);
+        assert_eq!(lifecycles[0].status(), IdentityStatus::SignedOut);
+        assert_eq!(lifecycles[1].ensure(IdentityTrigger::Background, RESTART_STATUS_TIMEOUT).unwrap().token_generation(), 2);
+        assert!(lifecycles[1].sign_out().unwrap().credentials_cleared);
+        assert!(store.entries.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn desktop_identity_login_is_not_committed_while_adoption_is_blocked() {
+        let store = TestStore::default();
+        let session = CredentialSession::new(Box::new(store.clone()));
+        let mut port =
+            login_port(RecordingBrowser::default(), test_runner(ScriptedDeviceTransport::default(), ScriptedExchange::accepting()).0, &store);
+        let root = port.runtime.identity_root.as_ref().unwrap();
+        let identity = identity_fixture(port.runtime.config.as_ref().unwrap(), &store, root, ScriptedProduct::default());
+        port.runtime.identity = Some(identity);
+        let (release, gate) = channel();
+        store.block_next_set(&identity_refresh_key(port.runtime.config.as_ref().unwrap()), gate);
+        port.sign_in().unwrap();
+        store.wait_until_set_blocked();
+        let active = session.authenticated_scope().is_some();
+        release.send(()).unwrap();
+        wait_for_login(&mut port, true);
+        assert!(!active, "an independently opened reader must not see a committed bearer during adoption");
+    }
+
+    #[test]
+    fn desktop_identity_login_faults_leave_neither_half_usable_after_cleanup() {
+        for fail_identity in [true, false] {
+            let store = TestStore::default();
+            let scratch = IdentityScratch::new();
+            let config = test_config();
+            let task = direct_task(&config, &store, &scratch.0, 1);
+            let status = task.status.clone();
+            let refresh_key = identity_refresh_key(&config);
+            if fail_identity {
+                store.set_fail_key(Some(&refresh_key));
+            } else {
+                // Fail the final commit, not the revocation marker written by staging.
+                store.fail_next_value("login/commit", "intcad-login/1/1/acct_desktop0001");
+            }
+            run_login(task, ScriptedDeviceTransport::default(), &ScriptedExchange::accepting(), &no_wait);
+            assert_eq!(status.lock().unwrap().phase, LoginPhase::Failed(RefusalCode::AuthUnavailable));
+            assert!(store.get(&refresh_key).unwrap().is_none());
+            assert!(!CredentialSession::new(Box::new(store.clone())).product_session_active());
+        }
+    }
+
+    #[test]
+    fn desktop_identity_crash_after_adoption_requires_cleanup_but_after_commit_preserves_login() {
+        for committed in [false, true] {
+            let store = TestStore::default();
+            let config = test_config();
+            let scratch = IdentityScratch::new();
+            let identity = identity_fixture(&config, &store, &scratch.0, ScriptedProduct::default());
+            let session = CredentialSession::new(Box::new(store.clone()));
+            let provider = {
+                let mut flow =
+                    DeviceCodeFlow::new(config.client.clone(), ScriptedDeviceTransport::default(), session.clone(), DeviceCodeMode::Explicit);
+                flow.start().unwrap();
+                assert!(matches!(flow.poll().unwrap(), DeviceCodePoll::Authorized));
+                flow.authorized_provider().unwrap()
+            };
+            let product = ScriptedExchange::accepting().exchange(&provider).unwrap();
+            let client = HttpAccountService::with_transport(
+                fixture_bootstrap(),
+                config.product.clone(),
+                Box::new(FixedCredentials::none()),
+                Box::new(session.clone()),
+                Box::new(SystemMonotonicClock::new()),
+            );
+            let installation = client.request_first_installation(product.product_session(), BootstrapPlatform::Linux, None).unwrap();
+            let staged = session.stage_verified_login_with_installation(&provider, &product, Some(installation), 1, &|| true).unwrap();
+            let refresh = provider.refresh().unwrap();
+            identity
+                .adopt_verified_login(
+                    provider.account_id(),
+                    staged.account_id(),
+                    provider.access_token().clone(),
+                    refresh.refresh_token().clone(),
+                    unix_seconds(),
+                    refresh.expires_at_unix_seconds(),
+                    staged.session_binding(),
+                )
+                .unwrap();
+            if committed {
+                // Model a crash just after the final marker, retaining a stage key.
+                session.commit_staged_login(&staged, &|| true).unwrap();
+                store.clone().set("login/stage/binding", staged.session_binding()).unwrap();
+            }
+            drop(session);
+            let mut runtime = AccountRuntime::new(CredentialSession::new(Box::new(store.clone())), None, Some(config.clone()));
+            runtime.identity_root = Some(scratch.0.clone());
+            runtime.identity = Some(identity);
+            let startup = runtime.startup();
+            assert_eq!(runtime.credentials.authenticated_scope().is_some(), committed);
+            assert_eq!(startup.logout_pending(), !committed);
+            if !committed {
+                let mut port = DesktopAccountPort::new(runtime, &startup);
+                port.sign_out().unwrap();
+                wait_for_cleanup(&port);
+                assert!(store.get(&identity_refresh_key(&config)).unwrap().is_none());
+            } else {
+                assert!(store.get(&identity_refresh_key(&config)).unwrap().is_some());
+            }
+        }
     }
 
     #[test]
@@ -4668,6 +4882,7 @@ mod tests {
                 operation.clone(),
                 grant,
                 Some((initial, Duration::from_secs(30))),
+                None,
                 move || (worker_wire, WireConnection::new("https://product.invalid", "1.0.0").unwrap(), Box::new(clock)),
                 move |wait, cancelled| {
                     waiting_tx.send(()).unwrap();
@@ -4775,6 +4990,7 @@ mod tests {
                 operation.clone(),
                 grant.clone(),
                 Some((ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(60)), Duration::from_secs(20))),
+                None,
                 move || (worker_wire, WireConnection::new("https://product.invalid", "1.0.0").unwrap(), Box::new(worker_clock)),
                 {
                     let mut attempts = 0;
@@ -5709,7 +5925,7 @@ mod tests {
         assert!(waits.iter().any(|duration| *duration >= Duration::from_secs(6)), "slow_down was not honoured: {waits:?}");
         assert!(status.lock().unwrap().phase == LoginPhase::Done);
         assert!(store.entries.lock().unwrap().contains_key("auth/product_session"));
-        assert_eq!(store.get("identity/session/1/refresh").unwrap().as_deref(), Some("refresh_token_test"));
+        assert_eq!(store.get(&identity_refresh_key(&config)).unwrap().as_deref(), Some("refresh_token_test"));
         let scope = CredentialSession::new(Box::new(store.clone())).authenticated_scope().unwrap();
         let identity = identity_fixture(
             &config,

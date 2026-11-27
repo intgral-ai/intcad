@@ -50,7 +50,7 @@ pub use billing::SessionBilling;
 pub use contract::{ContractArtifacts, ContractPin, VerifiedContract};
 pub use credentials::{
     ACCOUNT_KEYRING_SERVICE, BlockedProductExchange, CredentialSession, KeyringStore, MemorySession, NoPersistentStore, ProductExchangeError,
-    ProductLogin, ProductSession, ProductSessionExchange, ProviderLogin, ProviderRefresh, ProviderSession,
+    ProductLogin, ProductSession, ProductSessionExchange, ProviderLogin, ProviderRefresh, ProviderSession, StagedLogin,
 };
 pub use device_code::{
     DeviceCodeError, DeviceCodeFlow, DeviceCodeMode, DeviceCodePoll, DeviceCodePrompt, DeviceCodeTransport, UreqDeviceCodeTransport,

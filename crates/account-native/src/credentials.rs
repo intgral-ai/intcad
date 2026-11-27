@@ -456,6 +456,26 @@ struct SessionState {
     locked: bool,
 }
 
+/// A prepared login. Until the matching commit is written, even a fresh reader
+/// in another process cannot use the staged bearer.
+pub struct StagedLogin {
+    account: String,
+    binding: String,
+    generation: u128,
+    epoch: u64,
+    owner: std::sync::Weak<Mutex<SessionState>>,
+}
+
+impl StagedLogin {
+    pub fn account_id(&self) -> &str {
+        &self.account
+    }
+
+    pub fn session_binding(&self) -> &str {
+        &self.binding
+    }
+}
+
 impl CredentialSession {
     pub fn new(store: Box<dyn CredentialStore + Send>) -> Self {
         Self {
@@ -835,6 +855,22 @@ impl CredentialSession {
         generation: u64,
         current: &dyn Fn() -> bool,
     ) -> Result<ProductLogin, CredentialError> {
+        let staged = self.stage_verified_login_with_installation(provider, product, installation, generation, current)?;
+        let result = self.commit_staged_login(&staged, current);
+        if result.is_err() {
+            let _ = self.abort_staged_login(staged);
+        }
+        result
+    }
+
+    pub fn stage_verified_login_with_installation(
+        &self,
+        provider: &ProviderSession,
+        product: &ProductSession,
+        installation: Option<crate::http::InstallationBootstrap>,
+        generation: u64,
+        current: &dyn Fn() -> bool,
+    ) -> Result<StagedLogin, CredentialError> {
         if !safe_token(&provider.account_id, MAX_ACCOUNT_BYTES)
             || provider.access_token.is_empty()
             || has_control(provider.access_token.expose_secret())
@@ -865,7 +901,7 @@ impl CredentialSession {
         if !current() {
             return Err(attempt_superseded());
         }
-        self.epoch.fetch_add(1, Ordering::SeqCst);
+        let epoch = self.epoch.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
         state.locked = true;
         let result = (|| {
             clear_authority_inner(&mut state)?;
@@ -887,21 +923,60 @@ impl CredentialSession {
             if !current() {
                 return Err(attempt_superseded());
             }
-            commit_marker(&mut state, &account, generation)?;
-            discard_stage(&mut state);
             Ok(())
         })();
         match result {
-            Ok(()) => {
-                state.locked = false;
-                Ok(ProductLogin { account_id: account })
-            }
+            Ok(()) => Ok(StagedLogin { account, binding, generation, epoch, owner: Arc::downgrade(&self.inner) }),
             Err(error) => {
                 // This process stays closed even if the initial revocation write itself failed.
                 state.locked = true;
                 Err(error)
             }
         }
+    }
+
+    fn check_staged(&self, state: &SessionState, staged: &StagedLogin, aborting: bool) -> Result<(), CredentialError> {
+        let marker = state.store.get(LOGIN_COMMIT_KEY)?;
+        let ambiguous_commit = aborting && marker.as_deref() == Some(&format!("{LOGIN_COMMIT_DONE}/{}/{}", staged.generation, staged.account));
+        if !staged.owner.ptr_eq(&Arc::downgrade(&self.inner))
+            || staged.epoch != self.authority_generation()
+            || !state.locked
+            || (marker.as_deref() != Some(LOGIN_COMMIT_REVOKED) && !ambiguous_commit)
+            || state.store.get(LOGIN_STAGE_BINDING_KEY)?.as_deref() != Some(&staged.binding)
+        {
+            return Err(attempt_superseded());
+        }
+        Ok(())
+    }
+
+    pub fn commit_staged_login(&self, staged: &StagedLogin, current: &dyn Fn() -> bool) -> Result<ProductLogin, CredentialError> {
+        let _write = lock_product_authority_write()?;
+        let mut state = self.lock()?;
+        self.check_staged(&state, staged, false)?;
+        if !current() || self.is_revoked() {
+            return Err(attempt_superseded());
+        }
+        commit_marker(&mut state, &staged.account, staged.generation)?;
+        // Cleanup here is best-effort: a crash or failed delete after commit does
+        // not invalidate a fully committed login.
+        discard_stage(&mut state);
+        state.locked = false;
+        Ok(ProductLogin { account_id: staged.account.clone() })
+    }
+
+    pub fn abort_staged_login(&self, staged: StagedLogin) -> Result<(), CredentialError> {
+        let _write = lock_product_authority_write()?;
+        let mut state = self.lock()?;
+        self.check_staged(&state, &staged, true)?;
+        clear_authority_inner(&mut state)
+    }
+
+    /// Detect a crash between credential staging and final commit. Residual stage
+    /// keys after a successful commit need not retire the valid login.
+    pub fn interrupted_login(&self) -> Result<bool, CredentialError> {
+        let state = self.lock()?;
+        Ok(state.store.get(LOGIN_STAGE_BINDING_KEY)?.is_some()
+            && !state.store.get(LOGIN_COMMIT_KEY)?.is_some_and(|marker| marker.starts_with(&format!("{LOGIN_COMMIT_DONE}/"))))
     }
 
     /// Activate an Intcad product session only from a typed, trusted exchange result. The provider

@@ -110,15 +110,15 @@ pub(crate) struct IdentityJournal {
 }
 
 impl IdentityJournal {
-    /// Create `<root>/identity` (mode `0700` on Unix) and open the journal.
+    /// Create `<root>/identity/<domain>` (mode `0700` on Unix) and open the journal.
     ///
     /// The root must be absolute; the caller owns making it private to the current user.
     /// Any I/O failure is [`JournalError::Unavailable`].
-    pub(crate) fn new(root: PathBuf) -> Result<Self, JournalError> {
+    pub(crate) fn new(root: PathBuf, domain: &str) -> Result<Self, JournalError> {
         if !root.is_absolute() {
             return Err(JournalError::Unavailable);
         }
-        let dir = root.join(IDENTITY_DIR);
+        let dir = root.join(IDENTITY_DIR).join(domain);
         fs::create_dir_all(&dir).map_err(|_| JournalError::Unavailable)?;
         #[cfg(unix)]
         {

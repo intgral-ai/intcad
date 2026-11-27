@@ -20,11 +20,11 @@ impl TempRoot {
     }
 
     fn journal(&self) -> IdentityJournal {
-        IdentityJournal::new(self.root.clone()).expect("open identity journal")
+        IdentityJournal::new(self.root.clone(), "fixture").expect("open identity journal")
     }
 
     fn slot(&self, stem: &str, index: u8) -> PathBuf {
-        self.root.join("identity").join(format!("{stem}.{index}"))
+        self.root.join("identity/fixture").join(format!("{stem}.{index}"))
     }
 }
 
@@ -136,7 +136,7 @@ fn attempt_and_revocation_records_round_trip() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(temp.root.join("identity")).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(temp.root.join("identity/fixture")).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
     }
 }
@@ -272,7 +272,7 @@ fn a_torn_clear_write_leaves_the_previous_attempt() {
 
 #[test]
 fn a_relative_root_is_refused() {
-    assert!(matches!(IdentityJournal::new(PathBuf::from("relative-identity-root")), Err(JournalError::Unavailable)));
+    assert!(matches!(IdentityJournal::new(PathBuf::from("relative-identity-root"), "fixture"), Err(JournalError::Unavailable)));
 }
 
 #[test]

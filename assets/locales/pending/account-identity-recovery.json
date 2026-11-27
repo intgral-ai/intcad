@@ -1,7 +1,7 @@
 {
-  "en": {"account.identity_recovering": "Checking your sign-in…"},
-  "de": {"account.identity_recovering": "Ihre Anmeldung wird überprüft…"},
-  "ja": {"account.identity_recovering": "サインインを確認しています…"},
-  "ko": {"account.identity_recovering": "로그인 확인 중…"},
-  "zh": {"account.identity_recovering": "正在验证登录…"}
+  "en": {"account.identity_expired": "Your session has ended. Sign in again to continue.", "account.identity_pending": "Your renewed sign-in is waiting for verification.", "account.identity_recovering": "Restoring your sign-in. You can keep working locally.", "account.identity_retry": "Retry verification"},
+  "de": {"account.identity_expired": "Ihre Sitzung ist beendet. Melden Sie sich erneut an.", "account.identity_pending": "Ihre erneuerte Anmeldung wartet auf Bestätigung.", "account.identity_recovering": "Ihre Anmeldung wird wiederhergestellt. Sie können lokal weiterarbeiten.", "account.identity_retry": "Überprüfung wiederholen"},
+  "ja": {"account.identity_expired": "セッションが終了しました。続行するには再度サインインしてください。", "account.identity_pending": "更新したサインインの確認を待っています。", "account.identity_recovering": "サインインを復元しています。ローカルでの作業は続けられます。", "account.identity_retry": "確認を再試行"},
+  "ko": {"account.identity_expired": "세션이 종료되었습니다. 계속하려면 다시 로그인하세요.", "account.identity_pending": "갱신된 로그인의 확인을 기다리는 중입니다.", "account.identity_recovering": "로그인을 복구하는 중입니다. 로컬 작업은 계속할 수 있습니다.", "account.identity_retry": "확인 다시 시도"},
+  "zh": {"account.identity_expired": "会话已结束。请重新登录以继续。", "account.identity_pending": "续期后的登录正在等待验证。", "account.identity_recovering": "正在恢复登录。你可以继续本地工作。", "account.identity_retry": "重试验证"}
 }

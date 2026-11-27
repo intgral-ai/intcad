@@ -931,7 +931,7 @@ fn a_failed_commit_marker_write_leaves_no_restorable_session() {
     let product = ProductSession::from_trusted_exchange("acct_partial", crate::http::Secret::new("product_partial_SECRET"), None);
     store.set_fail_commit(true);
     assert_eq!(session.persist_verified_login(&provider, &product, 2, &|| true).unwrap_err().code, CredentialErrorCode::Unavailable);
-    assert!(store.contains_key(PRODUCT_SESSION_KEY), "the test writes the raw value before the failed marker");
+    assert!(!store.contains_key(PRODUCT_SESSION_KEY), "failed commit cleanup removes the staged bearer");
     let fresh = CredentialSession::new(Box::new(store));
     assert!(!fresh.product_session_active(), "an uncommitted partial write is restorable");
     assert!(fresh.display_account().is_none());

@@ -306,10 +306,14 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
         wire: ScriptedTransport,
         clock: TestClock,
         receive_at: u64,
+        close_gate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     }
     impl crate::http::Transport for TimedReply {
         fn send(&self, request: &crate::http::WireRequest) -> Result<WireResponse, TransportFailure> {
             self.clock.millis.set(self.receive_at);
+            if let Some(gate) = &self.close_gate {
+                gate.store(false, std::sync::atomic::Ordering::Release);
+            }
             self.wire.send(request)
         }
     }
@@ -320,6 +324,8 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
         Scope,
         Generation,
         ResponseOperation,
+        GateBefore,
+        GateAfter,
     }
     for (status, receive_at, change) in [
         (200, 21_000, Change::None),
@@ -329,6 +335,8 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
         (200, 21_000, Change::Scope),
         (200, 21_000, Change::Generation),
         (200, 21_000, Change::ResponseOperation),
+        (200, 21_000, Change::GateBefore),
+        (200, 21_000, Change::GateAfter),
     ] {
         let clock = TestClock::at(0);
         let store = RecordingStore::default();
@@ -346,7 +354,13 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
         if change == Change::ResponseOperation {
             body["operation_id"] = json!("op_example_0002");
         }
-        let transport = TimedReply { wire: ScriptedTransport::new(vec![ok(status, body)]), clock: clock.clone(), receive_at };
+        let ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(change != Change::GateBefore));
+        let transport = TimedReply {
+            wire: ScriptedTransport::new(vec![ok(status, body)]),
+            clock: clock.clone(),
+            receive_at,
+            close_gate: (change == Change::GateAfter).then(|| ready.clone()),
+        };
         let deadline = ConservativeDeadline::new(clock.now(), Duration::from_secs(60));
         let mut renewal = OperationRenewal::new(
             transport,
@@ -359,7 +373,8 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
             deadline.clone(),
             Duration::from_secs(20),
         )
-        .unwrap();
+        .unwrap()
+        .with_gate(move || ready.load(std::sync::atomic::Ordering::Acquire).then_some((3, 7)));
         clock.millis.set(19_999);
         assert_eq!(renewal.tick(), Ok(false));
         session.update_product_session(&scope, &Secret::new("rotated_bearer")).unwrap();
@@ -372,7 +387,7 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
                 session.revoke_in_process();
                 session.end_revocation();
             }
-            Change::None | Change::ResponseOperation => {}
+            Change::None | Change::ResponseOperation | Change::GateBefore | Change::GateAfter => {}
         }
         clock.millis.set(20_000);
         let result = renewal.tick();
@@ -381,13 +396,17 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
             assert_eq!(renewal.deadline().expires_at(), MonotonicInstant::from_millis(80_000));
             clock.millis.set(36_999);
             assert_eq!(renewal.tick(), Ok(false));
+        } else if matches!(change, Change::GateBefore | Change::GateAfter) {
+            assert_eq!(result, Ok(false));
+            assert_eq!(renewal.deadline(), &deadline);
+            assert!(renewal.wait_for_next_tick().is_some(), "verification pause does not retire the operation");
         } else {
             assert!(result.is_err());
             assert_eq!(renewal.deadline(), &deadline);
             assert_eq!(renewal.tick(), Ok(false), "a refused or late lease never retries");
         }
         let requests = renewal.transport().wire.take_requests();
-        assert_eq!(requests.len(), usize::from(matches!(change, Change::None | Change::ResponseOperation)));
+        assert_eq!(requests.len(), usize::from(matches!(change, Change::None | Change::ResponseOperation | Change::GateAfter)));
         if let Some(request) = requests.first() {
             assert_eq!(request.header("Authorization"), Some("Bearer rotated_bearer"));
             assert_eq!(request.header("X-Execution-Session-Proof"), Some("original_proof"));

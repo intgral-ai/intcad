@@ -591,6 +591,7 @@ pub struct OperationRenewal<T: Transport> {
     generation: u64,
     deadline: ConservativeDeadline,
     next: Option<MonotonicInstant>,
+    gate: Option<Box<dyn Fn() -> Option<(u64, u64)> + Send>>,
 }
 
 impl<T: Transport> OperationRenewal<T> {
@@ -653,9 +654,24 @@ impl<T: Transport> OperationRenewal<T> {
         };
         let service = HttpAccountService::with_transport(transport, connection, Box::new(wire), Box::new(session.clone()), clock);
         let next = Some(due);
-        let driver = Self { service, session, scope, operation, authorization: grant.id().clone(), proof, generation, deadline, next };
+        let driver = Self { service, session, scope, operation, authorization: grant.id().clone(), proof, generation, deadline, next, gate: None };
         driver.check_binding()?;
         Ok(driver)
+    }
+
+    /// Require a verified (login, token) generation at send and application.
+    /// No generation pauses renewal without changing the current deadline.
+    pub fn with_gate(mut self, gate: impl Fn() -> Option<(u64, u64)> + Send + 'static) -> Self {
+        self.gate = Some(Box::new(gate));
+        self
+    }
+
+    fn verified_generation(&self) -> Option<(u64, u64)> {
+        self.gate.as_ref().map_or(Some((0, 0)), |gate| gate())
+    }
+
+    fn pause(&mut self) {
+        self.next = Some(self.service.clock.now().saturating_add(Duration::from_secs(1)));
     }
 
     fn check_binding(&self) -> Result<(), Refusal> {
@@ -683,12 +699,37 @@ impl<T: Transport> OperationRenewal<T> {
         if now < next {
             return Ok(false);
         }
+        if let Err(error) = self.check_binding() {
+            self.next = None;
+            return Err(error);
+        }
+        let Some(verified) = self.verified_generation() else {
+            self.pause();
+            return Ok(false);
+        };
         self.next = None;
-        self.check_binding()?;
-        let (grant, sent_at, interval) =
-            self.service.exchange_renewal(&self.scope, &self.operation, &self.authorization, Capability::Control, Some(&self.deadline))?;
+        let gate = &self.gate;
+        let paused = std::cell::Cell::new(false);
+        let still_verified = || {
+            let ready = gate.as_ref().is_none_or(|gate| gate() == Some(verified));
+            paused.set(paused.get() || !ready);
+            ready
+        };
+        let response = self.service.exchange_renewal_gated(
+            &self.scope,
+            &self.operation,
+            &self.authorization,
+            Capability::Control,
+            Some(&self.deadline),
+            still_verified,
+        );
         let received_at = self.service.clock.now();
+        if paused.get() || self.verified_generation() != Some(verified) {
+            self.pause();
+            return Ok(false);
+        }
         self.check_binding()?;
+        let (grant, sent_at, interval) = response?;
         let interval = interval.ok_or_else(unavailable)?;
         let attempt = RenewalAttempt { sent_at, received_at, old_deadline: self.deadline.clone(), still_valid: true };
         let remaining = grant.expires_at().as_duration().saturating_sub(sent_at.as_duration());
@@ -964,6 +1005,18 @@ impl<T: Transport> HttpAccountService<T> {
         capability: Capability,
         prior: Option<&ConservativeDeadline>,
     ) -> Result<(Grant, MonotonicInstant, Option<Duration>), Refusal> {
+        self.exchange_renewal_gated(scope, operation, authorization_id, capability, prior, || true)
+    }
+
+    fn exchange_renewal_gated(
+        &mut self,
+        scope: &AuthenticatedHostScope,
+        operation: &OperationId,
+        authorization_id: &GrantId,
+        capability: Capability,
+        prior: Option<&ConservativeDeadline>,
+        still_verified: impl Fn() -> bool,
+    ) -> Result<(Grant, MonotonicInstant, Option<Duration>), Refusal> {
         require_provable(scope)?;
         let mut request = self.request(
             "POST",
@@ -984,7 +1037,13 @@ impl<T: Transport> HttpAccountService<T> {
         if prior.is_some_and(|deadline| deadline.remaining(sent_at).is_none()) {
             return Err(refusal(RefusalCode::UnsafeToStart));
         }
+        if !still_verified() {
+            return Err(refusal(RefusalCode::AuthUnavailable));
+        }
         let response = self.transport.send(&request).map_err(|_| unavailable())?;
+        if !still_verified() {
+            return Err(refusal(RefusalCode::AuthUnavailable));
+        }
         if response.status() == 401 {
             self.handoff.renewal_unauthorized(scope, operation);
             return Err(refusal(RefusalCode::AuthRequired));
