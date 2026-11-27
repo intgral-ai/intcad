@@ -651,7 +651,7 @@ fn permissions_section(app: &mut SolveApp, ui: &mut egui::Ui) {
 fn panel_section(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::get();
     ui_kit::settings_section(ui, "panel", tr("ui.ai_panel"), |ui| {
-        let label_width = [tr("ui.agent_chat_side"), tr("ui.agent_chat_turn_limit")]
+        let label_width = [tr("ui.agent_chat_side"), tr("ui.agent_chat_turn_limit"), tr("ui.next_step_pause")]
             .iter()
             .map(|label| ui_kit::ContentWidth::label(ui, label) + t.space_4)
             .fold(0.0, f32::max);
@@ -681,6 +681,27 @@ fn panel_section(app: &mut SolveApp, ui: &mut egui::Ui) {
                 crate::scenario::publish_handle("prefs:agent_chat_attach_selection", response.rect.center());
                 ui_kit::help_icon(ui, tr("ui.agent_chat_attach_selection_tip"));
             });
+            // Next-step suggestions: off by default, and the cost is said where it is turned on.
+            ui_kit::row(ui, "", |ui| {
+                let response = ui_kit::checkbox(ui, tr("ui.next_step_setting"), &mut app.preferences.agent_next_step)
+                    .backing_on_hover_text(tr("ui.next_step_setting_tip"));
+                crate::scenario::publish_handle("prefs:agent_next_step", response.rect.center());
+                ui_kit::help_icon(ui, tr("ui.next_step_setting_tip"));
+            });
+            // What each suggestion sends and costs, wrapped under the checkbox (a row is one line).
+            ui_kit::status_line(ui, tr("ui.next_step_cost"), ui_kit::StatusTone::Dim);
+            if app.preferences.agent_next_step {
+                ui_kit::row(ui, tr("ui.next_step_pause"), |ui| {
+                    let p = &mut app.preferences;
+                    let range = super::predict::PAUSE_RANGE;
+                    ui_kit::settings_number(ui, &mut p.agent_next_step_pause_s, *range.start()..=*range.end(), 0.5)
+                });
+                ui_kit::row(ui, tr("ui.next_step_per_hour"), |ui| {
+                    let p = &mut app.preferences;
+                    let range = super::predict::HOURLY_RANGE;
+                    ui_kit::settings_number(ui, &mut p.agent_next_step_per_hour, *range.start()..=*range.end(), 1.0)
+                });
+            }
             ui_kit::row(ui, tr("ui.agent_chat_turn_limit"), |ui| {
                 let p = &mut app.preferences;
                 let previous = usize::from(p.agent_chat_turn_limit != 0);
