@@ -46,6 +46,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("derive", Class::Standalone),
     // the 3Dconnexion driver's client API on macOS (no workspace dependencies)
     ("3dx-client", Class::Standalone),
+    // suspend-inclusive native account clock (no workspace dependencies)
+    ("suspend-clock", Class::Standalone),
     // the profiler: timed spans for every layer, the kernel's calls to commands (no workspace dependencies)
     ("profile", Class::Standalone),
     ("sketch", Class::Layer(1)),
@@ -66,6 +68,9 @@ pub const TABLE: &[(&str, Class)] = &[
     ("gpu", Class::Layer(5)),
     ("mcp", Class::Layer(5)),
     ("testkit", Class::Testkit),
+    // native account adapters (durable ledger, credential store, HTTP); native-only, never in the
+    // wasm closure, and only apps compose it
+    ("account-native", Class::Exempt),
     // apps and tooling
     ("solidcraft", Class::Exempt),
     ("cli", Class::Exempt),
@@ -147,6 +152,7 @@ pub enum Violation {
     StandaloneHasWorkspaceDep { krate: String, dep: String },
     TestkitAsNormalDep { krate: String },
     UiBelowL5 { krate: String, dep: String, layer: u8 },
+    ForbiddenClosure { root: String, dep: String, target: ClosureTarget },
 }
 
 impl std::fmt::Display for Violation {
@@ -166,6 +172,9 @@ impl std::fmt::Display for Violation {
             }
             Violation::UiBelowL5 { krate, dep, layer } => {
                 write!(f, "{krate} (L{layer}) depends on UI crate `{dep}`; UI toolkits are only allowed in L5+")
+            }
+            Violation::ForbiddenClosure { root, dep, target } => {
+                write!(f, "{root} reaches `{dep}` in the {} dependency closure; it is native-only", target.label())
             }
         }
     }
@@ -245,6 +254,247 @@ pub fn from_metadata(meta: &Value) -> Result<Vec<Crate>, String> {
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+/// A dependency edge in the resolved package graph, including cargo's target condition.
+#[derive(Debug, Clone)]
+pub struct ClosureDep {
+    pub name: String,
+    pub kind: DepKind,
+    pub target: Option<String>,
+}
+
+/// A package in the resolved graph. Names can repeat across versions, so the closure follows
+/// every package with a matching name (conservative, never narrower than cargo's closure).
+#[derive(Debug, Clone)]
+pub struct ClosureCrate {
+    pub name: String,
+    pub deps: Vec<ClosureDep>,
+}
+
+/// Which conditional edges a closure guard follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClosureTarget {
+    /// Every target: a dependency is forbidden even if it is reached only on another platform.
+    Any,
+    /// The browser target: target-specific edges are evaluated for `wasm32-unknown-unknown`.
+    Wasm,
+}
+
+impl ClosureTarget {
+    fn label(self) -> &'static str {
+        match self {
+            ClosureTarget::Any => "native and wasm",
+            ClosureTarget::Wasm => "wasm32-unknown-unknown",
+        }
+    }
+}
+
+/// The browser roots that must never compose native account adapters.
+pub const BROWSER_ROOTS: &[&str] = &["solidcraft-web", "solidcraft-ui-egui"];
+/// Native-only crates forbidden below the browser roots on every target.
+pub const NATIVE_ONLY_CRATES: &[&str] = &["solidcraft-account-native", "solidcraft-suspend-clock"];
+/// Native-only crates forbidden in the browser target's closure.
+pub const WASM_FORBIDDEN_CRATES: &[&str] = &["solidcraft-account-native", "solidcraft-suspend-clock", "keyring", "ureq"];
+
+/// Build the resolved graph from `cargo metadata --format-version 1 --locked` (without
+/// `--no-deps`). Build and normal edges are followed, dev edges are not.
+pub fn from_resolve(meta: &Value) -> Result<Vec<ClosureCrate>, String> {
+    let nodes = meta["resolve"]["nodes"].as_array().ok_or("metadata: no resolve.nodes array")?;
+    let packages = meta["packages"].as_array().ok_or("metadata: no packages array")?;
+    let mut names = std::collections::HashMap::new();
+    for p in packages {
+        if let (Some(id), Some(name)) = (p["id"].as_str(), p["name"].as_str()) {
+            names.insert(id, name);
+        }
+    }
+    let mut out = Vec::new();
+    for node in nodes {
+        let id = node["id"].as_str().ok_or("resolve node without id")?;
+        let name = names.get(id).ok_or_else(|| format!("resolve node {id} has no package"))?;
+        let mut deps = Vec::new();
+        for dep in node["deps"].as_array().into_iter().flatten() {
+            let pkg = dep["pkg"].as_str().ok_or("resolve dep without pkg")?;
+            let dname = names.get(pkg).ok_or_else(|| format!("resolve dep {pkg} has no package"))?;
+            for kind in dep["dep_kinds"].as_array().into_iter().flatten() {
+                let dep_kind = match kind["kind"].as_str() {
+                    Some("dev") => DepKind::Dev,
+                    Some("build") => DepKind::Build,
+                    _ => DepKind::Normal,
+                };
+                deps.push(ClosureDep { name: (*dname).to_owned(), kind: dep_kind, target: kind["target"].as_str().map(str::to_owned) });
+            }
+        }
+        out.push(ClosureCrate { name: (*name).to_owned(), deps });
+    }
+    Ok(out)
+}
+
+fn edge_selected(dep: &ClosureDep, target: ClosureTarget) -> bool {
+    if dep.kind == DepKind::Dev {
+        return false;
+    }
+    match target {
+        ClosureTarget::Any => true,
+        // Unknown cfg expressions stay in the closure: a guard may be wider than cargo, never
+        // narrower.
+        ClosureTarget::Wasm => dep.target.as_deref().is_none_or(|expr| cfg_matches(expr).unwrap_or(true)),
+    }
+}
+
+/// Whether `root` reaches `forbidden` through normal or build dependencies selected for `target`.
+pub fn reaches(graph: &[ClosureCrate], root: &str, forbidden: &str, target: ClosureTarget) -> bool {
+    let mut seen = vec![false; graph.len()];
+    let mut stack: Vec<usize> = graph.iter().enumerate().filter(|(_, c)| c.name == root).map(|(i, _)| i).collect();
+    while let Some(i) = stack.pop() {
+        if std::mem::replace(&mut seen[i], true) {
+            continue;
+        }
+        for dep in &graph[i].deps {
+            if !edge_selected(dep, target) {
+                continue;
+            }
+            if dep.name == forbidden {
+                return true;
+            }
+            for (j, c) in graph.iter().enumerate() {
+                if c.name == dep.name && !seen[j] {
+                    stack.push(j);
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Guard rules for the browser and native closures. Returns violations sorted for stable output.
+pub fn closure_check(graph: &[ClosureCrate]) -> Vec<Violation> {
+    let mut out = Vec::new();
+    for root in BROWSER_ROOTS {
+        for dep in NATIVE_ONLY_CRATES {
+            if reaches(graph, root, dep, ClosureTarget::Any) {
+                out.push(Violation::ForbiddenClosure { root: (*root).into(), dep: (*dep).into(), target: ClosureTarget::Any });
+            }
+        }
+    }
+    let mut wasm_roots: Vec<&str> = Vec::new();
+    for c in graph {
+        if matches!(classify(&c.name), Some(Class::Layer(_))) && !wasm_roots.contains(&c.name.as_str()) {
+            wasm_roots.push(&c.name);
+        }
+    }
+    if !wasm_roots.contains(&"solidcraft-web") {
+        wasm_roots.push("solidcraft-web");
+    }
+    for root in wasm_roots {
+        for dep in WASM_FORBIDDEN_CRATES {
+            if reaches(graph, root, dep, ClosureTarget::Wasm) {
+                out.push(Violation::ForbiddenClosure { root: root.into(), dep: (*dep).into(), target: ClosureTarget::Wasm });
+            }
+        }
+    }
+    out.sort_by_key(|v| v.to_string());
+    out.dedup();
+    out
+}
+
+fn cfg_matches(expr: &str) -> Option<bool> {
+    let expr = expr.trim();
+    if expr == "wasm32-unknown-unknown" {
+        return Some(true);
+    }
+    let inner = expr.strip_prefix("cfg(")?.strip_suffix(')')?.trim();
+    eval_cfg(inner)
+}
+
+fn eval_cfg(pred: &str) -> Option<bool> {
+    let pred = pred.trim();
+    if pred.is_empty() {
+        return None;
+    }
+    if let Some(inner) = cfg_call(pred, "all") {
+        let mut unknown = false;
+        for part in split_cfg_args(inner) {
+            match eval_cfg(part) {
+                Some(false) => return Some(false),
+                None => unknown = true,
+                Some(true) => {}
+            }
+        }
+        return if unknown { None } else { Some(true) };
+    }
+    if let Some(inner) = cfg_call(pred, "any") {
+        let mut unknown = false;
+        for part in split_cfg_args(inner) {
+            match eval_cfg(part) {
+                Some(true) => return Some(true),
+                None => unknown = true,
+                Some(false) => {}
+            }
+        }
+        return if unknown { None } else { Some(false) };
+    }
+    if let Some(inner) = cfg_call(pred, "not") {
+        return eval_cfg(inner).map(|b| !b);
+    }
+    if let Some((key, value)) = pred.split_once('=') {
+        let key = key.trim();
+        let value = value.trim().trim_matches('"');
+        return wasm_cfg_value(key).map(|v| v == value);
+    }
+    match pred {
+        "unix" | "windows" => Some(false),
+        _ => None,
+    }
+}
+
+fn cfg_call<'a>(pred: &'a str, name: &str) -> Option<&'a str> {
+    pred.strip_prefix(name)?.strip_prefix('(')?.strip_suffix(')')
+}
+
+fn split_cfg_args(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut start = 0usize;
+    for (i, ch) in s.char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => quoted = true,
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(s[start..].trim());
+    parts
+}
+
+fn wasm_cfg_value(key: &str) -> Option<&'static str> {
+    match key {
+        "target_arch" => Some("wasm32"),
+        "target_os" => Some("unknown"),
+        "target_family" => Some("wasm"),
+        "target_vendor" => Some("unknown"),
+        "target_env" | "target_abi" => Some(""),
+        "target_pointer_width" => Some("32"),
+        "target_endian" => Some("little"),
+        _ => None,
+    }
 }
 
 pub fn describe(class: Option<Class>) -> String {
@@ -351,5 +601,168 @@ mod tests {
         assert!(doc.deps[0].workspace && !doc.deps[1].workspace);
         assert_eq!(doc.deps[2].kind, Dev);
         assert!(check(&g).is_empty());
+    }
+
+    fn cc(name: &str, deps: &[(&str, DepKind, Option<&str>)]) -> ClosureCrate {
+        ClosureCrate {
+            name: name.into(),
+            deps: deps.iter().map(|(n, k, t)| ClosureDep { name: (*n).into(), kind: *k, target: t.map(str::to_owned) }).collect(),
+        }
+    }
+
+    fn closure_reaches(graph: &[ClosureCrate], root: &str, forbidden: &str, target: ClosureTarget) -> bool {
+        reaches(graph, root, forbidden, target)
+    }
+
+    #[test]
+    fn account_native_is_not_in_web_or_ui_wasm_closure() {
+        // Inert synthetic cargo graph: the clean roots reach engine but no account adapter.
+        let clean = [
+            cc("solidcraft-web", &[("solidcraft-engine", Normal, None)]),
+            cc("solidcraft-ui-egui", &[("solidcraft-engine", Normal, None)]),
+            cc("solidcraft-engine", &[("solidcraft-geom", Normal, None)]),
+            cc("solidcraft-geom", &[]),
+        ];
+        assert!(closure_check(&clean).is_empty(), "{:?}", closure_check(&clean));
+
+        // A transitive forbidden dependency below a browser root must turn the guard red.
+        let dirty = [
+            cc("solidcraft-web", &[("solidcraft-web-shim", Normal, None)]),
+            cc("solidcraft-web-shim", &[("solidcraft-account-native", Normal, None)]),
+            cc("solidcraft-account-native", &[("keyring", Normal, None), ("ureq", Normal, None)]),
+            cc("solidcraft-ui-egui", &[("solidcraft-engine", Normal, None)]),
+            cc("solidcraft-engine", &[("solidcraft-geom", Normal, None)]),
+            cc("solidcraft-geom", &[]),
+        ];
+        let v = closure_check(&dirty);
+        assert!(
+            v.iter().any(|v| matches!(v, Violation::ForbiddenClosure { root, dep, target: ClosureTarget::Any }
+            if root == "solidcraft-web" && dep == "solidcraft-account-native")),
+            "{v:?}"
+        );
+        assert!(
+            v.iter().any(|v| matches!(v, Violation::ForbiddenClosure { root, dep, target: ClosureTarget::Wasm }
+            if root == "solidcraft-web" && dep == "keyring")),
+            "{v:?}"
+        );
+    }
+
+    #[test]
+    fn wasm_closure_ignores_edges_for_other_targets() {
+        // `keyring` is reached only from a Windows-gated edge; `ureq` only from a wasm edge.
+        let g = [
+            cc(
+                "solidcraft-web",
+                &[("windows-shim", Normal, Some("cfg(target_os = \"windows\")")), ("wasm-shim", Normal, Some("cfg(target_arch = \"wasm32\")"))],
+            ),
+            cc("windows-shim", &[("keyring", Normal, None)]),
+            cc("wasm-shim", &[("ureq", Normal, None)]),
+            cc("keyring", &[]),
+            cc("ureq", &[]),
+        ];
+        assert!(!closure_reaches(&g, "solidcraft-web", "keyring", ClosureTarget::Wasm));
+        assert!(closure_reaches(&g, "solidcraft-web", "keyring", ClosureTarget::Any));
+        assert!(closure_reaches(&g, "solidcraft-web", "ureq", ClosureTarget::Wasm));
+        assert!(closure_reaches(&g, "solidcraft-web", "ureq", ClosureTarget::Any));
+
+        // The wasm rule covers every layer crate, not only the browser roots.
+        let layer = [
+            cc("solidcraft-engine", &[("wasm-shim", Normal, Some("cfg(target_arch = \"wasm32\")"))]),
+            cc("wasm-shim", &[("ureq", Normal, None)]),
+            cc("ureq", &[]),
+        ];
+        let v = closure_check(&layer);
+        assert!(
+            v.iter().any(|v| matches!(v, Violation::ForbiddenClosure { root, dep, target: ClosureTarget::Wasm }
+            if root == "solidcraft-engine" && dep == "ureq")),
+            "{v:?}"
+        );
+    }
+
+    #[test]
+    fn target_filter_is_conservative_for_unknown_and_nested_conditions() {
+        // The guard must keep an edge selected when any conjunct is unknown: it may be wider than
+        // cargo, never narrower.
+        let unknown_conjunct = [
+            cc("solidcraft-web", &[("unknown-shim", Normal, Some("cfg(all(target_arch = \"wasm32\", target_feature = \"simd128\"))"))]),
+            cc("unknown-shim", &[("keyring", Normal, None)]),
+            cc("keyring", &[]),
+        ];
+        let v = closure_check(&unknown_conjunct);
+        assert!(
+            v.iter().any(|v| matches!(v, Violation::ForbiddenClosure { root, dep, target: ClosureTarget::Wasm }
+                if root == "solidcraft-web" && dep == "keyring")),
+            "unknown conjunct was dropped instead of retained: {v:?}"
+        );
+
+        // A known false conjunct still excludes the edge.
+        let known_false = [
+            cc("solidcraft-web", &[("false-shim", Normal, Some("cfg(all(target_arch = \"wasm32\", target_os = \"windows\"))"))]),
+            cc("false-shim", &[("keyring", Normal, None)]),
+            cc("keyring", &[]),
+        ];
+        assert!(closure_check(&known_false).is_empty(), "{:?}", closure_check(&known_false));
+
+        // Unknown inside a nested `all` also survives an outer `any` with a false alternative.
+        let nested_unknown = [
+            cc(
+                "solidcraft-web",
+                &[("nested-shim", Normal, Some("cfg(any(target_os = \"linux\", all(target_arch = \"wasm32\", target_feature = \"simd128\")))"))],
+            ),
+            cc("nested-shim", &[("keyring", Normal, None)]),
+            cc("keyring", &[]),
+        ];
+        let v = closure_check(&nested_unknown);
+        assert!(
+            v.iter().any(|v| matches!(v, Violation::ForbiddenClosure { root, dep, target: ClosureTarget::Wasm }
+                if root == "solidcraft-web" && dep == "keyring")),
+            "nested unknown conjunct was dropped: {v:?}"
+        );
+
+        // Build edges are followed; dev edges are not.
+        let build = [
+            cc("solidcraft-web", &[("build-shim", Build, Some("cfg(target_arch = \"wasm32\")"))]),
+            cc("build-shim", &[("keyring", Normal, None)]),
+            cc("keyring", &[]),
+        ];
+        assert!(!closure_check(&build).is_empty(), "build edge was not followed");
+        let dev = [
+            cc("solidcraft-web", &[("dev-shim", Dev, Some("cfg(target_arch = \"wasm32\")"))]),
+            cc("dev-shim", &[("keyring", Normal, None)]),
+            cc("keyring", &[]),
+        ];
+        assert!(closure_check(&dev).is_empty(), "dev edge must not be followed");
+    }
+
+    #[test]
+    fn resolved_graph_reads_target_conditions() {
+        let meta: Value = serde_json::from_str(
+            r#"{
+                "packages":[
+                    {"id":"pkg web","name":"solidcraft-web"},
+                    {"id":"pkg shim","name":"web-shim"},
+                    {"id":"pkg native","name":"solidcraft-account-native"}
+                ],
+                "resolve":{"nodes":[
+                    {"id":"pkg web","deps":[
+                        {"pkg":"pkg shim","dep_kinds":[
+                            {"kind":null,"target":null},
+                            {"kind":"dev","target":null}
+                        ]}
+                    ]},
+                    {"id":"pkg shim","deps":[
+                        {"pkg":"pkg native","dep_kinds":[{"kind":null,"target":"cfg(target_os = \"windows\")"}]}
+                    ]},
+                    {"id":"pkg native","deps":[]}
+                ]}
+            }"#,
+        )
+        .unwrap();
+        let g = from_resolve(&meta).unwrap();
+        let web = g.iter().find(|c| c.name == "solidcraft-web").unwrap();
+        assert_eq!(web.deps.len(), 2);
+        assert_eq!(web.deps[1].kind, Dev);
+        assert!(!closure_reaches(&g, "solidcraft-web", "solidcraft-account-native", ClosureTarget::Wasm));
+        assert!(closure_reaches(&g, "solidcraft-web", "solidcraft-account-native", ClosureTarget::Any));
     }
 }

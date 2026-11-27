@@ -69,6 +69,7 @@ pub struct Card {
     pub error: Option<String>,
     /// Whether a saved report exists (`inspect.dfm.available`).
     pub available: bool,
+    pub report_produced: bool,
 }
 
 impl Card {
@@ -102,6 +103,7 @@ impl Card {
             card.findings = report.findings;
             card.rules = report.rules;
             card.not_checked = report.not_checked;
+            card.report_produced = true;
         }
         card.status = match (running, outcome.as_deref(), available) {
             (true, _, _) => "running",

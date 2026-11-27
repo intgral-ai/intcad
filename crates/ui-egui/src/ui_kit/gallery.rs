@@ -1537,6 +1537,12 @@ const ELEMENTS: &[Element] = &[
             ui.push_id(open, |ui| disclosure_button_at(ui, rect, open, crate::i18n::tr_label(if open { "Collapse" } else { "Expand" })));
         }
     }),
+    element!("disclosure_label_button", |ui, _| {
+        for expanded in [true, false] {
+            let label = crate::i18n::tr_label(if expanded { "Collapse" } else { "Expand" });
+            ui.push_id(expanded, |ui| disclosure_label_button(ui, label, expanded));
+        }
+    }),
     element!("panel_disclosure_button_at", |ui, _| {
         let t = Tokens::get();
         for open in [true, false] {

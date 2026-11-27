@@ -6,36 +6,27 @@ working (see the [compatibility notes](https://github.com/tangency-labs/solidcra
 
 ## Desktop
 
-Download the installer for your system from the
-[Download section of the README](https://github.com/tangency-labs/solidcraft#download) or the
-[releases page](https://github.com/tangency-labs/solidcraft/releases), or build it yourself with
-stable Rust (1.95 or newer):
+Download Intcad from [Intcad's public releases](https://github.com/intgral-ai/intcad-releases/releases).
+For [v0.1.3](https://github.com/intgral-ai/intcad-releases/releases/tag/v0.1.3), choose the Windows
+MSI or portable ZIP, the universal macOS DMG, or the Linux AppImage or archive for your
+architecture. Other Linux packages are listed under **Assets** if available. These links
+can return **404** until the approved release is public.
 
-```sh
-git clone https://github.com/tangency-labs/solidcraft && cd solidcraft
-cargo run --release -p solidcraft -- --sample   # opens with a sample part
-```
+If you have Intcad v0.1.0, v0.1.1 or v0.1.2, the
+[first upgrade to v0.1.3 is manual](updates.md#updating-from-010-011-or-012). Whether upgrading or
+installing for the first time, [verify your download](updates.md#verify-a-manual-download).
 
 `intcad part.step` opens a STEP, IGES, 3MF, STL or OBJ file as a new design, and
-`intcad design.sc` opens a saved design. Windows builds cross-compile from Linux with
-`cargo xwin build --release --target x86_64-pc-windows-msvc -p solidcraft`.
+`intcad design.sc` opens a saved design.
 
 ### macOS
 
 Open the release `.dmg` and drag `Intcad.app` onto Applications.
 
-The release `.dmg` is signed with a Developer ID and notarized by Apple, and the app and the disk
-image carry the notarization ticket, so macOS opens SolidCraft normally, even offline.
-
-A copy you build yourself, or one from a fork that has no signing keys, is signed ad hoc and not
-notarized, so macOS blocks its first launch with "SolidCraft can't be opened, because Apple can't
-verify if the app is vulnerable". Open **System Settings › Privacy & Security**, scroll down to the
-message about SolidCraft, click **Open Anyway** and confirm: the app opens normally from then on.
-From a terminal, remove the quarantine flag instead:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Intcad.app
-```
+The v0.1.3 release build does not use Developer ID signing or Apple notarization. macOS may
+block the first launch. Only after verifying the official download, go to **System Settings ›
+Privacy & Security**, find the message about Intcad, and choose **Open Anyway** if available.
+On a managed Mac, follow your organization's policy.
 
 When updating from a build released under the previous product name, follow the
 [macOS upgrade notes](https://github.com/tangency-labs/solidcraft/blob/main/docs/compatibility.md#macos) so you replace it rather than install a second copy.
@@ -57,40 +48,18 @@ betas; 3.0.0-beta-3 or newer works), or remove it.
 
 ### Linux Flatpak
 
-Install Flatpak using your distribution's package manager. For an installation that receives
-updates, add Flathub for the required GNOME runtime and the SolidCraft application feed
-to the same user installation:
-
-```sh
-flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-flatpak remote-add --user --if-not-exists solidcraft https://docs.solidcraft.io/flatpak/solidcraft.flatpakrepo
-flatpak install --user solidcraft ai.intgral.intcad
-flatpak run ai.intgral.intcad
-```
-
-A SolidCraft remote added before the project moved to `docs.solidcraft.io` (from
-`bherbruck.github.io`) no longer finds updates. Point it at the new address, then update:
-`flatpak remote-modify --user --url=https://docs.solidcraft.io/flatpak/repo/ solidcraft` and
-`flatpak update --user`.
-
-Earlier releases used the application IDs `ai.storyteller.solidcraft` and, up to 0.7,
-`ai.storyteller.solvecraft`. If you installed one of those from the SolidCraft remote,
-`flatpak update --user` reports it as end-of-life and offers to replace it with
-`ai.intgral.intcad`; accept, and your settings and autosaves move with it. If you
-installed a `.flatpak` bundle, install the new bundle, launch it once (it copies your settings),
-then run `flatpak uninstall --user ai.storyteller.solidcraft` (or `ai.storyteller.solvecraft`; see the
-[compatibility notes](https://github.com/tangency-labs/solidcraft/blob/main/docs/compatibility.md#linux-app-id)).
-
-Alternatively, download the release's `.flatpak` file for your architecture and run
-`flatpak install --user ./solidcraft-VERSION-linux-ARCH.flatpak`. The bundle supplies the
-Flathub runtime repository address; installation still needs internet access to fetch any
-missing runtime. Launch with `flatpak run ai.intgral.intcad`, rather than looking for
-a host `intcad` binary. Files chosen through Open/Save use the desktop file-chooser portal;
-command-line paths outside Documents may need a specific additional filesystem permission.
+Install Flatpak using your distribution's package manager. If the Intcad release attaches a
+`.flatpak` bundle for your architecture, download and verify it, then run
+`flatpak install --user ./intcad-VERSION-linux-ARCH.flatpak` with the actual file name.
+The bundle supplies the Flathub runtime repository address; installation still needs internet
+access to fetch any missing runtime. Launch with `flatpak run ai.intgral.intcad`, rather than
+looking for a host `intcad` binary. Files chosen through Open/Save use the desktop file-chooser
+portal; command-line paths outside Documents may need an additional filesystem permission.
+The upstream SolidCraft feed is not an Intcad download source.
 
 ### Linux Snap
 
-On Ubuntu and other distributions with snapd:
+On Ubuntu and other distributions with snapd, if Intcad is available to you in the Snap Store:
 
 ```sh
 sudo snap install intcad
@@ -100,9 +69,10 @@ intcad.cli --version  # the CLI, for scripts and `intcad.cli mcp`
 
 The snap can open designs in your home folder (not hidden folders) and, through the file
 chooser, anywhere else. For USB drives and other mounted disks, run
-`sudo snap connect solidcraft:removable-media` once. A release's `.snap` file installs without
-the store with `sudo snap install --dangerous ./solidcraft-VERSION-linux-ARCH.snap`; it then
-doesn't update automatically.
+`sudo snap connect intcad:removable-media` once. If the Intcad release attaches a `.snap` file
+for your architecture, verify it before installing it with
+`sudo snap install --dangerous ./intcad-VERSION-linux-ARCH.snap` (use the actual file name).
+A file installed this way does not update automatically.
 
 ## Web
 

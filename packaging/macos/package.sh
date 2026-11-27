@@ -7,7 +7,13 @@
 #   $DIST/intcad-cli-<version>-macos-<arch>.zip    the headless CLI with the licence files
 #
 # Usage: packaging/macos/package.sh [--arch universal|aarch64|x86_64] [--skip-build] [--sign] [--with-mastra]
+#                                   [--with-mastra-agent]
 #        packaging/macos/package.sh --build-only <rust-target>
+#
+# --with-mastra-agent (or SOLIDCRAFT_WITH_MASTRA_AGENT=1) puts the built-in agent's folder into
+# the app. A universal app carries one folder per CPU (Contents/Resources/mastra-agent/<target>),
+# built beforehand for that target; a single-architecture app carries one folder. Release packages
+# carry it, and docs/mastra-packaging.md says how it is built.
 #
 # --build-only builds just that target (aarch64-apple-darwin or x86_64-apple-darwin) and stops,
 # so the release workflow can build the two halves of the universal binary on separate runners;
@@ -79,6 +85,7 @@ SKIP_BUILD=0
 BUILD_ONLY=
 SIGN=0
 WITH_MASTRA="${SOLIDCRAFT_WITH_MASTRA:-0}"
+WITH_MASTRA_AGENT="${SOLIDCRAFT_WITH_MASTRA_AGENT:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --arch) ARCH="$2"; shift 2 ;;
@@ -87,7 +94,8 @@ while [ $# -gt 0 ]; do
     --sign) SIGN=1; shift ;;
     --with-mastra) WITH_MASTRA=1; shift ;;
     --without-mastra) WITH_MASTRA=0; shift ;;
-    -h | --help) sed -n '2,23p' "$0"; exit 0 ;;
+    --with-mastra-agent) WITH_MASTRA_AGENT=1; shift ;;
+    -h | --help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -98,6 +106,14 @@ case "$ARCH" in
   *) echo "unknown --arch $ARCH" >&2; exit 2 ;;
 esac
 
+if [ "$WITH_MASTRA_AGENT" = 1 ] && [ "$ARCH" = universal ] && [ -z "$BUILD_ONLY" ]; then
+  for variable in SOLIDCRAFT_MASTRA_AGENT_DIR_AARCH64 SOLIDCRAFT_MASTRA_AGENT_DIR_X86_64; do
+    if [ -z "${!variable:-}" ]; then
+      echo "error: $variable is not set; a universal app needs the agent's folder for both CPUs" >&2
+      exit 2
+    fi
+  done
+fi
 if [ -n "$BUILD_ONLY" ] && [ "$SKIP_BUILD" = 1 ]; then
   echo "--skip-build and --build-only exclude each other" >&2; exit 2
 fi
@@ -145,6 +161,8 @@ if [ "$SKIP_BUILD" = 0 ]; then
   (cd "$ROOT" && cargo build --release --locked -p solidcraft -p solidcraft-cli "${args[@]}")
 fi
 
+# An earlier run may have left the built-in agent's folder, which nothing may write.
+if [ -d "$WORK" ]; then chmod -R u+w "$WORK"; fi
 rm -rf "$WORK"
 mkdir -p "$WORK/bin"
 for bin in intcad intcad-cli; do
@@ -205,6 +223,46 @@ else
   warn "the built-in Mastra workflow is not bundled (opt-in; the runtime artifact is unapproved, DQ-7/#15)"
 fi
 
+# ---- Built-in agent -----------------------------------------------------------------------------
+# Its own folder beside `mastra/`: the app starts the Node in it with agent/main.mjs, and finds a
+# universal app's copy for its own CPU under `mastra-agent/<target>`. stage-agent.sh checks each
+# folder before copying it, and its own check, not this script, decides whether it may ship.
+AGENT_DIR="$APP/Contents/Resources/mastra-agent"
+stage_agent() {
+  local target="$1" dest="$2" from="${SOLIDCRAFT_MASTRA_AGENT_DIR:-}"
+  # A universal app's two folders are named one per CPU; a single one may name either.
+  if [ "$ARCH" = universal ]; then
+    case "$target" in
+      aarch64-apple-darwin) from="${SOLIDCRAFT_MASTRA_AGENT_DIR_AARCH64:-$from}" ;;
+      x86_64-apple-darwin) from="${SOLIDCRAFT_MASTRA_AGENT_DIR_X86_64:-$from}" ;;
+    esac
+  fi
+  "$SCRIPT_DIR/../mastra/stage-agent.sh" --target "$target" --dest "$dest" ${from:+--from "$from"}
+}
+if [ "$WITH_MASTRA_AGENT" = 1 ]; then
+  if [ "$ARCH" = universal ]; then
+    stage_agent aarch64-apple-darwin "$AGENT_DIR/aarch64-apple-darwin"
+    stage_agent x86_64-apple-darwin "$AGENT_DIR/x86_64-apple-darwin"
+  else
+    stage_agent "${TARGETS[0]}" "$AGENT_DIR"
+  fi
+  mkdir -p "$APP/Contents/Resources/Licenses"
+  # Each CPU's folder carries the licences of the packages it was built from. The two halves can
+  # differ (their native modules differ), so each copy is named for its slice and each agent
+  # folder keeps its own as well.
+  find "$AGENT_DIR" -path '*/licenses/THIRD-PARTY-LICENSES.txt' -print | sort | while IFS= read -r licences; do
+    slice="$(dirname "$(dirname "$licences")")"
+    suffix=""
+    case "$slice" in
+      "$AGENT_DIR"/*) suffix="-$(basename "$slice")" ;;
+    esac
+    cp "$licences" "$APP/Contents/Resources/Licenses/MASTRA-AGENT-THIRD-PARTY-LICENSES$suffix.txt"
+    cp "$(dirname "$licences")/NODE-LICENSE.txt" "$APP/Contents/Resources/Licenses/MASTRA-AGENT-NODE-LICENSE$suffix.txt"
+  done
+else
+  warn "the built-in agent is not bundled (--with-mastra-agent); a release package carries it"
+fi
+
 sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHORT_VERSION@/$SHORT_VERSION/g" "$ROOT/assets/platforms/macos/Info.plist.in" >"$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist"
 printf 'APPL????' >"$APP/Contents/PkgInfo"
@@ -217,6 +275,20 @@ if [ -d "$APP/Contents/Resources/mastra" ]; then
   find "$APP/Contents/Resources/mastra" -type f -name node -print0 | while IFS= read -r -d '' node; do
     sign_code "$node" "$MACOS_BUNDLE_ID.mastra-node" "$SCRIPT_DIR/node-entitlements.plist"
   done
+fi
+# The built-in agent's Node, and the native libraries its packages load, are nested code too.
+if [ -d "$AGENT_DIR" ]; then
+  find "$AGENT_DIR" -path '*/node_modules/*' -type f \( -name '*.node' -o -name '*.dylib' \) -print0 | while IFS= read -r -d '' library; do
+    sign_code "$library"
+  done
+  find "$AGENT_DIR" -type f -name node -print0 | while IFS= read -r -d '' node_program; do
+    sign_code "$node_program" "$MACOS_BUNDLE_ID.mastra-agent-node" "$SCRIPT_DIR/node-entitlements.plist"
+  done
+  # Nothing in the folder may be written once it is in the app: the agent keeps what it writes
+  # in the user's data folder, and a signed app must not change its own contents.
+  chmod -R a-w "$AGENT_DIR"
+  # The whole app as it will ship holds nothing that looks like a secret or a stored sign-in.
+  node "$ROOT/packages/mastra-runtime/scripts/agent-package.mjs" scan "$APP"
 fi
 sign_code "$APP" "" "$SCRIPT_DIR/entitlements.plist"
 codesign --verify --strict --deep --verbose=2 "$APP"
@@ -298,10 +370,35 @@ if [ "$WITH_MASTRA" = 1 ]; then
     *) test -f "$MNT/Intcad.app/Contents/Resources/mastra/runtime.json" ;;
   esac
 fi
+if [ "$WITH_MASTRA_AGENT" = 1 ]; then
+  # The agent's folder as the image carries it: each CPU's copy checked again, and the copy this
+  # machine can run started once against stand-ins. A universal app runs its own CPU's copy.
+  if [ "$ARCH" = universal ]; then
+    for target in "${TARGETS[@]}"; do
+      node "$ROOT/packages/mastra-runtime/scripts/agent-package.mjs" check --read-only --target "$target" \
+        "$MNT/Intcad.app/Contents/Resources/mastra-agent/$target"
+    done
+    case "$(uname -m)" in
+      arm64) host=aarch64-apple-darwin ;;
+      *) host=x86_64-apple-darwin ;;
+    esac
+    node "$ROOT/packages/mastra-runtime/scripts/agent-smoke.mjs" "$MNT/Intcad.app/Contents/Resources/mastra-agent/$host"
+  else
+    node "$ROOT/packages/mastra-runtime/scripts/agent-package.mjs" check --read-only --target "${TARGETS[0]}" "$MNT/Intcad.app/Contents/Resources/mastra-agent"
+    node "$ROOT/packages/mastra-runtime/scripts/agent-smoke.mjs" "$MNT/Intcad.app/Contents/Resources/mastra-agent"
+  fi
+fi
 # Not --strict: the mounted HFS volume adds Finder info, which strict verification rejects.
 codesign --verify --deep --verbose=2 "$MNT/Intcad.app"
 "$MNT/Intcad.app/Contents/MacOS/Intcad" --version
-hdiutil detach "$MNT"
+# Programs were just run from the image (with the built-in agent, its Node and what it started):
+# the system may hold the volume for a moment after they end.
+detached=0
+for _ in 1 2 3 4 5; do
+  if hdiutil detach "$MNT"; then detached=1; break; fi
+  sleep 2
+done
+if [ "$detached" = 0 ]; then hdiutil detach "$MNT" -force; fi
 
 if [ -n "$SIGN_IDENTITY" ]; then
   sign_code "$DMG"

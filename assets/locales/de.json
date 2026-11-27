@@ -4463,7 +4463,7 @@
   "ui.agent_chat_limit": "Der Agent hat die Grenze von {limit} Änderungen für eine Nachricht erreicht. Senden Sie eine weitere Nachricht, damit er weitermacht.",
   "ui.agent_chat_login_found": "Anmeldung gefunden",
   "ui.agent_chat_minimize": "Zu einer Leiste minimieren",
-  "ui.agent_chat_mode_all": "Alles",
+  "ui.agent_chat_mode_all": "Auto",
   "ui.agent_chat_mode_ask": "Fragen",
   "ui.agent_chat_mode_edits": "Ändern",
   "ui.agent_chat_model_custom": "Eigenes verwenden: {model}",

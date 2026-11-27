@@ -1,0 +1,1381 @@
+//! A local folder as the Files panel shows it, and the file operations it runs.
+//!
+//! A directory is read on demand, folders first and each group in natural name order (so
+//! `part2` comes before `part10`). The operations work on one item at a time and answer one
+//! result per item, so a batch can report what succeeded, what was skipped and what failed
+//! without pretending it was all one transaction. Copying never follows a symbolic link:
+//! links are copied or removed as links, and a recursive copy refuses a destination inside its
+//! own source. Moving is a rename, and across volumes the content is copied and checked before
+//! the source is removed.
+//!
+//! Deleting goes to the system's trash first (`trash`), which follows the
+//! [freedesktop.org trash specification] on Linux. A caller that finds no usable trash asks the
+//! person again before deleting for good; nothing here falls back to erasing by itself.
+//!
+//! Opening a file with the system's default program and showing it in the system file manager
+//! are the two ways out of the application; both are detached, so a slow program never waits
+//! for the window.
+//!
+//! [freedesktop.org trash specification]: https://specifications.freedesktop.org/trash-spec/latest/
+
+use std::ffi::OsStr;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+/// How a directory entry is shown and what may be done with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// A real directory.
+    Dir,
+    /// A real file (or a device, socket or other special entry: it is treated as a file).
+    File,
+    /// A symbolic link. `to_dir` says its target is a directory; the link is never followed for
+    /// a recursive operation.
+    Link { to_dir: bool },
+}
+
+impl Kind {
+    /// Folders first in the tree, links next to what they point at.
+    pub fn is_dir(self) -> bool {
+        matches!(self, Kind::Dir | Kind::Link { to_dir: true })
+    }
+}
+
+/// One row of a directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    /// The name inside its folder, as the file system reports it.
+    pub name: String,
+    /// The absolute path this entry was read at (or the path the caller gave, joined).
+    pub path: PathBuf,
+    pub kind: Kind,
+    /// The file's size in bytes; 0 for a directory.
+    pub size: u64,
+    /// When the entry last changed, when the file system reports it.
+    pub modified: Option<SystemTime>,
+}
+
+impl Entry {
+    /// Is this a design the application opens in a tab (`.sc`, any case)?
+    pub fn is_design(&self) -> bool {
+        matches!(self.kind, Kind::File) && self.path.extension().and_then(OsStr::to_str).is_some_and(|e| e.eq_ignore_ascii_case("sc"))
+    }
+}
+
+/// Read one folder, folders first and then by natural name. Hidden entries (a leading dot) are
+/// included; the panel decides whether to show them.
+pub fn read_dir(path: &Path) -> Result<Vec<Entry>, String> {
+    let reader = fs::read_dir(path).map_err(|e| describe("read", path, &e))?;
+    let mut entries = Vec::new();
+    for item in reader {
+        let item = item.map_err(|e| describe("read", path, &e))?;
+        let name = item.file_name().to_string_lossy().into_owned();
+        let entry_path = item.path();
+        let (kind, size, modified) = match fs::symlink_metadata(&entry_path) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() {
+                    let to_dir = fs::metadata(&entry_path).map(|target| target.is_dir()).unwrap_or(false);
+                    (Kind::Link { to_dir }, 0, metadata.modified().ok())
+                } else if metadata.is_dir() {
+                    (Kind::Dir, 0, metadata.modified().ok())
+                } else {
+                    (Kind::File, metadata.len(), metadata.modified().ok())
+                }
+            }
+            // A link to a path that is gone, or a file removed between the listing and the
+            // stat: show it as a file rather than dropping a row the person can see on disk.
+            Err(_) => (Kind::File, 0, None),
+        };
+        entries.push(Entry { name, path: entry_path, kind, size, modified });
+    }
+    entries.sort_by(|a, b| a.kind.is_dir().cmp(&b.kind.is_dir()).reverse().then_with(|| natural_cmp(&a.name, &b.name)));
+    Ok(entries)
+}
+
+/// Compare two names the way a file manager does: digit runs by their value, letters without
+/// case, so `part 2` comes before `part 10`.
+pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut left = a.chars().peekable();
+    let mut right = b.chars().peekable();
+    loop {
+        match (left.peek().copied(), right.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                if x.is_ascii_digit() && y.is_ascii_digit() {
+                    let (na, nb) = (digits(&mut left), digits(&mut right));
+                    let order = na.cmp(&nb);
+                    if order != Ordering::Equal {
+                        return order;
+                    }
+                } else {
+                    let (lx, ly) = (x.to_lowercase().next(), y.to_lowercase().next());
+                    let order = lx.cmp(&ly);
+                    if order != Ordering::Equal {
+                        return order;
+                    }
+                    left.next();
+                    right.next();
+                }
+            }
+        }
+    }
+}
+
+/// The number under the digits `chars` starts with, saturating instead of overflowing.
+fn digits(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u128 {
+    let mut value: u128 = 0;
+    while let Some(c) = chars.peek().copied() {
+        let Some(digit) = c.to_digit(10) else { break };
+        value = value.saturating_mul(10).saturating_add(u128::from(digit));
+        chars.next();
+    }
+    value
+}
+
+/// Is `name` one ordinary child name on the selected platform? Windows never allows `:` in a
+/// file name: after a drive letter (`C:part.sc`) it names a drive, and after a file name
+/// (`part.sc:stream`) it starts an alternate data stream. Either form is not one directory
+/// entry. Other platforms keep their existing accepted names.
+fn one_child_name(name: &str, windows: bool) -> bool {
+    !(windows && name.contains(':'))
+}
+
+/// A name a person typed, as a name for one entry: no separators, not empty, not `.` or `..`.
+pub fn valid_name(name: &str) -> Result<&str, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("a name is needed".into());
+    }
+    if name == "." || name == ".." || name.contains(['/', '\\']) || name.contains('\0') || !one_child_name(name, cfg!(windows)) {
+        return Err(format!("“{name}” cannot be a file or folder name"));
+    }
+    Ok(name)
+}
+
+/// A path in `dir` for a new entry called `name`.
+pub fn child(dir: &Path, name: &str) -> Result<PathBuf, String> {
+    Ok(dir.join(valid_name(name)?))
+}
+
+/// The first free name in `dir` for a copy of `name`: `bracket (copy).sc`, then
+/// `bracket (copy 2).sc`, and so on. The extension stays at the end.
+pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !entry_exists(&first) {
+        return first;
+    }
+    let path = first.as_path();
+    let stem = path.file_stem().and_then(OsStr::to_str).unwrap_or(name);
+    let extension = path.extension().and_then(OsStr::to_str);
+    let named = |suffix: &str| match extension {
+        Some(extension) => format!("{stem}{suffix}.{extension}"),
+        None => format!("{stem}{suffix}"),
+    };
+    let mut candidate = dir.join(named(" (copy)"));
+    let mut number = 2u32;
+    while entry_exists(&candidate) {
+        candidate = dir.join(named(&format!(" (copy {number})")));
+        number = number.saturating_add(1);
+    }
+    candidate
+}
+
+/// Create an empty file.
+pub fn create_file(path: &Path) -> Result<(), String> {
+    match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(describe("create", path, &e)),
+    }
+}
+
+/// Create a folder (its parents must exist).
+pub fn create_dir(path: &Path) -> Result<(), String> {
+    fs::create_dir(path).map_err(|e| describe("create", path, &e))
+}
+
+/// What to do when the destination already has an entry of the same name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Conflict {
+    /// Put the source in under the first free name.
+    KeepBoth,
+    /// Leave the destination as it is and report the item as skipped.
+    Skip,
+    /// Replace an existing file with the source file. Folders are never merged or replaced:
+    /// a folder destination falls back to [`Conflict::KeepBoth`].
+    Replace,
+}
+
+/// What became of one item of a batch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    /// The item is at its destination.
+    Done,
+    /// The item was left as it was (a conflict the person chose to skip, or a folder conflict).
+    Skipped,
+    /// The operation did not finish. The reason includes any retained recovery path or
+    /// complete destination when a move's source could not be removed.
+    Failed(String),
+}
+
+/// One item's result, which the panel lists when a batch does not finish cleanly.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemResult {
+    pub source: PathBuf,
+    /// Where the item now is; for a skip or a failure, where it would have gone.
+    pub target: PathBuf,
+    pub outcome: Outcome,
+}
+
+impl ItemResult {
+    fn done(source: &Path, target: &Path) -> Self {
+        Self { source: source.to_path_buf(), target: target.to_path_buf(), outcome: Outcome::Done }
+    }
+    fn skipped(source: &Path, target: &Path) -> Self {
+        Self { source: source.to_path_buf(), target: target.to_path_buf(), outcome: Outcome::Skipped }
+    }
+    fn failed(source: &Path, target: &Path, error: impl Into<String>) -> Self {
+        Self { source: source.to_path_buf(), target: target.to_path_buf(), outcome: Outcome::Failed(error.into()) }
+    }
+    /// Did the item reach its destination?
+    pub fn succeeded(&self) -> bool {
+        matches!(self.outcome, Outcome::Done)
+    }
+}
+
+/// A snapshot of one plain file entry, taken when a destructive answer is offered. It binds the
+/// entry's object identity to the detectable edits (size, modified/creation time and change time)
+/// read in the same no-follow metadata call. It is a snapshot, not an atomicity claim: the entry
+/// can change after it is read, and a conditional publication must re-check it before publishing.
+///
+/// The fields stay private so only this module decides what makes a usable witness. On Unix this
+/// is a device and inode plus the edit evidence; on a platform whose stable safe API cannot prove
+/// the entry's own volume capability there is no witness at all.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryWitness {
+    #[cfg(unix)]
+    object: ObjectIdentity,
+    #[cfg(unix)]
+    edit: DetectableEdit,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObjectIdentity {
+    device: u64,
+    inode: u64,
+}
+
+/// The edit evidence in a witness. `changed` is ctime: it catches a write that restores the size
+/// and mtime, which an mtime-only check cannot. A rename of the entry itself also changes ctime,
+/// so a pre-rename ctime is never compared directly with a displaced entry; a test-only displaced
+/// comparison omits it and therefore cannot justify deleting a backup.
+#[cfg(unix)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DetectableEdit {
+    len: u64,
+    modified: Option<SystemTime>,
+    created: Option<SystemTime>,
+    changed: (i64, i64),
+}
+
+/// An opaque authorization for one exact named destination. It binds the destination spelling to
+/// the witness read when the question opened. A hard link or another spelling of the same object
+/// is not this destination, so it can never use this authorization. Keep the object-only alias
+/// relation separate: [`same_object_alias`] is evidence, never consent. This type plus
+/// [`replace_authorization`] and [`authorization_matches`] is the only public destructive-consent
+/// path; the lower-level same-entry checks stay private.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplaceAuthorization {
+    destination: PathBuf,
+    witness: EntryWitness,
+}
+
+/// Read the exact destination named now and authorize replacement of that name only. `None`
+/// means there is no usable witness now. The authorization is a snapshot, not an atomic
+/// guarantee; it must be checked again on the same exact destination immediately before any
+/// conditional publication.
+pub fn replace_authorization(destination: &Path) -> Option<ReplaceAuthorization> {
+    entry_witness(destination).map(|witness| ReplaceAuthorization { destination: destination.to_path_buf(), witness })
+}
+
+/// Is this still the same exact named destination and the same entry the authorization binds?
+/// The path must be spelled exactly as the destination that was authorized. A hard-link alias of
+/// the same object is not this named destination, and an edit, replacement, missing path or
+/// unsupported platform never matches.
+pub fn authorization_matches(authorization: &ReplaceAuthorization, destination: &Path) -> bool {
+    authorization.destination == destination && witness_matches(&authorization.witness, destination)
+}
+
+/// Read one named plain entry without following a link and return a witness for destructive
+/// consent. `None` means the path is not a plain file now, or this platform has no safe way to
+/// prove the identity and capability a witness requires.
+///
+/// No-follow applies to the final path component only: `symlink_metadata` does not follow the
+/// entry itself, but parent directories are resolved by the ordinary path lookup. A link,
+/// directory, device, socket or FIFO is refused rather than followed or treated as a file.
+/// This is a single metadata snapshot, not a pinned handle and not a generation proof. It is
+/// evidence only, never consent: destructive replacement must use [`replace_authorization`] and
+/// [`authorization_matches`].
+///
+/// Windows replacement stays unsupported in this build. A witness there would require proving,
+/// from the opened entry itself, that its volume is local NTFS. The safe surface of `winapi-util`
+/// 0.1.11 wraps `GetFileInformationByHandle` and `GetFileType` only; the volume's file-system
+/// name requires `GetVolumeInformationByHandleW`, which exists only as raw `unsafe` bindings in
+/// `windows-sys`/`windows`. A drive letter, a nonzero 64-bit file index, or a successful metadata
+/// query is not that proof, and ReFS, network volumes, reparse points and every unverified or
+/// unknown capability stay unsupported. No approved safe adapter exists in this scope, so no
+/// Windows witness is manufactured and no first-party `unsafe` is added.
+pub fn entry_witness(path: &Path) -> Option<EntryWitness> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::symlink_metadata(path).ok()?;
+        if !metadata.file_type().is_file() {
+            return None;
+        }
+        Some(EntryWitness {
+            object: ObjectIdentity { device: metadata.dev(), inode: metadata.ino() },
+            edit: DetectableEdit {
+                len: metadata.len(),
+                modified: metadata.modified().ok(),
+                created: metadata.created().ok(),
+                changed: (metadata.ctime(), metadata.ctime_nsec()),
+            },
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Do two witnesses name the same object? This ignores every detectable edit. It is **alias
+/// evidence only** — a hard link or another spelling of one entry — and must never be used to
+/// authorize a replacement. Use [`authorization_matches`] for destructive consent.
+/// A platform with no witness never reports same.
+pub fn same_object_alias(a: &EntryWitness, b: &EntryWitness) -> bool {
+    #[cfg(unix)]
+    {
+        a.object == b.object
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
+/// Do two witnesses name the same object *and* the same detectable edits, including change time?
+/// This is an internal comparison; the only public destructive-consent path is the exact-name
+/// [`authorization_matches`]. An in-place edit keeps the object but revokes the snapshot the
+/// person saw. A platform with no witness never reports same.
+fn same_entry(a: &EntryWitness, b: &EntryWitness) -> bool {
+    #[cfg(unix)]
+    {
+        a == b
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        false
+    }
+}
+
+/// Does `path` still hold exactly the entry the witness names, including its detectable edits?
+/// This is an internal exact-name recheck; public destructive consent must go through
+/// [`authorization_matches`]. Unknown, missing, replaced, edited and unsupported entries never
+/// count as the same.
+fn witness_matches(expected: &EntryWitness, path: &Path) -> bool {
+    entry_witness(path).is_some_and(|current| same_entry(expected, &current))
+}
+
+/// Copy `source` into the folder `destination`, following `conflict`.
+pub fn copy_into(source: &Path, destination: &Path, conflict: Conflict) -> ItemResult {
+    let Some(name) = source.file_name() else {
+        return ItemResult::failed(source, destination, "the item has no name");
+    };
+    let direct = destination.join(name);
+    if let Err(e) = ensure_destination(source, destination) {
+        return ItemResult::failed(source, &direct, e);
+    }
+    let target = match resolve(source, &direct, conflict) {
+        Ok(Some(target)) => target,
+        Ok(None) => return ItemResult::skipped(source, &direct),
+        Err(e) => return ItemResult::failed(source, &direct, e),
+    };
+    if target == source {
+        return ItemResult::failed(source, &direct, "the item is already there");
+    }
+    let replacing = conflict == Conflict::Replace && is_plain_file(source) && is_plain_file(&target);
+    match staged_copy(source, &target, replacing) {
+        Ok(()) => ItemResult::done(source, &target),
+        Err(failure) => ItemResult::failed(source, &target, failure.message),
+    }
+}
+
+/// Keep `destination` beside itself while `replace` writes the new entry, and put the old one
+/// back when `replace` fails. A failed replace therefore never leaves the person without their
+/// file. If both the replacement and the restore fail, the error names the kept file.
+fn swap_in(destination: &Path, replace: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    let Some(parent) = destination.parent() else { return Err("the destination has no folder".into()) };
+    let staging = owned_sibling(parent, "replace")?;
+    let backup = staging.join("previous");
+    let result = match fs::rename(destination, &backup) {
+        Err(e) => Err(describe("replace", destination, &e)),
+        Ok(()) => match replace() {
+            Ok(()) => Ok(()),
+            // A failed replacement may already have created a new destination. Restore the
+            // previous entry only through the atomic no-clobber primitive: overwriting would
+            // destroy those new bytes. If the destination exists, both copies are kept and
+            // the error names the previous one.
+            Err(e) => match rename_no_replace(&backup, destination) {
+                Ok(()) => Err(e),
+                Err(restore) => {
+                    return Err(format!("{e}; the previous entry is kept at {} because it could not be put back: {restore}", backup.display()));
+                }
+            },
+        },
+    };
+    finish_staging(&staging, result)
+}
+
+/// Reserve an exclusive sibling directory. Never adopt an existing path, including a
+/// dangling symlink. Its fixed-size name also works beside a maximum-length filename.
+fn owned_sibling(parent: &Path, purpose: &str) -> Result<PathBuf, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..1000 {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let candidate = parent.join(format!(".intcad-{purpose}-{}-{n}", std::process::id()));
+        let builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        let builder = {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = builder;
+            builder.mode(0o700);
+            builder
+        };
+        match builder.create(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(describe("reserve staging", &candidate, &e)),
+        }
+    }
+    Err(format!("could not reserve staging in {}", parent.display()))
+}
+
+fn finish_staging(staging: &Path, result: Result<(), String>) -> Result<(), String> {
+    let cleanup = || -> io::Result<()> {
+        #[cfg(test)]
+        tests::checkpoint("cleanup", staging, staging)?;
+        fs::remove_dir_all(staging)
+    };
+    match cleanup() {
+        Ok(()) => result,
+        Err(e) => {
+            let reason = result.err().unwrap_or_else(|| "the complete destination is in place".into());
+            Err(format!("{reason}; staging could not be removed; recover it at {}: {e}", staging.display()))
+        }
+    }
+}
+
+/// A staged copy can stop after its complete entry reached the public target: `finish_staging`
+/// may fail to remove the staging tree after publication. `published` records that outcome so
+/// a caller does not withdraw a record or delete a source for an entry that is already public.
+/// `message` keeps the existing failure wording.
+struct StagedFailure {
+    published: bool,
+    message: String,
+}
+
+/// No public destination exists until every entry has been copied. Replacement is a single
+/// native rename of a complete entry, so a failed publication leaves the old file intact.
+fn staged_copy(source: &Path, target: &Path, replacing: bool) -> Result<(), StagedFailure> {
+    let Some(parent) = target.parent() else {
+        return Err(StagedFailure { published: false, message: "the destination has no folder".into() });
+    };
+    let staging = owned_sibling(parent, "stage").map_err(|message| StagedFailure { published: false, message })?;
+    let payload = staging.join("entry");
+    let mut published = false;
+    let result = copy_entry(source, &payload).and_then(|()| {
+        #[cfg(test)]
+        tests::checkpoint("publish", &payload, target).map_err(|e| describe("publish", target, &e))?;
+        if replacing {
+            let outcome = fs::rename(&payload, target);
+            published = outcome.is_ok();
+            outcome.map_err(|e| describe("publish", target, &e))
+        } else {
+            let (outcome, made) = publish_no_replace(&payload, target);
+            published = made;
+            outcome.map_err(|e| describe("publish", target, &e))
+        }
+    });
+    match finish_staging(&staging, result) {
+        Ok(()) => Ok(()),
+        Err(message) => Err(StagedFailure { published, message }),
+    }
+}
+
+/// Atomic no-clobber publication. The flag says whether the complete target exists after the
+/// result: a supported rename primitive publishes only on success, while the hard-link fallback
+/// can publish and then fail to unlink its staging source.
+fn publish_no_replace(source: &Path, target: &Path) -> (io::Result<()>, bool) {
+    #[cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))]
+    {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+        let outcome = renameat_with(CWD, source, CWD, target, RenameFlags::NOREPLACE).map_err(Into::into);
+        let published = outcome.is_ok();
+        (outcome, published)
+    }
+    #[cfg(windows)]
+    {
+        // This safe wrapper does not change source attributes or require hard links.
+        // Resolve only the parents for verbatim/long paths; never follow the source link.
+        let outcome = windows_entry_path(source)
+            .and_then(|source| windows_entry_path(target).map(|target| (source, target)))
+            .and_then(|(source, target)| atomicwrites::move_atomic(&source, &target));
+        let published = outcome.is_ok();
+        (outcome, published)
+    }
+    #[cfg(not(any(windows, target_vendor = "apple", target_os = "linux", target_os = "android")))]
+    {
+        // An exclusive hard link publishes file/link entries without overwriting. If unlink
+        // fails, both complete entries remain; never remove the public destination on error.
+        match fs::hard_link(source, target) {
+            Err(e) => (Err(e), false),
+            Ok(()) => match fs::remove_file(source) {
+                Ok(()) => (Ok(()), true),
+                Err(e) => (
+                    Err(io::Error::new(
+                        e.kind(),
+                        format!("the complete destination is at {}, but {} could not be removed: {e}", target.display(), source.display()),
+                    )),
+                    true,
+                ),
+            },
+        }
+    }
+}
+
+fn rename_no_replace(source: &Path, target: &Path) -> io::Result<()> {
+    publish_no_replace(source, target).0
+}
+
+#[cfg(windows)]
+fn windows_entry_path(path: &Path) -> io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStrExt;
+    // atomicwrites' Win32 conversion appends NUL, so validate before crossing that boundary.
+    if path.as_os_str().encode_wide().any(|c| c == 0) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "a path contains NUL"));
+    }
+    let absolute = std::path::absolute(path)?;
+    let (Some(parent), Some(name)) = (absolute.parent(), absolute.file_name()) else {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "the entry has no parent or name"));
+    };
+    Ok(fs::canonicalize(parent)?.join(name))
+}
+
+/// Move `source` into the folder `destination`, following `conflict`. Across volumes the
+/// content is copied first and the source removed only when the copy is complete.
+pub fn move_into(source: &Path, destination: &Path, conflict: Conflict) -> ItemResult {
+    let Some(name) = source.file_name() else {
+        return ItemResult::failed(source, destination, "the item has no name");
+    };
+    let direct = destination.join(name);
+    if let Err(e) = ensure_destination(source, destination) {
+        return ItemResult::failed(source, &direct, e);
+    }
+    let target = match resolve(source, &direct, conflict) {
+        Ok(Some(target)) => target,
+        Ok(None) => return ItemResult::skipped(source, &direct),
+        Err(e) => return ItemResult::failed(source, &direct, e),
+    };
+    if target == source {
+        return ItemResult::failed(source, &direct, "the item is already there");
+    }
+    let replacing = conflict == Conflict::Replace && is_plain_file(source) && is_plain_file(&target);
+    match move_entry_with(source, &target, replacing) {
+        Ok(()) => ItemResult::done(source, &target),
+        Err(e) => ItemResult::failed(source, &target, e),
+    }
+}
+
+/// Rename one entry inside its folder.
+pub fn rename(source: &Path, new_name: &str, conflict: Conflict) -> ItemResult {
+    let Some(parent) = source.parent() else {
+        return ItemResult::failed(source, source, "the item has no folder");
+    };
+    let mut target = match child(parent, new_name) {
+        Ok(target) => target,
+        Err(e) => return ItemResult::failed(source, source, e),
+    };
+    if target == source {
+        return ItemResult::done(source, &target);
+    }
+    let target_exists = entry_exists(&target);
+    let same_entry = target_exists && same_case_entry(source, &target);
+    if target_exists && !same_entry {
+        match conflict {
+            Conflict::Skip => return ItemResult::skipped(source, &target),
+            Conflict::KeepBoth => target = unique_path(parent, new_name),
+            Conflict::Replace => {
+                if !is_plain_file(source) || !is_plain_file(&target) {
+                    return ItemResult::failed(source, &target, "a folder cannot replace another entry");
+                }
+                let from = source.to_path_buf();
+                let to = target.clone();
+                return match swap_in(&target, || fs::rename(&from, &to).map_err(|e| describe("rename", &from, &e))) {
+                    Ok(()) => ItemResult::done(source, &target),
+                    Err(e) => ItemResult::failed(source, &target, e),
+                };
+            }
+        }
+    }
+    let attempt = || -> io::Result<()> {
+        #[cfg(test)]
+        tests::checkpoint("rename publish", source, &target)?;
+        // A verified case-only alias needs the native rename to update stored spelling.
+        // Every ordinary rename must still be exclusive at publication, even if the
+        // selected direct/KeepBoth destination was free during conflict resolution.
+        if same_entry { fs::rename(source, &target) } else { rename_no_replace(source, &target) }
+    };
+    match attempt() {
+        Ok(()) => ItemResult::done(source, &target),
+        Err(e) => ItemResult::failed(source, &target, describe("rename", source, &e)),
+    }
+}
+
+/// A filesystem alias is not a second hardlink or a link to the same target. Inspect the
+/// parent's stored names (without following links), and require exactly one case-equivalent
+/// entry, with the source's exact spelling. On sensitive volumes a distinct target is listed
+/// separately. Conservatively refuse names whose case equivalence cannot be established.
+fn same_case_entry(source: &Path, target: &Path) -> bool {
+    let (Some(parent), Some(from), Some(to)) = (source.parent(), source.file_name(), target.file_name()) else { return false };
+    let (Some(from_text), Some(to_text)) = (from.to_str(), to.to_str()) else { return false };
+    if from_text.to_lowercase() != to_text.to_lowercase() {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(parent) else { return false };
+    let mut found = false;
+    for entry in entries {
+        let Ok(entry) = entry else { return false };
+        let name = entry.file_name();
+        if name.to_str().is_some_and(|name| name.to_lowercase() == to_text.to_lowercase()) {
+            if name != from || found {
+                return false;
+            }
+            found = true;
+        }
+    }
+    found
+}
+
+fn entry_exists(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+/// Where `source` goes when the destination already holds `direct`; `None` means skip.
+fn resolve(source: &Path, direct: &Path, conflict: Conflict) -> Result<Option<PathBuf>, String> {
+    if !entry_exists(direct) {
+        return Ok(Some(direct.to_path_buf()));
+    }
+    match conflict {
+        Conflict::Skip => Ok(None),
+        Conflict::Replace if is_plain_file(source) && is_plain_file(direct) => Ok(Some(direct.to_path_buf())),
+        // A folder is never merged into another folder and a file never replaces a folder.
+        Conflict::Replace | Conflict::KeepBoth => {
+            let Some(parent) = direct.parent() else { return Err("the destination has no folder".into()) };
+            let Some(name) = direct.file_name().and_then(OsStr::to_str) else {
+                return Err("the destination name is not readable".into());
+            };
+            Ok(Some(unique_path(parent, name)))
+        }
+    }
+}
+
+fn ensure_destination(source: &Path, destination: &Path) -> Result<(), String> {
+    let metadata = fs::metadata(destination).map_err(|e| describe("open", destination, &e))?;
+    if !metadata.is_dir() {
+        return Err(format!("{} is not a folder", destination.display()));
+    }
+    if is_within(source, destination) {
+        return Err("a folder cannot be copied or moved into itself".into());
+    }
+    Ok(())
+}
+
+/// Is `child` the same as `parent` or inside it? Both paths must exist for the canonical
+/// answer; a missing path falls back to the written form.
+pub fn is_within(parent: &Path, child: &Path) -> bool {
+    let parent = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
+    let child = fs::canonicalize(child).unwrap_or_else(|_| child.to_path_buf());
+    child.starts_with(&parent)
+}
+
+/// Copy one entry to `target`, recursing into a real folder.
+fn copy_entry(source: &Path, target: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(source).map_err(|e| describe("read", source, &e))?;
+    if metadata.file_type().is_symlink() {
+        return copy_link(source, target);
+    }
+    if metadata.is_dir() {
+        return copy_dir(source, target, 0);
+    }
+    copy_file(source, target)
+}
+
+fn copy_file(source: &Path, target: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    tests::checkpoint("copy", source, target).map_err(|e| describe("copy", source, &e))?;
+    fs::copy(source, target).map(|_| ()).map_err(|e| describe("copy", source, &e))
+}
+
+fn copy_dir(source: &Path, target: &Path, depth: usize) -> Result<(), String> {
+    // A symbolic loop cannot be followed (links are not recursed), but a hostile deep tree
+    // still must not exhaust the window's stack.
+    if depth > 256 {
+        return Err("the folder is nested too deeply to copy".into());
+    }
+    fs::create_dir(target).map_err(|e| describe("create", target, &e))?;
+    let reader = fs::read_dir(source).map_err(|e| describe("read", source, &e))?;
+    for item in reader {
+        let item = item.map_err(|e| describe("read", source, &e))?;
+        let from = item.path();
+        let to = target.join(item.file_name());
+        let metadata = fs::symlink_metadata(&from).map_err(|e| describe("read", &from, &e))?;
+        if metadata.file_type().is_symlink() {
+            copy_link(&from, &to)?;
+        } else if metadata.is_dir() {
+            copy_dir(&from, &to, depth + 1)?;
+        } else {
+            copy_file(&from, &to)?;
+        }
+    }
+    // Keep the folder's own time where the platform allows it (best effort; a copy that worked
+    // is not a failure because the timestamp could not be set).
+    if let Ok(modified) = fs::metadata(source).and_then(|m| m.modified()) {
+        let times = fs::FileTimes::new().set_modified(modified);
+        if let Ok(file) = fs::File::open(target) {
+            let _ = file.set_times(times);
+        }
+    }
+    Ok(())
+}
+
+/// Copy a symbolic link as a link, never as its target. A platform that cannot make the link
+/// reports the failure; it is not silently replaced by a copy of the target's content.
+fn copy_link(source: &Path, target: &Path) -> Result<(), String> {
+    let to = fs::read_link(source).map_err(|e| describe("read link", source, &e))?;
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&to, target).map_err(|e| describe("copy link", source, &e))
+    }
+    #[cfg(windows)]
+    {
+        let is_dir = fs::metadata(source).map(|m| m.is_dir()).unwrap_or(false);
+        let made = if is_dir { std::os::windows::fs::symlink_dir(&to, target) } else { std::os::windows::fs::symlink_file(&to, target) };
+        made.map_err(|e| describe("copy link", source, &e))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (source, target, to);
+        Err("this platform cannot copy a symbolic link".into())
+    }
+}
+
+/// Move one entry, copying across volumes and removing the source only after the copy is in.
+fn move_entry_with(source: &Path, target: &Path, replacing: bool) -> Result<(), String> {
+    let attempt = || -> io::Result<()> {
+        #[cfg(test)]
+        tests::checkpoint("move", source, target)?;
+        if replacing { fs::rename(source, target) } else { rename_no_replace(source, target) }
+    };
+    match attempt() {
+        Ok(()) => Ok(()),
+        Err(e) if is_cross_device(&e) => {
+            staged_copy(source, target, replacing).map_err(|failure| failure.message)?;
+            let remove = || -> Result<(), String> {
+                #[cfg(test)]
+                tests::checkpoint("remove source", source, target).map_err(|e| describe("remove source", source, &e))?;
+                remove_permanent(source)
+            };
+            remove().map_err(|e| format!("copied to {}, but the source could not be removed: {e}", target.display()))
+        }
+        Err(e) => Err(describe("move", source, &e)),
+    }
+}
+
+fn is_cross_device(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(18) // EXDEV
+    }
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(17) // ERROR_NOT_SAME_DEVICE
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+fn is_plain_file(path: &Path) -> bool {
+    fs::symlink_metadata(path).map(|m| m.is_file()).unwrap_or(false)
+}
+
+/// Why a delete needs the person's answer before it runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TrashProblem {
+    /// The file system or platform has no trash this application can use.
+    Unavailable,
+    /// There is a trash, but this item could not be put in it.
+    Refused(String),
+}
+
+/// `NSFeatureUnsupportedError` from Foundation's error list (`FoundationErrors`): the volume has
+/// no Trash this application can use.
+#[cfg(any(target_os = "macos", test))]
+const NO_TRASH_HERE: isize = 3328;
+
+#[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+const _: () = assert!(NO_TRASH_HERE == objc2_foundation::NSFeatureUnsupportedError);
+
+/// Does a Foundation error mean "this volume has no Trash"? Only `NSFeatureUnsupportedError` in
+/// `NSCocoaErrorDomain` does: the same number in another domain is a different failure, and an
+/// access denial in the Cocoa domain is a refusal, not unavailability.
+#[cfg(any(target_os = "macos", test))]
+fn trash_error_means_no_trash(domain: &str, code: isize) -> bool {
+    code == NO_TRASH_HERE && domain == "NSCocoaErrorDomain"
+}
+
+/// The environment name Windows' recycle adapter uses to carry one item path. The
+/// PowerShell instructions never contain a path.
+#[cfg(any(windows, test))]
+const WINDOWS_RECYCLE_PATH: &str = "INTCAD_RECYCLE_PATH";
+
+/// Constant executable instructions for the recycle adapter. The item path is read from
+/// [`WINDOWS_RECYCLE_PATH`] as data; PowerShell never parses it as script text.
+#[cfg(any(windows, test))]
+const WINDOWS_RECYCLE_FILE: &str = "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($env:INTCAD_RECYCLE_PATH, 'OnlyErrorDialogs', 'SendToRecycleBin')";
+
+#[cfg(any(windows, test))]
+const WINDOWS_RECYCLE_DIRECTORY: &str = "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($env:INTCAD_RECYCLE_PATH, 'OnlyErrorDialogs', 'SendToRecycleBin')";
+
+#[cfg(any(windows, test))]
+fn windows_recycle_command(path: &Path, is_dir: bool) -> Result<std::process::Command, TrashProblem> {
+    // Windows' process environment cannot carry NUL. Refuse rather than let a path cross
+    // that boundary or fall back to permanent deletion.
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
+        return Err(TrashProblem::Refused("the path contains NUL".into()));
+    }
+    let script = if is_dir { WINDOWS_RECYCLE_DIRECTORY } else { WINDOWS_RECYCLE_FILE };
+    let mut command = std::process::Command::new("powershell");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    command.env(WINDOWS_RECYCLE_PATH, path.as_os_str());
+    Ok(command)
+}
+
+/// Put one entry in the system's trash.
+pub fn trash(path: &Path) -> Result<(), TrashProblem> {
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+    {
+        if home_trash_available() {
+            return move_to_home_trash(path).map_err(TrashProblem::Refused);
+        }
+        if let Some(volume) = volume_trash(path) {
+            return move_to_volume_trash(path, &volume).map_err(TrashProblem::Refused);
+        }
+        Err(TrashProblem::Unavailable)
+    }
+    #[cfg(all(windows, not(target_arch = "wasm32")))]
+    {
+        let is_dir = fs::symlink_metadata(path).map(|m| m.is_dir()).unwrap_or(false);
+        match windows_recycle_command(path, is_dir)?.output() {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => Err(TrashProblem::Refused(describe_text(&String::from_utf8_lossy(&output.stderr)))),
+            Err(e) => Err(TrashProblem::Refused(describe_text(&e.to_string()))),
+        }
+    }
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    {
+        use objc2_foundation::{NSFileManager, NSURL};
+        // Files operations run on Rust workers, which need their own Cocoa autorelease pool.
+        objc2::rc::autoreleasepool(|_| {
+            // Keep the entry path intact: canonicalizing would trash a symlink's target.
+            // Foundation receives a file URL as data, never executable AppleScript.
+            let path = std::path::absolute(path).map_err(|e| TrashProblem::Refused(describe("move to the trash", path, &e)))?;
+            let url =
+                NSURL::from_file_path(&path).ok_or_else(|| TrashProblem::Refused(format!("could not make a file URL for {}", path.display())))?;
+            NSFileManager::new().trashItemAtURL_resultingItemURL_error(&url, None).map_err(|error| {
+                if trash_error_means_no_trash(&error.domain().to_string(), error.code()) {
+                    TrashProblem::Unavailable
+                } else {
+                    TrashProblem::Refused(format!("move to the trash {}: {error}", path.display()))
+                }
+            })
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        Err(TrashProblem::Unavailable)
+    }
+}
+
+/// Delete one entry for good. A symbolic link is removed as a link: its target is untouched.
+pub fn remove_permanent(path: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path).map_err(|e| describe("delete", path, &e))?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path).map_err(|e| describe("delete", path, &e))
+    } else {
+        fs::remove_file(path).map_err(|e| describe("delete", path, &e))
+    }
+}
+
+/// Is a home trash usable for `path`? (Linux and other freedesktop systems.)
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn home_trash_available() -> bool {
+    match home_trash() {
+        Some((files, info)) => ensure_trash_dirs(&files, &info),
+        None => false,
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn home_trash() -> Option<(PathBuf, PathBuf)> {
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))?;
+    let trash = data.join("Trash");
+    Some((trash.join("files"), trash.join("info")))
+}
+
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn ensure_trash_dirs(files: &Path, info: &Path) -> bool {
+    let made = fs::create_dir_all(files).and_then(|_| fs::create_dir_all(info));
+    made.is_ok() && fs::metadata(files).map(|m| m.is_dir()).unwrap_or(false)
+}
+
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn move_to_home_trash(path: &Path) -> Result<(), String> {
+    let Some((files, info)) = home_trash() else { return Err("there is no home folder".into()) };
+    move_into_trash(&files, &info, path)
+}
+
+/// A trash on the same volume, for a file the home trash should not hold (another disk).
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn volume_trash(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mount = mount_point(path)?;
+    let uid = current_uid()?;
+    for candidate in [mount.join(".Trash").join(uid.to_string()), mount.join(format!(".Trash-{uid}"))] {
+        let (files, info) = (candidate.join("files"), candidate.join("info"));
+        if ensure_trash_dirs(&files, &info) {
+            return Some((files, info));
+        }
+    }
+    None
+}
+
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn move_to_volume_trash(path: &Path, trash: &(PathBuf, PathBuf)) -> Result<(), String> {
+    move_into_trash(&trash.0, &trash.1, path)
+}
+
+/// Put one item in a trash folder. A payload (`files/<name>`) and its record
+/// (`info/<name>.trashinfo`) are one pair. The operation reserves a free record exclusively
+/// first, publishes the payload under the same name with a no-replace primitive, and withdraws
+/// only the record it created when publication does not complete. No existing payload or record
+/// is adopted, truncated or replaced; a name already held by anyone is skipped.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn move_into_trash(files: &Path, info: &Path, original: &Path) -> Result<(), String> {
+    use std::io::Write as _;
+    let name = original.file_name().and_then(OsStr::to_str).unwrap_or("item");
+    let when = utc_now();
+    let body = format!("[Trash Info]\nPath={}\nDeletionDate={when}\n", percent_encode(&original.to_string_lossy()));
+    let mut number = 1u32;
+    for _ in 0..1000 {
+        let target_name = if number == 1 { name.to_string() } else { format!("{name}.{number}") };
+        number = number.saturating_add(1);
+        let target = files.join(&target_name);
+        let info_file = info.join(format!("{target_name}.trashinfo"));
+
+        // The record is ours only when this exclusive create made it. A name another writer
+        // holds, including a dangling link, is not adopted.
+        let mut record = match fs::OpenOptions::new().write(true).create_new(true).open(&info_file) {
+            Ok(record) => record,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(describe("write", &info_file, &e)),
+        };
+        if let Err(e) = record.write_all(body.as_bytes()) {
+            drop(record);
+            let _ = fs::remove_file(&info_file);
+            return Err(describe("write", &info_file, &e));
+        }
+        drop(record);
+
+        let checked: io::Result<()> = {
+            #[cfg(test)]
+            {
+                tests::checkpoint("trash move", original, &target).and_then(|()| tests::checkpoint("trash publish", original, &target))
+            }
+            #[cfg(not(test))]
+            {
+                Ok(())
+            }
+        };
+        let (publication, published) = match checked {
+            Ok(()) => publish_no_replace(original, &target),
+            Err(e) => (Err(e), false),
+        };
+        match publication {
+            Ok(()) => return Ok(()),
+            Err(e) if published => {
+                // The hard-link fallback published a complete payload before its source
+                // unlink failed. Keep the source and record, and name the payload too.
+                return Err(format!(
+                    "the complete payload is at {} with its record at {}, and the source remains at {}: {e}",
+                    target.display(),
+                    info_file.display(),
+                    original.display()
+                ));
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                // The payload name was taken after the record; withdraw our record and leave
+                // the other writer's entry, and try the next pair name.
+                let _ = fs::remove_file(&info_file);
+                continue;
+            }
+            Err(e) if is_cross_device(&e) => {
+                match staged_copy(original, &target, false) {
+                    Ok(()) => {}
+                    Err(failure) if failure.published => {
+                        // The complete copy is public but staging cleanup failed; keep the
+                        // source and record, and report the payload, record and staging tree.
+                        return Err(format!(
+                            "the complete payload is at {} with its record at {}, and the source remains at {}: {}",
+                            target.display(),
+                            info_file.display(),
+                            original.display(),
+                            failure.message
+                        ));
+                    }
+                    Err(failure) => {
+                        // The payload was not published; this attempt's record goes too.
+                        let _ = fs::remove_file(&info_file);
+                        return Err(failure.message);
+                    }
+                }
+                let remove = || -> Result<(), String> {
+                    #[cfg(test)]
+                    tests::checkpoint("trash remove source", original, &target).map_err(|e| describe("remove source", original, &e))?;
+                    remove_permanent(original)
+                };
+                return match remove() {
+                    Ok(()) => Ok(()),
+                    // The complete copy and its record stay; report both so neither is lost.
+                    Err(e) => Err(format!(
+                        "the complete recovery copy is at {} with its record at {}, but the source could not be removed: {e}",
+                        target.display(),
+                        info_file.display()
+                    )),
+                };
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&info_file);
+                return Err(describe("move to the trash", original, &e));
+            }
+        }
+    }
+    Err(format!("could not find a free name in the trash for {}", original.display()))
+}
+
+/// The mount point a path is on: the longest prefix of its ancestors with the same device id.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn mount_point(path: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let mut current = path.canonicalize().ok()?;
+    while !current.is_dir() {
+        if !current.pop() {
+            return None;
+        }
+    }
+    let device = fs::metadata(&current).ok()?.dev();
+    while let Some(parent) = current.parent() {
+        match fs::metadata(parent) {
+            Ok(metadata) if metadata.dev() == device => current = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    Some(current)
+}
+
+/// The user id that names this user's trash on a volume, read from the home folder's owner
+/// (no extra dependency, no system call beyond `stat`).
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn current_uid() -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    let home = std::env::var_os("HOME")?;
+    fs::metadata(home).ok().map(|metadata| metadata.uid())
+}
+
+/// `aaaa-mm-ddThh:mm:ss` in UTC, for a `.trashinfo` file, without a date-time dependency.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn utc_now() -> String {
+    let seconds = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let days = seconds / 86_400;
+    let time = seconds % 86_400;
+    let (year, month, day) = civil_from_days(i64::try_from(days).unwrap_or(0));
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}", time / 3_600, (time % 3_600) / 60, time % 60)
+}
+
+/// Days since the epoch as a calendar date (Howard Hinnant's algorithm, public domain).
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = u32::try_from(doy - (153 * mp + 2) / 5 + 1).unwrap_or(1);
+    let month = u32::try_from(if mp < 10 { mp + 3 } else { mp - 9 }).unwrap_or(1);
+    year += i64::from(month <= 2);
+    (year, month, day)
+}
+
+/// Percent-encode a path for a `.trashinfo` file (UTF-8, with `/` kept, as the spec says).
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn percent_encode(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => encoded.push(char::from(byte)),
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+/// Stable category for a positively identified missing default-program association.
+pub const NO_ASSOCIATED_PROGRAM: &str = "no program is associated with this file";
+
+/// Open a file (or folder) with the system's default program, waiting for the opener to answer.
+/// Some systems start a program that stays attached for its lifetime; call this on a worker so
+/// the window keeps drawing. An answer here is the opener's: a missing association is an error.
+pub fn open_default_waiting(path: &Path) -> Result<(), String> {
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+    {
+        if !has_association(path) {
+            return Err(NO_ASSOCIATED_PROGRAM.into());
+        }
+        wait_for("xdg-open", &[path.as_os_str()])
+    }
+    #[cfg(all(windows, not(target_arch = "wasm32")))]
+    {
+        // `start` returns success even when Windows only shows its own "how do you want to open
+        // this file?" picker. Ask the registry first, so the panel can give the reason and the
+        // folder instead of a picker the application cannot see.
+        if !has_association(path) {
+            return Err(NO_ASSOCIATED_PROGRAM.into());
+        }
+        wait_for("cmd", &[OsStr::new("/C"), OsStr::new("start"), OsStr::new(""), path.as_os_str()])
+    }
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    {
+        wait_for("open", &[path.as_os_str()])
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        Err("this build cannot open files with the system".into())
+    }
+}
+
+/// Open a file (or folder) with the system's default program.
+pub fn open_default(path: &Path) -> Result<(), String> {
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+    {
+        spawn_detached("xdg-open", &[path.as_os_str()])
+    }
+    #[cfg(all(windows, not(target_arch = "wasm32")))]
+    {
+        spawn_detached("cmd", &[OsStr::new("/C"), OsStr::new("start"), OsStr::new(""), path.as_os_str()])
+    }
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    {
+        spawn_detached("open", &[path.as_os_str()])
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        Err("this build cannot open files with the system".into())
+    }
+}
+
+/// Show an entry in the system's file manager, with the entry selected where the platform can.
+pub fn reveal(path: &Path) -> Result<(), String> {
+    #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+    {
+        // The freedesktop file manager interface selects the entry; a plain folder open is the
+        // fallback when no file manager answers.
+        let uri = format!("file://{}", path.to_string_lossy());
+        let shown = std::process::Command::new("dbus-send")
+            .args([
+                "--session",
+                "--dest=org.freedesktop.FileManager1",
+                "--type=method_call",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+                &format!("array:string:{uri}"),
+                "string:",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if shown {
+            return Ok(());
+        }
+        let parent = path.parent().unwrap_or(path);
+        spawn_detached("xdg-open", &[parent.as_os_str()])
+    }
+    #[cfg(all(windows, not(target_arch = "wasm32")))]
+    {
+        spawn_detached("explorer", &[format!("/select,{}", path.display()).as_ref()])
+    }
+    #[cfg(all(target_os = "macos", not(target_arch = "wasm32")))]
+    {
+        spawn_detached("open", &[OsStr::new("-R"), path.as_os_str()])
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = path;
+        Err("this build has no system file manager".into())
+    }
+}
+
+/// Does the system name a program for this file's type? A desktop without `xdg-mime` is given
+/// the benefit of the doubt: `xdg-open` answers for itself then.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn has_association(path: &Path) -> bool {
+    let query = |args: &[&str]| -> Option<String> {
+        let output = std::process::Command::new("xdg-mime").args(args).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+    let Some(mime) = query(&["query", "filetype", &path.to_string_lossy()]) else { return true };
+    if mime.is_empty() {
+        // No MIME answer is not positive evidence of a missing application.
+        return true;
+    }
+    query(&["query", "default", &mime]).is_none_or(|default| !default.is_empty())
+}
+
+/// Does Windows name a program for this file's type? A type may be claimed by the user (the
+/// Explorer `UserChoice`), by a per-user class, or by a machine class whose `open` command is
+/// present. An extension with none of these has no program, and the caller shows the reason.
+#[cfg(all(windows, not(target_arch = "wasm32")))]
+fn has_association(path: &Path) -> bool {
+    let Some(extension) = path.extension().and_then(OsStr::to_str).map(|extension| extension.to_ascii_lowercase()) else { return true };
+    let choice = format!(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.{extension}\UserChoice");
+    if reg_value(&choice, Some("ProgId")).is_some_and(|progid| !progid.is_empty()) {
+        return true;
+    }
+    let progid = reg_value(&format!(r"HKCU\Software\Classes\.{extension}"), None)
+        .filter(|value| !value.is_empty())
+        .or_else(|| reg_value(&format!(r"HKCR\.{extension}"), None).filter(|value| !value.is_empty()));
+    let Some(progid) = progid else { return false };
+    reg_value(&format!(r"HKCR\{progid}\shell\open\command"), None)
+        .or_else(|| reg_value(&format!(r"HKCU\Software\Classes\{progid}\shell\open\command"), None))
+        .is_some_and(|command| !command.is_empty())
+}
+
+/// The default value of a registry key, or one named value, as text; `None` when the key is not
+/// there (an unassociated extension has no key).
+#[cfg(all(windows, not(target_arch = "wasm32")))]
+fn reg_value(key: &str, value: Option<&str>) -> Option<String> {
+    let mut command = std::process::Command::new("reg");
+    command.args(["query", key]);
+    match value {
+        Some(value) => {
+            command.args(["/v", value]);
+        }
+        None => {
+            command.arg("/ve");
+        }
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        for kind in ["REG_EXPAND_SZ", "REG_SZ"] {
+            if let Some(at) = line.find(kind) {
+                return Some(line[at + kind.len()..].trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn wait_for(program: &str, args: &[&OsStr]) -> Result<(), String> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("{program}: {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    log::warn!("system opener {program} failed ({}): {reason}", output.status);
+    // Do not infer "no association" from an empty error, a general failure exit code, or
+    // a status number in an arbitrary filename. Recognize LaunchServices' specific answer.
+    let is_open = Path::new(program).file_name() == Some(OsStr::new("open"));
+    let missing_application =
+        reason.rsplit_once(" (Error Domain=").is_some_and(|(_, detail)| detail.starts_with("NSOSStatusErrorDomain Code=-10814 "));
+    if is_open && reason.starts_with("No application knows how to open URL ") && missing_application {
+        return Err(NO_ASSOCIATED_PROGRAM.into());
+    }
+    Err(if reason.is_empty() { format!("{program}: opener failed ({})", output.status) } else { reason })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_detached(program: &str, args: &[&OsStr]) -> Result<(), String> {
+    let mut command = std::process::Command::new(program);
+    command.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    command.spawn().map(|_| ()).map_err(|e| format!("{program}: {e}"))
+}
+
+fn describe(what: &str, path: &Path, error: &io::Error) -> String {
+    format!("{what} {}: {error}", path.display())
+}
+
+#[cfg(windows)]
+fn describe_text(text: &str) -> String {
+    let text = text.trim();
+    if text.is_empty() { "the system refused the operation".into() } else { text.to_string() }
+}
+
+#[cfg(test)]
+#[path = "files_tests.rs"]
+mod tests;

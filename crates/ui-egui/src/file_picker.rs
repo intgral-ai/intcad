@@ -415,10 +415,12 @@ mod tests {
         h.app.pick_open(|_, _| {});
         let (tx, rx) = std::sync::mpsc::channel();
         h.app.control_rx = Some(rx);
-        let (command, reply) =
-            crate::control::ControlRequest::new("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
-        let (resize, resized) = crate::control::ControlRequest::new("ui.resize", json!({"width":1200,"height":800}));
-        let (home, shown) = crate::control::ControlRequest::new("ui.home", json!({"open":true}));
+        let (command, reply) = crate::control::ControlRequest::trusted_gui(
+            "engine.execute",
+            json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}),
+        );
+        let (resize, resized) = crate::control::ControlRequest::trusted_gui("ui.resize", json!({"width":1200,"height":800}));
+        let (home, shown) = crate::control::ControlRequest::trusted_gui("ui.home", json!({"open":true}));
         tx.send(command).unwrap();
         tx.send(resize).unwrap();
         tx.send(home).unwrap();

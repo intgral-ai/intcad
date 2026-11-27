@@ -14,3 +14,5 @@
 
 [Mastra workflow hosting](mastra-runtime.md) defines the proposed desktop runtime,
 shared AI interfaces, guarded document writes and snapshot-validation contract.
+[Account architecture](account/architecture.md) records the native-only adapter seam, browser
+closure guard and trust boundary.

@@ -61,6 +61,22 @@ class CandidateState(unittest.TestCase):
         self.assertTrue(release_candidate.state(
             "workflow_call", "", "", "", "", "", "")[0])
 
+    def test_a_stable_tag_push_is_the_formal_post_promotion_gate(self):
+        verify, reason = release_candidate.state(
+            "push", "", "", "", "", "", "", ref="refs/tags/v0.1.3")
+        self.assertTrue(verify)
+        self.assertEqual(reason, "stable release tag push")
+        self.assertEqual(release_candidate.context("push"), "release-gate")
+        # Branch pushes, prereleases and malformed tags stay out.
+        for ref in ("refs/heads/main", "refs/tags/v0.1.3-rc.1", "refs/tags/v1.2", "refs/tags/nightly"):
+            with self.subTest(ref=ref):
+                self.assertFalse(release_candidate.state("push", "", "", "", "", "", "", ref=ref)[0])
+
+    def test_a_dispatch_stays_diagnostic_even_when_it_asks_to_be_formal(self):
+        verify, _ = release_candidate.state("workflow_dispatch", "", "", "", "", "", "", ref="refs/tags/v0.1.3")
+        self.assertTrue(verify)
+        self.assertEqual(release_candidate.context("workflow_dispatch"), "release-gate-diagnostic")
+
     def test_manual_run_uses_a_diagnostic_context(self):
         self.assertEqual(release_candidate.context("workflow_dispatch"), "release-gate-diagnostic")
         self.assertEqual(release_candidate.context("pull_request"), "release-gate")

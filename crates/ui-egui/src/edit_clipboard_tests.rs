@@ -57,6 +57,19 @@ fn middle_button(pressed: bool) -> egui::Event {
     egui::Event::PointerButton { pos: egui::pos2(500.0, 500.0), button: egui::PointerButton::Middle, pressed, modifiers: egui::Modifiers::NONE }
 }
 
+/// An opt-in native adapter may retain a file-only clipboard command as empty Paste.
+/// It is not evidence for pasting the CAD clipboard, even when CAD has copied geometry.
+#[test]
+fn empty_native_paste_never_pastes_the_cad_clipboard() {
+    let (mut h, _) = rectangle();
+    assert!(super::copy(&mut h.app));
+    let before = curves(&h);
+    let undo = h.app.session.undo.len();
+    clipboard_frame(&mut h, &egui::Context::default(), vec![egui::Event::Paste(String::new())]);
+    assert_eq!(curves(&h), before);
+    assert_eq!(h.app.session.undo.len(), undo);
+}
+
 #[test]
 fn middle_button_press_and_hold_do_not_paste() {
     let (mut h, _) = rectangle();

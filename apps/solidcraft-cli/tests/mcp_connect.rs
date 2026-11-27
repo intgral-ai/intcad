@@ -39,7 +39,9 @@ fn mcp_connect_serves_before_the_app_runs_and_reaches_it_once_it_does() {
         stdout.read_line(&mut line).unwrap();
         serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line:?}"))
     };
-    let measure = json!({"name": "measure", "arguments": {}});
+    // `running` is a free helper: it exercises transport, discovery and the launch token without
+    // claiming that a reachable app is authenticated authority for a charged tool.
+    let running = json!({"name": "running", "arguments": {}});
     let text = |r: &Value| r["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string();
 
     // The server answers without the app, and its instructions say the app isn't running.
@@ -49,8 +51,8 @@ fn mcp_connect_serves_before_the_app_runs_and_reaches_it_once_it_does() {
     let tools = ask(2, "tools/list", json!({}));
     assert!(tools["result"]["tools"].as_array().is_some_and(|t| !t.is_empty()), "{tools}");
 
-    // A tool call says the app is not running and how to start it.
-    let r = ask(3, "tools/call", measure.clone());
+    // A free helper call says the app is not running and how to start it.
+    let r = ask(3, "tools/call", running.clone());
     assert_eq!(r["result"]["isError"], true, "{r}");
     assert!(text(&r).contains("not running") && text(&r).contains(&format!("intcad --control {port}")), "{r}");
 
@@ -70,13 +72,85 @@ fn mcp_connect_serves_before_the_app_runs_and_reaches_it_once_it_does() {
         };
         writeln!(&stream, "{reply}").unwrap();
     });
-    let r = ask(4, "tools/call", measure);
+    let r = ask(4, "tools/call", running);
     assert_ne!(r["result"]["isError"], true, "{r}");
-    assert!(text(&r).contains("engine.execute"), "{r}");
+    assert!(text(&r).contains("control.running"), "{r}");
     app.join().unwrap();
 
     drop(stdin);
     assert!(child.wait().unwrap().success());
+    std::fs::remove_dir_all(&control_dir).ok();
+}
+
+/// A reachable, token-bearing loopback app is still only transport. A charged bridged tool is
+/// refused before the app receives any request; the free helper already proves the channel works.
+#[test]
+fn bridged_charged_tool_fails_closed_and_the_app_receives_no_dispatch() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let control_dir = std::env::temp_dir().join(format!("solidcraft-mcp-authority-{}-{}", std::process::id(), listener.local_addr().unwrap().port()));
+    std::fs::create_dir_all(&control_dir).unwrap();
+    let token = "0123456789abcdef".repeat(4);
+    std::fs::write(control_dir.join(format!("{}.token", listener.local_addr().unwrap().port())), &token).unwrap();
+    let (counts, received) = std::sync::mpsc::channel();
+    let app = std::thread::spawn(move || {
+        // `try_connect` probes with one connection that sends nothing, then the tool call opens
+        // the real one. Keep the probe's silence out of the dispatch count.
+        let (stream, first) = loop {
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().unwrap()).read_line(&mut line).unwrap();
+            if !line.is_empty() {
+                break (stream, line);
+            }
+        };
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut pending = Some(first);
+        let mut dispatched = 0_usize;
+        loop {
+            let line = match pending.take() {
+                Some(line) => line,
+                None => {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 {
+                        break;
+                    }
+                    line
+                }
+            };
+            let req: Value = serde_json::from_str(&line).unwrap();
+            dispatched = dispatched.saturating_add(1);
+            let result = json!({"method": req["method"]});
+            writeln!(&stream, "{}", json!({"id": req["id"], "ok": true, "result": result})).unwrap();
+        }
+        counts.send(dispatched).unwrap();
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_intcad-cli"))
+        .args(["mcp", "--connect", &addr, "--allow-any-path"])
+        .env("SOLIDCRAFT_CONTROL_DIR", &control_dir)
+        .env_remove("SOLIDCRAFT_CONTROL_TOKEN")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut ask = |id: u64, name: &str| -> Value {
+        writeln!(stdin, "{}", json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": {}}})).unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line:?}"))
+    };
+    let free = ask(1, "running");
+    assert_ne!(free["result"]["isError"], true, "{free}");
+    let charged = ask(2, "measure");
+    assert_eq!(charged["result"]["isError"], true, "{charged}");
+    assert_eq!(charged["result"]["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE", "{charged}");
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    assert_eq!(received.recv().unwrap(), 1, "only the free helper reached the app; the charged call dispatched nothing");
+    app.join().unwrap();
     std::fs::remove_dir_all(&control_dir).ok();
 }
 
@@ -127,12 +201,12 @@ fn mcp_without_arguments_finds_the_running_app() {
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    writeln!(stdin, "{}", json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "measure", "arguments": {}}})).unwrap();
+    writeln!(stdin, "{}", json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "running", "arguments": {}}})).unwrap();
     let mut line = String::new();
     stdout.read_line(&mut line).unwrap();
     let r: Value = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line:?}"));
     assert_ne!(r["result"]["isError"], true, "{r}");
-    assert!(r["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("engine.execute"), "{r}");
+    assert!(r["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("control.running"), "{r}");
     app.join().unwrap();
     drop(stdin);
     assert!(child.wait().unwrap().success());
