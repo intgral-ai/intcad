@@ -1819,14 +1819,15 @@ mod tests {
                 // 300 s after Allow, not after the send.
                 assert!(took >= Duration::from_millis(4800) && took < Duration::from_millis(6400), "{took:?}");
                 let deadline = Instant::now() + Duration::from_secs(20);
-                let body = loop {
-                    let r = solidcraft_mcp::call_tool(&mut bridge, "pending", &json!({}));
-                    let body: Value = serde_json::from_str(r["content"][0]["text"].as_str().unwrap_or("null")).unwrap_or(Value::Null);
-                    if body["done"] == true || Instant::now() > deadline {
-                        break body;
+                // What the `pending` tool reads: the app's `control.pending` (develop keeps
+                // `solidcraft_mcp::call_tool` to the MCP crate's own tests).
+                let status = loop {
+                    let status = bridge.call("control.pending", json!({})).unwrap_or(Value::Null);
+                    if status["done"] == true || Instant::now() > deadline {
+                        break status;
                     }
                 };
-                assert_eq!((&body["done"], &body["result"]), (&json!(true), &json!({"estimated": true})), "{body}");
+                assert_eq!((&status["done"], &status["reply"]["result"]), (&json!(true), &json!({"estimated": true})), "{status}");
                 assert_eq!(sent.load(Ordering::SeqCst), 1);
             });
             static BUILTIN: Running = Running::new();
