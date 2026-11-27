@@ -80,7 +80,14 @@ fn backwards_step_permanently_invalidates_the_clock() {
 #[test]
 fn supported_native_platform_exposes_a_readable_clock() {
     let clock = SuspendClock::default();
-    let first = clock.read();
-    assert!(first.is_some(), "native continuous clock must be available on the supported runner");
-    assert!(clock.read() >= first);
+    let first = clock.read().expect("native continuous clock must be available on the supported runner");
+    let limit = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        let next = clock.read().expect("the native continuous clock must stay available");
+        if next > first {
+            break;
+        }
+        assert!(std::time::Instant::now() < limit, "the native continuous clock must advance");
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
