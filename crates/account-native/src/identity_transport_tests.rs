@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use crate::http::Secret;
 use crate::identity_transport::{
-    IdentityTransport, RefreshHttp, RefreshHttpReply, RefreshTransportError, UreqIdentityTransport, UreqRefreshHttp, parse_retry_after,
+    IdentityTransport, RefreshHttp, RefreshHttpError, RefreshHttpReply, RefreshTransportError, UreqIdentityTransport, UreqRefreshHttp,
+    map_refresh_http_error, parse_retry_after,
 };
 
 const TOKEN_URL: &str = "https://api.workos.com/user_management/authenticate";
@@ -21,7 +22,7 @@ struct PostCall {
 #[derive(Default)]
 struct ScriptState {
     calls: Vec<PostCall>,
-    replies: Vec<Result<RefreshHttpReply, ()>>,
+    replies: Vec<Result<RefreshHttpReply, RefreshHttpError>>,
 }
 
 /// The scripted `RefreshHttp` seam: replies are queued, no network is reachable.
@@ -31,7 +32,7 @@ struct ScriptedRefreshHttp {
 }
 
 impl ScriptedRefreshHttp {
-    fn new(replies: Vec<Result<RefreshHttpReply, ()>>) -> Self {
+    fn new(replies: Vec<Result<RefreshHttpReply, RefreshHttpError>>) -> Self {
         Self { state: Arc::new(Mutex::new(ScriptState { calls: Vec::new(), replies })) }
     }
 
@@ -45,11 +46,11 @@ impl ScriptedRefreshHttp {
 }
 
 impl RefreshHttp for ScriptedRefreshHttp {
-    fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<RefreshHttpReply, ()> {
+    fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<RefreshHttpReply, RefreshHttpError> {
         let mut state = self.state.lock().unwrap();
         state.calls.push(PostCall { url: url.to_owned(), content_type: content_type.to_owned(), body: String::from_utf8(body.to_vec()).unwrap() });
         if state.replies.is_empty() {
-            return Err(());
+            return Err(RefreshHttpError::Transport);
         }
         state.replies.remove(0)
     }
@@ -124,7 +125,7 @@ fn a_scripted_transport_maps_statuses_without_a_network() {
         );
     }
     // A transport failure is transient, never terminal.
-    let transport = UreqIdentityTransport::new(ScriptedRefreshHttp::new(vec![Err(())]));
+    let transport = UreqIdentityTransport::new(ScriptedRefreshHttp::new(vec![Err(RefreshHttpError::Transport)]));
     assert_eq!(
         transport.refresh("client_0123456789", &Secret::new("refresh_SECRET_old")).unwrap_err(),
         RefreshTransportError::Transient { retry_after: None }
@@ -221,4 +222,42 @@ fn malformed_responses_are_protocol() {
         let transport = UreqIdentityTransport::new(ScriptedRefreshHttp::single(reply(200, body)));
         assert_eq!(transport.refresh("client_0123456789", &Secret::new("refresh_SECRET_old")).unwrap_err(), RefreshTransportError::Protocol);
     }
+}
+#[test]
+fn credential_trace_is_suppressed_at_the_sink_until_last_request_finishes() {
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    struct Sink(AtomicUsize);
+    impl log::Log for Sink {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if record.target() == "test-credential-wire" {
+                self.0.fetch_add(1, Relaxed);
+            }
+        }
+        fn flush(&self) {}
+    }
+    static SINK: Sink = Sink(AtomicUsize::new(0));
+    log::set_logger(&SINK).unwrap();
+    log::set_max_level(log::LevelFilter::Trace);
+    let emit = || log::trace!(target: "test-credential-wire", "synthetic-credential");
+    emit();
+    assert_eq!(SINK.0.load(Relaxed), 1);
+    let first = crate::http::SuppressWireTrace::new();
+    let second = crate::http::SuppressWireTrace::new();
+    drop(first);
+    emit();
+    assert_eq!(SINK.0.load(Relaxed), 1);
+    drop(second);
+    emit();
+    assert_eq!(SINK.0.load(Relaxed), 2);
+    log::set_max_level(log::LevelFilter::Off);
+}
+#[test]
+fn native_body_limit_error_is_protocol_not_transient() {
+    let error = map_refresh_http_error(ureq::Error::BodyExceedsLimit(64));
+    assert_eq!(error, RefreshHttpError::BodyTooLarge);
+    let transport = UreqIdentityTransport::new(ScriptedRefreshHttp::new(vec![Err(error)]));
+    assert_eq!(transport.refresh("client", &Secret::new("synthetic")).unwrap_err(), RefreshTransportError::Protocol);
 }

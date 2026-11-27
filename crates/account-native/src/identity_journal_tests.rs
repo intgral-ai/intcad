@@ -282,3 +282,37 @@ fn write_attempt_refuses_a_zero_attempt_id() {
     assert!(matches!(journal.write_attempt(&attempt(0)), Err(JournalError::Corrupt)));
     assert_eq!(journal.read_attempt().unwrap(), None);
 }
+#[test]
+fn oversized_slot_and_sequence_overflow_are_rejected() {
+    let temp = TempRoot::new("oversized-overflow");
+    let journal = temp.journal();
+    let slot = temp.slot("current", 0);
+    journal.write_current_login(&current(7)).unwrap();
+    let original = std::fs::read_to_string(&slot).unwrap();
+    std::fs::write(&slot, original.replacen("\n1\n", &format!("\n{}\n", u64::MAX), 1)).unwrap();
+    assert_eq!(journal.read_current_login().unwrap(), Some(current(7)));
+    assert_eq!(journal.write_current_login(&current(8)), Err(JournalError::Corrupt));
+    std::fs::write(&slot, vec![0; 65_537]).unwrap();
+    assert_eq!(journal.read_current_login(), Err(JournalError::Corrupt));
+}
+
+#[cfg(unix)]
+#[test]
+fn public_and_symlink_slots_are_rejected_and_replacement_does_not_follow_the_link() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let temp = TempRoot::new("hostile");
+    let journal = temp.journal();
+    let slot = temp.slot("current", 0);
+    journal.write_current_login(&current(7)).unwrap();
+    std::fs::set_permissions(&slot, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(journal.read_current_login(), Err(JournalError::Corrupt));
+    std::fs::set_permissions(&slot, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let outside = temp.root.join("outside");
+    std::fs::rename(&slot, &outside).unwrap();
+    let original = std::fs::read(&outside).unwrap();
+    symlink(&outside, &slot).unwrap();
+    assert_eq!(journal.read_current_login(), Err(JournalError::Corrupt));
+    journal.write_current_login(&current(8)).unwrap();
+    assert_eq!(journal.read_current_login().unwrap(), Some(current(8)));
+    assert_eq!(std::fs::read(&outside).unwrap(), original);
+}

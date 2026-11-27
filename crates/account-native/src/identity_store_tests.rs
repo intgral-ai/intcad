@@ -416,10 +416,9 @@ fn a_corrupt_owned_list_cannot_block_commit_revocation() {
         assert!(fake.entry(&key).is_none(), "the current generation is removed: {key}");
     }
     assert!(fake.entry(ACTIVE_KEY).is_none());
-    // The corrupt list itself is removed so a later login can write a fresh one.
-    assert!(fake.entry(OWNED_KEY).is_none());
-    store.store_pending(&record(8, 1)).unwrap();
-    assert_eq!(store.load().unwrap().unwrap().login_generation, 8);
+    // An unenumerable index must not turn into a later false cleanup success.
+    assert!(fake.entry(OWNED_KEY).is_some());
+    assert_eq!(store.delete().unwrap_err(), IdentityStoreError::Unavailable);
 }
 
 #[test]
@@ -526,4 +525,33 @@ fn legacy_provider_keys_are_not_touched() {
     // Every store call targeted an identity key; nothing else was read, written or deleted.
     assert!(fake.take_calls().iter().all(|call| call.key().starts_with("identity/session/")));
     assert!(fake.keys().iter().all(|key| !key.starts_with("identity/")));
+}
+#[test]
+fn failed_staging_rollback_remains_owned_until_cleanup_can_delete_it() {
+    let fake = RecordingStore::default();
+    let mut store = CredentialIdentityStore::new(Box::new(fake.clone()));
+    let old = record(7, 3);
+    store.store_pending(&old).unwrap();
+    let access = access_key(4);
+    fake.fail_set(Some(&meta_key(4)));
+    fake.inner.lock().unwrap().fail_delete = Some(access.clone());
+    assert!(store.store_pending(&record(7, 4)).is_err());
+    assert!(fake.inner.lock().unwrap().entries.contains_key(&access));
+    fake.inner.lock().unwrap().fail_delete = None;
+    store.delete().unwrap();
+    assert!(fake.inner.lock().unwrap().entries.is_empty());
+}
+
+#[test]
+fn failed_logout_cleanup_keeps_owned_index_for_retry() {
+    let fake = RecordingStore::default();
+    let mut store = CredentialIdentityStore::new(Box::new(fake.clone()));
+    store.store_pending(&record(7, 3)).unwrap();
+    fake.inner.lock().unwrap().fail_delete = Some(access_key(3));
+    assert!(store.delete().is_err());
+    assert!(fake.inner.lock().unwrap().entries.contains_key(OWNED_KEY));
+    assert!(store.load().unwrap().is_none());
+    fake.inner.lock().unwrap().fail_delete = None;
+    store.delete().unwrap();
+    assert!(fake.inner.lock().unwrap().entries.is_empty());
 }

@@ -165,6 +165,7 @@ impl Default for UreqDeviceCodeTransport {
 
 impl DeviceCodeTransport for UreqDeviceCodeTransport {
     fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<(u16, Vec<u8>), CredentialError> {
+        let _trace = crate::http::SuppressWireTrace::new();
         let mut response =
             self.agent.post(url).header("Accept", "application/json").header("Content-Type", content_type).send(body).map_err(|_| unavailable())?;
         let status = response.status().as_u16();
@@ -397,10 +398,11 @@ fn optional_uri(value: &Value, field: &str) -> Result<Option<String>, Refusal> {
 }
 
 /// The access-token expiry in Unix seconds: the server's `expires_in` when it is a valid
-/// 1..=3600 seconds lifetime, otherwise the access token's JWT `exp` claim. A response with
-/// neither is refused; a login without a usable lifetime could never be renewed.
+/// 1..=3600 seconds lifetime, or the access token's JWT `exp` claim if the
+/// field is absent. A present but malformed lifetime is a protocol error.
 fn token_expiry_seconds(value: &Value, access_token: &str) -> Result<u64, Refusal> {
-    if let Some(seconds) = value.get("expires_in").and_then(Value::as_u64).filter(|seconds| (1..=3600).contains(seconds)) {
+    if value.get("expires_in").is_some() {
+        let seconds = required_seconds(value, "expires_in")?.as_secs();
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0);
         return Ok(now.saturating_add(seconds));
     }

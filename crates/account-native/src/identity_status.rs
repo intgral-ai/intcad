@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::credentials::ProductExchangeError;
 use crate::http::{MAX_RESPONSE_BYTES, PROTOCOL_VERSION, Secret, Transport, TransportFailure, WireConnection, WireRequest};
-use crate::identity::{SessionVerifier, VerifiedSession, VerifyError};
+use crate::identity::{REQUEST_TIMEOUT, SessionVerifier, VerifiedSession, VerifyError};
 use crate::session_verification::verified_account;
 
 /// Verifies the product account for an access token using the configured status endpoint.
@@ -31,7 +31,8 @@ impl<T: Transport + Send + Sync> SessionVerifier for StatusSessionVerifier<T> {
                 ("Authorization".to_owned(), format!("Bearer {}", access.expose_secret())),
             ],
             None,
-        );
+        )
+        .with_timeout(REQUEST_TIMEOUT);
         let response = self.transport.send(&request).map_err(|error| match error {
             TransportFailure::BodyTooLarge => VerifyError::Protocol,
             _ => VerifyError::Transient,
@@ -40,7 +41,7 @@ impl<T: Transport + Send + Sync> SessionVerifier for StatusSessionVerifier<T> {
             return Err(VerifyError::Protocol);
         }
         match response.status() {
-            408 | 429 | 500..=599 => Err(VerifyError::Transient),
+            408 | 429 | 500..=599 => Err(response.retry_after().map_or(VerifyError::Transient, VerifyError::RetryAfter)),
             200 => {
                 let value = serde_json::from_slice(response.body()).map_err(|_| VerifyError::Protocol)?;
                 if !has_status_shape(&value) {

@@ -18,12 +18,10 @@
 //!
 //! [`read_attempt`]: IdentityJournal::read_attempt
 
-// The renewal flow wires this module in later INT-1527 tasks; today only the tests exercise it.
-#![cfg_attr(not(test), allow(dead_code))]
-
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -34,6 +32,7 @@ const IDENTITY_DIR: &str = "identity";
 const RECORD_VERSION: u32 = 1;
 /// Slots hold small typed records; refuse oversized files before reading them.
 const MAX_SLOT_BYTES: u64 = 64 * 1024;
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// One identity refresh attempt. Non-secret scheduling and backoff state only.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,6 +67,16 @@ pub(crate) struct CurrentLoginRecord {
     pub version: u32,
     pub domain: String,
     pub login_generation: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StatusAttempt {
+    pub domain: String,
+    pub started: u64,
+    pub sends: u8,
+    pub next: u64,
+    pub cooldown_step: u8,
 }
 
 /// The journal could not be used. Messages are static and never quote file contents.
@@ -168,6 +177,14 @@ impl IdentityJournal {
         self.write_newest("current", record)
     }
 
+    pub(crate) fn read_status_attempt(&self) -> Result<Option<StatusAttempt>, JournalError> {
+        self.read_newest("status")
+    }
+
+    pub(crate) fn write_status_attempt(&self, record: &StatusAttempt) -> Result<(), JournalError> {
+        self.write_newest("status", record)
+    }
+
     fn slot_path(&self, stem: &str, index: usize) -> PathBuf {
         self.dir.join(format!("{stem}.{index}"))
     }
@@ -213,16 +230,45 @@ impl IdentityJournal {
             (Some(_), None) => 1,
             _ => 0,
         };
-        let payload = format!("{MAGIC}\n{}\n{}\n{json}", newest.saturating_add(1), sha256_hex(json.as_bytes()));
+        let sequence = newest.checked_add(1).ok_or(JournalError::Corrupt)?;
+        let payload = format!("{MAGIC}\n{sequence}\n{}\n{json}", sha256_hex(json.as_bytes()));
+        if payload.len() as u64 > MAX_SLOT_BYTES {
+            return Err(JournalError::Corrupt);
+        }
         let mut options = OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        options.write(true).create_new(true);
         #[cfg(unix)]
         {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut file = options.open(self.slot_path(stem, target)).map_err(|_| JournalError::Unavailable)?;
-        file.write_all(payload.as_bytes()).and_then(|()| file.sync_all()).map_err(|_| JournalError::Unavailable)
+        // Never truncate a slot in place: it could be a symlink or hard link.
+        let (temporary, mut file) = (0..16)
+            .find_map(|_| {
+                let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+                let temporary = self.dir.join(format!(".slot-{}-{serial}", std::process::id()));
+                match options.open(&temporary) {
+                    Ok(file) => Some(Ok((temporary, file))),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(_) => Some(Err(JournalError::Unavailable)),
+                }
+            })
+            .ok_or(JournalError::Unavailable)??;
+        let result = file.write_all(payload.as_bytes()).and_then(|()| file.sync_all());
+        drop(file);
+        let result = result.and_then(|()| fs::rename(&temporary, self.slot_path(stem, target)));
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result.map_err(|_| JournalError::Unavailable)?;
+        #[cfg(unix)]
+        {
+            File::open(&self.dir).and_then(|dir| dir.sync_all()).map_err(|_| JournalError::Unavailable)?;
+            // The identity directory itself may have been created for this publication.
+            let parent = self.dir.parent().ok_or(JournalError::Unavailable)?;
+            File::open(parent).and_then(|dir| dir.sync_all()).map_err(|_| JournalError::Unavailable)?;
+        }
+        Ok(())
     }
 }
 
@@ -239,14 +285,42 @@ fn read_slot<T: DeserializeOwned>(path: &Path) -> Result<Slot<T>, JournalError> 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Slot::Missing),
         Err(_) => return Err(JournalError::Unavailable),
     };
-    if !metadata.is_file() || metadata.len() > MAX_SLOT_BYTES {
+    if !safe_slot_metadata(&metadata) {
         return Ok(Slot::Invalid);
     }
-    let bytes = fs::read(path).map_err(|_| JournalError::Unavailable)?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use nix::libc::{O_NOFOLLOW, O_NONBLOCK};
+        use std::os::unix::fs::OpenOptionsExt;
+        // Do not follow a racing replacement or wait on a substituted FIFO.
+        options.custom_flags(O_NOFOLLOW | O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|_| JournalError::Unavailable)?;
+    if !safe_slot_metadata(&file.metadata().map_err(|_| JournalError::Unavailable)?) {
+        return Ok(Slot::Invalid);
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_SLOT_BYTES + 1).read_to_end(&mut bytes).map_err(|_| JournalError::Unavailable)?;
+    if bytes.len() as u64 > MAX_SLOT_BYTES {
+        return Ok(Slot::Invalid);
+    }
     Ok(match parse_slot(&bytes) {
         Some((sequence, record)) => Slot::Valid { sequence, record },
         None => Slot::Invalid,
     })
+}
+
+fn safe_slot_metadata(metadata: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return false;
+        }
+    }
+    metadata.is_file() && metadata.len() <= MAX_SLOT_BYTES
 }
 
 /// Parse `magic\nsequence\nsha256-hex\njson`; the checksum covers exactly the JSON bytes.

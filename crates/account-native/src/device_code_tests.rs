@@ -234,14 +234,15 @@ fn a_device_token_response_keeps_the_refresh_token_and_expiry() {
     let (session, _) = session_with_memory();
     let mut flow = DeviceCodeFlow::new(WorkOsPublicClient::new("client_test").unwrap(), transport, session, DeviceCodeMode::Explicit);
     flow.start().unwrap();
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     assert_eq!(flow.poll().unwrap(), DeviceCodePoll::Authorized);
+    let after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
 
     let provider = flow.authorized_provider().unwrap();
     let refresh = provider.refresh().expect("a completed device login keeps its refresh token");
-    assert_eq!(refresh.refresh_token().expose_secret(), "refresh_token_SECRET_000000000000000000000000");
+    assert!(refresh.refresh_token().expose_secret() == "refresh_token_SECRET_000000000000000000000000");
     let expires_at = refresh.expires_at_unix_seconds();
-    assert!((now + 299..=now + 301).contains(&expires_at), "expiry {expires_at} is outside now+299..=now+301 (now {now})");
+    assert!((before + 300..=after + 300).contains(&expires_at));
 
     let shown = format!("{provider:?}");
     assert!(!shown.contains("refresh_token_SECRET"));
@@ -265,7 +266,7 @@ fn a_device_token_response_uses_the_jwt_expiry_when_expires_in_is_absent() {
     let provider = flow.authorized_provider().unwrap();
     let refresh = provider.refresh().expect("the JWT exp fallback still keeps the refresh token");
     assert_eq!(refresh.expires_at_unix_seconds(), 1_700_000_000);
-    assert_eq!(refresh.refresh_token().expose_secret(), "refresh_token_SECRET_000000000000000000000000");
+    assert!(refresh.refresh_token().expose_secret() == "refresh_token_SECRET_000000000000000000000000");
 }
 
 #[test]
@@ -275,7 +276,15 @@ fn a_device_token_response_without_refresh_or_expiry_is_refused() {
     let mut without_expiry = token_body();
     without_expiry.as_object_mut().unwrap().remove("expires_in");
     // The shared access token is opaque, not a JWT, so there is no exp fallback either.
-    for body in [without_refresh, without_expiry] {
+    let mut empty_refresh = token_body();
+    empty_refresh["refresh_token"] = json!("");
+    let invalid_expiries = [json!(0), json!(-1), json!("300"), json!(null)].map(|expiry| {
+        let mut body = token_body();
+        body["expires_in"] = expiry;
+        body["access_token"] = json!("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MDAwMDAwMDB9.c2lnbmF0dXJl");
+        body
+    });
+    for body in [without_refresh, without_expiry, empty_refresh].into_iter().chain(invalid_expiries) {
         let transport = ScriptedDeviceTransport::scripted(vec![(200, device_body()), (200, body)]);
         let (session, _) = session_with_memory();
         let mut flow = DeviceCodeFlow::new(WorkOsPublicClient::new("client_test").unwrap(), transport, session, DeviceCodeMode::Explicit);

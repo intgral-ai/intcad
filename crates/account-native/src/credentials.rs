@@ -204,15 +204,11 @@ impl fmt::Debug for KeyringStore {
 
 impl CredentialStore for KeyringStore {
     fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
-        match self.entry(key)?.get_password() {
-            Ok(secret) => Ok(Some(secret)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err(unavailable()),
-        }
+        get_keyring_value(&self.entry(key)?, key)
     }
 
     fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
-        self.entry(key)?.set_password(secret).map_err(|_| unavailable())
+        set_keyring_value(&self.entry(key)?, key, secret)
     }
 
     fn delete(&mut self, key: &str) -> Result<(), CredentialError> {
@@ -233,6 +229,24 @@ impl CredentialStore for KeyringStore {
             Err(_) => false,
         }
     }
+}
+
+pub(super) fn get_keyring_value(entry: &keyring::Entry, key: &str) -> Result<Option<String>, CredentialError> {
+    let value = if key.starts_with("identity/") {
+        entry.get_secret().and_then(|bytes| String::from_utf8(bytes).map_err(|error| keyring::Error::BadEncoding(error.into_bytes())))
+    } else {
+        entry.get_password()
+    };
+    match value {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err(unavailable()),
+    }
+}
+
+pub(super) fn set_keyring_value(entry: &keyring::Entry, key: &str, secret: &str) -> Result<(), CredentialError> {
+    // Windows password storage encodes UTF-16LE, doubling ASCII token sizes.
+    if key.starts_with("identity/") { entry.set_secret(secret.as_bytes()) } else { entry.set_password(secret) }.map_err(|_| unavailable())
 }
 
 /// A completed provider login. It proves only the WorkOS provider session; it is not an Intcad

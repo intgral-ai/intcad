@@ -21,9 +21,6 @@
 //! `identity/session/active` marker matches the commit and the meta says `pending=false`;
 //! anything else loads as pending. Tokens are redacted from `Debug` and every error message.
 
-// The renewal flow wires this module in later INT-1527 tasks; today only the tests exercise it.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -341,9 +338,10 @@ impl IdentityStore for CredentialIdentityStore {
             self.store.set(COMMIT_KEY, &commit).map_err(|_| IdentityStoreError::Unavailable)
         })();
         if result.is_err() {
-            // Best-effort rollback: remove the torn generation and restore the old owned list.
-            let _ = self.delete_generation(generation);
-            let _ = self.write_owned(&old_owned);
+            // Keep the durable owned list unless every staged key is confirmed gone.
+            if self.delete_generation(generation).is_ok() {
+                let _ = self.write_owned(&old_owned);
+            }
             return result;
         }
         // The new commit is durable. Retire every other generation best-effort; a generation
@@ -389,9 +387,8 @@ impl IdentityStore for CredentialIdentityStore {
         let mut result = Ok(());
         // Read owned best-effort only after revocation. A corrupt list cannot block cleanup of the
         // current generation, but unknown orphan keys may remain, so the cleanup result stays
-        // `Unavailable` even when the commit and the current generation are gone: the caller must
-        // not report a fully confirmed credential cleanup. The corrupt list itself is still
-        // deleted below so a later login can write a fresh one.
+        // `Unavailable` even when the commit and the current generation are gone. Keep
+        // an unenumerable list rather than reporting false success on the next cleanup.
         let mut generations = match self.read_owned() {
             Ok(generations) => generations,
             Err(_) => {
@@ -407,12 +404,14 @@ impl IdentityStore for CredentialIdentityStore {
         {
             generations.push(generation);
         }
+        let mut retained = Vec::new();
         for generation in generations {
             if self.delete_generation(generation).is_err() {
+                retained.push(generation);
                 result = Err(IdentityStoreError::Unavailable);
             }
         }
-        if self.store.delete(OWNED_KEY).is_err() {
+        if retained.is_empty() && result.is_ok() && self.store.delete(OWNED_KEY).is_err() {
             result = Err(IdentityStoreError::Unavailable);
         }
         result

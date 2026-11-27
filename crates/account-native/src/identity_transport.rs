@@ -11,9 +11,6 @@
 //! is the only network adapter; it reuses the device transport's TLS/root-certificate and
 //! no-redirect configuration with a 5-second total/connect timeout and a 64 KiB body cap.
 
-// The renewal flow wires this module in later INT-1527 tasks; today only the tests exercise it.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,7 +84,13 @@ impl fmt::Debug for RefreshHttpReply {
 
 /// The HTTP seam for the refresh exchange. Tests script this; configuration never supplies a URL.
 pub(crate) trait RefreshHttp: Send + Sync {
-    fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<RefreshHttpReply, ()>;
+    fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<RefreshHttpReply, RefreshHttpError>;
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RefreshHttpError {
+    Transport,
+    BodyTooLarge,
 }
 
 /// The documented WorkOS public-client refresh over one [`RefreshHttp`] adapter.
@@ -119,10 +122,10 @@ impl<H: RefreshHttp> IdentityTransport for UreqIdentityTransport<H> {
             .map(|(name, value)| format!("{}={}", form_encode(name), form_encode(value)))
             .collect::<Vec<_>>()
             .join("&");
-        let reply = self
-            .http
-            .post(WORKOS_TOKEN_URL, "application/x-www-form-urlencoded", form.as_bytes())
-            .map_err(|_| RefreshTransportError::Transient { retry_after: None })?;
+        let reply = self.http.post(WORKOS_TOKEN_URL, "application/x-www-form-urlencoded", form.as_bytes()).map_err(|error| match error {
+            RefreshHttpError::Transport => RefreshTransportError::Transient { retry_after: None },
+            RefreshHttpError::BodyTooLarge => RefreshTransportError::Protocol,
+        })?;
         if reply.body.len() > MAX_REFRESH_RESPONSE_BYTES {
             return Err(RefreshTransportError::Protocol);
         }
@@ -194,16 +197,29 @@ impl UreqRefreshHttp {
 }
 
 impl RefreshHttp for UreqRefreshHttp {
-    fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<RefreshHttpReply, ()> {
+    fn post(&self, url: &str, content_type: &str, body: &[u8]) -> Result<RefreshHttpReply, RefreshHttpError> {
         if url != WORKOS_TOKEN_URL {
-            return Err(());
+            return Err(RefreshHttpError::Transport);
         }
-        let mut response =
-            self.agent.post(url).header("Accept", "application/json").header("Content-Type", content_type).send(body).map_err(|_| ())?;
+        let _trace = crate::http::SuppressWireTrace::new();
+        let mut response = self
+            .agent
+            .post(url)
+            .header("Accept", "application/json")
+            .header("Content-Type", content_type)
+            .send(body)
+            .map_err(map_refresh_http_error)?;
         let status = response.status().as_u16();
         let retry_after = response.headers().get("Retry-After").and_then(|value| value.to_str().ok()).and_then(parse_retry_after);
-        let body = response.body_mut().with_config().limit(MAX_REFRESH_RESPONSE_BYTES as u64).read_to_vec().map_err(|_| ())?;
+        let body = response.body_mut().with_config().limit(MAX_REFRESH_RESPONSE_BYTES as u64).read_to_vec().map_err(map_refresh_http_error)?;
         Ok(RefreshHttpReply { status, retry_after, body })
+    }
+}
+
+pub(crate) fn map_refresh_http_error(error: ureq::Error) -> RefreshHttpError {
+    match error {
+        ureq::Error::BodyExceedsLimit(_) => RefreshHttpError::BodyTooLarge,
+        _ => RefreshHttpError::Transport,
     }
 }
 

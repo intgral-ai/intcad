@@ -186,13 +186,19 @@ pub struct WireRequest {
     url: String,
     headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
+    timeout: Option<Duration>,
 }
 
 impl WireRequest {
     /// Build one request from the host composition. New call sites must take the URL from a
     /// validated [`WireConnection`] and must not put a credential in the URL.
     pub(crate) fn new(method: &'static str, url: String, headers: Vec<(String, String)>, body: Option<Vec<u8>>) -> Self {
-        Self { method, url, headers, body }
+        Self { method, url, headers, body, timeout: None }
+    }
+
+    pub(crate) fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
     }
 
     pub fn method(&self) -> &'static str {
@@ -233,11 +239,16 @@ impl fmt::Debug for WireRequest {
 pub struct WireResponse {
     status: u16,
     body: Vec<u8>,
+    retry_after: Option<Duration>,
 }
 
 impl WireResponse {
     pub fn new(status: u16, body: impl Into<Vec<u8>>) -> Self {
-        Self { status, body: body.into() }
+        Self { status, body: body.into(), retry_after: None }
+    }
+
+    pub(crate) fn retry_after(&self) -> Option<Duration> {
+        self.retry_after
     }
 
     pub fn status(&self) -> u16 {
@@ -326,11 +337,45 @@ impl Default for UreqTransport {
     }
 }
 
+/// `ureq-proto` traces raw wire bytes. Suppress trace process-wide for the
+/// lifetime of credential-bearing HTTP exchanges (including body reads).
+/// Overlapping requests share the saved level, without serializing their I/O.
+/// The host should not change the global log level during these exchanges.
+pub(crate) struct SuppressWireTrace;
+
+static WIRE_TRACE: std::sync::Mutex<(usize, log::LevelFilter)> = std::sync::Mutex::new((0, log::LevelFilter::Off));
+
+impl SuppressWireTrace {
+    pub(crate) fn new() -> Self {
+        let mut state = WIRE_TRACE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.0 == 0 {
+            state.1 = log::max_level();
+            log::set_max_level(state.1.min(log::LevelFilter::Debug));
+        }
+        state.0 += 1;
+        Self
+    }
+}
+
+impl Drop for SuppressWireTrace {
+    fn drop(&mut self) {
+        let mut state = WIRE_TRACE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.0 -= 1;
+        if state.0 == 0 {
+            log::set_max_level(state.1);
+        }
+    }
+}
+
 impl Transport for UreqTransport {
     fn send(&self, request: &WireRequest) -> Result<WireResponse, TransportFailure> {
+        let _trace = SuppressWireTrace::new();
         let mut response = match request.method {
             "GET" => {
                 let mut outgoing = self.agent.get(&request.url);
+                if let Some(timeout) = request.timeout {
+                    outgoing = outgoing.config().timeout_global(Some(timeout)).timeout_connect(Some(timeout)).build();
+                }
                 for (name, value) in &request.headers {
                     outgoing = outgoing.header(name, value);
                 }
@@ -348,11 +393,13 @@ impl Transport for UreqTransport {
         }
         .map_err(map_ureq_error)?;
         let status = response.status().as_u16();
+        let retry_after =
+            response.headers().get("Retry-After").and_then(|value| value.to_str().ok()).and_then(crate::identity_transport::parse_retry_after);
         let body = response.body_mut().with_config().limit(MAX_RESPONSE_BYTES as u64).read_to_vec().map_err(|error| match error {
             ureq::Error::BodyExceedsLimit(_) => TransportFailure::BodyTooLarge,
             _ => TransportFailure::Network,
         })?;
-        Ok(WireResponse { status, body })
+        Ok(WireResponse { status, body, retry_after })
     }
 }
 
@@ -717,7 +764,7 @@ impl<T: Transport> HttpAccountService<T> {
         if body.is_some() {
             headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
         }
-        WireRequest { method, url: self.connection.url(path), headers, body }
+        WireRequest::new(method, self.connection.url(path), headers, body)
     }
 
     fn push_auth(&self, request: &mut WireRequest, name: &str, secret: Option<Secret>) -> Result<(), Refusal> {
