@@ -131,6 +131,12 @@ if ($Phase -ne 'package') {
   if ($WithMastraAgent) {
     if ($Arch -ne 'x64') { throw "the built-in agent's folder is built for Windows x64 only; pass -WithMastraAgent:`$false for Windows $Arch" }
     Invoke-Native 'stage the built-in agent' { & (Join-Path $PSScriptRoot '..\mastra\stage-agent.ps1') -Target $Target -Dest (Join-Path $Stage 'mastra-agent') }
+    # The unmodified Microsoft Visual C++ runtime the agent's native modules load, beside node.exe.
+    # The checked-in receipt pins the exact licensed bytes; a missing or different file fails here.
+    Invoke-Native 'stage the Microsoft Visual C++ runtime' {
+      & (Join-Path $PSScriptRoot 'vc-runtime.ps1') -Action Stage -Destination (Join-Path $Stage 'mastra-agent') `
+        -Evidence (Join-Path $TargetDir 'windows-package\vc-runtime')
+    }
     Invoke-Native 'scan the staged package' { node (Join-Path $Root 'packages\mastra-runtime\scripts\agent-package.mjs') scan $Stage }
     # The agent as the packages will carry it, started and answering against stand-ins. On a
     # copy: nothing here keeps a running agent from writing into the folder it runs from.
@@ -158,6 +164,7 @@ Invoke-Native 'wix build' {
     -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
     -culture en-US -loc (Join-Path $Root 'assets/platforms/windows/solidcraft.en-us.wxl') `
     -d "Version=$MsiVersion" -d "DisplayVersion=$Version" -d "BinDir=$Stage" -d "IconPath=$Icon" -d "HasMastra=$HasMastra" -d "HasMastraAgent=$HasMastraAgent" `
+    -d "LicenseRtf=$(Join-Path $PSScriptRoot 'INTCAD-LICENSE.rtf')" `
     -o $Msi
 }
 Invoke-Native 'MSI shortcut icon validation (ICE50)' {
@@ -176,6 +183,11 @@ Copy-Item (Join-Path $Stage 'ASSISTANT-THIRD-PARTY-NOTICES.txt') $Portable
 Copy-Item (Join-Path $Stage 'WEB-VIEW-PLATFORM-NOTICES.txt') $Portable
 if (Test-Path (Join-Path $Stage 'mastra')) { Copy-Item -Recurse (Join-Path $Stage 'mastra') $Portable }
 if (Test-Path (Join-Path $Stage 'mastra-agent')) { Copy-Item -Recurse (Join-Path $Stage 'mastra-agent') $Portable }
+if (Test-Path (Join-Path $Portable 'mastra-agent\vc-runtime-receipt.json')) {
+  Invoke-Native 'verify the portable Microsoft runtime' {
+    & (Join-Path $PSScriptRoot 'vc-runtime.ps1') -Action Verify -Destination (Join-Path $Portable 'mastra-agent')
+  }
+}
 $Zip = Join-Path $Dist "intcad-$Version-windows-$Arch-portable.zip"
 Remove-Item -Force $Zip -ErrorAction SilentlyContinue
 Compress-Archive -Path $Portable -DestinationPath $Zip

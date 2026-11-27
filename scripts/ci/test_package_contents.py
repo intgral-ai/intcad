@@ -316,7 +316,29 @@ class AgentContents(unittest.TestCase):
             self.assertTrue(data["agent"]["node"])
             self.assertEqual(data["agent"]["missing"], [])
 
-    def test_a_wrapper_with_a_leading_zero_prerelease_identifier_does_not_count(self):
+    def test_a_windows_agent_without_its_microsoft_runtime_is_incomplete(self):
+        # The Windows x64 agent's native modules load VCRUNTIME140.dll. It ships beside node.exe and
+        # the receipt records the exact licensed bytes; a package that omits either is incomplete.
+        windows = [name.split("usr/lib/intcad/", 1)[-1] for name in self.AGENT]
+        windows = [name + ".exe" if name == "mastra-agent/node" else name for name in windows]
+        with tempfile.TemporaryDirectory() as directory:
+            data = self.report(directory, windows, package_id="release-windows-x64")
+            self.assertEqual(data["agent"]["missing"],
+                             ["mastra-agent/node_modules/@libsql/win32-x64-msvc/VCRUNTIME140.dll",
+                              "mastra-agent/node_modules/@ast-grep/napi-win32-x64-msvc/VCRUNTIME140.dll",
+                              "mastra-agent/vc-runtime-receipt.json",
+                              "mastra-agent/licenses/VC-RUNTIME-NOTICE.txt"])
+        with tempfile.TemporaryDirectory() as directory:
+            data = self.report(directory, [*windows, *package_contents.VC_RUNTIME_REQUIRED],
+                               package_id="release-windows-x64")
+            self.assertEqual(data["agent"]["missing"], [])
+
+    def test_a_linux_agent_does_not_carry_or_require_the_microsoft_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = self.report(directory, ["usr/bin/intcad", *self.AGENT])
+            self.assertEqual(data["agent"]["missing"], [], "a Linux agent has no Microsoft runtime to carry")
+
+
         # The release workflow rejects numeric prerelease identifiers like `01`.
         with tempfile.TemporaryDirectory() as directory:
             names = ["intcad-0.1.3-beta.01-linux-x86_64/" + name for name in self.AGENT]
