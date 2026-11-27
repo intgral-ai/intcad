@@ -35,8 +35,8 @@ enum Pending {
 
 /// Give a cancelled prompt time to finish before disconnecting an unresponsive agent.
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
-/// Time for the built-in guessing runtime to finish cleanup, not merely remove its session ID.
-const PREDICTION_CLOSE_GRACE: Duration = Duration::from_secs(5);
+/// One budget to get a retired session's ID (if still opening) and finish its cleanup.
+const PREDICTION_TEARDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// The ACP prompt frame borrows the text and base64 from the composer. Preflight can therefore
 /// reject an oversized prompt without copying all of its attachments into JSON values.
@@ -194,7 +194,7 @@ pub struct AcpBackend {
     permissions: HashMap<u64, Value>,
     next_key: u64,
     cancelling: Option<(u64, Instant)>,
-    prediction_close_started: Option<Instant>,
+    prediction_teardown_started: Option<Instant>,
     prediction_open_queued: bool,
     prompt_refused: Option<ProcessIoError>,
     exited: bool,
@@ -360,7 +360,7 @@ impl AcpBackend {
             permissions: HashMap::new(),
             next_key: 0,
             cancelling: None,
-            prediction_close_started: None,
+            prediction_teardown_started: None,
             prediction_open_queued: false,
             prompt_refused: None,
             exited: false,
@@ -417,16 +417,20 @@ impl AcpBackend {
         self.built_in && self.lean.is_some()
     }
 
-    fn close_prediction(&mut self, session: String) {
-        if acp::closes_sessions(&self.init) && self.prediction_close_started.is_none() {
-            self.prediction_close_started = Some(Instant::now());
+    fn close_prediction(&mut self, session: String) -> bool {
+        if !acp::closes_sessions(&self.init) {
+            return false;
+        }
+        if !self.pending.values().any(|what| *what == Pending::CloseSession) {
+            self.prediction_teardown_started.get_or_insert_with(Instant::now);
             self.request(Pending::CloseSession, "session/close", json!({"sessionId": session}));
         }
+        true
     }
 
     fn open_queued_prediction(&mut self) {
         if self.prediction_open_queued
-            && self.prediction_close_started.is_none()
+            && self.prediction_teardown_started.is_none()
             && !self.pending.values().any(|what| matches!(what, Pending::SessionNew | Pending::RetiredSessionNew))
         {
             self.prediction_open_queued = false;
@@ -434,7 +438,7 @@ impl AcpBackend {
         }
     }
 
-    fn stop_guesser_after_close_failure(&mut self, why: &str) -> Event {
+    fn stop_guesser_after_teardown_failure(&mut self, why: &str) -> Event {
         log::warn!("next-step suggestions: {why}; stopping the guessing process");
         self.proc.shutdown(false);
         self.finish_exit(vec![crate::i18n::tr("ui.agent_chat_exited").to_string()])
@@ -637,8 +641,12 @@ impl AcpBackend {
                         None => out.push(Event::Error("session/new: no sessionId".into())),
                     },
                     (Pending::RetiredSessionNew, result) => {
-                        if let Some(session) = result.ok().and_then(|v| v.get("sessionId")?.as_str().map(str::to_owned)) {
-                            self.close_prediction(session);
+                        let closing = result
+                            .ok()
+                            .and_then(|v| v.get("sessionId")?.as_str().map(str::to_owned))
+                            .is_some_and(|session| self.close_prediction(session));
+                        if !closing {
+                            self.prediction_teardown_started = None;
                         }
                         self.open_queued_prediction();
                     }
@@ -651,11 +659,11 @@ impl AcpBackend {
                     }
                     // Signed in: try the session again.
                     (Pending::Authenticate, Ok(_)) => self.new_session(),
-                    (Pending::CloseSession, result) if self.prediction_close_started.take().is_some() => {
+                    (Pending::CloseSession, result) if self.prediction_teardown_started.take().is_some() => {
                         if result.is_ok() {
                             self.open_queued_prediction();
                         } else {
-                            out.push(self.stop_guesser_after_close_failure("prediction session close failed"));
+                            out.push(self.stop_guesser_after_teardown_failure("prediction session close failed"));
                         }
                     }
                     (Pending::SetMode | Pending::SetModel | Pending::CloseSession, Ok(_)) => {}
@@ -789,7 +797,7 @@ impl AcpBackend {
         self.session = None;
         self.pending.clear();
         self.cancelling = None;
-        self.prediction_close_started = None;
+        self.prediction_teardown_started = None;
         self.prediction_open_queued = false;
         self.config_pending = None;
         Event::Exited { tail }
@@ -801,8 +809,8 @@ impl AcpBackend {
             return out;
         }
         // A late reply must not reopen the old process after its cleanup deadline.
-        if self.prediction_close_started.is_some_and(|started| now.saturating_duration_since(started) >= PREDICTION_CLOSE_GRACE) {
-            return vec![self.stop_guesser_after_close_failure("prediction session close timed out")];
+        if self.prediction_teardown_started.is_some_and(|started| now.saturating_duration_since(started) >= PREDICTION_TEARDOWN_GRACE) {
+            return vec![self.stop_guesser_after_teardown_failure("prediction session teardown timed out")];
         }
         if let Some(error) = self.prompt_refused.take() {
             let key = match error {
@@ -847,7 +855,7 @@ impl ChatBackend for AcpBackend {
     }
 
     fn poll_wake_after(&self) -> Option<Duration> {
-        self.prediction_close_started.map(|at| PREDICTION_CLOSE_GRACE.saturating_sub(at.elapsed()))
+        self.prediction_teardown_started.map(|at| PREDICTION_TEARDOWN_GRACE.saturating_sub(at.elapsed()))
     }
 
     fn prompt(&mut self, parts: &[PromptPart]) {
@@ -1043,6 +1051,9 @@ impl ChatBackend for AcpBackend {
     }
 
     fn retire_prediction_session(&mut self) {
+        if !self.is_builtin_guesser() {
+            return;
+        }
         self.prediction_open_queued = false;
         if !self.permissions.is_empty() || self.pending.values().any(|what| *what == Pending::Prompt) {
             self.cancel();
@@ -1055,6 +1066,7 @@ impl ChatBackend for AcpBackend {
         for request in self.pending.values_mut() {
             if *request == Pending::SessionNew {
                 *request = Pending::RetiredSessionNew;
+                self.prediction_teardown_started.get_or_insert_with(Instant::now);
             }
         }
         self.config_pending = None;
@@ -1413,7 +1425,7 @@ mod tests {
         let mut backend = opened_prediction();
         let close_id = backend.next_id + 1;
         ChatBackend::new_session(&mut backend);
-        let started = backend.prediction_close_started.unwrap();
+        let started = backend.prediction_teardown_started.unwrap();
         assert!(backend.poll_wake_after().is_some(), "silent cleanup still schedules a poll");
         assert!(backend.poll_at(started + Duration::from_millis(4_999)).is_empty());
         ChatBackend::new_session(&mut backend);
@@ -1426,6 +1438,52 @@ mod tests {
         assert_eq!(backend.next_id, close_id, "no request after or during expired cleanup");
         assert!(backend.pending.is_empty());
         assert!(backend.poll_wake_after().is_none());
+    }
+
+    #[test]
+    fn g86_a_missing_retired_open_reply_disconnects_without_sending_another_request() {
+        let mut backend = prediction_backend();
+        ChatBackend::new_session(&mut backend);
+        let stale = backend.next_id;
+        backend.retire_prediction_session();
+        ChatBackend::new_session(&mut backend);
+        let started = backend.prediction_teardown_started.unwrap();
+        let wake = backend.poll_wake_after();
+        assert_eq!(sent(&backend), [Pending::RetiredSessionNew]);
+        assert!(backend.poll_at(started + Duration::from_secs(4)).is_empty());
+        backend.retire_prediction_session();
+        ChatBackend::new_session(&mut backend);
+        let mut events = backend.poll_at(started + Duration::from_secs(5));
+        assert!(matches!(events.as_slice(), [Event::Exited { .. }]), "the retired open must expire even without a reply: {events:?}");
+        assert!(wake.is_some(), "the frame must wake even without child traffic");
+        assert!(backend.pid().is_none());
+        backend.handle(Incoming::Reply { id: stale, result: Ok(json!({"sessionId":"too late"})) }, &mut events);
+        backend.connections(connections::Request::Setup(Default::default()));
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(events.len(), 1);
+        assert_eq!(backend.next_id, stale, "no close, setup or replacement on the old process");
+        assert!(backend.pending.is_empty());
+        assert!(backend.poll_wake_after().is_none());
+    }
+
+    #[test]
+    fn g86_a_late_open_reply_does_not_extend_the_teardown_deadline() {
+        let mut backend = prediction_backend();
+        ChatBackend::new_session(&mut backend);
+        let stale = backend.next_id;
+        backend.retire_prediction_session();
+        ChatBackend::new_session(&mut backend);
+        let started = backend.prediction_teardown_started.unwrap();
+        assert!(backend.poll_at(started + Duration::from_millis(4_999)).is_empty());
+        let mut events = Vec::new();
+        backend.handle(Incoming::Reply { id: stale, result: Ok(json!({"sessionId":"stale"})) }, &mut events);
+        assert!(events.is_empty(), "a timely old open reply starts cleanup, not a new session");
+        assert_eq!(sent(&backend), [Pending::CloseSession]);
+        assert_eq!(backend.prediction_teardown_started, Some(started), "waiting for close shares the retired-open deadline");
+        let events = backend.poll_at(started + Duration::from_secs(5));
+        assert!(matches!(events.as_slice(), [Event::Exited { .. }]));
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(backend.next_id, stale + 1, "only the close was sent");
     }
 
     #[test]
