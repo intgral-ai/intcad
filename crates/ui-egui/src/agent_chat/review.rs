@@ -776,7 +776,8 @@ pub fn body_changes(before: &ModelState, after: &ModelState) -> Lists {
 /// Start the turn on a copy, when the preference asks for it and the turn may change the design.
 pub(crate) fn begin(app: &mut SolveApp) {
     let chat = &mut app.agent_chat;
-    if !app.preferences.agent_chat_preview || chat.preview.is_some() {
+    let forced = std::mem::take(&mut chat.force_preview);
+    if !(app.preferences.agent_chat_preview || forced) || chat.preview.is_some() {
         return;
     }
     chat.next_preview += 1;
@@ -956,7 +957,8 @@ pub(crate) fn forget(chat: &mut super::AgentChat) {
 pub(crate) fn overlay(app: &mut SolveApp) -> Option<(u64, Arc<ModelState>, Arc<ModelState>)> {
     let revision = app.session.revision;
     let uid = app.session.uid;
-    let preview = app.agent_chat.preview.as_ref()?;
+    // No chat preview: a next-step suggestion's ghost, if one is drawn. Never both.
+    let Some(preview) = app.agent_chat.preview.as_ref() else { return super::ghost::overlay(app) };
     let (changes, after) = preview.shown.clone()?;
     let key = {
         use std::hash::{Hash, Hasher};
