@@ -194,11 +194,20 @@ sketch, a brief, a part to fit around.
   file off. A picture is read off the window thread, so a large one never stops the window: its
   chip shows a spinner meanwhile, and **Send** waits for it. **Send** sends files with no text.
 - **Pictures** (PNG, JPEG, GIF, WebP) go to the agent as they are when they are at most 2048 px
-  on the long side and 3.75 MB (a picture's base64 then stays under 5 MB, so eight still fit in a
-  prompt). Otherwise they are scaled down to 2048 px and re-encoded: as PNG when that fits, as
+  on the long side and 3.75 MB each. Otherwise they are scaled down to 2048 px and re-encoded: as PNG when that fits, as
   JPEG when the picture has no transparency, halved until it fits; a GIF goes as its first frame.
   BMP and TIFF go as PNG. HEIC can't be read: export it as JPEG or PNG first. An agent that takes
   no pictures gets none, and the message says which were left out.
+- **PDFs** up to 12 MiB go as documents to an agent that takes them; to any other, and when larger,
+  the message names the file and where it is. The built-in agent takes pictures and PDFs and hands
+  them to its model. DeepSeek and xAI plan sign-in do not take PDFs. The selected model must
+  be able to read the attachments in the message and in the chat history. If it cannot, choose
+  a compatible model, remove the new attachments, or start a new chat if the files are in its history.
+- **Total message size.** The built-in agent accepts up to 18 MiB per encoded message, including
+  text, attached files, and protocol overhead. One 12 MiB PDF fits alongside ordinary text, but
+  several large files may not. Other ACP agents keep the existing 8 MiB transport limit and their
+  own attachment capabilities. An oversized message is not sent, and the agent stays connected;
+  try a smaller message or fewer attachments.
 - **Text files** (UTF-8, up to 256 KB: Markdown, plain text, JSON, CSV, YAML, TOML, XML, SVG…)
   go in the message's text, whole as far as the message's 100,000-character cap allows: past it
   a file is cut (and says how much is missing) or named only.

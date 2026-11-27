@@ -346,6 +346,8 @@ pub enum TurnKind {
     Network,
     /// This connection may not use that model.
     Model,
+    /// The model cannot read the message's pictures or documents (INT-1513).
+    Attachments,
     /// Anything else: shown in the agent's own words, as any agent's error is.
     Other,
 }
@@ -359,6 +361,7 @@ impl TurnKind {
             TurnKind::Rate => "rate",
             TurnKind::Network => "network",
             TurnKind::Model => "model",
+            TurnKind::Attachments => "attachments",
             TurnKind::Other => "other",
         }
     }
@@ -371,6 +374,7 @@ impl TurnKind {
             TurnKind::Rate => "ui.agent_chat_problem_rate",
             TurnKind::Network => "ui.agent_chat_problem_network",
             TurnKind::Model => "ui.agent_chat_problem_model",
+            TurnKind::Attachments => "ui.agent_chat_problem_attachments",
             TurnKind::Other => return None,
         })
     }
@@ -411,6 +415,7 @@ impl TurnProblem {
             "rate" => TurnKind::Rate,
             "network" => TurnKind::Network,
             "model" => TurnKind::Model,
+            "attachments" => TurnKind::Attachments,
             _ => TurnKind::Other,
         };
         Some(TurnProblem { kind, prefix: text(told, "prefix").unwrap_or_default() })
@@ -1288,7 +1293,7 @@ mod tests {
         }
         assert_eq!(TurnProblem::parse(None), None);
         assert!(TurnKind::Other.sentence().is_none());
-        for kind in [TurnKind::Auth, TurnKind::Key, TurnKind::Quota, TurnKind::Rate, TurnKind::Network, TurnKind::Model] {
+        for kind in [TurnKind::Auth, TurnKind::Key, TurnKind::Quota, TurnKind::Rate, TurnKind::Network, TurnKind::Model, TurnKind::Attachments] {
             let sentence = kind.sentence().expect("a sentence of the app's own");
             assert!(!tr(sentence).starts_with("ui."), "{sentence} is in the catalog");
         }

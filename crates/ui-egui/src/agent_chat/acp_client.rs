@@ -8,13 +8,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
+use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
 use solidcraft_engine::{DocumentStamp, entitlement::BridgeScopeCheck};
 
 use super::acp::{self, Incoming};
 use super::backend::{ChatBackend, Event, PromptPart, StartContext, TestError};
 use super::connections;
-use super::process::{AgentProcess, FromAgent};
+use super::process::{AgentProcess, FromAgent, ProcessIoError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pending {
@@ -31,6 +32,59 @@ enum Pending {
 
 /// Give a cancelled prompt time to finish before disconnecting an unresponsive agent.
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
+
+/// The ACP prompt frame borrows the text and base64 from the composer. Preflight can therefore
+/// reject an oversized prompt without copying all of its attachments into JSON values.
+#[derive(Serialize)]
+struct PromptRequest<'a> {
+    jsonrpc: &'static str,
+    id: u64,
+    method: &'static str,
+    params: PromptParams<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PromptParams<'a> {
+    session_id: &'a str,
+    prompt: PromptBlocks<'a>,
+    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
+    meta: Option<Value>,
+}
+
+struct PromptBlocks<'a>(&'a [PromptPart]);
+
+impl Serialize for PromptBlocks<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Resource<'a> {
+            uri: &'a str,
+            #[serde(rename = "mimeType")]
+            mime: &'a str,
+            blob: &'a str,
+        }
+        #[derive(Serialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum Block<'a> {
+            Text {
+                text: &'a str,
+            },
+            Image {
+                #[serde(rename = "mimeType")]
+                mime: &'a str,
+                data: &'a str,
+            },
+            Resource {
+                resource: Resource<'a>,
+            },
+        }
+        serializer.collect_seq(self.0.iter().map(|part| match part {
+            PromptPart::Text(text) => Block::Text { text },
+            PromptPart::Image { mime, base64 } => Block::Image { mime, data: base64 },
+            PromptPart::Document { uri, mime, base64, .. } => Block::Resource { resource: Resource { uri, mime, blob: base64 } },
+        }))
+    }
+}
 
 /// Variables the agent doesn't inherit: a control token set for the app's own `--control` port
 /// would otherwise reach the agent and outrank the chat endpoint's own token file.
@@ -130,6 +184,7 @@ pub struct AcpBackend {
     permissions: HashMap<u64, Value>,
     next_key: u64,
     cancelling: Option<(u64, Instant)>,
+    prompt_refused: Option<ProcessIoError>,
     exited: bool,
     config_pending: Option<(u64, String)>,
     modern_config: bool,
@@ -156,9 +211,7 @@ impl AcpBackend {
     /// Mastra's usage reporting is switched off for it ([`TELEMETRY_OFF_ENV`]).
     pub fn start_builtin(argv: &[String], ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
         let env = [(DATA_DIR_ENV, data.as_os_str()), (TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1"))];
-        let mut backend = AcpBackend::start_with_env(argv, ctx, &env)?;
-        backend.built_in = true;
-        Ok(backend)
+        Self::spawn(argv, ctx, &env, ENV_REMOVE, true)
     }
 
     pub(super) fn start_packaged(argv: &[String], mut ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
@@ -173,8 +226,7 @@ impl AcpBackend {
             program.to_str().ok_or_else(|| "The packaged Agent's Node path is not valid text".to_string())?.to_string(),
             entry.to_str().ok_or_else(|| "The packaged Agent's entry path is not valid text".to_string())?.to_string(),
         ];
-        let mut backend = Self::spawn(&argv, ctx, &env, PACKAGED_ENV_REMOVE)?;
-        backend.built_in = true;
+        let mut backend = Self::spawn(&argv, ctx, &env, PACKAGED_ENV_REMOVE, true)?;
         backend.cad = Some(PackagedCad {
             tools,
             wake,
@@ -221,16 +273,12 @@ impl AcpBackend {
 
     /// Start `argv` and say hello (`initialize`); the session follows when the agent answers.
     pub fn start(argv: &[String], ctx: StartContext) -> Result<AcpBackend, String> {
-        AcpBackend::start_with_env(argv, ctx, &[])
+        Self::spawn(argv, ctx, &[], ENV_REMOVE, false)
     }
 
-    fn start_with_env(argv: &[String], ctx: StartContext, env: &[(&str, &std::ffi::OsStr)]) -> Result<AcpBackend, String> {
-        Self::spawn(argv, ctx, env, ENV_REMOVE)
-    }
-
-    fn spawn(argv: &[String], ctx: StartContext, env: &[(&str, &std::ffi::OsStr)], remove: &[&str]) -> Result<AcpBackend, String> {
+    fn spawn(argv: &[String], ctx: StartContext, env: &[(&str, &std::ffi::OsStr)], remove: &[&str], built_in: bool) -> Result<AcpBackend, String> {
         let wake = ctx.wake;
-        let proc = AgentProcess::spawn_with_env(argv, &ctx.cwd, remove, env, wake)?;
+        let proc = AgentProcess::spawn_with_env(argv, &ctx.cwd, remove, env, built_in, wake)?;
         // An agent inside WSL is told the same folder and bridge as WSL shows them (#5546).
         let (cwd, bridge) =
             if acp::runs_in_wsl(argv) { (acp::wsl_path(&ctx.cwd), ctx.bridge.as_ref().map(acp::McpBridge::in_wsl)) } else { (ctx.cwd, ctx.bridge) };
@@ -250,10 +298,11 @@ impl AcpBackend {
             permissions: HashMap::new(),
             next_key: 0,
             cancelling: None,
+            prompt_refused: None,
             exited: false,
             config_pending: None,
             modern_config: false,
-            built_in: false,
+            built_in,
             initialized: false,
             setup: None,
             project: None,
@@ -577,6 +626,15 @@ impl AcpBackend {
         if self.exited {
             return out;
         }
+        if let Some(error) = self.prompt_refused.take() {
+            let key = match error {
+                ProcessIoError::OversizedFrame => "ui.agent_chat_prompt_too_large",
+                ProcessIoError::ResourceExhausted => "ui.agent_chat_prompt_send_full",
+                _ => "ui.agent_chat_prompt_send_failed",
+            };
+            out.push(Event::TurnEnded { reason: "error".into() });
+            out.push(Event::Error(crate::i18n::tr(key).to_string()));
+        }
         for _ in 0..512 {
             match self.proc.from_agent.try_recv() {
                 Ok(FromAgent::Line(l)) => {
@@ -609,15 +667,33 @@ impl ChatBackend for AcpBackend {
 
     fn prompt(&mut self, parts: &[PromptPart]) {
         if let Some(s) = self.session.clone() {
-            let mut params = acp::prompt_params(&s, parts);
+            let prompt = self.next_id + 1;
+            let request = PromptRequest {
+                jsonrpc: "2.0",
+                id: prompt,
+                method: "session/prompt",
+                params: PromptParams {
+                    session_id: &s,
+                    prompt: PromptBlocks(parts),
+                    meta: self.cad.is_some().then(|| json!({"intcad": {"cadTurn": prompt.to_string()}})),
+                },
+            };
+            if let Err(error) = self.proc.send_prompt(&request) {
+                self.revoke_cad();
+                if let Some(cad) = &mut self.cad {
+                    cad.last_effect = false;
+                }
+                self.prompt_refused = Some(error);
+                return;
+            }
+            self.next_id = prompt;
+            self.pending.insert(prompt, Pending::Prompt);
             if let Some(cad) = &mut self.cad {
                 let active = cad.next_active.take();
                 let check = cad.next_check.take();
                 cad.retire();
                 // Any effect of the turn that just ended was read by the panel already.
                 cad.last_effect = false;
-                let prompt = self.next_id + 1;
-                params["_meta"]["intcad"]["cadTurn"] = json!(prompt.to_string());
                 if let (Some(active), Some(document)) = (active, &cad.document) {
                     cad.turn = Some(CadTurn {
                         prompt,
@@ -630,7 +706,6 @@ impl ChatBackend for AcpBackend {
                     });
                 }
             }
-            self.request(Pending::Prompt, "session/prompt", params);
         }
     }
 
@@ -819,6 +894,54 @@ mod tests {
         backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut events);
         backend.handle(Incoming::Reply { id: 2, result: Ok(json!({"sessionId":"s1"})) }, &mut events);
         Ok(backend)
+    }
+
+    #[test]
+    fn builtin_acp_delivers_a_full_pdf_and_recovers_after_multiple_oversized_pictures() {
+        // Check the real child's wire (counts bytes and answers the exact request id). Keep stdout
+        // small: only the desktop-to-agent direction gets the built-in prompt allowance.
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let peer = r#"/"method":"session\/prompt"/ {
+            match($0, /"id":[0-9]+/); id = substr($0, RSTART + 5, RLENGTH - 5);
+            printf "{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"stopReason\":\"end_turn\",\"bytes\":%d}}\n", id, length($0) + 1; fflush();
+        }"#;
+        let mut backend = AcpBackend::spawn(&["awk".into(), peer.into()], ctx, &[("LC_ALL", std::ffi::OsStr::new("C"))], ENV_REMOVE, true).unwrap();
+        let mut events = Vec::new();
+        backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentInfo":{"name":"fake"}})) }, &mut events);
+        AcpBackend::new_session(&mut backend);
+        backend.handle(Incoming::Reply { id: 2, result: Ok(json!({"sessionId":"s1"})) }, &mut events);
+        let receive = |backend: &mut AcpBackend| {
+            let Ok(FromAgent::Line(line)) = backend.proc.from_agent.recv_timeout(Duration::from_secs(10)) else {
+                panic!("peer did not see a prompt")
+            };
+            let value: Value = serde_json::from_str(&line).unwrap();
+            let mut events = Vec::new();
+            backend.handle(acp::parse_builtin(&line).unwrap(), &mut events);
+            assert_eq!(events, [Event::TurnEnded { reason: String::new() }]);
+            value["result"]["bytes"].as_u64().unwrap()
+        };
+
+        backend.prompt(&[
+            PromptPart::Text("Read this PDF, please.".into()),
+            PromptPart::Document {
+                name: "file.pdf".into(),
+                uri: "file:///file.pdf".into(),
+                mime: "application/pdf".into(),
+                base64: "AAAA".repeat(4 << 20), // 12 MiB decoded
+            },
+        ]);
+        assert!(receive(&mut backend) > 16 << 20);
+        let pictures = (0..4).map(|_| PromptPart::Image { mime: "image/jpeg".into(), base64: "A".repeat(5_000_000) }).collect::<Vec<_>>();
+        backend.prompt(&pictures);
+        assert!(matches!(
+            backend.poll().as_slice(),
+            [Event::TurnEnded { reason }, Event::Error(notice)]
+                if reason == "error" && notice == crate::i18n::tr("ui.agent_chat_prompt_too_large")
+        ));
+        assert!(!backend.pending.values().any(|p| *p == Pending::Prompt));
+        backend.prompt(&[PromptPart::Text("Words only".into())]);
+        assert!(receive(&mut backend) < 512);
+        backend.shutdown(true);
     }
 
     #[test]
@@ -1141,6 +1264,7 @@ mod tests {
             ("rate", TurnKind::Rate),
             ("network", TurnKind::Network),
             ("model", TurnKind::Model),
+            ("attachments", TurnKind::Attachments),
         ];
         for (word, kind) in kinds {
             let mut backend = builtin_backend(true).unwrap();
@@ -1177,6 +1301,28 @@ mod tests {
         assert!(matches!(events.as_slice(), [Event::TurnEnded { reason }, Event::AuthRequired { .. }] if reason == "auth"), "{events:?}");
         other.shutdown(true);
         backend.shutdown(true);
+    }
+
+    /// INT-1513, on the wire: the built-in agent's `initialize` answer as it is now (it takes
+    /// pictures and documents) lets the panel send them with a message; its earlier answer did not.
+    #[test]
+    fn the_built_in_agent_says_it_takes_pictures_and_documents() {
+        let capabilities = json!({"loadSession": false, "mcpCapabilities": {"http": true, "sse": false}});
+        let mut now = capabilities.clone();
+        now["promptCapabilities"] = json!({"image": true, "embeddedContext": true});
+        for (answer, takes) in [(now, true), (capabilities, false)] {
+            let mut backend = builtin_backend(false).unwrap();
+            let mut events = Vec::new();
+            backend.handle(
+                Incoming::Reply { id: 1, result: Ok(json!({"agentInfo": {"name": "mastracode"}, "agentCapabilities": answer})) },
+                &mut events,
+            );
+            ChatBackend::new_session(&mut backend);
+            backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId": "s1"})) }, &mut events);
+            assert!(events.contains(&Event::Documents(takes)), "{events:?}");
+            assert!(events.iter().any(|event| matches!(event, Event::Ready { images, .. } if *images == takes)), "{events:?}");
+            backend.shutdown(true);
+        }
     }
 
     /// Forgetting the session stops what the agent still sends for it from being taken in; the

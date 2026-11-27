@@ -68,6 +68,24 @@ the [UIA helper](../../../../scripts/e2e/windows_assistant_uia.py) can locate th
 Close button. Verify that the panel disappears and returns on reopening. For agent or tool
 changes, verify which agent ran, the visible turn or tool result and the resulting design state.
 
+### Built-in attachment transport and Stop
+
+Use a disposable project and a loopback model stub, with no provider keys or plan sign-ins.
+In the native Assistant, send a synthetic 12 MiB PDF with one sentence. Check that the provider
+stub receives the full PDF. Send several pictures whose combined encoded message exceeds the
+[transport limit](../../../../docs/agent-chat.md): expect a size notice and no provider call.
+Send text alone and verify that the same session answers. After a successful picture turn, switch
+to a text-only model fixture; verify that a text follow-up is refused without a provider call, then
+switch back or open a new chat and verify recovery. Press Stop with a turn held before submission;
+verify cancellation and that unblocking the fixture does not send the cancelled message.
+
+For focused checks before the native journey, run the `acp_prompt_` and `builtin_acp_delivers`
+Rust tests in `solidcraft-ui-egui`, and `connections.test.ts` in `packages/mastra-runtime`. Run
+[`agent-smoke.mjs`](../../../../packages/mastra-runtime/scripts/agent-smoke.mjs) against the pinned
+SDK with `--only "I1 a picture"`, `--only "packaged ACP"`, and `--only "a turn cancelled"`.
+The packaged case checks that an attachment and the private CAD callback reach their respective
+destinations on the same turn. These focused checks do not replace the native Assistant journey.
+
 ## Gotchas
 
 The app screenshot can omit the child WebView. Use native window capture for page evidence.

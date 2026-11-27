@@ -6,6 +6,8 @@
 // `Base` is Mastra Code's `MastraCodeAcpAgent`. It is passed in so this file imports nothing of
 // Mastra's and the tests can stand in for it.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import { METHODS } from './connections.mjs';
 import { classifyFailure } from './problems.mjs';
 import { isChatModel, newestFirst, orderModelOptions } from './models.mjs';
@@ -18,15 +20,53 @@ const INTERNAL = -32603;
 const BUSY = -32000;
 
 /**
+ * A message's pictures and documents (PDFs), apart from the rest. Mastra Code's ACP agent reads text
+ * and text documents and refuses the turn on a picture or a binary document, while its session
+ * sends files with a message (`sendMessage({ content, files })`, as its own terminal sends a pasted
+ * picture). So these go as files: `{ data: base64, mediaType, filename? }`.
+ */
+export function filesOf(blocks) {
+  const rest = [];
+  const files = [];
+  for (const block of blocks ?? []) {
+    if (block?.type === 'image' && typeof block.data === 'string') files.push({ data: block.data, mediaType: block.mimeType });
+    else if (block?.type === 'resource' && typeof block.resource?.blob === 'string') {
+      const { blob, mimeType, uri } = block.resource;
+      files.push({ data: blob, mediaType: mimeType ?? 'application/octet-stream', filename: nameOf(uri) });
+    } else rest.push(block);
+  }
+  return { rest, files };
+}
+
+/** The file name at the end of a `file:` address, or undefined. */
+function nameOf(uri) {
+  const last = String(uri ?? '').split('/').pop();
+  try {
+    return decodeURIComponent(last) || undefined;
+  } catch {
+    return last || undefined;
+  }
+}
+
+/** The files of the turn `prompt` is sending, for the one message of that turn (see `newSession`). */
+const turnFiles = new AsyncLocalStorage();
+
+/**
  * @param Base            Mastra Code's ACP agent class
  * @param RequestError    ACP's error class (`new RequestError(code, message, data)`)
  * @param connections     the Connections of this process
  * @param dates           () => Map of release dates by model id; dates learned from Mastra's catalog are added to it
  * @param reloadSignIns   () => makes Mastra read its sign-in file again
+ * @param takesAttachments (model id, files) => false (possibly async) when the model cannot read those files
+ * @param isNotAdmitted    pinned SDK predicate for a startup cancellation before signal admission
  */
-export function intcadAgent({ Base, RequestError, connections, dates, reloadSignIns, cad }) {
+export function intcadAgent({
+  Base, RequestError, connections, dates, reloadSignIns, cad,
+  takesAttachments = () => undefined, isNotAdmitted = () => false,
+}) {
   return class IntcadAgent extends Base {
     #gate;
+    #prompts = new Map();
 
     /**
      * The app's `execute` with a command that only reads runs without a card (reads.mjs), and in a
@@ -40,10 +80,19 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       this.#gate = gate;
     }
 
-    /** The sign-ins are offered on the Connections page, through the methods below, not as ACP sign-in methods. */
+    /**
+     * The sign-ins are offered on the Connections page, through the methods below, not as ACP
+     * sign-in methods. Pictures and documents are taken (`prompt`): the app sends them only to an
+     * agent that says so.
+     */
     async initialize(request) {
       const response = await super.initialize(request);
-      return { ...response, authMethods: [] };
+      const capabilities = response.agentCapabilities ?? {};
+      return {
+        ...response,
+        agentCapabilities: { ...capabilities, promptCapabilities: { ...capabilities.promptCapabilities, image: true, embeddedContext: true } },
+        authMethods: [],
+      };
     }
 
     configOptions(entry) {
@@ -88,6 +137,61 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       // model reads in place of Mastra's "not approved by the user". Without a way to give the
       // reason, nothing is held: a bare decline would read as the user's refusal.
       const session = entry.session;
+      // The files of a turn (`prompt`) go with the first message that turn sends, which is Mastra
+      // Code's own `sendMessage` of the user's words, and with no other: a turn cancelled before
+      // it sends leaves nothing for the next one.
+      if (typeof session?.sendMessage === 'function') {
+        // Keep only MIME types, not a second copy of the session's files. The SDK can replay a
+        // submitted attachment from its history, including after an interrupted answer.
+        const history = new Set();
+        const send = session.sendMessage.bind(session);
+        session.sendMessage = async input => {
+          const turn = turnFiles.getStore();
+          if (turn?.entry !== entry) return send(input);
+          const { signal, sessionId, files } = turn;
+          signal.throwIfAborted();
+          if (turn.submitted) return send(input);
+          // The SDK queues model selection and prompts together. Check only now, when a
+          // preceding selection has run; if refresh yields, read the model again afterwards.
+          let model;
+          let usable;
+          let supported;
+          const types = Array.from(new Set([...history, ...files.map(file => file.mediaType)]), mediaType => ({ mediaType }));
+          do {
+            signal.throwIfAborted();
+            model = session.model.get() ?? '';
+            usable = !entry.usable?.length || entry.usable.includes(model) ||
+              await this.#usableNow(sessionId, entry, model, signal);
+            signal.throwIfAborted();
+            if (model !== (session.model.get() ?? '')) continue;
+            supported = usable && types.length ? takesAttachments(model, types) : undefined;
+            if (supported?.then) supported = await beforeAbort(signal, () => supported);
+          } while (model !== (session.model.get() ?? ''));
+          signal.throwIfAborted();
+          turn.model = model;
+          if (!usable) {
+            throw new RequestError(INTERNAL, `no connection serves ${model}`, { intcad: { kind: 'model', prefix: connections.prefixOf(model, { known: true }) } });
+          }
+          if (supported === false) {
+            throw new RequestError(INTERNAL, `${model} cannot read the pictures or documents in this chat`, { intcad: { kind: 'attachments', prefix: connections.prefixOf(model) } });
+          }
+          this.#gate.prompted(sessionId);
+          turn.submitted = true;
+          turn.files = [];
+          let mayBeRetained = true;
+          try {
+            return await send(files.length ? { ...input, files } : input);
+          } catch (error) {
+            // The pinned Session raises this before agent.sendSignal, including when Stop
+            // changes its abort generation during thread/subscription setup. Other outcomes
+            // cannot prove non-admission, so keep their MIME types conservatively.
+            mayBeRetained = !isNotAdmitted(error);
+            throw error;
+          } finally {
+            if (mayBeRetained) for (const file of files) history.add(file.mediaType);
+          }
+        };
+      }
       if (entry.project && typeof session?.respondToToolApproval === 'function') {
         const respond = session.respondToToolApproval.bind(session);
         const gate = this.#gate;
@@ -133,8 +237,9 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
      * its model and the user picks: the newest model may be one that is paid for by use, and nobody
      * chose it.
      */
-    async #settle(entry, move) {
+    async #settle(entry, move, signal) {
       const catalog = await entry.controller.listAvailableModels();
+      if (signal?.aborted) return;
       // Mastra's live catalog knows models that came out after the registry file it ships with.
       let learned = false;
       for (const model of catalog) {
@@ -157,15 +262,19 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
      * worked out once more: whether the model can be used now. If it can, the app is told the new
      * list. A list that cannot be worked out leaves the turn refused as before.
      */
-    async #usableNow(sessionId, entry, model) {
+    async #usableNow(sessionId, entry, model, signal) {
+      return beforeAbort(signal, () => this.#refreshForPrompt(sessionId, entry, model, signal));
+    }
+
+    async #refreshForPrompt(sessionId, entry, model, signal) {
       try {
         entry.controller.invalidateAvailableModelsCache?.();
-        await this.#settle(entry, false);
+        await this.#settle(entry, false, signal);
       } catch (error) {
         process.stderr.write(`[intcad] could not check the models of a session again: ${error}\n`);
         return false;
       }
-      if (!entry.usable?.includes(model)) return false;
+      if (signal.aborted || !entry.usable?.includes(model)) return false;
       try {
         await this.connection.sessionUpdate({ sessionId, update: { sessionUpdate: 'config_option_update', configOptions: this.configOptions(entry) } });
       } catch (error) {
@@ -175,27 +284,54 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       return true;
     }
 
-    /** A turn that fails says why in a word the Assistant has a sentence for, and for which provider. */
+    /**
+     * A turn that fails says why in a word the Assistant has a sentence for, and for which provider.
+     * Its pictures and documents go to the model as files (`filesOf`).
+     */
     async prompt(request) {
-      const entry = this.sessions.get(request.sessionId);
-      // A session is not moved off a model nothing serves by itself (see #settle), so a turn can be
-      // asked for on one. No provider is asked: the Assistant says to pick another model.
-      const using = entry?.session.model.get() ?? '';
-      if (entry?.usable?.length && !entry.usable.includes(using) && !(await this.#usableNow(request.sessionId, entry, using))) {
-        throw new RequestError(INTERNAL, `no connection serves ${using}`, { intcad: { kind: 'model', prefix: connections.prefixOf(using, { known: true }) } });
-      }
-      this.#gate.prompted(request.sessionId);
+      const { sessionId } = request;
+      const entry = this.sessions.get(sessionId);
+      const controller = new AbortController();
+      const prompts = this.#prompts.get(sessionId) ?? new Set();
+      this.#prompts.set(sessionId, prompts);
+      prompts.add(controller);
+      const { rest, files } = filesOf(request.prompt);
+      const turn = { entry, sessionId, files, signal: controller.signal, submitted: false };
+      const early = Promise.withResolvers();
+      const stopped = () => {
+        if (turn.submitted) return;
+        turn.files = [];
+        early.resolve({ stopReason: 'cancelled' });
+      };
+      controller.signal.addEventListener('abort', stopped, { once: true });
       try {
-        return await (cad ? cad.prompt(request, entry, () => super.prompt(request)) : super.prompt(request));
+        const sent = files.length ? { ...request, prompt: rest } : request;
+        // Keep the SDK's queue intact. Its cancel marks its own queued callback before it can
+        // replace entry.state; the per-turn signal independently guards our sendMessage hook.
+        const run = () => Promise.race([super.prompt(sent), early.promise]);
+        return await turnFiles.run(turn, () => (cad ? cad.prompt(sent, entry, run) : run()));
       } catch (error) {
-        const model = entry?.session.model.get() ?? '';
+        if (controller.signal.aborted) return { stopReason: 'cancelled' };
+        if (error instanceof RequestError && error.data?.intcad) throw error;
+        const model = turn.model ?? entry?.session.model.get() ?? '';
         const prefix = connections.prefixOf(model);
         const message = error instanceof Error ? error.message : String(error);
         const kind = classifyFailure(`${message} ${typeof error?.data === 'string' ? error.data : ''}`);
         if (kind === 'auth') connections.expired(prefix);
         const data = error?.data && typeof error.data === 'object' ? { ...error.data } : {};
         throw new RequestError(typeof error?.code === 'number' ? error.code : INTERNAL, message, { ...data, intcad: { kind, prefix } });
+      } finally {
+        controller.signal.removeEventListener('abort', stopped);
+        prompts.delete(controller);
+        if (!prompts.size) this.#prompts.delete(sessionId);
       }
+    }
+
+    async cancel(notification) {
+      // Record Stop even before the SDK's queued callback or this wrapper's refresh completes.
+      // The SDK still owns interruption of an already submitted message and its pending tools.
+      for (const controller of this.#prompts.get(notification.sessionId) ?? []) controller.abort();
+      await super.cancel(notification);
     }
 
     /**
@@ -218,4 +354,18 @@ export function intcadAgent({ Base, RequestError, connections, dates, reloadSign
       }
     }
   };
+}
+
+async function beforeAbort(signal, run) {
+  signal.throwIfAborted();
+  let abort;
+  const cancelled = new Promise((_, reject) => {
+    abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+  });
+  try {
+    return await Promise.race([run(), cancelled]);
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
 }

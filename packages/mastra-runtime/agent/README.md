@@ -109,7 +109,24 @@ is asked; its `prefix` is empty when the model's connection was a custom address
 session starts on a model that something connected can serve.
 
 A `session/prompt` that fails carries
-`data: { "intcad": { "kind": "auth" | "quota" | "rate" | "network" | "model" | "other", "prefix" } }`.
+`data: { "intcad": { "kind": "auth" | "quota" | "rate" | "network" | "model" | "attachments" | "other", "prefix" } }`.
+
+`initialize` declares `promptCapabilities.image` and `embeddedContext`, so the app sends a message's
+pictures (`image` blocks) and PDFs (`resource` blocks with a `blob`). Mastra Code's own prompt handler
+refuses both; `agent.mjs` takes them out and hands them to the session's `sendMessage` as files of
+that turn's message (INT-1513). Just before submission, it checks the effective model and adapter
+against the message and any attachment types the SDK may retain from earlier turns, even on a
+text-only follow-up. A confirmed SDK cancellation before admission leaves no attachment history.
+DeepSeek and xAI's OAuth chat adapter cannot take PDFs. On signed-in Copilot, a model listed by
+the SDK must advertise vision to receive pictures. The SDK reports both explicit `false` and
+omitted upstream vision as `false`. An unlisted model, a failed catalog lookup, or no sign-in
+leaves the decision to the provider. Vision support does not establish PDF support.
+An incompatible turn is refused with kind `attachments` before a provider is asked. Stop also
+applies during model refresh or while a prompt is waiting in the SDK queue.
+
+The desktop preflights the complete encoded prompt, including the JSON-RPC envelope and newline.
+A built-in prompt is limited to 18 MiB, enough for one 12 MiB PDF and ordinary text. It is refused
+locally if it does not fit; agent-to-desktop limits do not change.
 
 ### The note and the project (INT-1473)
 
