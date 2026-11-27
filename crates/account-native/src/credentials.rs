@@ -73,6 +73,14 @@ const LOGIN_COMMIT_DONE: &str = "intcad-login/1";
 const LOGIN_COMMIT_REVOKED: &str = "intcad-login/revoked";
 const KEYRING_PROBE_KEY: &str = "intcad/keyring-probe";
 
+// CredentialStore does not expose a namespace identifier, so serialize login replacement
+// and bearer publication across all independently opened stores in this process.
+static PRODUCT_AUTHORITY_WRITE: Mutex<()> = Mutex::new(());
+
+fn lock_product_authority_write() -> Result<MutexGuard<'static, ()>, CredentialError> {
+    PRODUCT_AUTHORITY_WRITE.lock().map_err(|_| unavailable())
+}
+
 pub(crate) fn unavailable() -> CredentialError {
     CredentialError { code: CredentialErrorCode::Unavailable, message: "the credential store is unavailable".into() }
 }
@@ -574,16 +582,30 @@ impl CredentialSession {
     }
 
     /// Publish an already verified replacement bearer without changing the login's identity.
+    ///
+    /// For a shared keyring, all desktop/CLI writers in other processes must also honor the
+    /// per-user `account-keyring.lock`; the credential-store interface has no cross-process CAS.
     pub fn update_product_session(&self, expected_scope: &AuthenticatedHostScope, token: &Secret) -> Result<(), CredentialError> {
         if token.is_empty() || has_control(token.expose_secret()) {
             return Err(unavailable());
         }
+        let generation = self.authority_generation();
+        let _write = lock_product_authority_write()?;
         let (mut state, epoch) = self.lock_for_handoff().map_err(|_| unavailable())?;
-        if current_scope(&mut state).as_ref() != Some(expected_scope) || !self.epoch_unchanged(epoch) {
+        if generation != epoch {
+            return Err(unavailable());
+        }
+        let commit = read_secret(&state, LOGIN_COMMIT_KEY).ok_or_else(unavailable)?;
+        if current_scope(&mut state).as_ref() != Some(expected_scope)
+            || read_secret(&state, LOGIN_COMMIT_KEY).as_ref() != Some(&commit)
+            || read_session_binding(&state).as_deref() != Some(expected_scope.session_binding().as_str())
+            || !authority_usable(&state)
+            || !self.epoch_unchanged(epoch)
+        {
             return Err(unavailable());
         }
         state.store.set(PRODUCT_SESSION_KEY, token.expose_secret()).map_err(|error| store_failure(&mut state, error))?;
-        if !self.epoch_unchanged(epoch) {
+        if !authority_usable(&state) || !self.epoch_unchanged(epoch) {
             return Err(unavailable());
         }
         Ok(())
@@ -632,11 +654,15 @@ impl CredentialSession {
         {
             return Err(unavailable());
         }
+        let _write = lock_product_authority_write()?;
         let mut state = self.lock()?;
         if state.locked {
             return Err(unavailable());
         }
         let persisted_binding = state.store.get(SESSION_BINDING_KEY).map_err(|_| unavailable())?;
+        if persisted_binding.as_deref().is_some_and(|persisted| persisted != binding) {
+            return Err(unavailable());
+        }
         if persisted_binding.is_none()
             && state.store.get(LOGIN_COMMIT_KEY).map_err(|_| unavailable())?.is_some_and(|marker| marker.starts_with("intcad-login/1/"))
         {
@@ -646,6 +672,9 @@ impl CredentialSession {
         let persisted_account = state.store.get(ACCOUNT_KEY).map_err(|_| unavailable())?;
         let same_bound = state.account.as_deref() == Some(account);
         let same_persisted = persisted_account.as_deref() == Some(account);
+        if persisted_binding.is_some() && !same_persisted {
+            return Err(unavailable());
+        }
         if !(same_bound && same_persisted) {
             // A missing bound account is a restart when the persisted label still matches; that
             // adopt path must not delete the settlement credentials needed for recovery.
@@ -660,7 +689,7 @@ impl CredentialSession {
         if state.installation.as_deref() != Some(installation) {
             set_installation(&mut state, installation)?;
         }
-        if persisted_binding.as_deref() != Some(binding) || read_session_binding(&state).as_deref() != Some(binding) {
+        if persisted_binding.is_none() {
             write_binding(&mut state, SESSION_BINDING_KEY, binding)?;
         }
         Ok(())
@@ -672,6 +701,7 @@ impl CredentialSession {
         if !safe_token(account, MAX_ACCOUNT_BYTES) {
             return Err(unavailable());
         }
+        let _write = lock_product_authority_write()?;
         let mut state = self.lock()?;
         if state.locked {
             return Err(unavailable());
@@ -720,6 +750,7 @@ impl CredentialSession {
     }
 
     fn clear_with_tombstone(&self) -> Result<(), CredentialError> {
+        let _write = lock_product_authority_write()?;
         let mut state = self.lock()?;
         mark_logout(&mut state)?;
         clear_authority(&mut state)
@@ -759,6 +790,7 @@ impl CredentialSession {
         if self.revoked.load(Ordering::SeqCst) {
             return Err(unavailable());
         }
+        let _write = lock_product_authority_write()?;
         let mut state = self.lock()?;
         if !self.epoch_unchanged(epoch) || state.locked {
             return Err(unavailable());
@@ -821,12 +853,14 @@ impl CredentialSession {
             }
         }
 
+        let generation = u128::from(generation);
         let binding = session_binding_digest(
             &account,
             installation.as_ref().map_or("", |installation| installation.installation_id()),
             provider.access_token.expose_secret(),
             generation,
         );
+        let _write = lock_product_authority_write()?;
         let mut state = self.lock()?;
         if !current() {
             return Err(attempt_superseded());
@@ -902,6 +936,10 @@ impl CredentialSession {
             }
         }
 
+        let mut nonce = [0; 16];
+        rustls::crypto::ring::default_provider().secure_random.fill(&mut nonce).map_err(|_| unavailable())?;
+        let attempt = u128::from_be_bytes(nonce);
+        let _write = lock_product_authority_write()?;
         let mut state = self.lock()?;
         // The exchange can run for a whole network round trip. A sign-out or account switch that
         // happened meanwhile must win: the barrier is checked before the provider recheck so no
@@ -915,7 +953,9 @@ impl CredentialSession {
             return Err(unavailable());
         }
         self.epoch.fetch_add(1, Ordering::SeqCst);
-        let binding = session_binding_digest(&account, "", product.product_session().expose_secret(), 0);
+        // The legacy seam has no caller generation or bootstrap pair. Mint a fresh attempt
+        // even if the exact same provider and product credentials are reused after restart.
+        let binding = session_binding_digest(&account, "", provider.access_token.expose_secret(), attempt);
         state.locked = true;
         let result = (|| {
             clear_product_authority_inner(&mut state)?;
@@ -923,9 +963,7 @@ impl CredentialSession {
             write_binding(&mut state, LOGIN_STAGE_BINDING_KEY, &binding)?;
             write_product_login(&mut state, &account, product.product_session().expose_secret())?;
             write_binding(&mut state, SESSION_BINDING_KEY, &binding)?;
-            // The legacy test/explicit seam has no desktop attempt id; generation 0 is still a
-            // valid durable commit and every reader uses the same marker gate.
-            commit_marker(&mut state, &account, 0)?;
+            commit_marker(&mut state, &account, attempt)?;
             discard_stage(&mut state);
             Ok(())
         })();
@@ -1078,7 +1116,7 @@ fn activation_committed(state: &SessionState) -> bool {
 
 /// The durable linearization point: this single-key write makes all staged/authoritative values
 /// readable at once. Callers write every value before it and never read them before it.
-fn commit_marker(state: &mut SessionState, account: &str, generation: u64) -> Result<(), CredentialError> {
+fn commit_marker(state: &mut SessionState, account: &str, generation: u128) -> Result<(), CredentialError> {
     state.store.set(LOGIN_COMMIT_KEY, &format!("{LOGIN_COMMIT_DONE}/{generation}/{account}")).map_err(|error| store_failure(state, error))
 }
 
@@ -1361,7 +1399,7 @@ fn write_binding(state: &mut SessionState, key: &str, binding: &str) -> Result<(
     state.store.set(key, binding).map_err(|error| store_failure(state, error))
 }
 
-fn session_binding_digest(account: &str, installation: &str, login_secret: &str, generation: u64) -> String {
+fn session_binding_digest(account: &str, installation: &str, login_secret: &str, generation: u128) -> String {
     let mut hasher = Sha256::new();
     hasher.update(account.as_bytes());
     hasher.update([0]);

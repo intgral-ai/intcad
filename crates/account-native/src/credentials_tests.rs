@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use solidcraft_engine::entitlement::{
@@ -59,6 +59,13 @@ fn product_sign_in(session: &CredentialSession, account: &str, product_secret: &
     session.activate_product_session(&FixedExchange { account_id: account, product_session: product_secret, expires_at_unix_seconds: None }).unwrap();
 }
 
+fn bind_installed_scope(session: &CredentialSession, store: &RecordingStore, account: &str, installation: &str) {
+    let binding = store.entry("auth/session_binding").unwrap();
+    session
+        .bind_scope(&AuthenticatedHostScope::new(AccountId::new(account), InstallationId::new(installation), HostSessionBinding::new(binding)))
+        .unwrap();
+}
+
 #[test]
 fn rotating_the_stored_bearer_preserves_scope_and_settlement_handoff() {
     let store = RecordingStore::default();
@@ -100,6 +107,90 @@ fn bearer_update_refuses_a_different_scope_revocation_tombstone_and_account_swit
     publish_first_installation(&session, "switched_bearer").unwrap();
     assert!(session.update_product_session(&original, &rotated).is_err());
     assert_eq!(store.entry(PRODUCT_SESSION_KEY).as_deref(), Some("switched_bearer"));
+}
+
+#[test]
+fn review_stale_publisher_from_an_independent_session_cannot_replace_a_new_bearer() {
+    let store = RecordingStore::default();
+    let a = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&a, "acct_one", "bearer_a");
+    publish_first_installation(&a, "bearer_a").unwrap();
+    let old = a.authenticated_scope().unwrap();
+    let b = CredentialSession::new(Box::new(store.clone()));
+    b.switch_account("acct_two").unwrap();
+    product_sign_in(&b, "acct_two", "bearer_b");
+    publish_first_installation(&b, "bearer_b").unwrap();
+
+    assert!(a.update_product_session(&old, &crate::Secret::new("late_bearer_a")).is_err());
+    assert_eq!(b.product_session(), Some(crate::Secret::new("bearer_b")));
+}
+
+#[test]
+fn review_account_replacement_cannot_cross_an_in_flight_bearer_write() {
+    let store = RecordingStore::default();
+    let a = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&a, "acct_one", "bearer_a");
+    publish_first_installation(&a, "bearer_a").unwrap();
+    let old = a.authenticated_scope().unwrap();
+    let (writing, started) = channel();
+    let (release, wait) = channel();
+    *store.paused_bearer_write.lock().unwrap() = Some(PausedBearerWrite { writing, release: wait });
+    let publisher = std::thread::spawn(move || a.update_product_session(&old, &crate::Secret::new("late_bearer_a")));
+    started.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+
+    let b = CredentialSession::new(Box::new(store.clone()));
+    let (switching, began_switch) = channel();
+    let (committed, finished) = channel();
+    let replacement = std::thread::spawn(move || {
+        switching.send(()).unwrap();
+        b.switch_account("acct_two").unwrap();
+        product_sign_in(&b, "acct_two", "bearer_b");
+        committed.send(()).unwrap();
+    });
+    began_switch.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let crossed_write = finished.recv_timeout(std::time::Duration::from_millis(250)).is_ok();
+    release.send(()).unwrap();
+    publisher.join().unwrap().unwrap();
+    replacement.join().unwrap();
+    assert!(!crossed_write, "replacement committed before the already validated write finished");
+    assert_eq!(store.entry(PRODUCT_SESSION_KEY).as_deref(), Some("bearer_b"));
+}
+
+#[test]
+fn review_binding_can_be_set_once_but_never_replaced_by_a_fixture() {
+    let store = RecordingStore::default();
+    let fixture = CredentialSession::new(Box::new(store.clone()));
+    let requested = scope("acct_one", "inst_one");
+    assert!(!store.contains_key("auth/session_binding"));
+    fixture.bind_scope(&requested).unwrap();
+    assert_eq!(store.entry("auth/session_binding").as_deref(), Some(requested.session_binding().as_str()));
+    fixture.bind_scope(&requested).unwrap();
+
+    product_sign_in(&fixture, "acct_one", "bearer");
+    publish_first_installation(&fixture, "bearer").unwrap();
+    let active = fixture.authenticated_scope().unwrap();
+    let replacement = scope(active.account().as_str(), active.installation().as_str());
+    assert!(fixture.bind_scope(&replacement).is_err());
+    assert_eq!(fixture.authenticated_scope(), Some(active));
+}
+
+#[test]
+fn review_legacy_reactivation_with_the_same_bearer_mints_a_new_binding() {
+    let store = RecordingStore::default();
+    let a = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&a, "acct_one", "same_bearer");
+    publish_first_installation(&a, "same_bearer").unwrap();
+    let old = a.authenticated_scope().unwrap();
+
+    let b = CredentialSession::new(Box::new(store));
+    b.activate_product_session(&FixedExchange { account_id: "acct_one", product_session: "same_bearer", expires_at_unix_seconds: None }).unwrap();
+    publish_first_installation(&b, "same_bearer").unwrap();
+    let new = b.authenticated_scope().unwrap();
+    assert_eq!(old.account(), new.account());
+    assert_eq!(old.installation(), new.installation());
+    assert_ne!(old.session_binding(), new.session_binding());
+    assert!(a.update_product_session(&old, &crate::Secret::new("late_bearer")).is_err());
+    assert_eq!(b.product_session(), Some(crate::Secret::new("same_bearer")));
 }
 
 #[test]
@@ -248,10 +339,16 @@ impl StoreState {
     }
 }
 
+struct PausedBearerWrite {
+    writing: Sender<()>,
+    release: Receiver<()>,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct RecordingStore {
     inner: Arc<Mutex<StoreState>>,
     commit_waiting: Arc<AtomicUsize>,
+    paused_bearer_write: Arc<Mutex<Option<PausedBearerWrite>>>,
 }
 
 impl RecordingStore {
@@ -303,7 +400,7 @@ impl RecordingStore {
         self.inner.lock().unwrap().entries.get(key).cloned()
     }
 
-    fn force_put(&self, key: &str, value: &str) {
+    pub(crate) fn force_put(&self, key: &str, value: &str) {
         self.inner.lock().unwrap().entries.insert(key.to_owned(), value.to_owned());
     }
 }
@@ -316,6 +413,13 @@ impl CredentialStore for RecordingStore {
     }
 
     fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
+        if key == PRODUCT_SESSION_KEY {
+            let pause = self.paused_bearer_write.lock().unwrap().take();
+            if let Some(PausedBearerWrite { writing, release }) = pause {
+                writing.send(()).unwrap();
+                release.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+            }
+        }
         let gate = {
             let mut state = self.inner.lock().map_err(|_| unavailable())?;
             state.calls.push(Call::Set(key.to_owned()));
@@ -378,7 +482,7 @@ fn logout_and_switch_account_delete_old_credential_first() {
     let store = RecordingStore::default();
     let session = CredentialSession::new(Box::new(store.clone()));
     product_sign_in(&session, "acct_old", "product_old_SECRET");
-    session.bind_scope(&scope("acct_old", "inst_old")).unwrap();
+    bind_installed_scope(&session, &store, "acct_old", "inst_old");
     let mut handoff = session.clone();
     CredentialHandoff::initial_lease_proof(&mut handoff, &grant(), Capability::Chat, crate::http::Secret::new("proof_old_SECRET")).unwrap();
     CredentialHandoff::execution_session_proof(&mut handoff, Capability::Chat, &operation(), crate::http::Secret::new("op_proof_secret")).unwrap();
@@ -410,7 +514,7 @@ fn account_switch_that_cannot_delete_old_credentials_fails_closed() {
     let store = RecordingStore::default();
     let session = CredentialSession::new(Box::new(store.clone()));
     product_sign_in(&session, "acct_old", "product_old_SECRET");
-    session.bind_scope(&scope("acct_old", "inst_old")).unwrap();
+    bind_installed_scope(&session, &store, "acct_old", "inst_old");
     store.set_fail_delete(PRODUCT_SESSION_KEY);
 
     assert_eq!(session.switch_account("acct_new").unwrap_err().code, CredentialErrorCode::Unavailable);
@@ -493,7 +597,7 @@ fn a_revoked_session_refuses_handoff_writes_without_touching_the_store() {
     let store = RecordingStore::default();
     let session = CredentialSession::new(Box::new(store.clone()));
     product_sign_in(&session, "acct_one", "product_one_SECRET");
-    session.bind_scope(&scope("acct_one", "inst_one")).unwrap();
+    bind_installed_scope(&session, &store, "acct_one", "inst_one");
     store.take_calls();
 
     session.revoke_in_process();
@@ -514,7 +618,7 @@ fn a_failed_sign_out_delete_persists_a_tombstone_and_a_fresh_session_fails_close
     let store = RecordingStore::default();
     let session = CredentialSession::new(Box::new(store.clone()));
     product_sign_in(&session, "acct_old", "product_old_SECRET");
-    session.bind_scope(&scope("acct_old", "inst_old")).unwrap();
+    bind_installed_scope(&session, &store, "acct_old", "inst_old");
     assert!(session.authenticated_scope().is_some());
     store.set_fail_delete(PRODUCT_SESSION_KEY);
 
@@ -535,7 +639,7 @@ fn a_completed_sign_out_removes_the_tombstone_only_after_authority_is_gone() {
     let store = RecordingStore::default();
     let session = CredentialSession::new(Box::new(store.clone()));
     product_sign_in(&session, "acct_old", "product_old_SECRET");
-    session.bind_scope(&scope("acct_old", "inst_old")).unwrap();
+    bind_installed_scope(&session, &store, "acct_old", "inst_old");
     session.sign_out().unwrap();
     assert!(!session.logout_pending().unwrap());
     assert!(!store.contains_key(PRODUCT_SESSION_KEY));
@@ -547,7 +651,7 @@ fn initial_lease_proofs_and_operation_credentials_share_one_store_and_use_separa
     let store = RecordingStore::default();
     let mut handoff = CredentialSession::new(Box::new(store.clone()));
     product_sign_in(&handoff, "acct_one", "product_one_SECRET");
-    handoff.bind_scope(&scope("acct_one", "inst_one")).unwrap();
+    bind_installed_scope(&handoff, &store, "acct_one", "inst_one");
     let wire = handoff.clone();
     let other_grant = GrantId::new("grant_example_0002");
 
@@ -564,6 +668,7 @@ fn initial_lease_proofs_and_operation_credentials_share_one_store_and_use_separa
     assert!(WireCredentials::execution_session_proof(&wire, &OperationId::parse("op_example_other").unwrap()).is_none());
 
     let other = wire.clone();
+    other.switch_account("acct_two").unwrap();
     other.bind_scope(&scope("acct_two", "inst_two")).unwrap();
     assert!(WireCredentials::initial_lease_proof(&other, &grant()).is_none());
     assert!(WireCredentials::execution_session_proof(&other, &operation()).is_none());
@@ -594,7 +699,7 @@ fn token_never_in_debug_display_logs_or_error_messages() {
     let store = RecordingStore::default();
     let session = CredentialSession::new(Box::new(store.clone()));
     product_sign_in(&session, "acct_one", "product_SECRET_alpha");
-    session.bind_scope(&scope("acct_one", "inst_one")).unwrap();
+    bind_installed_scope(&session, &store, "acct_one", "inst_one");
     let mut handoff = session.clone();
     CredentialHandoff::initial_lease_proof(&mut handoff, &grant(), Capability::Chat, crate::http::Secret::new("proof_SECRET_gamma")).unwrap();
     CredentialHandoff::execution_session_proof(&mut handoff, Capability::Chat, &operation(), crate::http::Secret::new("operation_SECRET_delta"))
@@ -624,12 +729,12 @@ fn a_restarted_session_preserves_and_then_clears_every_tracked_credential() {
     let store = RecordingStore::default();
     let first = CredentialSession::new(Box::new(store.clone()));
     product_sign_in(&first, "acct_one", "product_one_SECRET");
-    first.bind_scope(&scope("acct_one", "inst_one")).unwrap();
+    bind_installed_scope(&first, &store, "acct_one", "inst_one");
     let mut first_handoff = first.clone();
     CredentialHandoff::settlement_credential(&mut first_handoff, &operation(), crate::http::Secret::new("settlement_one")).unwrap();
 
     let second = CredentialSession::new(Box::new(store.clone()));
-    second.bind_scope(&scope("acct_one", "inst_one")).unwrap();
+    bind_installed_scope(&second, &store, "acct_one", "inst_one");
     assert_eq!(
         WireCredentials::settlement_credential(&second, &operation()).unwrap().expose_secret(),
         "settlement_one",

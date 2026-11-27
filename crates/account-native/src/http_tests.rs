@@ -298,6 +298,7 @@ fn billing_preflight_rejects_a_replaced_installation_credential_even_when_scope_
 
 #[test]
 fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_late_success() {
+    use crate::credentials_tests::RecordingStore;
     use crate::http::{CredentialHandoff, OperationRenewal};
     use solidcraft_engine::entitlement::{ConservativeDeadline, Grant};
 
@@ -330,7 +331,8 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
         (200, 21_000, Change::ResponseOperation),
     ] {
         let clock = TestClock::at(0);
-        let mut session = bound_session(Box::new(MemorySession::default()));
+        let store = RecordingStore::default();
+        let mut session = bound_session(Box::new(store.clone()));
         let scope = session.authenticated_scope().unwrap();
         let operation = operation();
         CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("original_proof")).unwrap();
@@ -365,7 +367,7 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
             Change::Proof => {
                 CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("replacement_proof")).unwrap();
             }
-            Change::Scope => session.bind_scope(&self::scope()).unwrap(),
+            Change::Scope => store.force_put("auth/session_binding", "replacement_binding"),
             Change::Generation => {
                 session.revoke_in_process();
                 session.end_revocation();
