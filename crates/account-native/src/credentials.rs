@@ -204,15 +204,11 @@ impl fmt::Debug for KeyringStore {
 
 impl CredentialStore for KeyringStore {
     fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
-        match self.entry(key)?.get_password() {
-            Ok(secret) => Ok(Some(secret)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(_) => Err(unavailable()),
-        }
+        get_keyring_value(&self.entry(key)?, key)
     }
 
     fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
-        self.entry(key)?.set_password(secret).map_err(|_| unavailable())
+        set_keyring_value(&self.entry(key)?, key, secret)
     }
 
     fn delete(&mut self, key: &str) -> Result<(), CredentialError> {
@@ -235,11 +231,59 @@ impl CredentialStore for KeyringStore {
     }
 }
 
+pub(super) fn get_keyring_value(entry: &keyring::Entry, key: &str) -> Result<Option<String>, CredentialError> {
+    let value = if key.starts_with("identity/") {
+        entry.get_secret().and_then(|bytes| String::from_utf8(bytes).map_err(|error| keyring::Error::BadEncoding(error.into_bytes())))
+    } else {
+        entry.get_password()
+    };
+    match value {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err(unavailable()),
+    }
+}
+
+pub(super) fn set_keyring_value(entry: &keyring::Entry, key: &str, secret: &str) -> Result<(), CredentialError> {
+    // Windows password storage encodes UTF-16LE, doubling ASCII token sizes.
+    if key.starts_with("identity/") { entry.set_secret(secret.as_bytes()) } else { entry.set_password(secret) }.map_err(|_| unavailable())
+}
+
 /// A completed provider login. It proves only the WorkOS provider session; it is not an Intcad
 /// product login and cannot be used as a product bearer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderLogin {
     pub provider_account_id: String,
+}
+
+/// The refresh material captured from a completed device login. It is kept in memory on the
+/// provider session for the renewal lifecycle; the current login paths do not persist it.
+#[derive(Clone)]
+pub struct ProviderRefresh {
+    refresh_token: Secret,
+    expires_at_unix_seconds: u64,
+}
+
+impl ProviderRefresh {
+    pub fn refresh_token(&self) -> &Secret {
+        &self.refresh_token
+    }
+
+    /// The access token's expiry as Unix seconds. It is a scheduling hint for renewal, not an
+    /// authentication decision.
+    pub fn expires_at_unix_seconds(&self) -> u64 {
+        self.expires_at_unix_seconds
+    }
+}
+
+impl fmt::Debug for ProviderRefresh {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ProviderRefresh")
+            .field("refresh_token", &"<redacted>")
+            .field("expires_at_unix_seconds", &self.expires_at_unix_seconds)
+            .finish()
+    }
 }
 
 /// The typed provider credentials offered to the explicit product-session exchange. The access
@@ -249,13 +293,22 @@ pub struct ProviderLogin {
 pub struct ProviderSession {
     account_id: String,
     access_token: Secret,
+    refresh: Option<ProviderRefresh>,
 }
 
 impl ProviderSession {
-    /// The typed provider handoff from a completed device-code poll. It carries no product
-    /// authority and must be verified by a trusted exchange before anything is persisted.
+    /// The legacy typed provider handoff. Stored provider logins from before refresh capture
+    /// have no refresh token, so this constructor keeps them usable with `refresh() == None`.
+    /// It carries no product authority and must be verified by a trusted exchange before
+    /// anything is persisted.
     pub(crate) fn from_authorized(account_id: String, access_token: Secret) -> Self {
-        Self { account_id, access_token }
+        Self { account_id, access_token, refresh: None }
+    }
+
+    /// The refreshable handoff from a device login that issued a refresh token and an access
+    /// token expiry. Like [`Self::from_authorized`] it carries no product authority.
+    pub(crate) fn from_authorized_refreshable(account_id: String, access_token: Secret, refresh_token: Secret, expires_at_unix_seconds: u64) -> Self {
+        Self { account_id, access_token, refresh: Some(ProviderRefresh { refresh_token, expires_at_unix_seconds }) }
     }
 
     pub fn account_id(&self) -> &str {
@@ -265,11 +318,21 @@ impl ProviderSession {
     pub fn access_token(&self) -> &Secret {
         &self.access_token
     }
+
+    /// The captured refresh material, or `None` for a legacy login without a refresh token.
+    pub fn refresh(&self) -> Option<&ProviderRefresh> {
+        self.refresh.as_ref()
+    }
 }
 
 impl fmt::Debug for ProviderSession {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("ProviderSession").field("account_id", &self.account_id).field("access_token", &"<redacted>").finish()
+        formatter
+            .debug_struct("ProviderSession")
+            .field("account_id", &self.account_id)
+            .field("access_token", &"<redacted>")
+            .field("refresh", &self.refresh.is_some())
+            .finish()
     }
 }
 
@@ -897,7 +960,8 @@ fn read_provider_session(state: &SessionState) -> Option<ProviderSession> {
     if !safe_token(&account, MAX_ACCOUNT_BYTES) || access_token.is_empty() || has_control(&access_token) {
         return None;
     }
-    Some(ProviderSession { account_id: account, access_token: Secret::new(access_token) })
+    // Stored provider logins have no refresh key; the legacy constructor restores without one.
+    Some(ProviderSession::from_authorized(account, Secret::new(access_token)))
 }
 
 fn provider_required() -> CredentialError {

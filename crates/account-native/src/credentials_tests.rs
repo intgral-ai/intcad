@@ -123,6 +123,30 @@ fn product_activation_requires_a_provider_login_and_rejects_expired_results() {
     assert!(!session.product_session_active());
 }
 
+#[test]
+fn a_legacy_provider_session_without_refresh_still_activates() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    // A stored provider login from before refresh capture has no refresh key at all.
+    session.complete_provider_login("user_provider_0001", "provider_access_SECRET").unwrap();
+    assert!(!store.keys().iter().any(|key| key.contains("refresh")));
+
+    let legacy = ProviderSession::from_authorized("user_provider_0001".into(), crate::http::Secret::new("provider_access_SECRET"));
+    assert!(legacy.refresh().is_none());
+    assert!(format!("{legacy:?}").contains("refresh: false"));
+
+    let login = session
+        .activate_product_session(&FixedExchange {
+            account_id: "acct_legacy",
+            product_session: "product_legacy_SECRET",
+            expires_at_unix_seconds: None,
+        })
+        .unwrap();
+    assert_eq!(login.account_id, "acct_legacy");
+    assert!(session.product_session_active());
+    assert_eq!(WireCredentials::product_session(&session).unwrap().expose_secret(), "product_legacy_SECRET");
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Call {
     Get(String),
@@ -866,4 +890,53 @@ fn display_identity_requires_the_same_durable_commit_as_product_authority() {
     let fresh = CredentialSession::new(Box::new(store));
     assert!(fresh.display_account().is_none());
     assert!(!fresh.product_session_active());
+}
+#[test]
+fn identity_keyring_entries_fit_windows_byte_limit_and_legacy_uses_passwords() {
+    use std::any::Any;
+    use std::sync::Mutex;
+    #[derive(Debug, Default)]
+    struct WindowsSized(Mutex<Option<Vec<u8>>>);
+    impl keyring::credential::CredentialApi for WindowsSized {
+        fn set_password(&self, password: &str) -> keyring::Result<()> {
+            self.set_secret(&password.encode_utf16().flat_map(u16::to_le_bytes).collect::<Vec<_>>())
+        }
+        fn get_password(&self) -> keyring::Result<String> {
+            let bytes = self.get_secret()?;
+            let (units, remainder) = bytes.as_chunks::<2>();
+            if !remainder.is_empty() {
+                return Err(keyring::Error::BadEncoding(bytes));
+            }
+            let units = units.iter().copied().map(u16::from_le_bytes).collect::<Vec<_>>();
+            String::from_utf16(&units).map_err(|_| keyring::Error::BadEncoding(bytes))
+        }
+        fn set_secret(&self, secret: &[u8]) -> keyring::Result<()> {
+            assert!(secret.len() <= 2560, "Credential Manager blob limit");
+            *self.0.lock().unwrap() = Some(secret.to_vec());
+            Ok(())
+        }
+        fn get_secret(&self) -> keyring::Result<Vec<u8>> {
+            self.0.lock().unwrap().clone().ok_or(keyring::Error::NoEntry)
+        }
+        fn delete_credential(&self) -> keyring::Result<()> {
+            *self.0.lock().unwrap() = None;
+            Ok(())
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+    let entry = keyring::Entry::new_with_credential(Box::new(WindowsSized::default()));
+    let identity = "identity/1/access";
+    let legacy = "provider/access";
+    assert!(super::credentials::get_keyring_value(&entry, identity).unwrap().is_none());
+    let large = "a".repeat(1800);
+    super::credentials::set_keyring_value(&entry, identity, &large).unwrap();
+    assert_eq!(entry.get_secret().unwrap().len(), 1800);
+    assert!(super::credentials::get_keyring_value(&entry, identity).unwrap().as_deref() == Some(large.as_str()));
+    super::credentials::set_keyring_value(&entry, legacy, "legacy").unwrap();
+    assert_eq!(entry.get_secret().unwrap().len(), 12);
+    assert!(super::credentials::get_keyring_value(&entry, legacy).unwrap().as_deref() == Some("legacy"));
+    entry.set_secret(&[0xff]).unwrap();
+    assert!(super::credentials::get_keyring_value(&entry, identity).is_err());
 }
