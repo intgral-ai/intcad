@@ -235,7 +235,7 @@ pub(crate) fn tool_space(app: &SolveApp, mut available: Rect) -> Rect {
 const CENTRE_WIDTH: f32 = 520.0;
 /// Its height until the page has said how tall it is: the message box alone.
 #[cfg(not(target_arch = "wasm32"))]
-const CENTRE_HEIGHT: f32 = 140.0;
+pub(crate) const CENTRE_HEIGHT: f32 = 140.0;
 
 /// Whether the Assistant sits at the bottom centre of the window: only where the host shows its
 /// page, which is all of it there.
@@ -261,7 +261,9 @@ pub(crate) fn centre_preferred(_app: &SolveApp) -> bool {
 
 /// At the bottom of the window, centred on it: the page's message box, and above it what the
 /// page opens (the conversation, a menu), as tall as the page says, at most half the window.
-/// It keeps inside the room the panels leave, above the history.
+/// It keeps inside the room the panels leave, above the history. The person can drag its top edge
+/// and its sides ([`centre_edges`]): the size they set holds until they drag again, within the
+/// room there is now (a panel that opens beside it takes its room back).
 #[cfg(not(target_arch = "wasm32"))]
 fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
@@ -269,6 +271,8 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
     let available = ui.available_rect_before_wrap();
     app.agent_chat.dock_space = Some(available);
     let mut bounds = available.shrink(gap);
+    let set = (app.preferences.agent_chat_centre_width, app.preferences.agent_chat_centre_height);
+    let wanted = if set.0 > 0.0 { set.0.clamp(MIN_WIDTH, MAX_CENTRE) } else { CENTRE_WIDTH };
     if let Some(history) = app.shell.history.filter(|_| app.ui.show_timeline && !app.preferences.timeline_left) {
         bounds.max.y = (history.top() - gap).min(bounds.bottom()).max(bounds.top());
     }
@@ -289,16 +293,26 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
         } else {
             beside.max.x = (bar.left() - gap).max(bounds.left()).min(bounds.right());
         }
-        if beside.width() >= CENTRE_WIDTH.min(bounds.width()) {
+        if beside.width() >= wanted.min(bounds.width()) {
             bounds = beside;
         } else {
             bounds.max.y = (bar.top() - gap).min(bounds.bottom()).max(bounds.top());
         }
     }
-    let most = (window.height() / 2.0).min(bounds.height()).max(0.0);
+    // Its edges take a drag in a margin of the app's own beside and above the view (a native view
+    // takes every press on it), so the box keeps that margin inside the room.
+    let grip = ctx.global_style().interaction.resize_grab_radius_side;
+    bounds = Rect::from_min_max(pos2(bounds.left() + grip, bounds.top() + grip), pos2(bounds.right() - grip, bounds.bottom()));
+    let width = wanted.min(bounds.width().max(0.0));
+    // A height the person set is as tall as the page may be: it lays out to the view it is given.
+    let (height, most) = if set.1 > 0.0 {
+        let height = set.1.max(CENTRE_HEIGHT).min(bounds.height().max(0.0));
+        (height, height)
+    } else {
+        let most = (window.height() / 2.0).min(bounds.height()).max(0.0);
+        (app.agent_chat.web_height.unwrap_or(CENTRE_HEIGHT).min(most), most)
+    };
     app.agent_chat.web_centre = Some(most);
-    let width = CENTRE_WIDTH.min(bounds.width().max(0.0));
-    let height = app.agent_chat.web_height.unwrap_or(CENTRE_HEIGHT).min(most);
     // Where the user moved it along the bottom (`web::act`, `move`), from the window's centre, shown
     // within the room there is now: a narrower window or a panel beside it pushes it in for as long
     // as it is there. Never moved, it stays centred on the window.
@@ -320,8 +334,10 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
     app.agent_chat.web_reveal = app.agent_chat.web_clips.then_some(height);
     // A layer of its own over the view, so a menu or a sheet over it hides the native view. It
     // holds only what is shown: above it the window's own view takes the pointer.
-    Container::new(&ctx, Surface::Viewport).area(Id::new("sc_agent_chat_centre")).fixed_pos(rect.min).show(&ctx, |ui| {
-        ui.allocate_rect(rect, Sense::hover());
+    let edges = Rect::from_min_max(pos2(rect.left() - grip, rect.top() - grip), pos2(rect.right() + grip, rect.bottom()));
+    Container::new(&ctx, Surface::Viewport).area(Id::new("sc_agent_chat_centre")).fixed_pos(edges.min).show(&ctx, |ui| {
+        ui.allocate_rect(edges, Sense::hover());
+        centre_edges(app, ui, rect, grip, bounds);
         web::place(app, ui, view);
     });
     crate::scenario::publish_rect("agent_chat:panel", rect);
@@ -329,6 +345,49 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
     app.agent_chat.panel_rect = Some(rect);
     app.agent_chat.drop_rect = Some(rect);
     gallery_window(app, &ctx);
+}
+
+/// The widest the box at the bottom centre may be dragged, before the room there is bounds it.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_CENTRE: f32 = 100_000.0;
+
+/// The box's edges at the bottom centre, `grip` wide just outside the native view: its top drags
+/// its height, each side its width, the other side staying where it is. What the person sets is
+/// kept in the preferences, bounded by the message box (the side panel's least width, the page's
+/// height at rest) and by `room`; a double-click on an edge puts back the size that follows the
+/// page.
+#[cfg(not(target_arch = "wasm32"))]
+fn centre_edges(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, grip: f32, room: Rect) {
+    let edges = [
+        ("top", Rect::from_min_max(pos2(rect.left(), rect.top() - grip), pos2(rect.right(), rect.top()))),
+        ("left", Rect::from_min_max(pos2(rect.left() - grip, rect.top()), pos2(rect.left(), rect.bottom()))),
+        ("right", Rect::from_min_max(pos2(rect.right(), rect.top()), pos2(rect.right() + grip, rect.bottom()))),
+    ];
+    for (edge, zone) in edges {
+        let response = ui.interact(zone, Id::new(("sc_agent_chat_centre_edge", edge)), Sense::click_and_drag());
+        crate::scenario::publish_rect(&format!("agent_chat:centre_{edge}"), zone);
+        if response.hovered() || response.dragged() {
+            ui.ctx().set_cursor_icon(if edge == "top" { egui::CursorIcon::ResizeVertical } else { egui::CursorIcon::ResizeHorizontal });
+        }
+        if response.double_clicked() {
+            (app.preferences.agent_chat_centre_width, app.preferences.agent_chat_centre_height) = (0.0, 0.0);
+            continue;
+        }
+        let delta = response.drag_delta();
+        if !response.dragged() || delta == egui::Vec2::ZERO {
+            continue;
+        }
+        if edge == "top" {
+            app.preferences.agent_chat_centre_height = (rect.height() - delta.y).clamp(CENTRE_HEIGHT, room.height().max(CENTRE_HEIGHT));
+        } else {
+            let wider = if edge == "right" { delta.x } else { -delta.x };
+            let width = (rect.width() + wider).clamp(MIN_WIDTH, room.width().max(MIN_WIDTH));
+            // The box is placed from the window's centre: half the change keeps the other side still.
+            let grown = width - rect.width();
+            app.agent_chat.web_shift += if edge == "right" { grown / 2.0 } else { -grown / 2.0 };
+            app.preferences.agent_chat_centre_width = width;
+        }
+    }
 }
 
 /// The same outer rectangle is used for the floating sheet and its docking preview.

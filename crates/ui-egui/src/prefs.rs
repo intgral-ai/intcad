@@ -1571,6 +1571,10 @@ preference_settings! {
     /// Where the host shows the Assistant's page: at the bottom of the window, centred, as one
     /// message box with the conversation opened above it. Off: the side panel, as before.
     agent_chat_centre: bool = true, PAGE_ASSISTANT;
+    /// The size the person gave that box by dragging its edges, in points; 0: as before (520 wide,
+    /// as tall as the page says). Bounded each frame by the room there is.
+    agent_chat_centre_width: f32 = 0.0;
+    agent_chat_centre_height: f32 = 0.0;
     /// Whether the chat is in its own window instead of the side panel, and that window's place
     /// and size as the system last reported them (`[x, y, width, height]`, points; `x` can be
     /// negative or past the main screen when the window sits on another one).
