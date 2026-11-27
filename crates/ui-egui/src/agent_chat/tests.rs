@@ -17422,8 +17422,8 @@ fn reopening_and_cancelling_a_sign_in_go_to_the_agent_and_say_nothing() {
 }
 
 /// INT-1522: the page is told why a sign-in could not finish in a whole sentence: who holds the
-/// port (a sign-in of this app, of another Intcad, a program by its name), the port and the
-/// system's code when it would not be opened, and a sign-in whose time ran out.
+/// port (a sign-in of this app, of another Intcad, another program), the port and the system's
+/// code when it would not be opened, and a sign-in whose time ran out.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_sign_in_that_could_not_finish_is_told_in_a_sentence_that_says_who_or_what() {
@@ -17436,8 +17436,6 @@ fn a_sign_in_that_could_not_finish_is_told_in_a_sentence_that_says_who_or_what()
     let port = |holder: Value| json!({"id": "openai-codex", "kind": "port", "holder": holder});
     assert_eq!(said(port(json!({"kind": "here"}))), tr("ui.agent_chat_conn_problem_port_here"));
     assert_eq!(said(port(json!({"kind": "intcad"}))), tr("ui.agent_chat_conn_problem_port_intcad"));
-    let by_program = said(port(json!({"kind": "program", "name": "Codex"})));
-    assert_eq!(by_program, "The local port this sign-in needs is in use by Codex. Close it and try again.");
     assert_eq!(said(port(json!(null))), tr("ui.agent_chat_conn_problem_port"));
     let refused = said(json!({"id": "openai-codex", "kind": "listen", "port": 1457, "code": "EACCES"}));
     assert!(refused.contains("1457") && refused.contains("EACCES"), "{refused}");

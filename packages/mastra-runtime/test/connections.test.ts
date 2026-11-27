@@ -26,8 +26,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 const agentFolder = import.meta.url.includes("/dist/test/") ? "../../agent/" : "../agent/";
 const load = (name: string): Promise<Json> => import(new URL(agentFolder + name, import.meta.url).href);
 const { Connections, METHODS, customId } = await load("connections.mjs");
-const callbackModule = await load("callback.mjs");
-const { holdCallbackPorts } = callbackModule;
+const { holdCallbackPorts } = await load("callback.mjs");
 const { attachmentReader, isChatModel, orderModelOptions, releaseDates } = await load("models.mjs");
 const { classifyFailure, classifySignInFailure } = await load("problems.mjs");
 const { intcadAgent } = await load("agent.mjs");
@@ -435,16 +434,15 @@ async function foreignListener(port: number): Promise<net.Server> {
   return server;
 }
 
-test("a taken port says who holds it: a sign-in of this app, of another Intcad, or which program (INT-1522)", async () => {
+test("a taken port says who holds it: a sign-in of this app, of another Intcad, or another program (INT-1522)", async () => {
   const base = 42455;
-  // Another program: named where the system lets the agent find it (lsof and ps on macOS and Linux).
+  // Another program: not named, only told apart from an Intcad.
   const foreign = await foreignListener(base + 2);
   const byProgram = await holdCallbackPorts(http, () => false, { ports: [base, base + 2] }).then(() => null, (error: Json) => error);
   foreign.close();
   assert.equal(byProgram?.code, "PORT_BUSY");
   assert.equal(byProgram?.port, base + 2);
-  if (process.platform === "darwin") assert.deepEqual(byProgram?.holder, { kind: "program", name: "node" });
-  else assert.ok(byProgram?.holder === null || byProgram?.holder?.name === "node", JSON.stringify(byProgram?.holder));
+  assert.equal(byProgram?.holder, null);
 
   // A sign-in of this same app (another design's agent: same parent), which never ends.
   const ours = await holdCallbackPorts(http, () => false, { ports: [base + 4, base + 6] });
@@ -468,21 +466,6 @@ test("a taken port says who holds it: a sign-in of this app, of another Intcad, 
   } finally {
     child.kill();
   }
-});
-
-test("the holder of a port is read from what lsof, netstat, ps and tasklist print, and named by its app (INT-1522)", () => {
-  const { pidIn, programName } = callbackModule;
-  assert.equal(pidIn("p15185\ncnode\nf33\n", 1457, "darwin"), 15185);
-  assert.equal(pidIn("", 1457, "linux"), null);
-  const netstat = "\r\nActive Connections\r\n\r\n  Proto  Local Address          Foreign Address        State           PID\r\n  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1000\r\n  TCP    127.0.0.1:1457         0.0.0.0:0              LISTENING       4242\r\n";
-  assert.equal(pidIn(netstat, 1457, "win32"), 4242);
-  assert.equal(pidIn(netstat, 1455, "win32"), null);
-  assert.equal(programName("/Applications/Intcad.app/Contents/Resources/mastra-agent/node\n"), "Intcad");
-  assert.equal(programName("/Applications/ChatGPT.app/Contents/Frameworks/ChatGPT Helper.app/Contents/MacOS/ChatGPT Helper"), "ChatGPT");
-  assert.equal(programName("/usr/local/bin/codex"), "codex");
-  assert.equal(programName("C:\\Program Files\\nodejs\\node.exe"), "node.exe");
-  assert.equal(programName("codex\u0007\u202e"), "codex");
-  assert.equal(programName(""), null);
 });
 
 test("a sign-in of another design of this app that is being cancelled is waited for briefly (INT-1522)", async () => {
@@ -520,10 +503,10 @@ test("a port the system will not open is told apart from a taken one; the first 
 });
 
 test("a sign-in's problem carries who holds the port, or the port and the system's code (INT-1522)", async () => {
-  const held = world({ holdPorts: async () => Promise.reject(Object.assign(new Error("port 1457 is in use"), { code: "PORT_BUSY", port: 1457, holder: { kind: "program", name: "Codex" } })) });
+  const held = world({ holdPorts: async () => Promise.reject(Object.assign(new Error("port 1457 is in use"), { code: "PORT_BUSY", port: 1457, holder: { kind: "intcad" } })) });
   held.connections.login({ id: "openai-codex" });
   await settle();
-  assert.deepEqual(held.connections.list().problem, { id: "openai-codex", kind: "port", holder: { kind: "program", name: "Codex" } });
+  assert.deepEqual(held.connections.list().problem, { id: "openai-codex", kind: "port", holder: { kind: "intcad" } });
 
   const refused = world({ holdPorts: async () => Promise.reject(Object.assign(new Error("port 1457 could not be opened"), { code: "LISTEN_FAILED", port: 1457, errno: "EACCES" })) });
   refused.connections.login({ id: "openai-codex" });

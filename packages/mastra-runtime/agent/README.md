@@ -6,7 +6,7 @@ its SDK and unchanged, with what the Assistant's Connections page needs added in
 - `connections.mjs`: which plans are signed in, which keys and custom addresses the app handed
   over, the one sign-in that may be under way, and the methods the page's buttons end in;
 - `callback.mjs`: how the ChatGPT browser sign-in waits for the browser beyond Mastra Code's 60
-  seconds, and who holds its port when it is taken;
+  seconds, and whether an Intcad holds its port when it is taken;
 - `agent.mjs`: the methods on the ACP agent, a model list a person can read, sessions that follow a
   sign-in or sign-out, and the reason on a turn that fails;
 - `models.mjs`, `problems.mjs`: the order of the model list, and the kinds of failure;
@@ -100,9 +100,9 @@ sends the same snapshot as the notification `_intcad/connections/changed` whenev
 - `login.phase`: `starting`; `browser` (the address is open, nothing to type); `device` (`userCode`
   is typed on that page); `code` (the page will show a code that is pasted back). `login.error` is
   `incomplete` after a pasted code that has not the shape of one.
-- `problem.kind`, for a sign-in that could not finish: `port` (with `holder`, when found: `{ kind:
-  'here' }` a sign-in of another design of the same app, `{ kind: 'intcad' }` one of another
-  Intcad, `{ kind: 'program', name }`), `listen` (the system would not open the port: `port`,
+- `problem.kind`, for a sign-in that could not finish: `port` (with `holder` when it is Intcad's:
+  `{ kind: 'here' }` a sign-in of another design of the same app, `{ kind: 'intcad' }` one of
+  another Intcad; none for another program), `listen` (the system would not open the port: `port`,
   `code`, such as `EACCES`), `timeout` (15 minutes passed), `offline`, `failed`, and for the
   ChatGPT sign-in's token endpoint `refused`, `region`, `plan` (the endpoint's answer names the
   region or the plan). `step`: how far it got: `open` (before the browser is opened), `wait`,
@@ -362,9 +362,7 @@ another design; the page cancels one when the user goes back from it. If 1457 is
 sign-in cannot be received and fails with `problem.kind` `port`. Who holds it is asked first at
 `/intcad-sign-in`, where Intcad's own listener answers `{ app: 'intcad', parent }` (the agent's
 parent process, the app); one of the same app is waited for up to two seconds, since its cancel
-may be on the way. Otherwise the program is named where the system says it: `lsof` and `ps` on
-macOS and Linux, `netstat` and `tasklist` on Windows, by the app it sits in when it is one
-(`…/Codex.app/…` is Codex). The first port may be refused by the system as well: what keeps this
+may be on the way. Another program is not named. The first port may be refused by the system as well: what keeps this
 process off it keeps Mastra Code off it too.
 
 ## What was checked, and what was not

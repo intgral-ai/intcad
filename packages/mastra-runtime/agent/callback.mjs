@@ -8,9 +8,6 @@
 // for the address the browser was sent back to, which a person would paste by hand. Here the
 // listener that holds the ports receives that address and hands it over.
 
-import { execFile } from 'node:child_process';
-import { basename } from 'node:path';
-
 export const CALLBACK_PORTS = [1455, 1457];
 
 // What the browser shows once it has called back. The sign-in is not finished then (the code is
@@ -75,17 +72,6 @@ function listen(http, port, onCallback, sentence) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-/** A program's output, or `''` when it cannot be run or fails: finding a holder is best effort. */
-function output(program, args) {
-  return new Promise(resolve => {
-    try {
-      execFile(program, args, { timeout: 2000, windowsHide: true, maxBuffer: 1 << 20 }, (error, stdout) => resolve(error ? '' : String(stdout)));
-    } catch {
-      resolve('');
-    }
-  });
-}
-
 /** What a listener on the port says of itself at `WHO`: `{ app, parent }`, or null. */
 function ask(http, port) {
   return new Promise(resolve => {
@@ -113,51 +99,13 @@ function ask(http, port) {
   });
 }
 
-/** The program a path names: the app it sits in (`…/Codex.app/…` is Codex), else its file name. */
-export function programName(path) {
-  const text = String(path ?? '').trim();
-  const app = /([^/\\]+)\.app[/\\]/i.exec(text)?.[1];
-  const name = (app ?? basename(text.replace(/\\/g, '/'))).replace(/[\p{Cc}\p{Cf}]/gu, '').trim();
-  return name ? name.slice(0, 64) : null;
-}
-
-/** The process listening on `port` of 127.0.0.1, by what `lsof -F p` or `netstat -ano` prints. */
-export function pidIn(text, port, platform = process.platform) {
-  if (platform === 'win32') {
-    for (const line of String(text).split(/\r?\n/)) {
-      const [proto, local, , state, pid] = line.trim().split(/\s+/);
-      if (proto === 'TCP' && local === `127.0.0.1:${port}` && state === 'LISTENING' && /^\d+$/.test(pid ?? '')) return Number(pid);
-    }
-    return null;
-  }
-  const pid = /^p(\d+)$/m.exec(String(text))?.[1];
-  return pid ? Number(pid) : null;
-}
-
-/** The name of the program listening on `port`, where the system lets this process find it. */
-async function programOn(port, platform) {
-  if (platform === 'win32') {
-    const pid = pidIn(await output('netstat', ['-ano', '-p', 'TCP']), port, platform);
-    if (!pid) return null;
-    // `"node.exe","1234",…`
-    return programName(/^"([^"]+)"/.exec(await output('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH']))?.[1]);
-  }
-  const lsof = platform === 'darwin' ? '/usr/sbin/lsof' : 'lsof';
-  const pid = pidIn(await output(lsof, ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fp']), port, platform);
-  if (!pid) return null;
-  return programName(await output(platform === 'darwin' ? '/bin/ps' : 'ps', ['-o', 'comm=', '-p', String(pid)]));
-}
-
 /**
  * Who holds `port`: `{ kind: 'here' }`, a sign-in of another design of this app (its agent has the
- * same parent); `{ kind: 'intcad' }`, one of another Intcad; `{ kind: 'program', name }`; or null
- * when the system does not say.
+ * same parent); `{ kind: 'intcad' }`, one of another Intcad; null, another program.
  */
-export async function holderOf(http, port, platform = process.platform) {
+export async function holderOf(http, port) {
   const answer = await ask(http, port);
-  if (answer?.app === 'intcad') return { kind: answer.parent === process.ppid ? 'here' : 'intcad' };
-  const name = await programOn(port, platform).catch(() => null);
-  return name ? { kind: 'program', name } : null;
+  return answer?.app === 'intcad' ? { kind: answer.parent === process.ppid ? 'here' : 'intcad' } : null;
 }
 
 /**

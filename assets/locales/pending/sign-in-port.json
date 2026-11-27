@@ -3,56 +3,48 @@
     "ui.agent_chat_conn_problem_listen": "Intcad could not open local port {port} for this sign-in (the system answered {code}). Try again; if it keeps happening, security software may be blocking that port.",
     "ui.agent_chat_conn_problem_port_here": "The local port this sign-in needs is held by a sign-in in another design of this Intcad. Cancel that one, then try again.",
     "ui.agent_chat_conn_problem_port_intcad": "The local port this sign-in needs is held by a sign-in in another Intcad that is running. Finish or cancel it there, then try again.",
-    "ui.agent_chat_conn_problem_port_program": "The local port this sign-in needs is in use by {program}. Close it and try again.",
     "ui.agent_chat_conn_problem_timeout": "Nothing came back from the browser in time, so the sign-in was stopped. Try again."
   },
   "ar": {
     "ui.agent_chat_conn_problem_listen": "تعذّر على Intcad فتح المنفذ المحلي {port} لتسجيل الدخول هذا (ردّ النظام: {code}). حاول من جديد؛ وإن تكرّر ذلك فقد يكون برنامج حماية يحجب هذا المنفذ.",
     "ui.agent_chat_conn_problem_port_here": "المنفذ المحلي الذي يحتاجه تسجيل الدخول هذا محجوز لتسجيل دخول في تصميم آخر داخل Intcad هذا. ألغِه هناك ثم حاول من جديد.",
     "ui.agent_chat_conn_problem_port_intcad": "المنفذ المحلي الذي يحتاجه تسجيل الدخول هذا محجوز لتسجيل دخول في نسخة أخرى من Intcad قيد التشغيل. أكمِله أو ألغِه هناك ثم حاول من جديد.",
-    "ui.agent_chat_conn_problem_port_program": "المنفذ المحلي الذي يحتاجه تسجيل الدخول هذا يستخدمه {program}. أغلقه ثم حاول من جديد.",
     "ui.agent_chat_conn_problem_timeout": "لم يصل ردّ من المتصفح في الوقت المحدد، فأُوقف تسجيل الدخول. حاول من جديد."
   },
   "de": {
     "ui.agent_chat_conn_problem_listen": "Intcad konnte den lokalen Port {port} für diese Anmeldung nicht öffnen (das System meldete {code}). Versuche es erneut; wenn es wieder passiert, blockiert vielleicht eine Sicherheitssoftware diesen Port.",
     "ui.agent_chat_conn_problem_port_here": "Der lokale Port, den diese Anmeldung braucht, ist von einer Anmeldung in einem anderen Design dieses Intcad belegt. Brich sie dort ab und versuche es erneut.",
     "ui.agent_chat_conn_problem_port_intcad": "Der lokale Port, den diese Anmeldung braucht, ist von einer Anmeldung in einem anderen laufenden Intcad belegt. Schließe sie dort ab oder brich sie ab und versuche es dann erneut.",
-    "ui.agent_chat_conn_problem_port_program": "Der lokale Port, den diese Anmeldung braucht, wird von {program} verwendet. Schließe es und versuche es erneut.",
     "ui.agent_chat_conn_problem_timeout": "Vom Browser kam nicht rechtzeitig eine Antwort, deshalb wurde die Anmeldung beendet. Versuche es erneut."
   },
   "he": {
     "ui.agent_chat_conn_problem_listen": "Intcad לא הצליח לפתוח את היציאה המקומית {port} עבור ההתחברות הזאת (תשובת המערכת: {code}). יש לנסות שוב; אם זה חוזר, ייתכן שתוכנת אבטחה חוסמת את היציאה הזאת.",
     "ui.agent_chat_conn_problem_port_here": "היציאה המקומית שההתחברות הזאת צריכה תפוסה על ידי התחברות בתכן אחר של Intcad הזה. יש לבטל אותה שם ולנסות שוב.",
     "ui.agent_chat_conn_problem_port_intcad": "היציאה המקומית שההתחברות הזאת צריכה תפוסה על ידי התחברות ב-Intcad אחר שפועל. יש להשלים או לבטל אותה שם ולנסות שוב.",
-    "ui.agent_chat_conn_problem_port_program": "היציאה המקומית שההתחברות הזאת צריכה נמצאת בשימוש של {program}. יש לסגור אותה ולנסות שוב.",
     "ui.agent_chat_conn_problem_timeout": "לא הגיעה תשובה מהדפדפן בזמן, ולכן ההתחברות הופסקה. יש לנסות שוב."
   },
   "ja": {
     "ui.agent_chat_conn_problem_listen": "Intcad はこのサインインに必要なローカルポート {port} を開けませんでした（システムの応答: {code}）。もう一度お試しください。繰り返し起きる場合は、セキュリティソフトがこのポートをブロックしている可能性があります。",
     "ui.agent_chat_conn_problem_port_here": "このサインインに必要なローカルポートを、この Intcad の別のデザインのサインインが使っています。そちらを取り消してから、もう一度お試しください。",
     "ui.agent_chat_conn_problem_port_intcad": "このサインインに必要なローカルポートを、実行中の別の Intcad のサインインが使っています。そちらでサインインを終えるか取り消してから、もう一度お試しください。",
-    "ui.agent_chat_conn_problem_port_program": "このサインインに必要なローカルポートを {program} が使っています。それを閉じてから、もう一度お試しください。",
     "ui.agent_chat_conn_problem_timeout": "時間内にブラウザから応答がなかったため、サインインを止めました。もう一度お試しください。"
   },
   "ko": {
     "ui.agent_chat_conn_problem_listen": "Intcad가 이 로그인에 필요한 로컬 포트 {port}을(를) 열지 못했습니다(시스템 응답: {code}). 다시 시도하세요. 계속 이런다면 보안 소프트웨어가 이 포트를 막고 있을 수 있습니다.",
     "ui.agent_chat_conn_problem_port_here": "이 로그인에 필요한 로컬 포트를 이 Intcad의 다른 디자인에서 진행 중인 로그인이 사용하고 있습니다. 그 로그인을 취소한 뒤 다시 시도하세요.",
     "ui.agent_chat_conn_problem_port_intcad": "이 로그인에 필요한 로컬 포트를 실행 중인 다른 Intcad의 로그인이 사용하고 있습니다. 그곳에서 로그인을 마치거나 취소한 뒤 다시 시도하세요.",
-    "ui.agent_chat_conn_problem_port_program": "이 로그인에 필요한 로컬 포트를 {program}이(가) 사용 중입니다. 그 프로그램을 닫고 다시 시도하세요.",
     "ui.agent_chat_conn_problem_timeout": "제시간에 브라우저에서 응답이 오지 않아 로그인을 멈췄습니다. 다시 시도하세요."
   },
   "vi": {
     "ui.agent_chat_conn_problem_listen": "Intcad không mở được cổng cục bộ {port} cho lần đăng nhập này (hệ thống trả lời {code}). Hãy thử lại; nếu vẫn xảy ra, có thể phần mềm bảo mật đang chặn cổng đó.",
     "ui.agent_chat_conn_problem_port_here": "Cổng cục bộ mà lần đăng nhập này cần đang bị một lần đăng nhập trong thiết kế khác của Intcad này giữ. Hãy hủy lần đó rồi thử lại.",
     "ui.agent_chat_conn_problem_port_intcad": "Cổng cục bộ mà lần đăng nhập này cần đang bị một lần đăng nhập trong một Intcad khác đang chạy giữ. Hãy hoàn tất hoặc hủy lần đăng nhập đó rồi thử lại.",
-    "ui.agent_chat_conn_problem_port_program": "Cổng cục bộ mà lần đăng nhập này cần đang được {program} sử dụng. Hãy đóng chương trình đó rồi thử lại.",
     "ui.agent_chat_conn_problem_timeout": "Trình duyệt không phản hồi kịp nên lần đăng nhập đã dừng. Hãy thử lại."
   },
   "zh": {
     "ui.agent_chat_conn_problem_listen": "Intcad 没能在本机打开登录要用的端口 {port}（系统回答 {code}）。再试一次；如果一直这样，可能是安全软件拦住了这个端口。",
     "ui.agent_chat_conn_problem_port_here": "登录要用的本机端口被这个 Intcad 里另一个设计的登录占着。先在那里取消，再重试。",
     "ui.agent_chat_conn_problem_port_intcad": "登录要用的本机端口被另一个正在运行的 Intcad 的登录占着。在那里走完或取消登录，再重试。",
-    "ui.agent_chat_conn_problem_port_program": "登录要用的本机端口被 {program} 占用了。关掉它之后重试。",
     "ui.agent_chat_conn_problem_timeout": "浏览器那边一直没有回来，登录已经停下。再试一次。"
   }
 }

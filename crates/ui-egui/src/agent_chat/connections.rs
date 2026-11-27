@@ -205,11 +205,9 @@ pub enum PortHolder {
     Here,
     /// A sign-in of another Intcad.
     Intcad,
-    /// Another program, by its name.
-    Program(String),
 }
 
-/// Longest program name and system error code read from a sign-in's problem (characters).
+/// Longest error code read from a sign-in's problem (characters).
 const MAX_WORD: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -306,7 +304,6 @@ impl Snapshot {
             let holder = problem.get("holder").and_then(|holder| match holder.get("kind").and_then(Value::as_str) {
                 Some("here") => Some(PortHolder::Here),
                 Some("intcad") => Some(PortHolder::Intcad),
-                Some("program") => word(holder, "name").map(PortHolder::Program),
                 _ => None,
             });
             Some(LoginProblem {
@@ -1121,7 +1118,6 @@ fn problem_text(problem: &LoginProblem) -> String {
     let sentence = match (problem.kind, &problem.holder) {
         (LoginProblemKind::Port, Some(PortHolder::Here)) => tr("ui.agent_chat_conn_problem_port_here").to_string(),
         (LoginProblemKind::Port, Some(PortHolder::Intcad)) => tr("ui.agent_chat_conn_problem_port_intcad").to_string(),
-        (LoginProblemKind::Port, Some(PortHolder::Program(name))) => trf("ui.agent_chat_conn_problem_port_program", &[("program", name)]),
         (LoginProblemKind::Port, None) => tr("ui.agent_chat_conn_problem_port").to_string(),
         (LoginProblemKind::Listen, _) => {
             let port = problem.port.map(|port| port.to_string()).unwrap_or_else(|| "1457".into());
@@ -1404,22 +1400,22 @@ mod tests {
     }
 
     /// INT-1522: who holds the sign-in's port, and the port and code of one the system would not
-    /// open, are read as short words; anything else of them is left out.
+    /// open, are read; a code is a short word, and anything else of them is left out.
     #[test]
     fn a_sign_in_problem_says_who_holds_the_port_or_what_the_system_answered() {
         let problem = |value: Value| Snapshot::parse(&json!({"plans": [], "keys": [], "problem": value})).and_then(|snapshot| snapshot.problem);
         let holder = |value: Value| problem(json!({"id": "openai-codex", "kind": "port", "holder": value})).and_then(|problem| problem.holder);
         assert_eq!(holder(json!({"kind": "here"})), Some(PortHolder::Here));
         assert_eq!(holder(json!({"kind": "intcad"})), Some(PortHolder::Intcad));
-        assert_eq!(holder(json!({"kind": "program", "name": " Codex\u{7} "})), Some(PortHolder::Program("Codex".into())));
-        assert_eq!(holder(json!({"kind": "program", "name": "x".repeat(500)})), Some(PortHolder::Program("x".repeat(MAX_WORD))));
-        for none in [json!({"kind": "program"}), json!({"kind": "program", "name": "  "}), json!({"kind": "someone"}), json!("Codex"), json!(null)] {
+        for none in [json!({"kind": "program", "name": "Codex"}), json!({"kind": "someone"}), json!("Codex"), json!(null)] {
             assert_eq!(holder(none.clone()), None, "{none}");
         }
-        let listen = problem(json!({"id": "openai-codex", "kind": "listen", "port": 1457, "code": "EACCES"})).expect("a problem");
+        let listen = problem(json!({"id": "openai-codex", "kind": "listen", "port": 1457, "code": " EACCES\u{7} "})).expect("a problem");
         assert_eq!((listen.kind, listen.port, listen.code.as_deref()), (LoginProblemKind::Listen, Some(1457), Some("EACCES")));
         let odd = problem(json!({"id": "openai-codex", "kind": "listen", "port": 99999, "code": 13})).expect("a problem");
         assert_eq!((odd.port, odd.code), (None, None));
+        let long = problem(json!({"id": "openai-codex", "kind": "listen", "code": "x".repeat(500)})).expect("a problem");
+        assert_eq!(long.code, Some("x".repeat(MAX_WORD)));
         assert_eq!(problem(json!({"id": "openai-codex", "kind": "timeout"})).map(|problem| problem.kind), Some(LoginProblemKind::Timeout));
         // INT-1521: the step, the service's status and the log's path; a status that is none, a
         // step this version does not know and a path with a line break in it are left out.

@@ -543,7 +543,7 @@ The ChatGPT plan's sign-in ends with the browser calling a local port (1457; 145
 which the agent holds while it waits. A sign-in waits at most 15 minutes. It is cancelled when the
 user goes back from the Connections page, when another design is shown, and, before a sign-in
 starts, in every design not shown. When the port is taken, the page says who holds it where it
-can tell: another design's sign-in, another running Intcad's, or a program by its name.
+can tell: another design's sign-in, another running Intcad's, or another program.
 
 A sign-in that fails says at which step: it could not start, it stopped waiting for the browser,
 the sign-in service refused the last step (with its HTTP status and error code, and as a refusal
