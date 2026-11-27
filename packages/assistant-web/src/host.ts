@@ -191,8 +191,6 @@ export interface AssistantState {
   centre?: number | null;
   /** A next-step suggestion, or why there is none, for the line over the message box; `ready`: its ghost is drawn. */
   suggestion?: { label: string | null; text: string; guess: boolean; ready: boolean; id?: string } | null;
-  /** There: the primary presses in the app's window outside the page so far. Its conversation collapses on a new one. */
-  outsidePresses?: number;
   permissions: 'ask' | 'edits' | 'all';
   skill: string;
   skills: { id: string; title: string }[];
@@ -246,7 +244,7 @@ export type StringKey =
   | 'setupBody' | 'openSettings' | 'model' | 'queuedStopped' | 'sendNow' | 'sendNowTip' | 'edit'
   | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'modelRefine' | 'modelFilter' | 'modelEffort' | 'revalidate' | 'dropHint' | 'removeChip'
   | 'openPicture' | 'selectedNow'
-  | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel'
+  | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel' | 'moveBox'
   | 'reviewTitle' | 'reviewAccept' | 'reviewReject' | 'reviewMade' | 'reviewChanged' | 'reviewRemoved'
   | 'reviewAccepted' | 'reviewRejected' | 'reviewMore'
   | 'dfmCheckTitle' | 'dfmRunning' | 'dfmDone' | 'dfmCancelled' | 'dfmError' | 'dfmNotChecked'
@@ -311,6 +309,8 @@ export type Action =
   | { type: 'minimize' }
   /** At the bottom centre: how tall the page wants to be, in points (the host keeps it within `centre`). */
   | { type: 'size'; height: number }
+  /** There: the user moves the box sideways; the pointer's travel since the press, in screen units (`screenX`). */
+  | { type: 'move'; dx: number; done?: boolean }
   /** Tab (accept) or Esc in the empty message box, with a suggestion over it. */
   | { type: 'suggestion'; accept: boolean; id: string }
   | { type: 'side'; left: boolean }

@@ -151,14 +151,91 @@ fn measured_bar_honours_size_position_and_ignores_unknown_slots() {
     }
 }
 
+/// Upright at the bottom left of the view is the default, for a saved bar without an edge too: the
+/// same floating bar stood on end, its foot on the row's line above the history and its side the
+/// row's gap from the view's own left edge, its slots in order, More at its foot in a short view.
+/// The Assistant at the bottom centre keeps clear of it and is dragged no further than it. `edge:
+/// bottom` gives the row back where it was.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn the_bar_stands_upright_at_the_views_bottom_left_by_default() {
+    use crate::ui_kit::{NAV_BOTTOM, NAV_EDGE};
+    assert_eq!(NavigationBar::default().edge, Edge::Left);
+    assert_eq!(serde_json::from_value::<NavigationBar>(json!({"position": "centre"})).unwrap().edge, Edge::Left, "saved without an edge");
+    assert!(validate(&json!({"edge": "left"})).is_ok());
+    let mut h = crate::scenario::Harness::new();
+    h.app.home.open = false;
+    // The harness keeps the suite on the row; this is the default's window.
+    h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true, "navigation_bar": {"edge": "left"}}));
+    h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    crate::agent_chat::web::set_host(&mut h.app, true);
+    for (width, height) in [(1600.0, 1000.0), (900.0, 700.0)] {
+        h.call("ui.resize", json!({"width": width, "height": height}));
+        h.frames(3);
+        let layout = h.app.viewport.layout.clone().expect("the view's layout");
+        let (bar, view) = (layout.navigation, h.app.viewport.rect.expect("the view"));
+        assert!(bar.height() > 4.0 * bar.width(), "upright at {width}: {bar:?}");
+        assert_eq!((bar.left(), bar.bottom()), (view.left() + NAV_EDGE, layout.content.bottom() - NAV_BOTTOM), "the view's bottom left at {width}");
+        let ids: Vec<_> = NavigationBar::default().slots.into_iter().filter(|id| id != "separator").collect();
+        let rows: Vec<_> =
+            ids.iter().map(|id| crate::scenario::rect_of(&format!("nav:slot:{id}")).unwrap_or_else(|| panic!("{id} at {width}"))).collect();
+        assert!(
+            rows.iter().all(|row| bar.contains_rect(*row)) && rows.windows(2).all(|pair| pair[0].bottom() <= pair[1].top()),
+            "{rows:?} in {bar:?}"
+        );
+        let place = crate::scenario::rect_of("agent_chat:web").expect("the Assistant at the bottom centre");
+        assert!(
+            (place.center().x - h.ctx.content_rect().center().x).abs() < 1.0 && place.left() > bar.right(),
+            "clear of it at {width}: {place:?} {bar:?}"
+        );
+        web_move(&mut h, -90000.0);
+        let dragged = crate::scenario::rect_of("agent_chat:web").expect("the Assistant");
+        assert_eq!(dragged.left(), bar.right() + crate::shell::SHELL_GAP, "dragged left, it stops at the bar at {width}");
+        h.app.agent_chat.web_shift = 0.0;
+    }
+    // Its buttons work where it stands, and a menu opens to its right, inside the window.
+    h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+    h.frames(3);
+    let bar = h.app.viewport.layout.clone().expect("the view's layout").navigation;
+    h.step(&json!({"click": {"handle": "nav:slot:pan"}})).unwrap();
+    assert_eq!(h.app.viewport.nav, Some(crate::viewport::NavMode::Pan), "Pan from the upright bar");
+    h.step(&json!({"click": {"handle": "nav:slot:display"}})).unwrap();
+    h.frames(2);
+    let grid = crate::scenario::rect_of("view:grid").expect("the Display menu");
+    assert!(grid.left() > bar.right() && h.ctx.content_rect().contains_rect(grid), "to the bar's right, on screen: {grid:?} {bar:?}");
+    // A short view folds the last slots into More at the foot.
+    h.call("ui.resize", json!({"width": 1200.0, "height": 420.0}));
+    h.frames(3);
+    let bar = h.app.viewport.layout.clone().expect("the view's layout").navigation;
+    let more = crate::scenario::rect_of("nav:more").expect("More in a short view");
+    assert!(bar.contains_rect(more) && crate::scenario::rect_of("nav:slot:display").is_none(), "{more:?} {bar:?}");
+    // On the bottom edge it is the row again, at the bottom right beside the Assistant.
+    h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+    h.call("ui.prefs", json!({"navigation_bar": {"edge": "bottom"}}));
+    h.frames(3);
+    let layout = h.app.viewport.layout.clone().expect("the view's layout");
+    assert!(
+        layout.navigation.right() > layout.content.right() - 40.0 && layout.navigation.width() > layout.navigation.height(),
+        "{:?}",
+        layout.navigation
+    );
+}
+
+/// The page's drag of the Assistant at the bottom centre, by `dx` screen units, dropped.
+#[cfg(not(target_arch = "wasm32"))]
+fn web_move(h: &mut crate::scenario::Harness, dx: f32) {
+    crate::agent_chat::web::act(&mut h.app, &h.ctx, &json!({"type": "move", "dx": dx, "done": true}).to_string()).expect("the page moves the box");
+    h.frames(2);
+}
+
 #[test]
 fn a_bar_on_the_top_edge_sits_under_the_top_and_keeps_the_corner_controls_below_it() {
     use crate::ui_kit::NAV_BOTTOM;
-    // Older settings have no edge and keep the bar at the bottom; a bad value recovers the same way.
+    // Settings without an edge get the default, upright; a bad value recovers the same way.
     let old: NavigationBar = serde_json::from_value(json!({"position": "right"})).unwrap();
-    assert_eq!(old.edge, Edge::Bottom);
+    assert_eq!(old.edge, Edge::Left);
     let bad: NavigationBar = serde_json::from_value(json!({"edge": "sideways"})).unwrap();
-    assert_eq!(bad.edge, Edge::Bottom);
+    assert_eq!(bad.edge, Edge::Left);
     assert!(validate(&json!({"edge": "sideways"})).is_err());
     assert!(validate(&json!({"edge": "top"})).is_ok());
     let canvas = Rect::from_min_size(pos2(20.0, 30.0), vec2(900.0, 600.0));
@@ -168,7 +245,7 @@ fn a_bar_on_the_top_edge_sits_under_the_top_and_keeps_the_corner_controls_below_
             assert_eq!(serde_json::to_value(&prefs).unwrap()["edge"], if edge == Edge::Top { "top" } else { "bottom" });
             let bar = measure(canvas, &prefs, NavCaps::MODEL, |_| 50.0);
             match edge {
-                Edge::Bottom => assert_eq!(bar.rect.bottom(), canvas.bottom() - NAV_BOTTOM),
+                Edge::Bottom | Edge::Left => assert_eq!(bar.rect.bottom(), canvas.bottom() - NAV_BOTTOM),
                 Edge::Top => assert_eq!(bar.rect.top(), canvas.top() + NAV_BOTTOM),
             }
             for corner in [egui::Vec2::ZERO, vec2(120.0, 32.0)] {

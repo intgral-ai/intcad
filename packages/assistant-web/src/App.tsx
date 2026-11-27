@@ -11,6 +11,7 @@ import {
   Ellipsis,
   FileImage,
   FileText,
+  GripVertical,
   Hammer,
   KeyRound,
   Map as MapIcon,
@@ -1383,7 +1384,7 @@ function AssistantComposer({ state, onConnections, header }: { state: AssistantS
               }
             }}
           />
-          <ComposerActions className={centre ? 'flex-nowrap' : undefined}>
+          <ComposerActions className={centre ? 'flex-nowrap cursor-grab active:cursor-grabbing' : undefined}>
             <ComposerActionsStart className="gap-1">
               <DropdownMenu>
                 <DropdownMenu.Trigger variant="ghost" size="icon-sm" aria-label={strings.add} tooltip={strings.add}>
@@ -1538,19 +1539,17 @@ function AssistantBar({
       ))}
     </>
   );
-  // At the bottom centre the bar's empty part collapses the conversation, as Collapse does.
+  // At the bottom centre the bar's empty part drags the box; only Collapse collapses it.
   const centre = centred(state);
   return (
     <ChatShell.Bar className={centre ? 'relative' : undefined}>
       {/* Under the row: what is not a control (the gaps, the state badge) lets the press through to
-          it. Not a second tab stop: the bar's Collapse is the keyboard's way. */}
+          it, to drag the box. */}
       {centre && (
         <div
           aria-hidden
-          data-centre-bar-collapse
-          title={strings.collapse}
-          onClick={onCollapse}
-          className="absolute inset-0 cursor-pointer rounded-lg transition-colors duration-fast ease-out-custom hover:bg-fill-subtle motion-reduce:transition-none"
+          data-centre-bar-drag
+          className="absolute inset-0 cursor-grab rounded-lg transition-colors active:cursor-grabbing duration-fast ease-out-custom hover:bg-fill-subtle motion-reduce:transition-none"
         />
       )}
       <ChatShell.Column className={cn('flex-row items-center justify-between gap-2 py-2', centre && 'pointer-events-none relative [&_button]:pointer-events-auto')}>
@@ -1672,9 +1671,12 @@ function AssistantBar({
           {/* At the bottom centre the right rail's Assistant button shows and hides it: in the close
               button's place is Collapse, back to the message box. */}
           {centre ? (
-            <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.collapse} tooltip={strings.collapse} onClick={onCollapse}>
-              <Minimize2 />
-            </Button>
+            <>
+              <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.collapse} tooltip={strings.collapse} onClick={onCollapse}>
+                <Minimize2 />
+              </Button>
+              <Grip strings={strings} />
+            </>
           ) : (
             <Button type="button" size="icon-sm" variant="ghost" aria-label={strings.close} tooltip={strings.close} onClick={() => post({ type: 'close' })}>
               <X />
@@ -2830,6 +2832,24 @@ function PreviewLine({ line, open, strings, onExpand }: { line: Line; open: bool
   );
 }
 
+/** The grip the box at the bottom centre is dragged by, at its top right corner (the closed line's
+ *  end, the open bar's end), as Mastra's MetricsCard.DragHandle draws one. A click does nothing. */
+function Grip({ strings }: { strings: Strings }) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      data-centre-grip
+      className="shrink-0 cursor-grab active:cursor-grabbing"
+      aria-label={strings.moveBox}
+      tooltip={strings.moveBox}
+    >
+      <GripVertical />
+    </Button>
+  );
+}
+
 /** The model picker's header (Mastra's `header` slot): the connection the model runs on, and the way to sign in or add one. */
 function PickerConnection({ via, strings, onConnections }: { via: Connection | null | undefined; strings: Strings; onConnections: () => void }) {
   const account = via && 'account' in via && via.account ? via.account : null;
@@ -2903,8 +2923,6 @@ const POPUPS = [
 const OPEN = POPUPS.map(entry => entry.selector).join(', ');
 /** The popups a press outside the page closes. */
 const ON_BLUR = POPUPS.filter(entry => entry.blur).map(entry => entry.selector).join(', ');
-/** The dialogs, which keep the page as it is through a press outside it. */
-const DIALOGS = POPUPS.filter(entry => !entry.blur).map(entry => entry.selector).join(', ');
 const NATIVE_PORTALS = `${OPEN}, [role="tooltip"], [data-slot="alert-dialog-content"]`;
 
 /** A computed length we can use without guessing at unresolved units or expressions. */
@@ -2999,6 +3017,10 @@ function closePopups() {
 
 /** The headers over the message box: the line, a row that needs the user, the opened body. */
 const HEADERS = ':scope > [data-slot="composer"] > [data-slot="composer-header"]';
+/** The parts of the box at the bottom centre a press on moves it: no control, no words. */
+const EMPTY_OF_BOX = '[data-centre-bar-drag], [data-slot^="composer-actions"]';
+/** The box's grip, which drags it from anywhere on it, its icon too. */
+const GRIP = '[data-centre-grip]';
 
 /** Where a header over the message box ends at the top once its opening transition is over. */
 function topOf(header: Element) {
@@ -3071,9 +3093,6 @@ function Centre({
     else setRoom(next);
   };
   useLayoutEffect(() => fitRoom.current(false));
-  // The page lost the focus with a popup open, which that closed: the press outside the page that
-  // the host tells of next is most likely the same press, and it only closes the popup.
-  const blurClosed = useRef(false);
   // The page tells the host how tall it is; the host keeps it within `centre`. While a popup is open
   // (model picker, mode menu, a dialog) the page asks for all the room there is, from the press that
   // opens it, so the popup has room when it appears.
@@ -3226,10 +3245,7 @@ function Centre({
     };
     // A press outside the page (the model, the window) closes its menus, as one inside would;
     // switching to another app to copy a key does not close the dialog it goes into.
-    const blur = () => {
-      blurClosed.current = Boolean(document.querySelector(ON_BLUR));
-      closePopups();
-    };
+    const blur = () => closePopups();
     // A mode picked from its menu closes the menu.
     const picked = (event: globalThis.MouseEvent) => {
       if ((event.target as Element | null)?.closest('[role="menuitemradio"]')) window.setTimeout(closePopups, 120);
@@ -3290,22 +3306,51 @@ function Centre({
       delete native.__assistantX11Unmasked;
     };
   }, []);
-  // A primary press in the app's window outside the page (the model, the rail, the toolbar, the
-  // browser), as the host counts them: not `blur`, which switching to another app fires too. It
-  // closes the page's popups and collapses the opened conversation, unless all it does is close a
-  // popup, or a dialog, the connections page (a sign-in may be under way there) or New chat's
-  // question is open.
-  const presses = state.outsidePresses ?? 0;
-  const pressesSeen = useRef(presses);
+  // A press on the grip or an empty part of the box (the gap in the message box's bottom row; open,
+  // the bar's empty part) that goes sideways moves the box along the bottom of the window; the host keeps it
+  // there. A press that does not go a few points keeps its meaning, and the click a move ends in is
+  // not one. Screen units, as the view moves under the pointer meanwhile.
   useEffect(() => {
-    const pressed = presses > pressesSeen.current;
-    pressesSeen.current = presses;
-    if (!pressed) return;
-    const popup = blurClosed.current || Boolean(document.querySelector(ON_BLUR));
-    blurClosed.current = false;
-    closePopups();
-    if (open && !popup && !conn && !none && !state.confirmNew && !document.querySelector(DIALOGS)) collapse();
-  }, [presses]);
+    const element = measured.current;
+    if (!element) return;
+    let press: { id: number; x: number; dx: number; moving: boolean } | null = null;
+    const swallow = (event: Event) => event.stopPropagation();
+    const down = (event: PointerEvent) => {
+      if (event.button !== 0 || !(event.target instanceof Element)) return;
+      const at = event.target.closest(GRIP) ?? (event.target.matches(EMPTY_OF_BOX) ? event.target : null);
+      if (!at) return;
+      press = { id: event.pointerId, x: event.screenX, dx: 0, moving: false };
+      at.setPointerCapture(event.pointerId);
+    };
+    const move = (event: PointerEvent) => {
+      if (press?.id !== event.pointerId) return;
+      press.dx = event.screenX - press.x;
+      if (!press.moving && Math.abs(press.dx) < 4) return;
+      press.moving = true;
+      post({ type: 'move', dx: press.dx });
+    };
+    const up = (event: PointerEvent) => {
+      if (press?.id !== event.pointerId) return;
+      const { dx, moving } = press;
+      press = null;
+      if (!moving) return;
+      post({ type: 'move', dx, done: true });
+      window.addEventListener('click', swallow, { capture: true, once: true });
+      window.setTimeout(() => window.removeEventListener('click', swallow, { capture: true }));
+    };
+    element.addEventListener('pointerdown', down);
+    element.addEventListener('pointermove', move);
+    element.addEventListener('pointerup', up);
+    element.addEventListener('pointercancel', up);
+    element.addEventListener('lostpointercapture', up);
+    return () => {
+      element.removeEventListener('pointerdown', down);
+      element.removeEventListener('pointermove', move);
+      element.removeEventListener('pointerup', up);
+      element.removeEventListener('pointercancel', up);
+      element.removeEventListener('lostpointercapture', up);
+    };
+  }, []);
   // The conversation opens only once the view has its height: opened into a view still growing, it
   // would be cut off. It waits for the view to be that tall, not for a time; a host that never grows
   // has it opened after a second all the same.
@@ -3435,6 +3480,7 @@ function Centre({
               <ComposerHeaderContent className="min-w-0">
                 <PreviewLine line={preview} open={open} strings={strings} onExpand={() => roomFirst(() => setShown(true))} />
               </ComposerHeaderContent>
+              <Grip strings={strings} />
             </ComposerHeaderRow>
           )}
         </div>

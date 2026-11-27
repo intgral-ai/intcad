@@ -241,7 +241,7 @@ fn slot_count(app: &SolveApp, ui: &mut egui::Ui, stage: Rect, bar: Rect) {
     };
     let y = match app.preferences.navigation_bar.edge {
         Edge::Top => bar.bottom() + t.space_8,
-        Edge::Bottom => bar.top() - t.space_8 - size.y,
+        Edge::Bottom | Edge::Left => bar.top() - t.space_8 - size.y,
     };
     let rect = Rect::from_min_size(egui::pos2(x, y), size);
     ui.painter().with_clip_rect(stage).galley(rect.min, galley, view.text_dim);
@@ -520,12 +520,16 @@ fn option_grid(bar: &mut NavigationBar, ui: &mut egui::Ui, first: usize) {
 }
 
 fn anchor_option(bar: &mut NavigationBar, ui: &mut egui::Ui) {
-    let selected = usize::from(bar.edge == Edge::Bottom) * 3
-        + match bar.position {
-            Position::Left => 0,
-            Position::Centre => 1,
-            Position::Right => 2,
-        };
+    // Upright is none of the six places of a row.
+    let selected = match bar.edge {
+        Edge::Top => 0,
+        Edge::Bottom => 3,
+        Edge::Left => 6,
+    } + match bar.position {
+        Position::Left => 0,
+        Position::Centre => 1,
+        Position::Right => 2,
+    };
     let names = [
         "navbar.custom.anchor.top_left",
         "navbar.custom.anchor.top_centre",

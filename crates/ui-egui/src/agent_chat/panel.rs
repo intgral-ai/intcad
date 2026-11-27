@@ -297,21 +297,17 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
     app.agent_chat.web_centre = Some(most);
     let width = CENTRE_WIDTH.min(bounds.width().max(0.0));
     let height = app.agent_chat.web_height.unwrap_or(CENTRE_HEIGHT).min(most);
-    let left = crate::shell::within(window.center().x - width / 2.0, bounds.left(), bounds.right() - width);
+    // Where the user moved it along the bottom (`web::act`, `move`), from the window's centre, shown
+    // within the room there is now: a narrower window or a panel beside it pushes it in for as long
+    // as it is there. Never moved, it stays centred on the window.
+    let centred = window.center().x - width / 2.0;
+    let room = (bounds.left() - centred, bounds.right() - width - centred);
+    app.agent_chat.web_shift_room = Some(room);
+    let left = centred + crate::shell::within(app.agent_chat.web_shift, room.0, room.1);
     let rect = Rect::from_min_size(pos2(left, bounds.bottom() - height), vec2(width, height));
     if !rect.is_positive() {
         app.agent_chat.panel_rect = None;
         return;
-    }
-    // The page's native view takes its own presses: a primary press that reaches the app is outside
-    // the Assistant (the model, the rail, the toolbar, the browser), and the page collapses its
-    // conversation on it. Switching to another app is no press. Not while the picture viewer the
-    // page opened has the window, and only while the page has asked for all the room it may take
-    // (its conversation or a menu open): with the box closed a press changes nothing on the page,
-    // and telling it would send the whole state again on every press in the window.
-    let opened = app.agent_chat.web_height.is_some_and(|asked| asked + 2.0 >= most);
-    if opened && app.agent_chat.gallery.is_none() && ctx.input(|input| input.pointer.primary_pressed()) {
-        app.agent_chat.web_presses = app.agent_chat.web_presses.saturating_add(1);
     }
     if app.agent_chat.detection.is_none() && app.agent_chat.detecting.is_none() {
         refresh(app, &ctx);

@@ -1,0 +1,10 @@
+{
+  "en": { "ui.agent_chat_web_move": "Drag to move" },
+  "ja": { "ui.agent_chat_web_move": "ドラッグして移動" },
+  "zh": { "ui.agent_chat_web_move": "拖动以移动" },
+  "ar": { "ui.agent_chat_web_move": "اسحب للنقل" },
+  "he": { "ui.agent_chat_web_move": "גרירה להזזה" },
+  "vi": { "ui.agent_chat_web_move": "Kéo để di chuyển" },
+  "de": { "ui.agent_chat_web_move": "Zum Verschieben ziehen" },
+  "ko": { "ui.agent_chat_web_move": "끌어서 이동" }
+}

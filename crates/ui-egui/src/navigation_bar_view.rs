@@ -1,4 +1,5 @@
-//! Measured single-row navigation bar. Commands own all view changes.
+//! Measured navigation bar: one row along the view's bottom or top, or stood upright at its
+//! bottom left (the default). Commands own all view changes.
 use crate::navigation::NavCaps;
 use crate::navigation_bar::{self, Edge, Idle, Kind, Labels, MenuDisplay, NavigationBar, Position, Slot};
 use crate::theme::Tokens;
@@ -15,6 +16,8 @@ pub(crate) struct BarLayout {
     pub more: Rect,
     pub labels: bool,
     pub values: bool,
+    /// Upright (`Edge::Left`), or a row along the view's bottom or top.
+    pub edge: Edge,
 }
 
 /// Drop menu values, then labels, before moving a suffix into More. All rectangles use logical UI points.
@@ -27,7 +30,9 @@ fn measure_row(content: Rect, prefs: &NavigationBar, caps: NavCaps, label_width:
     let metrics = NavigationMetrics::for_size(prefs.size);
     let button = prefs.size.points();
     let inset = NAV_BORDER + NAV_PADDING;
-    let mut result = BarLayout { rect: Rect::NOTHING, slots: Vec::new(), overflow: Vec::new(), more: Rect::NOTHING, labels: false, values: true };
+    let edge = if prefs.edge == navigation_bar::Edge::Top { navigation_bar::Edge::Top } else { navigation_bar::Edge::Bottom };
+    let mut result =
+        BarLayout { rect: Rect::NOTHING, slots: Vec::new(), overflow: Vec::new(), more: Rect::NOTHING, labels: false, values: true, edge };
     let height = metrics.height();
     let available = content.width() - 2.0 * NAV_EDGE;
     if !content.is_finite() || available < button + 2.0 * inset || content.height() < height + NAV_BOTTOM {
@@ -90,9 +95,9 @@ fn measure_row(content: Rect, prefs: &NavigationBar, caps: NavCaps, label_width:
         Position::Right => content.right() - NAV_EDGE - row_width,
     };
     // The same gap from either edge of the view.
-    let top = match prefs.edge {
-        navigation_bar::Edge::Bottom => content.bottom() - height - NAV_BOTTOM,
+    let top = match edge {
         navigation_bar::Edge::Top => content.top() + NAV_BOTTOM,
+        _ => content.bottom() - height - NAV_BOTTOM,
     };
     result.rect = Rect::from_min_size(pos2(left, top), vec2(row_width, height));
     let mut x = left + inset;
@@ -122,8 +127,8 @@ pub(crate) fn editor_layout(stage: Rect, prefs: &NavigationBar, label_width: imp
     };
     // The same inset from the top or bottom edge as from the side, as in the live view.
     let y = match prefs.edge {
-        navigation_bar::Edge::Top => stage.top() + ui_kit::NAV_BORDER + ui_kit::NAV_STAGE_INSET,
-        navigation_bar::Edge::Bottom => stage.bottom() - ui_kit::NAV_BORDER - ui_kit::NAV_STAGE_INSET - bar.rect.height(),
+        Edge::Top => stage.top() + ui_kit::NAV_BORDER + ui_kit::NAV_STAGE_INSET,
+        Edge::Bottom | Edge::Left => stage.bottom() - ui_kit::NAV_BORDER - ui_kit::NAV_STAGE_INSET - bar.rect.height(),
     };
     let delta = pos2(x, y) - bar.rect.min;
     bar.rect = bar.rect.translate(delta);
@@ -136,7 +141,67 @@ pub(crate) fn editor_layout(stage: Rect, prefs: &NavigationBar, label_width: imp
     bar
 }
 
+/// Upright (`edge: left`): the same floating bar stood on end at the bottom left of the view, its
+/// foot on the row's line and its side the row's gap from the view's own left edge (`left`), not
+/// from the room the browser leaves. Its slots run from the top; in a view too short for all of
+/// them the last ones fold into More at its foot, as the row folds them at its end.
+fn measure_column(left: f32, content: Rect, prefs: &NavigationBar, caps: NavCaps) -> BarLayout {
+    use ui_kit::{NAV_BORDER, NAV_BOTTOM, NAV_EDGE, NAV_GAP, NAV_PADDING, NAV_SEPARATOR};
+    let button = prefs.size.points();
+    let inset = NAV_BORDER + NAV_PADDING;
+    let mut result = BarLayout {
+        rect: Rect::NOTHING,
+        slots: Vec::new(),
+        overflow: Vec::new(),
+        more: Rect::NOTHING,
+        labels: false,
+        values: false,
+        edge: Edge::Left,
+    };
+    let room = content.height() - 2.0 * NAV_BOTTOM;
+    if !content.is_finite() || !left.is_finite() || room < button + 2.0 * inset {
+        return result;
+    }
+    let slots: Vec<_> =
+        prefs.slots.iter().take(navigation_bar::MAX_SLOTS).filter_map(|id| navigation_bar::find(id)).filter(|slot| slot.available(caps)).collect();
+    if slots.is_empty() {
+        return result;
+    }
+    let height = |slot: &Slot| if slot.kind == Kind::Separator { NAV_SEPARATOR } else { button };
+    let mut visible = slots.len();
+    let mut column = slots.iter().map(|slot| height(slot)).sum::<f32>() + NAV_GAP * slots.len().saturating_sub(1) as f32 + 2.0 * inset;
+    if column > room {
+        visible = 0;
+        column = button + 2.0 * inset;
+        for slot in &slots {
+            let next = column + height(slot) + NAV_GAP;
+            if next > room {
+                break;
+            }
+            column = next;
+            visible += 1;
+        }
+        result.overflow.extend(slots.iter().skip(visible).copied());
+    }
+    result.rect = Rect::from_min_size(pos2(left + NAV_EDGE, content.bottom() - NAV_BOTTOM - column), vec2(button + 2.0 * inset, column));
+    let mut y = result.rect.top() + inset;
+    for slot in slots.iter().take(visible) {
+        result.slots.push((*slot, Rect::from_min_size(pos2(result.rect.left() + inset, y), vec2(button, height(slot)))));
+        y += height(slot) + NAV_GAP;
+    }
+    if !result.overflow.is_empty() {
+        result.more = Rect::from_min_size(pos2(result.rect.left() + inset, y), vec2(button, button));
+    }
+    result
+}
+
 pub(crate) fn measured(app: &SolveApp, ctx: &egui::Context, content: Rect) -> BarLayout {
+    if app.preferences.navigation_bar.edge == Edge::Left {
+        // The view's own left edge: under the floating cards, which are drawn over its controls.
+        // The Render workspace keeps it beside its panels.
+        let left = if crate::render_workspace::active(app) { content.left() } else { app.viewport.rect.map_or(content.left(), |view| view.left()) };
+        return measure_column(left, content, &app.preferences.navigation_bar, navigation_bar::canvas_caps(app));
+    }
     let t = Tokens::get();
     // The Assistant at the bottom centre of the window has the bar's default place: with it there
     // (the preference, whether the Assistant is open, closed or not started yet), a bar at the
@@ -271,7 +336,7 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
                     menu: false,
                 },
             );
-            ui_kit::navigation_tooltip(&response, bar.rect, app.preferences.navigation_bar.edge, app.tr("navbar.more"), None);
+            ui_kit::navigation_tooltip(&response, bar.rect, bar.edge, app.tr("navbar.more"), None);
             crate::scenario::publish_target("nav:more", response.rect);
             context_menu(app, &response, None);
             if response.clicked() {
@@ -283,10 +348,12 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
     if !open.is_empty() && anchor.is_positive() {
         let child_popup_open = egui::Popup::is_any_open(ui.ctx());
         let ctx = ui.ctx().clone();
-        // Menus open into the view: up from a bar at the bottom, down from one at the top.
-        let (pivot, at) = match app.preferences.navigation_bar.edge {
+        // Menus open into the view: up from a bar at the bottom, down from one at the top, and
+        // to the right of an upright one, up from the slot's foot.
+        let (pivot, at) = match bar.edge {
             Edge::Bottom => (Align2::RIGHT_BOTTOM, anchor.right_top() - vec2(0.0, ui_kit::NAV_POPUP_GAP)),
             Edge::Top => (Align2::RIGHT_TOP, anchor.right_bottom() + vec2(0.0, ui_kit::NAV_POPUP_GAP)),
+            Edge::Left => (Align2::LEFT_BOTTOM, pos2(bar.rect.right() + ui_kit::NAV_POPUP_GAP, anchor.bottom())),
         };
         let menu = Container::new(&ctx, Surface::Popup).area(menu_id.with("popup")).order(egui::Order::Foreground).pivot(pivot).fixed_pos(at).show(
             &ctx,
@@ -379,7 +446,8 @@ pub(crate) fn paint_row(
                             } else {
                                 bar.labels
                             },
-                            menu: slot.kind == Kind::Menu,
+                            // Upright, a menu's slot is as square as the others: no room for its chevron.
+                            menu: slot.kind == Kind::Menu && bar.edge != Edge::Left,
                         };
                         if editing.is_some() {
                             ui_kit::navigation_button_editable(ui, *bounds, button, true)
@@ -405,7 +473,7 @@ pub(crate) fn paint_row(
             });
         }
         // The settings' preview keeps its tips above, wherever the bar sits in the view.
-        let edge = if editing.is_some() { Edge::Bottom } else { app.preferences.navigation_bar.edge };
+        let edge = if editing.is_some() { Edge::Bottom } else { bar.edge };
         responses.push((index, *slot, tooltip(app, response, slot, hidden, bar.rect, edge)));
     }
     responses
