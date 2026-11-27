@@ -206,6 +206,10 @@ pub struct StartContext {
 pub trait ChatBackend {
     /// What arrived since the last call.
     fn poll(&mut self) -> Vec<Event>;
+    /// Poll even without inbound traffic when a pending operation reaches its deadline.
+    fn poll_wake_after(&self) -> Option<std::time::Duration> {
+        None
+    }
     /// Send a message (the panel only sends one after [`Event::Ready`] and while no turn runs).
     fn prompt(&mut self, parts: &[PromptPart]);
     /// Stop the message being answered; open permission questions count as cancelled.

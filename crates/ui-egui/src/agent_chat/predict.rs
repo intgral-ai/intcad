@@ -786,6 +786,9 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
         app.agent_chat.predict.said.entry(why).or_insert(now);
     }
     step(app, ctx, now, acted);
+    if let Some(wait) = app.agent_chat.predict.backend.as_ref().and_then(|b| b.poll_wake_after()) {
+        ctx.request_repaint_after(wait);
+    }
     // The pause ends, or a failed session's wait runs out, with no input to wake the window.
     if let Some(wait) = wake_in(app, now) {
         ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait.max(0.05)));

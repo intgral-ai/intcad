@@ -35,6 +35,8 @@ enum Pending {
 
 /// Give a cancelled prompt time to finish before disconnecting an unresponsive agent.
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
+/// Time for the built-in guessing runtime to finish cleanup, not merely remove its session ID.
+const PREDICTION_CLOSE_GRACE: Duration = Duration::from_secs(5);
 
 /// The ACP prompt frame borrows the text and base64 from the composer. Preflight can therefore
 /// reject an oversized prompt without copying all of its attachments into JSON values.
@@ -192,6 +194,8 @@ pub struct AcpBackend {
     permissions: HashMap<u64, Value>,
     next_key: u64,
     cancelling: Option<(u64, Instant)>,
+    prediction_close_started: Option<Instant>,
+    prediction_open_queued: bool,
     prompt_refused: Option<ProcessIoError>,
     exited: bool,
     config_pending: Option<(u64, String)>,
@@ -356,6 +360,8 @@ impl AcpBackend {
             permissions: HashMap::new(),
             next_key: 0,
             cancelling: None,
+            prediction_close_started: None,
+            prediction_open_queued: false,
             prompt_refused: None,
             exited: false,
             config_pending: None,
@@ -405,6 +411,33 @@ impl AcpBackend {
     /// sessions of next-step suggestions. Once the agent refuses one, sessions open as the chat's.
     pub fn lean_sessions(&mut self, note: &str) {
         self.lean = Some(note.to_string());
+    }
+
+    fn is_builtin_guesser(&self) -> bool {
+        self.built_in && self.lean.is_some()
+    }
+
+    fn close_prediction(&mut self, session: String) {
+        if acp::closes_sessions(&self.init) && self.prediction_close_started.is_none() {
+            self.prediction_close_started = Some(Instant::now());
+            self.request(Pending::CloseSession, "session/close", json!({"sessionId": session}));
+        }
+    }
+
+    fn open_queued_prediction(&mut self) {
+        if self.prediction_open_queued
+            && self.prediction_close_started.is_none()
+            && !self.pending.values().any(|what| matches!(what, Pending::SessionNew | Pending::RetiredSessionNew))
+        {
+            self.prediction_open_queued = false;
+            self.new_session();
+        }
+    }
+
+    fn stop_guesser_after_close_failure(&mut self, why: &str) -> Event {
+        log::warn!("next-step suggestions: {why}; stopping the guessing process");
+        self.proc.shutdown(false);
+        self.finish_exit(vec![crate::i18n::tr("ui.agent_chat_exited").to_string()])
     }
 
     fn new_session(&mut self) {
@@ -604,11 +637,10 @@ impl AcpBackend {
                         None => out.push(Event::Error("session/new: no sessionId".into())),
                     },
                     (Pending::RetiredSessionNew, result) => {
-                        if acp::closes_sessions(&self.init)
-                            && let Some(session) = result.ok().and_then(|v| v.get("sessionId")?.as_str().map(str::to_owned))
-                        {
-                            self.request(Pending::CloseSession, "session/close", json!({"sessionId": session}));
+                        if let Some(session) = result.ok().and_then(|v| v.get("sessionId")?.as_str().map(str::to_owned)) {
+                            self.close_prediction(session);
                         }
+                        self.open_queued_prediction();
                     }
                     (Pending::Prompt, Ok(v)) => {
                         if let Some(usage) = acp::turn_usage(&v) {
@@ -619,8 +651,15 @@ impl AcpBackend {
                     }
                     // Signed in: try the session again.
                     (Pending::Authenticate, Ok(_)) => self.new_session(),
+                    (Pending::CloseSession, result) if self.prediction_close_started.take().is_some() => {
+                        if result.is_ok() {
+                            self.open_queued_prediction();
+                        } else {
+                            out.push(self.stop_guesser_after_close_failure("prediction session close failed"));
+                        }
+                    }
                     (Pending::SetMode | Pending::SetModel | Pending::CloseSession, Ok(_)) => {}
-                    // The session is not used any more either way.
+                    // Other agents that offer close keep their existing best-effort behavior.
                     (Pending::CloseSession, Err((_, message))) => log::debug!("the agent did not close a session: {message}"),
                     (Pending::SetConfig, Ok(v)) => {
                         if let Some((request_id, config_id)) = self.config_pending.take()
@@ -750,6 +789,8 @@ impl AcpBackend {
         self.session = None;
         self.pending.clear();
         self.cancelling = None;
+        self.prediction_close_started = None;
+        self.prediction_open_queued = false;
         self.config_pending = None;
         Event::Exited { tail }
     }
@@ -758,6 +799,10 @@ impl AcpBackend {
         let mut out = Vec::new();
         if self.exited {
             return out;
+        }
+        // A late reply must not reopen the old process after its cleanup deadline.
+        if self.prediction_close_started.is_some_and(|started| now.saturating_duration_since(started) >= PREDICTION_CLOSE_GRACE) {
+            return vec![self.stop_guesser_after_close_failure("prediction session close timed out")];
         }
         if let Some(error) = self.prompt_refused.take() {
             let key = match error {
@@ -774,6 +819,9 @@ impl AcpBackend {
                     let read = if self.built_in { acp::parse_builtin(&l) } else { acp::parse(&l) };
                     if let Some(m) = read {
                         self.handle(m, &mut out);
+                    }
+                    if self.exited {
+                        break;
                     }
                 }
                 Ok(FromAgent::Exited(tail)) => {
@@ -796,6 +844,10 @@ impl AcpBackend {
 impl ChatBackend for AcpBackend {
     fn poll(&mut self) -> Vec<Event> {
         self.poll_at(Instant::now())
+    }
+
+    fn poll_wake_after(&self) -> Option<Duration> {
+        self.prediction_close_started.map(|at| PREDICTION_CLOSE_GRACE.saturating_sub(at.elapsed()))
     }
 
     fn prompt(&mut self, parts: &[PromptPart]) {
@@ -864,6 +916,17 @@ impl ChatBackend for AcpBackend {
     }
 
     fn new_session(&mut self) {
+        if self.is_builtin_guesser() {
+            if self.exited || self.pending.values().any(|what| *what == Pending::SessionNew) {
+                return;
+            }
+            if self.session.is_some() {
+                self.retire_prediction_session();
+            }
+            self.prediction_open_queued = true;
+            self.open_queued_prediction();
+            return;
+        }
         if self.pending.values().any(|p| *p == Pending::Prompt) {
             self.cancel();
         }
@@ -960,7 +1023,7 @@ impl ChatBackend for AcpBackend {
     }
 
     fn connections(&mut self, request: connections::Request) {
-        if !self.built_in {
+        if !self.built_in || self.exited {
             return;
         }
         if self.initialized {
@@ -980,9 +1043,12 @@ impl ChatBackend for AcpBackend {
     }
 
     fn retire_prediction_session(&mut self) {
-        self.cancel();
-        if let Some(session) = self.session.take().filter(|_| acp::closes_sessions(&self.init)) {
-            self.request(Pending::CloseSession, "session/close", json!({"sessionId": session}));
+        self.prediction_open_queued = false;
+        if !self.permissions.is_empty() || self.pending.values().any(|what| *what == Pending::Prompt) {
+            self.cancel();
+        }
+        if let Some(session) = self.session.take() {
+            self.close_prediction(session);
         }
         self.cancelling = None;
         self.pending.retain(|_, request| !matches!(request, Pending::Prompt | Pending::SetConfig));
@@ -1299,12 +1365,73 @@ mod tests {
         ids.into_iter().map(|(_, what)| *what).collect()
     }
 
-    #[test]
-    fn retiring_a_guess_closes_even_a_late_session_open_without_publishing_ready() {
+    fn prediction_backend() -> AcpBackend {
         let mut backend = builtin_backend(false).unwrap();
         backend.lean_sessions("guess");
+        backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentCapabilities":{"sessionCapabilities":{"close":{}}}})) }, &mut Vec::new());
+        backend
+    }
+
+    fn opened_prediction() -> AcpBackend {
+        let mut backend = prediction_backend();
+        ChatBackend::new_session(&mut backend);
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"old"})) }, &mut Vec::new());
+        backend
+    }
+
+    #[test]
+    fn g86_a_guess_waits_for_the_close_ack_before_opening_one_replacement() {
+        let mut backend = opened_prediction();
+        let before = backend.next_id;
+        ChatBackend::new_session(&mut backend);
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(sent(&backend), [Pending::CloseSession], "no replacement or duplicate close before the ACK");
+        assert_eq!(backend.next_id, before + 1);
+        assert!(backend.poll_at(Instant::now()).is_empty());
+        backend.handle(Incoming::Reply { id: before + 1, result: Ok(json!({})) }, &mut Vec::new());
+        assert_eq!(sent(&backend), [Pending::SessionNew]);
+        assert_eq!(backend.next_id, before + 2, "duplicate requests coalesced into one replacement");
+    }
+
+    #[test]
+    fn g86_a_close_error_retires_the_guesser_without_opening_a_replacement() {
+        let mut backend = opened_prediction();
+        let close_id = backend.next_id + 1;
+        ChatBackend::new_session(&mut backend);
         let mut events = Vec::new();
-        backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentCapabilities":{"sessionCapabilities":{"close":{}}}})) }, &mut events);
+        backend.handle(Incoming::Reply { id: close_id, result: Err((-32603, "cleanup failed".into())) }, &mut events);
+        events.extend(backend.poll_at(Instant::now()));
+        assert!(matches!(events.as_slice(), [Event::Exited { .. }]), "{events:?}");
+        assert!(backend.pid().is_none());
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(backend.next_id, close_id, "no request after or during failed cleanup");
+        assert!(backend.pending.is_empty());
+    }
+
+    #[test]
+    fn g86_an_expired_close_retires_the_guesser_and_ignores_the_late_ack() {
+        let mut backend = opened_prediction();
+        let close_id = backend.next_id + 1;
+        ChatBackend::new_session(&mut backend);
+        let started = backend.prediction_close_started.unwrap();
+        assert!(backend.poll_wake_after().is_some(), "silent cleanup still schedules a poll");
+        assert!(backend.poll_at(started + Duration::from_millis(4_999)).is_empty());
+        ChatBackend::new_session(&mut backend);
+        let mut events = backend.poll_at(started + Duration::from_secs(5));
+        assert!(matches!(events.as_slice(), [Event::Exited { .. }]), "{events:?}");
+        assert!(backend.pid().is_none());
+        backend.handle(Incoming::Reply { id: close_id, result: Ok(json!({})) }, &mut events);
+        assert_eq!(events.len(), 1, "no event from the old process");
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(backend.next_id, close_id, "no request after or during expired cleanup");
+        assert!(backend.pending.is_empty());
+        assert!(backend.poll_wake_after().is_none());
+    }
+
+    #[test]
+    fn retiring_a_guess_closes_even_a_late_session_open_without_publishing_ready() {
+        let mut backend = prediction_backend();
+        let mut events = Vec::new();
         backend.connections(setup("fake"));
         backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(connections_snapshot("in")) }, &mut events);
         assert!(matches!(events.pop(), Some(Event::PredictionSetup(_))));
@@ -1312,13 +1439,27 @@ mod tests {
         let stale = backend.next_id;
         backend.retire_prediction_session();
         ChatBackend::new_session(&mut backend);
-        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"current"})) }, &mut events);
-        assert!(matches!(events.last(), Some(Event::Ready { .. })));
-        events.clear();
+        assert_eq!(sent(&backend), [Pending::RetiredSessionNew], "an unresolved session must be accounted for before replacing it");
         backend.handle(Incoming::Reply { id: stale, result: Ok(json!({"sessionId":"stale"})) }, &mut events);
         assert!(events.is_empty(), "stale session must not become ready");
-        assert_eq!(backend.session.as_deref(), Some("current"));
+        assert!(backend.session.is_none());
         assert_eq!(sent(&backend), [Pending::CloseSession]);
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({})) }, &mut events);
+        assert_eq!(sent(&backend), [Pending::SessionNew]);
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"current"})) }, &mut events);
+        assert!(matches!(events.last(), Some(Event::Ready { .. })));
+        assert_eq!(backend.session.as_deref(), Some("current"));
+    }
+
+    #[test]
+    fn g86_retirement_withdraws_a_replacement_queued_during_close() {
+        let mut backend = opened_prediction();
+        ChatBackend::new_session(&mut backend);
+        let close_id = backend.next_id;
+        backend.retire_prediction_session();
+        backend.handle(Incoming::Reply { id: close_id, result: Ok(json!({})) }, &mut Vec::new());
+        assert!(backend.pending.is_empty(), "credentials must be set up again before opening a session");
+        assert_eq!(backend.next_id, close_id);
     }
 
     /// B14, on the wire: after `initialize` the built-in agent is handed its keys, and no session
