@@ -984,7 +984,7 @@ fn reported(items: &[(&str, &str, &str, &str, &str)], checked: u64) -> crate::ti
             values: vec![(found.to_string(), Some(required.to_string()))],
         })
         .collect();
-    crate::tickets::Report { run: String::new(), outcome: "done".into(), counts, freshness: "current".into(), items }
+    crate::tickets::Report { run: String::new(), done: true, outcome: "done".into(), counts, freshness: "current".into(), items }
 }
 
 const RELIEF: (&str, &str, &str, &str, &str) = ("advisory", "sm.bend_relief", "Body1", "1.2 mm", "2 mm");
@@ -1061,6 +1061,10 @@ fn the_assistants_finished_runs_its_check_by_itself_and_the_findings_come_back_u
     assert_eq!(asked, [(Actor::Agent, Some(0)), (Actor::Agent, Some(1))], "the Assistant's work asked for both, with the round");
     let page = told(&mut h);
     assert_eq!(ticket_of(&page, &id)["rounds"], json!({"round": 1, "of": 3, "stopped": "clean"}));
+    // The check's kind is carried on the ticket and its lines, and the page is told its word.
+    assert_eq!((ticket_of(&page, &id)["check"]["kind"].as_str(), page["kinds"]["dfm"].is_string()), (Some("dfm"), true));
+    let kinds: Vec<Option<tickets::CheckKind>> = tickets::events(&root, Some(&id)).unwrap().iter().filter(|e| e.action.starts_with("check_")).map(|e| e.kind).collect();
+    assert!(kinds.len() == 6 && kinds.iter().all(|kind| *kind == Some(tickets::CheckKind::Dfm)), "{kinds:?}");
     let prompts = agent.prompts().len();
     h.frames(6);
     assert_eq!(agent.prompts().len(), prompts, "a clean end tells the Assistant nothing");

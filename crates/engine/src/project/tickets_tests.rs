@@ -621,7 +621,7 @@ fn counted(run: &str, counts: &[(&str, u64)]) -> RunResult {
 fn round(root: &Path, id: &str, result: RunResult) -> Ticket {
     finished(root, id, Some("Fixed what the check found"), &[], false).unwrap();
     let asked = auto_check(root, id).unwrap();
-    assert_eq!(asked.check.as_ref().map(|c| (c.state, c.by)), Some((CheckState::Asked, Actor::Agent)));
+    assert_eq!(asked.check.as_ref().map(|c| (c.state, c.by, c.kind)), Some((CheckState::Asked, Actor::Agent, CheckKind::Dfm)));
     check_started(root, id, &result.run).unwrap();
     check_ran(root, id, result).unwrap()
 }
@@ -881,6 +881,7 @@ fn a_version_1_folder_is_read_and_a_later_step_writes_version_2() {
     assert_eq!(bracket.parts, [part("component", "Bracket")]);
     assert_eq!((bracket.check.clone(), bracket.finished), (None, true), "the agent's ask became its 'finished': no run starts without a person");
     assert_eq!(tickets[2].check.as_ref().and_then(|c| c.run.as_deref()), Some("run-7"));
+    assert_eq!(tickets[2].check.as_ref().map(|c| (c.kind, c.by)), Some((CheckKind::Dfm, Actor::Person)), "a check without a kind is a DFM check, a person's");
     assert!(tickets.iter().all(|t| !t.deleted && t.waits.is_empty() && t.attachments.is_empty() && t.recheck.is_none()));
     assert_eq!(events(&root, None).unwrap().len(), 4, "the record of layout 1 reads as it is");
     // The file is left as it was until a step changes the ticket; then it is layout 2.

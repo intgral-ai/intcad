@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[cfg_attr(target_arch = "wasm32", allow(unused_imports))]
-use solidcraft_engine::project::tickets::{self, CheckState, Event, State as TicketState, Ticket};
+use solidcraft_engine::project::tickets::{self, CheckKind, CheckState, Event, State as TicketState, Ticket};
 
 use crate::SolveApp;
 #[cfg_attr(target_arch = "wasm32", allow(unused_imports))]
@@ -43,11 +43,13 @@ pub struct RunItem {
     pub values: Vec<(String, Option<String>)>,
 }
 
-/// A run's report as a ticket's check reads it, whatever the check: the run, its own outcome word,
-/// its counts by finding state, its freshness, and each rule it reported.
+/// A run's report as a ticket's check reads it, whatever the check: the run, whether it finished
+/// (`done`), its own outcome word, its counts by finding state, its freshness, and each rule it
+/// reported.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Report {
     pub run: String,
+    pub done: bool,
     pub outcome: String,
     pub counts: BTreeMap<String, u64>,
     pub freshness: String,
@@ -74,6 +76,8 @@ pub(crate) struct StandInRuns {
     pub started: usize,
     pub hold: bool,
     running: Option<Report>,
+    /// The runs that ended, as the page reads them back.
+    reports: BTreeMap<String, Report>,
 }
 
 /// What the host keeps between frames for a Tickets view.
@@ -230,24 +234,21 @@ pub fn refresh(app: &mut SolveApp) {
     let stamp = (stamp.document_id, stamp.revision);
     if app.tickets.stamp.as_ref() != Some(&stamp) {
         app.tickets.stamp = Some(stamp);
-        let bound: Vec<String> = app.tickets.tickets.iter().filter_map(|t| t.check.as_ref().and_then(|c| c.run.clone())).collect();
-        let opened: Vec<String> = app.tickets.record.iter().filter(|e| e.action == "check_ran").filter_map(|e| e.run.clone()).collect();
+        let bound: Vec<(String, CheckKind)> =
+            app.tickets.tickets.iter().filter_map(|t| t.check.as_ref().and_then(|c| Some((c.run.clone()?, c.kind)))).collect();
+        let opened: Vec<(String, CheckKind)> =
+            app.tickets.record.iter().filter(|e| e.action == "check_ran").filter_map(|e| Some((e.run.clone()?, e.kind.unwrap_or_default()))).collect();
         let mut runs = bound.clone();
         runs.extend(opened.iter().filter(|run| !bound.contains(run)).cloned());
         let mut freshness = BTreeMap::new();
         let mut items = BTreeMap::new();
-        for run in runs {
-            // Read straight from the session: a run the project no longer holds is no toast here.
-            let Ok(reply) = app.session.execute("inspect.dfm", &serde_json::json!({ "run": run })) else { continue };
-            let card = crate::dfm_chat::Card::from_inspect(&reply);
-            if card.run_id != run {
-                continue;
+        for (run, kind) in runs {
+            let Some(report) = read_run(app, kind, &run) else { continue };
+            if opened.iter().any(|(opened, _)| *opened == run) && report.done {
+                items.insert(run.clone(), report.items);
             }
-            if opened.contains(&run) && card.status == "done" {
-                items.insert(run.clone(), run_items(&card));
-            }
-            if bound.contains(&run) && !card.freshness.is_empty() {
-                freshness.insert(run, card.freshness);
+            if bound.iter().any(|(bound, _)| *bound == run) && !report.freshness.is_empty() {
+                freshness.insert(run, report.freshness);
             }
         }
         app.tickets.freshness = freshness;
@@ -273,29 +274,6 @@ pub(crate) fn mark_stale(app: &mut SolveApp, root: &std::path::Path) {
             log::warn!("{id} was not marked for a re-check: {error}");
         }
     }
-}
-
-/// A run's items: each rule the run reported, with the parts its findings are on and their values.
-#[cfg(not(target_arch = "wasm32"))]
-fn run_items(card: &crate::dfm_chat::Card) -> Vec<RunItem> {
-    card.rules
-        .iter()
-        .map(|rule| {
-            let mut item = RunItem { rule: rule.rule_id.clone(), state: rule.state.clone(), count: rule.count, parts: Vec::new(), values: Vec::new() };
-            for finding in card.findings.iter().filter(|f| f.rules.contains(&rule.rule_id)) {
-                if !finding.body.is_empty() && !item.parts.contains(&finding.body) {
-                    item.parts.push(finding.body.clone());
-                }
-                if let Some(measured) = &finding.measured {
-                    let value = (format!("{} {}", measured.value, measured.unit), finding.requirement.as_ref().map(|req| format!("{} {}", req.value, req.unit)));
-                    if !item.values.contains(&value) {
-                        item.values.push(value);
-                    }
-                }
-            }
-            item
-        })
-        .collect()
 }
 
 /// A run's item as the page reads it (`CheckItem` in host.ts): what was found against what is
@@ -746,11 +724,14 @@ pub fn note(app: &mut SolveApp) -> Option<String> {
     }
 }
 
-/// Start the run of a ticket's check through the Review panel's own controlled entry: the run it
-/// reserved, or why it did not start (the entry's own refusal). While a check started by hand is
-/// still running, wait for it to end.
+// What follows to `report` is the one part of the tickets that knows a kind of check: where a run
+// starts (`start_run`, `run_result`) and where its findings are read (`read_run`, `report`).
+
+/// Start the run of a ticket's check of `kind`. A DFM check goes through the Review panel's own
+/// controlled entry: the run it reserved, or why it did not start (the entry's own refusal); while
+/// a check started by hand is still running, wait for it to end.
 #[cfg(not(target_arch = "wasm32"))]
-fn start_run(app: &mut SolveApp) -> Begun {
+fn start_run(app: &mut SolveApp, kind: CheckKind) -> Begun {
     #[cfg(test)]
     if let Some(runs) = app.tickets.stand_in.as_mut() {
         runs.started += 1;
@@ -764,35 +745,65 @@ fn start_run(app: &mut SolveApp) -> Begun {
             None => Begun::Refused("no stand-in answer left".into()),
         };
     }
-    if app.dfm_review.running {
-        return Begun::Wait;
-    }
-    crate::dfm_review::start(app);
-    match (app.dfm_review.running, app.dfm_review.mapped_run.clone()) {
-        (true, Some(run)) => Begun::Started(run),
-        _ => Begun::Refused(app.dfm_review.error.clone().unwrap_or_else(|| tr("ui.tickets_check_not_started").to_string())),
+    match kind {
+        CheckKind::Dfm => {
+            if app.dfm_review.running {
+                return Begun::Wait;
+            }
+            crate::dfm_review::start(app);
+            match (app.dfm_review.running, app.dfm_review.mapped_run.clone()) {
+                (true, Some(run)) => Begun::Started(run),
+                _ => Begun::Refused(app.dfm_review.error.clone().unwrap_or_else(|| tr("ui.tickets_check_not_started").to_string())),
+            }
+        }
     }
 }
 
-/// Where the run of a ticket's check stands: `None` while it runs; its report once it has one;
-/// why it did not finish otherwise. The Review panel's own poll reads the run each frame.
+/// Where the run of a ticket's check of `kind` stands: `None` while it runs; its report once it
+/// has one; why it did not finish otherwise. For a DFM check the Review panel's own poll reads the
+/// run each frame.
 #[cfg(not(target_arch = "wasm32"))]
-fn run_result(app: &mut SolveApp, run: &str) -> Option<Result<Report, String>> {
+fn run_result(app: &mut SolveApp, kind: CheckKind, run: &str) -> Option<Result<Report, String>> {
     #[cfg(test)]
     if let Some(runs) = app.tickets.stand_in.as_mut() {
         if runs.hold {
             return None;
         }
-        return Some(runs.running.take().filter(|report| report.run == run).ok_or_else(|| "the stand-in run is gone".to_string()));
+        let ended = runs.running.take().filter(|report| report.run == run).ok_or_else(|| "the stand-in run is gone".to_string());
+        if let Ok(report) = &ended {
+            runs.reports.insert(report.run.clone(), report.clone());
+        }
+        return Some(ended);
     }
-    if app.dfm_review.running {
-        return None;
+    match kind {
+        CheckKind::Dfm => {
+            if app.dfm_review.running {
+                return None;
+            }
+            let card = app.dfm_review.card.clone().filter(|card| !run.is_empty() && card.run_id == run);
+            Some(match (app.dfm_review.error.clone(), card) {
+                (None, Some(card)) => Ok(report(&card)),
+                (error, _) => Err(error.unwrap_or_else(|| tr("ui.dfm_review_did_not_finish").to_string())),
+            })
+        }
     }
-    let card = app.dfm_review.card.clone().filter(|card| !run.is_empty() && card.run_id == run);
-    Some(match (app.dfm_review.error.clone(), card) {
-        (None, Some(card)) => Ok(report(&card)),
-        (error, _) => Err(error.unwrap_or_else(|| tr("ui.dfm_review_did_not_finish").to_string())),
-    })
+}
+
+/// A run of a check of `kind` as the project holds it, or none (a run it no longer holds is no
+/// toast here): for a DFM check, read straight from the session.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_run(app: &mut SolveApp, kind: CheckKind, run: &str) -> Option<Report> {
+    #[cfg(test)]
+    if let Some(runs) = app.tickets.stand_in.as_ref() {
+        return runs.reports.get(run).cloned();
+    }
+    match kind {
+        CheckKind::Dfm => {
+            let reply = app.session.execute("inspect.dfm", &serde_json::json!({ "run": run })).ok()?;
+            let card = crate::dfm_chat::Card::from_inspect(&reply);
+            (card.run_id == run).then(|| report(&card))
+        }
+    }
 }
 
 /// A run's report as a ticket keeps it: the run's own words (its card state `done`, or its outcome
@@ -801,7 +812,30 @@ fn run_result(app: &mut SolveApp, run: &str) -> Option<Result<Report, String>> {
 fn report(card: &crate::dfm_chat::Card) -> Report {
     let counts = card.counts().as_object().map(|counts| counts.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64()?))).collect()).unwrap_or_default();
     let outcome = card.outcome.clone().filter(|outcome| outcome != "current").unwrap_or_else(|| card.status.clone());
-    Report { run: card.run_id.clone(), outcome, counts, freshness: card.freshness.clone(), items: run_items(card) }
+    Report { run: card.run_id.clone(), done: card.status == "done", outcome, counts, freshness: card.freshness.clone(), items: run_items(card) }
+}
+
+/// A run's items: each rule the run reported, with the parts its findings are on and their values.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_items(card: &crate::dfm_chat::Card) -> Vec<RunItem> {
+    card.rules
+        .iter()
+        .map(|rule| {
+            let mut item = RunItem { rule: rule.rule_id.clone(), state: rule.state.clone(), count: rule.count, parts: Vec::new(), values: Vec::new() };
+            for finding in card.findings.iter().filter(|f| f.rules.contains(&rule.rule_id)) {
+                if !finding.body.is_empty() && !item.parts.contains(&finding.body) {
+                    item.parts.push(finding.body.clone());
+                }
+                if let Some(measured) = &finding.measured {
+                    let value = (format!("{} {}", measured.value, measured.unit), finding.requirement.as_ref().map(|req| format!("{} {}", req.value, req.unit)));
+                    if !item.values.contains(&value) {
+                        item.values.push(value);
+                    }
+                }
+            }
+            item
+        })
+        .collect()
 }
 
 /// Each frame: send what is owed to the Assistant; when a ticket's check is asked for (by a person,
@@ -819,14 +853,12 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
     send_owed(app, ctx);
     match app.tickets.checking.clone() {
         None => {
-            let asked = app
-                .tickets
-                .tickets
-                .iter()
-                .find(|t| t.state == TicketState::InProgress && !t.deleted && t.check.as_ref().is_some_and(|c| c.state == CheckState::Asked))
-                .map(|t| t.id.clone());
-            let Some(id) = asked else { return };
-            match start_run(app) {
+            let asked = app.tickets.tickets.iter().find_map(|t| {
+                let check = t.check.as_ref().filter(|c| c.state == CheckState::Asked && t.state == TicketState::InProgress && !t.deleted)?;
+                Some((t.id.clone(), check.kind))
+            });
+            let Some((id, kind)) = asked else { return };
+            match start_run(app, kind) {
                 Begun::Wait => {}
                 Begun::Started(run) => {
                     app.tickets.checking = Some((id.clone(), run.clone()));
@@ -839,7 +871,8 @@ pub fn tick(app: &mut SolveApp, ctx: &egui::Context) {
             }
         }
         Some((id, run)) => {
-            let Some(result) = run_result(app, &run) else { return };
+            let kind = app.tickets.tickets.iter().find(|t| t.id == id).and_then(|t| t.check.as_ref()).map(|c| c.kind).unwrap_or_default();
+            let Some(result) = run_result(app, kind, &run) else { return };
             app.tickets.checking = None;
             let moved = app.tickets.tickets.iter().find(|t| t.id == id).is_none_or(|t| t.state != TicketState::InProgress || t.deleted);
             if moved {
@@ -974,6 +1007,7 @@ pub fn page_state(app: &mut SolveApp) -> String {
         "record": tickets.record.iter().map(|event| page_event(event, &tickets.pictures)).collect::<Vec<_>>(),
         "freshness": tickets.freshness,
         "items": tickets.items.iter().map(|(run, items)| (run.clone(), items.iter().map(page_item).collect::<serde_json::Value>())).collect::<serde_json::Map<_, _>>(),
+        "kinds": kinds(),
         "error": tickets.error,
         "refusal": tickets.refusal,
         "answered": tickets.answered.iter().map(|(n, ask, ok)| serde_json::json!({"n": n, "ask": ask, "ok": ok})).collect::<Vec<_>>(),
@@ -985,6 +1019,12 @@ pub fn page_state(app: &mut SolveApp) -> String {
         "assistant": assistant,
     })
     .to_string()
+}
+
+/// Each kind of check's word, by kind, as its lines and properties name it (「DFM 检查」).
+#[cfg(not(target_arch = "wasm32"))]
+fn kinds() -> serde_json::Map<String, serde_json::Value> {
+    [(CheckKind::Dfm, "ui.dfm_check.title")].into_iter().map(|(kind, key)| (kind.as_str().to_string(), serde_json::Value::from(tr(key)))).collect()
 }
 
 /// A file of the project as the page reads one (`TicketAttachment` in host.ts): its path, its

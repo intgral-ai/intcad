@@ -149,7 +149,25 @@ fn person() -> Actor {
     Actor::Person
 }
 
-/// A ticket's check: today one sheet-metal DFM run, bound by its run id.
+/// What kind of check a ticket's check is: today the one kind, the sheet-metal DFM run. The rounds,
+/// the gates and the record are the same for every kind; the app starts a run and reads its
+/// findings by the kind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckKind {
+    #[default]
+    Dfm,
+}
+
+impl CheckKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CheckKind::Dfm => "dfm",
+        }
+    }
+}
+
+/// A ticket's check, bound by its run id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Check {
     pub state: CheckState,
@@ -157,6 +175,9 @@ pub struct Check {
     /// project's automatic checks are on ([`auto_check`]).
     #[serde(default = "person")]
     pub by: Actor,
+    /// What kind of check it is; a file without one holds a DFM check.
+    #[serde(default)]
+    pub kind: CheckKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
     /// The run's own outcome word, as the run record has it.
@@ -311,6 +332,9 @@ pub struct Event {
     /// The Assistant's rounds as this step left them, on the lines of a check it asked for.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rounds: Option<Rounds>,
+    /// What kind of check, on a check's lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<CheckKind>,
     pub revision: u64,
 }
 
@@ -554,6 +578,7 @@ fn commit(root: &Path, ticket: &Ticket, from: Option<State>, line: Line) -> Resu
         attachments: line.attachments,
         view: line.view,
         rounds: line.rounds,
+        kind: ticket.check.as_ref().map(|check| check.kind).filter(|_| matches!(line.action, "check_asked" | "check_started" | "check_ran" | "check_refused")),
         revision: ticket.revision,
     };
     let appended = append(root, &event);
@@ -1296,9 +1321,19 @@ pub fn mark_recheck(root: &Path, id: &str, why: &str) -> Result<Ticket, TicketEr
     })
 }
 
-/// A new check of `by`'s asking: asked for, not started yet.
+/// A new check of `by`'s asking, of the kind a ticket's check is: asked for, not started yet.
 fn asked(by: Actor) -> Check {
-    Check { state: CheckState::Asked, by, run: None, outcome: None, counts: BTreeMap::new(), freshness: None, reason: None, at: now() }
+    Check {
+        state: CheckState::Asked,
+        by,
+        kind: CheckKind::default(),
+        run: None,
+        outcome: None,
+        counts: BTreeMap::new(),
+        freshness: None,
+        reason: None,
+        at: now(),
+    }
 }
 
 /// A person starts the check of a ticket in progress (跑检查, 请求检查), seen at revision `seen`;
@@ -1532,6 +1567,7 @@ pub fn comment(root: &Path, id: &str, actor: Actor, text: &str, files: &[String]
         attachments: files,
         view: view && actor == Actor::Agent,
         rounds: None,
+        kind: None,
         revision: ticket.revision,
     };
     let appended = append(root, &event);
@@ -1584,6 +1620,7 @@ pub fn comment_view(root: &Path, id: &str, at: &str, png: &[u8]) -> Result<Event
         attachments: vec![path],
         view: false,
         rounds: None,
+        kind: None,
         revision: ticket.revision,
     };
     let appended = append(root, &event);
@@ -1642,11 +1679,12 @@ pub fn check_started(root: &Path, id: &str, run: &str) -> Result<Ticket, TicketE
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "a check runs for the ticket in progress"));
         }
-        let by = ticket.check.as_ref().map_or(Actor::Person, |check| check.by);
+        let (by, kind) = ticket.check.as_ref().map_or((Actor::Person, CheckKind::default()), |check| (check.by, check.kind));
         if by == Actor::Agent && going(ticket) {
             line.rounds = ticket.rounds.clone();
         }
-        ticket.check = Some(Check { state: CheckState::Running, by, run, outcome: None, counts: BTreeMap::new(), freshness: None, reason: None, at: now() });
+        ticket.check =
+            Some(Check { state: CheckState::Running, by, kind, run, outcome: None, counts: BTreeMap::new(), freshness: None, reason: None, at: now() });
         Ok(())
     })
 }
@@ -1660,10 +1698,11 @@ pub fn check_refused(root: &Path, id: &str, reason: &str) -> Result<Ticket, Tick
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "a check runs for the ticket in progress"));
         }
-        let (run, by) = ticket.check.as_ref().map_or((None, Actor::Person), |check| (check.run.clone(), check.by));
+        let (run, by, kind) = ticket.check.as_ref().map_or((None, Actor::Person, CheckKind::default()), |check| (check.run.clone(), check.by, check.kind));
         ticket.check = Some(Check {
             state: CheckState::Refused,
             by,
+            kind,
             run,
             outcome: None,
             counts: BTreeMap::new(),
@@ -1692,13 +1731,14 @@ pub fn check_ran(root: &Path, id: &str, result: RunResult) -> Result<Ticket, Tic
         if ticket.state != State::InProgress {
             return Err(refused(ticket, "a check runs for the ticket in progress"));
         }
-        let by = ticket.check.as_ref().map_or(Actor::Person, |check| check.by);
+        let (by, kind) = ticket.check.as_ref().map_or((Actor::Person, CheckKind::default()), |check| (check.by, check.kind));
         let rounds = ticket.rounds.clone().filter(|_| by == Actor::Agent && going(ticket));
         let left = counts_text(&result.counts);
         ticket.recheck = None;
         ticket.check = Some(Check {
             state: CheckState::Ran,
             by,
+            kind,
             run: Some(result.run),
             outcome: Some(result.outcome),
             counts: result.counts,
