@@ -49,7 +49,7 @@ impl IdentityDomain {
     pub fn new(environment: &str, client_id: &str, product_origin: &str) -> Option<Self> {
         if !valid_text(environment, 64)
             || !valid_text(client_id, 256)
-            || client_id.bytes().any(|byte| byte.is_ascii_whitespace())
+            || client_id.chars().any(char::is_whitespace)
             || !valid_text(product_origin, 512)
             || !product_origin.starts_with("https://")
         {
@@ -402,12 +402,9 @@ impl IdentityLifecycle {
             // An explicit login may have committed while this sign-out waited.
             self.revoked.store(true, Ordering::Release);
             let store = self.store()?;
-            let observed = self.last_login_generation.load(Ordering::Acquire);
-            let generation = match self.load(store.as_ref()) {
-                Ok(record) => record.map_or(observed, |record| record.login_generation),
-                Err(_) if observed != 0 => observed,
-                Err(error) => return Err(error),
-            };
+            // An unreadable store might contain a newer login that we have never seen.
+            let generation =
+                self.load(store.as_ref())?.map_or_else(|| self.last_login_generation.load(Ordering::Acquire), |record| record.login_generation);
             if generation == 0 {
                 return Ok(SignOutOutcome { credentials_cleared: true });
             }
@@ -508,7 +505,7 @@ impl IdentityLifecycle {
                     self.cool_down(attempt, None)?;
                     return Err(IdentityError::Protocol);
                 }
-                Ok(response) => match Self::rotated_record(current.record, response, issued_at_unix, self.clock.now_unix_seconds()) {
+                Ok(response) => match Self::rotated_record(current.record, response, issued_at_unix) {
                     Ok(record) => {
                         store.store_pending(&record)?;
                         self.clear_attempt()?;
@@ -527,7 +524,7 @@ impl IdentityLifecycle {
         self.verify_pending(&pending, wait)
     }
 
-    fn rotated_record(mut old: StoredIdentity, response: RefreshResponse, issued_at_unix: u64, now: u64) -> Result<StoredIdentity, IdentityError> {
+    fn rotated_record(mut old: StoredIdentity, response: RefreshResponse, issued_at_unix: u64) -> Result<StoredIdentity, IdentityError> {
         if response.provider_account_id != old.provider_account_id {
             return Err(IdentityError::SessionChanged);
         }
@@ -536,11 +533,13 @@ impl IdentityLifecycle {
         if !valid_text(access, MAX_TOKEN_BYTES) || !valid_text(refresh, MAX_TOKEN_BYTES) {
             return Err(IdentityError::Protocol);
         }
+        // Do not discard a replacement refresh token just because the valid access
+        // lifetime elapsed in transit. Pending verification checks freshness separately.
         let expires_at_unix = match response.expires_in {
             Some(lifetime) => issued_at_unix.checked_add(lifetime.as_secs()),
             None => access_token_expiry_unix(access),
         }
-        .filter(|&expiry| expiry > now && expiry > issued_at_unix)
+        .filter(|&expiry| expiry > issued_at_unix)
         .ok_or(IdentityError::Protocol)?;
         old.token_generation = old.token_generation.checked_add(1).ok_or(IdentityError::Storage)?;
         old.access_token = access.to_owned();

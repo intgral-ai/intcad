@@ -85,7 +85,7 @@ type SendHook = Box<dyn FnOnce() + Send>;
 #[derive(Default)]
 struct Script {
     sends: AtomicU64,
-    replies: Mutex<VecDeque<Reply>>,
+    replies: Mutex<VecDeque<(&'static str, Reply)>>,
     checks: Mutex<VecDeque<Verify>>,
     on_send: Mutex<Option<SendHook>>,
 }
@@ -93,12 +93,13 @@ struct Script {
 impl IdentityTransport for Arc<Script> {
     fn refresh(&self, client_id: &str, token: &Secret) -> Reply {
         assert_eq!(client_id, "client");
-        assert_eq!(token.expose_secret(), "old-refresh");
         self.sends.fetch_add(1, Ordering::Relaxed);
         if let Some(hook) = self.on_send.lock().unwrap().take() {
             hook();
         }
-        self.replies.lock().unwrap().pop_front().unwrap()
+        let (expected_token, reply) = self.replies.lock().unwrap().pop_front().unwrap();
+        assert_eq!(token.expose_secret(), expected_token);
+        reply
     }
 }
 
@@ -151,7 +152,7 @@ impl Fixture {
     }
 
     fn reply(&self, reply: Reply) {
-        self.script.replies.lock().unwrap().push_back(reply);
+        self.script.replies.lock().unwrap().push_back(("old-refresh", reply));
     }
 
     fn success(&self) {
@@ -264,13 +265,23 @@ fn invalid_grant_signs_out_and_writes_the_barrier_before_delete() {
 fn a_barrier_write_failure_keeps_the_record() {
     let f = Fixture::new();
     f.login().unwrap();
-    // A symlink is an invalid journal slot on Unix; on every platform a directory
-    // in the target slot cannot be opened for writing as a file.
-    std::fs::create_dir(f.root.join("identity/revoked.0")).unwrap();
-    assert_eq!(f.lifecycle.sign_out().unwrap_err(), IdentityError::Storage);
-    assert_eq!(f.record().token_generation, 1);
+    f.login().unwrap(); // Retires login 1 in revoked.0, leaving revoked.1 as the next write target.
+    f.due();
+    f.reply(Err(RefreshTransportError::Terminal));
+    let root = f.root.clone();
+    *f.script.on_send.lock().unwrap() = Some(Box::new(move || {
+        std::fs::create_dir(root.join("identity/revoked.1")).unwrap();
+        // Reads still succeed; the directory only blocks the next durable write.
+        assert_eq!(IdentityJournal::new(root).unwrap().read_revocation().unwrap().unwrap().login_generation, 1);
+    }));
+    let before = f.record();
+    let events_before = f.store.lock().unwrap().events.len();
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Storage);
+    assert_eq!(f.refreshes(), 1);
+    assert_eq!(f.journal().read_revocation().unwrap().unwrap().login_generation, 1);
+    assert_eq!(f.record(), before);
     assert_eq!(f.ensure().unwrap_err(), IdentityError::SignedOut);
-    assert_eq!(f.store.lock().unwrap().events.last(), Some(&("active", None)));
+    assert_eq!(f.store.lock().unwrap().events.len(), events_before);
 }
 
 #[test]
@@ -337,6 +348,7 @@ fn domains_with_different_environments_or_origins_have_different_keys() {
     assert_ne!(base, key("prod", "https://product.example"));
     assert_ne!(base, key("test", "https://other.example"));
     assert!(IdentityDomain::new("test", "bad client", "https://product.example").is_none());
+    assert!(IdentityDomain::new("test", "bad\u{2003}client", "https://product.example").is_none());
     assert!(IdentityDomain::new("test", "client", "http://product.example").is_none());
 }
 
@@ -405,6 +417,33 @@ fn a_separate_lifecycle_observes_the_durable_barrier_after_delete_failure() {
 }
 
 #[test]
+fn sign_out_with_an_unreadable_current_login_does_not_revoke_only_the_observed_generation() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    assert_eq!(f.ensure().unwrap().login_generation(), 1);
+    let other = IdentityLifecycle::with_identity_store(
+        IdentityDomain::new("test", "client", "https://product.example").unwrap(),
+        Box::new(Store(f.store.clone(), f.root.clone())),
+        Box::new(f.script.clone()),
+        Box::new(f.script.clone()),
+        Box::new(f.clock.clone()),
+        f.root.clone(),
+    )
+    .unwrap();
+    other.adopt_login("provider", Secret::new("other-access"), Secret::new("other-refresh"), 100, 200, "binding").unwrap();
+    let revocation_before = f.journal().read_revocation().unwrap();
+    let events_before = f.store.lock().unwrap().events.len();
+    f.store.lock().unwrap().unreadable = true;
+    let outcome = f.lifecycle.sign_out();
+    f.store.lock().unwrap().unreadable = false;
+    assert_eq!(outcome, Err(IdentityError::Storage));
+    assert_eq!(f.journal().read_revocation().unwrap(), revocation_before);
+    assert_eq!(f.store.lock().unwrap().events.len(), events_before);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::SignedOut);
+    assert_eq!(other.ensure(IdentityTrigger::Background, WAIT).unwrap().login_generation(), 2);
+}
+
+#[test]
 fn a_contended_refresh_file_lock_obeys_zero_wait_without_sending() {
     let f = Fixture::new();
     f.login().unwrap();
@@ -456,4 +495,43 @@ fn a_rotated_pair_with_too_little_time_to_use_is_saved_but_not_published() {
     assert_eq!(f.record().refresh_token, "new-refresh");
     assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
     assert_eq!(f.refreshes(), 1);
+}
+
+#[test]
+fn a_pair_that_expires_during_exchange_is_saved_and_used_for_recovery() {
+    let f = Fixture::new();
+    f.login().unwrap();
+    f.due();
+    f.reply(Ok(RefreshResponse {
+        access_token: Secret::new("expired-access"),
+        refresh_token: Secret::new("replacement-refresh"),
+        provider_account_id: "provider".to_owned(),
+        expires_in: Some(Duration::from_secs(3)),
+    }));
+    let clock = f.clock.clone();
+    *f.script.on_send.lock().unwrap() = Some(Box::new(move || {
+        clock.wall.store(174, Ordering::Relaxed);
+        clock.millis.store(74_000, Ordering::Relaxed);
+    }));
+    // No verifier replies are queued for the already-expired bearer.
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::Transient);
+    let record = f.record();
+    assert!(record.pending);
+    assert_eq!(record.expires_at_unix, 173);
+    assert_eq!(record.access_token, "expired-access");
+    assert_eq!(record.refresh_token, "replacement-refresh");
+    f.script.replies.lock().unwrap().push_back((
+        "replacement-refresh",
+        Ok(RefreshResponse {
+            access_token: Secret::new("recovered-access"),
+            refresh_token: Secret::new("recovered-refresh"),
+            provider_account_id: "provider".to_owned(),
+            expires_in: Some(Duration::from_secs(120)),
+        }),
+    ));
+    f.verifies(Some("binding"));
+    let lease = f.ensure().unwrap();
+    assert_eq!(lease.access_token().expose_secret(), "recovered-access");
+    assert_eq!((lease.login_generation(), lease.token_generation()), (1, 3));
+    assert_eq!(f.refreshes(), 2);
 }
