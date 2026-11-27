@@ -383,30 +383,69 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v
 }
 
+/// Every command, built once: the gate, the control channel and execution all resolve ids
+/// through this list, so a request cannot be judged on one id and run as another.
+fn all_commands() -> &'static [&'static CommandSpec] {
+    static ALL: std::sync::OnceLock<Vec<&'static CommandSpec>> = std::sync::OnceLock::new();
+    ALL.get_or_init(command_specs)
+}
+
+/// Commands the window answers itself, outside the registry. The agent may call them too, and
+/// they read: a pick touches neither the document, the selection nor undo. Kept in step with the
+/// control channel's own dispatch, which intercepts them before `SolveApp::run`.
+pub const WINDOW_COMMANDS: &[&str] = &["view.pick"];
+
+/// The registered id `id` names: surrounding whitespace removed, exact match first, then
+/// ASCII-case-insensitive, plus the window-answered commands above. This is the one resolution
+/// rule for the agent gate, the control channel and execution; `None` means no command is named
+/// and nothing may run under it.
+pub fn resolve_command_id(id: &str) -> Option<&'static str> {
+    let id = id.trim();
+    WINDOW_COMMANDS.iter().copied().find(|w| w.eq_ignore_ascii_case(id)).or_else(|| find_command(id).map(|c| c.id))
+}
+
 pub fn find_command(id: &str) -> Option<&'static CommandSpec> {
-    let all = command_specs();
-    all.iter().find(|c| c.id == id).or_else(|| all.iter().find(|c| c.id.eq_ignore_ascii_case(id))).copied()
+    let id = id.trim();
+    all_commands().iter().find(|c| c.id == id).or_else(|| all_commands().iter().find(|c| c.id.eq_ignore_ascii_case(id))).copied()
 }
 
 /// The end of an unknown command's error: up to three ids like `id`, nearest first. Ids a few
 /// letters away (`solid.extrud` → `solid.extrude`) come before ids that end in the same word
 /// (`file.open` → `doc.open`). Empty when nothing is close.
 pub(crate) fn did_you_mean(id: &str) -> String {
+    suggest_command_ids(id, false)
+}
+
+/// Suggestions for read-only descriptions also include alternative verbs in the same namespace.
+pub(crate) fn describe_suggestions(id: &str) -> String {
+    suggest_command_ids(id, true)
+}
+
+fn same_namespace_alternative(id: &str, candidate: &str) -> bool {
+    let Some((namespace, verb)) = id.rsplit_once('.') else { return false };
+    let Some((other_namespace, other_verb)) = candidate.rsplit_once('.') else { return false };
+    namespace == other_namespace
+        && verb != other_verb
+        && [["add", "create", "new"].as_slice(), &["delete", "remove"]].iter().any(|group| group.contains(&verb) && group.contains(&other_verb))
+}
+
+fn suggest_command_ids(id: &str, include_alternatives: bool) -> String {
     let id = id.to_ascii_lowercase();
     if id.len() > 64 {
         return String::new();
     }
     let last = |s: &str| s.rsplit('.').next().unwrap_or(s).to_string();
     let near = (id.chars().count() / 4).max(2);
-    let mut found: Vec<(bool, usize, &str)> = command_specs()
+    let mut found: Vec<_> = command_specs()
         .iter()
         .filter_map(|c| {
             let d = edit_distance(&id, c.id);
-            (d <= near || last(&id) == last(c.id)).then_some((d > near, d, c.id))
+            let alternative = include_alternatives && same_namespace_alternative(&id, c.id);
+            (alternative || d <= near || last(&id) == last(c.id)).then_some((!alternative, d > near, d, c.id))
         })
         .collect();
     found.sort();
-    let ids: Vec<String> = found.iter().take(3).map(|(_, _, c)| format!("`{c}`")).collect();
+    let ids: Vec<String> = found.iter().take(3).map(|(_, _, _, c)| format!("`{c}`")).collect();
     match ids.as_slice() {
         [] => String::new(),
         [one] => format!(" (did you mean {one}?)"),

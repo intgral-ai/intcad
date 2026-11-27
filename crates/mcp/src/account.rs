@@ -1,0 +1,634 @@
+//! Defensive logical-operation identity and credit accounting for MCP tools.
+//!
+//! One external MCP tool call is one logical operation. A `batch` is admitted once as a whole,
+//! however many commands it sends to the engine, and a forwarded DFM/Review request reuses that
+//! outer identity instead of buying a second admission. The host supplies the context: JSON-RPC
+//! request ids, tool-call ids and run ids are data and never authority.
+
+use std::time::Duration;
+
+use serde_json::{Value, json};
+use solidcraft_engine::entitlement::{
+    Admission, BillingPort, BillingResult, BudgetTable, Capability, ConservativeDeadline, EntryCategory, MonotonicInstant, OperationId,
+    OperationStore, OperationStoreError, Refusal, RefusalCode, ReviewOperation, RunId, TrustedContext, UpperBound,
+};
+
+use crate::backend::Backend;
+
+/// Host-minted identity for one external MCP tool call.
+///
+/// `operation` comes from the host's authenticated path, never from the wire. The context carries
+/// no grant; only [`BillingPort::admit`] can return one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCallContext {
+    /// The authenticated host context this call was minted from. `None` is a test/direct-local
+    /// construction and never enough for a forwarded host bridge.
+    trusted: Option<TrustedContext>,
+    operation: OperationId,
+    capability: Capability,
+    entry: EntryCategory,
+    remaining: Option<Duration>,
+    deadline: Option<ConservativeDeadline>,
+    now: Option<MonotonicInstant>,
+    admission: Option<Admission>,
+    nested: bool,
+}
+
+impl ToolCallContext {
+    /// Identity supplied by the host after it minted (or recovered) the logical operation.
+    pub fn new(operation: OperationId, capability: Capability, entry: EntryCategory) -> Self {
+        Self { trusted: None, operation, capability, entry, remaining: None, deadline: None, now: None, admission: None, nested: false }
+    }
+
+    /// The production host bridge constructor.
+    ///
+    /// The operation, capability, entry, account, installation and session binding all come from
+    /// one [`TrustedContext`] minted by the host. Wire data cannot build this type, so a forwarded
+    /// call cannot claim authority a request body did not have.
+    pub fn from_trusted(trusted: TrustedContext) -> Self {
+        let operation = trusted.operation().clone();
+        let capability = trusted.capability();
+        let entry = trusted.entry();
+        Self { trusted: Some(trusted), operation, capability, entry, remaining: None, deadline: None, now: None, admission: None, nested: false }
+    }
+
+    /// The remaining authorization measured by the host for this request.
+    pub fn with_safe_stop(mut self, remaining: Duration) -> Self {
+        self.remaining = Some(remaining);
+        self
+    }
+
+    /// The host's conservative deadline, used only to prove a late settlement is past expiry.
+    pub fn with_deadline(mut self, deadline: ConservativeDeadline) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// The host's monotonic reading for the settlement decision.
+    pub fn with_now(mut self, now: MonotonicInstant) -> Self {
+        self.now = Some(now);
+        self
+    }
+
+    /// A continuation inside the same outer operation. It never admits or settles again.
+    ///
+    /// This is sealed to the crate's tests until Task 8/9 bind the parent's admission and
+    /// deadline into a production forwarding context. A production context cannot set
+    /// `nested`, so an external caller cannot use it to skip admission.
+    #[cfg(test)]
+    fn nested_context(&self, operation: OperationId) -> Self {
+        Self {
+            trusted: self.trusted.clone(),
+            operation,
+            capability: self.capability,
+            entry: self.entry,
+            remaining: self.remaining,
+            deadline: self.deadline.clone(),
+            now: self.now,
+            admission: self.admission.clone(),
+            nested: true,
+        }
+    }
+
+    /// A nested continuation is valid only with a real parent admission and an authorization
+    /// window that is still active. Without both, a forwarded call is refused until Task 9.
+    fn has_active_parent(&self) -> bool {
+        let admitted = self.admission.as_ref().is_some_and(|admission| matches!(admission, Admission::NewlyAdmitted { .. }));
+        let remaining = self.remaining.is_some_and(|remaining| !remaining.is_zero());
+        let deadline_active = match (self.deadline.as_ref(), self.now) {
+            (Some(deadline), Some(now)) => deadline.remaining(now).is_some(),
+            _ => false,
+        };
+        admitted && remaining && deadline_active
+    }
+
+    pub fn operation(&self) -> &OperationId {
+        &self.operation
+    }
+
+    pub fn capability(&self) -> Capability {
+        self.capability
+    }
+
+    pub fn entry(&self) -> EntryCategory {
+        self.entry
+    }
+
+    /// The authenticated host context, when this call came from the host bridge rather than a
+    /// test/direct-local constructor.
+    pub fn trusted(&self) -> Option<&TrustedContext> {
+        self.trusted.as_ref()
+    }
+
+    /// Whether this call carries a provable account/installation/session binding minted by the
+    /// host. A forwarded bridge call requires it; request fields cannot supply it.
+    pub fn is_host_bound(&self) -> bool {
+        self.trusted.as_ref().is_some_and(TrustedContext::is_provable)
+    }
+
+    pub fn deadline(&self) -> Option<&ConservativeDeadline> {
+        self.deadline.as_ref()
+    }
+
+    pub fn now(&self) -> Option<MonotonicInstant> {
+        self.now
+    }
+}
+
+/// How one metered call settled, or why it never ran.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallOutcome {
+    /// A protocol, notification, render or catalog helper; it maps to no Intcad logical command.
+    Free,
+    Succeeded,
+    PartialRetained,
+    FailedNoEffect,
+    /// The call may have run; its outcome is not provable. Never retry it.
+    Unknown,
+    /// Attendance refused before dispatch.
+    Refused(RefusalCode),
+    /// The operation already exists; an original may have run. Never dispatch again.
+    AlreadyExists,
+}
+
+/// A tool reply plus the logical operation it belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MeteredReply {
+    value: Value,
+    operation: OperationId,
+    outcome: CallOutcome,
+    context: ToolCallContext,
+}
+
+impl MeteredReply {
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
+
+    pub fn into_value(self) -> Value {
+        self.value
+    }
+
+    pub fn operation_id(&self) -> &OperationId {
+        &self.operation
+    }
+
+    pub fn outcome(&self) -> &CallOutcome {
+        &self.outcome
+    }
+
+    pub fn is_error(&self) -> bool {
+        self.value.get("isError") == Some(&Value::Bool(true))
+    }
+
+    /// A continuation of this call: a batch step, a bridged tool or a forwarded DFM request.
+    /// Test-only until Task 8/9 bind a production parent admission and active deadline.
+    #[cfg(test)]
+    pub(crate) fn nested_context(&self) -> ToolCallContext {
+        self.context.nested_context(self.operation.clone())
+    }
+
+    fn refused(context: &ToolCallContext, error: Refusal) -> Self {
+        let operation = context.operation.clone();
+        let body = json!({
+            "error": error.message,
+            "errorDetails": {"code": "OP_REFUSED", "reason": error.code.as_str()},
+            "operationId": operation.as_str(),
+        });
+        Self { value: error_result(body), operation, outcome: CallOutcome::Refused(error.code), context: context.clone() }
+    }
+
+    fn already_exists(context: &ToolCallContext) -> Self {
+        let operation = context.operation.clone();
+        let body = json!({
+            "error": "this logical operation already exists; it was not sent again",
+            "errorDetails": {"code": "OP_ALREADY_EXISTS"},
+            "operationId": operation.as_str(),
+        });
+        Self { value: error_result(body), operation, outcome: CallOutcome::AlreadyExists, context: context.clone() }
+    }
+
+    /// A retry of an operation that already completed. It keeps the original id and never
+    /// dispatches the backend again.
+    #[cfg(test)]
+    pub(crate) fn reused(context: &ToolCallContext) -> Self {
+        let operation = context.operation.clone();
+        let body = json!({
+            "error": "this logical operation was already applied; inspect the design instead of sending it again",
+            "errorDetails": {"code": "OP_SUCCEEDED", "retry": "never"},
+            "operationId": operation.as_str(),
+        });
+        Self { value: error_result(body), operation, outcome: CallOutcome::Succeeded, context: context.clone() }
+    }
+
+    fn unknown(context: &ToolCallContext, message: &str) -> Self {
+        let operation = context.operation.clone();
+        let body = json!({
+            "error": message,
+            "errorDetails": {"code": "OP_OUTCOME_UNKNOWN", "retry": "never"},
+            "operationId": operation.as_str(),
+        });
+        Self { value: error_result(body), operation, outcome: CallOutcome::Unknown, context: context.clone() }
+    }
+}
+
+/// Protocol, notification, render, catalog and diagnostics helpers. These map to no billed
+/// Intcad logical operation; Mastra's own prompt/plan tools never reach this module at all.
+pub fn tool_is_free(name: &str) -> bool {
+    matches!(
+        name,
+        "pending" | "screenshot" | "compare_picture" | "running" | "list_commands" | "describe_command" | "skill_reference" | "crash_reports"
+    )
+}
+
+/// Run one MCP tool under a host operation context and settle it exactly once.
+///
+/// A charged call needs a classified entry, a verified safe-stop bound, enough remaining
+/// authorization and a server-issued grant. Missing context is refused before dispatch.
+pub fn call_tool_with(
+    backend: &mut dyn Backend,
+    name: &str,
+    args: &Value,
+    context: &ToolCallContext,
+    budget: &BudgetTable,
+    billing: &mut dyn BillingPort,
+) -> MeteredReply {
+    let operation = context.operation.clone();
+    if tool_is_free(name) {
+        if billing.checks_live_window() && name == "screenshot" && args.get("path").is_some() {
+            return MeteredReply::refused(context, screenshot_path_refusal());
+        }
+        let value = crate::tools::call_tool(backend, name, args);
+        return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone() };
+    }
+    // A charged tool cannot borrow a free human/web origin to skip admission. Only the free
+    // helper catalog above is free; everything else needs a host-minted operation.
+    if context.entry.is_free() {
+        return MeteredReply::refused(context, Refusal::new(RefusalCode::CapabilityDenied, "a charged tool cannot run from a free origin"));
+    }
+    if context.nested {
+        if !context.has_active_parent() {
+            return MeteredReply::refused(
+                context,
+                Refusal::new(RefusalCode::UnsafeToStart, "a forwarded MCP call has no active parent operation or deadline"),
+            );
+        }
+        let value = crate::tools::call_tool(backend, name, args);
+        let outcome = classify_reply(&value);
+        return MeteredReply { value, operation, outcome, context: context.clone() };
+    }
+    let bound = match billing.preflight().and_then(|()| check_preflight(context, budget, billing.checks_live_window())) {
+        Ok(bound) => bound,
+        Err(refusal) => return MeteredReply::refused(context, refusal),
+    };
+    let admission = match &context.admission {
+        Some(admission) => admission.clone(),
+        None => match billing.admit(&operation, context.capability, context.entry) {
+            Ok(grant) => Admission::NewlyAdmitted { operation: operation.clone(), grant },
+            Err(refusal) if refusal.code == RefusalCode::OperationConflict => {
+                return MeteredReply::already_exists(context);
+            }
+            Err(refusal) => return MeteredReply::refused(context, refusal),
+        },
+    };
+    if let Err(refusal) = billing.dispatch(&operation, bound) {
+        return match billing.release(&operation, refusal.code) {
+            Ok(()) => MeteredReply::refused(context, refusal),
+            Err(_) => MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown"),
+        };
+    }
+    // As in Direct Control, the reply is staged and withheld on refusal. Local model
+    // changes and file writes made by the dispatched command are not rolled back here.
+    let result_value = crate::tools::call_tool(backend, name, args);
+    let outcome = classify_reply(&result_value);
+    if let Err(refusal) = billing.check_commit(&operation) {
+        return if billing.release(&operation, refusal.code).is_ok() {
+            MeteredReply::refused(context, refusal)
+        } else {
+            MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown")
+        };
+    }
+    let settle = settle(billing, &operation, &outcome);
+    if settle.is_ok() && billing.checks_live_window() {
+        match outcome {
+            CallOutcome::Succeeded | CallOutcome::PartialRetained | CallOutcome::FailedNoEffect => {
+                if let Err(refusal) = billing.check_publish(&operation) {
+                    return MeteredReply::refused(context, refusal);
+                }
+            }
+            CallOutcome::Unknown => return MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown"),
+            _ => {}
+        }
+    }
+    let mut reply_context = context.clone();
+    reply_context.admission = Some(admission);
+    let mut reply = MeteredReply { value: result_value, operation: operation.clone(), outcome, context: reply_context };
+    if let Err(error) = settle {
+        let disposition = match (context.deadline.as_ref(), context.now) {
+            (Some(deadline), Some(now)) => missing_operation_state(Some(deadline), now, error.code),
+            _ => MissingOperationState::Unknown,
+        };
+        match disposition {
+            MissingOperationState::ExpiredNoState => {
+                let body = json!({
+                    "error": "the authorization deadline passed and the settlement is closed",
+                    "errorDetails": {"code": "OP_STATE_UNAVAILABLE", "retry": "never"},
+                    "operationId": operation.as_str(),
+                });
+                reply.value = error_result(body);
+                reply.outcome = CallOutcome::FailedNoEffect;
+            }
+            MissingOperationState::Unknown => {
+                let unknown = MeteredReply::unknown(context, "the settlement reply was lost; the outcome is unknown");
+                reply.value = unknown.value;
+                reply.outcome = CallOutcome::Unknown;
+            }
+        }
+    }
+    if *reply.outcome() == CallOutcome::Unknown {
+        decorate_unknown(&mut reply.value, &reply.operation);
+    }
+    reply
+}
+
+pub(crate) fn screenshot_path_refusal() -> Refusal {
+    Refusal::new(RefusalCode::CapabilityDenied, "CAPABILITY_DENIED")
+}
+
+/// Forward one charged tool call to the host's own control authority without a local charge.
+///
+/// This is the GUI/Mastra bridge path: the backend forwards the same host-minted operation to the
+/// app's control seam, which owns admission and settlement. The MCP boundary still refuses a
+/// call that has no provable host context; it never accepts a source label, request id or
+/// caller-supplied account/session field. No admission or commit happens here, so the operation
+/// cannot be billed twice.
+pub fn call_tool_forwarded(backend: &mut dyn Backend, name: &str, args: &Value, context: &ToolCallContext) -> MeteredReply {
+    let operation = context.operation.clone();
+    if tool_is_free(name) {
+        let value = crate::tools::call_tool(backend, name, args);
+        return MeteredReply { value, operation, outcome: CallOutcome::Free, context: context.clone() };
+    }
+    if context.entry.is_free() {
+        return MeteredReply::refused(context, Refusal::new(RefusalCode::CapabilityDenied, "a charged tool cannot run from a free origin"));
+    }
+    if !context.is_host_bound() || context.entry == EntryCategory::Unknown {
+        return MeteredReply::refused(context, Refusal::new(RefusalCode::CapabilityDenied, "this forwarded call has no authenticated host context"));
+    }
+    if context.remaining.is_some_and(|remaining| remaining.is_zero()) {
+        return MeteredReply::refused(context, Refusal::new(RefusalCode::UnsafeToStart, "the forwarded call has no remaining authorization"));
+    }
+    if let (Some(deadline), Some(now)) = (context.deadline.as_ref(), context.now)
+        && deadline.remaining(now).is_none()
+    {
+        return MeteredReply::refused(context, Refusal::new(RefusalCode::UnsafeToStart, "the forwarded call's authorization deadline has passed"));
+    }
+    let value = crate::tools::call_tool(backend, name, args);
+    let outcome = classify_reply(&value);
+    MeteredReply { value, operation, outcome, context: context.clone() }
+}
+
+/// Whether this charged tool would need more than one controlled backend call, which the
+/// forwarded bridge cannot yet settle against one durable parent admission.
+///
+/// The forwarding layer reuses the same operation id, but the current control seam can only
+/// admit a fresh request. Expectation checks, parameter trials and topology inspection therefore
+/// refuse before work until Task 9 carries the validated parent admission into substeps.
+pub fn forwarded_substeps_unsupported(tool: &str, args: &Value) -> bool {
+    if args.get("expect").is_some() {
+        return true;
+    }
+    match tool {
+        "check_parameters" | "body_topology" => true,
+        // `inspect_design` makes one document read and optional per-sketch/joint reads.
+        "inspect_design" => {
+            args.get("sketches").and_then(Value::as_bool).unwrap_or(true) || args.get("joints").and_then(Value::as_bool).unwrap_or(true)
+        }
+        _ => false,
+    }
+}
+
+/// Fields that only describe host provenance, never a tool's own parameters.
+const RESERVED_PROVENANCE_FIELDS: &[&str] = &[
+    "trusted",
+    "trustedContext",
+    "trusted_context",
+    "hostContext",
+    "host_context",
+    "entryCategory",
+    "entry_category",
+    "operationId",
+    "operation_id",
+    "sessionBinding",
+    "admission",
+];
+
+/// The first reserved provenance-shaped field in tool arguments, if any.
+///
+/// Wire arguments may not name an origin, operation, account or grant: those are host data. The
+/// server refuses such a call before dispatch instead of ignoring it silently.
+pub fn provenance_claim(args: &Value) -> Option<&'static str> {
+    fn walk(value: &Value, depth: usize) -> Option<&'static str> {
+        if depth > 8 {
+            return None;
+        }
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    if let Some(field) = RESERVED_PROVENANCE_FIELDS.iter().copied().find(|field| *field == key) {
+                        return Some(field);
+                    }
+                    if let Some(field) = walk(child, depth.saturating_add(1)) {
+                        return Some(field);
+                    }
+                }
+                None
+            }
+            Value::Array(items) => items.iter().take(1024).find_map(|item| walk(item, depth.saturating_add(1))),
+            _ => None,
+        }
+    }
+    walk(args, 0)
+}
+
+fn check_preflight(context: &ToolCallContext, budget: &BudgetTable, live: bool) -> Result<Duration, Refusal> {
+    if context.entry.is_free() {
+        return Ok(Duration::ZERO);
+    }
+    if context.entry == EntryCategory::Unknown {
+        return Err(Refusal::new(RefusalCode::CapabilityDenied, "the MCP request entry is unclassified"));
+    }
+    match budget.bound(context.capability, context.entry) {
+        UpperBound::Unverified => Err(Refusal::new(RefusalCode::UnsafeToStart, "this controlled MCP path has no verified safe-stop bound")),
+        UpperBound::Verified(_) if !live && context.remaining.is_none() => {
+            Err(Refusal::new(RefusalCode::UnsafeToStart, "this controlled MCP call has no measured remaining authorization"))
+        }
+        UpperBound::Verified(bound) if !live && context.remaining.is_some_and(|remaining| remaining < bound) => {
+            Err(Refusal::new(RefusalCode::UnsafeToStart, "the remaining authorization is shorter than the safe-stop bound"))
+        }
+        UpperBound::Verified(bound) => Ok(bound),
+    }
+}
+
+fn settle(billing: &mut dyn BillingPort, operation: &OperationId, outcome: &CallOutcome) -> Result<(), Refusal> {
+    match outcome {
+        CallOutcome::Succeeded => billing.commit(operation, BillingResult::Succeeded).map(|_| ()),
+        CallOutcome::PartialRetained => billing.commit(operation, BillingResult::PartialRetained).map(|_| ()),
+        CallOutcome::Unknown => billing.commit(operation, BillingResult::Unknown).map(|_| ()),
+        CallOutcome::FailedNoEffect => billing.release(operation, RefusalCode::UnsafeToStart),
+        CallOutcome::Free | CallOutcome::Refused(_) | CallOutcome::AlreadyExists => Ok(()),
+    }
+}
+
+/// A known local deadline and a missing settlement answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MissingOperationState {
+    /// The host's own conservative deadline passed. The contract says no charge, and finalize and
+    /// lookup answer with the same generic no-state refusal.
+    ExpiredNoState,
+    /// There is no proof of a local deadline: a 401 or lost reply is not automatically free.
+    Unknown,
+}
+
+/// Resolve a finalize/lookup refusal without inventing operation state.
+///
+/// Only a known local deadline that has actually passed maps to no charge. Any other 401,
+/// transport failure or missing mapping stays unknown; it is never treated as released.
+pub fn missing_operation_state(deadline: Option<&ConservativeDeadline>, now: MonotonicInstant, _refusal: RefusalCode) -> MissingOperationState {
+    match deadline {
+        Some(deadline) if deadline.remaining(now).is_none() => MissingOperationState::ExpiredNoState,
+        _ => MissingOperationState::Unknown,
+    }
+}
+
+/// The same run keeps one logical operation across MCP, the bridge and a Review tool.
+pub fn record_review_operation(store: &mut dyn OperationStore, review: &ReviewOperation) -> Result<(), Refusal> {
+    store.record_review(review).map_err(store_refusal)
+}
+
+pub fn operation_for_review(store: &dyn OperationStore, run: &RunId) -> Result<Option<OperationId>, Refusal> {
+    store.review_operation(run).map_err(store_refusal)
+}
+
+fn store_refusal(error: OperationStoreError) -> Refusal {
+    Refusal::new(RefusalCode::AuthUnavailable, format!("the operation ledger is unavailable: {error:?}"))
+}
+
+fn classify_reply(value: &Value) -> CallOutcome {
+    let is_error = value.get("isError") == Some(&Value::Bool(true));
+    if !is_error {
+        return CallOutcome::Succeeded;
+    }
+    // Host-local proof that this rejection or input refusal happened before dispatch. A remote
+    // tool reply never carries this marker.
+    if value.get("noEffect") == Some(&Value::Bool(true)) {
+        return CallOutcome::FailedNoEffect;
+    }
+    let Some(body) = reply_body(value) else {
+        let text = reply_text(value).unwrap_or_default();
+        if text.starts_with("still running:") || text.contains("was lost while") {
+            return CallOutcome::Unknown;
+        }
+        let no_effect = text.starts_with("not run:") || text.starts_with(crate::backend::NOT_RUNNING);
+        return if no_effect { CallOutcome::FailedNoEffect } else { CallOutcome::Unknown };
+    };
+    if body.get("pending") == Some(&Value::Bool(true)) || body.get("outcomeUnknown") == Some(&Value::Bool(true)) {
+        return CallOutcome::Unknown;
+    }
+    // A typed proof that the request never reached the engine. `noEffect` is only added by
+    // this host for rejections and input refusals it made before dispatch; a remote `Rejected`
+    // reply never carries it.
+    if body.get("notSent") == Some(&Value::Bool(true)) {
+        return CallOutcome::FailedNoEffect;
+    }
+    // A typed checkpoint result: restored means no retained change; restored:false is the
+    // opposite and must be charged.
+    if body.get("restored") == Some(&Value::Bool(true)) {
+        return CallOutcome::FailedNoEffect;
+    }
+    if body.get("restored") == Some(&Value::Bool(false)) {
+        return CallOutcome::PartialRetained;
+    }
+    // A batch reports its own applied steps. Full rollback and an empty applied list are
+    // positive no-effect proof; a non-empty list is a retained effect.
+    if body.get("rolled_back") == Some(&Value::Bool(true)) {
+        return CallOutcome::FailedNoEffect;
+    }
+    if let Some(applied) = body.get("applied").and_then(Value::as_array) {
+        return if applied.is_empty() { CallOutcome::FailedNoEffect } else { CallOutcome::PartialRetained };
+    }
+    // An expectation check runs after the command completed. The write and stamp are retained,
+    // so a mismatch is still a charged partial-retained result, never a free failure.
+    if body.get("expectation").is_some_and(|expectation| expectation.get("ok") != Some(&Value::Bool(true))) {
+        return CallOutcome::PartialRetained;
+    }
+    // Other typed batch failures: a checkpoint failure or zero completed steps proves that no
+    // step ran. Anything else may have retained a partial effect, and stays unknown.
+    if body.get("failed").is_some() {
+        if body.get("failed").and_then(|failed| failed.get("stage")).and_then(Value::as_str) == Some("checkpoint") {
+            return CallOutcome::FailedNoEffect;
+        }
+        if body.get("completed").and_then(Value::as_u64) == Some(0) && body.get("results").and_then(Value::as_array).is_none_or(Vec::is_empty) {
+            return CallOutcome::FailedNoEffect;
+        }
+    }
+    CallOutcome::Unknown
+}
+
+fn reply_body(value: &Value) -> Option<Value> {
+    if let Some(structured) = value.get("structuredContent") {
+        return Some(structured.clone());
+    }
+    let text = value.get("content").and_then(Value::as_array).and_then(|content| content.last())?.get("text")?.as_str()?;
+    serde_json::from_str(text).ok()
+}
+
+fn reply_text(value: &Value) -> Option<&str> {
+    value.get("content").and_then(Value::as_array).and_then(|content| content.last())?.get("text")?.as_str()
+}
+
+fn decorate_unknown(value: &mut Value, operation: &OperationId) {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("operationId".into(), json!(operation.as_str()));
+        match object.get_mut("structuredContent").and_then(Value::as_object_mut) {
+            Some(structured) => {
+                structured.insert("code".into(), json!("OP_OUTCOME_UNKNOWN"));
+                structured.insert("operationId".into(), json!(operation.as_str()));
+            }
+            None => {
+                object.insert("structuredContent".into(), json!({"code":"OP_OUTCOME_UNKNOWN","operationId":operation.as_str()}));
+            }
+        }
+    }
+}
+
+fn error_result(body: Value) -> Value {
+    let text = serde_json::to_string_pretty(&body).unwrap_or_default();
+    json!({"content":[{"type":"text","text":text}],"structuredContent":body,"isError":true})
+}
+
+/// A wire argument tried to name host provenance. Refuse it before dispatch: the operation,
+/// account and session can only come from the host's authenticated context.
+pub(crate) fn forged_context_result(field: &str) -> Value {
+    let field: String = field.chars().take(64).collect();
+    error_result(json!({
+        "error": "tool arguments may not supply host provenance",
+        "errorDetails": {"code": "OP_REFUSED", "reason": "CAPABILITY_DENIED", "field": field},
+    }))
+}
+
+/// A refusal raised before any tool dispatch (no context, unclassified entry, unverified budget).
+pub(crate) fn refusal_result(error: Refusal) -> Value {
+    error_result(json!({
+        "error": error.message,
+        "errorDetails": {"code": "OP_REFUSED", "reason": error.code.as_str()},
+    }))
+}
+
+/// The generic response for finalize/lookup after the known local deadline: it names no state
+/// and carries no operation id, so a caller cannot infer a charge or a release from it.
+pub fn expired_state_response() -> Value {
+    json!({
+        "error": {"code": "AUTH_REQUIRED", "message": "no operation state is available"},
+        "retry": "never",
+    })
+}

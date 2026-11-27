@@ -7,7 +7,23 @@ set -euo pipefail
 
 root=$(git rev-parse --show-toplevel)
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+# Retry cleanup without replacing the check's result.
+cleanup() {
+  local status=$? attempt
+  trap - EXIT
+  for ((attempt = 1; attempt <= 10; attempt++)); do
+    if rm -rf -- "$tmp" 2>/dev/null && [ ! -e "$tmp" ]; then
+      break
+    fi
+    if ((attempt < 10)); then
+      sleep 0.2 || :
+    else
+      printf 'warning: could not clean temporary format-check directory: %s\n' "$tmp" >&2 || :
+    fi
+  done
+  exit "$status"
+}
+trap cleanup EXIT
 repo="$tmp/repo"
 mkdir -p "$repo/crates/doc/src/drawing" "$repo/scripts"
 cp -r "$root/crates/doc/src/format" "$repo/crates/doc/src/"

@@ -79,7 +79,9 @@ For a promotion branch (`release/vX.Y.Z[-beta.N]`) targeting `main`:
 3. If a commit is added after the gate starts, the new SHA has no release-gate
    result. The previous result is not reused. To verify the new candidate,
    convert the PR to draft and ready again. A manual dispatch is diagnostic:
-   it creates `release-gate-diagnostic`, not the required `release-gate`.
+   it creates `release-gate-diagnostic`, not the required `release-gate`. After
+   promotion, a stable `vX.Y.Z` tag push runs the same gate at the promoted commit
+   and is the formal post-promotion evidence the publisher accepts.
 4. A base-branch update that makes the candidate behind is blocked by strict
    up-to-date even when an old head-bound check is green; the temporary probe
    #116 reported `mergeStateStatus: BEHIND`. Update the candidate branch first
@@ -107,6 +109,7 @@ does not start both.
 | PR with a new commit after ready | new head SHA | new merge SHA | no new run | required check missing; blocked |
 | base branch updated | head SHA may stay the same | merge SHA can change | `BEHIND` on strict up-to-date; no automatic new check | blocked; update the candidate branch (new head) then verify; draft→ready alone does not merge the base |
 | manual dispatch | selected ref SHA | selected ref SHA | `release-gate-diagnostic` | diagnostic only |
+| stable tag push (`vX.Y.Z`) | tagged commit (on `main`) | tagged commit | `release-gate` | formal post-promotion gate |
 | main merge group | merge-group SHA | merge-group SHA | `release-gate` | required |
 | non-main merge group | group SHA | group SHA | `release-gate`, then not_applicable | no stable promotion |
 

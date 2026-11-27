@@ -1,0 +1,34 @@
+{
+  "ar": {
+    "account.delete_request": "لطلب حذف حسابك، أرسل رسالة إلى contact@intgral.ai من عنوان البريد الإلكتروني المرتبط بحسابك.",
+    "account.delete_request_safety": "لا تُضمّن كلمات مرور أو رموز تحقق أو رموز وصول أو ملفات تصميم."
+  },
+  "de": {
+    "account.delete_request": "Sende die Anfrage zur Kontolöschung von der E-Mail-Adresse deines Kontos an contact@intgral.ai.",
+    "account.delete_request_safety": "Gib keine Passwörter, Codes oder Token an und füge keine Designdateien bei."
+  },
+  "en": {
+    "account.delete_request": "To request account deletion, email contact@intgral.ai from your account email address.",
+    "account.delete_request_safety": "Do not include passwords, codes, tokens, or design files."
+  },
+  "he": {
+    "account.delete_request": "כדי לבקש למחוק את החשבון, יש לשלוח הודעה ל־contact@intgral.ai מכתובת הדוא״ל המשויכת לחשבון.",
+    "account.delete_request_safety": "אין לכלול סיסמאות, קודי אימות, אסימוני גישה או קובצי עיצוב."
+  },
+  "ja": {
+    "account.delete_request": "アカウントの削除を希望する場合は、登録したメールアドレスから contact@intgral.ai に削除を依頼してください。",
+    "account.delete_request_safety": "パスワード、コード、トークン、設計ファイルは送らないでください。"
+  },
+  "ko": {
+    "account.delete_request": "계정 삭제를 요청하려면 계정에 등록된 이메일 주소에서 contact@intgral.ai로 이메일을 보내십시오.",
+    "account.delete_request_safety": "비밀번호, 코드, 토큰 또는 설계 파일을 포함하지 마십시오."
+  },
+  "vi": {
+    "account.delete_request": "Để yêu cầu xóa tài khoản, hãy gửi email đến contact@intgral.ai từ địa chỉ email của tài khoản.",
+    "account.delete_request_safety": "Không gửi kèm mật khẩu, mã, mã thông báo hoặc tệp thiết kế."
+  },
+  "zh": {
+    "account.delete_request": "如需申请删除账户，请使用该账户的电子邮箱向 contact@intgral.ai 发送邮件。",
+    "account.delete_request_safety": "请勿发送密码、验证码、令牌或设计文件。"
+  }
+}

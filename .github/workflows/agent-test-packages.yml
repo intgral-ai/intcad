@@ -1,0 +1,222 @@
+# Test packages that carry the built-in agent: one for macOS (Apple silicon), Windows x64 and
+# Linux x86_64. Started by hand only. Build and check; nothing is signed with credentials,
+# published, attached to a release or deployed, and release.yml is not touched: an ordinary
+# package build still carries no agent. The packages are kept as artifacts of the run.
+#
+# Two ways to start it by hand. From the Actions page or `gh workflow run`, once this file is on
+# the default branch (GitHub runs a hand-started workflow only from there). Before that, on a pull
+# request that carries this file: add the label `agent-test-packages` to it. No other label, and
+# no push, starts it.
+#
+# Each job builds the agent's folder from the pinned lock (packages/mastra-runtime/agent-package),
+# without Mastra's enterprise-licensed content, runs the agent out of that folder against
+# stand-ins, and then packages with the opt-in. docs/mastra-packaging.md has the details.
+name: Test packages with the built-in agent (nonpublishing)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-test-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+# Every job starts with the same question: started by hand, or by the one label.
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  NODE_VERSION: "22.23.4"
+  NPM_VERSION: "11.19.0"
+
+jobs:
+  macos:
+    name: macOS Apple silicon (ad-hoc signed)
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent-test-packages'
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      AGENT_TARGET: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm install -g "npm@${{ env.NPM_VERSION }}"
+      - name: Build the agent's folder and run the agent out of it against stand-ins
+        run: |
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target "$AGENT_TARGET" --out "$RUNNER_TEMP/mastra-agent"
+          # Run a copy, so that the folder that is packaged is the one that was built.
+          cp -R "$RUNNER_TEMP/mastra-agent" "$RUNNER_TEMP/mastra-agent-run"
+          node packages/mastra-runtime/scripts/agent-smoke.mjs "$RUNNER_TEMP/mastra-agent-run"
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: ${{ env.AGENT_TARGET }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: agent-test-macos
+          save-if: false
+      - name: Build and package (the script checks and runs the agent as the disk image carries it)
+        env:
+          SOLIDCRAFT_MASTRA_AGENT_DIR: ${{ runner.temp }}/mastra-agent
+        run: packaging/macos/package.sh --arch aarch64 --with-mastra-agent
+      # The app as a tester gets it: copied out of the disk image and started without the network
+      # (packaging/macos/no-network.sb leaves only this machine's own address). The Assistant is
+      # opened and must offer the built-in agent alone, started out of the app. No message is sent.
+      - name: Copy the app out of the disk image and open the Assistant
+        run: |
+          dmg="$(find dist/release -maxdepth 1 -name '*.dmg' -print -quit)"
+          mnt="$(mktemp -d)"; apps="$(mktemp -d)"
+          hdiutil attach -readonly -nobrowse -mountpoint "$mnt" "$dmg"
+          cp -R "$mnt/Intcad.app" "$apps/"
+          hdiutil detach "$mnt"
+          if sandbox-exec -f packaging/macos/no-network.sb /usr/bin/curl -s -m 5 -o /dev/null https://api.github.com/; then
+            echo "error: the sandbox profile does not take the network away; the app is not started" >&2; exit 1
+          fi
+          python3 packaging/assistant-check.py --run-with "sandbox-exec -f packaging/macos/no-network.sb" \
+            --exe "$apps/Intcad.app/Contents/MacOS/Intcad" --evidence "$RUNNER_TEMP/installed-check" --built-in-agent
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: agent-test-macos-arm64-${{ github.sha }}
+          path: |
+            dist/release/*.dmg
+            ${{ runner.temp }}/installed-check
+            ${{ runner.temp }}/mastra-agent/agent.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  linux:
+    name: Linux x86_64
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent-test-packages'
+    # The glibc baseline of the ordinary packages.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      AGENT_TARGET: x86_64-unknown-linux-gnu
+      NFPM_VERSION: 2.47.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/ci/build-jobs.sh
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm install -g "npm@${{ env.NPM_VERSION }}"
+      - name: Build the agent's folder and run the agent out of it against stand-ins
+        run: |
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target "$AGENT_TARGET" --out "$RUNNER_TEMP/mastra-agent"
+          # Run a copy, so that the folder that is packaged is the one that was built.
+          cp -R "$RUNNER_TEMP/mastra-agent" "$RUNNER_TEMP/mastra-agent-run"
+          node packages/mastra-runtime/scripts/agent-smoke.mjs "$RUNNER_TEMP/mastra-agent-run"
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends desktop-file-utils appstream zsync rpm
+          sudo apt-get install -y --no-install-recommends libgtk-3-dev libwebkit2gtk-4.1-dev
+          curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb"
+          sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: agent-test-linux
+          save-if: false
+      - name: Build and package (AppImage, deb, rpm, tar.gz)
+        env:
+          SOLIDCRAFT_MASTRA_AGENT_DIR: ${{ runner.temp }}/mastra-agent
+        run: packaging/linux/package.sh --with-mastra-agent
+      # The agent as each package carries it: taken out of the tarball and the .deb, checked again
+      # and run against stand-ins. The desktop app is not started here.
+      - name: Check and run the agent out of the packages
+        run: |
+          mkdir "$RUNNER_TEMP/from-tar" "$RUNNER_TEMP/from-deb"
+          tar -xzf dist/release/intcad-*.tar.gz -C "$RUNNER_TEMP/from-tar"
+          dpkg-deb -x dist/release/intcad-*.deb "$RUNNER_TEMP/from-deb"
+          for folder in "$RUNNER_TEMP"/from-tar/*/lib/intcad/mastra-agent "$RUNNER_TEMP/from-deb/usr/lib/intcad/mastra-agent"; do
+            node packages/mastra-runtime/scripts/agent-package.mjs check --read-only --target "$AGENT_TARGET" "$folder"
+            node packages/mastra-runtime/scripts/agent-smoke.mjs "$folder"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: agent-test-linux-x86_64-${{ github.sha }}
+          path: |
+            dist/release/intcad-*.tar.gz
+            dist/release/intcad-*.deb
+            dist/release/intcad-*.rpm
+            dist/release/intcad-*.AppImage
+            ${{ runner.temp }}/mastra-agent/agent.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  windows:
+    name: Windows x64 (unsigned)
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'agent-test-packages'
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      AGENT_TARGET: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@1e60f620b9541d16bece96c5465dc8ee9832be0b # v4.0.3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - run: npm install -g "npm@${{ env.NPM_VERSION }}"
+      - name: Build the agent's folder and run the agent out of it against stand-ins
+        shell: pwsh
+        run: |
+          node packages/mastra-runtime/scripts/agent-package.mjs build --target $env:AGENT_TARGET --out "$env:RUNNER_TEMP\mastra-agent"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Run a copy, so that the folder that is packaged is the one that was built.
+          Copy-Item -Recurse "$env:RUNNER_TEMP\mastra-agent" "$env:RUNNER_TEMP\mastra-agent-run"
+          node packages/mastra-runtime/scripts/agent-smoke.mjs "$env:RUNNER_TEMP\mastra-agent-run"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: dtolnay/rust-toolchain@1.99.1
+        with:
+          targets: ${{ env.AGENT_TARGET }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: agent-test-windows
+          save-if: false
+      - name: Install WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          wix extension add -g WixToolset.UI.wixext/5.0.2 WixToolset.Util.wixext/5.0.2
+      - name: Build and package (msi, portable zip)
+        shell: pwsh
+        env:
+          SOLIDCRAFT_MASTRA_AGENT_DIR: ${{ runner.temp }}\mastra-agent
+        run: ./packaging/windows/package.ps1 -Arch x64 -WithMastraAgent
+      # The agent as the portable zip carries it: unpacked, checked again and run against stand-ins.
+      # The MSI is built and not installed here.
+      - name: Check and run the agent out of the portable zip
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist/release/intcad-*-portable.zip | Select-Object -First 1
+          Expand-Archive $zip.FullName "$env:RUNNER_TEMP\from-zip"
+          $folder = Get-ChildItem "$env:RUNNER_TEMP\from-zip" -Recurse -Directory -Filter mastra-agent | Select-Object -First 1
+          node packages/mastra-runtime/scripts/agent-package.mjs check --target $env:AGENT_TARGET $folder.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node packages/mastra-runtime/scripts/agent-smoke.mjs $folder.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: agent-test-windows-x64-${{ github.sha }}
+          path: |
+            dist/release/intcad-*.msi
+            dist/release/intcad-*-portable.zip
+            ${{ runner.temp }}/mastra-agent/agent.json
+          if-no-files-found: warn
+          retention-days: 14

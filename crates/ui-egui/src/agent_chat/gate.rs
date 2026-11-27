@@ -4,6 +4,12 @@
 //! user's Allow or Deny in the panel (anything that reads or writes files or replaces the design),
 //! and those that never run for the agent (crash reports, which hold other designs and paths).
 //! Plain data and rules, tested without a window.
+//!
+//! The decision is made on the **registered** command id, resolved exactly as the engine resolves
+//! it (trim, exact, then ASCII-case-insensitive) and read from `command` or `id` exactly as the
+//! control channel reads it. A request whose id names no command is refused rather than judged on
+//! a spelling the engine might interpret differently, and [`canonicalize`] rewrites the id the
+//! request will execute so the approval and the command are the same command.
 
 use serde_json::Value;
 
@@ -67,7 +73,10 @@ fn reads_only(id: &str) -> bool {
         || id.starts_with("model.")
         || id.ends_with(".inspect")
         || id.ends_with(".list")
-        || matches!(id, "edit.checkpoint" | "render.status" | "render.backends" | "render.settings.get" | "file.slicers" | "engine.describe")
+        || matches!(
+            id,
+            "edit.checkpoint" | "render.status" | "render.backends" | "render.settings.get" | "file.slicers" | "engine.describe" | "view.pick"
+        )
 }
 
 /// Commands that read or write a file by their nature: any string they are given in a path
@@ -111,10 +120,54 @@ fn names_a_file(id: &str, params: &Value) -> Option<String> {
         .or_else(|| AMBIGUOUS_KEYS.iter().find_map(|k| o.get(*k).and_then(|v| first(v, by_nature))))
 }
 
+/// The registered id a request names, or `None` when it names nothing. The one resolution rule,
+/// shared with the engine, so the gate and execution cannot disagree.
+pub fn resolve(id: &str) -> Option<&'static str> {
+    solidcraft_engine::resolve_command_id(id)
+}
+
+/// The id a request or batch step names: `command` first, then `id`, as the control channel and
+/// the engine accept them. `command` wins when both are present, matching the control channel.
+fn command_of(v: &Value) -> Option<&str> {
+    v.get("command").and_then(Value::as_str).or_else(|| v.get("id").and_then(Value::as_str))
+}
+
+/// Rewrite the id a request will execute to its registered spelling, so the approval card, the
+/// "Always allow" key and the command that runs all name the same command. A request naming no
+/// command is left alone: [`request`] refuses it before anything executes.
+pub fn canonicalize(method: &str, params: &mut Value) {
+    match method {
+        "engine.execute" => canonicalize_step(params),
+        "engine.batch" => {
+            if let Some(steps) = params.get_mut("commands").and_then(Value::as_array_mut) {
+                for step in steps {
+                    canonicalize_step(step);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn canonicalize_step(step: &mut Value) {
+    let Some(id) = command_of(step).and_then(resolve) else { return };
+    let Some(o) = step.as_object_mut() else { return };
+    // `command` is what the engine runs; drop `id` so no second spelling survives the gate.
+    o.remove("id");
+    o.insert("command".into(), Value::String(id.to_string()));
+}
+
+/// Whether `id` names the undo command, whatever spelling it arrived in.
+fn is_undo(id: &str) -> bool {
+    resolve(id) == Some("edit.undo")
+}
+
 /// One command as the agent would run it. `undo_left`: steps this turn may still undo without
 /// reaching changes made before it.
 pub fn command(id: &str, params: &Value, undo_left: usize) -> Verdict {
-    let id = id.trim();
+    let Some(id) = resolve(id) else {
+        return Verdict::Refuse(format!("`{}` is not a command", id.trim().chars().take(120).collect::<String>()));
+    };
     if id.starts_with("diagnostics.") || id.contains("crash") {
         return Verdict::Refuse(format!("`{id}` is not available in the agent chat: crash reports stay with the user"));
     }
@@ -154,7 +207,7 @@ pub fn request(method: &str, params: &Value, undo_left: usize) -> Verdict {
     }
     match method {
         "engine.execute" => {
-            let id = params.get("command").and_then(Value::as_str).unwrap_or("");
+            let id = command_of(params).unwrap_or("");
             command(id, params.get("params").unwrap_or(&Value::Null), undo_left)
         }
         "engine.batch" => {
@@ -164,13 +217,13 @@ pub fn request(method: &str, params: &Value, undo_left: usize) -> Verdict {
             // A batch can undo as many steps as it has: count down as it goes.
             let mut undo_left = undo_left;
             for s in steps.iter().take(10_000) {
-                let id = s.get("command").or_else(|| s.get("id")).and_then(Value::as_str).unwrap_or("");
+                let id = command_of(s).unwrap_or("");
                 match command(id, s.get("params").unwrap_or(&Value::Null), undo_left) {
                     Verdict::Refuse(e) => return Verdict::Refuse(e),
                     Verdict::Ask(a) => asks.push(a),
                     Verdict::Run { change: c } => {
                         change |= c;
-                        if id == "edit.undo" {
+                        if is_undo(id) {
                             undo_left = undo_left.saturating_sub(1);
                         } else if c {
                             undo_left += 1;
@@ -197,7 +250,12 @@ pub fn request(method: &str, params: &Value, undo_left: usize) -> Verdict {
 /// What "Always allow" remembers for a request: the command it runs (`batch` for a batch).
 pub fn tool_key(method: &str, params: &Value) -> String {
     match method {
-        "engine.execute" => params.get("command").and_then(Value::as_str).unwrap_or("").chars().take(120).collect(),
+        "engine.execute" => {
+            // The registered id, so "Always allow" for `file.save` also covers `FILE.SAVE` and a
+            // request that carried `id`; an unknown id keeps its spelling because it never runs.
+            let raw = command_of(params).unwrap_or("");
+            resolve(raw).unwrap_or(raw).chars().take(120).collect()
+        }
         "engine.batch" => "batch".into(),
         m => m.into(),
     }
@@ -208,7 +266,7 @@ pub fn describe(method: &str, params: &Value) -> String {
     match method {
         "engine.batch" => {
             let steps = params.get("commands").and_then(Value::as_array).map_or(&[][..], Vec::as_slice);
-            let ids: Vec<&str> = steps.iter().filter_map(|s| s.get("command").or_else(|| s.get("id")).and_then(Value::as_str)).take(6).collect();
+            let ids: Vec<&str> = steps.iter().filter_map(|s| command_of(s).map(|raw| resolve(raw).unwrap_or(raw))).take(6).collect();
             let more = if steps.len() > ids.len() { format!(" (+{})", steps.len() - ids.len()) } else { String::new() };
             format!("batch: {}{more}", ids.join(", "))
         }
@@ -259,7 +317,7 @@ mod tests {
         assert!(matches!(exec("doc.open", json!({"path": "x.step"})), Verdict::Ask(_)));
         assert!(matches!(exec("file.export", json!({"path": "x.stl"})), Verdict::Ask(_)));
         // Any command given a file, whatever its area.
-        assert!(matches!(exec("sketch.import", json!({"file": "a.dxf"})), Verdict::Ask(_)));
+        assert!(matches!(exec("sketch.insert_dxf", json!({"file": "a.dxf"})), Verdict::Ask(_)));
         let batch = json!({"commands": [{"command": "solid.box", "params": {}}, {"command": "file.save", "params": {"path": "/etc/x"}}]});
         assert!(matches!(request("engine.batch", &batch, 0), Verdict::Ask(a) if a.contains("/etc/x")));
     }
@@ -289,7 +347,7 @@ mod tests {
             Verdict::Run { change: true }
         );
         assert_eq!(exec("construct.plane.along_path", json!({"path": "edge-3", "t": 0.5})), Verdict::Run { change: true });
-        assert_eq!(exec("component.move", json!({"component": 2, "path": [4, 7], "translate": [1, 0, 0]})), Verdict::Run { change: true });
+        assert_eq!(exec("component.move_bodies", json!({"component": 2, "path": [4, 7], "translate": [1, 0, 0]})), Verdict::Run { change: true });
         assert_eq!(exec("occurrence.move", json!({"occurrence": 3, "path": [1, 2]})), Verdict::Run { change: true });
         let batch = json!({"commands": [
             {"command": "solid.box", "params": {}},
@@ -354,6 +412,89 @@ mod tests {
         assert!(matches!(request("engine.execute", &json!({"command": "edit.undo"}), 0), Verdict::Ask(_)));
         let batch = json!({"commands": [{"command": "solid.box"}, {"command": "edit.undo"}, {"command": "edit.undo"}]});
         assert!(matches!(request("engine.batch", &batch, 0), Verdict::Ask(_)));
+    }
+
+    /// The gate judges the command the engine will run. Case, surrounding space and the control
+    /// channel's `id` alias used to name a file, app or crash command that the gate never saw
+    /// (#INT-1454 SEC-1); now every spelling resolves to one registered id first.
+    #[test]
+    fn a_spelling_cannot_select_a_command_the_gate_did_not_judge() {
+        // Case, with parameters that name no file: the old gate read `FILE.SAVE` as an ordinary
+        // command and let it run. `a.sc` is not a file name to `looks_like_file` (no separator,
+        // no listed extension), so only the resolved id can make this ask.
+        assert!(matches!(exec("FILE.SAVE", json!({})), Verdict::Ask(_)));
+        assert!(matches!(exec("File.Save", json!({"path": "a.sc"})), Verdict::Ask(_)));
+        assert!(matches!(exec("File.New", json!({})), Verdict::Ask(_)));
+        assert!(matches!(exec("DIAGNOSTICS.CRASH_REPORTS", json!({})), Verdict::Refuse(_)));
+        assert!(matches!(exec("Diagnostics.Crash_Report", json!({"id": "x"})), Verdict::Refuse(_)));
+        // Surrounding space, as the engine trims it.
+        assert!(matches!(exec("  file.new\t", json!({})), Verdict::Ask(_)));
+        // The control channel's `id` alias, which the gate used to ignore entirely: with no
+        // `command`, the old gate judged an empty id and returned Run.
+        assert!(matches!(request("engine.execute", &json!({"id": "file.save", "params": {}}), 5), Verdict::Ask(_)));
+        assert!(matches!(request("engine.execute", &json!({"id": "file.save", "params": {"path": "a.sc"}}), 5), Verdict::Ask(_)));
+        assert!(matches!(request("engine.execute", &json!({"id": "diagnostics.crash_reports", "params": {}}), 5), Verdict::Refuse(_)));
+        // An id that names nothing is refused: the engine must not pick a command the gate did
+        // not judge. The last one is a Cyrillic `е`, which looks like `file.save` to a reader.
+        for id in ["file.sav", "", "   ", "file.sav\u{0435}"] {
+            assert!(matches!(exec(id, json!({})), Verdict::Refuse(_)), "{id:?}");
+        }
+        // Batch steps take the same path, whether they spell `command` or `id`.
+        let batch = json!({"commands": [
+            {"command": "SOLID.BOX", "params": {}},
+            {"id": "file.save", "params": {"path": "/etc/x"}},
+        ]});
+        assert!(matches!(request("engine.batch", &batch, 0), Verdict::Ask(a) if a.contains("/etc/x")));
+        let crash = json!({"commands": [{"command": "solid.box"}, {"command": "DIAGNOSTICS.CRASH_REPORT", "params": {"id": "x"}}]});
+        assert!(matches!(request("engine.batch", &crash, 0), Verdict::Refuse(_)));
+    }
+
+    /// The window answers `view.pick` outside the command registry; the agent may still call it,
+    /// as the control protocol documents, and it reads.
+    #[test]
+    fn the_windows_own_pick_still_runs_for_the_agent() {
+        assert_eq!(exec("view.pick", json!({"x": 10, "y": 20})), Verdict::Run { change: false });
+        assert_eq!(exec("VIEW.PICK", json!({"x": 10, "y": 20})), Verdict::Run { change: false });
+        let batch = json!({"commands": [{"command": "view.pick", "params": {"x": 1}}, {"command": "solid.box"}]});
+        assert_eq!(request("engine.batch", &batch, 0), Verdict::Run { change: true });
+    }
+
+    /// The request that executes is rewritten to the id the gate judged, so an approval and the
+    /// command under it cannot diverge.
+    #[test]
+    fn canonicalize_rewrites_the_id_that_will_run() {
+        let mut by_command = json!({"command": "FILE.SAVE", "params": {"path": "a.sc"}, "allow_paths": []});
+        canonicalize("engine.execute", &mut by_command);
+        assert_eq!(by_command["command"], "file.save");
+        assert!(by_command.get("id").is_none());
+
+        let mut by_id = json!({"id": "Doc.Open", "params": {"path": "a.sc"}});
+        canonicalize("engine.execute", &mut by_id);
+        assert_eq!(by_id["command"], "doc.open");
+        assert!(by_id.get("id").is_none());
+
+        let mut unknown = json!({"command": "FILE.SAV"});
+        canonicalize("engine.execute", &mut unknown);
+        assert_eq!(unknown["command"], "FILE.SAV");
+
+        let mut batch = json!({"commands": [{"command": "SOLID.BOX"}, {"id": "file.save", "params": {}}]});
+        canonicalize("engine.batch", &mut batch);
+        assert_eq!(batch["commands"][0]["command"], "solid.box");
+        assert_eq!(batch["commands"][1]["command"], "file.save");
+        assert!(batch["commands"][1].get("id").is_none());
+
+        let mut other = json!({"path": "x.png"});
+        canonicalize("ui.screenshot", &mut other);
+        assert_eq!(other, json!({"path": "x.png"}));
+    }
+
+    /// "Always allow" remembers the registered id, so a different spelling of the same command
+    /// cannot reuse or escape the remembered answer.
+    #[test]
+    fn always_allow_keys_on_the_registered_id() {
+        assert_eq!(tool_key("engine.execute", &json!({"command": "FILE.SAVE"})), "file.save");
+        assert_eq!(tool_key("engine.execute", &json!({"id": "DOC.OPEN"})), "doc.open");
+        assert_eq!(tool_key("engine.execute", &json!({"command": "file.sav"})), "file.sav");
     }
 
     #[test]
