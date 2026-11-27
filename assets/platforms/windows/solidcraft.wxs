@@ -166,6 +166,15 @@
       <Component Id="WebViewPlatformNotices">
         <File Id="WebViewNotices" Source="$(var.BinDir)\WEB-VIEW-PLATFORM-NOTICES.txt" KeyPath="yes" />
       </Component>
+      <?if $(var.HasMastraAgent) = 1 ?>
+      <!-- The installer's own assent to the Microsoft runtime terms: the licence page, or the
+           explicit INTCAD_RUNTIME_TERMS=1 of a silent install. It names the runtime build it was
+           given for, so a newly installed runtime asks again. The portable ZIP has no such record
+           and asks the person on first start. -->
+      <Component Id="RuntimeAssent" Guid="3A170071-4C70-44F6-AF8E-279F42D818C2">
+        <File Id="RuntimeAssentFile" Source="$(var.AssentPath)" KeyPath="yes" />
+      </Component>
+      <?endif?>
     </ComponentGroup>
   </Fragment>
 

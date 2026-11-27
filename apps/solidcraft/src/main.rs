@@ -46,6 +46,7 @@ mod native_menu;
 mod nav_bridge;
 #[cfg(target_os = "macos")]
 mod open_documents;
+mod runtime_assent;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod space_mouse;
 mod startup;
@@ -1146,6 +1147,30 @@ fn main() -> eframe::Result {
             _ => files.push(a),
         }
     }
+    // The Microsoft runtime a packaged copy carries is used only after its terms are accepted.
+    // This runs before the account runtime and the window: a refused copy reaches neither, and a
+    // `--control` start meets the same gate as a normal one.
+    let launch_mode = if control_port.is_some() {
+        solidcraft_ui_egui::runtime_terms::LaunchMode::Control
+    } else {
+        solidcraft_ui_egui::runtime_terms::LaunchMode::Normal
+    };
+    if let Some(exe_dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(std::path::Path::to_path_buf)) {
+        let data_dir = solidcraft_engine::recovery::data_dir();
+        if let runtime_assent::Assent::Refuse(why) = runtime_assent::begin(&exe_dir, data_dir.as_deref(), launch_mode, &runtime_assent::NativePrompt)
+        {
+            log::error!("runtime terms: {why}");
+            let _ = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Error)
+                .set_title("Intcad cannot start")
+                .set_description(format!(
+                    "{why}.\n\nAccept the Microsoft Visual C++ Runtime terms to use this copy of Intcad. The full terms are in VC-RUNTIME-TERMS.txt in the installation folder's mastra-agent folder."
+                ))
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
+            return Err(eframe::Error::AppCreation(std::io::Error::other(why).into()));
+        }
+    }
     // An information-only argument above has already returned, so this launch goes on to the
     // window and only now opens the account runtime.
     // Legacy settings must be adopted before this runtime creates anything under the settings
@@ -1388,7 +1413,6 @@ fn main() -> eframe::Result {
             mark("viewport pipelines");
             // `--control`/the environment name a port; otherwise the preference (on by default)
             // opens the default one (docs/control-protocol.md).
-            solidcraft_ui_egui::runtime_terms::set_automated(control_port.is_some());
             if let Some(listen_on) = solidcraft_engine::control_auth::plan(control_port, app.preferences.agent_control) {
                 let rx = control_server::start(listen_on, cc.egui_ctx.clone());
                 app = app.with_control(rx);
