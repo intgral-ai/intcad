@@ -502,6 +502,15 @@ function Launch([int]$port, [hashtable]$extra) {
     }
     if ($script:h -eq [IntPtr]::Zero) { throw "no window (exited: $($script:p.HasExited))" }
     Write-Host "window: '$([AssistantWin]::Text($script:h))' class '$([AssistantWin]::Class($script:h))'"
+    $sw = [AssistantWin]::GetSystemMetrics(0); $sh = [AssistantWin]::GetSystemMetrics(1)
+    Write-Host "screen: $sw x $sh"
+    if ($sw -lt 1000 -or $sh -lt 740) { throw 'BLOCKED: the desktop is too small for the 960 x 600 smoke window and margins' }
+    if (-not [AssistantWin]::SetWindowPos($script:h, [IntPtr]::Zero, 20, 20, [Math]::Min(1000, $sw - 40), [Math]::Min(620, $sh - 140), 0x0014)) {
+        throw 'BLOCKED: cannot place the smoke window'
+    }
+    [void][AssistantWin]::SetForegroundWindow($script:h)
+    Start-Sleep -Milliseconds 500
+    # Connect after window placement: the server requires the first token within five seconds.
     # Only connect to a listener owned by this process, not a stale/other occupant of the port.
     while (-not $script:client -and [datetime]::UtcNow -lt $deadline -and -not $script:p.HasExited) {
         $listener = @(Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
@@ -523,14 +532,6 @@ function Launch([int]$port, [hashtable]$extra) {
     $script:writer = New-Object System.IO.StreamWriter($stream)
     $script:writer.AutoFlush = $true
     $script:reader = New-Object System.IO.StreamReader($stream)
-    $sw = [AssistantWin]::GetSystemMetrics(0); $sh = [AssistantWin]::GetSystemMetrics(1)
-    Write-Host "screen: $sw x $sh"
-    if ($sw -lt 1000 -or $sh -lt 740) { throw 'BLOCKED: the desktop is too small for the 960 x 600 smoke window and margins' }
-    if (-not [AssistantWin]::SetWindowPos($script:h, [IntPtr]::Zero, 20, 20, [Math]::Min(1000, $sw - 40), [Math]::Min(620, $sh - 140), 0x0014)) {
-        throw 'BLOCKED: cannot place the smoke window'
-    }
-    [void][AssistantWin]::SetForegroundWindow($script:h)
-    Start-Sleep -Milliseconds 500
 }
 
 function RemainingMilliseconds([datetime]$until) {
