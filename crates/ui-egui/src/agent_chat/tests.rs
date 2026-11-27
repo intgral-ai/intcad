@@ -15705,11 +15705,11 @@ fn a_stress_estimate_turn_asks_before_the_solve_and_lets_changes_reach_the_gate(
         if dry {
             p["dry_run"] = json!(true);
         }
-        ControlRequest::new("engine.execute", json!({"command": "inspect.stress_estimate", "params": p}))
+        ControlRequest::trusted_gui("engine.execute", json!({"command": "inspect.stress_estimate", "params": p}))
     };
     let (dry, _dry_reply) = estimate(true);
     let (solve, solve_reply) = estimate(false);
-    let (change, change_reply) = ControlRequest::new("engine.execute", json!({"command": "solid.box", "params": {"length": 1}}));
+    let (change, change_reply) = ControlRequest::trusted_gui("engine.execute", json!({"command": "solid.box", "params": {"length": 1}}));
     let (tx, rx) = channel();
     for request in [dry, solve, change] {
         tx.send(request).unwrap();
