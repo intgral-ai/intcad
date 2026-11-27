@@ -29,6 +29,12 @@ function Themed() {
     }
     swatch.remove();
   }, [theme]);
+  // With the built-in agent the page is Mastra's own size; the stylesheet has the two sizes.
+  const builtIn = Boolean(state?.connect);
+  useEffect(() => {
+    if (builtIn) document.documentElement.dataset.sizes = 'mastra';
+    else delete document.documentElement.dataset.sizes;
+  }, [builtIn]);
   return (
     <ThemeContext.Provider value={{ theme, resolvedTheme: theme, systemTheme: theme, setTheme: () => {} }}>
       <TooltipProvider>

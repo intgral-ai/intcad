@@ -7,7 +7,9 @@ Only an explicit candidate transition starts it:
 
 * opened (already ready), reopened (already ready), or ready_for_review;
 * a main merge-group run;
-* a manual/reusable call.
+* a maintainer's push of a stable ``vX.Y.Z`` tag, which is the formal post-promotion
+  gate at the promoted main commit;
+* a manual/reusable call (diagnostic, or the ordinary reusable callers).
 
 A draft run still creates the required ``release-gate`` context, but it fails
 with a clear reason.  It is never reported as success, so a draft cannot be
@@ -19,6 +21,7 @@ selected ref, not the PR merge SHA, and cannot satisfy the required context.
 import argparse
 import json
 import os
+import re
 import sys
 
 
@@ -26,7 +29,7 @@ def _is_true(value):
     return str(value).strip().lower() in ("1", "true", "yes")
 
 
-def state(event, action, draft, head_ref, base_ref, merge_base, merge_head):
+def state(event, action, draft, head_ref, base_ref, merge_base, merge_head, *, ref=""):
     """Return (verify, reason) for one workflow event.
 
     ``verify`` is a string because it is written to ``$GITHUB_OUTPUT``.
@@ -39,6 +42,14 @@ def state(event, action, draft, head_ref, base_ref, merge_base, merge_head):
         # The existing release-gate job reports not_applicable for develop
         # merge groups.  Keep that behaviour; there is no merge queue here.
         return True, "merge group (applicability is decided by the gate)"
+    if event == "push":
+        # Only a stable release tag triggers the formal gate. A push to a branch, a
+        # prerelease tag or any other ref stays out; ordinary main pushes must not
+        # start the full matrix.
+        prefix = "refs/tags/"
+        if (ref or "").startswith(prefix) and re.fullmatch(r"v\d+\.\d+\.\d+", ref[len(prefix):]):
+            return True, "stable release tag push"
+        return False, f"push to {ref or 'unknown'}: not a stable release tag"
     if event in ("workflow_dispatch", "workflow_call"):
         return True, "explicit run"
     if event != "pull_request":
@@ -75,6 +86,7 @@ def state_from_env(env=None):
         env.get("BASE_REF", ""),
         env.get("MERGE_BASE", ""),
         env.get("MERGE_HEAD", ""),
+        ref=env.get("REF", ""),
     )
 
 
@@ -87,11 +99,13 @@ def main(argv=None):
     parser.add_argument("--base-ref", default=os.environ.get("BASE_REF", ""))
     parser.add_argument("--merge-base", default=os.environ.get("MERGE_BASE", ""))
     parser.add_argument("--merge-head", default=os.environ.get("MERGE_HEAD", ""))
+    parser.add_argument("--ref", default=os.environ.get("REF", ""))
     parser.add_argument("--out", help="write GitHub Actions step outputs here")
     parser.add_argument("--json", action="store_true", help="print both fields as JSON")
     args = parser.parse_args(argv)
     verify, reason = state(args.event, args.action, args.draft,
-                           args.head_ref, args.base_ref, args.merge_base, args.merge_head)
+                           args.head_ref, args.base_ref, args.merge_base, args.merge_head,
+                           ref=args.ref)
     reason = " ".join(str(reason).split()) or "no reason"
     check_context = context(args.event)
     if args.json:

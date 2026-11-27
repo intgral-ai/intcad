@@ -67,20 +67,33 @@ foreach ($case in $cases) {
         $reply = $reader.ReadLine()
         Write-Host "screenshot: $reply"
         if (-not ($reply -like '*"ok":true*') -or -not (Test-Path $shot)) { throw "no frame drawn: $reply" }
-        $writer.WriteLine((@{ id = 2; method = 'app.quit'; params = @{ force = $true } } | ConvertTo-Json -Compress))
-        Write-Host "quit: $($reader.ReadLine())"
         $client.Close()
-        if (-not $p.WaitForExit(60000)) { throw 'did not exit after app.quit' }
+        # The control channel checks the frame. Close the test's own window
+        # through the normal Windows close path, not a gated control request.
+        $p.Refresh()
+        if ($p.HasExited) { throw 'exited before the window could be closed' }
+        if ($p.MainWindowHandle -eq [IntPtr]::Zero) { throw 'no main window to close' }
+        if (-not $p.CloseMainWindow()) { throw 'could not close the main window' }
+        if (-not $p.WaitForExit(60000)) { throw 'did not exit after closing the main window' }
         if ($p.ExitCode -ne 0) { throw ('exit code 0x{0:x}' -f $p.ExitCode) }
         $ok = $true
     } catch {
         $why = $_.Exception.Message
     } finally {
-        if (-not $p.HasExited) { $p.Kill(); $p.WaitForExit() }
+        if (-not $ok -and -not $p.HasExited) {
+            $p.Kill()
+            if (-not $p.WaitForExit(15000)) { throw "FAIL: $($case.Name): $why; process did not exit after forced cleanup" }
+        }
     }
-    $err = $stderr.Result
-    Write-Host $err
-    if ($ok -and -not $err.Contains($case.Expect)) { $ok = $false; $why = "stderr does not say '$($case.Expect)'" }
+    # An inherited pipe can stay open after the app exits.
+    if ($stderr.Wait(5000)) {
+        $err = $stderr.Result
+        Write-Host $err
+        if ($ok -and -not $err.Contains($case.Expect)) { $ok = $false; $why = "stderr does not say '$($case.Expect)'" }
+    } else {
+        $ok = $false
+        $why = if ($why) { "$why; timed out waiting for stderr" } else { 'timed out waiting for stderr' }
+    }
     $reports = @(Get-ChildItem -Recurse -Filter report.json $crashes -ErrorAction SilentlyContinue)
     if ($reports.Count -gt 0) {
         foreach ($r in $reports) { Get-Content $r.FullName | Write-Host }
