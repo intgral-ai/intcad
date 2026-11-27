@@ -1060,19 +1060,15 @@ fn the_assistants_finished_runs_its_check_by_itself_and_the_findings_come_back_u
         tickets::events(&root, Some(&id)).unwrap().iter().filter(|e| e.action == "check_asked").map(|e| (e.actor, e.rounds.as_ref().map(|r| r.round))).collect();
     assert_eq!(asked, [(Actor::Agent, Some(0)), (Actor::Agent, Some(1))], "the Assistant's work asked for both, with the round");
     let page = told(&mut h);
-    assert_eq!(ticket_of(&page, &id)["rounds"], json!({"round": 1, "of": 3, "stopped": "clean"}));
+    assert_eq!(self::ticket(&page, &id)["rounds"], json!({"round": 1, "of": 3, "stopped": "clean"}));
     // The check's kind is carried on the ticket and its lines, and the page is told its word.
-    assert_eq!((ticket_of(&page, &id)["check"]["kind"].as_str(), page["kinds"]["dfm"].is_string()), (Some("dfm"), true));
+    assert_eq!((self::ticket(&page, &id)["check"]["kind"].as_str(), page["kinds"]["dfm"].is_string()), (Some("dfm"), true));
     let kinds: Vec<Option<tickets::CheckKind>> = tickets::events(&root, Some(&id)).unwrap().iter().filter(|e| e.action.starts_with("check_")).map(|e| e.kind).collect();
     assert!(kinds.len() == 6 && kinds.iter().all(|kind| *kind == Some(tickets::CheckKind::Dfm)), "{kinds:?}");
     let prompts = agent.prompts().len();
     h.frames(6);
     assert_eq!(agent.prompts().len(), prompts, "a clean end tells the Assistant nothing");
     dump_zh(&mut h, "rounds-2-clean", &id);
-}
-
-fn ticket_of<'a>(state: &'a Value, id: &str) -> &'a Value {
-    ticket(state, id)
 }
 
 /// Three rounds used up: 「建议」 left → waiting; something failed left → blocked; each with the
@@ -1086,7 +1082,7 @@ fn after_the_last_round_advisories_leave_it_waiting_and_a_failure_blocks_it_each
             says_finished(&mut h, &agent, &id, &format!("Round {n}: tried a larger relief"));
             assert_eq!(rounds(&root, &id).map(|r| (r.round, r.stopped)), Some((n, None)), "{name}");
             if n == 2 {
-                assert_eq!(ticket_of(&told(&mut h), &id)["rounds"]["round"], 2);
+                assert_eq!(ticket(&told(&mut h), &id)["rounds"]["round"], 2);
                 dump_zh(&mut h, &format!("{name}-round-2"), &id);
             }
         }

@@ -272,7 +272,7 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
     app.agent_chat.dock_space = Some(available);
     let mut bounds = available.shrink(gap);
     let set = (app.preferences.agent_chat_centre_width, app.preferences.agent_chat_centre_height);
-    let wanted = if set.0 > 0.0 { set.0.clamp(MIN_WIDTH, MAX_CENTRE) } else { CENTRE_WIDTH };
+    let wanted = if set.0 > 0.0 { set.0.max(MIN_WIDTH) } else { CENTRE_WIDTH };
     if let Some(history) = app.shell.history.filter(|_| app.ui.show_timeline && !app.preferences.timeline_left) {
         bounds.max.y = (history.top() - gap).min(bounds.bottom()).max(bounds.top());
     }
@@ -346,10 +346,6 @@ fn centre(app: &mut SolveApp, ui: &mut egui::Ui) {
     app.agent_chat.drop_rect = Some(rect);
     gallery_window(app, &ctx);
 }
-
-/// The widest the box at the bottom centre may be dragged, before the room there is bounds it.
-#[cfg(not(target_arch = "wasm32"))]
-const MAX_CENTRE: f32 = 100_000.0;
 
 /// The box's edges at the bottom centre, `grip` wide just outside the native view: its top drags
 /// its height, each side its width, the other side staying where it is. What the person sets is
