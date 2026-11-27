@@ -2602,6 +2602,7 @@ mod tests {
         fail_delete: Arc<AtomicBool>,
         fail_product_delete: Arc<AtomicBool>,
         fail_get: Arc<AtomicBool>,
+        fail_logout_metadata_read: Arc<AtomicBool>,
         block_delete: Arc<Mutex<VecDeque<Receiver<()>>>>,
         block_get: Arc<Mutex<Option<Receiver<()>>>>,
         block_set: Arc<Mutex<Option<(String, Receiver<()>)>>>,
@@ -2623,6 +2624,7 @@ mod tests {
                 fail_delete: Arc::new(AtomicBool::new(false)),
                 fail_product_delete: Arc::new(AtomicBool::new(false)),
                 fail_get: Arc::new(AtomicBool::new(false)),
+                fail_logout_metadata_read: Arc::new(AtomicBool::new(false)),
                 block_delete: Arc::new(Mutex::new(VecDeque::new())),
                 block_get: Arc::new(Mutex::new(None)),
                 block_set: Arc::new(Mutex::new(None)),
@@ -2691,7 +2693,7 @@ mod tests {
                 self.get_waiting.fetch_add(1, Ordering::SeqCst);
                 let _ = gate.recv();
             }
-            if self.fail_get.load(Ordering::SeqCst) {
+            if self.fail_get.load(Ordering::SeqCst) || (key == "auth/session_binding" && self.fail_logout_metadata_read.load(Ordering::SeqCst)) {
                 return Err(store_error());
             }
             Ok(self.entries.lock().unwrap().get(key).cloned())
@@ -3288,6 +3290,39 @@ mod tests {
         assert!(session.authenticated_scope().is_none());
         assert!(store.get(&identity_refresh_key(&config)).unwrap().is_some());
         assert!(store.get("auth/product_session").unwrap().is_some());
+    }
+
+    #[test]
+    fn desktop_identity_logout_metadata_read_failure_keeps_durable_marker_and_credentials() {
+        let store = TestStore::default();
+        let session = activate_session(&store);
+        let scope = session.authenticated_scope().unwrap();
+        let config = test_config();
+        let runtime = fixture_runtime(session, config.clone(), &store, ScriptedProduct::default());
+        seed_identity(runtime.identity.as_ref().unwrap(), &scope, Secret::new("old_bearer"));
+        let mut startup = runtime.startup();
+        startup.restart = None;
+        let mut port = DesktopAccountPort::new(runtime, &startup);
+        let deletes = store.delete_calls.load(Ordering::SeqCst);
+        store.fail_logout_metadata_read.store(true, Ordering::SeqCst);
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert_eq!(port.poll().unwrap().sign_out_error, Some(RefusalCode::AuthUnavailable));
+        assert!(port.runtime.credentials.is_revoked());
+        let peer = CredentialSession::new(Box::new(store.clone()));
+        assert!(peer.logout_pending().unwrap(), "metadata read failure must not skip writing the durable marker");
+        assert_eq!(store.delete_calls.load(Ordering::SeqCst), deletes);
+        assert!(store.get("auth/product_session").unwrap().is_some());
+        assert!(store.get(&identity_refresh_key(&config)).unwrap().is_some());
+
+        store.fail_logout_metadata_read.store(false, Ordering::SeqCst);
+        assert!(peer.authenticated_scope().is_none(), "the durable marker blocks other readers even after reads recover");
+        port.sign_out().unwrap();
+        wait_for_cleanup(&port);
+        assert!(port.poll().unwrap().sign_in_visible);
+        assert!(!peer.logout_pending().unwrap());
+        assert!(store.get("auth/product_session").unwrap().is_none());
+        assert!(store.get(&identity_refresh_key(&config)).unwrap().is_none());
     }
 
     #[test]

@@ -766,12 +766,14 @@ impl CredentialSession {
         let mut state = self.lock()?;
         let identity = identity_fence();
         let product = (|| {
-            let commit = state.store.get(LOGIN_COMMIT_KEY)?;
-            let binding = state.store.get(SESSION_BINDING_KEY)?;
             let mut id = [0; 16];
             rustls::crypto::ring::default_provider().secure_random.fill(&mut id).map_err(|_| unavailable())?;
             let marker = format!("sign_out/{:032x}", u128::from_le_bytes(id));
             state.store.set(LOGOUT_KEY, &marker).map_err(|error| store_failure(&mut state, error))?;
+            // Even if metadata cannot be read, peers must see the durable logout.
+            // Leave the marker in place and issue no cleanup fence until a retry.
+            let commit = state.store.get(LOGIN_COMMIT_KEY)?;
+            let binding = state.store.get(SESSION_BINDING_KEY)?;
             Ok(CredentialLogoutFence { owner: Arc::downgrade(&self.inner), epoch: self.authority_generation(), commit, binding, marker })
         })();
         Ok((identity, product))
