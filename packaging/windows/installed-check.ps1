@@ -118,7 +118,7 @@ function Assert-AgentRuntime([string] $Agent) {
   $acpProbe = Join-Path $RepoRoot 'packaging\windows\agent-acp-probe.mjs'
   Push-Location $Agent
   try {
-    $lines = & $node $acpProbe 2>&1 | Where-Object { $_ }
+    $lines = & $node $acpProbe 2>$null | Where-Object { $_ }
   } finally { Pop-Location }
   $acpText = (@($lines) | Select-Object -Last 1)
   Write-Output "ACP initialize: $acpText"
