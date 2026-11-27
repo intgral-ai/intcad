@@ -62,7 +62,14 @@ jobs:
         run: |
           packages=$(python3 -I scripts/ci/fea_suite.py apt-packages --platform linux)
           echo "Installing: $packages"
-          sudo apt-get update
+          # Bounded as in ci.yml (#231): a stalled mirror fails fast instead of using the job's time.
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
           # Word splitting is wanted: one argument per package.
           # shellcheck disable=SC2086
           sudo apt-get install -y --no-install-recommends $packages
@@ -71,7 +78,8 @@ jobs:
           python3 -I scripts/ci/fea_suite.py programs --platform linux
           --gmsh "$SOLIDCRAFT_GMSH" --ccx "$SOLIDCRAFT_CCX" --out fea-suite/programs.json
       - run: scripts/ci/build-jobs.sh
-      - uses: dtolnay/rust-toolchain@stable
+      # The same Rust as rust-toolchain.toml and every other workflow; change them together.
+      - uses: dtolnay/rust-toolchain@1.99.1
       # Only the nightly saves the cache (in the default branch's scope, which the release gate's
       # pull requests and manual runs can read); other runs read it and never write it back.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

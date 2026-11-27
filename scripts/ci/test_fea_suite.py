@@ -9,6 +9,7 @@ import json
 import re
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -181,6 +182,13 @@ class Workflows(unittest.TestCase):
         # Each platform the gate requires has a job that uploads its run.
         for platform in fea_suite.PLATFORMS:
             self.assertIn(f"name: fea-suite-{platform}-", self.suite)
+
+    def test_the_job_follows_the_repositorys_rust_and_apt_rules(self):
+        # The same Rust as rust-toolchain.toml, and an apt-get update that cannot hang the job.
+        channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text(encoding="utf-8"))["toolchain"]["channel"]
+        self.assertEqual(re.findall(r"dtolnay/rust-toolchain@(\S+)", self.suite), [channel])
+        self.assertNotRegex(self.suite, r"(?m)^\s+sudo apt-get update")
+        self.assertIn("timeout 180 sudo apt-get update", self.suite)
 
     def test_the_release_gate_requires_the_suite_and_regrades_it(self):
         self.assertIn("uses: ./.github/workflows/fea-suite.yml", self.gate)
