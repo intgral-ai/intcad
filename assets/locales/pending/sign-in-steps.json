@@ -1,0 +1,90 @@
+{
+  "en": {
+    "ui.agent_chat_conn_problem_exchange_failed": "The browser part is done, but the last step of the sign-in did not finish ({detail}). Try again.",
+    "ui.agent_chat_conn_problem_exchange_offline": "The browser part is done, but Intcad could not reach the sign-in service to finish it ({detail}). If your browser goes through a proxy or VPN, Intcad has to as well.",
+    "ui.agent_chat_conn_problem_exchange_plan": "The sign-in service says this account's plan does not include this ({detail}).",
+    "ui.agent_chat_conn_problem_exchange_refused": "The sign-in service refused the last step of the sign-in ({detail}). Try again.",
+    "ui.agent_chat_conn_problem_exchange_region": "The sign-in service does not offer this sign-in where you are ({detail}).",
+    "ui.agent_chat_conn_problem_log": "Details are in {path}.",
+    "ui.agent_chat_conn_problem_step_open": "The sign-in could not start. Try again.",
+    "ui.agent_chat_conn_problem_step_wait": "The sign-in stopped while it was waiting for the browser. Try again.",
+    "ui.agent_chat_conn_problem_store": "You signed in, but Intcad could not save the sign-in ({detail}). Try again."
+  },
+  "ar": {
+    "ui.agent_chat_conn_problem_exchange_failed": "اكتمل الجزء الخاص بالمتصفح، لكن الخطوة الأخيرة من تسجيل الدخول لم تكتمل ({detail}). حاول من جديد.",
+    "ui.agent_chat_conn_problem_exchange_offline": "اكتمل الجزء الخاص بالمتصفح، لكن تعذّر على Intcad الوصول إلى خدمة تسجيل الدخول لإكماله ({detail}). إن كان متصفحك يمرّ عبر وكيل أو VPN، فعلى Intcad أن يمرّ عبره أيضًا.",
+    "ui.agent_chat_conn_problem_exchange_plan": "تقول خدمة تسجيل الدخول إن خطة هذا الحساب لا تشمل ذلك ({detail}).",
+    "ui.agent_chat_conn_problem_exchange_refused": "رفضت خدمة تسجيل الدخول الخطوة الأخيرة من تسجيل الدخول ({detail}). حاول من جديد.",
+    "ui.agent_chat_conn_problem_exchange_region": "لا تقدّم خدمة تسجيل الدخول هذا النوع من تسجيل الدخول في منطقتك ({detail}).",
+    "ui.agent_chat_conn_problem_log": "التفاصيل في {path}.",
+    "ui.agent_chat_conn_problem_step_open": "تعذّر بدء تسجيل الدخول. حاول من جديد.",
+    "ui.agent_chat_conn_problem_step_wait": "توقّف تسجيل الدخول أثناء انتظار المتصفح. حاول من جديد.",
+    "ui.agent_chat_conn_problem_store": "سجّلت الدخول، لكن تعذّر على Intcad حفظ تسجيل الدخول ({detail}). حاول من جديد."
+  },
+  "de": {
+    "ui.agent_chat_conn_problem_exchange_failed": "Der Teil im Browser ist erledigt, aber der letzte Schritt der Anmeldung wurde nicht abgeschlossen ({detail}). Versuche es erneut.",
+    "ui.agent_chat_conn_problem_exchange_offline": "Der Teil im Browser ist erledigt, aber Intcad konnte den Anmeldedienst nicht erreichen, um sie abzuschließen ({detail}). Wenn dein Browser über einen Proxy oder ein VPN geht, muss Intcad das auch.",
+    "ui.agent_chat_conn_problem_exchange_plan": "Laut Anmeldedienst ist das im Plan dieses Kontos nicht enthalten ({detail}).",
+    "ui.agent_chat_conn_problem_exchange_refused": "Der Anmeldedienst hat den letzten Schritt der Anmeldung abgelehnt ({detail}). Versuche es erneut.",
+    "ui.agent_chat_conn_problem_exchange_region": "Der Anmeldedienst bietet diese Anmeldung dort, wo du bist, nicht an ({detail}).",
+    "ui.agent_chat_conn_problem_log": "Einzelheiten stehen in {path}.",
+    "ui.agent_chat_conn_problem_step_open": "Die Anmeldung konnte nicht beginnen. Versuche es erneut.",
+    "ui.agent_chat_conn_problem_step_wait": "Die Anmeldung wurde beendet, während sie auf den Browser wartete. Versuche es erneut.",
+    "ui.agent_chat_conn_problem_store": "Du hast dich angemeldet, aber Intcad konnte die Anmeldung nicht speichern ({detail}). Versuche es erneut."
+  },
+  "he": {
+    "ui.agent_chat_conn_problem_exchange_failed": "החלק שבדפדפן הסתיים, אבל השלב האחרון של ההתחברות לא הושלם ({detail}). יש לנסות שוב.",
+    "ui.agent_chat_conn_problem_exchange_offline": "החלק שבדפדפן הסתיים, אבל Intcad לא הצליח להגיע לשירות ההתחברות כדי להשלים אותה ({detail}). אם הדפדפן עובר דרך פרוקסי או VPN, גם Intcad צריך לעבור דרכו.",
+    "ui.agent_chat_conn_problem_exchange_plan": "לפי שירות ההתחברות, התוכנית של החשבון הזה לא כוללת את זה ({detail}).",
+    "ui.agent_chat_conn_problem_exchange_refused": "שירות ההתחברות דחה את השלב האחרון של ההתחברות ({detail}). יש לנסות שוב.",
+    "ui.agent_chat_conn_problem_exchange_region": "שירות ההתחברות לא מציע את ההתחברות הזאת באזור שלך ({detail}).",
+    "ui.agent_chat_conn_problem_log": "הפרטים נמצאים ב-{path}.",
+    "ui.agent_chat_conn_problem_step_open": "לא ניתן היה להתחיל את ההתחברות. יש לנסות שוב.",
+    "ui.agent_chat_conn_problem_step_wait": "ההתחברות הופסקה בזמן שחיכתה לדפדפן. יש לנסות שוב.",
+    "ui.agent_chat_conn_problem_store": "ההתחברות הצליחה, אבל Intcad לא הצליח לשמור אותה ({detail}). יש לנסות שוב."
+  },
+  "ja": {
+    "ui.agent_chat_conn_problem_exchange_failed": "ブラウザでの手順は終わりましたが、サインインの最後の手順が完了しませんでした（{detail}）。もう一度お試しください。",
+    "ui.agent_chat_conn_problem_exchange_offline": "ブラウザでの手順は終わりましたが、Intcad がサインインサービスに接続できず完了できませんでした（{detail}）。ブラウザがプロキシや VPN を経由している場合は、Intcad も同じように経由する必要があります。",
+    "ui.agent_chat_conn_problem_exchange_plan": "サインインサービスによると、このアカウントのプランには含まれていません（{detail}）。",
+    "ui.agent_chat_conn_problem_exchange_refused": "サインインサービスがサインインの最後の手順を拒否しました（{detail}）。もう一度お試しください。",
+    "ui.agent_chat_conn_problem_exchange_region": "サインインサービスは、お使いの地域ではこのサインインを提供していません（{detail}）。",
+    "ui.agent_chat_conn_problem_log": "詳細は {path} にあります。",
+    "ui.agent_chat_conn_problem_step_open": "サインインを開始できませんでした。もう一度お試しください。",
+    "ui.agent_chat_conn_problem_step_wait": "ブラウザを待っている間にサインインが止まりました。もう一度お試しください。",
+    "ui.agent_chat_conn_problem_store": "サインインはできましたが、Intcad がサインイン情報を保存できませんでした（{detail}）。もう一度お試しください。"
+  },
+  "ko": {
+    "ui.agent_chat_conn_problem_exchange_failed": "브라우저에서 할 일은 끝났지만 로그인의 마지막 단계가 완료되지 않았습니다({detail}). 다시 시도하세요.",
+    "ui.agent_chat_conn_problem_exchange_offline": "브라우저에서 할 일은 끝났지만 Intcad가 로그인 서비스에 연결하지 못해 마무리하지 못했습니다({detail}). 브라우저가 프록시나 VPN을 거친다면 Intcad도 거쳐야 합니다.",
+    "ui.agent_chat_conn_problem_exchange_plan": "로그인 서비스에 따르면 이 계정의 요금제에는 포함되어 있지 않습니다({detail}).",
+    "ui.agent_chat_conn_problem_exchange_refused": "로그인 서비스가 로그인의 마지막 단계를 거부했습니다({detail}). 다시 시도하세요.",
+    "ui.agent_chat_conn_problem_exchange_region": "로그인 서비스가 현재 지역에서는 이 로그인을 제공하지 않습니다({detail}).",
+    "ui.agent_chat_conn_problem_log": "자세한 내용은 {path}에 있습니다.",
+    "ui.agent_chat_conn_problem_step_open": "로그인을 시작하지 못했습니다. 다시 시도하세요.",
+    "ui.agent_chat_conn_problem_step_wait": "브라우저를 기다리는 동안 로그인이 멈췄습니다. 다시 시도하세요.",
+    "ui.agent_chat_conn_problem_store": "로그인은 되었지만 Intcad가 로그인 정보를 저장하지 못했습니다({detail}). 다시 시도하세요."
+  },
+  "vi": {
+    "ui.agent_chat_conn_problem_exchange_failed": "Phần trong trình duyệt đã xong, nhưng bước cuối của lần đăng nhập chưa hoàn tất ({detail}). Hãy thử lại.",
+    "ui.agent_chat_conn_problem_exchange_offline": "Phần trong trình duyệt đã xong, nhưng Intcad không kết nối được tới dịch vụ đăng nhập để hoàn tất ({detail}). Nếu trình duyệt của bạn đi qua proxy hoặc VPN thì Intcad cũng phải đi qua đó.",
+    "ui.agent_chat_conn_problem_exchange_plan": "Dịch vụ đăng nhập cho biết gói của tài khoản này không bao gồm việc này ({detail}).",
+    "ui.agent_chat_conn_problem_exchange_refused": "Dịch vụ đăng nhập đã từ chối bước cuối của lần đăng nhập ({detail}). Hãy thử lại.",
+    "ui.agent_chat_conn_problem_exchange_region": "Dịch vụ đăng nhập không cung cấp kiểu đăng nhập này ở nơi bạn đang ở ({detail}).",
+    "ui.agent_chat_conn_problem_log": "Chi tiết nằm trong {path}.",
+    "ui.agent_chat_conn_problem_step_open": "Không bắt đầu được lần đăng nhập. Hãy thử lại.",
+    "ui.agent_chat_conn_problem_step_wait": "Lần đăng nhập đã dừng trong lúc chờ trình duyệt. Hãy thử lại.",
+    "ui.agent_chat_conn_problem_store": "Bạn đã đăng nhập, nhưng Intcad không lưu được lần đăng nhập ({detail}). Hãy thử lại."
+  },
+  "zh": {
+    "ui.agent_chat_conn_problem_exchange_failed": "浏览器那边已经走完，但登录的最后一步没有完成（{detail}）。再试一次。",
+    "ui.agent_chat_conn_problem_exchange_offline": "浏览器那边已经走完，但 Intcad 连不上登录服务，最后一步没能完成（{detail}）。如果浏览器走代理或 VPN，Intcad 也得走同一个。",
+    "ui.agent_chat_conn_problem_exchange_plan": "登录服务说这个账号的套餐不包括这一项（{detail}）。",
+    "ui.agent_chat_conn_problem_exchange_refused": "登录服务拒绝了登录的最后一步（{detail}）。再试一次。",
+    "ui.agent_chat_conn_problem_exchange_region": "登录服务在你所在的地区不提供这种登录（{detail}）。",
+    "ui.agent_chat_conn_problem_log": "详情记在 {path}。",
+    "ui.agent_chat_conn_problem_step_open": "登录没能开始。再试一次。",
+    "ui.agent_chat_conn_problem_step_wait": "等浏览器的时候登录停下了。再试一次。",
+    "ui.agent_chat_conn_problem_store": "已经登录，但 Intcad 没能把登录存下来（{detail}）。再试一次。"
+  }
+}

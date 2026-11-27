@@ -37,3 +37,22 @@ export function keepKeysFromCommands(Sandbox, names) {
 export function withoutParams(args) {
   return args.map(arg => (arg && typeof arg === 'object' && !(arg instanceof Error) && typeof arg.method === 'string' && 'params' in arg ? { ...arg, params: '[not shown]' } : arg));
 }
+
+/**
+ * Text with what could let someone in, or say whose account it is, taken out, for the sign-in log
+ * (INT-1521): the secrets given (the keys the agent holds), a user and password in an address (a
+ * proxy's), every value in an address's query (a sign-in's code and state), the fields that hold
+ * tokens, JWTs, e-mail addresses, and any other run of 32 or more letters and digits (a key, a
+ * code, a verifier).
+ */
+export function scrub(text, secrets = []) {
+  let out = String(text ?? '');
+  for (const secret of secrets) if (typeof secret === 'string' && secret.length >= 8) out = out.split(secret).join('[removed]');
+  return out
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi, '$1[removed]@')
+    .replace(/([?&][^=\s&#]+=)[^\s&#"']+/g, '$1[removed]')
+    .replace(/"(access_token|refresh_token|id_token|code_verifier|api_?key|token|password)"\s*:\s*"[^"]*"/gi, '"$1": "[removed]"')
+    .replace(/\beyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){1,2}/g, '[removed]')
+    .replace(/[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g, '[removed]')
+    .replace(/[A-Za-z0-9_+=-]{32,}/g, '[removed]');
+}

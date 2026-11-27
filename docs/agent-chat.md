@@ -545,6 +545,16 @@ user goes back from the Connections page, when another design is shown, and, bef
 starts, in every design not shown. When the port is taken, the page says who holds it where it
 can tell: another design's sign-in, another running Intcad's, or a program by its name.
 
+A sign-in that fails says at which step: it could not start, it stopped waiting for the browser,
+the sign-in service refused the last step (with its HTTP status and error code, and as a refusal
+for the region or the plan where the answer names one) or could not be reached, or the result
+could not be saved. Each sign-in is written down, with secrets taken out, in `logs/sign-in.log` in
+the agent's data folder, and the page says where. When the app's environment names a proxy
+(`HTTPS_PROXY` or `HTTP_PROXY`), the built-in agent's requests go through it (the app starts it
+with `NODE_USE_ENV_PROXY=1` and this computer's names added to `NO_PROXY`); the system's own
+proxy setting is not read, and an app started from the Dock or the Start menu usually has no such
+variable.
+
 The model is picked at the lower right of the message box, in Mastra's own model picker: the
 models of the connection in use, newest first, with a search box and a row that opens the
 Connections page. Another provider is taken with **Switch** on its row there; the model list then

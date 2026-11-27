@@ -10,7 +10,10 @@ its SDK and unchanged, with what the Assistant's Connections page needs added in
 - `agent.mjs`: the methods on the ACP agent, a model list a person can read, sessions that follow a
   sign-in or sign-out, and the reason on a turn that fails;
 - `models.mjs`, `problems.mjs`: the order of the model list, and the kinds of failure;
-- `secrets.mjs`: what keeps a key out of the commands a model runs and out of what is printed;
+- `secrets.mjs`: what keeps a key out of the commands a model runs and out of what is printed
+  or logged;
+- `signin.mjs`: what a failed sign-in leaves to go by: what the ChatGPT sign-in's token endpoint
+  answered, and the sign-in log;
 - `skills.mjs`: the skill sets the package carries (`modelling-skills`: the repository's
   `skills/solidcraft-modeling`, `-editing`, `-checking` and `-mechanisms`; `context-skills`:
   `../agent-skills/intcad-context`, written for this agent alone), how the build copies
@@ -100,7 +103,12 @@ sends the same snapshot as the notification `_intcad/connections/changed` whenev
 - `problem.kind`, for a sign-in that could not finish: `port` (with `holder`, when found: `{ kind:
   'here' }` a sign-in of another design of the same app, `{ kind: 'intcad' }` one of another
   Intcad, `{ kind: 'program', name }`), `listen` (the system would not open the port: `port`,
-  `code`, such as `EACCES`), `timeout` (15 minutes passed), `offline`, `failed`.
+  `code`, such as `EACCES`), `timeout` (15 minutes passed), `offline`, `failed`, and for the
+  ChatGPT sign-in's token endpoint `refused`, `region`, `plan` (the endpoint's answer names the
+  region or the plan). `step`: how far it got: `open` (before the browser is opened), `wait`,
+  `exchange` (with the token endpoint: its `status` and its error `code`, or for `offline` the
+  system's code, `timeout` or `no-connection`), `store` (saving it: the file error's `code`).
+  `log`: the path of the sign-in log, when the agent keeps one (below).
 - `dates`: release dates of the models of connected providers, from Mastra's registry.
 
 A session's `model` option lists only models one can talk to, newest first. After a sign-in, a
@@ -375,5 +383,25 @@ The sign-in address points at port 1457 where Mastra Code's own points at 1455. 
 signing in (2026-11-18), OpenAI's sign-in service treats the two alike (it goes on to its sign-in
 page) and refuses an address with any other port.
 
-Not checked: any sign-in completed with a real account through this agent, a turn answered by a
-real provider, and the Kimi plan's model prefix.
+A ChatGPT sign-in with a real account was completed on 2026-11-27 on macOS in a copy built
+locally from `develop` (seen by its sign-in file, not by this folder's tests). Not checked here: a
+turn answered by a real provider, and the Kimi plan's model prefix.
+
+## What a sign-in leaves to go by
+
+Mastra Code's SDK keeps nothing of a failed exchange: it prints the HTTP status and throws "Token
+exchange failed". The entry wraps `fetch` for the ChatGPT sign-in's token endpoint only
+(`signin.mjs`): the answer's status, and for a refusal the provider's own error code (a short word
+from the JSON, never its description) and whether it names the region or the plan, are handed to
+the sign-in under way; the body of an answer that was taken is never read. With
+`MASTRA_APP_DATA_DIR` set, each sign-in writes `logs/sign-in.log` there: the Node version and the
+names of the proxy variables it was given, each step, what the endpoint answered, and every line
+the agent printed meanwhile. Each line goes through `scrub` (`secrets.mjs`) first: the keys the
+agent holds, every value in an address's query, a user and password in an address, token fields,
+JWTs, e-mail addresses and any other run of 32 or more letters and digits are taken out. The file
+starts over past 256 KiB.
+
+The agent's requests follow a proxy only as Node does: with `NODE_USE_ENV_PROXY=1`, `HTTPS_PROXY`
+or `HTTP_PROXY`, and `NO_PROXY`. The app passes the first and adds this computer's names to the
+last when its own environment names a proxy (`proxy_env` in `acp_client.rs`). The operating
+system's own proxy setting is not read.

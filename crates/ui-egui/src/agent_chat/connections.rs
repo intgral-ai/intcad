@@ -163,6 +163,10 @@ pub enum LoginProblemKind {
     /// The person did not come back from the browser in the sign-in's time.
     Timeout,
     Offline,
+    /// The sign-in service refused the last step; for the region or for the plan when it said so.
+    Refused,
+    Region,
+    Plan,
     Failed,
 }
 
@@ -173,9 +177,25 @@ impl LoginProblemKind {
             LoginProblemKind::Listen => "listen",
             LoginProblemKind::Timeout => "timeout",
             LoginProblemKind::Offline => "offline",
+            LoginProblemKind::Refused => "refused",
+            LoginProblemKind::Region => "region",
+            LoginProblemKind::Plan => "plan",
             LoginProblemKind::Failed => "failed",
         }
     }
+}
+
+/// How far a sign-in that failed had got (INT-1521).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Before the browser was opened.
+    Open,
+    /// Waiting for the browser.
+    Wait,
+    /// The last step, with the sign-in service.
+    Exchange,
+    /// Saving what it gave.
+    Store,
 }
 
 /// Who holds the port a sign-in needs, as far as the agent could tell.
@@ -199,8 +219,14 @@ pub struct LoginProblem {
     /// For [`LoginProblemKind::Port`]: who holds it, when the agent found out.
     pub holder: Option<PortHolder>,
     /// For [`LoginProblemKind::Listen`]: the port and the system's code for the refusal (`EACCES`).
+    /// At [`Step::Exchange`]: the sign-in service's error code, or the system's when it had none.
     pub port: Option<u16>,
     pub code: Option<String>,
+    pub step: Option<Step>,
+    /// The sign-in service's HTTP status at [`Step::Exchange`].
+    pub status: Option<u16>,
+    /// Where the agent wrote the sign-in down.
+    pub log: Option<String>,
 }
 
 /// A short word from the agent for a sentence: printable, cut to size, `None` when empty.
@@ -290,11 +316,23 @@ impl Snapshot {
                     Some("listen") => LoginProblemKind::Listen,
                     Some("timeout") => LoginProblemKind::Timeout,
                     Some("offline") => LoginProblemKind::Offline,
+                    Some("refused") => LoginProblemKind::Refused,
+                    Some("region") => LoginProblemKind::Region,
+                    Some("plan") => LoginProblemKind::Plan,
                     _ => LoginProblemKind::Failed,
                 },
                 holder,
                 port: problem.get("port").and_then(Value::as_u64).and_then(|port| u16::try_from(port).ok()),
                 code: word(problem, "code"),
+                step: match problem.get("step").and_then(Value::as_str) {
+                    Some("open") => Some(Step::Open),
+                    Some("wait") => Some(Step::Wait),
+                    Some("exchange") => Some(Step::Exchange),
+                    Some("store") => Some(Step::Store),
+                    _ => None,
+                },
+                status: problem.get("status").and_then(Value::as_u64).and_then(|status| u16::try_from(status).ok()).filter(|status| (100..600).contains(status)),
+                log: text(problem, "log").filter(|log| !log.is_empty() && !log.chars().any(char::is_control)),
             })
         });
         let dates = value
@@ -1074,9 +1112,13 @@ fn page(conn: &Conn) -> Value {
     })
 }
 
-/// Why a sign-in could not finish, as the page says it under the plan's row.
+/// Why a sign-in could not finish, as the page says it under the plan's row: which step and, at
+/// the step with the sign-in service, its status and code (INT-1521). Where the agent wrote the
+/// sign-in down, the sentence says where.
 fn problem_text(problem: &LoginProblem) -> String {
-    match (problem.kind, &problem.holder) {
+    let detail = [problem.status.map(|status| format!("HTTP {status}")), problem.code.clone()].into_iter().flatten().collect::<Vec<_>>().join(", ");
+    let with = |id: &'static str| trf(id, &[("detail", if detail.is_empty() { "?" } else { &detail })]);
+    let sentence = match (problem.kind, &problem.holder) {
         (LoginProblemKind::Port, Some(PortHolder::Here)) => tr("ui.agent_chat_conn_problem_port_here").to_string(),
         (LoginProblemKind::Port, Some(PortHolder::Intcad)) => tr("ui.agent_chat_conn_problem_port_intcad").to_string(),
         (LoginProblemKind::Port, Some(PortHolder::Program(name))) => trf("ui.agent_chat_conn_problem_port_program", &[("program", name)]),
@@ -1086,8 +1128,22 @@ fn problem_text(problem: &LoginProblem) -> String {
             trf("ui.agent_chat_conn_problem_listen", &[("port", &port), ("code", problem.code.as_deref().unwrap_or("?"))])
         }
         (LoginProblemKind::Timeout, _) => tr("ui.agent_chat_conn_problem_timeout").to_string(),
+        (LoginProblemKind::Refused, _) => with("ui.agent_chat_conn_problem_exchange_refused"),
+        (LoginProblemKind::Region, _) => with("ui.agent_chat_conn_problem_exchange_region"),
+        (LoginProblemKind::Plan, _) => with("ui.agent_chat_conn_problem_exchange_plan"),
+        (LoginProblemKind::Offline, _) if problem.step == Some(Step::Exchange) => with("ui.agent_chat_conn_problem_exchange_offline"),
         (LoginProblemKind::Offline, _) => tr("ui.agent_chat_conn_problem_offline").to_string(),
-        (LoginProblemKind::Failed, _) => tr("ui.agent_chat_conn_problem_failed").to_string(),
+        (LoginProblemKind::Failed, _) => match problem.step {
+            Some(Step::Open) => tr("ui.agent_chat_conn_problem_step_open").to_string(),
+            Some(Step::Wait) => tr("ui.agent_chat_conn_problem_step_wait").to_string(),
+            Some(Step::Exchange) if !detail.is_empty() => with("ui.agent_chat_conn_problem_exchange_failed"),
+            Some(Step::Store) => with("ui.agent_chat_conn_problem_store"),
+            _ => tr("ui.agent_chat_conn_problem_failed").to_string(),
+        },
+    };
+    match &problem.log {
+        Some(path) => format!("{sentence} {}", trf("ui.agent_chat_conn_problem_log", &[("path", path)])),
+        None => sentence,
     }
 }
 
@@ -1340,7 +1396,8 @@ mod tests {
         let login = snapshot.login.as_ref().expect("the sign-in under way");
         assert_eq!((login.id.as_str(), login.phase, login.user_code.as_deref(), login.incomplete), ("anthropic", Phase::Code, None, true));
         assert!(!format!("{snapshot:?}").contains("claude.ai"), "the address is not kept");
-        assert_eq!(snapshot.problem, Some(LoginProblem { id: "openai-codex".into(), kind: LoginProblemKind::Port, holder: None, port: None, code: None }));
+        let port = LoginProblem { id: "openai-codex".into(), kind: LoginProblemKind::Port, holder: None, port: None, code: None, step: None, status: None, log: None };
+        assert_eq!(snapshot.problem, Some(port));
         assert_eq!(snapshot.dates.len(), 1, "a date that is no text is left out");
         // Something is connected by the saved key and the custom address, though the plan expired.
         assert!(snapshot.connected() && !snapshot.plan_in("openai"));
@@ -1364,6 +1421,13 @@ mod tests {
         let odd = problem(json!({"id": "openai-codex", "kind": "listen", "port": 99999, "code": 13})).expect("a problem");
         assert_eq!((odd.port, odd.code), (None, None));
         assert_eq!(problem(json!({"id": "openai-codex", "kind": "timeout"})).map(|problem| problem.kind), Some(LoginProblemKind::Timeout));
+        // INT-1521: the step, the service's status and the log's path; a status that is none, a
+        // step this version does not know and a path with a line break in it are left out.
+        let at = problem(json!({"id": "openai-codex", "kind": "region", "step": "exchange", "status": 403, "code": "unsupported_country", "log": "/a/sign-in.log"}))
+            .expect("a problem");
+        assert_eq!((at.kind, at.step, at.status, at.log.as_deref()), (LoginProblemKind::Region, Some(Step::Exchange), Some(403), Some("/a/sign-in.log")));
+        let odd = problem(json!({"id": "openai-codex", "kind": "refused", "step": "teleport", "status": 7, "log": "/a\nb"})).expect("a problem");
+        assert_eq!((odd.step, odd.status, odd.log), (None, None, None));
     }
 
     /// What comes from the agent's process is hostile: nothing of it panics, a row that does not

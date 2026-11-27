@@ -4,10 +4,12 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { test } from "node:test";
+import { join } from "node:path";
+import { after, test } from "node:test";
 import { Agent as CoreAgent } from "@mastra/core/agent";
 
 type Json = Record<string, any>;
@@ -31,6 +33,9 @@ const { classifyFailure, classifySignInFailure } = await load("problems.mjs");
 const { intcadAgent } = await load("agent.mjs");
 const { PlanGate } = await load("plan.mjs");
 const { keepKeysFromCommands, keyVariables, withoutParams } = await load("secrets.mjs");
+// INT-1521. Loaded so that their tests fail, not the whole file, while a file is missing.
+const secretsModule = await load("secrets.mjs");
+const signinModule: Json = await load("signin.mjs").catch(() => ({}));
 
 const PROVIDERS = [
   { id: "openai-codex", name: "ChatGPT Plus/Pro (Codex Subscription)" },
@@ -93,6 +98,7 @@ function world(overrides: Json = {}) {
     changed: (snapshot: Json) => void told.push(snapshot),
     refresh: async (why?: Json) => void ((refreshed += 1), whys.push(why)),
     ...(overrides.limitMs ? { limitMs: overrides.limitMs } : {}),
+    ...(overrides.log ? { log: overrides.log } : {}),
   });
   return { connections, signedIn, told, opened, written, env, held, custom: () => custom, refreshed: () => refreshed, whys };
 }
@@ -327,12 +333,12 @@ test("a sign-in that cannot finish says why: the port, the network, or anything 
   const offline = world({ login: async () => Promise.reject(new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo"), { code: "ENOTFOUND" }) })) });
   offline.connections.login({ id: "xai" });
   await settle();
-  assert.deepEqual(offline.connections.list().problem, { id: "xai", kind: "offline" });
+  assert.deepEqual(offline.connections.list().problem, { id: "xai", kind: "offline", step: "open" });
 
   const other = world({ login: async () => Promise.reject(new Error("Token exchange failed")) });
   other.connections.login({ id: "anthropic" });
   await settle();
-  assert.deepEqual(other.connections.list().problem, { id: "anthropic", kind: "failed" });
+  assert.deepEqual(other.connections.list().problem, { id: "anthropic", kind: "failed", step: "open" });
   // The next attempt starts clean.
   other.connections.cancel();
   assert.equal(other.connections.list().problem, null);
@@ -408,7 +414,7 @@ test("a sign-in left unfinished stops at the time limit, gives the ports back an
   await new Promise((resolve) => setTimeout(resolve, 120));
   assert.equal(held[0]!.closed, true, "the ports are free once the time is up");
   assert.equal(told.at(-1)!.login, null);
-  assert.deepEqual(told.at(-1)!.problem, { id: "openai-codex", kind: "timeout" });
+  assert.deepEqual(told.at(-1)!.problem, { id: "openai-codex", kind: "timeout", step: "wait" });
   // A new sign-in starts as usual afterwards, and the end of the agent's process gives its ports back too.
   connections.login({ id: "openai-codex" });
   await settle();
@@ -523,6 +529,193 @@ test("a sign-in's problem carries who holds the port, or the port and the system
   refused.connections.login({ id: "openai-codex" });
   await settle();
   assert.deepEqual(refused.connections.list().problem, { id: "openai-codex", kind: "listen", port: 1457, code: "EACCES" });
+});
+
+// ---- INT-1521: which step failed, what the token endpoint answered, the log, the proxy ----
+
+/** A stand-in for a provider's token endpoint: each test says how it answers. */
+async function tokenEndpoint(answer: (request: http.IncomingMessage, response: http.ServerResponse) => void) {
+  const server = http.createServer(answer);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const url = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}/oauth/token`;
+  const close = () => (server.closeAllConnections(), server.close());
+  // Closed when the tests end too, so a test that fails half way leaves nothing listening.
+  after(close);
+  return { url, close };
+}
+
+/** What Mastra Code's ChatGPT sign-in does with the code once the browser has called back (its `exchangeAuthorizationCode` and what follows). */
+async function exchange(fetcher: (url: string, init: Json) => Promise<Response>, url: string, limitMs = 15000) {
+  const response = await fetcher(url, {
+    method: "POST",
+    signal: AbortSignal.timeout(limitMs),
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "grant_type=authorization_code&code=c1",
+  });
+  if (!response.ok) throw new Error("Token exchange failed");
+  const json = (await response.json()) as Json;
+  if (!json.access_token || !json.refresh_token) throw new Error("Token exchange failed");
+  return json;
+}
+
+test("the token endpoint's answer is seen: taken, refused with its code, refused for the region, stalled, or not there (INT-1521)", async () => {
+  const { watchExchange, failureCode } = signinModule;
+  const seen: Json[] = [];
+  const at = (url: string) => watchExchange(fetch, url, (answer: Json) => seen.push(answer));
+  // Taken: the answer is the SDK's to read, and nothing of it is read here.
+  const ok = await tokenEndpoint((_request, response) => response.end(JSON.stringify({ access_token: "a", refresh_token: "r" })));
+  assert.equal((await exchange(at(ok.url), ok.url)).access_token, "a");
+  ok.close();
+  assert.deepEqual(seen.pop(), { status: 200 });
+  // Refused with an error body: the status and the provider's code, never its description.
+  const refused = await tokenEndpoint((_request, response) => {
+    response.statusCode = 400;
+    response.end(JSON.stringify({ error: "invalid_grant", error_description: "Code expired for a@example.com" }));
+  });
+  await assert.rejects(exchange(at(refused.url), refused.url), /Token exchange failed/);
+  refused.close();
+  assert.deepEqual(seen.pop(), { status: 400, code: "invalid_grant", kind: "refused" });
+  // Refused for the region; and a refusal that is a page, not JSON, still reads as one with its status.
+  const region = await tokenEndpoint((_request, response) => {
+    response.statusCode = 403;
+    response.end(JSON.stringify({ error: { code: "unsupported_country_region_territory", message: "Country, region, or territory not supported" } }));
+  });
+  await assert.rejects(exchange(at(region.url), region.url));
+  region.close();
+  assert.deepEqual(seen.pop(), { status: 403, code: "unsupported_country_region_territory", kind: "region" });
+  const page = await tokenEndpoint((_request, response) => ((response.statusCode = 403), response.end("<html><body>Access denied</body></html>")));
+  await assert.rejects(exchange(at(page.url), page.url));
+  page.close();
+  assert.deepEqual(seen.pop(), { status: 403, code: null, kind: "refused" });
+  const plan = await tokenEndpoint((_request, response) => ((response.statusCode = 403), response.end(JSON.stringify({ detail: { code: "usage_not_included" } }))));
+  await assert.rejects(exchange(at(plan.url), plan.url));
+  plan.close();
+  assert.deepEqual(seen.pop(), { status: 403, code: "usage_not_included", kind: "plan" });
+  // Stalled past the limit, and nobody there.
+  const stalled = await tokenEndpoint(() => {});
+  await assert.rejects(exchange(at(stalled.url), stalled.url, 100));
+  stalled.close();
+  assert.equal(failureCode(seen.pop()!.error), "timeout");
+  const gone = await tokenEndpoint(() => {});
+  gone.close();
+  await assert.rejects(exchange(at(gone.url), gone.url));
+  assert.equal(failureCode(seen.pop()!.error), "ECONNREFUSED");
+  // What a proxy that refuses the tunnel gives (Node 22.23.4): nothing that says more.
+  const tunnel = Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new DOMException("Request was cancelled.", "Error")) });
+  assert.equal(failureCode(tunnel), "no-connection");
+  // Any other address is passed on untouched and not seen.
+  const other = await tokenEndpoint((_request, response) => response.end("{}"));
+  assert.equal((await at("http://127.0.0.1:9/oauth/token")(other.url, {})).status, 200);
+  other.close();
+  assert.equal(seen.length, 0);
+});
+
+/** A ChatGPT sign-in as Mastra Code goes through it, with its exchange at `url` through `fetcher`. */
+const chatgptSignIn = (fetcher: () => (url: string, init: Json) => Promise<Response>, url: string, after?: () => void) => async (_id: string, callbacks: Json) => {
+  callbacks.onAuth({ url: "https://auth.example/authorize?state=s1" });
+  await callbacks.onManualCodeInput();
+  await exchange(fetcher(), url);
+  after?.();
+};
+
+test("a sign-in that fails says at which step, with the token endpoint's status and code, and where its log is (INT-1521)", async () => {
+  const { watchExchange, signInLog } = signinModule;
+  const folder = mkdtempSync(join(tmpdir(), "intcad-sign-in-"));
+  const log = signInLog(folder);
+  const steps = async (answer: (request: http.IncomingMessage, response: http.ServerResponse) => void, overrides: Json = {}) => {
+    const endpoint = await tokenEndpoint(answer);
+    let watched: (url: string, init: Json) => Promise<Response> = fetch;
+    const w = world({ log, login: chatgptSignIn(() => watched, endpoint.url, overrides.after), ...overrides });
+    watched = watchExchange(fetch, endpoint.url, (seen: Json) => w.connections.exchanged(seen));
+    w.connections.login({ id: "openai-codex" });
+    await settle();
+    w.held[0]?.callback("http://localhost:1457/auth/callback?code=c1&state=s1");
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    endpoint.close();
+    return w.connections.list().problem;
+  };
+  const refused = (body: Json) => (_request: http.IncomingMessage, response: http.ServerResponse) => ((response.statusCode = 400), response.end(JSON.stringify(body)));
+  assert.deepEqual(await steps(refused({ error: "invalid_grant" })), { id: "openai-codex", kind: "refused", step: "exchange", status: 400, code: "invalid_grant", log: log.path });
+  // Taken, but the answer holds no token: the exchange still, with the status it had.
+  assert.deepEqual(await steps((_request, response) => response.end("{}")), { id: "openai-codex", kind: "failed", step: "exchange", status: 200, code: "missing_tokens", log: log.path });
+  // Taken, and the sign-in could not be saved: a file error after the exchange.
+  const unsaved = await steps((_request, response) => response.end(JSON.stringify({ access_token: "a", refresh_token: "r" })), {
+    after: () => {
+      throw Object.assign(new Error("EACCES: permission denied, rename 'auth.json.tmp'"), { code: "EACCES", syscall: "rename" });
+    },
+  });
+  assert.deepEqual(unsaved, { id: "openai-codex", kind: "failed", step: "store", code: "EACCES", log: log.path });
+  // Before the browser opened, and while waiting for it.
+  const early = world({ log, login: async () => Promise.reject(new Error("crypto is not available")) });
+  early.connections.login({ id: "openai-codex" });
+  await settle();
+  assert.deepEqual(early.connections.list().problem, { id: "openai-codex", kind: "failed", step: "open", log: log.path });
+  const waiting = world({ log, login: async (_id: string, callbacks: Json) => (callbacks.onAuth({ url: "https://auth.example/a?state=s1" }), Promise.reject(new Error("Unexpected"))) });
+  waiting.connections.login({ id: "openai-codex" });
+  await settle();
+  assert.deepEqual(waiting.connections.list().problem, { id: "openai-codex", kind: "failed", step: "wait", log: log.path });
+
+  // The log says what happened, step by step, and nothing of the codes, addresses or account.
+  const text = readFileSync(log.path, "utf8");
+  assert.match(text, /openai-codex: started/);
+  assert.match(text, /exchange: HTTP 400 invalid_grant/);
+  assert.match(text, /"step":"store"/);
+  assert.doesNotMatch(text, /state=s1|code=c1|auth\.example/);
+});
+
+test("the sign-in log takes out what could let someone in or say whose account it is (INT-1521)", () => {
+  const { scrub } = secretsModule;
+  const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImFAZXhhbXBsZS5jb20ifQ.c2lnbmF0dXJlLXNpZ25hdHVyZQ";
+  const raw = [
+    "callback http://localhost:1457/auth/callback?code=ac_abc123&state=9f8e7d",
+    `proxy http://alice:s3cret@proxy.corp:8080 and token ${jwt}`,
+    '{"access_token":"at-1","refresh_token":"rt-2","id_token":"x","error":"invalid_grant"} {"kind":"offline","code":"ECONNREFUSED"}',
+    "signed in as someone@example.com with sk-the-users-own-key-0001",
+    `verifier ${"Ab9_".repeat(12)} and a path /Users/someone/Library/Application Support/Intcad/mastra/logs/sign-in.log`,
+  ].join("\n");
+  const clean = scrub(raw, ["sk-the-users-own-key-0001"]);
+  for (const secret of ["ac_abc123", "9f8e7d", "alice", "s3cret", jwt, "at-1", "rt-2", "someone@example.com", "sk-the-users-own-key-0001", "Ab9_Ab9_Ab9_"]) {
+    assert.ok(!clean.includes(secret), `${secret} is in: ${clean}`);
+  }
+  // What helps to tell what went wrong stays: the provider's code, the host, the step, the log's own path.
+  for (const kept of ["invalid_grant", '"code":"ECONNREFUSED"', "proxy.corp:8080", "callback http://localhost:1457/auth/callback", "/Users/someone/Library/Application Support/Intcad/mastra/logs/sign-in.log"]) {
+    assert.ok(clean.includes(kept), `${kept} is not in: ${clean}`);
+  }
+});
+
+test("with the variables the app passes, the exchange goes through the person's proxy and this computer's addresses do not (INT-1521)", async () => {
+  // A stand-in proxy: it records what it is asked for and refuses it, so nothing leaves this computer.
+  const asked: string[] = [];
+  const proxy = net.createServer((socket) =>
+    socket.once("data", (chunk) => {
+      asked.push(String(chunk).split("\r\n")[0]!);
+      socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n");
+    }),
+  );
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", () => resolve()));
+  const local = await tokenEndpoint((_request, response) => response.end("{}"));
+  const entry = new URL(agentFolder + "signin.mjs", import.meta.url).href;
+  const proxyUrl = `http://127.0.0.1:${(proxy.address() as net.AddressInfo).port}`;
+  // As the app starts the agent when its own environment names a proxy (`proxy_env` in acp_client.rs).
+  const env = { PATH: process.env.PATH ?? "", HTTPS_PROXY: proxyUrl, NODE_USE_ENV_PROXY: "1", NO_PROXY: "localhost,127.0.0.1,::1", no_proxy: "localhost,127.0.0.1,::1" };
+  const script = `const { watchExchange, failureCode } = await import(${JSON.stringify(entry)});
+const seen = [];
+const watched = watchExchange(fetch, "https://auth.example.invalid/oauth/token", (answer) => seen.push(answer));
+await watched("https://auth.example.invalid/oauth/token", { method: "POST", signal: AbortSignal.timeout(5000) }).catch(() => {});
+const direct = await fetch(${JSON.stringify(local.url)}).then((response) => response.status, (error) => String(error));
+console.log(JSON.stringify({ failed: seen[0]?.error ? failureCode(seen[0].error) : null, direct }));`;
+  const printed = await new Promise<string>((resolve) => {
+    const child = spawn(process.execPath, ["--no-warnings", "--input-type=module", "-e", script], { env, stdio: ["ignore", "pipe", "inherit"] });
+    let out = "";
+    child.stdout!.on("data", (chunk) => (out += chunk));
+    child.on("exit", () => resolve(out.trim()));
+  });
+  proxy.close();
+  local.close();
+  assert.deepEqual(asked, ["CONNECT auth.example.invalid:443 HTTP/1.1"], "the exchange went through the proxy, and only it");
+  const result = JSON.parse(printed);
+  assert.equal(result.direct, 200, "this computer's address is not sent to the proxy");
+  assert.ok(result.failed, "the refusal by the proxy is seen as a failed exchange");
 });
 
 test("a key is not in the environment of a command a model runs, nor in a refusal that is printed", () => {

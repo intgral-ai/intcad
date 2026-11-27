@@ -17445,6 +17445,45 @@ fn a_sign_in_that_could_not_finish_is_told_in_a_sentence_that_says_who_or_what()
     assert_eq!(said(json!({"id": "openai-codex", "kind": "something new"})), tr("ui.agent_chat_conn_problem_failed"));
 }
 
+/// INT-1521: the sentence says at which step a sign-in failed (it could not start, it stopped
+/// waiting for the browser, the sign-in service refused or could not be reached at the last step,
+/// the result could not be saved), with the service's HTTP status and its error code, a refusal for
+/// the region or the plan as that, and where the sign-in's log is; nothing else of the answer.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_sign_in_that_failed_says_at_which_step_with_the_status_and_code_and_where_the_log_is() {
+    let (mut app, script, _keys, ctx) = builtin_told(|_| {});
+    let mut said = |problem: Value| {
+        script.report(Event::Connections(conn_snapshot(|told| told["problem"] = problem)));
+        poll(&mut app, &ctx);
+        page_state(&mut app)["connect"]["problem"]["text"].as_str().unwrap_or_default().to_string()
+    };
+    let at = |step: &str, kind: &str, more: Value| {
+        let mut problem = json!({"id": "openai-codex", "kind": kind, "step": step});
+        for (name, value) in more.as_object().into_iter().flatten() {
+            problem[name] = value.clone();
+        }
+        problem
+    };
+    let refused = said(at("exchange", "refused", json!({"status": 400, "code": "invalid_grant"})));
+    assert_eq!(refused, "The sign-in service refused the last step of the sign-in (HTTP 400, invalid_grant). Try again.");
+    let region = said(at("exchange", "region", json!({"status": 403, "code": "unsupported_country_region_territory"})));
+    assert_eq!(region, "The sign-in service does not offer this sign-in where you are (HTTP 403, unsupported_country_region_territory).");
+    assert!(said(at("exchange", "plan", json!({"status": 403, "code": "usage_not_included"}))).contains("plan does not include"));
+    let unreachable = said(at("exchange", "offline", json!({"code": "ECONNREFUSED"})));
+    assert!(unreachable.contains("(ECONNREFUSED)") && unreachable.contains("proxy or VPN"), "{unreachable}");
+    assert!(said(at("exchange", "failed", json!({"status": 200, "code": "missing_tokens"}))).contains("(HTTP 200, missing_tokens)"));
+    assert!(said(at("store", "failed", json!({"code": "EACCES"}))).contains("could not save the sign-in (EACCES)"));
+    assert_eq!(said(at("open", "failed", json!({}))), "The sign-in could not start. Try again.");
+    assert_eq!(said(at("wait", "failed", json!({}))), "The sign-in stopped while it was waiting for the browser. Try again.");
+    // Away from the last step, no answer reads as the network as before.
+    assert_eq!(said(at("wait", "offline", json!({}))), tr("ui.agent_chat_conn_problem_offline"));
+    // Where the log is, after the sentence.
+    let path = "/Users/someone/Library/Application Support/Intcad/mastra/logs/sign-in.log";
+    let logged = said(at("exchange", "refused", json!({"status": 401, "code": "invalid_client", "log": path})));
+    assert!(logged.ends_with(&format!("Details are in {path}.")), "{logged}");
+}
+
 /// INT-1522: a sign-in left waiting holds the local port the browser calls back to. Showing
 /// another design ends the one of the design left (also one asked for and not answered yet), and
 /// a sign-in started in another design first ends any still under way in the designs not shown.
