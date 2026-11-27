@@ -3425,6 +3425,8 @@ impl SolveApp {
         self.poll_deferred(ui.ctx());
         self.poll_delete_check(ui.ctx());
         timeline::tick_playback(self, ui.ctx());
+        // Before anything reads this frame's keys: Tab and Esc belong to a next-step guess shown.
+        agent_chat::predict::tick(self, ui.ctx());
         if !self.embedded && !self.embed_editor {
             toolbar::app_bar(self, ui);
         }
@@ -3592,6 +3594,8 @@ impl SolveApp {
         joint_handles::show_warning(self, ui.ctx());
         shortcut_box::show(self, ui.ctx());
         agent_chat::ask_here::show(self, ui.ctx());
+        // The next-step guess's card in the view (after the panels, so it sits above the model).
+        agent_chat::predict::card::show(self, ui.ctx());
         prefs::show(self, ui.ctx());
         toolbar_custom::window(self, ui.ctx());
     }

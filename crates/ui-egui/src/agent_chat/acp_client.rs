@@ -19,8 +19,11 @@ use super::process::{AgentProcess, FromAgent, ProcessIoError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pending {
+    /// `session/close` of a guessing session.
+    CloseSession,
     Initialize,
     SessionNew,
+    RetiredSessionNew,
     Prompt,
     Authenticate,
     SetMode,
@@ -32,6 +35,8 @@ enum Pending {
 
 /// Give a cancelled prompt time to finish before disconnecting an unresponsive agent.
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
+/// One budget to get a retired session's ID (if still opening) and finish its cleanup.
+const PREDICTION_TEARDOWN_GRACE: Duration = Duration::from_secs(5);
 
 /// The ACP prompt frame borrows the text and base64 from the composer. Preflight can therefore
 /// reject an oversized prompt without copying all of its attachments into JSON values.
@@ -97,6 +102,11 @@ pub const DATA_DIR_ENV: &str = "MASTRA_APP_DATA_DIR";
 /// Mastra's own switch for its usage reporting. The built-in agent is always started with it
 /// set, whatever program it is; the agent's entry sets it for itself as well.
 pub const TELEMETRY_OFF_ENV: &str = "MASTRA_TELEMETRY_DISABLED";
+
+/// Lean guessing sessions on a plan sign-in. Off until the agent's provider says it may be.
+const LEAN_ON_PLANS: bool = false;
+/// The kind of sign-in that is an API key, as the Claude adapter names it.
+const KEY_SIGN_IN: &str = "api_key";
 
 struct CadTurn {
     prompt: u64,
@@ -184,6 +194,8 @@ pub struct AcpBackend {
     permissions: HashMap<u64, Value>,
     next_key: u64,
     cancelling: Option<(u64, Instant)>,
+    prediction_teardown_started: Option<Instant>,
+    prediction_open_queued: bool,
     prompt_refused: Option<ProcessIoError>,
     exited: bool,
     config_pending: Option<(u64, String)>,
@@ -199,7 +211,24 @@ pub struct AcpBackend {
     /// The project folder the next session may work in ([`ChatBackend::set_project`]). Only the
     /// built-in agent is handed it.
     project: Option<std::path::PathBuf>,
+    /// What the open session used, as the agent reported it, not yet taken.
+    usage: super::backend::Usage,
+    /// The note of lean sessions ([`AcpBackend::lean_sessions`]); `None`: sessions as the chat's.
+    lean: Option<String>,
+    /// The `session/new` out was a lean one: its id.
+    lean_request: Option<u64>,
+    /// The last session asked for is a lean one.
+    lean_session: bool,
+    /// The agent refused a lean session: this process asks for none again.
+    lean_refused: bool,
+    /// Lean sessions on a plan sign-in too ([`LEAN_ON_PLANS`]).
+    lean_on_plans: bool,
+    /// The kind of sign-in the agent last reported (`_auth/status_update`).
+    sign_in: Option<String>,
     cad: Option<PackagedCad>,
+    /// The variables taken out of the agent's environment when it was started.
+    #[cfg(test)]
+    env_removed: &'static [&'static str],
 }
 
 impl AcpBackend {
@@ -215,18 +244,12 @@ impl AcpBackend {
     }
 
     pub(super) fn start_packaged(argv: &[String], mut ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
-        let (program, entry) = Self::packaged_agent(argv)?;
+        let argv = Self::packaged_argv(argv)?;
         let tools = ctx.tools.take().ok_or_else(|| "The packaged Agent has no desktop tool queue".to_string())?;
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::from(ctx.wake);
         let process_wake = Arc::clone(&wake);
         ctx.wake = Box::new(move || process_wake());
-        ctx.bridge = None;
-        let env = [(DATA_DIR_ENV, data.as_os_str()), (TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1"))];
-        let argv = [
-            program.to_str().ok_or_else(|| "The packaged Agent's Node path is not valid text".to_string())?.to_string(),
-            entry.to_str().ok_or_else(|| "The packaged Agent's entry path is not valid text".to_string())?.to_string(),
-        ];
-        let mut backend = Self::spawn(&argv, ctx, &env, PACKAGED_ENV_REMOVE, true)?;
+        let mut backend = Self::spawn_packaged(&argv, ctx, data)?;
         backend.cad = Some(PackagedCad {
             tools,
             wake,
@@ -239,6 +262,39 @@ impl AcpBackend {
             last_effect: false,
         });
         Ok(backend)
+    }
+
+    /// The package's built-in agent for next-step suggestions: started as the chat's
+    /// ([`AcpBackend::start_packaged`]: the package's own Node and entry, the same variables taken out
+    /// of its environment), but with no desktop tool queue and no MCP bridge, so its sessions are
+    /// never handed the design's tools.
+    pub(super) fn start_packaged_guesser(argv: &[String], mut ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
+        let argv = Self::packaged_argv(argv)?;
+        ctx.tools = None;
+        Self::spawn_packaged(&argv, ctx, data)
+    }
+
+    /// The package's Node and entry ([`AcpBackend::packaged_agent`]) as the argument list to start.
+    fn packaged_argv(argv: &[String]) -> Result<[String; 2], String> {
+        let (program, entry) = Self::packaged_agent(argv)?;
+        Ok([
+            program.to_str().ok_or_else(|| "The packaged Agent's Node path is not valid text".to_string())?.to_string(),
+            entry.to_str().ok_or_else(|| "The packaged Agent's entry path is not valid text".to_string())?.to_string(),
+        ])
+    }
+
+    /// Start the package's agent with its data folder, its usage reporting off and the variables
+    /// that could make it load other code taken out ([`PACKAGED_ENV_REMOVE`]). No MCP bridge.
+    fn spawn_packaged(argv: &[String; 2], mut ctx: StartContext, data: &std::path::Path) -> Result<AcpBackend, String> {
+        ctx.bridge = None;
+        let env = [(DATA_DIR_ENV, data.as_os_str()), (TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1"))];
+        Self::spawn(argv, ctx, &env, PACKAGED_ENV_REMOVE, true)
+    }
+
+    /// The variables taken out of the agent's environment when it was started.
+    #[cfg(test)]
+    pub(crate) fn env_removed(&self) -> &'static [&'static str] {
+        self.env_removed
     }
 
     /// The one program pair the paid lane may start: this package's own Node, entry and SDK.
@@ -276,7 +332,13 @@ impl AcpBackend {
         Self::spawn(argv, ctx, &[], ENV_REMOVE, false)
     }
 
-    fn spawn(argv: &[String], ctx: StartContext, env: &[(&str, &std::ffi::OsStr)], remove: &[&str], built_in: bool) -> Result<AcpBackend, String> {
+    fn spawn(
+        argv: &[String],
+        ctx: StartContext,
+        env: &[(&str, &std::ffi::OsStr)],
+        remove: &'static [&'static str],
+        built_in: bool,
+    ) -> Result<AcpBackend, String> {
         let wake = ctx.wake;
         let proc = AgentProcess::spawn_with_env(argv, &ctx.cwd, remove, env, built_in, wake)?;
         // An agent inside WSL is told the same folder and bridge as WSL shows them (#5546).
@@ -298,6 +360,8 @@ impl AcpBackend {
             permissions: HashMap::new(),
             next_key: 0,
             cancelling: None,
+            prediction_teardown_started: None,
+            prediction_open_queued: false,
             prompt_refused: None,
             exited: false,
             config_pending: None,
@@ -306,7 +370,16 @@ impl AcpBackend {
             initialized: false,
             setup: None,
             project: None,
+            usage: super::backend::Usage::default(),
+            lean: None,
+            lean_request: None,
+            lean_session: false,
+            lean_refused: false,
+            lean_on_plans: LEAN_ON_PLANS,
+            sign_in: None,
             cad: None,
+            #[cfg(test)]
+            env_removed: remove,
         };
         b.request(Pending::Initialize, "initialize", acp::initialize_params(env!("CARGO_PKG_VERSION")));
         Ok(b)
@@ -327,18 +400,83 @@ impl AcpBackend {
         }
     }
 
+    /// As if [`LEAN_ON_PLANS`] were on.
+    #[cfg(test)]
+    pub(crate) fn lean_on_plans(&mut self) {
+        self.lean_on_plans = true;
+    }
+
+    /// Open every session of this process lean where the agent takes it
+    /// ([`acp::lean_session_params`]), with `note` as its whole system prompt: the guessing
+    /// sessions of next-step suggestions. Once the agent refuses one, sessions open as the chat's.
+    pub fn lean_sessions(&mut self, note: &str) {
+        self.lean = Some(note.to_string());
+    }
+
+    fn is_builtin_guesser(&self) -> bool {
+        self.built_in && self.lean.is_some()
+    }
+
+    fn close_prediction(&mut self, session: String) -> bool {
+        if !acp::closes_sessions(&self.init) {
+            return false;
+        }
+        if !self.pending.values().any(|what| *what == Pending::CloseSession) {
+            self.prediction_teardown_started.get_or_insert_with(Instant::now);
+            self.request(Pending::CloseSession, "session/close", json!({"sessionId": session}));
+        }
+        true
+    }
+
+    fn open_queued_prediction(&mut self) {
+        if self.prediction_open_queued
+            && self.prediction_teardown_started.is_none()
+            && !self.pending.values().any(|what| matches!(what, Pending::SessionNew | Pending::RetiredSessionNew))
+        {
+            self.prediction_open_queued = false;
+            self.new_session();
+        }
+    }
+
+    fn stop_guesser_after_teardown_failure(&mut self, why: &str) -> Event {
+        log::warn!("next-step suggestions: {why}; stopping the guessing process");
+        self.proc.shutdown(false);
+        self.finish_exit(vec![crate::i18n::tr("ui.agent_chat_exited").to_string()])
+    }
+
     fn new_session(&mut self) {
         self.config_pending = None;
         self.pending.retain(|_, request| *request != Pending::SetConfig);
         // INT-1473: the built-in agent's file tools reach a project it is handed, and its note
         // says what they are for. Any other agent's session is as it was.
-        let project = self.project.as_deref().filter(|_| self.built_in);
-        let note = if project.is_some() { acp::project_note(&self.note) } else { self.note.clone() };
-        let mut params = acp::session_new_params(&self.cwd, self.bridge.as_ref(), &self.init, &note, project);
-        if self.cad.is_some() {
+        // A guessing session is lean on an API key only: on a plan, and until the agent says what it
+        // is signed in with, it runs as the agent opens it, less the user's MCP servers and every MCP tool.
+        let guesses = self.lean.is_some();
+        // The built-in agent's guessing session: the guessing note alone, marked for the agent to
+        // open it read-only, with no MCP and no design tool (decision 27). Never a project.
+        if let Some(note) = self.lean.as_deref().filter(|_| self.built_in) {
+            let params = acp::next_step_session_params(&self.cwd, note);
+            self.request(Pending::SessionNew, "session/new", params);
+            self.lean_request = None;
+            self.lean_session = false;
+            return;
+        }
+        let may_be_lean = !self.lean_refused && (self.lean_on_plans || self.sign_in.as_deref() == Some(KEY_SIGN_IN));
+        let lean = self.lean.as_deref().filter(|_| may_be_lean).and_then(|note| acp::lean_session_params(&self.cwd, &self.init, note));
+        let sent_lean = lean.is_some();
+        let mut params = lean.unwrap_or_else(|| {
+            let project = self.project.as_deref().filter(|_| self.built_in);
+            let note = if project.is_some() { acp::project_note(&self.note) } else { self.note.clone() };
+            let params = acp::session_new_params(&self.cwd, self.bridge.as_ref(), &self.init, &note, project);
+            if guesses { acp::without_mcp(params) } else { params }
+        });
+        // A guessing session is never handed the design's tools.
+        if self.cad.is_some() && !guesses {
             params["_meta"]["intcad"]["cadBridge"] = json!({"version":1,"tools":solidcraft_mcp::tool_definitions()});
         }
         self.request(Pending::SessionNew, "session/new", params);
+        self.lean_request = sent_lean.then_some(self.next_id);
+        self.lean_session = sent_lean;
     }
 
     fn revoke_cad(&mut self) {
@@ -444,6 +582,18 @@ impl AcpBackend {
                 if self.cancelling.is_some_and(|(request, _)| request == id) {
                     self.cancelling = None;
                 }
+                if self.lean_request == Some(id) {
+                    self.lean_request = None;
+                    // Any refusal, a sign-in one too: the user's own setup may be what signs in.
+                    if let Err((_, message)) = &result {
+                        log::warn!(
+                            "next-step suggestions: the agent refused a lean session ({message}); its sessions open as the chat's from now on"
+                        );
+                        self.lean_refused = true;
+                        self.new_session();
+                        return;
+                    }
+                }
                 match (what, result) {
                     (Pending::Initialize, Ok(v)) => {
                         self.agent = acp::agent_info(&v);
@@ -490,13 +640,35 @@ impl AcpBackend {
                         }
                         None => out.push(Event::Error("session/new: no sessionId".into())),
                     },
+                    (Pending::RetiredSessionNew, result) => {
+                        let closing = result
+                            .ok()
+                            .and_then(|v| v.get("sessionId")?.as_str().map(str::to_owned))
+                            .is_some_and(|session| self.close_prediction(session));
+                        if !closing {
+                            self.prediction_teardown_started = None;
+                        }
+                        self.open_queued_prediction();
+                    }
                     (Pending::Prompt, Ok(v)) => {
+                        if let Some(usage) = acp::turn_usage(&v) {
+                            self.usage.merge(usage);
+                        }
                         let reason = v.get("stopReason").and_then(Value::as_str).unwrap_or("");
                         out.push(Event::TurnEnded { reason: if reason == "end_turn" { String::new() } else { reason.to_string() } });
                     }
                     // Signed in: try the session again.
                     (Pending::Authenticate, Ok(_)) => self.new_session(),
-                    (Pending::SetMode | Pending::SetModel, Ok(_)) => {}
+                    (Pending::CloseSession, result) if self.prediction_teardown_started.take().is_some() => {
+                        if result.is_ok() {
+                            self.open_queued_prediction();
+                        } else {
+                            out.push(self.stop_guesser_after_teardown_failure("prediction session close failed"));
+                        }
+                    }
+                    (Pending::SetMode | Pending::SetModel | Pending::CloseSession, Ok(_)) => {}
+                    // Other agents that offer close keep their existing best-effort behavior.
+                    (Pending::CloseSession, Err((_, message))) => log::debug!("the agent did not close a session: {message}"),
                     (Pending::SetConfig, Ok(v)) => {
                         if let Some((request_id, config_id)) = self.config_pending.take()
                             && request_id == id
@@ -509,6 +681,8 @@ impl AcpBackend {
                         }
                     }
                     (Pending::Connections(what), Ok(v)) => out.push(match connections::Snapshot::parse(&v) {
+                        Some(snapshot) if what == connections::What::Setup && self.lean.is_some() => Event::PredictionSetup(snapshot),
+                        Some(snapshot) if what == connections::What::Logout => Event::ConnectionsLogout(snapshot),
                         Some(snapshot) => Event::Connections(snapshot),
                         None => Event::ConnectionsFailed { what, code: 0 },
                     }),
@@ -568,7 +742,8 @@ impl AcpBackend {
                 self.permissions.insert(self.next_key, rpc);
                 out.push(Event::Permission { key: self.next_key, title, kind, options });
             }
-            Incoming::Text { .. } | Incoming::Tool { .. } | Incoming::Plan { .. } => {}
+            Incoming::Usage { session, usage } if self.accepts_session(&session) => self.usage.merge(usage),
+            Incoming::Text { .. } | Incoming::Tool { .. } | Incoming::Plan { .. } | Incoming::Usage { .. } => {}
             // The built-in agent says why a turn failed. Its kind decides what the panel shows,
             // so the general arm's guess from the error's code and words is not made, and the
             // session stays: the user signs in again and goes on in it.
@@ -588,7 +763,12 @@ impl AcpBackend {
             }
             Incoming::Refused { id, error, .. } => self.handle(Incoming::Reply { id, result: Err(error) }, out),
             Incoming::Connections(snapshot) => out.push(Event::Connections(snapshot)),
-            Incoming::AuthStatus(s) => out.push(Event::AuthStatus(s)),
+            Incoming::AuthStatus { label, kind } => {
+                self.sign_in = kind.or(self.sign_in.take());
+                if let Some(label) = label {
+                    out.push(Event::AuthStatus(label));
+                }
+            }
             Incoming::ModeChanged(m) if !self.modern_config => out.push(Event::Modes { current: m, available: Vec::new() }),
             Incoming::ModelChanged(m) if !self.modern_config => out.push(Event::Models { current: m, available: Vec::new() }),
             Incoming::ConfigOptions { session, options } if self.session.as_deref() == Some(session.as_str()) => {
@@ -617,6 +797,8 @@ impl AcpBackend {
         self.session = None;
         self.pending.clear();
         self.cancelling = None;
+        self.prediction_teardown_started = None;
+        self.prediction_open_queued = false;
         self.config_pending = None;
         Event::Exited { tail }
     }
@@ -625,6 +807,10 @@ impl AcpBackend {
         let mut out = Vec::new();
         if self.exited {
             return out;
+        }
+        // A late reply must not reopen the old process after its cleanup deadline.
+        if self.prediction_teardown_started.is_some_and(|started| now.saturating_duration_since(started) >= PREDICTION_TEARDOWN_GRACE) {
+            return vec![self.stop_guesser_after_teardown_failure("prediction session teardown timed out")];
         }
         if let Some(error) = self.prompt_refused.take() {
             let key = match error {
@@ -641,6 +827,9 @@ impl AcpBackend {
                     let read = if self.built_in { acp::parse_builtin(&l) } else { acp::parse(&l) };
                     if let Some(m) = read {
                         self.handle(m, &mut out);
+                    }
+                    if self.exited {
+                        break;
                     }
                 }
                 Ok(FromAgent::Exited(tail)) => {
@@ -666,6 +855,10 @@ impl ChatBackend for AcpBackend {
     }
     fn poll(&mut self) -> Vec<Event> {
         self.poll_at(Instant::now())
+    }
+
+    fn poll_wake_after(&self) -> Option<Duration> {
+        self.prediction_teardown_started.map(|at| PREDICTION_TEARDOWN_GRACE.saturating_sub(at.elapsed()))
     }
 
     fn prompt(&mut self, parts: &[PromptPart]) {
@@ -712,6 +905,11 @@ impl ChatBackend for AcpBackend {
         }
     }
 
+    fn take_usage(&mut self) -> Option<super::backend::Usage> {
+        let usage = std::mem::take(&mut self.usage);
+        (!usage.is_empty()).then_some(usage)
+    }
+
     fn cancel(&mut self) {
         self.revoke_cad();
         // Open permission questions are answered "cancelled" first, as the protocol asks.
@@ -729,11 +927,26 @@ impl ChatBackend for AcpBackend {
     }
 
     fn new_session(&mut self) {
+        if self.is_builtin_guesser() {
+            if self.exited || self.pending.values().any(|what| *what == Pending::SessionNew) {
+                return;
+            }
+            if self.session.is_some() {
+                self.retire_prediction_session();
+            }
+            self.prediction_open_queued = true;
+            self.open_queued_prediction();
+            return;
+        }
         if self.pending.values().any(|p| *p == Pending::Prompt) {
             self.cancel();
         }
         self.revoke_cad();
-        self.session = None;
+        // A guessing session is asked once and not gone back to: left open, each would keep the
+        // agent's processes for it (Claude Code: two, about 320 MB). The chat's stay as they were.
+        if let Some(s) = self.session.take().filter(|_| self.lean.is_some() && acp::closes_sessions(&self.init)) {
+            self.request(Pending::CloseSession, "session/close", json!({"sessionId": s}));
+        }
         self.modern_config = false;
         self.config_pending = None;
         self.pending.retain(|_, request| *request != Pending::SetConfig);
@@ -742,6 +955,14 @@ impl ChatBackend for AcpBackend {
 
     fn set_instructions(&mut self, text: &str) {
         self.note = acp::system_note(text);
+    }
+
+    fn key_sign_in(&self) -> bool {
+        self.sign_in.as_deref() == Some(KEY_SIGN_IN)
+    }
+
+    fn session_fits_sign_in(&self) -> bool {
+        !self.lean_session || self.lean_on_plans || self.key_sign_in()
     }
 
     fn set_project(&mut self, root: Option<&std::path::Path>) {
@@ -813,7 +1034,7 @@ impl ChatBackend for AcpBackend {
     }
 
     fn connections(&mut self, request: connections::Request) {
-        if !self.built_in {
+        if !self.built_in || self.exited {
             return;
         }
         if self.initialized {
@@ -832,6 +1053,28 @@ impl ChatBackend for AcpBackend {
         self.pending.retain(|_, request| *request != Pending::SetConfig);
     }
 
+    fn retire_prediction_session(&mut self) {
+        if !self.is_builtin_guesser() {
+            return;
+        }
+        self.prediction_open_queued = false;
+        if !self.permissions.is_empty() || self.pending.values().any(|what| *what == Pending::Prompt) {
+            self.cancel();
+        }
+        if let Some(session) = self.session.take() {
+            self.close_prediction(session);
+        }
+        self.cancelling = None;
+        self.pending.retain(|_, request| !matches!(request, Pending::Prompt | Pending::SetConfig));
+        for request in self.pending.values_mut() {
+            if *request == Pending::SessionNew {
+                *request = Pending::RetiredSessionNew;
+                self.prediction_teardown_started.get_or_insert_with(Instant::now);
+            }
+        }
+        self.config_pending = None;
+        self.modern_config = false;
+    }
     fn pid(&self) -> Option<u32> {
         self.proc.pid()
     }
@@ -1137,6 +1380,149 @@ mod tests {
         ids.into_iter().map(|(_, what)| *what).collect()
     }
 
+    fn prediction_backend() -> Result<AcpBackend, String> {
+        let mut backend = builtin_backend(false)?;
+        backend.lean_sessions("guess");
+        backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentCapabilities":{"sessionCapabilities":{"close":{}}}})) }, &mut Vec::new());
+        Ok(backend)
+    }
+
+    fn opened_prediction() -> Result<AcpBackend, String> {
+        let mut backend = prediction_backend()?;
+        ChatBackend::new_session(&mut backend);
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"old"})) }, &mut Vec::new());
+        Ok(backend)
+    }
+
+    #[test]
+    fn g86_a_guess_waits_for_the_close_ack_before_opening_one_replacement() {
+        let mut backend = opened_prediction().unwrap();
+        let before = backend.next_id;
+        ChatBackend::new_session(&mut backend);
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(sent(&backend), [Pending::CloseSession], "no replacement or duplicate close before the ACK");
+        assert_eq!(backend.next_id, before + 1);
+        assert!(backend.poll_at(Instant::now()).is_empty());
+        backend.handle(Incoming::Reply { id: before + 1, result: Ok(json!({})) }, &mut Vec::new());
+        assert_eq!(sent(&backend), [Pending::SessionNew]);
+        assert_eq!(backend.next_id, before + 2, "duplicate requests coalesced into one replacement");
+    }
+
+    #[test]
+    fn g86_a_close_error_retires_the_guesser_without_opening_a_replacement() {
+        let mut backend = opened_prediction().unwrap();
+        let close_id = backend.next_id + 1;
+        ChatBackend::new_session(&mut backend);
+        let mut events = Vec::new();
+        backend.handle(Incoming::Reply { id: close_id, result: Err((-32603, "cleanup failed".into())) }, &mut events);
+        events.extend(backend.poll_at(Instant::now()));
+        assert!(matches!(events.as_slice(), [Event::Exited { .. }]), "{events:?}");
+        assert!(backend.pid().is_none());
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(backend.next_id, close_id, "no request after or during failed cleanup");
+        assert!(backend.pending.is_empty());
+    }
+
+    #[test]
+    fn g86_an_expired_close_retires_the_guesser_and_ignores_the_late_ack() {
+        let mut backend = opened_prediction().unwrap();
+        let close_id = backend.next_id + 1;
+        ChatBackend::new_session(&mut backend);
+        let started = backend.prediction_teardown_started.unwrap();
+        assert!(backend.poll_wake_after().is_some(), "silent cleanup still schedules a poll");
+        assert!(backend.poll_at(started + Duration::from_millis(4_999)).is_empty());
+        ChatBackend::new_session(&mut backend);
+        let mut events = backend.poll_at(started + Duration::from_secs(5));
+        assert!(matches!(events.as_slice(), [Event::Exited { .. }]), "{events:?}");
+        assert!(backend.pid().is_none());
+        backend.handle(Incoming::Reply { id: close_id, result: Ok(json!({})) }, &mut events);
+        assert_eq!(events.len(), 1, "no event from the old process");
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(backend.next_id, close_id, "no request after or during expired cleanup");
+        assert!(backend.pending.is_empty());
+        assert!(backend.poll_wake_after().is_none());
+    }
+
+    #[test]
+    fn g86_a_missing_retired_open_reply_disconnects_without_sending_another_request() {
+        let mut backend = prediction_backend().unwrap();
+        ChatBackend::new_session(&mut backend);
+        let stale = backend.next_id;
+        backend.retire_prediction_session();
+        ChatBackend::new_session(&mut backend);
+        let started = backend.prediction_teardown_started.unwrap();
+        let wake = backend.poll_wake_after();
+        assert_eq!(sent(&backend), [Pending::RetiredSessionNew]);
+        assert!(backend.poll_at(started + Duration::from_secs(4)).is_empty());
+        backend.retire_prediction_session();
+        ChatBackend::new_session(&mut backend);
+        let mut events = backend.poll_at(started + Duration::from_secs(5));
+        assert!(matches!(events.as_slice(), [Event::Exited { .. }]), "the retired open must expire even without a reply: {events:?}");
+        assert!(wake.is_some(), "the frame must wake even without child traffic");
+        assert!(backend.pid().is_none());
+        backend.handle(Incoming::Reply { id: stale, result: Ok(json!({"sessionId":"too late"})) }, &mut events);
+        backend.connections(connections::Request::Setup(Default::default()));
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(events.len(), 1);
+        assert_eq!(backend.next_id, stale, "no close, setup or replacement on the old process");
+        assert!(backend.pending.is_empty());
+        assert!(backend.poll_wake_after().is_none());
+    }
+
+    #[test]
+    fn g86_a_late_open_reply_does_not_extend_the_teardown_deadline() {
+        let mut backend = prediction_backend().unwrap();
+        ChatBackend::new_session(&mut backend);
+        let stale = backend.next_id;
+        backend.retire_prediction_session();
+        ChatBackend::new_session(&mut backend);
+        let started = backend.prediction_teardown_started.unwrap();
+        assert!(backend.poll_at(started + Duration::from_millis(4_999)).is_empty());
+        let mut events = Vec::new();
+        backend.handle(Incoming::Reply { id: stale, result: Ok(json!({"sessionId":"stale"})) }, &mut events);
+        assert!(events.is_empty(), "a timely old open reply starts cleanup, not a new session");
+        assert_eq!(sent(&backend), [Pending::CloseSession]);
+        assert_eq!(backend.prediction_teardown_started, Some(started), "waiting for close shares the retired-open deadline");
+        let events = backend.poll_at(started + Duration::from_secs(5));
+        assert!(matches!(events.as_slice(), [Event::Exited { .. }]));
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(backend.next_id, stale + 1, "only the close was sent");
+    }
+
+    #[test]
+    fn retiring_a_guess_closes_even_a_late_session_open_without_publishing_ready() {
+        let mut backend = prediction_backend().unwrap();
+        let mut events = Vec::new();
+        backend.connections(setup("fake"));
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(connections_snapshot("in")) }, &mut events);
+        assert!(matches!(events.pop(), Some(Event::PredictionSetup(_))));
+        ChatBackend::new_session(&mut backend);
+        let stale = backend.next_id;
+        backend.retire_prediction_session();
+        ChatBackend::new_session(&mut backend);
+        assert_eq!(sent(&backend), [Pending::RetiredSessionNew], "an unresolved session must be accounted for before replacing it");
+        backend.handle(Incoming::Reply { id: stale, result: Ok(json!({"sessionId":"stale"})) }, &mut events);
+        assert!(events.is_empty(), "stale session must not become ready");
+        assert!(backend.session.is_none());
+        assert_eq!(sent(&backend), [Pending::CloseSession]);
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({})) }, &mut events);
+        assert_eq!(sent(&backend), [Pending::SessionNew]);
+        backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"current"})) }, &mut events);
+        assert!(matches!(events.last(), Some(Event::Ready { .. })));
+        assert_eq!(backend.session.as_deref(), Some("current"));
+    }
+
+    #[test]
+    fn g86_retirement_withdraws_a_replacement_queued_during_close() {
+        let mut backend = opened_prediction().unwrap();
+        ChatBackend::new_session(&mut backend);
+        let close_id = backend.next_id;
+        backend.retire_prediction_session();
+        backend.handle(Incoming::Reply { id: close_id, result: Ok(json!({})) }, &mut Vec::new());
+        assert!(backend.pending.is_empty(), "credentials must be set up again before opening a session");
+        assert_eq!(backend.next_id, close_id);
+    }
+
     /// B14, on the wire: after `initialize` the built-in agent is handed its keys, and no session
     /// is asked for until the panel opens one (the agent refuses a session while nothing is
     /// connected). A `setup` given before `initialize` is answered waits for that answer.
@@ -1211,7 +1597,7 @@ mod tests {
         assert_eq!(Request::Setup(all).params(), worded);
         let mut events = Vec::new();
         backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(connections_snapshot("in")) }, &mut events);
-        assert!(matches!(events.as_slice(), [Event::Connections(snapshot)] if snapshot.connected()), "{events:?}");
+        assert!(matches!(events.as_slice(), [Event::ConnectionsLogout(snapshot)] if snapshot.connected()), "{events:?}");
         events.clear();
         let changed = json!({"jsonrpc": "2.0", "method": "_intcad/connections/changed", "params": connections_snapshot("expired")}).to_string();
         backend.handle(acp::parse_builtin(&changed).unwrap(), &mut events);
