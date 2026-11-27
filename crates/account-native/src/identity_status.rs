@@ -1,5 +1,7 @@
+use serde_json::Value;
+
 use crate::credentials::ProductExchangeError;
-use crate::http::{MAX_RESPONSE_BYTES, PROTOCOL_VERSION, Secret, Transport, WireConnection, WireRequest};
+use crate::http::{MAX_RESPONSE_BYTES, PROTOCOL_VERSION, Secret, Transport, TransportFailure, WireConnection, WireRequest};
 use crate::identity::{SessionVerifier, VerifiedSession, VerifyError};
 use crate::session_verification::verified_account;
 
@@ -30,7 +32,10 @@ impl<T: Transport + Send + Sync> SessionVerifier for StatusSessionVerifier<T> {
             ],
             None,
         );
-        let response = self.transport.send(&request).map_err(|_| VerifyError::Transient)?;
+        let response = self.transport.send(&request).map_err(|error| match error {
+            TransportFailure::BodyTooLarge => VerifyError::Protocol,
+            _ => VerifyError::Transient,
+        })?;
         if response.body().len() > MAX_RESPONSE_BYTES {
             return Err(VerifyError::Protocol);
         }
@@ -38,6 +43,9 @@ impl<T: Transport + Send + Sync> SessionVerifier for StatusSessionVerifier<T> {
             408 | 429 | 500..=599 => Err(VerifyError::Transient),
             200 => {
                 let value = serde_json::from_slice(response.body()).map_err(|_| VerifyError::Protocol)?;
+                if !has_status_shape(&value) {
+                    return Err(VerifyError::Protocol);
+                }
                 let account_id = verified_account(&value).map_err(|error| match error {
                     ProductExchangeError::Rejected => VerifyError::Rejected,
                     ProductExchangeError::Unavailable | ProductExchangeError::NotConfigured => VerifyError::Protocol,
@@ -47,4 +55,15 @@ impl<T: Transport + Send + Sync> SessionVerifier for StatusSessionVerifier<T> {
             _ => Err(VerifyError::Rejected),
         }
     }
+}
+
+// The frozen business decoder also rejects some missing or mistyped fields.
+// Check their shape first so P1 can distinguish malformed snapshots from denials.
+fn has_status_shape(value: &Value) -> bool {
+    ["/account/id", "/account/status", "/protocol/version"].into_iter().all(|path| value.pointer(path).is_some_and(Value::is_string))
+        && ["/account/email_verified", "/protocol/supported", "/client/supported", "/eligible"]
+            .into_iter()
+            .all(|path| value.pointer(path).is_some_and(Value::is_boolean))
+        && value.get("reasons").is_some_and(Value::is_array)
+        && ["balance", "held", "available"].into_iter().all(|field| value.get(field).is_some_and(Value::is_u64))
 }

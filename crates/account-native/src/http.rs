@@ -348,7 +348,10 @@ impl Transport for UreqTransport {
         }
         .map_err(map_ureq_error)?;
         let status = response.status().as_u16();
-        let body = response.body_mut().with_config().limit(MAX_RESPONSE_BYTES as u64).read_to_vec().map_err(|_| TransportFailure::BodyTooLarge)?;
+        let body = response.body_mut().with_config().limit(MAX_RESPONSE_BYTES as u64).read_to_vec().map_err(|error| match error {
+            ureq::Error::BodyExceedsLimit(_) => TransportFailure::BodyTooLarge,
+            _ => TransportFailure::Network,
+        })?;
         Ok(WireResponse { status, body })
     }
 }

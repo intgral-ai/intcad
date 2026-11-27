@@ -85,12 +85,40 @@ fn a_status_transport_failure_is_transient() {
 }
 
 #[test]
+fn a_native_body_too_large_is_protocol_and_other_transport_errors_are_transient() {
+    assert_eq!(verify(Err(TransportFailure::BodyTooLarge)).err(), Some(VerifyError::Protocol));
+    assert_eq!(verify(Err(TransportFailure::Timeout)).err(), Some(VerifyError::Transient));
+}
+
+#[test]
 fn a_malformed_status_snapshot_is_protocol() {
     assert_eq!(verify(Ok(WireResponse::new(200, b"{".to_vec()))).err(), Some(VerifyError::Protocol));
     for field in ["account", "balance"] {
         let mut body = active_body();
         body.as_object_mut().unwrap().remove(field);
         assert_eq!(verify(Ok(WireResponse::new(200, body.to_string().into_bytes()))).err(), Some(VerifyError::Protocol), "missing {field}");
+    }
+}
+
+#[test]
+fn malformed_business_fields_are_protocol_failures() {
+    let mut missing_email_verified = active_body();
+    missing_email_verified["account"].as_object_mut().unwrap().remove("email_verified");
+    let mut mistyped_eligible = active_body();
+    mistyped_eligible["eligible"] = json!("true");
+    for (field, body) in [("missing email_verified", missing_email_verified), ("mistyped eligible", mistyped_eligible)] {
+        assert_eq!(verify(Ok(WireResponse::new(200, body.to_string().into_bytes()))).err(), Some(VerifyError::Protocol), "{field}");
+    }
+}
+
+#[test]
+fn a_well_formed_inactive_or_unverified_account_is_rejected() {
+    let mut inactive = active_body();
+    inactive["account"]["status"] = json!("disabled");
+    let mut unverified = active_body();
+    unverified["account"]["email_verified"] = json!(false);
+    for body in [inactive, unverified] {
+        assert_eq!(verify(Ok(WireResponse::new(200, body.to_string().into_bytes()))).err(), Some(VerifyError::Rejected));
     }
 }
 
