@@ -1377,23 +1377,23 @@ mod tests {
         ids.into_iter().map(|(_, what)| *what).collect()
     }
 
-    fn prediction_backend() -> AcpBackend {
-        let mut backend = builtin_backend(false).unwrap();
+    fn prediction_backend() -> Result<AcpBackend, String> {
+        let mut backend = builtin_backend(false)?;
         backend.lean_sessions("guess");
         backend.handle(Incoming::Reply { id: 1, result: Ok(json!({"agentCapabilities":{"sessionCapabilities":{"close":{}}}})) }, &mut Vec::new());
-        backend
+        Ok(backend)
     }
 
-    fn opened_prediction() -> AcpBackend {
-        let mut backend = prediction_backend();
+    fn opened_prediction() -> Result<AcpBackend, String> {
+        let mut backend = prediction_backend()?;
         ChatBackend::new_session(&mut backend);
         backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(json!({"sessionId":"old"})) }, &mut Vec::new());
-        backend
+        Ok(backend)
     }
 
     #[test]
     fn g86_a_guess_waits_for_the_close_ack_before_opening_one_replacement() {
-        let mut backend = opened_prediction();
+        let mut backend = opened_prediction().unwrap();
         let before = backend.next_id;
         ChatBackend::new_session(&mut backend);
         ChatBackend::new_session(&mut backend);
@@ -1407,7 +1407,7 @@ mod tests {
 
     #[test]
     fn g86_a_close_error_retires_the_guesser_without_opening_a_replacement() {
-        let mut backend = opened_prediction();
+        let mut backend = opened_prediction().unwrap();
         let close_id = backend.next_id + 1;
         ChatBackend::new_session(&mut backend);
         let mut events = Vec::new();
@@ -1422,7 +1422,7 @@ mod tests {
 
     #[test]
     fn g86_an_expired_close_retires_the_guesser_and_ignores_the_late_ack() {
-        let mut backend = opened_prediction();
+        let mut backend = opened_prediction().unwrap();
         let close_id = backend.next_id + 1;
         ChatBackend::new_session(&mut backend);
         let started = backend.prediction_teardown_started.unwrap();
@@ -1442,7 +1442,7 @@ mod tests {
 
     #[test]
     fn g86_a_missing_retired_open_reply_disconnects_without_sending_another_request() {
-        let mut backend = prediction_backend();
+        let mut backend = prediction_backend().unwrap();
         ChatBackend::new_session(&mut backend);
         let stale = backend.next_id;
         backend.retire_prediction_session();
@@ -1468,7 +1468,7 @@ mod tests {
 
     #[test]
     fn g86_a_late_open_reply_does_not_extend_the_teardown_deadline() {
-        let mut backend = prediction_backend();
+        let mut backend = prediction_backend().unwrap();
         ChatBackend::new_session(&mut backend);
         let stale = backend.next_id;
         backend.retire_prediction_session();
@@ -1488,7 +1488,7 @@ mod tests {
 
     #[test]
     fn retiring_a_guess_closes_even_a_late_session_open_without_publishing_ready() {
-        let mut backend = prediction_backend();
+        let mut backend = prediction_backend().unwrap();
         let mut events = Vec::new();
         backend.connections(setup("fake"));
         backend.handle(Incoming::Reply { id: backend.next_id, result: Ok(connections_snapshot("in")) }, &mut events);
@@ -1511,7 +1511,7 @@ mod tests {
 
     #[test]
     fn g86_retirement_withdraws_a_replacement_queued_during_close() {
-        let mut backend = opened_prediction();
+        let mut backend = opened_prediction().unwrap();
         ChatBackend::new_session(&mut backend);
         let close_id = backend.next_id;
         backend.retire_prediction_session();
