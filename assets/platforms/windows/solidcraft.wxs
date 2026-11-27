@@ -80,7 +80,7 @@
           Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
     </UI>
     <?if $(var.HasMastraAgent) = 1 ?>
-    <LaunchCondition Condition="UILevel = 5 OR INTCAD_RUNTIME_TERMS = 1"
+    <Launch Condition="UILevel = 5 OR INTCAD_RUNTIME_TERMS = 1"
         Message="This package includes the Microsoft Visual C++ Runtime. Read VC-RUNTIME-TERMS.txt and accept the terms in the installer, or pass INTCAD_RUNTIME_TERMS=1 for a silent install." />
     <?endif?>
 
