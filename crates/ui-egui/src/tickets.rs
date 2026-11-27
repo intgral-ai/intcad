@@ -28,6 +28,17 @@ use crate::SolveApp;
 #[cfg_attr(target_arch = "wasm32", allow(unused_imports))]
 use crate::i18n::{format as trf, tr};
 
+/// One rule a check's run reported: its state, how many findings, the parts they are on, and each
+/// value found with the value required (none where the rule has no requirement).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunItem {
+    pub rule: String,
+    pub state: String,
+    pub count: usize,
+    pub parts: Vec<String>,
+    pub values: Vec<(String, Option<String>)>,
+}
+
 /// What the host keeps between frames for a Tickets view.
 #[derive(Default)]
 pub struct State {
@@ -71,6 +82,16 @@ pub struct State {
     picked: Vec<tickets::Part>,
     /// Files taken into the project for the ticket being created, by their paths there.
     pub adding: Vec<String>,
+    /// Files taken into the project for the comment being written on the open ticket.
+    pub commenting: Vec<String>,
+    /// The open ticket's runs, by run id: each rule the run reported.
+    pub items: BTreeMap<String, Vec<RunItem>>,
+    /// Lines whose picture of the 3D view the agent asked for, as (ticket, line's `at`), and those
+    /// the app has tried, so a picture that cannot be taken is not tried every frame.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    views: Vec<(String, String)>,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    views_tried: Vec<(String, String)>,
     /// The picture attachments of the tickets, by path: the key they are served by and their bytes.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pictures: BTreeMap<String, (String, Arc<Vec<u8>>)>,
@@ -150,34 +171,44 @@ pub fn refresh(app: &mut SolveApp) {
     if app.tickets.seen != Some(generation) {
         app.tickets.seen = Some(generation);
         match tickets::list(&root) {
-            Ok(list) => {
-                // A refusal's reason stays until the person's next request, whoever writes meanwhile.
-                app.tickets.tickets = list;
-                read_pictures(&mut app.tickets, &root);
-            }
+            // A refusal's reason stays until the person's next request, whoever writes meanwhile.
+            Ok(list) => app.tickets.tickets = list,
             Err(error) => app.tickets.error = Some(error.to_string()),
         }
         app.tickets.record = match &app.tickets.selected {
-            Some(id) => tickets::events(&root, Some(id)).unwrap_or_default(),
+            Some(id) => tickets::record(&root, id).unwrap_or_default(),
             None => Vec::new(),
         };
+        app.tickets.views = tickets::views_wanted(&root, None).unwrap_or_default();
+        read_pictures(&mut app.tickets, &root);
         app.tickets.stamp = None;
     }
     let stamp = app.session.document_stamp();
     let stamp = (stamp.document_id, stamp.revision);
     if app.tickets.stamp.as_ref() != Some(&stamp) {
         app.tickets.stamp = Some(stamp);
-        let runs: Vec<String> = app.tickets.tickets.iter().filter_map(|t| t.check.as_ref().and_then(|c| c.run.clone())).collect();
+        let bound: Vec<String> = app.tickets.tickets.iter().filter_map(|t| t.check.as_ref().and_then(|c| c.run.clone())).collect();
+        let opened: Vec<String> = app.tickets.record.iter().filter(|e| e.action == "check_ran").filter_map(|e| e.run.clone()).collect();
+        let mut runs = bound.clone();
+        runs.extend(opened.iter().filter(|run| !bound.contains(run)).cloned());
         let mut freshness = BTreeMap::new();
+        let mut items = BTreeMap::new();
         for run in runs {
             // Read straight from the session: a run the project no longer holds is no toast here.
             let Ok(reply) = app.session.execute("inspect.dfm", &serde_json::json!({ "run": run })) else { continue };
             let card = crate::dfm_chat::Card::from_inspect(&reply);
-            if card.run_id == run && !card.freshness.is_empty() {
+            if card.run_id != run {
+                continue;
+            }
+            if opened.contains(&run) && card.status == "done" {
+                items.insert(run.clone(), run_items(&card));
+            }
+            if bound.contains(&run) && !card.freshness.is_empty() {
                 freshness.insert(run, card.freshness);
             }
         }
         app.tickets.freshness = freshness;
+        app.tickets.items = items;
         mark_stale(app, &root);
     }
 }
@@ -201,6 +232,44 @@ pub(crate) fn mark_stale(app: &mut SolveApp, root: &std::path::Path) {
     }
 }
 
+/// A run's items: each rule the run reported, with the parts its findings are on and their values.
+#[cfg(not(target_arch = "wasm32"))]
+fn run_items(card: &crate::dfm_chat::Card) -> Vec<RunItem> {
+    card.rules
+        .iter()
+        .map(|rule| {
+            let mut item = RunItem { rule: rule.rule_id.clone(), state: rule.state.clone(), count: rule.count, parts: Vec::new(), values: Vec::new() };
+            for finding in card.findings.iter().filter(|f| f.rules.contains(&rule.rule_id)) {
+                if !finding.body.is_empty() && !item.parts.contains(&finding.body) {
+                    item.parts.push(finding.body.clone());
+                }
+                if let Some(measured) = &finding.measured {
+                    let value = (format!("{} {}", measured.value, measured.unit), finding.requirement.as_ref().map(|req| format!("{} {}", req.value, req.unit)));
+                    if !item.values.contains(&value) {
+                        item.values.push(value);
+                    }
+                }
+            }
+            item
+        })
+        .collect()
+}
+
+/// A run's item as the page reads it (`CheckItem` in host.ts): what was found against what is
+/// required in the Review panel's own words.
+#[cfg(not(target_arch = "wasm32"))]
+fn page_item(item: &RunItem) -> serde_json::Value {
+    let values: Vec<String> = item
+        .values
+        .iter()
+        .map(|(measured, required)| match required {
+            Some(required) => trf("ui.dfm_review_value", &[("measured", measured), ("required", required)]),
+            None => trf("ui.dfm_review_value_no_requirement", &[("measured", measured)]),
+        })
+        .collect();
+    serde_json::json!({ "rule": item.rule, "state": item.state, "count": item.count, "parts": item.parts, "values": values })
+}
+
 #[cfg(target_arch = "wasm32")]
 pub fn refresh(_app: &mut SolveApp) {}
 
@@ -221,7 +290,8 @@ fn picture_path(path: &str) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn read_pictures(state: &mut State, root: &std::path::Path) {
     let live = state.tickets.iter().filter(|t| !t.deleted).flat_map(|t| t.attachments.iter());
-    let named: Vec<String> = live.chain(state.adding.iter()).filter(|path| picture_path(path)).cloned().collect();
+    let comments = state.record.iter().flat_map(|e| e.attachments.iter());
+    let named: Vec<String> = live.chain(state.adding.iter()).chain(comments).chain(state.commenting.iter()).filter(|path| picture_path(path)).cloned().collect();
     let held = &mut state.pictures;
     held.retain(|path, _| named.contains(path));
     for path in &named {
@@ -415,19 +485,22 @@ pub fn start(app: &mut SolveApp, ctx: &egui::Context, id: &str, seen: u64) {
         return;
     }
     let Some(ticket) = apply(app, |root| tickets::start(root, id, seen)) else { return };
+    let (said, said_files) = root(app).map(|root| comments(&root, &ticket.id)).unwrap_or_default();
     let chip = crate::agent_chat::attach::Attachment {
         id: 0,
         name: format!("{} · {}", ticket.id, ticket.title.chars().take(40).collect::<String>()),
-        content: crate::agent_chat::attach::Content::Text(std::sync::Arc::new(summary(&ticket))),
+        content: crate::agent_chat::attach::Content::Text(std::sync::Arc::new(format!("{}{said}", summary(&ticket)))),
         thumb: None,
     };
     if let Err(reason) = crate::agent_chat::attach_ready(app, chip) {
         crate::agent_chat::notify(app, reason, true);
     }
-    // Its attachments go with the message, as files dropped on the Assistant go: pictures and
-    // PDFs whole where the agent takes them, any other file pointed to.
+    // Its attachments and its comments' files go with the message, as files dropped on the
+    // Assistant go: pictures and PDFs whole where the agent takes them, any other file pointed to.
     if let Some(root) = root(app) {
-        for path in &ticket.attachments {
+        let mut files = ticket.attachments.clone();
+        files.extend(said_files.into_iter().filter(|file| !ticket.attachments.contains(file)));
+        for path in &files {
             let full = path.split('/').fold(root.clone(), |full, name| full.join(name));
             if let Err(reason) = crate::agent_chat::attach::read(&full).and_then(|file| crate::agent_chat::attach_ready(app, file)) {
                 crate::agent_chat::notify(app, reason, true);
@@ -450,6 +523,57 @@ pub fn show(app: &mut SolveApp, id: &str) {
     app.tickets.expanded = false;
     app.tickets.error = None;
     app.tickets.seen = None;
+}
+
+/// The most comments a hand-over carries, and their characters in all.
+#[cfg(not(target_arch = "wasm32"))]
+const HANDED_COMMENTS: usize = 10;
+#[cfg(not(target_arch = "wasm32"))]
+const HANDED_CHARACTERS: usize = 4000;
+
+/// A ticket's comments as the agent reads them when the ticket is handed to it: the newest
+/// [`HANDED_COMMENTS`], oldest first, each with who wrote it, within [`HANDED_CHARACTERS`] (an older
+/// one that does not fit is left out, the newest is cut); a person's reason for moving it back
+/// counts as a comment. With them, the files they carry.
+#[cfg(not(target_arch = "wasm32"))]
+fn comments(root: &std::path::Path, id: &str) -> (String, Vec<String>) {
+    let record = tickets::record(root, id).unwrap_or_default();
+    let said: Vec<&Event> = record
+        .iter()
+        .filter(|e| e.action == "comment" || (e.action == "moved" && e.actor == tickets::Actor::Person && e.note.is_some()))
+        .collect();
+    let mut kept: Vec<String> = Vec::new();
+    let mut files: Vec<String> = Vec::new();
+    let mut left = HANDED_CHARACTERS;
+    for event in said.iter().rev().take(HANDED_COMMENTS) {
+        let who = match event.actor {
+            tickets::Actor::Person => "the person",
+            tickets::Actor::Agent => "the Assistant",
+            tickets::Actor::App => "the app",
+        };
+        let moved = if event.action == "moved" { format!(", moving it to {}", event.to.map(|to| to.as_str()).unwrap_or_default()) } else { String::new() };
+        let mut line = format!("- {who}{moved}, {}: {}", event.at, event.note.as_deref().unwrap_or_default());
+        if !event.attachments.is_empty() {
+            line += &format!(" [files: {}]", event.attachments.join(", "));
+        }
+        let length = line.chars().count();
+        if length > left {
+            if kept.is_empty() {
+                kept.push(line.chars().take(left).collect());
+                files.extend(event.attachments.iter().cloned());
+            }
+            break;
+        }
+        left -= length;
+        kept.push(line);
+        files.extend(event.attachments.iter().cloned());
+    }
+    if kept.is_empty() {
+        return (String::new(), Vec::new());
+    }
+    kept.reverse();
+    let text = format!("\nComments, oldest first (what the person wrote is what they ask of you now):\n{}", kept.join("\n"));
+    (text, files)
 }
 
 /// A ticket in full, as the agent reads it.
@@ -509,8 +633,11 @@ pub fn note(app: &mut SolveApp) -> Option<String> {
             Some(ticket) => {
                 out += &format!(
                     "\nYou are working on {} alone. Change only what it asks for.\n{}\nWhen its changes are made, call execute with \
-                     ticket.update {{\"id\": \"{}\", \"action\": \"finished\"}}: where a check applies a person then starts it (no \
-                     check starts by itself); where none applies you may set it done. If you cannot go on, use action block with the reason.",
+                     ticket.update {{\"id\": \"{}\", \"action\": \"finished\", \"text\": …}}, the text saying what you changed, on which \
+                     parts, and what you did not do (attachments: [project files] and view: true add files and a picture of the 3D view): \
+                     where a check applies a person then starts it (no check starts by itself); where none applies you may set it done. If \
+                     you cannot go on, use action block with the text saying why. To tell the person something on the ticket, use action \
+                     comment with text.",
                     ticket.id,
                     summary(ticket),
                     ticket.id
@@ -565,6 +692,7 @@ pub fn tick(app: &mut SolveApp) {
     }
     refresh(app);
     attach_wanted_view(app, |app| crate::control::view_png(app, VIEW_PICTURE.0, VIEW_PICTURE.1));
+    attach_comment_views(app, |app| crate::control::view_png(app, VIEW_PICTURE.0, VIEW_PICTURE.1));
     match app.tickets.checking.clone() {
         None => {
             let asked = app
@@ -672,8 +800,9 @@ pub fn page_state(app: &mut SolveApp) -> String {
         "project": project,
         "tickets": tickets.tickets.iter().map(|ticket| page_ticket(ticket, &tickets.tickets, &tickets.pictures)).collect::<Vec<_>>(),
         "selected": tickets.selected,
-        "record": tickets.record,
+        "record": tickets.record.iter().map(|event| page_event(event, &tickets.pictures)).collect::<Vec<_>>(),
         "freshness": tickets.freshness,
+        "items": tickets.items.iter().map(|(run, items)| (run.clone(), items.iter().map(page_item).collect::<serde_json::Value>())).collect::<serde_json::Map<_, _>>(),
         "error": tickets.error,
         "refusal": tickets.refusal,
         "answered": tickets.answered.iter().map(|(n, ask, ok)| serde_json::json!({"n": n, "ask": ask, "ok": ok})).collect::<Vec<_>>(),
@@ -681,6 +810,7 @@ pub fn page_state(app: &mut SolveApp) -> String {
         "filter": tickets.filter,
         "selection": selection,
         "adding": tickets.adding.iter().map(file).collect::<Vec<_>>(),
+        "commenting": tickets.commenting.iter().map(file).collect::<Vec<_>>(),
         "assistant": assistant,
     })
     .to_string()
@@ -692,6 +822,16 @@ pub fn page_state(app: &mut SolveApp) -> String {
 fn attachment(path: &String, pictures: &BTreeMap<String, (String, Arc<Vec<u8>>)>) -> serde_json::Value {
     let name = path.rsplit('/').next().unwrap_or(path);
     serde_json::json!({ "path": path, "name": name, "picture": pictures.get(path).map(|(key, _)| key) })
+}
+
+/// A record line as the page reads it (`TicketEvent` in host.ts): its files as `{path, name, picture}`.
+#[cfg(not(target_arch = "wasm32"))]
+fn page_event(event: &Event, pictures: &BTreeMap<String, (String, Arc<Vec<u8>>)>) -> serde_json::Value {
+    let mut value = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
+    if !event.attachments.is_empty() {
+        value["attachments"] = event.attachments.iter().map(|path| attachment(path, pictures)).collect();
+    }
+    value
 }
 
 /// A ticket as the page reads it (`Ticket` in host.ts): the store's own fields, each attachment as
@@ -786,7 +926,9 @@ fn texts(kind: &str, name: &str, value: Option<&serde_json::Value>) -> Result<Ve
 /// - a person's changes: `ticket_create` (`title`, `text`, `requirements`, `parts`, `attachments`,
 ///   `parent`), `ticket_edit` (any of `title`, `text`, `requirements`, `checks`), `ticket_waits`
 ///   (`waits`), `ticket_assign_parts` (the model's selection), `ticket_attach` (`id`, or null for
-///   the ticket being created: the app asks for the file);
+///   the ticket being created: the app asks for the file), `ticket_comment` (`id`, `text`,
+///   `attachments`), `ticket_comment_attach` (`id`, `view`: a file the app asks for, or a picture
+///   of the 3D view now, for the comment being written); `ticket_set_state` may carry `reason`;
 /// - the app: `ticket_attachment` (`path`: a picture in the picture viewer, any other file in the
 ///   system's program), `ticket_show_parts` (`id`), `ticket_ask_draft` (a message to the Assistant).
 ///
@@ -810,7 +952,11 @@ fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &serde_json:
     };
     match kind {
         "ticket_open" => {
-            app.tickets.selected = Some(id()?.to_string());
+            let id = id()?.to_string();
+            if app.tickets.selected.as_ref() != Some(&id) {
+                app.tickets.commenting.clear();
+            }
+            app.tickets.selected = Some(id);
             app.tickets.error = None;
             // The open ticket's record is read with the tickets.
             app.tickets.seen = None;
@@ -818,6 +964,7 @@ fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &serde_json:
         }
         "ticket_close" => {
             app.tickets.selected = None;
+            app.tickets.commenting.clear();
             app.tickets.expanded = false;
             app.tickets.record.clear();
             app.tickets.error = None;
@@ -849,7 +996,8 @@ fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &serde_json:
             let to = text("to").ok_or(format!("{kind}: no state"))?;
             let to: TicketState = serde_json::from_value(Value::from(to)).map_err(|_| format!("{kind}: `{to}` is not a state"))?;
             let (id, seen) = (id()?, seen()?);
-            apply(app, |root| tickets::set_state(root, id, seen, to));
+            let reason = text("reason").map(str::to_string);
+            apply(app, |root| tickets::set_state(root, id, seen, to, reason));
         }
         "ticket_delete" => delete(app, id()?, seen()?),
         "ticket_restore" => {
@@ -908,7 +1056,28 @@ fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &serde_json:
                 None | Some(Value::Null) => None,
                 Some(_) => Some(id()?.to_string()),
             };
-            attach(app, to);
+            attach(app, to.map(Target::Ticket));
+        }
+        "ticket_comment" => {
+            let id = id()?;
+            let body = text("text").unwrap_or_default();
+            let files = list("attachments")?;
+            let Some(root) = root(app) else { return Err(format!("{kind}: no project")) };
+            match tickets::comment(&root, id, tickets::Actor::Person, body, &files, false) {
+                Ok(_) => {
+                    app.tickets.commenting.clear();
+                    refresh(app);
+                }
+                Err(error) => app.tickets.error = Some(error.to_string()),
+            }
+        }
+        "ticket_comment_attach" => {
+            let id = id()?.to_string();
+            if action.get("view").and_then(Value::as_bool).unwrap_or(false) {
+                comment_view_now(app, &id, |app| crate::control::view_png(app, VIEW_PICTURE.0, VIEW_PICTURE.1));
+            } else {
+                attach(app, Some(Target::Comment(id)));
+            }
         }
         "ticket_attachment" => open_attachment(app, text("path").ok_or(format!("{kind}: no path"))?)?,
         "ticket_show_parts" => show_parts(app, id()?),
@@ -929,11 +1098,20 @@ fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &serde_json:
     Ok(())
 }
 
+/// Where a file chosen with 加附件 goes besides a new ticket.
+#[cfg(not(target_arch = "wasm32"))]
+enum Target {
+    Ticket(String),
+    /// The comment being written on that ticket.
+    Comment(String),
+}
+
 /// 加附件: the app asks for a file, takes it into the project ([`tickets::take_in`]: a file of the
 /// project stays where it is, any other is copied under `attachments/`) and adds it to ticket `to`
-/// as it is when the file is chosen, or to the files of the ticket being created (`None`).
+/// as it is when the file is chosen, to the comment being written on it, or to the files of the
+/// ticket being created (`None`).
 #[cfg(not(target_arch = "wasm32"))]
-fn attach(app: &mut SolveApp, to: Option<String>) {
+fn attach(app: &mut SolveApp, to: Option<Target>) {
     app.pick_file(tr("ui.tickets_attachments"), &["pdf", "png", "jpg", "jpeg", "gif", "webp", "step", "stp", "dxf", "txt", "md"], move |app, path| {
         let (Some(path), Some(root)) = (path, root(app)) else { return };
         let taken = match tickets::take_in(&root, std::path::Path::new(&path)) {
@@ -943,12 +1121,22 @@ fn attach(app: &mut SolveApp, to: Option<String>) {
                 return;
             }
         };
-        let Some(id) = to else {
-            if !app.tickets.adding.contains(&taken) {
-                app.tickets.adding.push(taken);
+        let id = match to {
+            None => {
+                if !app.tickets.adding.contains(&taken) {
+                    app.tickets.adding.push(taken);
+                }
+                read_pictures(&mut app.tickets, &root);
+                return;
             }
-            read_pictures(&mut app.tickets, &root);
-            return;
+            Some(Target::Comment(id)) => {
+                // Only while that ticket is still the open one: its box is where the file goes.
+                if app.tickets.selected.as_ref() == Some(&id) {
+                    take_for_comment(app, &root, taken);
+                }
+                return;
+            }
+            Some(Target::Ticket(id)) => id,
         };
         let Ok(ticket) = tickets::load(&root, &id) else { return };
         let mut files = ticket.attachments.clone();
@@ -959,25 +1147,72 @@ fn attach(app: &mut SolveApp, to: Option<String>) {
     });
 }
 
+/// Add a file taken into the project to the comment being written, at most
+/// [`tickets::MAX_COMMENT_FILES`].
+#[cfg(not(target_arch = "wasm32"))]
+fn take_for_comment(app: &mut SolveApp, root: &std::path::Path, taken: String) {
+    if app.tickets.commenting.contains(&taken) {
+        return;
+    }
+    if app.tickets.commenting.len() >= tickets::MAX_COMMENT_FILES {
+        app.tickets.error = Some(format!("a comment carries at most {} files", tickets::MAX_COMMENT_FILES));
+        return;
+    }
+    app.tickets.commenting.push(taken);
+    read_pictures(&mut app.tickets, root);
+}
+
+/// 当前 3D 视图 in the comment box: `picture` takes the view as it is now, saved under the project's
+/// `attachments/` and added to the comment being written on ticket `id`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn comment_view_now(app: &mut SolveApp, id: &str, picture: impl FnOnce(&SolveApp) -> Result<Vec<u8>, String>) {
+    let Some(root) = root(app) else { return };
+    let stored = picture(app).and_then(|png| tickets::store_view(&root, id, &png).map_err(|error| error.to_string()));
+    match stored {
+        Ok(path) => take_for_comment(app, &root, path),
+        Err(error) => app.tickets.error = Some(error),
+    }
+}
+
+/// The agent asked, with a comment or with "finished", for a picture of the 3D view: `picture`
+/// takes it as the view is now, once per line, and the store adds it to that line.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn attach_comment_views(app: &mut SolveApp, picture: impl FnOnce(&SolveApp) -> Result<Vec<u8>, String>) {
+    let Some(wanted) = app.tickets.views.iter().find(|line| !app.tickets.views_tried.contains(line)).cloned() else { return };
+    app.tickets.views_tried.push(wanted.clone());
+    let Some(root) = root(app) else { return };
+    let (id, at) = wanted;
+    match picture(app).and_then(|png| tickets::comment_view(&root, &id, &at, &png).map_err(|error| error.to_string())) {
+        Ok(_) => refresh(app),
+        Err(error) => log::warn!("the 3D view's picture for a line of {id} was not added: {error}"),
+    }
+}
+
 /// Open an attachment the view names: only a path one of the live tickets carries. A picture opens
 /// in the picture viewer over the app with that ticket's other pictures; any other file in the
 /// system's program for it.
 #[cfg(not(target_arch = "wasm32"))]
 fn open_attachment(app: &mut SolveApp, path: &str) -> Result<(), String> {
     let root = root(app).ok_or("ticket_attachment: no project")?;
-    let ticket = app
-        .tickets
-        .tickets
-        .iter()
-        .find(|ticket| !ticket.deleted && ticket.attachments.iter().any(|file| file == path))
-        .ok_or("ticket_attachment: no ticket carries that file")?;
-    let shown: Vec<(Arc<Vec<u8>>, String)> = ticket
-        .attachments
+    // The files of the ticket, comment or line that carries it, in their order.
+    let carried: Vec<String> = match app.tickets.tickets.iter().find(|ticket| !ticket.deleted && ticket.attachments.iter().any(|file| file == path)) {
+        Some(ticket) => ticket.attachments.clone(),
+        None => app
+            .tickets
+            .record
+            .iter()
+            .map(|event| &event.attachments)
+            .chain(std::iter::once(&app.tickets.commenting))
+            .find(|files| files.iter().any(|file| file == path))
+            .cloned()
+            .ok_or("ticket_attachment: no ticket or comment carries that file")?,
+    };
+    let shown: Vec<(Arc<Vec<u8>>, String)> = carried
         .iter()
         .filter_map(|file| app.tickets.pictures.get(file).map(|(_, bytes)| (Arc::clone(bytes), file.rsplit('/').next().unwrap_or(file).to_string())))
         .collect();
     if app.tickets.pictures.contains_key(path) {
-        let at = ticket.attachments.iter().filter(|file| app.tickets.pictures.contains_key(*file)).position(|file| file == path).unwrap_or(0);
+        let at = carried.iter().filter(|file| app.tickets.pictures.contains_key(*file)).position(|file| file == path).unwrap_or(0);
         crate::agent_chat::show_pictures(app, shown, at);
         return Ok(());
     }
@@ -1163,6 +1398,16 @@ fn page_strings() -> serde_json::Map<String, serde_json::Value> {
         ("withTicket", "ui.tickets_with_ticket"),
         ("whyStale", "ui.tickets_why_stale"),
         ("checkOff", "ui.tickets_check_off"),
+        ("comment", "ui.tickets_comment"),
+        ("commentPlaceholder", "ui.tickets_comment_placeholder"),
+        ("backTitle", "ui.tickets_back_title"),
+        ("backWhy", "ui.tickets_back_why"),
+        ("backConfirm", "ui.tickets_back_confirm"),
+        ("checkItems", "ui.tickets_check_items"),
+        ("attachFile", "ui.tickets_attach_file"),
+        ("attachViewNow", "ui.tickets_attach_view_now"),
+        ("removeFile", "ui.tickets_remove_file"),
+        ("checkRan", "ui.tickets_check_ran"),
     ]
     .into_iter()
     .map(|(name, key)| (name.to_string(), serde_json::Value::from(tr(key))))

@@ -45,6 +45,9 @@ pub const MAX_TEXT: usize = 8000;
 pub const MAX_LINES: usize = 40;
 pub const MAX_LINE: usize = 400;
 pub const MAX_REASON: usize = 1000;
+/// A comment's text, and what the agent writes when it says it has finished or is blocked.
+pub const MAX_COMMENT: usize = 4000;
+pub const MAX_COMMENT_FILES: usize = 5;
 pub const MAX_PARTS: usize = 50;
 pub const MAX_ATTACHMENTS: usize = 20;
 pub const MAX_WAITS: usize = 20;
@@ -231,7 +234,9 @@ pub struct Event {
     pub ticket: String,
     /// `drafted`, `created`, `edited`, `confirmed`, `declined`, `deleted`, `restored`, `started`,
     /// `taken`, `moved`, `done`, `finished`, `check_asked`, `check_started`, `check_ran`,
-    /// `check_refused`, `check_off`, `check_on`, `blocked`, `unblocked`, `recheck`, `view_attached`.
+    /// `check_refused`, `check_off`, `check_on`, `blocked`, `unblocked`, `recheck`, `view_attached`,
+    /// `comment` (its text is `note`), `comment_view` (the picture a line asked for; `note` is that
+    /// line's `at`).
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<State>,
@@ -245,6 +250,13 @@ pub struct Event {
     /// (「未检查」).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unchecked: bool,
+    /// Files in the project that a comment, or the agent's finished line, carries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
+    /// The agent asked for a picture of the 3D view with this line; the app adds it as a
+    /// `comment_view` line ([`comment_view`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub view: bool,
     pub revision: u64,
 }
 
@@ -456,11 +468,13 @@ struct Line {
     note: Option<String>,
     run: Option<String>,
     unchecked: bool,
+    attachments: Vec<String>,
+    view: bool,
 }
 
 impl Line {
     fn new(actor: Actor, action: &'static str) -> Self {
-        Self { actor, action, note: None, run: None, unchecked: false }
+        Self { actor, action, note: None, run: None, unchecked: false, attachments: Vec::new(), view: false }
     }
 
     fn note(mut self, note: Option<String>) -> Self {
@@ -482,6 +496,8 @@ fn commit(root: &Path, ticket: &Ticket, from: Option<State>, line: Line) -> Resu
         note: line.note,
         run: line.run,
         unchecked: line.unchecked,
+        attachments: line.attachments,
+        view: line.view,
         revision: ticket.revision,
     };
     let appended = append(root, &event);
@@ -1046,8 +1062,10 @@ pub fn work_myself(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketErr
 /// A person sets a ticket they saw at revision `seen` to any state (the state menu): Done only
 /// past its gate ([`why_not_done`]), recorded as unchecked where nothing was checked. Setting the
 /// state it already has changes nothing. Tickets it waits for do not stop a person.
-pub fn set_state(root: &Path, id: &str, seen: u64, to: State) -> Result<Ticket, TicketError> {
-    move_state(root, id, Some(seen), to, Actor::Person)
+/// `reason`: why, when a person moves it back (optional), kept on the move's line.
+pub fn set_state(root: &Path, id: &str, seen: u64, to: State, reason: Option<String>) -> Result<Ticket, TicketError> {
+    let reason = reason.map(|reason| clean(&reason, MAX_REASON, "reason")).transpose()?.filter(|reason| !reason.is_empty());
+    move_state(root, id, Some(seen), to, Actor::Person, reason)
 }
 
 /// The agent sets a ticket to any state (`ticket.update`, action `state`), under the conditions a
@@ -1055,10 +1073,10 @@ pub fn set_state(root: &Path, id: &str, seen: u64, to: State) -> Result<Ticket, 
 /// is refused while it waits for tickets not done yet or while the Assistant works another ticket
 /// (one at a time). Accepting a draft is a move from draft to confirmed.
 pub fn agent_set_state(root: &Path, id: &str, to: State) -> Result<Ticket, TicketError> {
-    move_state(root, id, None, to, Actor::Agent)
+    move_state(root, id, None, to, Actor::Agent, None)
 }
 
-fn move_state(root: &Path, id: &str, seen: Option<u64>, to: State, actor: Actor) -> Result<Ticket, TicketError> {
+fn move_state(root: &Path, id: &str, seen: Option<u64>, to: State, actor: Actor, reason: Option<String>) -> Result<Ticket, TicketError> {
     let current = load(root, id)?;
     if let Some(seen) = seen {
         unchanged(&current, seen)?;
@@ -1076,7 +1094,7 @@ fn move_state(root: &Path, id: &str, seen: Option<u64>, to: State, actor: Actor)
             return Err(TicketError::Refused(format!("the Assistant works {} now: one ticket at a time", other.id)));
         }
     }
-    step(root, id, Line::new(actor, "moved"), seen, |ticket, line| {
+    step(root, id, Line::new(actor, "moved").note(reason), seen, |ticket, line| {
         if to == State::Done {
             if let Some(why) = why_not_done(ticket, &all) {
                 let message = why.say(&ticket.id);
@@ -1103,7 +1121,7 @@ fn move_state(root: &Path, id: &str, seen: Option<u64>, to: State, actor: Actor)
 
 /// A person marks a ticket done (完成): [`set_state`] to Done.
 pub fn done(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError> {
-    set_state(root, id, seen, State::Done)
+    set_state(root, id, seen, State::Done, None)
 }
 
 /// A person changes, in one save, any of a ticket's title, text, requirement lines, parts,
@@ -1219,12 +1237,32 @@ fn agents_ticket(ticket: &Ticket, state: State, what: &str) -> Result<(), Ticket
     Ok(())
 }
 
-/// The agent says it has finished the ticket it works (做完了). No check starts by itself:
+/// What the agent is told to write when it says it has finished.
+pub const SAY_FINISHED: &str = "say what you did, as text: what you changed, on which parts, and what you did not do";
+/// What the agent is told to write when it says it is blocked.
+pub const SAY_BLOCKED: &str = "say why, as text: what you changed so far, on which parts, and what stops you";
+
+/// The agent's text for a finished or blocked line: required, at most [`MAX_COMMENT`] characters.
+fn said(text: Option<&str>, what: &str) -> Result<String, TicketError> {
+    let text = clean(text.unwrap_or_default(), MAX_COMMENT, "text")?;
+    if text.is_empty() {
+        return Err(TicketError::Invalid(format!("{what}: {}", if what == "finished" { SAY_FINISHED } else { SAY_BLOCKED })));
+    }
+    Ok(text)
+}
+
+/// The agent says it has finished the ticket it works (做完了), with what it did (`text`,
+/// required: what it changed, on which parts, what it did not do), files of the project to show
+/// with it, and whether the app adds a picture of the 3D view (`view`). No check starts by itself:
 /// where a check applies, the ticket stays in progress, marked finished, until a person starts
 /// the check; where none applies, it goes to waiting for a person's confirmation.
-pub fn finished(root: &Path, id: &str, note_text: Option<String>) -> Result<Ticket, TicketError> {
-    let note_text = note(note_text)?;
-    step(root, id, Line::new(Actor::Agent, "finished").note(note_text), None, |ticket, _| {
+pub fn finished(root: &Path, id: &str, text: Option<&str>, files: &[String], view: bool) -> Result<Ticket, TicketError> {
+    let text = said(text, "finished")?;
+    let files = comment_files(root, files)?;
+    let mut line = Line::new(Actor::Agent, "finished").note(Some(text));
+    line.attachments = files;
+    line.view = view;
+    step(root, id, line, None, |ticket, _| {
         agents_ticket(ticket, State::InProgress, "only the ticket in progress is finished")?;
         if applies(ticket) {
             ticket.finished = true;
@@ -1237,10 +1275,7 @@ pub fn finished(root: &Path, id: &str, note_text: Option<String>) -> Result<Tick
 
 /// The agent stops on the ticket it works and says why.
 pub fn block(root: &Path, id: &str, reason: &str) -> Result<Ticket, TicketError> {
-    let reason = clean(reason, MAX_REASON, "reason")?;
-    if reason.is_empty() {
-        return Err(TicketError::Invalid("say why the ticket is blocked".into()));
-    }
+    let reason = said(Some(reason), "blocked")?;
     step(root, id, Line::new(Actor::Agent, "blocked").note(Some(reason.clone())), None, |ticket, _| {
         agents_ticket(ticket, State::InProgress, "only the ticket in progress can be blocked")?;
         move_to(ticket, Actor::Agent, State::Blocked)?;
@@ -1256,6 +1291,119 @@ pub fn unblock(root: &Path, id: &str, note_text: Option<String>) -> Result<Ticke
         agents_ticket(ticket, State::Blocked, "only a blocked ticket is unblocked")?;
         move_to(ticket, Actor::Agent, State::InProgress)
     })
+}
+
+/// A comment's files, checked as a ticket's are: files of the project, at most [`MAX_COMMENT_FILES`].
+fn comment_files(root: &Path, paths: &[String]) -> Result<Vec<String>, TicketError> {
+    if paths.len() > MAX_COMMENT_FILES {
+        return Err(TicketError::Invalid(format!("a comment carries at most {MAX_COMMENT_FILES} files")));
+    }
+    attachments(root, paths)
+}
+
+/// A comment by a person or the agent on a ticket that is not deleted, in any state: its text and
+/// files of the project (bring one from outside in with [`take_in`]), one record line of its own,
+/// never changed afterwards. It writes no ticket and leaves its revision as it is, so a person's
+/// save made on that revision is still taken. `view`: the agent asks the app to add a picture of
+/// the 3D view to it ([`comment_view`]).
+pub fn comment(root: &Path, id: &str, actor: Actor, text: &str, files: &[String], view: bool) -> Result<Event, TicketError> {
+    if actor == Actor::App {
+        return Err(TicketError::Refused("a comment is written by a person or the Assistant".into()));
+    }
+    let ticket = load(root, id)?;
+    if ticket.deleted {
+        return Err(TicketError::Refused(format!("{id} is deleted: restore it first")));
+    }
+    let text = clean(text, MAX_COMMENT, "comment")?;
+    let files = comment_files(root, files)?;
+    if text.is_empty() && files.is_empty() && !view {
+        return Err(TicketError::Invalid("a comment needs text or a file".into()));
+    }
+    let event = Event {
+        at: now(),
+        actor,
+        ticket: ticket.id.clone(),
+        action: "comment".into(),
+        from: None,
+        to: None,
+        note: Some(text).filter(|text| !text.is_empty()),
+        run: None,
+        unchecked: false,
+        attachments: files,
+        view: view && actor == Actor::Agent,
+        revision: ticket.revision,
+    };
+    let appended = append(root, &event);
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+    appended.map(|()| event)
+}
+
+/// Save a picture of the 3D view (`png`, as the host rendered it) under `attachments/` as
+/// `<id>-view.png` (or the next free name), for a comment being written; its path in the project.
+pub fn store_view(root: &Path, id: &str, png: &[u8]) -> Result<String, TicketError> {
+    if png.len() as u64 > MAX_ATTACHMENT_BYTES || png.is_empty() {
+        return Err(TicketError::Invalid("the picture is empty or too large".into()));
+    }
+    let ticket = load(root, id)?;
+    store_file(root, &format!("{}-view.png", ticket.id), png)
+}
+
+/// The lines whose picture of the 3D view the agent asked for and the app has not added yet, as
+/// (ticket, the line's `at`): of one ticket, or of all.
+pub fn views_wanted(root: &Path, ticket: Option<&str>) -> Result<Vec<(String, String)>, TicketError> {
+    let record = events(root, ticket)?;
+    let added: Vec<(&str, &str)> =
+        record.iter().filter(|event| event.action == "comment_view").filter_map(|event| Some((event.ticket.as_str(), event.note.as_deref()?))).collect();
+    Ok(record
+        .iter()
+        .filter(|event| event.view && !added.contains(&(event.ticket.as_str(), event.at.as_str())))
+        .map(|event| (event.ticket.clone(), event.at.clone()))
+        .collect())
+}
+
+/// The app adds the picture of the 3D view that the line at `at` asked for: saved under
+/// `attachments/`, recorded as a `comment_view` line that names that line, which a reader shows
+/// with it. Like a comment, it leaves the ticket's revision as it is.
+pub fn comment_view(root: &Path, id: &str, at: &str, png: &[u8]) -> Result<Event, TicketError> {
+    let ticket = load(root, id)?;
+    if !views_wanted(root, Some(id))?.iter().any(|(_, wanted)| wanted == at) {
+        return Err(TicketError::Refused(format!("no line of {id} at {at} waits for a picture")));
+    }
+    let path = store_view(root, id, png)?;
+    let event = Event {
+        at: now(),
+        actor: Actor::App,
+        ticket: ticket.id.clone(),
+        action: "comment_view".into(),
+        from: None,
+        to: None,
+        note: Some(at.to_string()),
+        run: None,
+        unchecked: false,
+        attachments: vec![path],
+        view: false,
+        revision: ticket.revision,
+    };
+    let appended = append(root, &event);
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+    appended.map(|()| event)
+}
+
+/// A ticket's record as a reader shows it: each `comment_view` picture joined to the line that
+/// asked for it.
+pub fn record(root: &Path, id: &str) -> Result<Vec<Event>, TicketError> {
+    let mut out: Vec<Event> = Vec::new();
+    for event in events(root, Some(id))? {
+        if event.action == "comment_view"
+            && let Some(asked) = out.iter_mut().rev().find(|line| line.view && Some(&line.at) == event.note.as_ref())
+        {
+            asked.attachments.extend(event.attachments);
+            asked.view = false;
+            continue;
+        }
+        out.push(event);
+    }
+    Ok(out)
 }
 
 /// The app attaches the picture of the 3D view the agent asked for when it drafted (`png`, as the

@@ -2,24 +2,26 @@
 // components/common/issues/details/issue-details.tsx, issue-properties-panel.tsx and
 // activity-feed.tsx, and components/common/issues/status-selector.tsx (github.com/ln-dev7/circle at
 // b0ba7dd): the issue page's header with previous and next, its title and description, the
-// sub-issues, the activity feed, the properties column and the status menu, without the comment
-// box, reactions and the rich description. MIT, Copyright (c) 2025 lndev-ui | Circle Template.
+// sub-issues, the activity feed with its comment cards and comment box, the properties column and
+// the status menu, without reactions, replies and the rich description. MIT, Copyright (c) 2025
+// lndev-ui | Circle Template.
 // Here: one part ticket, narrow in the side panel (properties under the title) or large over the
 // window (properties in a column at the right). A click on its title, description or requirement
 // lines edits them where they stand. What it says is shown as plain text. The controls are Mastra's.
-import { Ban, Box, ChevronDown, ChevronUp, CircleDot, ClipboardCheck, Ellipsis, FileText, Maximize2, Minimize2, Paperclip, PenLine, Pencil, Plus, Trash2, Unlock } from 'lucide-react';
+import { Ban, Box, Camera, ChevronDown, ChevronUp, CircleDot, ClipboardCheck, Ellipsis, FileText, Maximize2, Minimize2, Paperclip, PenLine, Pencil, Plus, Trash2, Unlock, X } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useRef, useState } from 'react';
-import type { Ticket, TicketAction, TicketEvent, TicketStateName, TicketsState } from '../host';
+import type { CheckItem, Ticket, TicketAction, TicketAttachment, TicketEvent, TicketStateName, TicketsState } from '../host';
 import { ask, lastTickets, pictureUrl, post } from '../host';
-import { childrenOf, fill, lines, MAX_TEXT, MAX_TITLE, moment, names, ordered, progress, refusalText, stateWord, whyNotAssistant, whyNotDone } from './shared';
+import { childrenOf, fill, lines, MAX_COMMENT, MAX_REASON, MAX_TEXT, MAX_TITLE, moment, names, ordered, progress, refusalText, stateWord, whyNotAssistant, whyNotDone } from './shared';
 import type { Full, Words } from './shared';
 import { StateIcon } from './status-icons';
 import { AttachmentCard } from '@/ds/components/AttachmentCard';
+import { Avatar } from '@/ds/components/Avatar';
 import { Badge } from '@/ds/components/Badge';
 import { Breadcrumb, Crumb } from '@/ds/components/Breadcrumb';
 import { Button } from '@/ds/components/Button';
-import { Dialog, DialogAction, DialogCancel, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ds/components/Dialog';
+import { Dialog, DialogAction, DialogBody, DialogCancel, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ds/components/Dialog';
 import { DropdownMenu } from '@/ds/components/DropdownMenu';
 import { Input } from '@/ds/components/Input';
 import { Notice } from '@/ds/components/Notice';
@@ -91,21 +93,216 @@ function actorWord(words: Words, actor: TicketEvent['actor']) {
   return actor === 'person' ? words.actorPerson : actor === 'agent' ? words.actorAgent : words.actorApp;
 }
 
-function EventRow({ event, words, language }: { event: TicketEvent; words: Words; language: string }) {
+/** A run's rules, the ones that found something first. */
+const ITEM_ORDER = ['failed', 'advisory', 'passed', 'checked', 'unsupported'];
+
+function itemWord(words: Words, state: string) {
+  return state === 'failed' ? words.failed : state === 'advisory' ? words.advisory : state === 'unsupported' ? words.notCovered : words.checked;
+}
+
+const rank = (state: string) => (ITEM_ORDER.includes(state) ? ITEM_ORDER.indexOf(state) : 3);
+
+/** What a run came out with, in the person's words: `2 建议 · 8 已检查 · 3 未覆盖`, failed first, none left out but zeros. */
+function outcome(counts: Record<string, number>, words: Words) {
+  const checked = (counts.checked ?? 0) + (counts.passed ?? 0);
+  const named: [number, string][] = [
+    [counts.failed ?? 0, words.failed],
+    [counts.advisory ?? 0, words.advisory],
+    [checked, words.checked],
+    [counts.unsupported ?? 0, words.notCovered],
+  ];
+  return named.filter(([n]) => n > 0).map(([n, word]) => `${n} ${word}`);
+}
+
+/** A run's counts from its items. */
+function counted(items: CheckItem[]) {
+  const counts: Record<string, number> = {};
+  for (const item of items) counts[item.state] = (counts[item.state] ?? 0) + 1;
+  return counts;
+}
+
+/** The items a check's run reported, under its line in the record: state, parts, what was found against what is required, the item's own name small at the end, and the run at the foot. */
+function CheckItems({ items, run, words }: { items: CheckItem[]; run?: string; words: Words }) {
+  const sorted = [...items].sort((a, b) => rank(a.state) - rank(b.state));
+  return (
+    <div className="mt-1.5">
+      <ul className="flex flex-col border-t border-border" aria-label={fill(words.checkItems, { n: String(items.length) })}>
+        {sorted.map(item => (
+          <li key={item.rule} className="flex min-h-8 min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-border py-1 text-xs">
+            <Badge size="sm" emphasis="subtle" variant={item.state === 'failed' ? 'destructive' : item.state === 'advisory' ? 'warning' : 'neutral'}>
+              {itemWord(words, item.state)}
+            </Badge>
+            {item.parts.length > 0 && <span className="min-w-0 text-foreground/90">{item.parts.join('、')}</span>}
+            {(item.values ?? []).length > 0 && <span className="min-w-0">{(item.values ?? []).join('；')}</span>}
+            {item.count > 1 && <span className="tabular-nums">×{item.count}</span>}
+            <span className="ml-auto min-w-0 font-mono break-all text-muted-foreground/70">{item.rule}</span>
+          </li>
+        ))}
+      </ul>
+      {run && <p className="pt-1 font-mono text-xs text-muted-foreground/70">{run}</p>}
+    </div>
+  );
+}
+
+/** What a person or the Assistant wrote with a step: what it changed, why it stopped, why it went back. */
+function said(event: TicketEvent) {
+  return ['finished', 'blocked', 'unblocked', 'moved'].includes(event.action) && event.actor !== 'app' ? event.note : undefined;
+}
+
+function EventRow({ event, words, language, items, counts }: { event: TicketEvent; words: Words; language: string; items?: CheckItem[]; counts?: Record<string, number> }) {
+  const [open, setOpen] = useState(false);
   const named = event.action in DID ? words[DID[event.action as keyof typeof DID]] : event.action;
   const did = fill(named, { state: event.to ? stateWord(words, event.to) : '' });
-  // An agent's note, a refusal's reason, a step taken with another ticket; a bound run is named by its id (the store's counts line is English).
+  // A step taken with another ticket. A run is not named on its line (its id is at the foot of its items).
   const together = event.note?.match(/^with (T-\d+)$/);
-  const extra = event.action === 'check_ran' || event.action === 'check_started' ? event.run : together ? fill(words.withTicket, { id: together[1] ?? '' }) : event.note;
+  const ran = event.action === 'check_ran' || event.action === 'check_started';
+  const extra = ran ? null : together ? fill(words.withTicket, { id: together[1] ?? '' }) : said(event) || event.action === 'comment_view' ? null : event.note;
+  // The check's one result line: the kind of check, how its run ended (the run's own word when it
+  // is not `done`: superseded, cancelled, failed), and what came out.
+  const ended = event.note?.split(' · ')[0];
+  const result =
+    event.action === 'check_ran' ? [`${words.checkTitle} ${!ended || ended === 'done' ? words.checkRan : ended}`, ...outcome(items ? counted(items) : (counts ?? {}), words)].join(' · ') : null;
   return (
-    <li className="flex items-start gap-2.5 py-1.5 text-sm text-muted-foreground">
-      <span className="mt-px flex size-5 shrink-0 items-center justify-center rounded-full bg-fill">{EVENT_ICONS[event.action] ?? <CircleDot className="size-3.5" />}</span>
-      <span className="min-w-0 flex-1 break-words">
-        <span className="font-medium text-foreground/90">{actorWord(words, event.actor)}</span> {did}
-        <span className="text-xs whitespace-nowrap">{` · ${moment(event.at, language)}`}</span>
-        {extra && <span className="mt-0.5 block text-xs whitespace-pre-wrap">{extra}</span>}
-      </span>
-    </li>
+    <>
+      <div className="flex items-center gap-2.5 py-1.5 text-sm text-muted-foreground">
+        <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-fill">{EVENT_ICONS[event.action] ?? <CircleDot className="size-3.5" />}</span>
+        {result ? (
+          // What came out is read whole: the line wraps rather than cut its counts.
+          <span className="min-w-0 flex-1 break-words">
+            <span className="text-foreground/90">{result}</span> <span className="text-xs whitespace-nowrap">· {moment(event.at, language)}</span>
+          </span>
+        ) : (
+          <>
+            <span className="min-w-0 truncate">
+              <span className="font-medium text-foreground/90">{actorWord(words, event.actor)}</span> {did}
+            </span>
+            <span className="shrink-0 text-xs">· {moment(event.at, language)}</span>
+          </>
+        )}
+        {event.action === 'check_ran' && items && items.length > 0 && (
+          <Button size="sm" variant="ghost" aria-expanded={open} className="-my-1 ml-auto shrink-0" onClick={() => setOpen(!open)}>
+            {fill(words.checkItems, { n: String(items.length) })}
+            {open ? <ChevronUp /> : <ChevronDown />}
+          </Button>
+        )}
+      </div>
+      {extra && <p className="-mt-1 pb-1.5 pl-7.5 text-xs break-words whitespace-pre-wrap text-muted-foreground">{extra}</p>}
+      {open && items && (
+        <div className="pb-1.5 pl-7.5">
+          <CheckItems items={items} run={event.run} words={words} />
+        </div>
+      )}
+      {(said(event) || (event.attachments && event.attachments.length > 0)) && <CommentCard event={event} words={words} language={language} />}
+    </>
+  );
+}
+
+/** A comment as a card: who wrote it, when, what, and its files. A step's own text shows the same way. */
+function CommentCard({ event, words, language }: { event: TicketEvent; words: Words; language: string }) {
+  const who = actorWord(words, event.actor);
+  const text = event.action === 'comment' ? event.note : said(event);
+  return (
+    <div className="my-2 rounded-lg border border-border/60 bg-card p-3.5" data-comment={event.at}>
+      <div className="mb-1.5 flex items-center gap-2">
+        <Avatar name={who} size="inline" />
+        <span className="text-sm font-medium">{who}</span>
+        <span className="text-xs text-muted-foreground">{moment(event.at, language)}</span>
+      </div>
+      {text && <p className="my-1.5 text-sm break-words whitespace-pre-wrap">{text}</p>}
+      {event.attachments && event.attachments.length > 0 && <Files files={event.attachments} className="mt-2" />}
+    </div>
+  );
+}
+
+/** The record, oldest first: steps and comments in one feed, and the box a person writes a comment in. */
+function Activity({ ticket, state, words }: Page) {
+  const [draft, setDraft] = useState('');
+  // Files taken in for this comment that the person took off again before sending.
+  const [removed, setRemoved] = useState<string[]>([]);
+  const files = (state.commenting ?? []).filter(file => !removed.includes(file.path));
+  const [sending, setSending] = useState(false);
+  const submitComment = () => {
+    if ((!draft.trim() && files.length === 0) || sending) return;
+    setSending(true);
+    ask({ type: 'ticket_comment', id: ticket.id, text: draft.trim(), attachments: files.map(file => file.path) }, ok => {
+      setSending(false);
+      if (ok) {
+        setDraft('');
+        setRemoved([]);
+      }
+    });
+  };
+  // A check that has run takes one line: its start is folded into the result.
+  const record = state.record.filter((event, at) => event.action !== 'check_started' || !state.record.slice(at + 1).some(later => later.action === 'check_ran' || later.action === 'check_refused'));
+  const counts = (run?: string) => (run && ticket.check?.run === run ? ticket.check.counts : undefined);
+  return (
+    <section className="mt-10" aria-label={words.activity}>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-base font-semibold">{words.activity}</h2>
+      </div>
+
+      <div className="flex flex-col">
+        {record.map((event, at) =>
+          event.action === 'comment' ? (
+            <CommentCard key={at} event={event} words={words} language={state.language} />
+          ) : (
+            <EventRow key={at} event={event} words={words} language={state.language} items={event.run ? state.items?.[event.run] : undefined} counts={counts(event.run)} />
+          ),
+        )}
+      </div>
+
+      {/* Composer */}
+      <div className="mt-3 flex flex-col gap-2 rounded-lg border border-border/60 bg-card p-3" data-ticket={ticket.id}>
+        {files.length > 0 && (
+          <div className="flex flex-wrap gap-2" aria-label={words.attachments}>
+            {files.map(file => (
+              <span key={file.path} className="flex min-w-0 items-center gap-1">
+                <Badge variant="neutral" emphasis="subtle" size="sm" icon={file.picture ? <img src={pictureUrl(file.picture)} alt="" className="size-4 rounded-sm object-cover" draggable={false} /> : <FileText aria-hidden />}>
+                  <span className="truncate">{file.name}</span>
+                </Badge>
+                <Button type="button" size="icon-sm" variant="ghost" aria-label={`${words.removeFile} ${file.name}`} onClick={() => setRemoved([...removed, file.path])}>
+                  <X />
+                </Button>
+              </span>
+            ))}
+          </div>
+        )}
+        <textarea
+          value={draft}
+          onChange={event => setDraft(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+              submitComment();
+            }
+          }}
+          aria-label={words.comment}
+          placeholder={words.commentPlaceholder}
+          maxLength={MAX_COMMENT}
+          rows={2}
+          className="w-full resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+        />
+        <div className="flex items-center justify-between">
+          <DropdownMenu>
+            <DropdownMenu.Trigger variant="ghost" size="icon-sm" aria-label={words.attach} tooltip={words.attach} className="-ml-1.5">
+              <Plus />
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Content align="start">
+              <DropdownMenu.Item onClick={() => ask({ type: 'ticket_comment_attach', id: ticket.id, view: false })}>
+                <FileText />
+                {words.attachFile}
+              </DropdownMenu.Item>
+              <DropdownMenu.Item onClick={() => ask({ type: 'ticket_comment_attach', id: ticket.id, view: true })}>
+                <Camera />
+                {words.attachViewNow}
+              </DropdownMenu.Item>
+            </DropdownMenu.Content>
+          </DropdownMenu>
+          <Button size="sm" onClick={submitComment} disabled={sending || (!draft.trim() && files.length === 0)}>
+            {words.comment}
+          </Button>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -283,12 +480,47 @@ export function useRemove(ticket: Full, tickets: Full[], words: Words, kind: 'ti
   return { remove: () => (subs ? setAsking(true) : send()), dialog };
 }
 
+/** How far along a state is: a move to a smaller one is a move back. */
+const RANK: Record<TicketStateName, number> = { draft: 0, confirmed: 1, in_progress: 2, blocked: 2, waiting: 3, done: 4 };
+
+/** Moving a ticket back: why, asked once and optional, kept on the move's line. */
+function WhyBack({ to, words, onMove, onClose }: { to: TicketStateName; words: Words; onMove: (reason: string) => void; onClose: () => void }) {
+  const [reason, setReason] = useState('');
+  return (
+    <Dialog open onOpenChange={open => !open && onClose()}>
+      <DialogContent showCloseButton={false} size="sm">
+        <DialogHeader>
+          <DialogTitle>{fill(words.backTitle, { state: stateWord(words, to) })}</DialogTitle>
+        </DialogHeader>
+        <DialogBody>
+          <Input autoFocus aria-label={words.backWhy} placeholder={words.backWhy} maxLength={MAX_REASON} value={reason} onChange={event => setReason(event.target.value)} />
+        </DialogBody>
+        <DialogFooter>
+          <DialogCancel>{words.cancel}</DialogCancel>
+          <DialogAction
+            onConfirm={() => {
+              onMove(reason.trim());
+              onClose();
+            }}
+          >
+            {words.backConfirm}
+          </DialogAction>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /** The state, and the menu a person changes it with; a step that cannot be taken now says why. */
 function StateMenu(page: Page) {
   const { ticket, words } = page;
+  const [back, setBack] = useState<TicketStateName | null>(null);
   const why: Partial<Record<TicketStateName, string | null>> = { done: ticket.state === 'done' ? null : whyNotDone(ticket, words) };
   const reminder = still(page);
+  const move = (to: TicketStateName, reason?: string) => ask({ type: 'ticket_set_state', id: ticket.id, revision: ticket.revision, to, ...(reason ? { reason } : {}) });
   return (
+    <>
+    {back && <WhyBack to={back} words={words} onMove={reason => move(back, reason)} onClose={() => setBack(null)} />}
     <DropdownMenu>
       <DropdownMenu.Trigger variant="ghost" size="sm" aria-label={words.state} className="-ml-2">
         <StateIcon state={ticket.state} />
@@ -296,7 +528,14 @@ function StateMenu(page: Page) {
       </DropdownMenu.Trigger>
       <DropdownMenu.Content align="start" className="min-w-64">
         {reminder && <DropdownMenu.Label className="max-w-72 whitespace-normal">{reminder}</DropdownMenu.Label>}
-        <DropdownMenu.RadioGroup value={ticket.state} onValueChange={(to: unknown) => ask({ type: 'ticket_set_state', id: ticket.id, revision: ticket.revision, to: to as TicketStateName })}>
+        <DropdownMenu.RadioGroup
+          value={ticket.state}
+          onValueChange={(picked: unknown) => {
+            const to = picked as TicketStateName;
+            if (RANK[to] < RANK[ticket.state]) setBack(to);
+            else move(to);
+          }}
+        >
           {SETTABLE.map(name => (
             <DropdownMenu.RadioItem key={name} value={name} disabled={Boolean(why[name])} closeOnClick>
               <StateIcon state={name} />
@@ -307,6 +546,7 @@ function StateMenu(page: Page) {
         </DropdownMenu.RadioGroup>
       </DropdownMenu.Content>
     </DropdownMenu>
+    </>
   );
 }
 
@@ -476,30 +716,39 @@ function Actions(page: Page) {
   );
 }
 
-function Attachments({ ticket, words }: Page) {
+/** Files as a ticket or a comment shows them: a picture as its thumbnail, any other file as a card; a click opens it. */
+function Files({ files, className, children }: { files: TicketAttachment[]; className?: string; children?: ReactNode }) {
   const open = (path: string) => () => ask({ type: 'ticket_attachment', path });
   const type = (name: string) => name.split('.').pop()?.toUpperCase() ?? '';
+  return (
+    <div className={`flex min-w-0 flex-wrap items-center gap-2 ${className ?? ''}`}>
+      {files.map(file =>
+        file.picture ? (
+          <button key={file.path} type="button" title={file.name} aria-label={file.name} onClick={open(file.path)} className="cursor-pointer overflow-hidden rounded-xl border border-border bg-fill hover:border-border-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-border-focus">
+            <img src={pictureUrl(file.picture)} alt={file.name} className="block h-20 w-auto max-w-36 object-cover" draggable={false} />
+          </button>
+        ) : (
+          <div key={file.path} className="w-48 min-w-0">
+            <AttachmentCard name={file.name} typeLabel={type(file.name)} icon={<FileText aria-hidden />} onClick={open(file.path)} />
+          </div>
+        ),
+      )}
+      {children}
+    </div>
+  );
+}
+
+function Attachments({ ticket, words }: Page) {
   return (
     <section className="mt-8" aria-label={words.attachments}>
       <h2 className="mb-2 text-sm font-medium">
         {words.attachments} {ticket.attachments.length > 0 && <span className="text-muted-foreground">{ticket.attachments.length}</span>}
       </h2>
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        {ticket.attachments.map(file =>
-          file.picture ? (
-            <button key={file.path} type="button" title={file.name} aria-label={file.name} onClick={open(file.path)} className="cursor-pointer overflow-hidden rounded-xl border border-border bg-fill hover:border-border-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-border-focus">
-              <img src={pictureUrl(file.picture)} alt={file.name} className="block h-20 w-auto max-w-36 object-cover" draggable={false} />
-            </button>
-          ) : (
-            <div key={file.path} className="w-48 min-w-0">
-              <AttachmentCard name={file.name} typeLabel={type(file.name)} icon={<FileText aria-hidden />} onClick={open(file.path)} />
-            </div>
-          ),
-        )}
+      <Files files={ticket.attachments}>
         <Button size="sm" variant="ghost" icon={<Paperclip />} onClick={() => ask({ type: 'ticket_attach', id: ticket.id })}>
           {words.attach}
         </Button>
-      </div>
+      </Files>
     </section>
   );
 }
@@ -583,14 +832,8 @@ function Body({ page, properties, onAddSub }: { page: Page; properties: boolean;
       </section>
       <Attachments {...page} />
       <SubTickets {...page} onAdd={onAddSub} />
-      <section className="mt-10" aria-label={words.activity}>
-        <h2 className="mb-2 text-base font-semibold">{words.activity}</h2>
-        <ol className="flex flex-col">
-          {state.record.map((event, at) => (
-            <EventRow key={at} event={event} words={words} language={state.language} />
-          ))}
-        </ol>
-      </section>
+      {/* One comment box per ticket: what was typed on one never goes to the next. */}
+      <Activity key={ticket.id} {...page} />
     </>
   );
 }

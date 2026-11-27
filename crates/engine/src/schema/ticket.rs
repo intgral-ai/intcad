@@ -45,8 +45,7 @@ pub struct TicketDraftParams {
     /// The tickets it waits for, such as `["T-3"]`: the Assistant takes it once those are done.
     #[serde(default)]
     pub waits: Vec<String>,
-    /// Whether a check applies to it; left out: one does. `false` for a ticket no check can
-    /// judge (a discussion of a constraint, say).
+    /// Refused when given: a person switches a ticket's check off, in the Tickets panel.
     #[serde(default)]
     pub checks: Option<bool>,
     /// Ask the app to attach a picture of the 3D view as it is now.
@@ -54,21 +53,32 @@ pub struct TicketDraftParams {
     pub view: bool,
 }
 
-/// Set a ticket's state, or say the ticket the Assistant works is finished, blocked or taken up again.
+/// Set a ticket's state, comment on a ticket, or say the ticket the Assistant works is finished,
+/// blocked or taken up again.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TicketUpdateParams {
     pub id: String,
-    /// `state` (with `to`), `finished` (its changes are made; a person starts its check),
-    /// `block` (with the reason) or `unblock`.
+    /// `state` (with `to`), `comment` (with `text`), `finished` (with `text`: what was changed, on
+    /// which parts, what was not done; a person starts its check), `block` (with `text`: why) or
+    /// `unblock`.
     pub action: String,
     /// For `state`: `draft`, `confirmed` (accepts a draft), `in_progress`, `waiting`, `done` or
     /// `blocked`.
     #[serde(default)]
     pub to: Option<String>,
-    /// Why it is blocked, or a note for the record.
+    /// What the agent writes: the comment, what it did when finished, why it is blocked.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// The same as `text`, as earlier calls named it.
     #[serde(default)]
     pub reason: Option<String>,
+    /// For `comment` and `finished`: paths of files in the project to show with it, at most 5.
+    #[serde(default)]
+    pub attachments: Vec<String>,
+    /// For `comment` and `finished`: ask the app to add a picture of the 3D view as it is now.
+    #[serde(default)]
+    pub view: bool,
 }
 
 /// Every ticket of the project.

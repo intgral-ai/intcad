@@ -132,7 +132,7 @@ fn the_assistants_ticket_goes_from_draft_to_done_by_the_allowed_moves_and_each_s
     let id = draft(&root, bracket(), Actor::Agent).unwrap().id;
 
     // A draft cannot be handed over, checked, or finished by the agent.
-    for refused in [start(&root, &id, seen(&root, &id)).err(), ask_check(&root, &id, seen(&root, &id)).err(), finished(&root, &id, None).err()] {
+    for refused in [start(&root, &id, seen(&root, &id)).err(), ask_check(&root, &id, seen(&root, &id)).err(), finished(&root, &id, Some("Changed the part as asked."), &[], false).err()] {
         assert!(matches!(refused, Some(TicketError::Refused(_))), "{refused:?}");
     }
     assert_eq!(seen(&root, &id), 1, "a refused move changes nothing");
@@ -143,7 +143,7 @@ fn the_assistants_ticket_goes_from_draft_to_done_by_the_allowed_moves_and_each_s
     assert_eq!((started.state, started.worker), (State::InProgress, Some(Worker::Assistant)));
     // The agent says it is finished: a check applies, so nothing starts and the ticket stays in
     // progress until a person starts the check.
-    let said = finished(&root, &id, Some("Holes moved to 40 mm".into())).unwrap();
+    let said = finished(&root, &id, Some("Holes moved to 40 mm"), &[], false).unwrap();
     assert_eq!((said.state, said.finished, said.check.clone()), (State::InProgress, true, None));
     assert!(refusal(done(&root, &id, seen(&root, &id))).contains("check has not run"));
     let asked = ask_check(&root, &id, seen(&root, &id)).unwrap();
@@ -190,7 +190,7 @@ fn a_ticket_no_check_applies_to_waits_once_the_assistant_finishes_and_is_done_un
     let id = handed(&root, talk);
     assert!(!load(&root, &id).unwrap().checks);
     assert!(refusal(ask_check(&root, &id, seen(&root, &id))).contains("no check applies"));
-    let waiting = finished(&root, &id, None).unwrap();
+    let waiting = finished(&root, &id, Some("Changed the part as asked."), &[], false).unwrap();
     assert_eq!((waiting.state, waiting.finished), (State::Waiting, false));
     done(&root, &id, seen(&root, &id)).unwrap();
     let last = events(&root, Some(&id)).unwrap().pop().unwrap();
@@ -208,12 +208,12 @@ fn a_ticket_no_check_applies_to_waits_once_the_assistant_finishes_and_is_done_un
     // A ticket with no parts has no check to run: it finishes unchecked, whatever its switch says.
     let loose = handed(&root, titled("Choose the hinge supplier"));
     assert!(refusal(ask_check(&root, &loose, seen(&root, &loose))).contains("no check applies"));
-    finished(&root, &loose, None).unwrap();
+    finished(&root, &loose, Some("Changed the part as asked."), &[], false).unwrap();
     done(&root, &loose, seen(&root, &loose)).unwrap();
     assert!(events(&root, Some(&loose)).unwrap().pop().unwrap().unchecked);
     // A ticket with parts needs its check until a person switches it off on the ticket, in one line.
     let parted = handed(&root, bracket());
-    assert!(refusal(set_state(&root, &parted, seen(&root, &parted), State::Done)).contains("check has not run"));
+    assert!(refusal(set_state(&root, &parted, seen(&root, &parted), State::Done, None)).contains("check has not run"));
     let off = edit(&root, &parted, seen(&root, &parted), Edit { checks: Some(false), ..Edit::default() }).unwrap();
     assert!(!applies(&off) && !off.checks);
     assert_eq!(actions(&root, &parted).pop(), Some(("check_off".to_string(), Actor::Person)));
@@ -221,7 +221,7 @@ fn a_ticket_no_check_applies_to_waits_once_the_assistant_finishes_and_is_done_un
     assert!(applies(&on));
     assert_eq!(actions(&root, &parted).pop().map(|(a, _)| a).as_deref(), Some("check_on"));
     edit(&root, &parted, seen(&root, &parted), Edit { checks: Some(false), ..Edit::default() }).unwrap();
-    assert_eq!(set_state(&root, &parted, seen(&root, &parted), State::Done).unwrap().state, State::Done);
+    assert_eq!(set_state(&root, &parted, seen(&root, &parted), State::Done, None).unwrap().state, State::Done);
     assert!(events(&root, Some(&parted)).unwrap().pop().unwrap().unchecked);
 
     // One failure is something checked.
@@ -241,29 +241,29 @@ fn a_person_sets_any_state_and_done_waits_for_the_sub_tickets_and_the_check() {
     let other = create(&root, Draft { parent: Some(parent.clone()), parts: vec![part("component", "Vents")], ..titled("Vent slots") }).unwrap().id;
 
     // Back and forth, by a person, as they like; the same state again changes nothing.
-    let moved = set_state(&root, &child, 1, State::InProgress).unwrap();
+    let moved = set_state(&root, &child, 1, State::InProgress, None).unwrap();
     assert_eq!((moved.state, moved.worker), (State::InProgress, Some(Worker::Person)), "a person who moves it to in progress works it");
-    assert_eq!(set_state(&root, &child, 2, State::InProgress).unwrap().revision, 2);
-    assert_eq!(set_state(&root, &child, 2, State::Blocked).unwrap().state, State::Blocked);
-    let back = set_state(&root, &child, 3, State::Confirmed).unwrap();
+    assert_eq!(set_state(&root, &child, 2, State::InProgress, None).unwrap().revision, 2);
+    assert_eq!(set_state(&root, &child, 2, State::Blocked, None).unwrap().state, State::Blocked);
+    let back = set_state(&root, &child, 3, State::Confirmed, None).unwrap();
     assert_eq!((back.state, back.worker), (State::Confirmed, None), "nobody works a confirmed ticket");
-    assert_eq!(set_state(&root, &child, 4, State::Done).unwrap().state, State::Done, "no check applies: done straight from confirmed");
+    assert_eq!(set_state(&root, &child, 4, State::Done, None).unwrap().state, State::Done, "no check applies: done straight from confirmed");
     assert_eq!(
         events(&root, Some(&child)).unwrap().into_iter().map(|e| e.action).collect::<Vec<_>>(),
         ["created", "moved", "moved", "moved", "done"]
     );
-    assert_eq!(set_state(&root, &child, 5, State::InProgress).unwrap().state, State::InProgress, "and back from done");
-    set_state(&root, &child, 6, State::Done).unwrap();
+    assert_eq!(set_state(&root, &child, 5, State::InProgress, None).unwrap().state, State::InProgress, "and back from done");
+    set_state(&root, &child, 6, State::Done, None).unwrap();
 
     // The parent waits for its sub-tickets that are not deleted; it is not finished by itself.
     let why = refusal(done(&root, &parent, 1));
     assert!(why.contains("sub-tickets not done yet (T-3)"), "{why}");
-    assert!(refusal(set_state(&root, &other, 1, State::Done)).contains("check has not run"), "a check applies to the vent slots");
+    assert!(refusal(set_state(&root, &other, 1, State::Done, None)).contains("check has not run"), "a check applies to the vent slots");
     delete(&root, &other, 1).unwrap();
     assert_eq!(load(&root, &parent).unwrap().state, State::Confirmed, "nothing finished the parent");
     assert_eq!(done(&root, &parent, 1).unwrap().state, State::Done);
     // A stale press is refused.
-    assert!(refusal(set_state(&root, &child, 1, State::Blocked)).contains("changed since you saw it"));
+    assert!(refusal(set_state(&root, &child, 1, State::Blocked, None)).contains("changed since you saw it"));
 }
 
 #[test]
@@ -287,7 +287,7 @@ fn a_refused_check_keeps_the_ticket_in_progress_and_the_agent_acts_only_on_the_t
     let mine = create(&root, titled("Countersink the M3 holes")).unwrap().id;
     work_myself(&root, &mine, 1).unwrap();
     assert_eq!(load(&root, &mine).unwrap().worker, Some(Worker::Person));
-    for refused in [finished(&root, &mine, None).err(), block(&root, &mine, "x").err()] {
+    for refused in [finished(&root, &mine, Some("Changed the part as asked."), &[], false).err(), block(&root, &mine, "x").err()] {
         assert!(matches!(&refused, Some(TicketError::Refused(why)) if why.contains("not handed to the Assistant")), "{refused:?}");
     }
     assert_eq!(seen(&root, &mine), 2);
@@ -338,8 +338,8 @@ fn waits_are_checked_cycles_refused_and_only_the_assistant_is_held_by_them() {
     // Waits hold the Assistant, not a person.
     let error = refusal(start(&root, &joint.id, 1));
     assert!(error.contains("T-3 waits for T-1, T-2"), "{error}");
-    set_state(&root, &base, 1, State::Done).unwrap();
-    set_state(&root, &lid, 2, State::Done).unwrap_err();
+    set_state(&root, &base, 1, State::Done, None).unwrap();
+    set_state(&root, &lid, 2, State::Done, None).unwrap_err();
     assert!(refusal(start(&root, &joint.id, 1)).contains("waits for T-2"));
     assert_eq!(work_myself(&root, &joint.id, 1).unwrap().worker, Some(Worker::Person), "a person is only reminded");
     // A deleted ticket cannot be waited for.
@@ -373,7 +373,7 @@ fn a_person_edits_a_ticket_in_any_state_in_one_line_and_a_done_tickets_change_as
     assert_eq!(actions(&root, &id).iter().filter(|(a, _)| a == "edited").count(), 1);
 
     // Done, then its requirement lines change: its state stays, it is marked 需重查 in the same line.
-    finished(&root, &id, None).unwrap();
+    finished(&root, &id, Some("Changed the part as asked."), &[], false).unwrap();
     checked(&root, &id, ran("run-1"));
     done(&root, &id, seen(&root, &id)).unwrap();
     let revision = seen(&root, &id);
@@ -385,7 +385,7 @@ fn a_person_edits_a_ticket_in_any_state_in_one_line_and_a_done_tickets_change_as
     let line = events(&root, Some(&id)).unwrap().pop().unwrap();
     assert_eq!((line.action.as_str(), line.note.as_deref()), ("edited", Some("needs a re-check: requirement lines changed")));
     // Moved back, it cannot be done on the old run; a new run clears the mark.
-    set_state(&root, &id, marked.revision, State::InProgress).unwrap();
+    set_state(&root, &id, marked.revision, State::InProgress, None).unwrap();
     assert!(refusal(done(&root, &id, seen(&root, &id))).contains("changed after its check ran"));
     checked(&root, &id, ran("run-2"));
     assert_eq!(load(&root, &id).unwrap().recheck, None);
@@ -411,10 +411,10 @@ fn deleting_and_declining_keep_the_ticket_and_its_record_and_restoring_brings_it
     assert!(load(&root, &id).unwrap().deleted && list(&root).unwrap().len() == 1, "its file stays");
     // A deleted ticket takes no step but its restoring.
     for refused in [
-        finished(&root, &id, None).err(),
+        finished(&root, &id, Some("Changed the part as asked."), &[], false).err(),
         edit(&root, &id, seen(&root, &id), Edit { title: Some("x".into()), ..Edit::default() }).err(),
         delete(&root, &id, seen(&root, &id)).err(),
-        set_state(&root, &id, seen(&root, &id), State::Done).err(),
+        set_state(&root, &id, seen(&root, &id), State::Done, None).err(),
     ] {
         assert!(matches!(&refused, Some(TicketError::Refused(why)) if why.contains("deleted")), "{refused:?}");
     }
@@ -540,6 +540,128 @@ fn attachments_are_files_in_the_project_and_one_from_outside_is_copied_under_att
 
 /// A project folder as layout 1 wrote it, by hand: one `part` per ticket, a top ticket the
 /// others are under, and a check the agent asked for.
+#[test]
+fn comments_by_a_person_and_the_agent_are_recorded_in_order_and_leave_the_revision_alone() {
+    let scratch = Scratch::new("comments");
+    let (_, root) = project(&scratch);
+    let id = handed(&root, bracket());
+    let revision = seen(&root, &id);
+    let mine = comment(&root, &id, Actor::Person, "  Keep the side plates as they are.  ", &[], false).unwrap();
+    assert_eq!((mine.action.as_str(), mine.actor, mine.note.as_deref()), ("comment", Actor::Person, Some("Keep the side plates as they are.")));
+    comment(&root, &id, Actor::Agent, "孔位按 5 mm 改。", &[], false).unwrap();
+    let said: Vec<(Actor, Option<String>)> =
+        events(&root, Some(&id)).unwrap().into_iter().filter(|e| e.action == "comment").map(|e| (e.actor, e.note)).collect();
+    assert_eq!(said, [(Actor::Person, Some("Keep the side plates as they are.".into())), (Actor::Agent, Some("孔位按 5 mm 改。".into()))], "in the order written");
+    assert_eq!(seen(&root, &id), revision, "a comment writes no ticket and moves no revision");
+
+    // A save made on the revision a person saw is still taken after a comment, and so is the next.
+    let titled_now = edit(&root, &id, revision, Edit { title: Some("Bracket, holes moved".into()), ..Edit::default() }).unwrap();
+    comment(&root, &id, Actor::Person, "Between two saves.", &[], false).unwrap();
+    edit(&root, &id, titled_now.revision, Edit { text: Some("Moved by 0.8 mm.".into()), ..Edit::default() }).unwrap();
+
+    // Refused: the app as author, nothing to say, too long, a deleted ticket, no such ticket.
+    assert!(refusal(comment(&root, &id, Actor::App, "x", &[], false)).contains("a person or the Assistant"));
+    assert!(refusal(comment(&root, &id, Actor::Person, "   ", &[], false)).contains("needs text"));
+    let long = "字".repeat(MAX_COMMENT + 1);
+    assert!(refusal(comment(&root, &id, Actor::Person, &long, &[], false)).contains("longer than 4000"));
+    assert!(comment(&root, &id, Actor::Person, &"字".repeat(MAX_COMMENT), &[], false).is_ok(), "4000 characters, not bytes");
+    let gone = create(&root, titled("Label")).unwrap().id;
+    delete(&root, &gone, seen(&root, &gone)).unwrap();
+    assert!(refusal(comment(&root, &gone, Actor::Person, "x", &[], false)).contains("deleted"));
+    assert!(matches!(comment(&root, "T-99", Actor::Person, "x", &[], false), Err(TicketError::NoSuchTicket(_))));
+}
+
+#[test]
+fn finished_and_blocked_need_a_text_that_says_what_was_done_or_why() {
+    let scratch = Scratch::new("said");
+    let (_, root) = project(&scratch);
+    let id = handed(&root, bracket());
+    for text in [None, Some(""), Some("   ")] {
+        let why = refusal(finished(&root, &id, text, &[], false));
+        assert!(why.contains("what you changed, on which parts, and what you did not do"), "{why}");
+    }
+    let why = refusal(block(&root, &id, " "));
+    assert!(why.contains("what stops you"), "{why}");
+    assert_eq!(load(&root, &id).unwrap().state, State::InProgress, "nothing moved");
+    let text = "Changed: holes moved 0.8 mm inwards.\nParts: Bracket.\nNot done: flange stays 7.4 mm.";
+    finished(&root, &id, Some(text), &[], false).unwrap();
+    let line = events(&root, Some(&id)).unwrap().pop().unwrap();
+    assert_eq!((line.action.as_str(), line.note.as_deref()), ("finished", Some(text)));
+}
+
+#[test]
+fn the_agents_own_state_move_takes_no_text() {
+    // Recorded as it is: `state` to waiting, blocked or done needs no text, unlike finished and block.
+    let scratch = Scratch::new("move-text");
+    let (_, root) = project(&scratch);
+    let id = handed(&root, titled("Constraint, no parts"));
+    let moved = agent_set_state(&root, &id, State::Waiting).unwrap();
+    assert_eq!(moved.state, State::Waiting);
+    assert_eq!(events(&root, Some(&id)).unwrap().pop().unwrap().note, None);
+}
+
+#[test]
+fn a_persons_move_back_keeps_its_reason_on_the_line() {
+    let scratch = Scratch::new("reason");
+    let (_, root) = project(&scratch);
+    let id = create(&root, titled("Cover")).unwrap().id;
+    set_state(&root, &id, seen(&root, &id), State::Done, None).unwrap();
+    set_state(&root, &id, seen(&root, &id), State::InProgress, Some(" The housing grew 2 mm. ".into())).unwrap();
+    let line = events(&root, Some(&id)).unwrap().pop().unwrap();
+    assert_eq!((line.action.as_str(), line.from, line.to, line.note.as_deref()), ("moved", Some(State::Done), Some(State::InProgress), Some("The housing grew 2 mm.")));
+    let long = "x".repeat(MAX_REASON + 1);
+    assert!(refusal(set_state(&root, &id, seen(&root, &id), State::Done, Some(long))).contains("longer than"));
+}
+
+#[test]
+fn a_comment_carries_files_of_the_project_one_from_outside_copied_and_at_most_five() {
+    let scratch = Scratch::new("comment-files");
+    let (_, root) = project(&scratch);
+    let id = create(&root, titled("Flange")).unwrap().id;
+    let outside = scratch.0.join("supplier list.pdf");
+    std::fs::write(&outside, b"%PDF-1.7 outside").unwrap();
+    let taken = take_in(&root, &outside).unwrap();
+    assert_eq!(taken, "attachments/supplier list.pdf", "copied under attachments/");
+    assert!(root.join("attachments/supplier list.pdf").is_file());
+    let line = comment(&root, &id, Actor::Person, "From the supplier.", std::slice::from_ref(&taken), false).unwrap();
+    assert_eq!(line.attachments, std::slice::from_ref(&taken));
+    assert_eq!(comment(&root, &id, Actor::Person, "", std::slice::from_ref(&taken), false).unwrap().note, None, "files alone are a comment");
+
+    let six: Vec<String> = (1..=6)
+        .map(|n| {
+            std::fs::write(root.join(format!("view-{n}.png")), b"\x89PNG").unwrap();
+            format!("view-{n}.png")
+        })
+        .collect();
+    assert!(refusal(comment(&root, &id, Actor::Person, "six", &six, false)).contains("at most 5"));
+    assert!(comment(&root, &id, Actor::Person, "five", &six[..5], false).is_ok());
+    for path in ["../outside.png", ".intcad/tickets/events.jsonl", "none.pdf"] {
+        assert!(comment(&root, &id, Actor::Person, "x", &[path.to_string()], false).is_err(), "{path} is refused");
+    }
+}
+
+#[test]
+fn the_view_the_agent_asks_for_is_joined_to_its_line() {
+    let scratch = Scratch::new("comment-view");
+    let (_, root) = project(&scratch);
+    let id = handed(&root, bracket());
+    finished(&root, &id, Some("Changed the holes on Bracket; nothing left undone."), &[], true).unwrap();
+    let wanted = views_wanted(&root, None).unwrap();
+    assert_eq!(wanted.len(), 1);
+    let (ticket, at) = wanted[0].clone();
+    assert_eq!(ticket, id);
+    let revision = seen(&root, &id);
+    let added = comment_view(&root, &id, &at, b"\x89PNG view").unwrap();
+    assert_eq!(added.attachments, [format!("attachments/{id}-view.png")]);
+    assert_eq!(seen(&root, &id), revision, "the picture moves no revision");
+    assert!(views_wanted(&root, Some(&id)).unwrap().is_empty());
+    let shown = record(&root, &id).unwrap();
+    let finished_line = shown.iter().find(|e| e.action == "finished").unwrap();
+    assert_eq!(finished_line.attachments, [format!("attachments/{id}-view.png")], "shown with the line that asked for it");
+    assert!(!shown.iter().any(|e| e.action == "comment_view"));
+    assert!(refusal(comment_view(&root, &id, &at, b"\x89PNG again")).contains("waits for a picture"), "once only");
+}
+
 fn write_version_1(root: &Path) {
     let dir = folder(root);
     std::fs::create_dir_all(&dir).unwrap();
@@ -644,14 +766,19 @@ fn the_agents_commands_draft_set_states_and_say_finished_but_start_no_check_and_
     let joint = run(
         &mut s,
         "ticket.draft",
-        json!({"title": "Lid and base: hinge clearance 3 mm", "parent": "T-1", "waits": [], "checks": false, "view": true,
+        json!({"title": "Lid and base: hinge clearance 3 mm", "parent": "T-1", "waits": [], "view": true,
                "parts": [{"kind": "component", "id": "Lid"}, {"kind": "component", "id": "Base"}], "attachments": ["sketch.png"]}),
     );
     let ticket = &joint["ticket"];
     assert_eq!(
         (ticket["parent"].as_str(), ticket["parts"].as_array().map(Vec::len), ticket["checks"].as_bool()),
-        (Some("T-1"), Some(2), Some(false))
+        (Some("T-1"), Some(2), Some(true))
     );
+    // Only a person switches a ticket's check off: the agent's draft does not carry the switch.
+    for checks in [json!(false), json!(true)] {
+        let error = s.execute("ticket.draft", &json!({"title": "Unchecked", "checks": checks})).unwrap_err().to_string();
+        assert!(error.contains("a person switches a ticket's check off"), "{error}");
+    }
     assert_eq!((ticket["attachments"][0].as_str(), ticket["wantsView"].as_bool()), (Some("sketch.png"), Some(true)));
     let waiting = run(&mut s, "ticket.draft", json!({"title": "Paint", "waits": ["T-2"]}));
     assert_eq!(waiting["ticket"]["waits"][0], "T-2");
@@ -702,25 +829,34 @@ fn the_agents_commands_draft_set_states_and_say_finished_but_start_no_check_and_
         assert!(error.contains("is not an action"), "{action}: {error}");
     }
     // A draft is not worked on, nor a ticket a person works.
-    let error = s.execute("ticket.update", &json!({"id": "T-2", "action": "finished"})).unwrap_err().to_string();
+    let error = s.execute("ticket.update", &json!({"id": "T-2", "action": "finished", "text": "x"})).unwrap_err().to_string();
     assert!(error.contains("T-2 is draft"), "{error}");
     assert_eq!(seen(&root, "T-2"), 1, "nothing the agent asked for changed the draft");
     confirm(&root, "T-1", 1, false).unwrap();
     work_myself(&root, "T-1", 2).unwrap();
-    let error = s.execute("ticket.update", &json!({"id": "T-1", "action": "finished"})).unwrap_err().to_string();
+    let error = s.execute("ticket.update", &json!({"id": "T-1", "action": "finished", "text": "x"})).unwrap_err().to_string();
     assert!(error.contains("not handed to the Assistant"), "{error}");
+    // A comment from the agent, on any ticket, with files of the project.
+    let commented = run(&mut s, "ticket.update", json!({"id": "T-1", "action": "comment", "text": "Seen.", "attachments": ["sketch.png"]}));
+    let line = commented["events"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!((line["action"].as_str(), line["actor"].as_str(), line["note"].as_str()), (Some("comment"), Some("agent"), Some("Seen.")));
+    assert_eq!(line["attachments"], json!(["sketch.png"]));
 
-    // On the ticket handed to the Assistant: finished, with no check applying, waits for a person.
-    confirm(&root, "T-2", 1, false).unwrap();
-    start(&root, "T-2", 2).unwrap();
+    // On the ticket handed to the Assistant: finished, with no check applying (a person switched it
+    // off; the agent cannot), waits for a person.
+    edit(&root, "T-2", 1, Edit { checks: Some(false), ..Edit::default() }).unwrap();
+    confirm(&root, "T-2", 2, false).unwrap();
+    start(&root, "T-2", 3).unwrap();
+    let error = s.execute("ticket.update", &json!({"id": "T-2", "action": "finished"})).unwrap_err().to_string();
+    assert!(error.contains("what you changed, on which parts, and what you did not do"), "the refusal says what to write: {error}");
     let said = run(&mut s, "ticket.update", json!({"id": "T-2", "action": "finished", "reason": "Hinge moved 1 mm"}));
     assert_eq!((said["ticket"]["state"].as_str(), said["ticket"]["check"].is_null()), (Some("waiting"), true));
     let error = s.execute("ticket.update", &json!({"id": "T-2", "action": "block", "reason": "x"})).unwrap_err().to_string();
     assert!(error.contains("T-2 is waiting"), "{error}");
     let inspected = run(&mut s, "ticket.inspect", json!({"id": "T-2"}));
     let steps: Vec<&str> = inspected["events"].as_array().unwrap().iter().filter_map(|e| e["action"].as_str()).collect();
-    assert_eq!(steps, ["drafted", "confirmed", "started", "finished"]);
-    assert_eq!(inspected["events"][3]["actor"], "agent");
+    assert_eq!(steps, ["drafted", "check_off", "confirmed", "started", "finished"]);
+    assert_eq!(inspected["events"][4]["actor"], "agent");
     // The agent sets states as a person does, under the same conditions, each step its own line.
     let accepted = run(&mut s, "ticket.update", json!({"id": "T-3", "action": "state", "to": "confirmed"}));
     assert_eq!(accepted["ticket"]["state"], "confirmed", "the agent accepts its own draft");

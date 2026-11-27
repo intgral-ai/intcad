@@ -114,7 +114,17 @@
     "ui.tickets_ask_draft_message": "Draft part tickets for this project from requirements.md: one ticket per piece of work.",
     "ui.tickets_why_stale": "It changed after you looked at it: look at it again",
     "ui.tickets_check_off": "Not checked · switched off for this ticket",
-    "ui.tickets_parts_missing": "Not in the model any more: {parts}"
+    "ui.tickets_parts_missing": "Not in the model any more: {parts}",
+    "ui.tickets_comment": "Comment",
+    "ui.tickets_comment_placeholder": "Leave a comment…",
+    "ui.tickets_back_title": "Move it back to {state}?",
+    "ui.tickets_back_why": "Why? (optional)",
+    "ui.tickets_back_confirm": "Move back",
+    "ui.tickets_check_items": "{n} items",
+    "ui.tickets_attach_file": "Choose a file",
+    "ui.tickets_attach_view_now": "The 3D view now",
+    "ui.tickets_remove_file": "Remove",
+    "ui.tickets_check_ran": "ran"
   },
   "zh": {
     "ui.tickets_one_at_a_time": "{id} 正在进行。先做完它或等它的检查，再开始另一张。",
@@ -231,7 +241,17 @@
     "ui.tickets_ask_draft_message": "根据 requirements.md 为这个项目起草部件票：每件要做的事一张。",
     "ui.tickets_why_stale": "它在你看过之后改过了，请再看一遍",
     "ui.tickets_check_off": "不检查 · 已关掉",
-    "ui.tickets_parts_missing": "模型里已经没有：{parts}"
+    "ui.tickets_parts_missing": "模型里已经没有：{parts}",
+    "ui.tickets_comment": "评论",
+    "ui.tickets_comment_placeholder": "写评论…",
+    "ui.tickets_back_title": "改回「{state}」？",
+    "ui.tickets_back_why": "为什么？（可不填）",
+    "ui.tickets_back_confirm": "改回",
+    "ui.tickets_check_items": "{n} 项",
+    "ui.tickets_attach_file": "选择文件",
+    "ui.tickets_attach_view_now": "当前 3D 视图",
+    "ui.tickets_remove_file": "移除",
+    "ui.tickets_check_ran": "跑完了"
   },
   "ja": {
     "ui.tickets_one_at_a_time": "{id} が進行中です。終えるかチェックを待ってから次を開始してください。",
@@ -348,7 +368,17 @@
     "ui.tickets_ask_draft_message": "requirements.md からこのプロジェクトの部品チケットを起草してください。作業ごとに 1 枚です。",
     "ui.tickets_why_stale": "表示した後に変更されました。もう一度確認してください",
     "ui.tickets_check_off": "チェックしない · このチケットではオフ",
-    "ui.tickets_parts_missing": "モデルにもうありません：{parts}"
+    "ui.tickets_parts_missing": "モデルにもうありません：{parts}",
+    "ui.tickets_comment": "コメント",
+    "ui.tickets_comment_placeholder": "コメントを書く…",
+    "ui.tickets_back_title": "「{state}」に戻しますか？",
+    "ui.tickets_back_why": "理由（任意）",
+    "ui.tickets_back_confirm": "戻す",
+    "ui.tickets_check_items": "{n} 項目",
+    "ui.tickets_attach_file": "ファイルを選ぶ",
+    "ui.tickets_attach_view_now": "現在の 3D ビュー",
+    "ui.tickets_remove_file": "外す",
+    "ui.tickets_check_ran": "完了"
   },
   "de": {
     "ui.tickets_one_at_a_time": "{id} ist in Arbeit. Schließen Sie es ab oder warten Sie auf seine Prüfung, bevor Sie ein weiteres starten.",
@@ -465,7 +495,17 @@
     "ui.tickets_ask_draft_message": "Entwirf Teile-Tickets für dieses Projekt aus requirements.md: ein Ticket pro Arbeitsschritt.",
     "ui.tickets_why_stale": "Es hat sich geändert, seit du es angesehen hast: sieh es dir noch einmal an",
     "ui.tickets_check_off": "Nicht geprüft · für dieses Ticket ausgeschaltet",
-    "ui.tickets_parts_missing": "Nicht mehr im Modell: {parts}"
+    "ui.tickets_parts_missing": "Nicht mehr im Modell: {parts}",
+    "ui.tickets_comment": "Kommentar",
+    "ui.tickets_comment_placeholder": "Kommentar schreiben…",
+    "ui.tickets_back_title": "Zurück auf {state} setzen?",
+    "ui.tickets_back_why": "Warum? (optional)",
+    "ui.tickets_back_confirm": "Zurücksetzen",
+    "ui.tickets_check_items": "{n} Punkte",
+    "ui.tickets_attach_file": "Datei wählen",
+    "ui.tickets_attach_view_now": "Aktuelle 3D-Ansicht",
+    "ui.tickets_remove_file": "Entfernen",
+    "ui.tickets_check_ran": "gelaufen"
   },
   "ko": {
     "ui.tickets_one_at_a_time": "{id}이(가) 진행 중입니다. 끝내거나 검사를 기다린 뒤 다른 티켓을 시작하세요.",
@@ -582,7 +622,17 @@
     "ui.tickets_ask_draft_message": "requirements.md를 바탕으로 이 프로젝트의 부품 티켓 초안을 작성해 주세요. 작업 하나에 티켓 하나입니다.",
     "ui.tickets_why_stale": "확인한 뒤에 바뀌었습니다. 다시 확인하세요",
     "ui.tickets_check_off": "검사 안 함 · 이 티켓에서 꺼짐",
-    "ui.tickets_parts_missing": "모델에 더 이상 없습니다: {parts}"
+    "ui.tickets_parts_missing": "모델에 더 이상 없습니다: {parts}",
+    "ui.tickets_comment": "댓글",
+    "ui.tickets_comment_placeholder": "댓글 남기기…",
+    "ui.tickets_back_title": "「{state}」(으)로 되돌릴까요?",
+    "ui.tickets_back_why": "이유 (선택)",
+    "ui.tickets_back_confirm": "되돌리기",
+    "ui.tickets_check_items": "{n}개 항목",
+    "ui.tickets_attach_file": "파일 선택",
+    "ui.tickets_attach_view_now": "현재 3D 뷰",
+    "ui.tickets_remove_file": "제거",
+    "ui.tickets_check_ran": "완료"
   },
   "ar": {
     "ui.tickets_one_at_a_time": "{id} قيد التنفيذ. أنهِها أو انتظر فحصها قبل بدء أخرى.",
@@ -699,7 +749,17 @@
     "ui.tickets_ask_draft_message": "اكتب مسودات تذاكر القطع لهذا المشروع من requirements.md: تذكرة لكل عمل.",
     "ui.tickets_why_stale": "تغيّرت بعد أن نظرت إليها: انظر إليها مجددًا",
     "ui.tickets_check_off": "بلا فحص · أُوقف لهذه التذكرة",
-    "ui.tickets_parts_missing": "لم تعد في النموذج: {parts}"
+    "ui.tickets_parts_missing": "لم تعد في النموذج: {parts}",
+    "ui.tickets_comment": "تعليق",
+    "ui.tickets_comment_placeholder": "اكتب تعليقًا…",
+    "ui.tickets_back_title": "إعادتها إلى {state}؟",
+    "ui.tickets_back_why": "لماذا؟ (اختياري)",
+    "ui.tickets_back_confirm": "إعادة",
+    "ui.tickets_check_items": "{n} بنود",
+    "ui.tickets_attach_file": "اختيار ملف",
+    "ui.tickets_attach_view_now": "العرض ثلاثي الأبعاد الحالي",
+    "ui.tickets_remove_file": "إزالة",
+    "ui.tickets_check_ran": "اكتمل"
   },
   "he": {
     "ui.tickets_one_at_a_time": "{id} בעבודה. סיימו אותו או חכו לבדיקה שלו לפני שמתחילים אחר.",
@@ -816,7 +876,17 @@
     "ui.tickets_ask_draft_message": "נסח כרטיסי חלקים לפרויקט הזה מתוך requirements.md: כרטיס אחד לכל עבודה.",
     "ui.tickets_why_stale": "הוא השתנה אחרי שהסתכלת עליו: הסתכל שוב",
     "ui.tickets_check_off": "ללא בדיקה · כובתה לכרטיס הזה",
-    "ui.tickets_parts_missing": "כבר לא במודל: {parts}"
+    "ui.tickets_parts_missing": "כבר לא במודל: {parts}",
+    "ui.tickets_comment": "תגובה",
+    "ui.tickets_comment_placeholder": "כתבו תגובה…",
+    "ui.tickets_back_title": "להחזיר ל{state}?",
+    "ui.tickets_back_why": "למה? (לא חובה)",
+    "ui.tickets_back_confirm": "החזרה",
+    "ui.tickets_check_items": "{n} פריטים",
+    "ui.tickets_attach_file": "בחירת קובץ",
+    "ui.tickets_attach_view_now": "תצוגת התלת-ממד כעת",
+    "ui.tickets_remove_file": "הסרה",
+    "ui.tickets_check_ran": "הסתיימה"
   },
   "vi": {
     "ui.tickets_one_at_a_time": "{id} đang làm. Hãy hoàn thành hoặc chờ kiểm tra của nó trước khi bắt đầu phiếu khác.",
@@ -933,6 +1003,16 @@
     "ui.tickets_ask_draft_message": "Soạn phiếu chi tiết cho dự án này từ requirements.md: mỗi việc một phiếu.",
     "ui.tickets_why_stale": "Phiếu đã thay đổi sau khi bạn xem: hãy xem lại",
     "ui.tickets_check_off": "Không kiểm tra · đã tắt cho phiếu này",
-    "ui.tickets_parts_missing": "Không còn trong mô hình: {parts}"
+    "ui.tickets_parts_missing": "Không còn trong mô hình: {parts}",
+    "ui.tickets_comment": "Bình luận",
+    "ui.tickets_comment_placeholder": "Viết bình luận…",
+    "ui.tickets_back_title": "Chuyển lại về {state}?",
+    "ui.tickets_back_why": "Vì sao? (không bắt buộc)",
+    "ui.tickets_back_confirm": "Chuyển lại",
+    "ui.tickets_check_items": "{n} mục",
+    "ui.tickets_attach_file": "Chọn tệp",
+    "ui.tickets_attach_view_now": "Khung nhìn 3D hiện tại",
+    "ui.tickets_remove_file": "Bỏ",
+    "ui.tickets_check_ran": "đã chạy xong"
   }
 }

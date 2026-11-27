@@ -30,6 +30,8 @@ export const full = (ticket: Ticket): Full => ({
 /** The same limits as the store (crates/engine/src/project/tickets.rs). */
 export const MAX_TITLE = 200;
 export const MAX_TEXT = 8000;
+export const MAX_COMMENT = 4000;
+export const MAX_REASON = 1000;
 const MAX_LINES = 40;
 const MAX_LINE = 400;
 

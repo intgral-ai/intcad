@@ -33,6 +33,16 @@
       "packages/playground-ui/src/ds/components/Arrival/arrival.tsx",
       "packages/playground-ui/src/ds/components/Arrival/use-watched.ts",
       "packages/playground-ui/src/ds/components/AttachmentCard/attachment-card.tsx",
+      "packages/playground-ui/src/ds/components/Avatar/Avatar.tsx",
+      "packages/playground-ui/src/ds/components/Avatar/avatar-badge.tsx",
+      "packages/playground-ui/src/ds/components/Avatar/avatar-element.tsx",
+      "packages/playground-ui/src/ds/components/Avatar/avatar-fallback.tsx",
+      "packages/playground-ui/src/ds/components/Avatar/avatar-group-count.tsx",
+      "packages/playground-ui/src/ds/components/Avatar/avatar-group.tsx",
+      "packages/playground-ui/src/ds/components/Avatar/avatar-image.tsx",
+      "packages/playground-ui/src/ds/components/Avatar/avatar-named.tsx",
+      "packages/playground-ui/src/ds/components/Avatar/avatar-root.tsx",
+      "packages/playground-ui/src/ds/components/Avatar/avatar-size.ts",
       "packages/playground-ui/src/ds/components/Badge/Badge.tsx",
       "packages/playground-ui/src/ds/components/BrandLoader/brand-loader.tsx",
       "packages/playground-ui/src/ds/components/Breadcrumb/Breadcrumb.tsx",
@@ -278,7 +288,7 @@
       "name": "@base-ui/react",
       "version": "1.9.0",
       "licence": "MIT",
-      "modulesInScript": 327,
+      "modulesInScript": 333,
       "licenceFiles": [
         "LICENSE"
       ]
@@ -1511,16 +1521,16 @@
       "sha256": "ae12d1b4e32a29fd115da324e525469ce760157803ab963e22967741e72671e0"
     },
     "assistant.js": {
-      "bytes": 1836640,
-      "sha256": "27d2829961961f8edb12fcaf3c1bbc866ec98b62749ce247cd7af229f37e47e7"
+      "bytes": 1850550,
+      "sha256": "208351c901326644d32265ea94f8eef86654cfffb614676d74c8c5514eb9f92a"
     },
     "index.html": {
       "bytes": 822,
       "sha256": "5405f90c0fd9cd475b33152ba3f5f7b1c1600cfa36713b64c65be69f130fdb98"
     },
     "style.css": {
-      "bytes": 368405,
-      "sha256": "88dde60692a22c3b115e5a0ce429d928918ddd39b83481d9a45d3b1b7d9ddb22"
+      "bytes": 368731,
+      "sha256": "614fccb7be43c6841bbb30d61bdf92b30bafb2c6f25782257e43d1e4c5a7261b"
     }
   }
 }

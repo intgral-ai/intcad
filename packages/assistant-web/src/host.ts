@@ -398,7 +398,7 @@ export interface Ticket {
   updated: string;
 }
 
-/** One line of a ticket's record; `at` is RFC 3339 in UTC. */
+/** One line of a ticket's record; `at` is RFC 3339 in UTC. A `comment` line's text is its `note`. */
 export interface TicketEvent {
   at: string;
   actor: 'person' | 'agent' | 'app';
@@ -408,7 +408,20 @@ export interface TicketEvent {
   to?: TicketStateName;
   note?: string;
   run?: string;
+  /** A comment's files, or the files the Assistant attached when it said it had finished. */
+  attachments?: TicketAttachment[];
   revision: number;
+}
+
+/** One item of a check's run, as the run reported it: its state, how many findings, on which parts. */
+export interface CheckItem {
+  /** The item's own name in the check (a rule's id), shown small. */
+  rule: string;
+  state: string;
+  count: number;
+  parts: string[];
+  /** What was found against what is required, in the check's own words. */
+  values?: string[];
 }
 
 /** The names of the tickets view's words: the list `tickets_state` sends in web.rs. */
@@ -430,7 +443,9 @@ export type TicketStringKey =
   | 'expand' | 'collapse' | 'addText'
   | 'didDeclined' | 'didDeleted' | 'didRestored' | 'didTaken' | 'didMoved' | 'didFinished' | 'didCheckOff' | 'didCheckOn' | 'didRecheck' | 'didViewAttached'
   | 'runCheck' | 'recheck' | 'finishedNote' | 'needsCheck' | 'deleteWithSubs' | 'confirmWithSubs' | 'together' | 'onlyThis' | 'whyRecheck' | 'withTicket'
-  | 'whyStale' | 'checkOff';
+  | 'whyStale' | 'checkOff'
+  | 'comment' | 'commentPlaceholder' | 'backTitle' | 'backWhy' | 'backConfirm' | 'checkItems'
+  | 'attachFile' | 'attachViewNow' | 'removeFile' | 'checkRan';
 
 export interface TicketsState {
   view: 'tickets';
@@ -446,6 +461,8 @@ export interface TicketsState {
   record: TicketEvent[];
   /** Each bound run's freshness now, by run id. */
   freshness: Record<string, string>;
+  /** The open ticket's runs, by run id: each rule the run reported. */
+  items?: Record<string, CheckItem[]>;
   /** Why a step was refused, in the store's words. */
   error: string | null;
   /** The same refusal as a kind the page says in the person's words; absent for any other. */
@@ -467,6 +484,8 @@ export interface TicketsState {
   selection?: TicketPart[];
   /** Files the app has taken into the project's `attachments/` for the ticket being created. */
   adding?: TicketAttachment[];
+  /** Files taken in for the comment being written on the open ticket; they go with it when it is sent. */
+  commenting?: TicketAttachment[];
   /** An agent is connected, so the Assistant can take a ticket. */
   assistant?: boolean;
   /** The view's latest requests as the host answered them: the host's count, the page's own number (`ask`) and whether the step was taken. Several: the page may send more than one between two states. */
@@ -492,7 +511,12 @@ export type TicketAction = (
   | { type: 'ticket_edit'; id: string; revision: number; title?: string; text?: string; requirements?: string[]; checks?: boolean }
   | { type: 'ticket_create'; title: string; text: string; requirements: string[]; parts: TicketPart[]; attachments: string[]; parent: string | null }
   | { type: 'ticket_decline' | 'ticket_work_myself' | 'ticket_ask_check' | 'ticket_assign_parts'; id: string; revision: number }
-  | { type: 'ticket_set_state'; id: string; revision: number; to: TicketStateName }
+  /** `reason`: why, when a person moves it back; optional. */
+  | { type: 'ticket_set_state'; id: string; revision: number; to: TicketStateName; reason?: string }
+  /** A comment: a person's text on the ticket, and the files taken in for it, in its record; it cannot be changed once sent. */
+  | { type: 'ticket_comment'; id: string; text: string; attachments: string[] }
+  /** A file for the comment being written: the app asks for one, or (`view`) takes a picture of the 3D view as it is now. */
+  | { type: 'ticket_comment_attach'; id: string; view: boolean }
   | { type: 'ticket_waits'; id: string; revision: number; waits: string[] }
   | { type: 'ticket_restore' | 'ticket_expand' | 'ticket_show_parts'; id: string }
   /** `id`: the ticket a file goes to, null for the one being created; the app asks for the file. */

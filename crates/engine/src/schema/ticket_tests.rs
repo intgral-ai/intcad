@@ -10,5 +10,5 @@ fn schemas_and_the_key_check_agree() {
         input_schema_for::<TicketDraftParams>(),
         &["attachments", "checks", "parent", "parts", "requirements", "text", "title", "view", "waits"],
     );
-    assert_keys(input_schema_for::<TicketUpdateParams>(), &["action", "id", "reason", "to"]);
+    assert_keys(input_schema_for::<TicketUpdateParams>(), &["action", "attachments", "id", "reason", "text", "to", "view"]);
 }

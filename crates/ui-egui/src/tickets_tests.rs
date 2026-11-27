@@ -188,7 +188,17 @@ fn a_scripted_agent_drafts_is_started_on_one_ticket_and_its_check_leaves_it_wait
     assert!(agent.prompts().last().is_some_and(|p| p.contains("You are working on T-2 alone")), "{:?}", agent.prompts().last());
 
     // The agent makes the part and says it is finished: no check starts by itself.
-    agent_calls(&mut h, "solid.box", json!({"length": 40, "width": 30, "height": 1.5}));
+    // A sheet-metal tray, so the check has rules to report.
+    for (command, params) in [
+        ("sheet.manage_rules", json!({"name": "SPCC 2.0", "thickness": "2 mm", "bend_radius": "2 mm", "k_factor": 0.44, "active": true})),
+        ("sketch.create", json!({"plane": "XY", "name": "Base outline"})),
+        ("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]})),
+        ("sketch.finish", json!({})),
+        ("sheet.flange", json!({"sketch": "Base outline", "body_name": "Body1"})),
+        ("sheet.flange", json!({"edges": [[50, 0, 2], [100, 30, 2], [50, 60, 2], [0, 30, 2]], "height": 30, "body": "Body1"})),
+    ] {
+        agent_calls(&mut h, command, params);
+    }
     agent_calls(&mut h, "ticket.update", json!({"id": "T-2", "action": "finished", "reason": "Plate made"}));
     agent.end_turn();
     h.frames(30);
@@ -211,6 +221,17 @@ fn a_scripted_agent_drafts_is_started_on_one_ticket_and_its_check_leaves_it_wait
     assert_eq!(Some(run.clone()), h.app.dfm_review.mapped_run, "the ticket names the run the Review entry reserved");
     assert_eq!(billing.commits(), 1, "the run was the Review entry's one billed operation");
     assert!(check.counts.get("failed").copied().unwrap_or(0) == 0, "the empty factory table fails nothing: {:?}", check.counts);
+
+    // The check's line opens to the run's rules, as the run reported them (the page in Chinese).
+    h.app.preferences.language = "zh".into();
+    crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_open", "id": "T-2"}).to_string()).unwrap();
+    let page: Value = serde_json::from_str(&crate::tickets::page_state(&mut h.app)).unwrap();
+    let items = page["items"][&run].as_array().cloned().unwrap_or_default();
+    let shaped = |item: &Value| item["rule"].is_string() && item["state"].is_string() && item["count"].is_u64() && item["parts"].is_array() && item["values"].is_array();
+    assert!(!items.is_empty() && items.iter().all(shaped), "{}", page["items"]);
+    assert!(items.iter().any(|item| item["state"] == "unsupported"), "the empty factory table covers nothing: {}", page["items"]);
+    assert_eq!(items.len() as u64, check.counts.values().sum::<u64>(), "one item per rule the run counted");
+    dump(&mut h, "check-items");
 
     crate::tickets::done(&mut h.app, "T-2", seen(&root, "T-2"));
     assert_eq!(state(&root, "T-2"), TicketState::Done);
@@ -402,6 +423,131 @@ fn every_request_the_tickets_view_names_has_an_arm_in_the_host() {
     assert!(unknown.is_err_and(|why| why.starts_with("unknown action")), "the check can fail");
 }
 
+/// A person's comment, with a file from outside the project and a picture of the view, reaches the
+/// record and the page; a sixth file is refused; the Assistant's comment and a person's reason for
+/// moving a ticket back are recorded; the next hand-over carries the comments, newest last, within
+/// their limits, and their files.
+#[test]
+fn a_comment_reaches_the_record_the_page_and_the_next_hand_over_with_its_files() {
+    let scratch = Scratch::new("comments");
+    let (mut h, root) = window(&scratch);
+    h.app.preferences.language = "zh".into();
+    let agent = StandIn::default();
+    crate::agent_chat::install_test_backend(&mut h.app, Box::new(agent.clone()));
+    let id = tickets::create(&root, Draft { title: "底板孔位".into(), ..Draft::default() }).unwrap().id;
+    h.settle();
+    let ctx = h.ctx.clone();
+    crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_open", "id": id}).to_string()).unwrap();
+
+    // Files for the comment being written: one chosen from outside the project, the view's picture.
+    let outside = scratch.0.join("供应商回复.pdf");
+    std::fs::write(&outside, b"%PDF-1.7 reply").unwrap();
+    let taken = tickets::take_in(&root, &outside).unwrap();
+    assert_eq!(taken, "attachments/供应商回复.pdf", "copied under attachments/");
+    crate::tickets::take_for_comment(&mut h.app, &root, taken.clone());
+    crate::tickets::comment_view_now(&mut h.app, &id, |_| Ok(png()));
+    let view = format!("attachments/{id}-view.png");
+    assert_eq!(h.app.tickets.commenting, [taken.clone(), view.clone()]);
+    // Without a renderer (this test process), the view's picture is refused with its reason.
+    crate::tickets::comment_view_now(&mut h.app, &id, |app| crate::control::view_png(app, 64, 40));
+    assert!(h.app.tickets.error.take().is_some() && h.app.tickets.commenting.len() == 2);
+    for n in 3..=5 {
+        std::fs::write(root.join(format!("note-{n}.txt")), b"x").unwrap();
+        crate::tickets::take_for_comment(&mut h.app, &root, format!("note-{n}.txt"));
+    }
+    std::fs::write(root.join("note-6.txt"), b"x").unwrap();
+    crate::tickets::take_for_comment(&mut h.app, &root, "note-6.txt".into());
+    assert!(h.app.tickets.error.take().is_some_and(|e| e.contains("at most 5")), "a sixth file is refused");
+    assert_eq!(h.app.tickets.commenting.len(), 5);
+    let page: Value = serde_json::from_str(&crate::tickets::page_state(&mut h.app)).unwrap();
+    assert_eq!(page["commenting"].as_array().map(Vec::len), Some(5), "the page shows what is attached before sending");
+
+    // The person sends it with two of the files (they took the others off).
+    let revision = seen(&root, &id);
+    let message = json!({"type": "ticket_comment", "id": id, "text": "侧板这次不要动，孔位见截图。", "attachments": [taken, view], "ask": 7});
+    crate::tickets::receive(&mut h.app, &ctx, &message.to_string()).unwrap();
+    assert!(h.app.tickets.error.is_none() && h.app.tickets.commenting.is_empty(), "{:?}", h.app.tickets.error);
+    assert_eq!(seen(&root, &id), revision, "a comment moves no revision");
+    let page: Value = serde_json::from_str(&crate::tickets::page_state(&mut h.app)).unwrap();
+    let line = page["record"].as_array().unwrap().last().unwrap().clone();
+    assert_eq!((line["action"].as_str(), line["actor"].as_str(), line["note"].as_str()), (Some("comment"), Some("person"), Some("侧板这次不要动，孔位见截图。")));
+    let files = line["attachments"].as_array().unwrap();
+    assert_eq!((files[0]["name"].as_str(), files[0]["picture"].is_null()), (Some("供应商回复.pdf"), true));
+    assert!(files[1]["picture"].is_string(), "the view's picture has a thumbnail: {}", files[1]);
+    assert!(page["answered"].as_array().unwrap().iter().any(|a| a["ask"] == 7 && a["ok"] == true));
+
+    // A person moves it back with a reason; the Assistant comments.
+    tickets::set_state(&root, &id, seen(&root, &id), TicketState::Done, None).unwrap();
+    h.settle();
+    dump(&mut h, "comments-done");
+    let back = json!({"type": "ticket_set_state", "id": id, "revision": seen(&root, &id), "to": "confirmed", "reason": "外壳改高了 2 mm"});
+    crate::tickets::receive(&mut h.app, &ctx, &back.to_string()).unwrap();
+    assert_eq!(tickets::events(&root, Some(&id)).unwrap().pop().and_then(|e| e.note).as_deref(), Some("外壳改高了 2 mm"));
+    dump(&mut h, "comments-back");
+    agent_calls(&mut h, "ticket.update", json!({"id": id, "action": "comment", "text": "收到。"}));
+
+    // The hand-over carries them, oldest first, each with who wrote it, and the comment's files.
+    crate::tickets::start(&mut h.app, &ctx, &id, seen(&root, &id));
+    h.settle();
+    let sent = agent.prompts().pop().unwrap_or_default();
+    let (first, reason, reply) = (sent.find("侧板这次不要动"), sent.find("外壳改高了 2 mm"), sent.find("收到。"));
+    assert!(sent.contains("Comments, oldest first") && first < reason && reason < reply && first.is_some(), "{sent}");
+    assert!(sent.contains("- the person, ") && sent.contains("- the person, moving it to confirmed, ") && sent.contains("- the Assistant, "), "{sent}");
+    let names = h.app.agent_chat.items.iter().rev().find_map(|item| match item {
+        crate::agent_chat::Item::User { files, .. } => Some(files.clone()),
+        _ => None,
+    });
+    assert!(names.unwrap_or_default().iter().any(|n| n == "供应商回复.pdf"), "the comment's file went with the message");
+
+    // The Assistant says what it did, asking for a picture of the view; the app adds the picture
+    // to that line (a stand-in picture: this process draws none); the person answers.
+    let text = "改了什么：底板两个孔向板内移了 0.8 mm。\n动了的件：底板。\n没做到：法兰 7.4 mm 没改，等你定。";
+    agent_calls(&mut h, "ticket.update", json!({"id": id, "action": "finished", "text": text, "view": true}));
+    crate::tickets::refresh(&mut h.app);
+    h.app.tickets.views_tried.clear();
+    crate::tickets::attach_comment_views(&mut h.app, |_| Ok(png()));
+    let answer = json!({"type": "ticket_comment", "id": id, "text": "法兰先不改，我下午问一下供应商。", "attachments": []});
+    crate::tickets::receive(&mut h.app, &ctx, &answer.to_string()).unwrap();
+    let page: Value = serde_json::from_str(&crate::tickets::page_state(&mut h.app)).unwrap();
+    let record = page["record"].as_array().unwrap();
+    let finished = record.iter().find(|e| e["action"] == "finished").unwrap();
+    assert_eq!(finished["note"].as_str(), Some(text));
+    assert!(finished["attachments"][0]["picture"].is_string(), "the view's picture shows with the line that asked for it: {finished}");
+    assert!(!record.iter().any(|e| e["action"] == "comment_view"));
+    dump(&mut h, "comments-finished");
+    crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_expand", "id": id}).to_string()).unwrap();
+    dump(&mut h, "comments-finished-large");
+    crate::tickets::receive(&mut h.app, &ctx, &json!({"type": "ticket_collapse"}).to_string()).unwrap();
+    std::fs::write(root.join("法兰尺寸草图.pdf"), b"%PDF-1.7 sketch").unwrap();
+    crate::tickets::take_for_comment(&mut h.app, &root, "法兰尺寸草图.pdf".into());
+    dump(&mut h, "comments-files");
+    h.app.tickets.commenting.clear();
+
+    // At most the newest 10, and 4000 characters in all: a long Chinese comment is cut, never split
+    // inside a character.
+    for n in 1..=12 {
+        tickets::comment(&root, &id, Actor::Person, &format!("第 {n} 条"), &[], false).unwrap();
+    }
+    let (said, _) = crate::tickets::comments(&root, &id);
+    assert_eq!(said.matches("\n- ").count(), 10, "{said}");
+    assert!(said.contains("第 12 条") && !said.contains("第 2 条"), "{said}");
+    tickets::comment(&root, &id, Actor::Person, &"长".repeat(tickets::MAX_COMMENT), &[], false).unwrap();
+    let (said, _) = crate::tickets::comments(&root, &id);
+    assert!(said.chars().count() <= 4000 + 100 && said.contains("长长长"), "{}", said.chars().count());
+}
+
+/// With `SOLIDCRAFT_TICKETS_DUMP` set to a folder, the host's state as the page is told it now, and
+/// the pictures it serves, for the page's own pictures.
+fn dump(h: &mut Harness, name: &str) {
+    let Some(folder) = std::env::var_os("SOLIDCRAFT_TICKETS_DUMP").map(std::path::PathBuf::from) else { return };
+    std::fs::create_dir_all(folder.join("picture")).unwrap();
+    let state: Value = serde_json::from_str(&crate::tickets::page_state(&mut h.app)).unwrap();
+    std::fs::write(folder.join(format!("{name}.json")), serde_json::to_vec_pretty(&state).unwrap()).unwrap();
+    for (key, bytes) in crate::tickets::pictures(&h.app) {
+        std::fs::write(folder.join("picture").join(key), bytes.as_slice()).unwrap();
+    }
+}
+
 /// A small real picture, for a ticket's picture attachment.
 fn png() -> Vec<u8> {
     let picture = image::RgbImage::from_fn(64, 40, |x, y| image::Rgb([(x * 4) as u8, (y * 6) as u8, 160]));
@@ -445,7 +591,7 @@ fn the_tickets_view_is_told_the_stores_tickets_in_the_pages_shape() {
     let left = person(Draft { title: "Left bracket".into(), parent: Some(bracket.clone()), parts: vec![part("component", "Left")], ..Draft::default() });
     let right = person(Draft { title: "Right bracket".into(), parent: Some(bracket.clone()), ..Draft::default() });
     tickets::work_myself(&root, &left, seen_now(&left)).unwrap();
-    tickets::set_state(&root, &right, seen_now(&right), TicketState::Done).unwrap();
+    tickets::set_state(&root, &right, seen_now(&right), TicketState::Done, None).unwrap();
     // Two parts and two attachments.
     std::fs::create_dir_all(root.join("specs")).unwrap();
     std::fs::write(root.join("specs/flange.png"), png()).unwrap();
@@ -460,7 +606,7 @@ fn the_tickets_view_is_told_the_stores_tickets_in_the_pages_shape() {
     // Waiting for a person (no check applies), and waiting for other tickets.
     let label = person(Draft { title: "Label area 40 × 20 mm".into(), ..Draft::default() });
     tickets::work_myself(&root, &label, seen_now(&label)).unwrap();
-    tickets::set_state(&root, &label, seen_now(&label), TicketState::Waiting).unwrap();
+    tickets::set_state(&root, &label, seen_now(&label), TicketState::Waiting, None).unwrap();
     let paint = person(Draft { title: "Paint".into(), waits: vec![joint.clone(), label.clone()], ..Draft::default() });
     // Deleted.
     let old = person(Draft { title: "Old fixing holes".into(), ..Draft::default() });
@@ -470,14 +616,14 @@ fn the_tickets_view_is_told_the_stores_tickets_in_the_pages_shape() {
     for to in [TicketState::Confirmed, TicketState::InProgress] {
         tickets::agent_set_state(&root, &agents, to).unwrap();
     }
-    tickets::finished(&root, &agents, Some("Supplier B: 3 mm pins in stock".into())).unwrap();
+    tickets::finished(&root, &agents, Some("Supplier B: 3 mm pins in stock"), &[], false).unwrap();
     tickets::agent_set_state(&root, &agents, TicketState::Done).unwrap();
     // Parts, and the check switched off by a person on the ticket (one record line).
     let rivets = person(Draft { title: "Rivet holes on the lid".into(), parts: vec![part("body", "Lid")], ..Draft::default() });
     // The Assistant's ticket, which it says is finished; a check applies.
     let flange = person(Draft { title: "Flange 8 mm".into(), parts: vec![part("body", "Base")], ..Draft::default() });
     tickets::start(&root, &flange, seen_now(&flange)).unwrap();
-    tickets::finished(&root, &flange, Some("Flange raised to 8 mm".into())).unwrap();
+    tickets::finished(&root, &flange, Some("Flange raised to 8 mm"), &[], false).unwrap();
     h.settle();
 
     let ctx = h.ctx.clone();
@@ -722,8 +868,12 @@ fn a_tickets_parts_are_selected_in_the_model_and_a_picked_part_filters_the_list(
     assert!(h.app.tickets.error.as_deref().is_some_and(|e| e.contains("Gone")), "{:?}", h.app.tickets.error);
     let picked = json!({"kind": "body", "id": body});
     assert_eq!(told(&mut h)["filter"], picked, "one part picked: the list shows its tickets");
+    assert!(told(&mut h)["selected"].is_null(), "the list, no ticket's page");
     crate::tickets::receive(&mut h.app, &ctx, r#"{"type":"ticket_filter_clear"}"#).unwrap();
     assert!(told(&mut h)["filter"].is_null() && told(&mut h)["filter"].is_null(), "cleared, and it stays cleared while the pick is the same");
+    h.settle();
+    let after = told(&mut h);
+    assert!(after["filter"].is_null() && after["selected"].is_null() && !after["expanded"].as_bool().unwrap_or(false), "× opens nothing: {after}");
     h.app.run("select.clear", json!({})).unwrap();
     assert!(told(&mut h)["filter"].is_null());
     h.app.session.selection = vec![solidcraft_engine::Sel::Body { name: body.clone() }];
