@@ -1,21 +1,10 @@
 #!/usr/bin/env python3
-"""Start the installed SolidCraft snap on headless X11 and Wayland, model a box and
-open the Assistant.
+"""Check the installed snap's desktop, signed-out refusals and Assistant runtime.
 
-Runs the confined app (`snap install --dangerous` first) with its normal plugs, drives it over
-the control channel from the host (snaps share the host's network namespace), checks a
-30x20x10 box measures 6000 mm³, opens the Assistant and requires its page to load
-(webView.host and webView.page true), checks the GPU drew a non-blank frame, and copies each
-frame to --out (default: the current directory) as snap-<backend>.png. Needs xvfb-run and
-weston. Reuses the frame checks of flatpak-smoke.py.
-
-The page is served by the app itself, so it needs no network; the update check is turned off
-with SOLIDCRAFT_UPDATE_CHECK=0. release.yml runs the X11 variant inside `sudo unshare -n` with
-only loopback, after proving the namespace has a single link; that keeps the release policy that
-no network-enabled desktop is started. A strict snap can still be moved back to the host network
-namespace by snapd; the control connection then fails and the job reports the failure rather than
-passing. The release job also checks that the gnome extension provides libgtk-3.so.0 and
-libwebkit2gtk-4.1.so.0.
+Run in a private network namespace with only loopback, as in release.yml.
+The confined shell runs after Snap's command chain. It must still be in that
+namespace before it execs the desktop. It doesn't open the Assistant page.
+Requires xvfb-run or Weston and copies frames to --out as snap-<backend>.png.
 """
 import argparse
 import importlib.util
@@ -49,7 +38,7 @@ REQUESTS = [
 
 
 def drive(app, port, frame):
-    """Connect to the app's control port, model the box, open the Assistant and capture a frame."""
+    """Check the control refusals and runtime marker, and capture a frame."""
     deadline = time.monotonic() + 60
     while True:
         if app.poll() is not None:
@@ -108,35 +97,63 @@ def drive(app, port, frame):
             replies.append(raw)
             return reply
 
-        call(REQUESTS[1])
-        call(REQUESTS[2])
-        # The Assistant: the start page covers the workspace, then the panel must load its page.
-        call({"id": 4, "method": "ui.home", "params": {"open": False}})
-        call({"id": 5, "method": "ui.agent_chat", "params": {"open": True}})
-        request_id = 6
+        def refused(request):
+            """A controlled entry on a signed-out host must be refused, not executed."""
+            io.write(json.dumps(request) + "\n")
+            io.flush()
+            raw = io.readline()
+            if not raw:
+                raise RuntimeError(f"the control connection closed at {request['method']}")
+            reply = json.loads(raw)
+            details = (reply.get("errorDetails") or {}) if isinstance(reply, dict) else {}
+            if (not isinstance(reply, dict) or reply.get("id") != request["id"]
+                    or reply.get("ok") is not False
+                    or details.get("code") not in flatpak_smoke.FAIL_CLOSED):
+                raise ValueError(f"{request['method']} was not refused for a signed-out host: {reply}")
+            replies.append(raw)
+            return reply
+
+        refused(REQUESTS[1])
+        refused(REQUESTS[2])
+        # Opening the panel is a controlled entry: signed out it must be refused, and the
+        # Assistant's retained page cannot be driven without account authority. Prove the
+        # refusal, then read the bounded marker: the web runtime must be available.
+        request_id = 4
+        try:
+            io.write(json.dumps({"id": request_id, "method": "ui.agent_chat", "params": {"open": True}}) + "\n")
+            io.flush()
+            raw = io.readline()
+            opening = json.loads(raw)
+        except (OSError, ValueError) as error:
+            raise ValueError(f"the Assistant open request got no answer: {error}") from None
+        details = (opening.get("errorDetails") or {}) if isinstance(opening, dict) else {}
+        if opening.get("ok") is not False or details.get("code") not in flatpak_smoke.FAIL_CLOSED:
+            raise ValueError(f"the Assistant panel opened without account authority: {opening}")
+        replies.append(raw)
+        request_id += 1
         deadline = time.monotonic() + 120
+        marker = None
         while True:
-            state = call({"id": request_id, "method": "ui.agent_chat", "params": {}})["result"] or {}
-            web = state.get("webView") or {}
-            if state.get("open") is not True:
-                raise ValueError(f"the Assistant panel did not open: {state}")
-            if web.get("host") is False:
-                raise ValueError(f"the Assistant made no web view: {web}")
-            if web.get("host") is True and web.get("page") is True:
+            reply = call({"id": request_id, "method": "ui.inspect", "params": {}})
+            marker = ((reply.get("result") or {}).get("assistant")) or {}
+            if marker.get("host") == "available":
                 break
             if time.monotonic() >= deadline:
-                raise RuntimeError(f"the Assistant's page never loaded: {web}")
+                raise RuntimeError(f"the Assistant web runtime is not reported: {marker}")
             time.sleep(.25)
             request_id += 1
+        print("page NOT VERIFIED offline: the Assistant page needs account authority to open", flush=True)
         capture = call({"id": request_id + 1, "method": "ui.screenshot", "params": {"path": str(frame)}})
-        call({"id": request_id + 2, "method": "app.quit", "params": {"force": True}})
-    renderer = flatpak_smoke.validate_replies("".join(replies[:3]))
+    renderer = flatpak_smoke.validate_offline("".join(replies[:3]))
     if capture.get("ok") is not True or renderer != "gpu":
         raise ValueError(f"GPU frame capture failed: renderer={renderer}, {capture}")
     return renderer, flatpak_smoke.frame_statistics(frame.read_bytes())
 
 
 def run_backend(backend, out):
+    if [name for _, name in socket.if_nameindex()] != ["lo"]:
+        raise RuntimeError("Snap smoke requires a loopback-only network namespace")
+    netns = os.readlink("/proc/self/ns/net")
     runtime = Path(f"/run/user/{os.getuid()}")
     if not runtime.is_dir():
         raise RuntimeError(f"{runtime} is missing: snaps expect the login session's runtime directory")
@@ -168,13 +185,18 @@ def run_backend(backend, out):
         with socket.socket() as probe:
             if probe.connect_ex(("127.0.0.1", PORTS[backend])) == 0:
                 raise RuntimeError(f"port {PORTS[backend]} is already in use (another SolidCraft?)")
+        # Keep the normal Snap profile and command chain, but check the
+        # namespace after confinement, in the process that execs the desktop.
+        launch = 'actual=$(readlink /proc/self/ns/net); if [ "$actual" != "$1" ]; then ' \
+                 'echo "Snap network namespace changed; refusing desktop launch" >&2; exit 1; fi; ' \
+                 'shift; exec "$SNAP/usr/bin/intcad" "$@"'
         # Its own process group, so stopping it also stops the app under xvfb-run.
-        app = subprocess.Popen(prefix + ["/snap/bin/intcad", "--control", str(PORTS[backend])],
-                               env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        app = subprocess.Popen(prefix + ["snap", "run", "--shell", "intcad", "-ec", launch,
+                                         "intcad-offline", netns, "--control", str(PORTS[backend])],
+                                env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         try:
             renderer, stats = drive(app, PORTS[backend], work / "frame.png")
-            # app.quit exits cleanly, so the next run doesn't report a crash.
-            app.wait(timeout=30)
+            # The controlled quit is refused while signed out; the finally block stops the app.
         finally:
             if app.poll() is None:
                 os.killpg(app.pid, signal.SIGTERM)
@@ -184,7 +206,8 @@ def run_backend(backend, out):
                 os.killpg(app.pid, signal.SIGKILL)
                 app.wait()
         shutil.copy(work / "frame.png", out / f"snap-{backend}.png")
-        print(f"snap {backend}: PASS renderer={renderer}, box=6000 mm³, Assistant page loaded, frame={stats}")
+        print(f"snap {backend}: PASS renderer={renderer}, controlled entries refused (signed out), "
+              f"Assistant web runtime reported, page NOT VERIFIED offline, frame={stats}")
     except BaseException:
         log.flush()
         sys.stderr.write((work / "app.log").read_text(errors="replace")[-8000:])

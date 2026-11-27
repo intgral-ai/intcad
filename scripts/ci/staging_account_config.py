@@ -117,7 +117,7 @@ def verify_snapshot(snapshot: str, expected_sha: str) -> dict[str, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("snapshot", "verify", "inject", "inject-auto", "verify-production", "inject-production"))
+    parser.add_argument("command", choices=("snapshot", "verify", "inject", "inject-auto", "verify-production", "inject-production", "record-evidence"))
     args = parser.parse_args()
     try:
         if args.command == "inject-auto":
@@ -136,6 +136,19 @@ def main() -> None:
             values = verify_production(os.environ.get(PRODUCTION_SNAPSHOT_ENV, ""))
             print(f"production account tuple: {tuple_sha256(values)}")
             return
+        if args.command == "record-evidence":
+            # Call only after package-byte readback against these same inputs.
+            staging = os.environ.get(SNAPSHOT_ENV, "")
+            production = os.environ.get(PRODUCTION_SNAPSHOT_ENV, "")
+            if bool(staging) == bool(production):
+                raise ValueError("expected exactly one account snapshot for package evidence")
+            if production:
+                values, source = verify_production(production), "environment:production"
+            else:
+                values = verify_snapshot(staging, os.environ.get("GITHUB_SHA", ""))
+                source = "checked-in:staging"
+            destination = "GITHUB_ENV"
+            text = f"{SOURCE_ENV}={source}\n{TUPLE_ENV}={tuple_sha256(values)}\n"
         if args.command == "inject-production":
             values = verify_production(os.environ.get(PRODUCTION_SNAPSHOT_ENV, ""))
             destination = "GITHUB_ENV"

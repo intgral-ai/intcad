@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "source": {
+    "channel": "Visual Studio Community 2026 Stable, official Microsoft installer (VC\\Redist)",
+    "installer": "https://aka.ms/vs/stable/vs_community.exe",
+    "installerVersion": "18.12.12412.261",
+    "installerSha256": "efdfe9d22349a567228e27b88da27564e964f78e1749dd94a6e5a634c06bd252",
+    "installComponent": "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+    "redistVersion": "14.52.37025",
+    "redistPath": "VC\\Redist\\MSVC\\14.52.37025\\x64\\Microsoft.VC145.CRT",
+    "redistClause": "https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution#visual-c-runtime-files"
+  },
+  "license": {
+    "terms": "https://visualstudio.microsoft.com/license-terms/vs2026-ga-community/",
+    "redist": "https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution",
+    "record": "packaging/windows/vc-runtime-compliance.md",
+    "notice": "packaging/windows/VC-RUNTIME-NOTICE.txt",
+    "endUserTerms": "packaging/windows/VC-RUNTIME-TERMS.txt"
+  },
+  "files": [
+    {
+      "name": "VCRUNTIME140.dll",
+      "version": "14.52.37029.0",
+      "productVersion": "14.52.37029.0",
+      "machine": "AMD64",
+      "sha256": "eb1ee979bf02324712346e5bdbfc59c785388bc50d18cc2688aae4b0734915a0",
+      "redistVersion": "14.52.37025",
+      "sourcePath": "Microsoft.VC145.CRT\\VCRUNTIME140.dll",
+      "targets": [
+        "mastra-agent/node_modules/@libsql/win32-x64-msvc/VCRUNTIME140.dll",
+        "mastra-agent/node_modules/@ast-grep/napi-win32-x64-msvc/VCRUNTIME140.dll"
+      ],
+      "usedBy": "@libsql/win32-x64-msvc and @ast-grep/napi-win32-x64-msvc native modules of the packaged Agent (Windows x64)",
+      "redistributable": true,
+      "signer": "CN=Microsoft Windows Software Compatibility Publisher, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+    }
+  ]
+}

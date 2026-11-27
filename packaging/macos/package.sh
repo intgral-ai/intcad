@@ -355,6 +355,9 @@ case "$ARCH" in universal) WANT=(arm64 x86_64) ;; aarch64) WANT=(arm64) ;; *) WA
 for arch in "${WANT[@]}"; do
   lipo "$MNT/Intcad.app/Contents/MacOS/Intcad" -verify_arch "$arch"
 done
+if [ -n "${STAGING_ACCOUNT_CONFIG:-}${PRODUCTION_ACCOUNT_CONFIG:-}" ]; then
+  python3 -I "$ROOT/scripts/ci/verify_embedded_account.py" --macho-universal "$MNT/Intcad.app/Contents/MacOS/Intcad"
+fi
 test -s "$MNT/Intcad.app/Contents/Resources/Licenses/THIRD-PARTY-LICENSES.txt"
 cmp "$ROOT/packages/assistant-web/THIRD-PARTY-NOTICES.txt" "$MNT/Intcad.app/Contents/Resources/Licenses/ASSISTANT-THIRD-PARTY-NOTICES.txt"
 cmp "$ROOT/packaging/notices/WEB-VIEW-PLATFORM-NOTICES.txt" "$MNT/Intcad.app/Contents/Resources/Licenses/WEB-VIEW-PLATFORM-NOTICES.txt"

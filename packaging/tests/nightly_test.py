@@ -1,16 +1,19 @@
 """Exercise the real nightly decision script without GitHub or repository mutations."""
 
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
 import time
+import tomllib
 import unittest
 from unittest.mock import Mock, patch
 
@@ -344,7 +347,7 @@ class AssistantNativeSmoke(unittest.TestCase):
         kill_group.assert_not_called()
         self.app.wait.assert_not_called()
 
-    def test_hit_recomputes_frame_origin_after_grab_and_rejects_stale_page(self):
+    def test_hit_recomputes_frame_origin_after_grab_and_refreshes_a_moved_page(self):
         desktop = object.__new__(self.smoke.X11)
         desktop.dpy, desktop.root, desktop.owner, desktop.page_window = 123, 1, 2, 3
         state = {"grabbed": False}
@@ -359,9 +362,10 @@ class AssistantNativeSmoke(unittest.TestCase):
         desktop.click(40, 50)
         desktop.motion.assert_called_once_with(123, 0, 140, 150, 0)
         desktop.motion.reset_mock()
-        with self.assertRaisesRegex(ValueError, "stale|moved"):
-            desktop.close_page((440, 220, 760, 790), 1)
-        desktop.motion.assert_not_called()
+        # The page moved since the observation: the Close hit is re-derived from the live
+        # child and only then sent; the stale coordinates are never clicked.
+        desktop.close_page((440, 220, 760, 790), 1)
+        desktop.motion.assert_called_once_with(123, 0, 744, 254, 0)
 
     def test_frame_coordinates_outside_live_screen_never_send_input(self):
         desktop = object.__new__(self.smoke.X11)
@@ -573,6 +577,28 @@ print(refs[args[2]])
         self.assertEqual(output, "")
 
 
+class EmbeddedFontNotices(unittest.TestCase):
+    def test_source_notice_matches_locked_egui_font_licences(self):
+        notice = (ROOT / "NOTICE").read_text()
+        packages = tomllib.loads((ROOT / "Cargo.lock").read_text())["package"]
+        versions = [pkg["version"] for pkg in packages if pkg["name"] == "epaint_default_fonts"]
+        self.assertEqual(versions, ["0.36.2"], "recheck the font licences when the dependency changes")
+        self.assertIn("Ubuntu-Light.ttf: Copyright 2011 Canonical Ltd.", notice)
+        self.assertIn("NotoEmoji-Regular.ttf: Copyright 2013 Google Inc. All Rights Reserved.", notice)
+        # Pinned text digests from epaint_default_fonts 0.36.2, with line endings
+        # normalized and surrounding whitespace stripped.
+        for font, digest in (
+            ("Ubuntu-Light.ttf", "52fdffecb23a020de527f68c516cac16dbbaf2dbb73fd9e29e2149703b881c82"),
+            ("Hack-Regular.ttf", "1b7cf37d5c48d3727717e5cce59235cce6a38df1c873c84b2481450460c8eed5"),
+            ("NotoEmoji-Regular.ttf", "9f6ffa4d4ceb839c1d12b830273c1d9f01cb0f5e2535f6143b8f7befdd5650d5"),
+            ("emoji-icon-font.ttf", "c655c7118399c1858e4c3e1bc425803b64589bbe6a81872fef3481f26bdb3408"),
+        ):
+            with self.subTest(font=font):
+                match = re.search(r"(?ms)^Licence for " + re.escape(font) + r"\n\n(.*?)(?=^End font licence\.$)", notice)
+                self.assertIsNotNone(match, f"{font}: full licence missing from packaged NOTICE")
+                self.assertEqual(hashlib.sha256(match[1].strip().encode("utf-8")).hexdigest(), digest)
+
+
 class ForkWorkflowSafety(unittest.TestCase):
     """Catch executable publication paths, not the presence of old helper tests."""
 
@@ -621,7 +647,16 @@ class ForkWorkflowSafety(unittest.TestCase):
 
     def test_package_failures_cannot_be_allowed_or_nightly_filtered(self):
         text = self.workflow("release")
-        self.assertNotIn("continue-on-error", text)
+        # No step may be allowed to fail, with one owner-approved exception: the installed-app UI
+        # check informs the release report and does not block it (2026-11-25). It must stay the
+        # only advisory step, and it must be advisory in exactly one place, so a package build,
+        # content check, ldd run or account check cannot quietly become advisory too.
+        self.assertEqual(text.count("continue-on-error"), 1)
+        advisory = re.search(
+            r"(?ms)^      - name: Install the packages on bare systems and open the Assistant\n"
+            r"(.*?)(?=^      - )", text)
+        self.assertIsNotNone(advisory, "the installed-app UI check step is missing")
+        self.assertRegex(advisory[1], r"(?m)^        continue-on-error: true$")
         self.assertNotIn("packaging/nightly.sh", text)
         self.assertNotIn("needs.version.outputs.build", text)
         self.assertNotRegex(text, r"(?m)^  release:")
@@ -665,6 +700,30 @@ class ForkWorkflowSafety(unittest.TestCase):
         self.assertLess(windows.index("New-NetFirewallRule"), windows.index("windows-assistant-smoke.ps1') -Exe"))
         self.assertIn("$env:SOLIDCRAFT_UPDATE_CHECK = '0'", windows)
         self.assertNotRegex(text, r"windows-assistant-smoke\.ps1")
+
+    def test_snap_smoke_does_not_launch_when_isolation_precheck_fails(self):
+        launch = next(line.strip() for line in self.workflow("release").splitlines()
+                      if "sudo unshare -n" in line and "snap-smoke.py" in line)
+        shell, flags, command, *_ = shlex.split(launch)[4:]
+        # shlex splits the command but leaves dollar escapes inside double quotes.
+        precheck, separator, _ = command.replace(r"\$", "$").partition("exec su ")
+        self.assertTrue(separator, "test must intercept the real launch")
+        loopback = r'printf "%s\n" "1: lo: <UP>"'
+        cases = [
+            ("setup failed", 1, loopback, False),
+            ("extra interface", 0, r'printf "%s\n" "1: lo: <UP>" "2: eth0: <UP>"', False),
+            ("listing failed", 0, loopback + "; return 1", False),
+            ("empty listing", 0, "return 0", False),
+            ("wrong interface", 0, r'printf "%s\n" "2: eth0: <UP>"', False),
+            ("loopback only", 0, loopback, True),
+        ]
+        for name, setup_status, action, permitted in cases:
+            with self.subTest(case=name):
+                fake_ip = f'ip() {{ if [ "$1" = -o ]; then {action}; else return {setup_status}; fi; }}'
+                run = subprocess.run([shell, flags, fake_ip + "\n" + precheck + "echo launched"],
+                                     capture_output=True, text=True, timeout=5)
+                self.assertEqual("launched" in run.stdout, permitted, run.stderr)
+                self.assertEqual(run.returncode == 0, permitted, run.stderr)
 
     def test_build_only_tokens_and_fork_integration_lints_are_read_only(self):
         for name in ("packaging-lint", "lists"):

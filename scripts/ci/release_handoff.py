@@ -731,12 +731,9 @@ def prepare(env):
     handoff = work / "handoff"
     download_artifact(repo, live[manifest_name(attempt)], handoff, {"stable-release-handoff.json"})
     manifest = parse_json((handoff / "stable-release-handoff.json").read_bytes())
-    # The mode decides which kind of run may have produced this handoff; verify the
-    # live run only after reading it, so a candidate run cannot stand for a
-    # post-promotion run (or the reverse).
-    mode = manifest.get("mode")
-    require(mode in ("candidate", "tag"), "unknown handoff mode")
-    live_execution(repo, ident, run, attempt, mode, sha, "v" + version)
+    # PR handoffs are nonpublishing evidence, even if their other fields match.
+    require(manifest.get("mode") == "tag", "publisher requires a tag-push handoff")
+    live_execution(repo, ident, run, attempt, "tag", sha, "v" + version)
     descriptors = verify_manifest(manifest, ident, run, attempt, sha, version, contract,
                                   {name: live[name] for name in pair_names(attempt)})
     distribution = manifest["distribution"]
@@ -753,7 +750,7 @@ def prepare(env):
     (work / "acceptance-key.pub").write_text(key, encoding="ascii")
     (work / "candidate.json").write_text(json.dumps(dict(
         source=repo, repositoryId=ident, runId=run, runAttempt=attempt, sourceRevision=sha, version=version,
-        mode=mode, notesSha256=sha256(notes.encode()), archives=live,
+        mode="tag", notesSha256=sha256(notes.encode()), archives=live,
     )) + "\n", encoding="utf-8")
 
 
@@ -762,8 +759,8 @@ def confirm(env):
     repo, ident = authorize(env)
     require(candidate["source"] == repo and candidate["repositoryId"] == ident, "frozen source changed")
     run, attempt = candidate["runId"], candidate["runAttempt"]
-    live_execution(repo, ident, run, attempt, candidate.get("mode", "candidate"),
-                   candidate["sourceRevision"], "v" + candidate["version"])
+    require(candidate.get("mode") == "tag", "publisher requires a tag-push handoff")
+    live_execution(repo, ident, run, attempt, "tag", candidate["sourceRevision"], "v" + candidate["version"])
     # Re-read the tag before the next upload: it must still name the frozen SHA on main,
     # both locally and on the remote (a deleted or moved remote tag must stop staging).
     require_tag_on_main(env["TAG"], candidate["sourceRevision"])

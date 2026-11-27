@@ -12,7 +12,7 @@
 # as in CI. The gnome extension (gnome-46-2404 on core24) brings GTK 3 and WebKitGTK 4.1 at
 # runtime; snapcraft.yaml says why they are not staged here. Install and smoke-test the result:
 #   sudo snap install --dangerous dist/release/intcad-<version>-linux-<arch>.snap
-#   python3 packaging/linux/snap-smoke.py    # models a box and opens the Assistant's page
+#   python3 packaging/linux/snap-smoke.py    # run in a loopback-only namespace; checks signed-out refusals
 # Manifest: packaging/linux/snap/snapcraft.yaml.
 set -euo pipefail
 # shellcheck source=../env.sh

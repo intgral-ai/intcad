@@ -62,14 +62,27 @@
       <?endif?>
     </Feature>
 
-    <!-- WixUI_InstallDir without its licence page (MIT OR Apache-2.0: nothing to accept). -->
+    <!-- WixUI_InstallDir. A package that carries the Microsoft Visual C++ runtime for the
+         built-in Agent shows its terms and requires acceptance; the application itself is
+         MIT OR Apache-2.0 and has no licence page otherwise. -->
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+    <?if $(var.HasMastraAgent) = 1 ?>
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    <!-- A silent install has no licence page: it must pass this property explicitly. -->
+    <Property Id="INTCAD_RUNTIME_TERMS" Secure="yes" />
+    <?endif?>
     <UI>
+      <?if $(var.HasMastraAgent) != 1 ?>
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="InstallDirDlg" Order="2" Condition="NOT Installed" />
       <Publish Dialog="InstallDirDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2" />
+      <?endif?>
       <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchSolidcraft"
           Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
     </UI>
+    <?if $(var.HasMastraAgent) = 1 ?>
+    <Launch Condition="UILevel = 5 OR INTCAD_RUNTIME_TERMS = 1"
+        Message="This package includes the Microsoft Visual C++ Runtime. Read VC-RUNTIME-TERMS.txt and accept the terms in the installer, or pass INTCAD_RUNTIME_TERMS=1 for a silent install." />
+    <?endif?>
 
     <Property Id="SolidcraftVersion" Value="$(var.DisplayVersion)" />
     <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="Intcad $(var.DisplayVersion) is installed. You can start it any time from the Start menu." />
@@ -153,6 +166,15 @@
       <Component Id="WebViewPlatformNotices">
         <File Id="WebViewNotices" Source="$(var.BinDir)\WEB-VIEW-PLATFORM-NOTICES.txt" KeyPath="yes" />
       </Component>
+      <?if $(var.HasMastraAgent) = 1 ?>
+      <!-- The installer's own assent to the Microsoft runtime terms: the licence page, or the
+           explicit INTCAD_RUNTIME_TERMS=1 of a silent install. It names the runtime build it was
+           given for, so a newly installed runtime asks again. The portable ZIP has no such record
+           and asks the person on first start. -->
+      <Component Id="RuntimeAssent" Guid="3A170071-4C70-44F6-AF8E-279F42D818C2">
+        <File Id="RuntimeAssentFile" Source="$(var.AssentPath)" KeyPath="yes" />
+      </Component>
+      <?endif?>
     </ComponentGroup>
   </Fragment>
 

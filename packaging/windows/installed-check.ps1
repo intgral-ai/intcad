@@ -98,15 +98,70 @@ function Add-Summary([string] $Text) {
 }
 
 function Invoke-MsiFile([string] $File, [string] $Verb, [string] $Log) {
-  $run = Start-Process msiexec.exe -ArgumentList @($Verb, "`"$File`"", '/qn', '/norestart', '/L*v', "`"$Log`"") -Wait -PassThru
+  # A package that carries the Microsoft runtime requires explicit acceptance for a silent
+  # install; an older artifact without that property ignores it.
+  $run = Start-Process msiexec.exe -ArgumentList @($Verb, "`"$File`"", '/qn', 'INTCAD_RUNTIME_TERMS=1', '/norestart', '/L*v', "`"$Log`"") -Wait -PassThru
   if ($run.ExitCode -ne 0) {
     Get-Content $Log -Tail 60 -ErrorAction SilentlyContinue
     throw "msiexec $Verb $File exited $($run.ExitCode)"
   }
 }
 
-function Get-MsiMetadata([string] $File) {
+function Assert-AgentRuntime([string] $Agent) {
   <#
+    The installed Agent must run with the installed files only: its own Node, its entry, its
+    SDK, its native modules and the Microsoft runtime shipped beside them. A hosted image that
+    happens to have a machine-wide runtime must not make this pass.
+  #>
+  $node = Join-Path $Agent 'node.exe'
+  $probe = Join-Path $RepoRoot 'packaging\windows\agent-runtime-probe.mjs'
+  $acpProbe = Join-Path $RepoRoot 'packaging\windows\agent-acp-probe.mjs'
+  Push-Location $Agent
+  try {
+    $lines = & $node $acpProbe 2>$null | Where-Object { $_ }
+  } finally { Pop-Location }
+  $acpText = (@($lines) | Select-Object -Last 1)
+  Write-Output "ACP initialize: $acpText"
+  $acp = $acpText | ConvertFrom-Json
+  if (-not $acp.ok) { throw "the installed Agent's ACP entry did not answer initialize: $acpText" }
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $node
+  $psi.Arguments = "`"$probe`""
+  $psi.WorkingDirectory = $Agent
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardInput = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $process = [System.Diagnostics.Process]::Start($psi)
+  $probeLine = $process.StandardOutput.ReadLine()
+  Write-Output "native modules: $probeLine"
+  $native = $probeLine | ConvertFrom-Json
+  # The loaded module is asked of the running Node, so this is the real loader decision. Both
+  # native modules may load their own copy; each must come from this installed package.
+  $loadedModules = @($process.Modules | Where-Object { $_.ModuleName -eq 'VCRUNTIME140.dll' })
+  $loaded = @($loadedModules | ForEach-Object { $_.FileName })
+  $process.StandardInput.WriteLine('done')
+  if (-not $process.WaitForExit(15000)) { $process.Kill(); throw 'the runtime probe did not exit' }
+  $exit = $process.ExitCode
+  $err = $process.StandardError.ReadToEnd()
+  $receipt = Get-Content -LiteralPath (Join-Path $Agent 'vc-runtime-receipt.json') -Raw | ConvertFrom-Json
+  $expected = @($receipt.files | ForEach-Object { $_.targets } | ForEach-Object { Join-Path (Split-Path $Agent -Parent) ($_ -replace '/', '\') })
+  if (-not $native.libsql) { throw "libSQL did not load in the installed Agent: $probeLine $err" }
+  if (-not $native.astGrep) { throw "ast-grep did not run in the installed Agent: $probeLine $err" }
+  if ($exit -ne 0) { throw "the runtime probe exited ${exit}: $probeLine $err" }
+  if ($loaded.Count -eq 0) { throw 'the installed Node loaded no VCRUNTIME140.dll at all' }
+  foreach ($path in $loaded) {
+    if ($expected -notcontains [IO.Path]::GetFullPath($path)) {
+      throw "the installed Node loaded VCRUNTIME140.dll from '$path', which is not a package copy ($($expected -join ', '))"
+    }
+  }
+  Write-Output "ok: libSQL and ast-grep ran with the installed Node, which loaded $($loaded -join ', ')"
+  [ordered]@{ acp = $acp; native = $native; loadedRuntime = $loaded } |
+    ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $Evidence 'agent-runtime.json') -Encoding utf8
+}
+
+function Get-MsiMetadata([string] $File) {  <#
     ProductCode, ProductVersion and the Upgrade table, read from the MSI database itself. If the
     Windows Installer COM object is unavailable this fails: a package check must not silently skip
     the upgrade identity it claims to check.
@@ -257,6 +312,20 @@ try {
       throw 'the MSI installed no agent skills (mastra-agent\skills\<set>\<skill>\SKILL.md)'
     }
     Write-Output 'ok: the MSI installed the built-in agent with its Node, dependencies and skills'
+    # The agent's native modules import the Microsoft runtime. It must be in the installed package,
+    # match the receipt the release was built with, and be the copy the installed Node loads.
+    # The script throws on any mismatch (hashes, version, machine, signature); a script call does
+    # not set $LASTEXITCODE, so it is not consulted here.
+    & (Join-Path $RepoRoot 'packaging\windows\vc-runtime.ps1') -Action Verify -Destination $Agent -Evidence (Join-Path $Evidence 'vc-runtime')
+    # The installer's assent to those terms is recorded for the exact build it installed; without
+    # it every user would be asked again by a per-machine install.
+    $assent = Join-Path (Split-Path $Agent -Parent) 'vc-runtime-accepted.json'
+    if (-not (Test-Path -LiteralPath $assent)) { throw 'the MSI installed no Microsoft runtime assent record (vc-runtime-accepted.json)' }
+    $recorded = (Get-Content -LiteralPath $assent -Raw | ConvertFrom-Json).receipt
+    $installedKey = (Get-Content -LiteralPath (Join-Path $Agent 'vc-runtime-receipt.json') -Raw | ConvertFrom-Json).files[0].sha256
+    if ($recorded -ne $installedKey) { throw "the installer assent names $recorded, not the installed runtime build $installedKey" }
+    Write-Output "ok: the installer assent names the installed runtime build ($installedKey)"
+    Assert-AgentRuntime $Agent
   } else {
     if (Test-Path (Join-Path $Dir 'mastra-agent\agent.json')) { throw "the $Arch MSI carries an agent it was not built with" }
     Write-Output "ok: the $Arch MSI carries no built-in agent, as its target is not built for it"

@@ -25,14 +25,14 @@ install_step() {
     apt-get update -qq
     bare() { apt-get install -y -qq --no-install-recommends "$@" >/dev/null; }
     # What the .deb recommends (the GPU's userspace), and the test's tools.
-    local display_tools=(xvfb openbox python3 imagemagick dbus-x11 fonts-dejavu-core mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri)
+    local display_tools=(xvfb openbox python3 imagemagick dbus-x11 fonts-dejavu-core mesa-vulkan-drivers libegl-mesa0 libgl1-mesa-dri libxtst6)
     local wayland_tools=(sway xwayland grim)
     # What an AppImage needs from the system: the web view's libraries (GTK comes with them)
     # and the windowing libraries the app loads by name.
     local appimage_needs=(libwebkit2gtk-4.1-0 libxkbcommon-x11-0 libxcursor1 libxi6 libx11-xcb1 libwayland-client0 libvulkan1)
   elif command -v dnf >/dev/null; then
     bare() { dnf install -y -q --setopt=install_weak_deps=False "$@" >/dev/null; }
-    local display_tools=(xorg-x11-server-Xvfb openbox python3 ImageMagick dbus-x11 dejavu-sans-fonts mesa-vulkan-drivers mesa-dri-drivers)
+    local display_tools=(xorg-x11-server-Xvfb openbox python3 ImageMagick dbus-x11 dejavu-sans-fonts mesa-vulkan-drivers mesa-dri-drivers libXtst)
     local wayland_tools=(sway xorg-x11-server-Xwayland grim)
     local appimage_needs=(webkit2gtk4.1 libxkbcommon-x11 libXcursor libXi libwayland-client vulkan-loader)
   else

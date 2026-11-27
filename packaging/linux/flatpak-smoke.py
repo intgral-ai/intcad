@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Exercise desktop startup, modelling and the Assistant in the installed Flatpak.
+"""Check desktop startup, signed-out refusals and the Assistant runtime in the installed Flatpak.
 
 Uses the app's normal sandbox permissions. The control client runs inside that
 sandbox, so this does not grant host network access or save Flatpak overrides.
 Each headless backend has private runtime/configuration directories and a bus.
-The Assistant's page is served by the app itself, so opening it needs no network.
+The signed-out check does not verify Assistant page loading.
 """
 import argparse
 import base64
@@ -24,6 +24,9 @@ import zlib
 APP_ID = "ai.intgral.intcad"
 MAX_PIXELS = 16_000_000
 MAX_PNG_BYTES = 70_000_000
+# The authority layer's refusals for a controlled entry on a host with no account: no authority
+# at all, or no durable commit path for that entry. Both are fail-closed; nothing else counts.
+FAIL_CLOSED = frozenset({"AuthUnavailable", "UnsafeToStart"})
 SANDBOX_PROBE = r'''
 set -euo pipefail
 work=$(mktemp -d)
@@ -76,29 +79,26 @@ for request in '{"id":2,"method":"engine.execute","params":{"command":"solid.box
   IFS= read -r -t 30 reply <&3
   printf '%s\n' "$reply"
 done
-# The Assistant: open the panel and wait for the app's own page to report in. The page is
-# carried inside the app, so this needs no network. Hide the start page first, as it covers
-# the workspace (and the panel) when it happens to be showing.
-printf '{"id":4,"method":"ui.home","params":{"open":false}}\n' >&3
+# Opening the panel is a controlled entry. Signed out it must be refused; the page is
+# carried inside the app but cannot be driven without account authority, so the probe
+# proves the refusal and then reads the bounded marker for the web runtime.
+printf '{"id":4,"method":"ui.agent_chat","params":{"open":true}}\n' >&3
 IFS= read -r -t 30 reply <&3
 printf '%s\n' "$reply"
-printf '{"id":5,"method":"ui.agent_chat","params":{"open":true}}\n' >&3
-IFS= read -r -t 30 reply <&3
-printf '%s\n' "$reply"
-id=6
+id=5
 deadline=$((SECONDS + 120))
 while :; do
-  printf '{"id":%d,"method":"ui.agent_chat","params":{}}\n' "$id" >&3
+  printf '{"id":%d,"method":"ui.inspect","params":{}}\n' "$id" >&3
   if ! IFS= read -r -t 30 reply <&3; then
-    echo "the Assistant state got no reply" >&2
+    echo "the Assistant marker got no reply" >&2
     exit 1
   fi
   printf '%s\n' "$reply"
-  if printf '%s' "$reply" | grep -Eq '"page"[[:space:]]*:[[:space:]]*true|"host"[[:space:]]*:[[:space:]]*false|"ok"[[:space:]]*:[[:space:]]*false'; then
+  if printf '%s' "$reply" | grep -Eq '"host"[[:space:]]*:[[:space:]]*"(available|native_wayland)"'; then
     break
   fi
   if ((SECONDS >= deadline)); then
-    echo "the Assistant page never loaded: $reply" >&2
+    echo "the Assistant web runtime is not reported: $reply" >&2
     exit 1
   fi
   sleep .25
@@ -112,24 +112,32 @@ printf '\n'
 '''
 
 
-def validate_replies(stdout):
+def validate_offline(stdout):
+    """Check what this signed-out, offline desktop must do: run, and refuse control writes.
+
+    The control channel is a controlled entry, so an app with no account authority must
+    refuse `engine.execute` and `document.inspect` and must not commit anything. Both
+    fail-closed codes the authority layer uses are accepted (`AuthUnavailable` when there
+    is no authority, `UnsafeToStart` when there is no durable commit path); anything else,
+    and especially a successful reply, fails. Modelling over the control channel needs
+    authority and is covered by the signed-in staging acceptance, not by this offline probe.
+    """
     replies = [json.loads(line) for line in stdout.splitlines()]
-    if len(replies) != 3 or any(reply.get("id") != i or reply.get("ok") is not True
-                                for i, reply in enumerate(replies, 1)):
+    if len(replies) != 3 or any(reply.get("id") != i for i, reply in enumerate(replies, 1)):
         raise ValueError(f"desktop control failed: {replies}")
-    ui = replies[0]["result"]
+    ui_reply, *controlled = replies
+    if ui_reply.get("ok") is not True:
+        raise ValueError(f"ui.inspect failed: {ui_reply}")
+    ui = ui_reply["result"]
     viewport = ui["viewport"]
     if (ui["renderer"] not in {"gpu", "cpu"} or len(viewport) != 4
             or not all(math.isfinite(value) for value in viewport)
             or viewport[2] <= 0 or viewport[3] <= 0):
         raise ValueError("desktop did not create a usable viewport")
-    document = replies[2]["result"]
-    bodies = document["bodies"]
-    if (len(bodies) != 1 or len(document["timeline"]) != 1
-            or document["timeline"][0]["error"] is not None
-            or not math.isclose(bodies[0]["volume_mm3"], 6000, rel_tol=0, abs_tol=1e-7)
-            or bodies[0]["bbox"] != {"min": [0, 0, 0], "max": [30, 20, 10]}):
-        raise ValueError(f"desktop modelling failed: {document}")
+    for reply in controlled:
+        details = reply.get("errorDetails") or {}
+        if reply.get("ok") is not False or details.get("code") not in FAIL_CLOSED:
+            raise ValueError(f"a controlled entry was not refused for a signed-out host: {reply}")
     return ui["renderer"]
 
 
@@ -217,6 +225,28 @@ def frame_statistics(png):
     return {"width": width, "height": height, "nonblack": nonblack, "pixels": width * height}
 
 
+def validate_signed_out_assistant(replies, backend):
+    """A signed-out desktop cannot open the Assistant panel: the request is refused, and the
+    bounded marker still reports the web runtime. The page itself is NOT VERIFIED offline."""
+    if not replies:
+        raise ValueError("the Assistant open request returned no answer")
+    opening = replies[0]
+    details = opening.get("errorDetails") or {}
+    if opening.get("ok") is not False or details.get("code") not in FAIL_CLOSED:
+        raise ValueError(f"the Assistant panel opened without account authority: {opening}")
+    # Native Wayland has no X11 child for WebKitGTK. Its diagnostic is not
+    # interchangeable with the available host required under X11/XWayland.
+    expected = {"x11": "available", "xwayland": "available", "wayland": "native_wayland"}.get(backend)
+    observation = replies[-1]
+    marker = (observation.get("result") or {}).get("assistant") or {}
+    host = marker.get("host")
+    if expected is None or observation.get("ok") is not True or host != expected:
+        raise ValueError(f"Assistant {backend} host: expected {expected!r}, got {host!r}")
+    if host == "native_wayland":
+        return "native-Wayland diagnostic; page NOT VERIFIED offline"
+    return "web runtime available; page NOT VERIFIED offline"
+
+
 def validate_assistant(replies, backend):
     """The Assistant panel is open under this backend, with the state that backend promises.
 
@@ -271,14 +301,14 @@ def probe(gl_saved_four=False, backend="x11"):
     if not lines or lines[-1].startswith("{"):
         raise ValueError("invalid presented-frame response")
     json_lines = [line for line in lines if line.startswith("{")]
-    # ui.inspect, engine.execute, document.inspect; then the Assistant's replies; then the
-    # screenshot reply. The presented frame is the one line that is not JSON.
+    # ui.inspect, then the refused engine.execute and document.inspect; then the Assistant's
+    # replies; then the screenshot reply. The presented frame is the one line that is not JSON.
     if len(json_lines) < 5 or len(lines[-1]) > ((MAX_PNG_BYTES + 2) // 3) * 4:
         raise ValueError("invalid presented-frame response")
-    renderer = validate_replies("\n".join(json_lines[:3]))
+    renderer = validate_offline("\n".join(json_lines[:3]))
     assistant = [json.loads(line) for line in json_lines[3:-1]]
     try:
-        assistant_mode = validate_assistant(assistant, backend)
+        assistant_mode = validate_signed_out_assistant(assistant, backend)
     except ValueError as error:
         raise ValueError(f"{error}\n--- app log ---\n{result.stderr[-8000:]}") from error
     capture = json.loads(json_lines[-1])
@@ -290,8 +320,8 @@ def probe(gl_saved_four=False, backend="x11"):
     if gl_saved_four and "SolidCraft graphics: Gl, MSAA 1x (requested 4x)" not in result.stderr:
         raise ValueError("forced GL did not apply the safe sample count")
     mode = "GL saved 4x" if gl_saved_four else "default backend"
-    print(f"Flatpak desktop PASS: {mode}, renderer={renderer}, box=6000 mm³, "
-          f"Assistant {assistant_mode}, frame={statistics}")
+    print(f"Flatpak desktop PASS: {mode}, renderer={renderer}, controlled entries refused "
+          f"(signed out), Assistant {assistant_mode}, frame={statistics}")
 
 
 def run_backend(backend):
@@ -343,7 +373,8 @@ def run_backend(backend):
                     native_command = [sys.executable, str(Path(__file__).resolve()), "--probe",
                                       "--probe-backend", "wayland"]
                     subprocess.run(native_command, env=native, check=True, timeout=300)
-                print(f"{backend}: default sandbox desktop startup, modelling and Assistant PASS")
+                print(f"{backend}: sandbox startup, signed-out refusals and Assistant backend PASS; "
+                      "page NOT VERIFIED offline")
             finally:
                 if compositor:
                     compositor.terminate()

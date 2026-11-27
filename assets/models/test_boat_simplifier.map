@@ -1,0 +1,4 @@
+{
+    global: meshopt_simplify; test_boat_arena;
+    local: *;
+};

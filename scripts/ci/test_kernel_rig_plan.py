@@ -86,6 +86,15 @@ class Synthetic(unittest.TestCase):
         everything = (["fillets", "shell", "ladder"], True)
         self.assertEqual(plan.select(self.root, ["Cargo.lock", "Cargo.toml"], pin_diff=moved), everything)
 
+    def test_a_forked_solidcore_pin_change_runs_every_area(self):
+        moved = (
+            "--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1,3 +1,3 @@\n name = \"solidcore\"\n"
+            '-source = "git+https://github.com/intgral-ai/solidcore?rev=b884709#b884709"\n'
+            '+source = "git+https://github.com/intgral-ai/solidcore?rev=c0ffee#c0ffee"\n'
+        )
+        everything = (["fillets", "shell", "ladder"], True)
+        self.assertEqual(plan.select(self.root, ["Cargo.lock", "Cargo.toml"], pin_diff=moved), everything)
+
     def test_another_dependency_change_runs_nothing(self):
         bumped = '--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1,2 +1,2 @@\n name = "serde"\n-version = "1.0.1"\n+version = "1.0.2"\n'
         self.assertEqual(plan.select(self.root, ["Cargo.lock", "Cargo.toml"], pin_diff=bumped), ([], False))
