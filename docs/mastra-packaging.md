@@ -96,7 +96,12 @@ folders, not only beside `node.exe`.
   or an extracted ZIP against the same receipt.
 - `packaging/windows/VC-RUNTIME-NOTICE.txt`, `VC-RUNTIME-TERMS.txt` and the receipt travel in the
   package. The MSI shows the terms on its licence page and requires `INTCAD_RUNTIME_TERMS=1` for
-  a silent install; a portable copy shows the terms once on first start.
+  a silent install; it also installs `vc-runtime-accepted.json` naming the runtime build it was
+  given for, so that installed copy does not ask each user again.
+- A portable copy asks once, before the window opens (`apps/solidcraft/src/runtime_assent.rs`):
+  its native dialog shows where the shipped text is, a Yes records the receipt's build hash in the
+  app's data folder, and No, no answer or a missing terms file stops the start. A `--control`
+  start reaches the same gate; automation cannot accept on anyone's behalf.
 - The licensing basis and responsibilities are in
   `packaging/windows/vc-runtime-compliance.md`. The files are Microsoft's; Intcad ships them
   unmodified and services them by shipping a newer runtime with a later Intcad release. No

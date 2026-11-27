@@ -317,6 +317,14 @@ try {
     # The script throws on any mismatch (hashes, version, machine, signature); a script call does
     # not set $LASTEXITCODE, so it is not consulted here.
     & (Join-Path $RepoRoot 'packaging\windows\vc-runtime.ps1') -Action Verify -Destination $Agent -Evidence (Join-Path $Evidence 'vc-runtime')
+    # The installer's assent to those terms is recorded for the exact build it installed; without
+    # it every user would be asked again by a per-machine install.
+    $assent = Join-Path (Split-Path $Agent -Parent) 'vc-runtime-accepted.json'
+    if (-not (Test-Path -LiteralPath $assent)) { throw 'the MSI installed no Microsoft runtime assent record (vc-runtime-accepted.json)' }
+    $recorded = (Get-Content -LiteralPath $assent -Raw | ConvertFrom-Json).receipt
+    $installedKey = (Get-Content -LiteralPath (Join-Path $Agent 'vc-runtime-receipt.json') -Raw | ConvertFrom-Json).files[0].sha256
+    if ($recorded -ne $installedKey) { throw "the installer assent names $recorded, not the installed runtime build $installedKey" }
+    Write-Output "ok: the installer assent names the installed runtime build ($installedKey)"
     Assert-AgentRuntime $Agent
   } else {
     if (Test-Path (Join-Path $Dir 'mastra-agent\agent.json')) { throw "the $Arch MSI carries an agent it was not built with" }
