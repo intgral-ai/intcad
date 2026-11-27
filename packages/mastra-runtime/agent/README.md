@@ -109,7 +109,41 @@ is asked; its `prefix` is empty when the model's connection was a custom address
 session starts on a model that something connected can serve.
 
 A `session/prompt` that fails carries
-`data: { "intcad": { "kind": "auth" | "quota" | "rate" | "network" | "model" | "other", "prefix" } }`.
+`data: { "intcad": { "kind": "auth" | "quota" | "rate" | "network" | "model" | "attachments" | "other", "prefix" } }`.
+
+`initialize` declares `promptCapabilities.image` and `embeddedContext`, so the app sends a message's
+pictures (`image` blocks) and PDFs (`resource` blocks with a `blob`). Mastra Code's own prompt handler
+refuses both; `agent.mjs` takes them out and hands them to the session's `sendMessage` as files of
+that turn's message (INT-1513). Just before submission, it checks the effective model and adapter
+against the message and any attachment types the SDK may retain from earlier turns, even on a
+text-only follow-up. A confirmed SDK cancellation before admission leaves no attachment history.
+DeepSeek and xAI's OAuth chat adapter cannot take PDFs. On signed-in Copilot, a model listed by
+the SDK must advertise vision to receive pictures. The SDK reports both explicit `false` and
+omitted upstream vision as `false`. An unlisted model, a failed catalog lookup, or no sign-in
+leaves the decision to the provider. Vision support does not establish PDF support.
+An incompatible turn is refused with kind `attachments` before a provider is asked. Stop also
+applies during model refresh or while a prompt is waiting in the SDK queue.
+
+The desktop preflights the complete encoded prompt, including the JSON-RPC envelope and newline.
+A built-in prompt is limited to 18 MiB, enough for one 12 MiB PDF and ordinary text. It is refused
+locally if it does not fit; agent-to-desktop limits do not change.
+
+Two more, for the app's guesses of the user's next step (2026-11-26, G87 to G90 of
+`docs/design/autocomplete-tests.md`):
+
+- `session/close`, offered as `agentCapabilities.sessionCapabilities.close`. Mastra Code's ACP agent
+  has none, and keeps each session (a whole runtime, with its storage, workers and folder) until the
+  connection closes. A closed session is ended as every session is then: its turn cancelled and
+  aborted, its listeners removed, its runtime cleaned up. A prompt or a second close on it is
+  refused, and so is a close of a session that is not open. The app closes only guessing sessions.
+- A `session/new` with `_meta.intcad.nextStep: true` (only `true` counts; `isNextStep`, `session.mjs`)
+  is a guess. It gets the app's note alone (no `LANGUAGE`, no brief, no `NO_PROJECT`, and no project
+  even if one is sent), no MCP at all (`disableMcp`; the servers the request names are not started),
+  no design tools (a `cadBridge` catalog is ignored), and no per-session plan tracking. An input
+  processor clears model-visible tools at every step. Before the first guess the installed Core
+  must also pass an offline stream check with a stub model; otherwise the session is refused.
+  It is put in Mastra Code's read-only mode `fast` (Explore) before the reply as a second safeguard.
+  An agent without that mode refuses the session and ends it.
 
 ### The note and the project (INT-1473)
 
@@ -123,7 +157,7 @@ A `session/prompt` that fails carries
 Every session, with a project or without, works in a new, empty folder of its own,
 `<data>/sessions/s-<pid>-…` (`sessionFolder` in `session.mjs`), removed when the session is
 cleaned up, that is when the app closes its connection to the agent (New chat leaves the old
-session open). A start removes the folders of an agent process that is no longer running
+session open), or the session itself (`session/close`, sent only for guesses of the next step). A start removes the folders of an agent process that is no longer running
 (`sweepSessionFolders`). The `cwd` the app names is used only for the MCP servers it hands over.
 Mastra Code reads agent files (`AGENTS.md`, `CLAUDE.md`, on every turn), MCP servers (`.mcp.json`,
 `.claude/settings.local.json`) and skills from a session's folder: in one folder shared by every

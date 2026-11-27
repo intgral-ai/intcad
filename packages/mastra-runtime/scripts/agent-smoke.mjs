@@ -8,6 +8,8 @@
  * It starts the folder's own Node with the folder's entry, as the app does, and talks ACP with
  * it: `initialize`, a custom address handed over with `_intcad/connections/setup`, then
  *   - three turns in one session, answered by a stand-in model service;
+ *   - a message with a picture and a PDF, which reach the model as parts of the user's message (I1,
+ *     INT-1513);
  *   - a turn in which the model asks for a command, run after one permission request;
  *   - a turn in which the model asks for a tool of an MCP server handed over in `session/new`;
  *   - a command and a file write whose permission requests are refused;
@@ -40,6 +42,7 @@
  * This control must fail because the server does not see the response close.
  * `--only "early-rejection control"` runs both cancellation cases with a nonexistent
  * session for the prompt, so an ACP error arrives before the awaited event.
+ * `--only "I1 12 MiB"` runs a separate stress probe through the pinned SDK and model stub.
  *
  * Nothing of the person running it is used. The agent gets a new, empty data folder
  * (`MASTRA_APP_DATA_DIR`), which is also where Mastra keeps plan sign-ins, and the agent's entry
@@ -108,7 +111,7 @@ function mcpServer(log) {
 
 // ---- The stand-in model service -----------------------------------------------------------------
 
-const textOf = (message) => (typeof message?.content === "string" ? message.content : Array.isArray(message?.content) ? message.content.map((part) => part?.text ?? "").join("\n") : "");
+const textOf = (message) => (typeof message?.content === "string" ? message.content : Array.isArray(message?.content) ? message.content.flatMap((part) => typeof part?.text === "string" ? [part.text] : []).join("\n") : "");
 
 /**
  * An OpenAI-compatible service. What it answers follows the last message of the request:
@@ -177,6 +180,11 @@ export function modelService({ keep = () => {}, status = () => 200 } = {}) {
       };
       const messages = wanted.messages ?? [];
       const last = messages[messages.length - 1] ?? {};
+      // A large attachment can trigger Mastra's observer before the actual reply.
+      // Give the SDK the structured response that it expects for that request.
+      if (last.role === "user" && textOf(last).startsWith("## New Message History to Observe")) {
+        return say("<observations>\n* 🟡 (12:00) User sent the synthetic attachment fixture.\n</observations>");
+      }
       // A change the plan gate held (agent/plan.mjs): do as the real model did, record the plan
       // with `task_write`, then make the same call again. Mastra Code puts a message of its own
       // after the task tool's result (`<current-task-list …>`, or `<task-list-update …>` when a list
@@ -282,7 +290,7 @@ export function ownEnvironment(data, more = {}) {
  * (in `agent.open`) for the case to answer with `agent.answer`. Without it every request is allowed
  * once. `keep(file, value)` is told every message in both directions.
  */
-export function start({ command, args, env, cwd, permission, keep = () => {} }) {
+export function start({ command, args, env, cwd, permission, hostTool, keep = () => {} }) {
   const child = spawn(command, args, { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
   let pending = "";
   let stderr = "";
@@ -324,6 +332,8 @@ export function start({ command, args, env, cwd, permission, keep = () => {} }) 
           const result = permission ? permission(message) : { outcome: { outcome: "selected", optionId: allow?.optionId } };
           if (result === undefined) open.push(message);
           else write({ jsonrpc: "2.0", id: message.id, result });
+        } else if (message.method === "_intcad/cad/tool" && hostTool) {
+          write({ jsonrpc: "2.0", id: message.id, result: hostTool(message.params) });
         } else write({ jsonrpc: "2.0", id: message.id, result: {} });
         noted(message);
       } else if (message.method) noted(message);
@@ -508,7 +518,7 @@ async function main(args) {
    * `app.handed` is false. Without it the session's folder is the project, as for the other cases.
    * `prepare({ project, own, outside })` puts files in place before the agent starts.
    */
-  async function run(name, { mcpServers = [], permission, app, prepare } = {}, fn) {
+  async function run(name, { mcpServers = [], permission, app, prepare, cadBridge, hostTool } = {}, fn) {
     if (only && !name.includes(only)) return;
     ran += 1;
     const slug = name.replace(/[^a-z0-9]+/giu, "-");
@@ -527,12 +537,16 @@ async function main(args) {
     writeFileSync(join(project, "part.txt"), "a file of the project\n");
     await prepare?.({ project, own, elsewhere });
     const service = await modelService({ keep });
-    const agent = start({ command: node, args: [entry], env: ownEnvironment(data, sdk ? { SOLIDCRAFT_MASTRA_SDK: sdk } : {}), cwd: app ? own : project, permission, keep });
+    const agent = start({ command: node, args: [entry], env: ownEnvironment(data, sdk ? { SOLIDCRAFT_MASTRA_SDK: sdk } : {}), cwd: app ? own : project, permission, hostTool, keep });
     const out = { case: name };
     try {
       await agent.call("initialize", { protocolVersion: 1, clientCapabilities: {} });
       const snapshot = await agent.call("_intcad/connections/setup", { keys: {}, custom: [{ name: "Stand-in", url: `http://127.0.0.1:${service.port}/v1`, apiKey: "stand-in", models: ["hello-1"] }] });
-      const meta = (handed) => (app ? { _meta: { systemPrompt: { append: APP_NOTE }, ...(handed === false ? {} : { intcad: { project } }) } } : {});
+      const meta = (handed) => app || cadBridge ? {
+        _meta: { ...(app ? { systemPrompt: { append: APP_NOTE } } : {}), intcad: {
+          ...(app && handed !== false ? { project } : {}), ...(cadBridge ? { cadBridge } : {}),
+        } },
+      } : {};
       let session;
       // The run chooses the stand-in's model itself, so it does not depend on which model a new session starts on.
       const openSession = async (handed = app?.handed) => {
@@ -546,7 +560,12 @@ async function main(args) {
       // Nothing is sent unless the stand-in is the only thing the agent could talk to.
       const alone = snapshot.keys.every((key) => !key.saved) && snapshot.plans.every((plan) => plan.state === "out") && inUse.startsWith("mastracode/stand-in/");
       if (!alone) throw new Error(`not alone with the stand-in (keys saved: ${snapshot.keys.filter((key) => key.saved).length}, plans signed in: ${snapshot.plans.filter((plan) => plan.state !== "out").length}, model in use: ${inUse || "none"}); nothing was sent`);
-      const send = (text) => agent.call("session/prompt", { sessionId: earlyRejection ? `${session.sessionId}-missing` : session.sessionId, prompt: [{ type: "text", text }] });
+      let nextCadTurn = 0;
+      const send = (text, attachments = []) => agent.call("session/prompt", {
+        sessionId: earlyRejection ? `${session.sessionId}-missing` : session.sessionId,
+        prompt: [{ type: "text", text }, ...attachments],
+        ...(cadBridge ? { _meta: { intcad: { cadTurn: `smoke-turn-${++nextCadTurn}` } } } : {}),
+      });
       const sendUntil = async (text, wanted, from) => {
         const turn = send(text);
         const waitingForEvent = new AbortController();
@@ -560,9 +579,9 @@ async function main(args) {
           waitingForEvent.abort();
         }
       };
-      const prompt = async (text) => {
+      const prompt = async (text, attachments) => {
         const [from, before] = [agent.notes.length, service.seen.requests];
-        const reply = await send(text);
+        const reply = await send(text, attachments);
         return { stop: reply.stopReason, askedStandIn: service.seen.requests > before, ...turnOf(agent.notes, from) };
       };
       const before = listing(project);
@@ -610,6 +629,43 @@ async function main(args) {
     return turns.every((turn) => turn.stop === "end_turn" && turn.askedStandIn && /stand-in model/u.test(turn.answer));
   });
 
+  // INT-1513: a picture and a PDF attached to a message reach the model as parts of the user's
+  // message (agent/agent.mjs, `filesOf`); the next message brings none of its own.
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const attachmentCase = (pdfBytes) => async ({ out, agent, service, sessionId, prompt }) => {
+    const pdf = pdfBytes.toString("base64");
+    const lastUser = (text) => {
+      const body = service.seen.bodies.findLast((body) => body.stream && body.messages?.at(-1)?.role === "user" &&
+        textOf(body.messages.at(-1)) === text);
+      const user = body?.messages.at(-1);
+      return Array.isArray(user?.content) ? user.content : [{ type: "text", text: user?.content }];
+    };
+    const before = service.seen.requests;
+    const reply = await agent.call("session/prompt", {
+      sessionId,
+      prompt: [
+        { type: "text", text: "what is in these?" },
+        { type: "image", mimeType: "image/png", data: png },
+        { type: "resource", resource: { uri: "file:///brief%20one.pdf", mimeType: "application/pdf", blob: pdf } },
+      ],
+    });
+    const parts = lastUser("what is in these?");
+    Object.assign(out, { stop: reply.stopReason, askedStandIn: service.seen.requests > before, parts: parts.map((part) => part.type) });
+    out.picture = parts.some((part) => part.image_url?.url === `data:image/png;base64,${png}`);
+    out.document = parts.some((part) => part.file?.file_data === `data:application/pdf;base64,${pdf}` && part.file?.filename === "brief one.pdf");
+    out.documentBytes = out.document ? pdfBytes.length : 0;
+    out.next = await prompt("and now?");
+    out.nextParts = lastUser("and now?").map((part) => part.type);
+    return out.stop === "end_turn" && out.askedStandIn && out.picture && out.document && out.next.stop === "end_turn" && out.nextParts.every((type) => type === "text");
+  };
+  const tinyPdf = `%PDF-1.4\n% ${MARK}\n%%EOF\n`;
+  await run("I1 a picture and a PDF reach the model with the message", {}, attachmentCase(Buffer.from(tinyPdf)));
+  if (only === "I1 12 MiB") {
+    const largePdf = Buffer.alloc(12 * 1024 * 1024, 0x20);
+    largePdf.write(tinyPdf);
+    await run("I1 12 MiB PDF stress probe", {}, attachmentCase(largePdf));
+  }
+
   await run("a command after a permission request", {}, async ({ out, prompt, marker }) => {
     const turn = Object.assign(out, await prompt(`run the command: echo ${MARK} > allowed-command.txt`));
     out.markerFile = marker("allowed-command.txt") !== null;
@@ -621,6 +677,86 @@ async function main(args) {
     const turn = Object.assign(out, await prompt("measure the part"));
     out.serverSawCalls = existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").length : 0;
     return turn.stop === "end_turn" && turn.askedStandIn && out.serverSawCalls === 1 && turn.answer.includes(MARK);
+  });
+
+  // This exercises the actual packaged ACP entry and pinned SDK. The synthetic
+  // desktop reply proves transport, not authorization, accounting or a CAD edit.
+  const desktopCalls = [];
+  const desktopBridge = {
+    version: 1, tools: [{
+      name: "set_parameter", description: "Set one named test parameter.",
+      inputSchema: { type: "object", properties: { name: { type: "string" }, expression: { type: "string" } }, required: ["name", "expression"] },
+    }],
+  };
+  const cadEdit = (args) => `call intcad-app_set_parameter with ${JSON.stringify(args)}`;
+  await run("packaged ACP sends attachments and calls the desktop over its own stdio", {
+    app: { handed: false },
+    cadBridge: desktopBridge,
+    hostTool: (params) => {
+      desktopCalls.push(params);
+      return { content: [{ type: "text", text: MARK }], structuredContent: { marker: MARK } };
+    },
+  }, async ({ out, prompt, sessionId, service }) => {
+    const args = { name: "int1481_acceptance_marker", expression: "13 mm" };
+    const turn = Object.assign(out, await prompt(cadEdit(args), [{ type: "image", mimeType: "image/png", data: png }]));
+    const hasPicture = (message) => message.role === "user" && Array.isArray(message.content) &&
+      message.content.some((part) => part.image_url?.url === `data:image/png;base64,${png}`);
+    out.picture = service.seen.bodies.some((body) => body.messages?.some(hasPicture));
+    const received = desktopCalls[0];
+    out.desktopSawCalls = desktopCalls.length;
+    out.exactCall = desktopCalls.length === 1 && received.sessionId === sessionId &&
+      received.turn === "smoke-turn-1" && received.name === "set_parameter" &&
+      Object.keys(received.arguments ?? {}).length === 2 &&
+      received.arguments.name === args.name && received.arguments.expression === args.expression;
+    if (turn.stop !== "end_turn" || !turn.askedStandIn || turn.asked !== 1 ||
+        !out.exactCall || !out.picture || !turn.answer.includes(MARK)) return false;
+    const before = service.seen.bodies.length;
+    const secondText = cadEdit({ ...args, expression: "14 mm" });
+    const second = await prompt(secondText);
+    // The SDK also makes an asynchronous title request; select the actual streamed reply.
+    const conversation = service.seen.bodies.slice(before).find((body) =>
+      body.stream && body.messages?.at(-1)?.role === "user" && textOf(body.messages.at(-1)) === secondText);
+    const users = conversation?.messages?.filter((message) => message.role === "user") ?? [];
+    out.pictureRetainedOnlyInHistory = users.length > 1 && users.slice(0, -1).some(hasPicture) && !hasPicture(users.at(-1));
+    out.secondTurnDistinct = desktopCalls.length === 2 && desktopCalls[1].sessionId === sessionId &&
+      desktopCalls[1].turn === "smoke-turn-2" && desktopCalls[1].arguments?.expression === "14 mm";
+    return second.stop === "end_turn" && second.askedStandIn && second.asked === 1 &&
+      out.secondTurnDistinct && out.pictureRetainedOnlyInHistory && second.answer.includes(MARK);
+  });
+  let declinedRequests = 0;
+  await run("packaged ACP does not forward a declined desktop CAD tool", {
+    app: { handed: false },
+    cadBridge: desktopBridge,
+    permission: refuse,
+    hostTool: () => { declinedRequests += 1; return {}; },
+  }, async ({ out, prompt }) => {
+    const turn = Object.assign(out, await prompt(cadEdit({ name: "int1481_acceptance_marker", expression: "13 mm" })));
+    out.desktopSawCalls = declinedRequests;
+    return turn.stop === "end_turn" && turn.askedStandIn && turn.asked === 1 && declinedRequests === 0;
+  });
+  const resultText = (service) => textOf(service.seen.bodies.at(-1)?.messages?.at(-1));
+  await run("packaged ACP preserves the structured CAD result", {
+    app: { handed: false },
+    cadBridge: desktopBridge,
+    hostTool: () => ({ content: [{ type: "text", text: "MCP display text" }], structuredContent: { marker: MARK } }),
+  }, async ({ out, prompt, service }) => {
+    const turn = Object.assign(out, await prompt(cadEdit({ name: "test", expression: "13 mm" })));
+    out.modelResult = resultText(service);
+    return turn.stop === "end_turn" && turn.asked === 1 && JSON.stringify(JSON.parse(out.modelResult)) === JSON.stringify({ marker: MARK });
+  });
+  await run("packaged ACP surfaces a CAD refusal as a tool error", {
+    app: { handed: false },
+    cadBridge: desktopBridge,
+    hostTool: () => ({
+      isError: true,
+      content: [{ type: "text", text: "STALE_DOCUMENT: the design changed" }],
+      structuredContent: { code: "STALE_DOCUMENT" },
+    }),
+  }, async ({ out, prompt, service, agent }) => {
+    const turn = Object.assign(out, await prompt(cadEdit({ name: "test", expression: "13 mm" })));
+    out.modelResult = resultText(service);
+    out.failedTool = agent.notes.some(note => note.params?.update?.sessionUpdate === "tool_call_update" && note.params.update.status === "failed");
+    return turn.stop === "end_turn" && turn.asked === 1 && out.failedTool && out.modelResult.includes("STALE_DOCUMENT: the design changed");
   });
 
   // The app's tools that only look, and its `execute` with a command that only reads, ask nothing

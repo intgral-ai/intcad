@@ -15,11 +15,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { intcadAgent } from './agent.mjs';
 import { holdCallbackPorts } from './callback.mjs';
+import { cadBridge } from './cad.mjs';
 import { Connections, KEYS } from './connections.mjs';
 import { deniedFolders, keepFilesFrom } from './fence.mjs';
-import { releaseDates } from './models.mjs';
+import { attachmentReader, releaseDates } from './models.mjs';
 import { keepKeysFromCommands, keyVariables, withoutParams } from './secrets.mjs';
-import { sessionBuilder, sweepSessionFolders } from './session.mjs';
+import { predictionToolGuard, sessionBuilder, sweepSessionFolders } from './session.mjs';
 import { installSkillSets, setsToInstall } from './skills.mjs';
 
 // ACP's SDK prints a request it refuses, parameters and all. See secrets.mjs.
@@ -80,13 +81,18 @@ const sdkRoot = resolve(process.env.SOLIDCRAFT_MASTRA_SDK || join(here, '..', 'n
 // The files are named in full: an absolute path does not go through a package's export map, and a
 // bare name would be looked up from this folder, where the SDK need not be.
 const load = path => import(pathToFileURL(join(sdkRoot, path)).href);
+// This is the same Core installation the packaged code SDK resolves. Load it on
+// demand so a probe failure cannot stop ordinary chat.
+let predictionTools;
+const verifyPredictionTools = () => (predictionTools ??= load('@mastra/core/dist/agent/index.js')
+  .then(({ Agent }) => predictionToolGuard(Agent)()));
 
 if (!existsSync(join(sdkRoot, '@mastra', 'code-sdk', 'package.json'))) {
   process.stderr.write(`[intcad] Mastra Code's SDK is not in ${sdkRoot}. Set SOLIDCRAFT_MASTRA_SDK to the node_modules folder that holds it.\n`);
   process.exit(1);
 }
 
-const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }] =
+const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent }, { createMastraCode }, settings, { resolveSubagentsSetting }, { withCleanupFailure }, storage, gateway, customSource, { openUrlInBrowser }, { LocalSandbox, LocalFilesystem }, { createTool }, { jsonSchema }, { RequestContext }, cadErrors, { modelSupportsAttachments }, { isSessionStartupCancelledError }, copilot] =
   await Promise.all([
     load('@agentclientprotocol/sdk/dist/acp.js'),
     load('@mastra/code-sdk/dist/acp/agent.js'),
@@ -99,6 +105,13 @@ const [{ AgentSideConnection, RequestError, ndJsonStream }, { MastraCodeAcpAgent
     load('@mastra/code-sdk/dist/agents/custom-provider-source.js'),
     load('@mastra/code-sdk/dist/utils/open-url.js'),
     load('@mastra/core/dist/workspace/index.js'),
+    load('@mastra/core/dist/tools/index.js'),
+    load('ai/dist/index.js'),
+    load('@mastra/core/dist/request-context/index.js'),
+    load('@mastra/core/dist/error/index.js'),
+    load('@mastra/core/dist/llm/index.js'),
+    load('@mastra/core/dist/agent-controller/index.js'),
+    load('@mastra/code-sdk/dist/providers/github-copilot.js'),
   ]);
 
 let registry = {};
@@ -110,6 +123,18 @@ try {
 }
 const dates = releaseDates(registry);
 const keyEnv = id => [registry.providers?.[id]?.apiKeyEnvVar ?? []].flat();
+// Which models a message's pictures and documents are not sent to (models.mjs).
+const takesAttachments = attachmentReader(
+  registry, modelSupportsAttachments,
+  id => {
+    // The standalone Copilot gateway uses the provider's own store. Reload before asking
+    // about the route, including after a catalog lookup that may overlap a sign-out.
+    const auth = id === 'github-copilot' ? copilot.getAuthStorage() : gateway.getGlobalAuthStorage();
+    if (id === 'github-copilot') auth.reload();
+    return auth.get(id)?.type === 'oauth';
+  },
+  () => copilot.getCopilotModelCatalog(),
+);
 
 // A key reaches Mastra through this process's environment, and only the app puts one there
 // (`_intcad/connections/setup`). One that happens to be in the environment the app was started from
@@ -167,16 +192,16 @@ const connections = new Connections({
 customSource.setCustomProvidersSource(() => []);
 
 // Sessions as Mastra Code's ACP server opens them, without a vector store (session.mjs).
-const createSession = sessionBuilder({
+const createSession = cad => sessionBuilder({
   createMastraCode,
   loadSettings: settings.loadSettings,
   resolveDefaultThinkingLevel: settings.resolveDefaultThinkingLevel,
   resolveSubagentsSetting,
   withCleanupFailure,
+  verifyPredictionTools,
   RequestError,
+  cad,
 });
-
-const IntcadAgent = intcadAgent({ Base: MastraCodeAcpAgent, RequestError, connections, dates: () => dates, reloadSignIns: () => gateway.reloadAuthStorage() });
 
 // As Mastra Code's own `runAcpServer`, with the class above and the sign-in ended on the way out.
 let disposing;
@@ -192,7 +217,13 @@ process.on('SIGINT', stop);
 process.on('SIGTERM', stop);
 try {
   await new AgentSideConnection(connection => {
-    agent = new IntcadAgent(connection, request => createSession(request));
+    const cad = cadBridge({ createTool, jsonSchema, RequestContext, errors: cadErrors, invoke: (method, params) => connection.extMethod(method, params) });
+    const IntcadAgent = intcadAgent({
+      Base: MastraCodeAcpAgent, RequestError, connections, dates: () => dates,
+      reloadSignIns: () => gateway.reloadAuthStorage(), cad, takesAttachments,
+      isNotAdmitted: isSessionStartupCancelledError,
+    });
+    agent = new IntcadAgent(connection, createSession(cad));
     return agent;
   }, ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin))).closed;
 } finally {

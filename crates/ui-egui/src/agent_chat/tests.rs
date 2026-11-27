@@ -8740,9 +8740,19 @@ struct Script {
     /// Every request about the built-in agent's connections, in full (`calls` names them only,
     /// as a log would).
     requests: Arc<Mutex<Vec<connections::Request>>>,
+    /// The turn that just ended dispatched a desktop tool that may have changed the design.
+    bridge_effect: Arc<std::sync::atomic::AtomicBool>,
+    /// How often the panel withdrew the turn's desktop authority.
+    retired: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Script {
+    fn set_bridge_effect(&self, effect: bool) {
+        self.bridge_effect.store(effect, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn retirements(&self) -> usize {
+        self.retired.load(std::sync::atomic::Ordering::Relaxed)
+    }
     fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
@@ -8794,6 +8804,12 @@ impl ChatBackend for Script {
     }
     fn forget_session(&mut self) {
         self.calls.lock().unwrap().push("forget_session".into());
+    }
+    fn turn_had_bridge_effect(&self) -> bool {
+        self.bridge_effect.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn retire_bridge_authority(&mut self) {
+        self.retired.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     fn authenticate(&mut self, _: &str) {}
     fn shutdown(&mut self, _: bool) {}
@@ -18130,6 +18146,117 @@ fn fail_turn(app: &mut SolveApp, ctx: &egui::Context, script: &Script, kind: con
     poll(app, ctx);
 }
 
+/// A turn that may have changed the design is not sent again by itself when its plan signs
+/// back in: a new turn would mint a second operation. The message stays for the user to send.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_turn_with_a_desktop_edit_is_not_sent_again_by_itself() {
+    use connections::TurnKind;
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    assert_eq!(script.prompts().len(), 1, "the message was sent once");
+    script.report(Event::Connections(conn_snapshot(|told| told["plans"][0]["state"] = json!("expired"))));
+    poll(&mut app, &ctx);
+    script.set_bridge_effect(true);
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
+    assert!(app.agent_chat.conn.kept.is_none(), "an edit is not kept for an automatic resend");
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    for _ in 0..3 {
+        poll(&mut app, &ctx);
+    }
+    assert!(app.agent_chat.queued.is_none(), "nothing waits to be sent again");
+    assert_eq!(script.prompts().len(), 1, "the message was not sent again by itself");
+}
+
+/// An auth-required event is another path that could send a kept message again. It must not
+/// after a turn that may have edited the design.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_auth_required_event_does_not_send_an_edited_turn_again() {
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    script.set_bridge_effect(true);
+    script.report(Event::AuthRequired { methods: Vec::new() });
+    poll(&mut app, &ctx);
+    assert!(app.agent_chat.queued.is_none(), "an edit is not queued for a later sign-in");
+    assert_eq!(script.prompts().len(), 1);
+    // Without an effect the same event still keeps the message.
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    script.set_bridge_effect(false);
+    script.report(Event::AuthRequired { methods: Vec::new() });
+    poll(&mut app, &ctx);
+    assert!(app.agent_chat.queued.is_some(), "a no-effect turn keeps its retry");
+}
+
+/// Only the built-in package takes the private route. An added ACP agent whose command splits
+/// into two words is still an ordinary agent and keeps its listener and MCP bridge.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_added_two_word_agent_is_not_the_packaged_route() {
+    let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.builtin_agent = Some(agents::Builtin {
+        program: "/opt/intcad/mastra-agent/node".into(),
+        args: vec!["/opt/intcad/mastra-agent/agent/main.mjs".into()],
+        packaged: true,
+        data: None,
+    });
+    app.preferences.agents = vec![agents::AgentConfig {
+        id: "custom-1".into(),
+        name: "Mine".into(),
+        command: "npx agent".into(),
+        kind: agents::Kind::Acp,
+        ..Default::default()
+    }];
+    let entries = agents::entries(&app);
+    let builtin = entries.first().expect("the built-in entry");
+    assert_eq!(builtin.argv.len(), 2);
+    assert!(super::packaged_chat_route(&app, builtin, agents::Execution::Direct), "the package takes the private route");
+    let added = entries.iter().find(|entry| entry.id == "custom-1").expect("the added agent");
+    assert_eq!((added.kind, added.argv.len()), (agents::Kind::Acp, 2));
+    assert!(!super::packaged_chat_route(&app, added, agents::Execution::Direct), "an added agent never does");
+}
+
+/// The control: a turn proven to have had no effect is still sent again once its plan is back.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_turn_without_an_effect_is_sent_again_once_its_plan_signs_back_in() {
+    use connections::TurnKind;
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    script.report(Event::Connections(conn_snapshot(|told| told["plans"][0]["state"] = json!("expired"))));
+    poll(&mut app, &ctx);
+    script.set_bridge_effect(false);
+    fail_turn(&mut app, &ctx, &script, TurnKind::Auth, "openai");
+    assert!(app.agent_chat.conn.kept.is_some(), "a no-effect turn keeps its retry");
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    script.report(Event::Ready { agent: "Mastra Code 0.1".into(), images: false });
+    poll(&mut app, &ctx);
+    assert_eq!(script.prompts().len(), 2, "the kept message goes again");
+}
+
+/// A plan that changes hands, and a key or address that changes, retire the turn's desktop
+/// authority at once: the next callback is refused instead of drawing on the old provider.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_provider_change_retires_the_turns_desktop_authority() {
+    let (mut app, script, _keys, ctx) = builtin_ready();
+    send(&mut app, &ctx, "make a box".into());
+    assert_eq!(script.retirements(), 0);
+    script.report(Event::Connections(conn_snapshot(|told| told["plans"][0]["state"] = json!("out"))));
+    poll(&mut app, &ctx);
+    assert!(script.retirements() >= 1, "a plan signing out retires the turn's authority");
+    script.report(Event::Connections(conn_snapshot(chatgpt_in)));
+    poll(&mut app, &ctx);
+    let before_key = script.retirements();
+    conn_act(&mut app, &ctx, json!({"type": "conn_key", "provider": "openai", "key": "sk-retired-7f2b9456"})).expect("a key save");
+    assert!(script.retirements() > before_key, "a key change retires the turn's authority too");
+}
+
 /// B15: a turn the connection refused is a notice with the reason, the connection's prefix and
 /// its name in the user's words, and the whole sentence in the user's language, for each kind.
 #[cfg(not(target_arch = "wasm32"))]
@@ -18142,6 +18269,7 @@ fn a_failed_turn_says_why_in_the_users_words() {
         (TurnKind::Rate, "rate", "ui.agent_chat_problem_rate"),
         (TurnKind::Network, "network", "ui.agent_chat_problem_network"),
         (TurnKind::Model, "model", "ui.agent_chat_problem_model"),
+        (TurnKind::Attachments, "attachments", "ui.agent_chat_problem_attachments"),
     ];
     for language in ["en", "zh"] {
         for (kind, word, sentence) in cases {
@@ -18182,6 +18310,10 @@ fn a_failed_turn_says_why_in_the_users_words() {
         assert_eq!(trf("ui.agent_chat_problem_rate", &name), "「ChatGPT」现在限流了。过一会儿再试。");
         assert_eq!(trf("ui.agent_chat_problem_model", &name), "「ChatGPT」用不了选中的模型。换一个模型。");
         assert_eq!(trf("ui.agent_chat_problem_network", &name), "连不上模型服务。检查网络，消息没有丢。");
+        assert_eq!(
+            trf("ui.agent_chat_problem_attachments", &name),
+            "「ChatGPT」中选定的模型无法读取这条消息或聊天中的图片或 PDF。请选择兼容的模型、移除新附件，或在文件已进入聊天记录时开启新聊天。"
+        );
     }
     // The connection is found by its whole prefix: a custom address's has a slash in it.
     let (mut app, script, _keys, ctx) = builtin_ready();

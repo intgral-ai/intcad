@@ -191,6 +191,8 @@ export interface AssistantState {
   radius: number;
   /** At the bottom centre of the window: the most height the page may take, in points; absent in the side panel. */
   centre?: number | null;
+  /** A next-step suggestion, or why there is none, for the line over the message box; `ready`: its ghost is drawn. */
+  suggestion?: { label: string | null; text: string; guess: boolean; ready: boolean; id?: string } | null;
   permissions: 'ask' | 'edits' | 'all';
   skill: string;
   skills: { id: string; title: string }[];
@@ -311,6 +313,8 @@ export type Action =
   | { type: 'size'; height: number }
   /** There: the user moves the box sideways; the pointer's travel since the press, in screen units (`screenX`). */
   | { type: 'move'; dx: number; done?: boolean }
+  /** Tab (accept) or Esc in the empty message box, with a suggestion over it. */
+  | { type: 'suggestion'; accept: boolean; id: string }
   | { type: 'side'; left: boolean }
   | { type: 'surface'; color: string }
   | { type: 'copy'; text: string }

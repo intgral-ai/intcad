@@ -31,6 +31,7 @@ pub(crate) mod dfm_runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod discover;
 pub mod gate;
+pub(crate) mod ghost;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host_ai;
 #[cfg(not(target_arch = "wasm32"))]
@@ -46,8 +47,10 @@ pub mod packaged_runtime;
 mod panel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod paste;
+pub mod predict;
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
+pub mod project_brief;
 pub mod read_file;
 pub mod review;
 #[cfg(not(target_arch = "wasm32"))]
@@ -59,6 +62,7 @@ pub mod summary;
 pub(crate) mod task_runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod web;
+mod words;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -649,6 +653,9 @@ pub struct AgentChat {
     tools_tx: Option<Sender<ControlRequest>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) bridge_admission: Option<Receiver<ControlRequest>>,
+    /// The desktop can currently back the packaged Agent's CAD calls with an account and journal.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) bridge_authorized: bool,
     /// Settings → AI: the Add agent dialog and connection tests.
     pub settings: settings::State,
     /// Latest authentication evidence from a connection test or a chat, per agent; never saved.
@@ -671,6 +678,12 @@ pub struct AgentChat {
     /// The panel was open on the last frame.
     #[cfg(not(target_arch = "wasm32"))]
     seen_open: bool,
+    /// Next-step suggestions: their own session of the agent, the guess shown and the log of
+    /// guesses. It belongs to the window, not to one tab's conversation.
+    pub predict: predict::Predictor,
+    /// The next turn runs as a preview whatever `agent_chat_preview` says (a next-step guess sent
+    /// with Tab). Taken by the turn's start.
+    pub(crate) force_preview: bool,
 }
 
 impl Drop for AgentChat {
@@ -703,6 +716,7 @@ impl AgentChat {
         std::mem::swap(&mut self.open, &mut other.open);
         std::mem::swap(&mut self.following_document, &mut other.following_document);
         std::mem::swap(&mut self.settings, &mut other.settings);
+        std::mem::swap(&mut self.predict, &mut other.predict);
         std::mem::swap(&mut self.control_starter, &mut other.control_starter);
         std::mem::swap(&mut self.models_cache, &mut other.models_cache);
         std::mem::swap(&mut self.window_placed, &mut other.window_placed);
@@ -1180,14 +1194,23 @@ impl AgentChat {
                 }
                 self.state = Some(State::NeedsAuth);
                 self.picking = Some(false);
-                // What was asked goes again once the login is done.
-                if !self.stopped && self.queued.is_none() {
+                // What was asked goes again once the login is done, unless this turn may already
+                // have changed the design: a fresh turn would mint a second operation.
+                if !self.stopped && self.queued.is_none() && !self.backend.as_ref().is_some_and(|backend| backend.turn_had_bridge_effect()) {
                     self.queued = self.last.take();
                 }
             }
             Event::AuthStatus(s) => self.auth_status = Some(s),
             Event::Connections(snapshot) => self.conn.take_in(snapshot),
+            Event::ConnectionsLogout(snapshot) => {
+                self.conn.logout_pending = false;
+                self.conn.take_in(snapshot);
+            }
+            Event::PredictionSetup(_) => {}
             Event::ConnectionsFailed { what, code } => {
+                if what == connections::What::Logout {
+                    self.conn.logout_pending = false;
+                }
                 // Without the first snapshot the agent cannot be used: starting has failed. Later
                 // refusals change nothing here (a second sign-in while one is under way, say).
                 if what == connections::What::Setup && self.conn.snapshot.is_none() {
@@ -1208,7 +1231,12 @@ impl AgentChat {
                         Some(snapshot) => snapshot.name_of(&problem.prefix),
                         None => connections::AGENT_NAME.to_string(),
                     };
-                    self.conn.keep(&problem);
+                    // A turn whose desktop call may have changed the design is never sent again
+                    // by itself: a fresh turn would mint a second operation. The user can send it
+                    // again deliberately. A turn proven to have no effect keeps the retry.
+                    if !self.backend.as_ref().is_some_and(|backend| backend.turn_had_bridge_effect()) {
+                        self.conn.keep(&problem);
+                    }
                     self.push(Item::Problem { kind: problem.kind, prefix: problem.prefix, name });
                 }
             }
@@ -1520,14 +1548,15 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     } else {
         None
     };
-    let bridge_scope_check = app.commit_scope.as_ref().filter(|scope| app.has_commit_authority() && scope.is_provable()).and_then(|scope| {
-        let account = app.commit_account.as_ref()?;
-        // Without worker-backed durability, even a live identity cannot open the paid lane.
-        account.bridge_journal()?;
-        account.bridge_scope_check(scope)
-    });
+    let bridge_scope_check = desktop_bridge_scope_check(app);
+    // The packaged Agent reaches this window over its own stdio. Its queue needs neither the
+    // loopback endpoint nor the external CLI, so a missing listener does not disable its tools.
+    // Only the built-in entry may take this route: an added ACP agent with a two-word command is
+    // still an ordinary agent and keeps its listener and MCP bridge.
+    let packaged_route = packaged_chat_route(app, &entry, execution);
     let chat = &mut app.agent_chat;
-    if chat.tools_port.is_none()
+    if !packaged_route
+        && chat.tools_port.is_none()
         && let Some(start) = chat.control_starter.as_mut()
     {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1538,7 +1567,13 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
         }
     }
     let cli = find_cli();
-    if chat.tools_port.is_none() {
+    if packaged_route {
+        if chat.tools_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            chat.tools_tx = Some(tx);
+            chat.tools_rx = Some(rx);
+        }
+    } else if chat.tools_port.is_none() {
         chat.notice(tr("ui.agent_chat_no_control"), true);
     } else if cli.is_none() {
         chat.notice(tr("ui.agent_chat_no_cli"), true);
@@ -1548,8 +1583,8 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(hint) = entry.problem_hint() {
         chat.notice(hint, true);
     }
-    let bridge = cli.zip(chat.tools_port).map(|(cli, port)| acp::McpBridge { cli, port });
-    chat.tools_available = Some(bridge.is_some());
+    let bridge = if packaged_route { None } else { cli.zip(chat.tools_port).map(|(cli, port)| acp::McpBridge { cli, port }) };
+    chat.tools_available = Some(packaged_route || bridge.is_some());
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
     chat.work_dir = Some(start.cwd.clone());
@@ -1613,6 +1648,9 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             // it would keep its sign-ins in, and read the agent files of, the user's own home.
             let data = app.builtin_agent.as_ref().and_then(|found| found.data.clone());
             match data.filter(|folder| std::fs::create_dir_all(folder).is_ok()) {
+                Some(folder) if packaged_route => {
+                    acp_client::AcpBackend::start_packaged(&entry.argv, start, &folder).map(|b| Box::new(b) as Box<dyn ChatBackend>)
+                }
                 Some(folder) => acp_client::AcpBackend::start_builtin(&entry.argv, start, &folder).map(|b| Box::new(b) as Box<dyn ChatBackend>),
                 None => Err(tr("ui.agent_chat_no_data_folder").to_string()),
             }
@@ -1641,6 +1679,27 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
             chat.state = Some(State::Failed);
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn desktop_bridge_scope_check(app: &SolveApp) -> Option<solidcraft_engine::entitlement::BridgeScopeCheck> {
+    let scope = app.commit_scope.as_ref().filter(|scope| app.has_commit_authority() && scope.is_provable())?;
+    let account = app.commit_account.as_ref()?;
+    // Without worker-backed durability, even a live identity cannot open the paid lane.
+    account.bridge_journal()?;
+    account.bridge_scope_check(scope)
+}
+
+/// The packaged Agent's private route: the built-in entry, a direct ACP session, and the
+/// package's own two-part program. An agent the user added never takes it, even when its command
+/// happens to split into two words; such an agent keeps its listener and MCP bridge.
+#[cfg(not(target_arch = "wasm32"))]
+fn packaged_chat_route(app: &SolveApp, entry: &agents::Entry, execution: agents::Execution) -> bool {
+    agents::is_builtin_entry(app, entry)
+        && execution == agents::Execution::Direct
+        && entry.kind == agents::Kind::Acp
+        && entry.argv.len() == 2
+        && app.builtin_agent.as_ref().is_some_and(|found| found.packaged)
 }
 
 /// The agent's process is up: the conversation starts on it. The built-in agent is handed its
@@ -2215,6 +2274,7 @@ pub(crate) fn send_with(app: &mut SolveApp, ctx: &egui::Context, text: String, o
         }
         let files = if asked { Vec::new() } else { std::mem::take(&mut chat.attachments) };
         chat.pending.push(Pending { text, image, context, files });
+        chat.predict.chat_took_view();
         return Ok(());
     }
     let files = if asked { Vec::new() } else { std::mem::take(&mut app.agent_chat.attachments) };
@@ -2257,6 +2317,7 @@ fn submit(app: &mut SolveApp, ctx: &egui::Context, text: String, image: bool, co
         State::Ready => start_turn_with(app, text, image, at, files, interrupted.then_some(INTERRUPT_NOTE)),
         s => {
             app.agent_chat.queued = Some((text, image, at, files));
+            app.agent_chat.predict.chat_took_view();
             #[cfg(not(target_arch = "wasm32"))]
             if !s.running() {
                 connect(app, ctx);
@@ -2445,6 +2506,7 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     // The undo step is named after the message, or its first file when it has no words.
     let first_line = text.lines().find(|l| !l.trim().is_empty()).or_else(|| files.first().map(|f| f.name.as_str())).unwrap_or("");
     let label: String = first_line.chars().take(48).collect();
+    app.agent_chat.predict.chat_took_view();
     app.agent_chat.turn_warning = None;
     app.agent_chat.next_turn = app.agent_chat.next_turn.wrapping_add(1);
     let turn_id = app.agent_chat.next_turn;
@@ -2516,9 +2578,14 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     if skill == skill::Skill::Plain {
         review::begin(app);
     }
+    app.agent_chat.force_preview = false;
     let active = app.agent_chat.turn.as_ref().map(|turn| Arc::clone(&turn.active));
+    #[cfg(not(target_arch = "wasm32"))]
+    let bridge_scope_check = desktop_bridge_scope_check(app);
     if let Some(b) = app.agent_chat.backend.as_mut() {
         b.set_document(&stamp.document_id, stamp.revision);
+        #[cfg(not(target_arch = "wasm32"))]
+        b.set_bridge_scope_check(bridge_scope_check);
         if let Some(active) = active {
             b.set_turn_control(active);
         }
@@ -3093,8 +3160,24 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
     // The host's current stamp is the final authority for §9.3: a user or turn edit after the
     // captured snapshot must make the passing report historical, even if no new prompt ran.
     let stamp = app.session.document_stamp();
+    #[cfg(not(target_arch = "wasm32"))]
+    let bridge_scope_check = desktop_bridge_scope_check(app);
+    #[cfg(not(target_arch = "wasm32"))]
+    let bridge_was_authorized = std::mem::replace(&mut app.agent_chat.bridge_authorized, bridge_scope_check.is_some());
     if let Some(backend) = app.agent_chat.backend.as_mut() {
         backend.set_document(&stamp.document_id, stamp.revision);
+        #[cfg(not(target_arch = "wasm32"))]
+        match bridge_scope_check {
+            Some(check) => backend.set_bridge_scope_check(Some(check)),
+            // The account or its durable journal is no longer usable: a call already in the turn
+            // must not keep the authority it was started with.
+            None => {
+                backend.set_bridge_scope_check(None);
+                if bridge_was_authorized {
+                    backend.retire_bridge_authority();
+                }
+            }
+        }
     }
     follow_project(app);
     connections::poll(app, ctx);
@@ -3705,6 +3788,21 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
     if let Some(a) = p.get("attach_selection").and_then(Value::as_bool) {
         app.preferences.agent_chat_attach_selection = a;
     }
+    // Next-step suggestions: on or off, and the pause before one (seconds).
+    if let Some(on) = p.get("next_step").and_then(Value::as_bool) {
+        app.preferences.agent_next_step = on;
+    }
+    // Trust the saved design's project for this session, so its notes reach the agent (PRD F-6).
+    if p.get("trust_project").and_then(Value::as_bool) == Some(true) {
+        predict::trust_project(app)?;
+    }
+    if let Some(s) = p.get("next_step_pause_s").and_then(Value::as_f64) {
+        let s = s as f32;
+        if !predict::PAUSE_RANGE.contains(&s) {
+            return Err(format!("next_step_pause_s must be {} to {} seconds", predict::PAUSE_RANGE.start(), predict::PAUSE_RANGE.end()));
+        }
+        app.preferences.agent_next_step_pause_s = s;
+    }
     if p.get("pick").and_then(Value::as_bool) == Some(true) {
         start_pick(app);
     }
@@ -3899,6 +3997,7 @@ pub fn status(app: &SolveApp) -> Value {
             json!(c.preview.as_ref().map(|p| json!({"id": p.id, "phase": format!("{:?}", p.phase), "steps": p.steps, "busy_ms": p.busy_ms,
                 "computing": review::computing(c).map(|(since, what)| json!({"what": what, "ms": (crate::now_ms() - since).max(0.0)}))}))),
         );
+        state.insert("nextStep".into(), predict::status(app));
     }
     state
 }

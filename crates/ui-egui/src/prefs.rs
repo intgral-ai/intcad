@@ -1584,6 +1584,18 @@ preference_settings! {
     /// so the agent knows what "this" means without asking the app. Off: the agent is sent the
     /// selection only when it reads it through the app's tools, as before this was a setting.
     agent_chat_attach_selection: bool = true, PAGE_ASSISTANT;
+    /// Next-step suggestions (INT-1458): after an edit and a pause the connected agent guesses one
+    /// next modelling step, drawn over the design as a ghost; Tab puts it into the design. Off by
+    /// default: each guess is two calls on the user's own agent (its plan or credits).
+    agent_next_step: bool = false, PAGE_ASSISTANT;
+    /// The pause before a guess, in seconds.
+    agent_next_step_pause_s: f32 = crate::agent_chat::predict::DEFAULT_PAUSE_S, PAGE_ASSISTANT, accept(crate::agent_chat::predict::PAUSE_RANGE);
+    /// Suggestions an hour while the agent is signed in with a plan (with an API key there is no limit).
+    agent_next_step_per_hour: u32 = crate::agent_chat::predict::DEFAULT_HOURLY, PAGE_ASSISTANT, accept(crate::agent_chat::predict::HOURLY_RANGE);
+    /// The model the guesses run on, where the agent lists its models: empty picks the agent's
+    /// newest small model (mini, haiku, flash…) of the provider it uses; `same` keeps the model the
+    /// agent starts a session on (as before this was a setting); anything else is a model id.
+    agent_next_step_model: String = String::new(), PAGE_ASSISTANT;
 
     /// Changes the agent may make for one message; 0 is no limit.
     agent_chat_turn_limit: u32 = crate::agent_chat::gate::DEFAULT_TURN_LIMIT, PAGE_ASSISTANT;
@@ -3968,6 +3980,12 @@ pub fn migrate(mut p: Prefs) -> Prefs {
     if !accepted::home_fit_size(&p) {
         p.home_fit_size = Prefs::default().home_fit_size;
     }
+    if !accepted::agent_next_step_pause_s(&p) {
+        p.agent_next_step_pause_s = Prefs::default().agent_next_step_pause_s;
+    }
+    if !accepted::agent_next_step_per_hour(&p) {
+        p.agent_next_step_per_hour = Prefs::default().agent_next_step_per_hour;
+    }
     if p.orbit_cursor {
         p.orbit_around = OrbitAround::Cursor;
         p.orbit_cursor = false;
@@ -4221,6 +4239,12 @@ fn prepare_preferences(
     }
     if !accepted::dimension_step_mm(&new) || !accepted::dimension_step_deg(&new) {
         return Err("`dimension_step_mm` must be 0.001…1000 and `dimension_step_deg` 0.001…180".into());
+    }
+    if !accepted::agent_next_step_pause_s(&new) {
+        return Err("`agent_next_step_pause_s` must be 1…120 seconds".into());
+    }
+    if !accepted::agent_next_step_per_hour(&new) {
+        return Err("`agent_next_step_per_hour` must be 1…500".into());
     }
     if solidcraft_engine::doc::display_quality::DisplayQuality::parse(&new.display_quality).is_none() {
         return Err("`display_quality` must be coarse, normal, fine or ultra".into());
