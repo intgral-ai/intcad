@@ -638,6 +638,15 @@ test("a sign-in that fails says at which step, with the token endpoint's status 
   await settle();
   assert.deepEqual(waiting.connections.list().problem, { id: "openai-codex", kind: "failed", step: "wait", log: log.path });
 
+  // A ChatGPT token refresh answered while another plan's sign-in exchanges its code is not that sign-in's.
+  const claude = world({ log, login: async (_id: string, callbacks: Json) => (callbacks.onAuth({ url: "https://claude.example/authorize" }), await callbacks.onPrompt({}), Promise.reject(new Error("Token exchange failed"))) });
+  claude.connections.login({ id: "anthropic" });
+  await settle();
+  claude.connections.code({ id: "anthropic", code: "abc#def" });
+  claude.connections.exchanged({ status: 400, code: "invalid_grant", kind: "refused" });
+  await settle();
+  assert.deepEqual(claude.connections.list().problem, { id: "anthropic", kind: "failed", step: "exchange", log: log.path });
+
   // The log says what happened, step by step, and nothing of the codes, addresses or account.
   const text = readFileSync(log.path, "utf8");
   assert.match(text, /openai-codex: started/);

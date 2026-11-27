@@ -362,11 +362,12 @@ export class Connections {
 
   /**
    * What the ChatGPT sign-in's token endpoint answered (signin.mjs `watchExchange`): kept with the
-   * sign-in that is exchanging its code, and nothing else (a token refresh has no sign-in).
+   * ChatGPT sign-in that is exchanging its code, and nothing else (a token refresh has no sign-in,
+   * and another plan's sign-in is not this endpoint's).
    */
   exchanged(answer) {
     const login = this.#login;
-    if (!login || login.step !== 'exchange') return;
+    if (login?.id !== 'openai-codex' || login.step !== 'exchange') return;
     login.exchange = answer;
     if (answer.error) this.note(`${login.id}: exchange: no answer (${failureCode(answer.error)})`);
     else this.note(`${login.id}: exchange: HTTP ${answer.status}${answer.code ? ` ${answer.code}` : ''}${answer.kind ? ` (${answer.kind})` : ''}`);
