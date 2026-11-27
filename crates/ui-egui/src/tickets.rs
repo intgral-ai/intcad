@@ -808,12 +808,15 @@ fn read_run(app: &mut SolveApp, kind: CheckKind, run: &str) -> Option<Report> {
 }
 
 /// A run's report as a ticket keeps it: the run's own words (its card state `done`, or its outcome
-/// when that is not the newest run's: `superseded`, `cancelled`, `failed`), counts and rules.
+/// when that is not the newest run's: `superseded`, `cancelled`, `failed`), counts and rules. The
+/// newest run, whose report was produced, is `done` though the service may still say it runs.
 #[cfg(not(target_arch = "wasm32"))]
 fn report(card: &crate::dfm_chat::Card) -> Report {
     let counts = card.counts().as_object().map(|counts| counts.iter().filter_map(|(k, v)| Some((k.clone(), v.as_u64()?))).collect()).unwrap_or_default();
-    let outcome = card.outcome.clone().filter(|outcome| outcome != "current").unwrap_or_else(|| card.status.clone());
-    Report { run: card.run_id.clone(), done: card.status == "done", outcome, counts, freshness: card.freshness.clone(), items: run_items(card) }
+    let ran = card.report_produced && card.status == "running" && matches!(card.outcome.as_deref(), None | Some("current"));
+    let status = if ran { "done".to_string() } else { card.status.clone() };
+    let outcome = card.outcome.clone().filter(|outcome| outcome != "current").unwrap_or_else(|| status.clone());
+    Report { run: card.run_id.clone(), done: status == "done", outcome, counts, freshness: card.freshness.clone(), items: run_items(card) }
 }
 
 /// A run's items: each rule the run reported, with the parts its findings are on and their values.

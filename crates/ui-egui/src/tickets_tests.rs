@@ -227,6 +227,16 @@ fn a_scripted_agent_drafts_is_started_on_one_ticket_and_its_check_leaves_it_wait
     assert_eq!(ticket.state, TicketState::Waiting, "{:?} / review error {:?}", ticket.check, h.app.dfm_review.error);
     let check = ticket.check.clone().unwrap();
     assert_eq!(check.state, CheckState::Ran);
+    // A run whose report is there has finished, though the service may not have said so yet.
+    assert_eq!(check.outcome.as_deref(), Some("done"), "{check:?}");
+    let mut card = h.app.dfm_review.card.clone().unwrap();
+    assert!(card.report_produced, "{card:?}");
+    card.status = "running".into();
+    let read = super::report(&card);
+    assert_eq!((read.outcome.as_str(), read.done), ("done", true), "a run still running at the service, with its report");
+    card.outcome = Some("superseded".into());
+    let read = super::report(&card);
+    assert_eq!((read.outcome.as_str(), read.done), ("superseded", false), "a superseded run is left as it was");
     let run = check.run.clone().unwrap();
     assert_eq!(Some(run.clone()), h.app.dfm_review.mapped_run, "the ticket names the run the Review entry reserved");
     assert_eq!(billing.commits(), 1, "the run was the Review entry's one billed operation");
