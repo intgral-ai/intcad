@@ -6,6 +6,10 @@
 //! and creates those files. It never writes over an existing project: opening one reads it as it
 //! is.
 //!
+//! A new project also gets its Spec files at its root, beside the design: `requirements.md` and
+//! `design-intent.md`, ordinary files that the Files panel and the Assistant see. One of those
+//! names that is already taken is left as it is. `.intcad/` holds only the app's own files.
+//!
 //! The files are TOML because people edit them. A file newer than this build is refused instead
 //! of being rewritten, and a damaged file names the file and the position of the problem.
 
@@ -32,6 +36,31 @@ pub const MANIFEST: &str = "project.toml";
 pub const CI: &str = "ci.toml";
 /// The critical hole-to-hole dimensions the project declares.
 pub const CRITICAL: &str = "critical.toml";
+
+/// The Spec files a new project starts with, at its root: each name, and the text it starts with.
+/// The text is prompts only, with no example values, so nothing in it reads as a requirement.
+const SPEC_TEMPLATES: &[(&str, &str)] = &[
+    (
+        "requirements.md",
+        "# Requirements\n\n\
+         One requirement per line, with its number and unit, so each line can be cited on its own. \
+         Fill in the lines that apply and delete the rest.\n\n\
+         - Material and thickness:\n\
+         - Overall size limits:\n\
+         - Holes, slots and their tolerances:\n\
+         - Bends, flanges and smallest wall:\n\
+         - Parts it must fit or clear:\n\
+         - Finish and quantity:\n",
+    ),
+    (
+        "design-intent.md",
+        "# Design intent\n\n\
+         What this design is for, and what must not change.\n\n\
+         ## Purpose\n\nWhat the part does and where it goes.\n\n\
+         ## Must not change\n\nFaces, holes and dimensions that other parts depend on.\n\n\
+         ## Free to change\n\nWhat a fix may move, resize or remove.\n",
+    ),
+];
 
 /// The longest project name this build accepts, in characters.
 pub const MAX_NAME_CHARS: usize = 128;
@@ -356,7 +385,7 @@ pub struct CreatedProject {
     pub design: PathBuf,
 }
 
-/// Make a project folder at `parent/name`: the folder, `.intcad/`, its templates and an empty
+/// Make a project folder at `parent/name`: the folder, `.intcad/`, the Spec files and an empty
 /// design. The folder must not exist. On any failure nothing is left behind, so a retry starts
 /// from the same state and never looks like a project.
 pub fn create(parent: &Path, name: &str, design_name: &str) -> Result<CreatedProject, ProjectError> {
@@ -387,7 +416,7 @@ pub fn create(parent: &Path, name: &str, design_name: &str) -> Result<CreatedPro
     let building = root.join(format!("{FOLDER}.new"));
     let outcome = build_project(&root, &building, name, &design);
     match outcome {
-        Ok(()) => {}
+        Ok(_) => {}
         Err(error) => {
             let _ = fs::remove_dir_all(&building);
             let _ = fs::remove_dir_all(&root);
@@ -411,8 +440,8 @@ pub fn create(parent: &Path, name: &str, design_name: &str) -> Result<CreatedPro
 }
 
 /// Put a `.intcad/` folder beside an existing, saved design file. The design is never moved or
-/// rewritten; only the folder and its templates are made. Refused when a project already covers
-/// the design, so opening an old design never changes it by itself.
+/// rewritten; only `.intcad/` and the Spec files whose names are free are made. Refused when a
+/// project already covers the design, so opening an old design never changes it by itself.
 pub fn attach(design: &Path) -> Result<CreatedProject, ProjectError> {
     if !design.is_file() {
         return Err(ProjectError::Io { path: design.display().to_string(), message: "the design file does not exist; save it first".into() });
@@ -429,12 +458,19 @@ pub fn attach(design: &Path) -> Result<CreatedProject, ProjectError> {
         return Err(ProjectError::TargetExists { path: folder.display().to_string() });
     }
     let name = design.file_stem().and_then(|stem| stem.to_str()).map(str::trim).filter(|stem| !stem.is_empty()).unwrap_or("design").to_string();
-    if let Err(error) = build_project(root, &building, &name, design) {
-        let _ = fs::remove_dir_all(&building);
-        return Err(error);
-    }
+    let specs = match build_project(root, &building, &name, design) {
+        Ok(specs) => specs,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&building);
+            return Err(error);
+        }
+    };
     if let Err(error) = fs::rename(&building, &folder) {
         let _ = fs::remove_dir_all(&building);
+        // Only the Spec files this call made: the folder's own files stay.
+        for spec in specs {
+            let _ = fs::remove_file(spec);
+        }
         return Err(ProjectError::io(&folder, &error));
     }
     let project = Project::open(root)?;
@@ -476,12 +512,12 @@ fn new_project_id() -> String {
     format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
 }
 
-fn build_project(root: &Path, folder: &Path, name: &str, design: &Path) -> Result<(), ProjectError> {
+/// Make `.intcad/`'s files in `folder`, then the Spec files at `root` whose names are free. Every
+/// new project, made by `create` or `attach`, is made here. Returns the Spec files it made.
+fn build_project(root: &Path, folder: &Path, name: &str, design: &Path) -> Result<Vec<PathBuf>, ProjectError> {
     fs::create_dir(folder).map_err(|error| ProjectError::io(folder, &error))?;
-    for inside in ["specs", "checks/runs"] {
-        let path = folder.join(inside);
-        fs::create_dir_all(&path).map_err(|error| ProjectError::io(&path, &error))?;
-    }
+    let runs = folder.join("checks/runs");
+    fs::create_dir_all(&runs).map_err(|error| ProjectError::io(&runs, &error))?;
     let manifest = ProjectManifest {
         schema_version: SCHEMA_VERSION,
         id: new_project_id(),
@@ -502,11 +538,33 @@ fn build_project(root: &Path, folder: &Path, name: &str, design: &Path) -> Resul
     write_text(&folder.join(MANIFEST), &manifest_text(&manifest))?;
     write_text(&folder.join(CI), &ci_text(&ci))?;
     write_text(&folder.join(CRITICAL), &critical_text(&[]))?;
-    write_text(&folder.join("design-intent.md"), "# Design intent\n\nWhat this design is for, and what must not change.\n")?;
-    write_text(&folder.join("design-intent.toml"), "schema_version = 1\n")?;
-    write_text(&folder.join("specs/requirements.toml"), "schema_version = 1\n")?;
     write_text(&folder.join(".gitignore"), "cache/\n")?;
-    Ok(())
+    write_spec_templates(root)
+}
+
+/// Write each Spec file at `root` whose name is free. A name already taken (a file, a folder, a
+/// link) is the user's and is never opened for writing: `create_new` refuses it, which also
+/// leaves no gap between a look and the write. On a failure the files it made are removed.
+fn write_spec_templates(root: &Path) -> Result<Vec<PathBuf>, ProjectError> {
+    let mut made = Vec::new();
+    for &(name, text) in SPEC_TEMPLATES {
+        let path = root.join(name);
+        let written = match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                made.push(path.clone());
+                file.write_all(text.as_bytes()).and_then(|()| file.sync_all())
+            }
+            Err(_) if fs::symlink_metadata(&path).is_ok() => continue,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = written {
+            for spec in &made {
+                let _ = fs::remove_file(spec);
+            }
+            return Err(ProjectError::io(&path, &error));
+        }
+    }
+    Ok(made)
 }
 
 /// The `project.toml` text for this manifest. Written as a template so its order and comments

@@ -377,6 +377,7 @@ mod tests {
         assert!(design.is_file());
         assert_eq!(s.path.as_deref(), Some(design.to_string_lossy().as_ref()), "the open design is the project's design");
         assert!(root.join(".intcad/project.toml").is_file());
+        assert!(root.join("requirements.md").is_file() && root.join("design-intent.md").is_file());
         // The saved design is the one that was open, not an empty one.
         let bytes = fs::read(&design).expect("read");
         let doc = solidcraft_io::read_design(&bytes).expect("design");
@@ -387,6 +388,33 @@ mod tests {
         assert_eq!(inspected["project"]["name"], "Bracket A");
         assert_eq!(inspected["ci"]["enabled"], true);
         assert_eq!(inspected["ci"]["dataKind"], "generic");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// INT-1508: the design a new install opens on, saved, makes no project by itself; a project
+    /// made from it afterwards, a new folder or one beside the saved file, has its Spec files.
+    #[test]
+    fn the_default_design_saved_then_made_a_project_gets_its_spec_files() {
+        let dir = scratch("default-design");
+        let mut s = Session::default();
+        let saved = dir.join("Untitled.sc");
+        s.execute("file.save_as", &json!({"path": saved.to_string_lossy()})).expect("save");
+        assert!(saved.is_file());
+        for name in [".intcad", "requirements.md", "design-intent.md"] {
+            assert!(!dir.join(name).exists(), "a save alone makes no project: {name}");
+        }
+
+        // File > New Project, named after the design.
+        s.execute("project.create", &json!({"name": "Untitled", "folder": dir.to_string_lossy()})).expect("create");
+        for name in [".intcad/project.toml", "Untitled.sc", "requirements.md", "design-intent.md"] {
+            assert!(dir.join("Untitled").join(name).is_file(), "{name}");
+        }
+
+        // The start page's "project beside this design", on the file saved first.
+        s.execute("project.attach", &json!({"path": saved.to_string_lossy()})).expect("attach");
+        for name in [".intcad/project.toml", "requirements.md", "design-intent.md"] {
+            assert!(dir.join(name).is_file(), "{name}");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

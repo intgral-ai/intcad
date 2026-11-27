@@ -4186,7 +4186,7 @@
   "ui.agent_chat_limit": "Az ügynök elérte az egy üzenetre eső {limit} módosítás korlátját. Küldjön újabb üzenetet a folytatáshoz.",
   "ui.agent_chat_login_found": "bejelentkezés található",
   "ui.agent_chat_minimize": "Összecsukás sávvá",
-  "ui.agent_chat_mode_all": "Minden",
+  "ui.agent_chat_mode_all": "Auto",
   "ui.agent_chat_mode_ask": "Kérdez",
   "ui.agent_chat_mode_edits": "Szerkesztés",
   "ui.agent_chat_model_custom": "Egyéni használata: {model}",

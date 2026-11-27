@@ -4130,7 +4130,7 @@
   "ui.agent_chat_limit": "Агент достиг предела в {limit} изменений на одно сообщение. Отправьте ещё одно сообщение, чтобы он продолжил.",
   "ui.agent_chat_login_found": "вход найден",
   "ui.agent_chat_minimize": "Свернуть в полосу",
-  "ui.agent_chat_mode_all": "Всё",
+  "ui.agent_chat_mode_all": "Авто",
   "ui.agent_chat_mode_ask": "Спросить",
   "ui.agent_chat_mode_edits": "Правки",
   "ui.agent_chat_model_custom": "Использовать свою модель: {model}",

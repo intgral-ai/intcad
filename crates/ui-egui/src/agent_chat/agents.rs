@@ -281,9 +281,150 @@ impl Entry {
     }
 }
 
-/// Every agent the chat can use: the installed ones found, then the ones the user added.
+/// The built-in agent, as found when the app starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Builtin {
+    /// The program is the package's own (`mastra-agent/` beside the app), not one a developer
+    /// named in `SOLIDCRAFT_MASTRA_AGENT`. Only a package's agent may be trusted with the shorter
+    /// tool names its MCP bridge uses.
+    pub packaged: bool,
+    /// Its program: an absolute path.
+    pub program: std::path::PathBuf,
+    /// What the program is started with: nothing for a program named by the environment variable,
+    /// the agent's entry file for the Node carried in the package.
+    pub args: Vec<String>,
+    /// The folder of the app's own where it keeps its sign-ins and its other data, so it shares
+    /// none with a Mastra Code the user installed (`None`: no such folder could be named, and it
+    /// keeps them where it does by itself).
+    pub data: Option<std::path::PathBuf>,
+}
+
+/// Look for the built-in agent, once, when the app starts: the environment variable
+/// `SOLIDCRAFT_MASTRA_AGENT` names its program, and without it the package the app runs from may
+/// carry one ([`packaged_builtin`]). `None`: there is none, and the chat uses the agents it finds
+/// and the ones the user added, as it did before there was a built-in one.
+/// Tests name the agent themselves ([`crate::SolveApp::builtin_agent`]): a variable left in a
+/// developer's shell must not change what they see.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn look_for_builtin() -> Option<Builtin> {
+    if cfg!(test) {
+        return None;
+    }
+    let (program, args, packaged) = match builtin_program(solidcraft_engine::geom::env::var("MASTRA_AGENT")) {
+        Some(program) => (program, Vec::new(), false),
+        None => {
+            let (program, args) = packaged_builtin(&std::env::current_exe().ok()?)?;
+            (program, args, true)
+        }
+    };
+    Some(Builtin {
+        program,
+        args,
+        packaged,
+        data: builtin_data(std::env::var_os("SOLIDCRAFT_SETTINGS_DIR"), solidcraft_engine::recovery::data_dir()),
+    })
+}
+
+/// The browser build starts no agent.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn look_for_builtin() -> Option<Builtin> {
+    None
+}
+
+/// The program a `SOLIDCRAFT_MASTRA_AGENT` value names: an absolute path to a file. Anything
+/// else is no built-in agent, so a mistyped value leaves the chat as it was.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn builtin_program(value: Option<String>) -> Option<std::path::PathBuf> {
+    let program = std::path::PathBuf::from(value.filter(|value| !value.trim().is_empty())?);
+    (program.is_absolute() && program.is_file()).then_some(program)
+}
+
+/// The folder a package carries the built-in agent in, beside the app by the rules the Mastra
+/// workflow runtime's folder follows ([`super::packaged_runtime::roots_named`]). It is a folder of
+/// its own: `mastra/` is that runtime's, with a receipt this one does not have.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) const PACKAGED_AGENT_DIR: &str = "mastra-agent";
+
+/// The built-in agent a package carries for the app at `exe`: its own Node and the entry file that
+/// Node is started with. The folder is what says the package carries the agent. A package that
+/// has it has the built-in agent and nothing else, also when the folder is damaged: the agent then
+/// fails to start and the Assistant shows that, and never goes back to the agents found on the
+/// computer. A package without the folder has no built-in agent, and the chat is as it was.
+/// Nothing outside the package is looked at: not `PATH`, not a Node the user installed.
+#[cfg(not(target_arch = "wasm32"))]
+fn packaged_builtin(exe: &std::path::Path) -> Option<(std::path::PathBuf, Vec<String>)> {
+    let node = if cfg!(windows) { "node.exe" } else { "node" };
+    let roots = super::packaged_runtime::roots_named(exe, PACKAGED_AGENT_DIR);
+    // The place that holds the Node program, else the first place where the folder is at all.
+    let root = roots.iter().find(|root| root.join(node).is_file()).or_else(|| roots.iter().find(|root| root.is_dir()))?;
+    Some((root.join(node), vec![root.join("agent").join("main.mjs").to_string_lossy().into_owned()]))
+}
+
+/// Where the built-in agent keeps its data: `mastra` in the app's settings folder. `chosen` is
+/// the settings folder a run was given for itself (`SOLIDCRAFT_SETTINGS_DIR`), which the app's
+/// other files follow too; `own` is the app's per-user folder otherwise.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+fn builtin_data(chosen: Option<std::ffi::OsString>, own: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
+    let settings = chosen.map(std::path::PathBuf::from).filter(|folder| folder.is_absolute()).or(own)?;
+    Some(settings.join("mastra"))
+}
+
+/// Whether the chat has its built-in agent. It is offered first, and the agents found on the
+/// computer and the ones the user added stay usable beside it: a release package carries a
+/// working agent, it does not take the other ACP agents away.
+pub fn is_builtin(app: &crate::SolveApp) -> bool {
+    app.builtin_agent.is_some()
+}
+
+/// Whether `entry` is the built-in agent this app carries, rather than one found or added by the
+/// user. The built-in agent's connections, its data folder and its start belong to it alone.
+pub fn is_builtin_entry(app: &crate::SolveApp, entry: &Entry) -> bool {
+    app.builtin_agent.is_some() && entry.id == super::connections::AGENT_ID
+}
+
+/// Whether the conversation's agent is the built-in one: its connections page, its key handover
+/// and its data folder are its own, and no other agent's.
+pub fn builtin_current(app: &crate::SolveApp) -> bool {
+    current(app).is_some_and(|entry| is_builtin_entry(app, &entry))
+}
+
+/// Whether the process actually running this conversation is the agent Intcad itself ships. The
+/// picker and the default can change while a conversation runs, so a permission question is
+/// judged by the backend that asked it (`running_id`), not by what is selected now; and a program
+/// named through `SOLIDCRAFT_MASTRA_AGENT` is a developer's own, not the package's.
+pub fn builtin_running(app: &crate::SolveApp) -> bool {
+    app.builtin_agent.as_ref().is_some_and(|found| found.packaged) && app.agent_chat.running_id == super::connections::AGENT_ID
+}
+
+/// The built-in agent as the agent list shows it.
+fn builtin(app: &crate::SolveApp) -> Option<Entry> {
+    let found = app.builtin_agent.as_ref()?;
+    Some(Entry {
+        id: super::connections::AGENT_ID.to_string(),
+        name: super::connections::AGENT_NAME.to_string(),
+        kind: Kind::Acp,
+        argv: std::iter::once(found.program.to_string_lossy().into_owned()).chain(found.args.iter().cloned()).collect(),
+        version: None,
+        login: "",
+        found: false,
+        base_url: String::new(),
+        model: String::new(),
+        key: false,
+        request_timeout_s: DEFAULT_REQUEST_TIMEOUT_S,
+        reasoning_effort: String::new(),
+        problem: None,
+        install: "",
+        retired: false,
+    })
+}
+
+/// Every agent the chat can use: the built-in one first when the package carries one, then the
+/// installed ones found, then the ones the user added.
 pub fn entries(app: &crate::SolveApp) -> Vec<Entry> {
     let mut out = Vec::new();
+    if let Some(entry) = builtin(app) {
+        out.push(entry);
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(d) = &app.agent_chat.detection {
         out.extend(d.found.iter().map(|f| Entry {
@@ -502,6 +643,125 @@ mod tests {
         ] {
             assert!(!key_safe_for(url), "{url}");
         }
+    }
+
+    /// The built-in agent is named by an absolute path to a file and nothing looser, and keeps
+    /// its data in `mastra` under the settings folder: the one a run was given, else the app's own.
+    #[test]
+    fn the_built_in_agent_is_an_absolute_file_with_a_data_folder_of_the_apps() {
+        let me = std::env::current_exe().expect("this test's own program");
+        assert_eq!(builtin_program(Some(me.to_string_lossy().into_owned())), Some(me.clone()));
+        let folder = me.parent().expect("its folder").to_string_lossy().into_owned();
+        for not_one in [
+            None,
+            Some(String::new()),
+            Some("   ".into()),
+            Some("mastra-agent".into()),
+            Some("./mastra-agent".into()),
+            Some(folder),
+            Some("/no/such/program".into()),
+        ] {
+            assert_eq!(builtin_program(not_one.clone()), None, "{not_one:?}");
+        }
+        let own = std::path::PathBuf::from(if cfg!(windows) { r"C:\Users\u\AppData\Local\Intcad" } else { "/home/u/.local/share/intcad" });
+        let given = std::path::PathBuf::from(if cfg!(windows) { r"D:\run\settings" } else { "/tmp/run/settings" });
+        assert_eq!(builtin_data(None, Some(own.clone())), Some(own.join("mastra")));
+        assert_eq!(
+            builtin_data(Some(given.clone().into_os_string()), Some(own.clone())),
+            Some(given.join("mastra")),
+            "a run's own settings folder wins"
+        );
+        assert_eq!(builtin_data(Some("relative/settings".into()), Some(own.clone())), Some(own.join("mastra")), "a relative folder is not one");
+        assert_eq!(builtin_data(None, None), None);
+        // A test never finds one by itself, whatever the shell it runs in holds.
+        assert_eq!(look_for_builtin(), None);
+    }
+
+    /// A package carries the built-in agent in a folder beside the app: its own Node and the
+    /// entry file. A package made without the folder behaves as it did. One that has the folder
+    /// has the built-in agent whatever is missing inside it, so a damaged package shows the
+    /// agent failing and never the agents found on the computer.
+    #[test]
+    fn a_package_with_the_agents_folder_has_the_built_in_agent_and_one_without_it_has_none() {
+        let dir = std::env::temp_dir().join(format!("intcad-packaged-agent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // An app laid out as each system's package lays it out: the program two folders down, so
+        // every rule of `roots_named` has a place inside `dir`.
+        let exe = dir.join("Contents").join("MacOS").join("intcad");
+        let root = super::super::packaged_runtime::roots_named(&exe, PACKAGED_AGENT_DIR).into_iter().next().expect("a place for the folder");
+        assert!(root.starts_with(&dir) && root.ends_with(PACKAGED_AGENT_DIR), "{root:?}");
+        let node = root.join(if cfg!(windows) { "node.exe" } else { "node" });
+        let entry = root.join("agent").join("main.mjs");
+        let found = Some((node.clone(), vec![entry.to_string_lossy().into_owned()]));
+        assert_eq!(packaged_builtin(&exe), None, "no folder: no built-in agent");
+        // The folder alone, with nothing in it: the agent is the package's, and will fail to start.
+        std::fs::create_dir_all(&root).expect("make the folder");
+        assert_eq!(packaged_builtin(&exe), found, "an empty folder");
+        for file in [&node, &entry] {
+            std::fs::create_dir_all(file.parent().expect("a folder")).expect("make the folder");
+            std::fs::write(file, b"").expect("write the file");
+        }
+        assert_eq!(packaged_builtin(&exe), found, "a whole folder");
+        // A file where the folder should be is no folder.
+        std::fs::remove_dir_all(&root).expect("take the folder away");
+        std::fs::write(&root, b"").expect("write a file in its place");
+        assert_eq!(packaged_builtin(&exe), None, "a file of that name");
+        std::fs::remove_file(&root).expect("take the file away");
+        std::fs::create_dir_all(&root).expect("make the folder again");
+        // The other runtime's folder is not this one's.
+        assert!(!super::super::packaged_runtime::roots(&exe).contains(&root));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The built-in agent is the package's, not one found or added: its connections, its data
+    /// folder and its start are its own, and an agent beside it is not mistaken for it.
+    #[test]
+    fn only_the_carried_agent_is_the_built_in_one() {
+        let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        let external = Entry {
+            id: "claude".into(),
+            name: "Claude Code".into(),
+            kind: Kind::Acp,
+            argv: vec!["claude".into()],
+            version: None,
+            login: "",
+            found: true,
+            base_url: String::new(),
+            model: String::new(),
+            key: false,
+            request_timeout_s: 300,
+            reasoning_effort: String::new(),
+            problem: None,
+            install: "",
+            retired: false,
+        };
+        assert!(!is_builtin(&app) && !builtin_current(&app), "no package's agent: nothing is the built-in one");
+        app.builtin_agent = Some(Builtin { program: "/opt/intcad/mastra-agent".into(), args: Vec::new(), packaged: true, data: None });
+        assert!(is_builtin(&app));
+        let carried = builtin(&app).expect("the built-in agent");
+        assert!(is_builtin_entry(&app, &carried) && !is_builtin_entry(&app, &external));
+        // The list starts with it, and the agents found and added stay after it.
+        app.agent_chat.detection = Some(super::super::discover::Detection {
+            found: vec![super::super::discover::Found {
+                id: "claude",
+                name: "Claude Code",
+                argv: vec!["claude".into()],
+                version: None,
+                login: super::super::discover::Login::Unknown,
+                problem: None,
+                install: "",
+            }],
+            ..Default::default()
+        });
+        let all = entries(&app);
+        assert_eq!(all.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), ["mastra", "claude"]);
+        // The conversation is the built-in agent until another is picked; picking one makes the
+        // built-in agent's connections, and only its own, stop answering.
+        assert!(builtin_current(&app));
+        app.agent_chat.agent_id = Some("claude".into());
+        assert!(is_builtin(&app) && !builtin_current(&app), "an external agent is not the built-in one");
+        app.agent_chat.agent_id = Some("mastra".into());
+        assert!(builtin_current(&app));
     }
 
     #[test]

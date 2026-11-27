@@ -17,7 +17,7 @@ See [docs/agent-development.md](docs/agent-development.md) for standard commands
 ## Hard rules (what enforces each)
 - Independent: no other-product code/icons/text/templates or commercial CAD automation/data; scoped intgral-ai code only per `skills/solidcraft-ground-rules/SKILL.md`.
 - No GPL/LGPL/AGPL reading/copying/linking (OpenCASCADE, FreeCAD, SolveSpace, CadQuery, LibreCAD, QCAD) except system GTK/WebKitGTK. `cargo xtask licences --check`: Cargo only, not npm/Node or rights clearance.
-- Every asset is original or openly licensed with a row in ATTRIBUTION.md; read `assets/AGENTS.md` before icon work: `cargo xtask assets`, `cargo xtask icons`.
+- Every asset is original or openly licensed with a row in ATTRIBUTION.md; read `assets/AGENTS.md` for icons: `cargo xtask assets`, `cargo xtask icons`.
 - Never crash: no unwrap/expect/panic/unsafe in non-test code (unsafe allowlist in crash-safety), errors are `Result`, input is hostile: clippy `-D warnings`, `hostile_params_never_panic`.
 - Model decisions (operation, bodies, face/edge naming, depths, nearness) use exact geometry; a mesh is for display, export, previews and mesh bodies (`xtask/mesh-decisions.txt` only shrinks): `cargo xtask mesh-decisions`.
 - New kernel cases go to solidcore: `cargo xtask lists`.
@@ -32,9 +32,9 @@ See [docs/agent-development.md](docs/agent-development.md) for standard commands
 - New UI strings go in `assets/locales/pending/<slug>.json`, ATTRIBUTION rows in `attribution/pending/<slug>.md`: `cargo xtask lists`.
 - A changed default keeps the old behaviour behind a preference and fills the PR's `Changes a default:` line, and no second PR for an issue a lower-numbered one closes: `pr-checks.yml`.
 - A regression test goes in the area's existing test file, never a per-bug file (#3226).
-- Look at open PRs first, claim with a draft PR (lowest number wins), one topic per PR, never force-push `main`, no pushes just to catch up with `main`: `skills/solidcraft-contributing/SKILL.md`.
-- A PR title and first sentence make sense to someone new to the issue: `skills/solidcraft-contributing/SKILL.md`.
-- Show observable changes with real screenshots or a recording, captured yourself.
+- Look at open PRs first, claim with a draft PR (lowest number wins), one topic per PR, never force-push `main`, no catch-up pushes to `main`: `skills/solidcraft-contributing/SKILL.md`.
+- A PR title and first sentence are clear to a newcomer: `skills/solidcraft-contributing/SKILL.md`.
+- Show changes in screenshots or recordings you made; pick checks with [verify-intcad](.agents/skills/verify-intcad/).
 - Validation: [docs/validation-policy.md](docs/validation-policy.md) — run area checks, reuse unchanged inputs, rerun after changes; never claim unrun checks pass. `cargo xtask skills` keeps this file and `skills/` honest.
 
 ## Working on X: read the skill first
@@ -57,3 +57,8 @@ See [docs/agent-development.md](docs/agent-development.md) for standard commands
 | A bug report, a crash, a wrong result | `skills/solidcraft-reporting/SKILL.md` |
 | Checking, porting, designs in git | `skills/solidcraft-checking/SKILL.md` |
 | Assemblies, joints, motion | `skills/solidcraft-mechanisms/SKILL.md` |
+
+## Agent skills
+- Issues: GitHub Issues in `intgral-ai/intcad`; see `docs/agents/issue-tracker.md`.
+- Triage labels: `docs/agents/triage-labels.md`.
+- Domain: read `docs/agents/domain.md` first.

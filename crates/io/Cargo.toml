@@ -37,10 +37,19 @@ cadmpeg-registry = { workspace = true }
 [build-dependencies]
 sha2 = { workspace = true }
 
-# A plain fsync where a network share refuses Apple's full flush (src/safe_write.rs); already in
-# the tree through tempfile.
-[target.'cfg(target_vendor = "apple")'.dependencies]
+# A plain fsync on Apple network shares and atomic no-clobber Files publication.
+[target.'cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android"))'.dependencies]
 rustix = { version = "1", default-features = false, features = ["std", "fs"] }
+
+# The Trash (src/files.rs): the system's own call, through its safe bindings; both are already in
+# the tree through the app. macOS only: Foundation's trash is a desktop Trash, not an iOS API.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSFileManager", "NSString", "NSURL", "FoundationErrors"] }
+
+# Safe MoveFileExW without REPLACE_EXISTING: file, folder and link publication, including FAT.
+[target.'cfg(windows)'.dependencies]
+atomicwrites = "=0.4.4"
 
 # The computer's name for a design's lock file (src/design_lock.rs; the browser keeps no lock files).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
