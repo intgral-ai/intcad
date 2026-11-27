@@ -13,6 +13,8 @@
 //! - `document.export`, `document.import {text, name?}`, `document.saved {revision}`: the design
 //!   for a host that keeps the files itself (#8517)
 //! - `ui.inspect`: UI state, viewport rect, camera, tool and dialog
+//! - `ui.rects {prefix?}`: the rects drawn last frame, in window points, with the scale to window
+//!   pixels (a native child window is placed in those pixels; `ui.handles` gives their centres)
 //! - `ui.drag {x0, y0, x1, y1, button?, shift?, ctrl?, steps?, hold?}` (box selection, navigation;
 //!   `hold` keeps the button down that many frames before moving);
 //!   `ui.selection` (selection, dialog inputs, hover, drawn sketch dimensions);
@@ -35,6 +37,8 @@
 //! - `ui.confirm {accept?}`: the Delete confirmation (without `accept`: what it lists)
 //! - `ui.shortcut {command, key?, slot?, replace?}`: a command's keys, or bind one ("" clears)
 //! - `ui.help {item?: about|updates|shortcuts|report}`: the Help menu; returns the version and diagnostics
+//! - `ui.files {root?, show_hidden?, refresh?, open?, locate?}`: the Files panel's folder and its
+//!   visible rows; `root` is a folder path or null
 //! - `ui.prefs {...}`: the preferences (default_units, nav, zoom_reverse, orbit_around, msaa,
 //!   length_decimals, angle_decimals); returns them all
 //! - `ui.capture {action?: capture|revert|cancel}`: the Capture Position question
@@ -50,7 +54,14 @@ use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps};
+use solidcraft_engine::batch::{CheckpointPolicy, run_document_steps, run_document_steps_gated};
+use solidcraft_engine::entitlement::{
+    AccountService, Admission, AuthenticatedHostScope, AuthorizationBound, BillingPort, BudgetTable, Capability, CommitDecision, CommitGate,
+    ConservativeDeadline, EntryCategory, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, OperationStore, Refusal, RefusalCode,
+    ResultEvidence, SettlementAction, SettlementIntent, TrustedContext, UpperBound, settlement_for,
+};
+#[cfg(any(test, not(target_arch = "wasm32")))]
+use solidcraft_engine::entitlement::{FreshIntent, TransportCorrelation};
 use solidcraft_engine::io::vfs;
 use solidcraft_engine::render::{Camera, StandardView};
 use solidcraft_engine::schema::ParamCheck;
@@ -58,11 +69,19 @@ use solidcraft_engine::schema::ParamCheck;
 use crate::SolveApp;
 
 pub type ControlResponse = Value;
+#[derive(Clone, Copy)]
+enum BridgeDisposition {
+    Settle { intent: SettlementIntent, deferred: bool },
+    AlreadyTerminal,
+}
+type BridgeEffect = std::sync::Arc<Mutex<Option<BridgeDisposition>>>;
 
 pub struct ControlRequest {
     pub method: String,
     pub params: Value,
     pub reply: Sender<ControlResponse>,
+    /// Disposition for the bridge journal worker; it never comes from the reply's wire fields.
+    bridge_effect: Option<BridgeEffect>,
     /// Set once the window starts on it; until then it waits its turn (`control.running`, #3654).
     pub started: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Chat requests already admitted by the gate may outlive a tab switch. This turn's
@@ -70,12 +89,375 @@ pub struct ControlRequest {
     pub(crate) chat_turn: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Original document precondition and tab context, pinned at first host admission.
     pub(crate) guarded: Option<crate::execution_guard::GuardedAdmission>,
+    /// Where this request entered Intcad. Only the host's named constructors set it from the
+    /// path that actually produced the request; request parameters never choose it.
+    pub(crate) entry: EntryCategory,
+    /// The host-minted logical operation for a controlled entry; `None` for free entries and
+    /// when the host could not mint one (admission then fails closed).
+    pub(crate) operation: Option<OperationId>,
+    /// The typed admission taken at the first trusted host seam. Every forwarding/resumption
+    /// carries it, so a request is never billed twice and an unclassified request is never
+    /// admitted later by a shared dispatch helper.
+    pub(crate) admission: Option<Admission>,
+    /// The host-authenticated scope that minted the admission. The commit gate compares it with
+    /// the scope the host can prove at the commit point, so an account or session switch drops
+    /// the old operation's result. `None` for free entries.
+    pub(crate) admission_scope: Option<AuthenticatedHostScope>,
+    /// Set by the host at the actual dispatch boundary, never from wire fields. A false value
+    /// proves that no step of this logical operation has started, so a pre-dispatch refusal may
+    /// release its held admission exactly once.
+    pub(crate) work_started: std::sync::Arc<AtomicBool>,
+    /// Host-known proof that this dispatch refused before it could touch the design. Set only by
+    /// local validation/guard paths, never inferred from a reply payload.
+    pub(crate) local_no_effect: std::sync::Arc<AtomicBool>,
+    /// Host-known uncertainty about whether an effect was retained. Settlement finalizes as
+    /// `Unknown`; it never releases or charges silently.
+    pub(crate) local_unknown_effect: std::sync::Arc<AtomicBool>,
+    /// The host-minted context for a forwarded bridge call. It binds the operation to the same
+    /// account, installation, session, capability and entry; wire fields cannot supply it.
+    pub(crate) trusted: Option<TrustedContext>,
+    /// The host's conservative authorization window for a forwarded call, when one was measured.
+    pub(crate) deadline: Option<ConservativeDeadline>,
+    /// The host's monotonic reading at which the forwarded call was minted.
+    pub(crate) now: Option<MonotonicInstant>,
+    /// The published free helper or protocol read chosen by the host. It never mints an
+    /// operation or consumes credits, and only that tool's exact methods below are allowed.
+    pub(crate) helper: Option<String>,
+}
+
+/// Entries whose human host path is free even when it shares command dispatch.
+pub fn free_entry(entry: EntryCategory) -> bool {
+    entry.is_free()
+}
+
+/// The capability the frozen rev3 entry matrix pairs with a controlled entry.
+/// `None` for free entries and for unclassified requests.
+pub fn entry_capability(entry: EntryCategory) -> Option<Capability> {
+    match entry {
+        EntryCategory::HumanGuiFree | EntryCategory::WebGuiFree | EntryCategory::Unknown => None,
+        EntryCategory::Mastra => Some(Capability::Harness),
+        EntryCategory::ExternalAcpMcp | EntryCategory::HeadlessMcp | EntryCategory::GuiBridgeMcp => Some(Capability::Mcp),
+        EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation => Some(Capability::Control),
+        EntryCategory::CliDfm => Some(Capability::Dfm),
+        EntryCategory::ReviewPanel => Some(Capability::Review),
+    }
+}
+
+/// Protocol, maintenance, navigation and rendering methods that no controlled entry bills.
+/// They are checked only after the entry is classified, so an unclassified request stays
+/// refused even for a navigation method.
+fn auxiliary_method(method: &str) -> bool {
+    matches!(
+        method,
+        "control.running"
+            | "control.pending"
+            | "control.capabilities"
+            | "control.subscribe"
+            | "engine.commands"
+            | "ui.inspect"
+            | "ui.rects"
+            | "ui.view"
+            | "ui.screenshot"
+            | "ui.render"
+            | "ui.icon_audit"
+            | "ui.resize"
+    )
+}
+
+/// The exact screenshot camera helper: `view.apply` with one `camera` object or one named-view
+/// string and no other field. `view.apply` is transient view state (`s.camera`), never saved and
+/// never an undo step; it cannot carry a design mutation.
+fn exact_screenshot_camera(params: &Value) -> bool {
+    let Some(object) = params.as_object() else { return false };
+    if object.len() != 1 {
+        return false;
+    }
+    match (object.get("camera"), object.get("view")) {
+        (Some(camera), None) => camera.is_object(),
+        (None, Some(view)) => view.is_string(),
+        _ => false,
+    }
+}
+
+/// The screenshot standard-view helper: `ui.view` with exactly one standard-view string.
+fn exact_screenshot_view(params: &Value) -> bool {
+    let Some(object) = params.as_object() else { return false };
+    if object.len() != 1 {
+        return false;
+    }
+    matches!(object.get("view").and_then(Value::as_str), Some("front" | "back" | "top" | "bottom" | "left" | "right" | "iso" | "home" | "fit"))
+}
+
+/// The exact host-selected methods a published MCP free helper or resource read may use.
+///
+/// Every branch is tied to the originating tool. Generic `engine.execute`, arbitrary commands
+/// and design mutations are never free, even when a host marks one helper request.
+fn mcp_helper_method(helper: &str, method: &str, params: &Value) -> bool {
+    match helper {
+        "@resource" => matches!(method, "document.inspect" | "engine.commands"),
+        "pending" => method == "control.pending",
+        "running" => method == "control.running",
+        "list_commands" => method == "engine.commands",
+        "describe_command" => method == "engine.execute" && params.get("command").and_then(Value::as_str) == Some("engine.describe"),
+        "crash_reports" => {
+            method == "engine.execute"
+                && matches!(params.get("command").and_then(Value::as_str), Some("diagnostics.crash_reports" | "diagnostics.crash_report"))
+        }
+        "compare_picture" => method == "engine.execute" && params.get("command").and_then(Value::as_str) == Some("inspect.compare_picture"),
+        "screenshot" => match method {
+            "ui.view" => exact_screenshot_view(params),
+            "ui.screenshot" | "ui.render" => true,
+            "engine.execute" => {
+                params.get("command").and_then(Value::as_str) == Some("view.apply") && params.get("params").is_some_and(exact_screenshot_camera)
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// A host-marked helper must be one of the exact free methods and must not carry a billable
+/// operation, trusted context or stale admission. Otherwise it is a controlled request and is
+/// refused here rather than being dispatched for free.
+fn helper_refusal(req: &ControlRequest) -> Option<Refusal> {
+    let helper = req.helper.as_deref()?;
+    if !matches!(req.entry, EntryCategory::GuiBridgeMcp | EntryCategory::HeadlessMcp | EntryCategory::ExternalAcpMcp) {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "a free helper cannot use this request entry"));
+    }
+    if req.operation.is_some() || req.trusted.is_some() || req.admission.as_ref().is_some_and(|admission| !matches!(admission, Admission::Allowed)) {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "a free helper cannot carry operation authority"));
+    }
+    if !mcp_helper_method(helper, &req.method, &req.params) {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "this method is not an exact published free helper"));
+    }
+    None
+}
+
+/// Methods that start a native file operation answered later by a worker/save path, outside
+/// the typed admission carried into the current request. A controlled entry cannot carry that
+/// admission into their eventual commit yet, so it is refused before any admission or work.
+/// `ui.documents` can launch an asynchronous save through its `answer` or `changed_on_disk`
+/// fields, and an asynchronous re-open through `open_elsewhere`; navigation, tab moves and
+/// prompts that only ask for an answer or cancel are not included.
+fn starts_async_native_work(method: &str, params: &Value) -> bool {
+    match method {
+        "ui.file" => true,
+        "ui.home" => params.get("sample").is_some(),
+        "ui.documents" => {
+            matches!(params.get("answer").and_then(Value::as_str), Some("save"))
+                || matches!(params.get("changed_on_disk").and_then(Value::as_str), Some("save_copy" | "overwrite"))
+                || matches!(params.get("open_elsewhere").and_then(Value::as_str), Some("read_only" | "anyway"))
+        }
+        _ => false,
+    }
+}
+
+fn async_native_refusal(req: &ControlRequest) -> Option<Refusal> {
+    (!free_entry(req.entry) && starts_async_native_work(&req.method, &req.params))
+        .then(|| Refusal::new(RefusalCode::UnsafeToStart, "this controlled entry starts a native file operation that has no durable commit path yet"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn mint_operation() -> Option<OperationId> {
+    let mut entropy = [0_u8; 16];
+    getrandom::fill(&mut entropy).ok()?;
+    OperationId::mint_from_entropy(&entropy).ok()
+}
+
+/// The browser never creates a controlled entry, and has no host entropy to mint one with.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn mint_operation() -> Option<OperationId> {
+    None
 }
 
 impl ControlRequest {
-    pub fn new(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+    /// Where the host constructed this request. The value is set only by a named constructor and
+    /// is never read from wire parameters, so a diagnostic or test needs no mutable access.
+    pub fn entry_category(&self) -> EntryCategory {
+        self.entry
+    }
+
+    fn pending(entry: EntryCategory, method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        let operation = entry_capability(entry).and_then(|_| mint_operation());
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { method: method.into(), params, reply: tx, started: Default::default(), chat_turn: None, guarded: None }, rx)
+        let request = Self {
+            method: method.into(),
+            params,
+            reply: tx,
+            bridge_effect: None,
+            started: Default::default(),
+            chat_turn: None,
+            guarded: None,
+            entry,
+            operation,
+            admission: None,
+            admission_scope: None,
+            work_started: std::sync::Arc::new(AtomicBool::new(false)),
+            local_no_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            local_unknown_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            trusted: None,
+            deadline: None,
+            now: None,
+            helper: None,
+        };
+        (request, rx)
+    }
+
+    /// A person acting in this app's own window, including commands that reuse `engine.execute`.
+    pub fn trusted_gui(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::HumanGuiFree, method, params)
+    }
+
+    /// A normal browser CAD request: anonymous, offline and free.
+    pub fn trusted_web(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::WebGuiFree, method, params)
+    }
+
+    /// The built-in Mastra harness calling an Intcad logical tool.
+    pub fn trusted_mastra(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::Mastra, method, params)
+    }
+
+    /// A trusted runtime bridge forwarding an Intcad tool call.
+    pub fn trusted_bridge(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::GuiBridgeMcp, method, params)
+    }
+
+    /// A forwarded bridge call that keeps the operation and authenticated host context minted
+    /// for this one logical MCP tool call. The entry, capability and operation are derived from
+    /// `trusted`, never from the wire request.
+    pub(crate) fn trusted_bridge_forwarded(
+        method: impl Into<String>,
+        params: Value,
+        trusted: TrustedContext,
+        deadline: Option<ConservativeDeadline>,
+        now: Option<MonotonicInstant>,
+    ) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        let entry = trusted.entry();
+        let operation = Some(trusted.operation().clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let request = Self {
+            method: method.into(),
+            params,
+            reply: tx,
+            bridge_effect: None,
+            started: Default::default(),
+            chat_turn: None,
+            guarded: None,
+            entry,
+            operation,
+            admission: None,
+            admission_scope: Some(trusted.scope().clone()),
+            work_started: std::sync::Arc::new(AtomicBool::new(false)),
+            local_no_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            local_unknown_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            trusted: Some(trusted),
+            deadline,
+            now,
+            helper: None,
+        };
+        (request, rx)
+    }
+
+    /// A free helper or protocol/resource read chosen by the host bridge. It carries no
+    /// operation and no trusted context; `helper` names the originating tool (or `@resource`),
+    /// so control admits only that tool's exact fixed methods.
+    pub(crate) fn trusted_bridge_helper(
+        method: impl Into<String>,
+        params: Value,
+        helper: impl Into<String>,
+    ) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let request = Self {
+            method: method.into(),
+            params,
+            reply: tx,
+            bridge_effect: None,
+            started: Default::default(),
+            chat_turn: None,
+            guarded: None,
+            entry: EntryCategory::GuiBridgeMcp,
+            operation: None,
+            admission: None,
+            admission_scope: None,
+            work_started: std::sync::Arc::new(AtomicBool::new(false)),
+            local_no_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            local_unknown_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            trusted: None,
+            deadline: None,
+            now: None,
+            helper: Some(helper.into()),
+        };
+        (request, rx)
+    }
+
+    /// An external ACP client, arriving through MCP.
+    pub fn trusted_acp(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::ExternalAcpMcp, method, params)
+    }
+
+    /// A standalone headless MCP server.
+    pub fn trusted_mcp(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::HeadlessMcp, method, params)
+    }
+
+    /// An authenticated external control connection.
+    pub fn trusted_control(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::DirectControl, method, params)
+    }
+
+    /// The Review panel's own logical check.
+    pub fn trusted_review_panel(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::ReviewPanel, method, params)
+    }
+
+    /// A mixed CLI validation request that contains a DFM check.
+    pub fn trusted_cli_dfm(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::CliDfm, method, params)
+    }
+
+    /// External UI automation driving real operations.
+    pub fn trusted_external_ui(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
+        Self::pending(EntryCategory::ExternalUiAutomation, method, params)
+    }
+
+    /// A request with no trusted origin, for ordering and fail-closed tests only.
+    #[cfg(test)]
+    pub(crate) fn unclassified_for_test(method: impl Into<String>, params: Value) -> Self {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        Self {
+            method: method.into(),
+            params,
+            reply: tx,
+            bridge_effect: None,
+            started: Default::default(),
+            chat_turn: None,
+            guarded: None,
+            entry: EntryCategory::Unknown,
+            operation: None,
+            admission: None,
+            admission_scope: None,
+            work_started: std::sync::Arc::new(AtomicBool::new(false)),
+            local_no_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            local_unknown_effect: std::sync::Arc::new(AtomicBool::new(false)),
+            trusted: None,
+            deadline: None,
+            now: None,
+            helper: None,
+        }
+    }
+
+    pub fn entry(&self) -> EntryCategory {
+        self.entry
+    }
+
+    pub fn operation(&self) -> Option<&OperationId> {
+        self.operation.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn trusted(&self) -> Option<&TrustedContext> {
+        self.trusted.as_ref()
     }
 
     pub(crate) fn refuse_cancelled_chat(&self) -> bool {
@@ -86,6 +468,1144 @@ impl ControlRequest {
             false
         }
     }
+}
+
+/// The trusted origin and typed admission of a request held back after host admission.
+///
+/// Fields are private so no module can invent an origin, operation, admission or host context.
+/// The only constructor takes an already-classified request, and [`reissue`] consumes the value
+/// once. A later caller cannot re-issue an arbitrary entry or grant.
+#[derive(Clone)]
+pub(crate) struct Reissue {
+    bridge_effect: Option<BridgeEffect>,
+    entry: EntryCategory,
+    operation: Option<OperationId>,
+    admission: Option<Admission>,
+    admission_scope: Option<AuthenticatedHostScope>,
+    work_started: std::sync::Arc<AtomicBool>,
+    local_no_effect: std::sync::Arc<AtomicBool>,
+    local_unknown_effect: std::sync::Arc<AtomicBool>,
+    trusted: Option<TrustedContext>,
+    deadline: Option<ConservativeDeadline>,
+    now: Option<MonotonicInstant>,
+    helper: Option<String>,
+}
+
+impl Reissue {
+    pub(crate) fn from_request(req: &ControlRequest) -> Self {
+        Self {
+            entry: req.entry,
+            operation: req.operation.clone(),
+            admission: req.admission.clone(),
+            admission_scope: req.admission_scope.clone(),
+            work_started: req.work_started.clone(),
+            local_no_effect: req.local_no_effect.clone(),
+            local_unknown_effect: req.local_unknown_effect.clone(),
+            trusted: req.trusted.clone(),
+            deadline: req.deadline.clone(),
+            now: req.now,
+            helper: req.helper.clone(),
+            bridge_effect: req.bridge_effect.clone(),
+        }
+    }
+}
+
+/// Rebuild a request the agent cursor held back, keeping the origin and operation the host
+/// admitted. Reconstructing it as a free GUI request would let any entry bypass admission.
+///
+/// The origin is not chosen here; it comes only from [`Reissue::from_request`].
+pub(crate) fn reissue(parts: Reissue, method: impl Into<String>, params: Value) -> (ControlRequest, std::sync::mpsc::Receiver<ControlResponse>) {
+    let Reissue {
+        entry,
+        operation,
+        admission,
+        admission_scope,
+        work_started,
+        local_no_effect,
+        local_unknown_effect,
+        trusted,
+        deadline,
+        now,
+        helper,
+        bridge_effect,
+    } = parts;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let request = ControlRequest {
+        method: method.into(),
+        params,
+        reply: tx,
+        bridge_effect,
+        started: Default::default(),
+        chat_turn: None,
+        guarded: None,
+        entry,
+        operation,
+        admission,
+        admission_scope,
+        work_started,
+        local_no_effect,
+        local_unknown_effect,
+        trusted,
+        deadline,
+        now,
+        helper,
+    };
+    (request, rx)
+}
+
+/// The only refusal port used when the host has not installed billing authority yet. It never
+/// grants; it keeps the production path fail-closed instead of silently treating a controlled
+/// entry as free.
+struct NoAuthorityBilling;
+
+impl BillingPort for NoAuthorityBilling {
+    fn admit(
+        &mut self,
+        _operation: &OperationId,
+        _capability: Capability,
+        _entry: EntryCategory,
+    ) -> Result<solidcraft_engine::entitlement::Grant, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "no host billing authority is installed for this controlled entry"))
+    }
+
+    fn commit(
+        &mut self,
+        _operation: &OperationId,
+        _result: solidcraft_engine::entitlement::BillingResult,
+    ) -> Result<solidcraft_engine::entitlement::BillingResult, Refusal> {
+        Err(Refusal::new(RefusalCode::AuthUnavailable, "no host billing authority is installed for this controlled entry"))
+    }
+
+    fn release(&mut self, _operation: &OperationId, _reason: RefusalCode) -> Result<(), Refusal> {
+        Ok(())
+    }
+}
+
+/// Decide one request from its trusted entry, before any method or parameter dispatch.
+///
+/// A free human/web entry is allowed and never touches the budget or billing port. An
+/// unclassified entry is refused with `CapabilityDenied` even for a navigation method. A direct
+/// control or external-UI-automation protocol/navigation/render method is free; every Intcad
+/// logical operation, including a read-only MCP/Mastra tool, needs a verified safe-stop bound,
+/// a host-minted operation and a server-issued grant from the host's [`BillingPort`]; the local
+/// port never turns a balance check into authority.
+pub fn admit_control_request(req: &ControlRequest, budget: &BudgetTable, billing: &mut dyn BillingPort) -> Admission {
+    if let Some(refusal) = helper_refusal(req) {
+        return Admission::Refused(refusal);
+    }
+    if req.helper.is_some() {
+        return Admission::Allowed;
+    }
+    if let Some(refusal) = trusted_refusal(req) {
+        return Admission::Refused(refusal);
+    }
+    if let Some(refusal) = deadline_refusal(req) {
+        return Admission::Refused(refusal);
+    }
+    if free_entry(req.entry) {
+        return Admission::Allowed;
+    }
+    let Some(capability) = entry_capability(req.entry) else {
+        return Admission::Refused(Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"));
+    };
+    if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
+        return Admission::Allowed;
+    }
+    if let Some(refusal) = async_native_refusal(req) {
+        return Admission::Refused(refusal);
+    }
+    if !budget.is_verified(capability, req.entry) {
+        return Admission::Refused(Refusal::new(RefusalCode::UnsafeToStart, "this controlled entry has no verified safe-stop bound"));
+    }
+    let Some(operation) = req.operation.clone() else {
+        return Admission::Refused(Refusal::new(RefusalCode::CapabilityDenied, "the host did not mint an operation for this controlled entry"));
+    };
+    match billing.admit(&operation, capability, req.entry) {
+        Ok(grant) => Admission::NewlyAdmitted { operation, grant },
+        Err(refusal) => Admission::Refused(refusal),
+    }
+}
+
+/// Admit a request against the app's installed authority: an explicitly installed billing port
+/// when a host supplied one, otherwise the verified commit authority. With neither, controlled
+/// entries stay refused before dispatch; free GUI, browser CAD and ordinary local commands are
+/// unaffected either way.
+fn admit_for_app(app: &mut SolveApp, req: &ControlRequest) -> Admission {
+    if req.entry == EntryCategory::GuiBridgeMcp && req.helper.is_none() {
+        #[cfg(test)]
+        if app.commit_account.as_ref().is_some_and(|account| account.bridge_journal().is_none()) {
+            return begin_covered_bridge(app, req).unwrap_or_else(Admission::Refused);
+        }
+        return Admission::Refused(Refusal::new(RefusalCode::AuthUnavailable, "the bridge worker did not supply an admission"));
+    }
+    let budget = app.budget.clone();
+    match app.billing_source() {
+        Some(mut source) => admit_control_request(req, &budget, source.port()),
+        None => admit_control_request(req, &budget, &mut NoAuthorityBilling),
+    }
+}
+
+#[cfg(test)]
+fn begin_covered_bridge(app: &mut SolveApp, req: &ControlRequest) -> Result<Admission, Refusal> {
+    let required = bridge_start_bound(app, req)?;
+    let (Some(scope), Some(account), Some(store)) = (app.commit_scope.as_ref(), app.commit_account.as_deref_mut(), app.review_store.as_deref_mut())
+    else {
+        return Err(Refusal::new(RefusalCode::AuthUnavailable, "the host has no bridge account authority or journal"));
+    };
+    begin_registered_bridge(req, scope, account, store, required)
+}
+
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn bridge_start_bound(app: &SolveApp, req: &ControlRequest) -> Result<Duration, Refusal> {
+    let step = required_bound(app, req)?;
+    let count =
+        if req.method == "engine.batch" { req.params.get("commands").and_then(Value::as_array).map_or(1, |steps| steps.len().max(1)) } else { 1 };
+    Ok(step.saturating_mul(u32::try_from(count).unwrap_or(u32::MAX)))
+}
+
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn begin_registered_bridge(
+    req: &ControlRequest,
+    scope: &AuthenticatedHostScope,
+    account: &mut dyn AccountService,
+    store: &mut dyn OperationStore,
+    required: Duration,
+) -> Result<Admission, Refusal> {
+    let operation =
+        req.operation.as_ref().ok_or_else(|| Refusal::new(RefusalCode::CapabilityDenied, "the bridge did not mint a logical operation"))?;
+    match account.begin_covered_bridge(scope, operation, required, req.deadline.as_ref())? {
+        Admission::NewlyAdmitted { operation: admitted, grant } if &admitted == operation => {
+            let admission = Admission::NewlyAdmitted { operation: admitted, grant };
+            // HELD records an intent only, not an admitted server hold. A refused or ambiguous
+            // begin leaves HELD; only a newly admitted same-ID receipt advances it to PENDING.
+            // A retry uses the original ID and scope; ALREADY_EXISTS never grants execution.
+            if store.mark_started(operation, crate::now_ms() as u64).is_err() {
+                let _ = settle_bridge_intent(store, account, scope, operation, SettlementIntent::Release(RefusalCode::AuthUnavailable), false);
+                return Err(Refusal::new(RefusalCode::AuthUnavailable, "the journal could not mark the bridge admission"));
+            }
+            Ok(admission)
+        }
+        Admission::Refused(refusal) => Err(refusal),
+        Admission::AlreadyExists { .. } => Err(Refusal::new(RefusalCode::OperationConflict, "the bridge operation already exists on the server")),
+        _ => Err(Refusal::new(RefusalCode::AuthUnavailable, "the account service did not return a matching bridge grant")),
+    }
+}
+
+/// Take the typed admission once, at the first trusted host seam that can still carry it.
+///
+/// The result is stored in the request and every forwarding, queue, offload or cursor resumption
+/// keeps it; later shared dispatch resolves the stored value instead of billing again. A refusal
+/// is never stored and is sent to the caller by the seam that took it.
+pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result<Admission, Refusal> {
+    if let Some(refusal) = entry_refusal(req) {
+        return Err(refusal);
+    }
+    if let Some(refusal) = async_native_refusal(req) {
+        return Err(refusal);
+    }
+    if let Some(refusal) = controlled_multi_step_refusal(req) {
+        return Err(refusal);
+    }
+    if let Some(refusal) = controlled_capture_refusal(req) {
+        return Err(refusal);
+    }
+    // A host-minted context with an already expired window must not be dispatched, even if a
+    // request was held for a while. The actual durable commit deadline remains Task 9's gate;
+    // this is the admission-side check the host can prove now.
+    if let (Some(deadline), Some(now)) = (req.deadline.as_ref(), req.now)
+        && deadline.remaining(now).is_none()
+    {
+        return Err(Refusal::new(RefusalCode::UnsafeToStart, "the forwarded authorization window has passed"));
+    }
+    if let Some(admission) = req.admission.clone() {
+        if let Some(refusal) = admission_binding_refusal(req, &admission) {
+            return Err(refusal);
+        }
+        if req.admission_scope.is_none()
+            && let Some(trusted) = req.trusted.as_ref()
+        {
+            req.admission_scope = Some(trusted.scope().clone());
+        }
+        if let Some(refusal) = authority_refusal(app, req, &admission) {
+            // A false host-marked start is positive proof that no step of this operation ran.
+            // Release the one held admission and consume it so it cannot be reused.
+            release_unstarted_with(app, req, refusal.code);
+            return Err(refusal);
+        }
+        return match admission {
+            Admission::Refused(refusal) => Err(refusal),
+            admission => Ok(admission),
+        };
+    }
+    if let Some(refusal) = authority_snapshot_refusal(app, req) {
+        if req.entry == EntryCategory::DirectControl
+            && let Some(operation) = req.operation.as_ref()
+        {
+            app.account.control_finished(operation);
+        }
+        return Err(refusal);
+    }
+    match admit_for_app(app, req) {
+        Admission::Refused(refusal) => Err(refusal),
+        admission => {
+            // Bind this admission to the scope the host can prove now, before the gate reads it.
+            req.admission_scope = app.commit_scope.clone();
+            if let Some(refusal) = authority_refusal(app, req, &admission) {
+                // Nothing has been dispatched for a fresh admission, so this is positive no-effect
+                // evidence and the just-taken hold can be released.
+                req.admission_scope = None;
+                release_admission(app, &admission, refusal.code);
+                return Err(refusal);
+            }
+            req.admission = Some(admission.clone());
+            register_control_renewal(app, req, &admission);
+            Ok(admission)
+        }
+    }
+}
+
+fn register_control_renewal(app: &mut SolveApp, req: &ControlRequest, admission: &Admission) {
+    if req.entry == EntryCategory::DirectControl
+        && let Admission::NewlyAdmitted { operation, grant } = admission
+        && req.operation.as_ref() == Some(operation)
+        && grant.capability() == Capability::Control
+        && let Some(scope) = app.commit_scope.as_ref()
+    {
+        app.account.control_admitted(scope, operation, grant);
+    }
+}
+
+/// Release a just-taken, never-dispatched admission. Only call this when there is positive
+/// evidence that no effect occurred (for example, admission itself refused before any step).
+/// A release transport failure is kept as recovery work instead of silently discarded.
+fn release_admission(app: &mut SolveApp, admission: &Admission, reason: RefusalCode) {
+    if let Admission::NewlyAdmitted { operation, .. } = admission {
+        app.account.control_finished(operation);
+    }
+    if let Admission::NewlyAdmitted { operation, .. } = admission
+        && let Some(mut source) = app.billing_source()
+        && let Err(refusal) = source.port().release(operation, reason)
+    {
+        app.pending_settlements.push(SettlementNotice {
+            operation: operation.clone(),
+            kind: SettlementNoticeKind::TransportFailed { action: SettlementAction::Release(reason), code: refusal.code },
+        });
+    }
+}
+
+/// Consume a grant taken earlier when a later seam discovers that the async path cannot carry it
+/// to a durable commit. Taking the typed admission out of the request prevents a released
+/// request from being reused as if it were still admitted. Only an unstarted admission is
+/// released: started work may already have an effect and keeps its hold.
+pub(crate) fn release_unstarted(app: &mut SolveApp, req: &mut ControlRequest) {
+    release_unstarted_with(app, req, RefusalCode::UnsafeToStart);
+}
+
+pub(crate) fn release_unstarted_with(app: &mut SolveApp, req: &mut ControlRequest, reason: RefusalCode) {
+    if req.work_started.load(Ordering::Relaxed) {
+        return;
+    }
+    let admission = req.admission.take();
+    req.admission_scope = None;
+    if req.bridge_effect.is_some() {
+        // The worker owns settlement for the admitted bridge request.
+        return;
+    }
+    if let Some(admission) = admission {
+        release_admission(app, &admission, reason);
+    }
+}
+
+pub(crate) fn release_reissue_unstarted(app: &mut SolveApp, reissue: &mut Reissue, reason: RefusalCode) {
+    if reissue.work_started.load(Ordering::Relaxed) {
+        return;
+    }
+    let admission = reissue.admission.take();
+    reissue.admission_scope = None;
+    if reissue.bridge_effect.is_some() {
+        return;
+    }
+    if let Some(admission) = admission {
+        release_admission(app, &admission, reason);
+    }
+}
+
+/// A path that answers a controlled entry from an async worker has no typed admission carried
+/// into a durable commit gate yet. Refuse it before any work or grant, pending Task 8/9; free
+/// human and browser entries stay on this path unchanged.
+pub(crate) fn async_controlled_refusal(req: &ControlRequest) -> Option<Value> {
+    if free_entry(req.entry) {
+        return None;
+    }
+    Some(admission_refusal_json(&Refusal::new(
+        RefusalCode::UnsafeToStart,
+        "this controlled entry needs a durable commit path that is not available yet",
+    )))
+}
+
+pub(crate) fn admission_refusal_json(reason: &Refusal) -> Value {
+    json!({
+        "ok": false,
+        "error": reason.message,
+        "errorDetails": {"code": format!("{:?}", reason.code), "retry": "never"},
+    })
+}
+
+fn admission_refusal(reason: &Refusal) -> Outcome {
+    Outcome::Done(admission_refusal_json(reason))
+}
+
+/// The origin-only fail-closed check: no method, parameter or local task gate may run before an
+/// unclassified request is refused, or before a forwarded host context is checked for binding.
+fn entry_refusal(req: &ControlRequest) -> Option<Refusal> {
+    if let Some(refusal) = helper_refusal(req) {
+        return Some(refusal);
+    }
+    if let Some(refusal) = trusted_refusal(req) {
+        return Some(refusal);
+    }
+    if let Some(refusal) = deadline_refusal(req) {
+        return Some(refusal);
+    }
+    if free_entry(req.entry) || entry_capability(req.entry).is_some() {
+        None
+    } else {
+        Some(Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"))
+    }
+}
+
+/// A forwarded host context must match the request exactly. A caller cannot attach a trusted
+/// context for another entry, capability or operation, and a free/unclassified request cannot
+/// carry one at all.
+fn trusted_refusal(req: &ControlRequest) -> Option<Refusal> {
+    let trusted = req.trusted.as_ref()?;
+    if !trusted.is_provable() {
+        return Some(Refusal::new(
+            RefusalCode::CapabilityDenied,
+            "the forwarded host context has no stable account, installation and session binding",
+        ));
+    }
+    if trusted.entry() != req.entry {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "the forwarded host context belongs to a different entry"));
+    }
+    let Some(capability) = entry_capability(req.entry) else {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "a free or unclassified request cannot carry host operation authority"));
+    };
+    if trusted.capability() != capability {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "the forwarded host context belongs to a different capability"));
+    }
+    if req.operation.as_ref() != Some(trusted.operation()) {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "the forwarded operation does not match the host context"));
+    }
+    None
+}
+
+/// A forwarded request whose measured authorization window has already passed cannot be reused.
+/// The actual durable commit deadline remains Task 9's gate; this is the admission-side bound.
+fn deadline_refusal(req: &ControlRequest) -> Option<Refusal> {
+    match (req.deadline.as_ref(), req.now) {
+        (Some(deadline), Some(now)) if deadline.remaining(now).is_none() => {
+            Some(Refusal::new(RefusalCode::UnsafeToStart, "the forwarded authorization window has passed"))
+        }
+        _ => None,
+    }
+}
+
+/// A stored admission can only dispatch the operation it was granted for. This stops a held or
+/// reissued request from borrowing another call's grant.
+fn admission_binding_refusal(req: &ControlRequest, admission: &Admission) -> Option<Refusal> {
+    match admission {
+        Admission::NewlyAdmitted { operation, .. } if req.operation.as_ref() == Some(operation) => None,
+        Admission::NewlyAdmitted { .. } => Some(Refusal::new(RefusalCode::CapabilityDenied, "the stored admission belongs to a different operation")),
+        Admission::Allowed if req.trusted.is_some() => {
+            Some(Refusal::new(RefusalCode::CapabilityDenied, "a forwarded controlled operation needs a real admission"))
+        }
+        Admission::Allowed | Admission::AlreadyExists { .. } => None,
+        Admission::Refused(refusal) => Some(refusal.clone()),
+    }
+}
+
+/// Whether the admission carries authority to run the operation now. `AlreadyExists` is status,
+/// never execution authority, so it must not dispatch a second time.
+fn may_dispatch(admission: &Admission) -> bool {
+    matches!(admission, Admission::Allowed | Admission::NewlyAdmitted { .. })
+}
+
+#[cfg(test)]
+static COMMIT_GATE_CHECKS: AtomicUsize = AtomicUsize::new(0);
+
+/// The host's current authenticated scope, account status and monotonic clock.
+///
+/// All three are required for a controlled commit. A host that installed billing authority but
+/// not commit authority keeps controlled results closed; ordinary free CAD is unaffected.
+fn host_authority(app: &SolveApp) -> Option<(&AuthenticatedHostScope, &dyn AccountService, &dyn MonotonicClock)> {
+    let scope = app.commit_scope.as_ref()?;
+    let account = app.commit_account.as_deref()?;
+    let clock = app.commit_clock.as_deref()?;
+    Some((scope, account, clock))
+}
+
+/// The earlier of the request's measured window and the server grant's expiry.
+fn authorization_bound<'a>(app: &SolveApp, req: &'a ControlRequest, admission: &'a Admission) -> Option<AuthorizationBound<'a>> {
+    let expires_at = match admission {
+        Admission::NewlyAdmitted { operation, grant } => {
+            let renewed = if req.entry == EntryCategory::DirectControl && grant.capability() == Capability::Control {
+                app.commit_scope.as_ref().and_then(|scope| app.account.renewed_control_cutoff(scope, operation, grant))
+            } else {
+                None
+            };
+            Some(renewed.unwrap_or_else(|| grant.expires_at()))
+        }
+        _ => None,
+    };
+    match (req.deadline.as_ref(), expires_at) {
+        (Some(deadline), Some(expiry)) if expiry < deadline.expires_at() => Some(AuthorizationBound::ExpiresAt(expiry)),
+        (Some(deadline), _) => Some(AuthorizationBound::Deadline(deadline)),
+        (None, Some(expiry)) => Some(AuthorizationBound::ExpiresAt(expiry)),
+        (None, None) => None,
+    }
+}
+
+fn controlled_capture_refusal(req: &ControlRequest) -> Option<Refusal> {
+    if free_entry(req.entry) || req.helper.is_some() {
+        return None;
+    }
+    if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
+        return None;
+    }
+    if matches!(req.method.as_str(), "ui.screenshot" | "ui.render") {
+        return Some(Refusal::new(
+            RefusalCode::UnsafeToStart,
+            "controlled screenshot delivery has no durable commit path yet; use a free human render or an unsupported-path refusal",
+        ));
+    }
+    None
+}
+
+/// Controlled batch/script execution has no enforced mid-run stop yet. Until the runner can
+/// prove it stops at `SafeStopPlan::next_safe_stop`, refuse these paths before any step applies.
+/// Free human CAD keeps its batch and script paths unchanged.
+fn controlled_multi_step_refusal(req: &ControlRequest) -> Option<Refusal> {
+    if free_entry(req.entry) || req.helper.is_some() {
+        return None;
+    }
+    let nested = req.params.get("command").and_then(Value::as_str).is_some_and(|command| matches!(command, "engine.batch" | "engine.script"));
+    if req.method == "engine.script" || nested {
+        return Some(Refusal::new(RefusalCode::UnsafeToStart, "controlled script execution has no enforced safe-stop yet; run the steps separately"));
+    }
+    None
+}
+
+/// The measured safe-stop bound a controlled request must fit before it may start.
+fn required_bound(app: &SolveApp, req: &ControlRequest) -> Result<Duration, Refusal> {
+    let capability = entry_capability(req.entry).ok_or_else(|| Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"))?;
+    match app.budget.bound(capability, req.entry) {
+        UpperBound::Verified(required) => Ok(required),
+        UpperBound::Unverified => Err(Refusal::new(RefusalCode::UnsafeToStart, "this controlled entry has no verified safe-stop bound")),
+    }
+}
+
+/// Whether the live authorization still covers this operation's measured bound.
+fn remaining_covers(bound: Option<AuthorizationBound<'_>>, now: MonotonicInstant, required: Duration) -> Result<(), Refusal> {
+    let Some(bound) = bound else {
+        return Err(Refusal::new(RefusalCode::UnsafeToStart, "this controlled operation has no measured authorization bound"));
+    };
+    match bound.remaining(now) {
+        Some(remaining) if remaining >= required => Ok(()),
+        Some(_) => {
+            Err(Refusal::new(RefusalCode::UnsafeToStart, "the remaining authorization is shorter than this operation's measured safe-stop bound"))
+        }
+        None => Err(Refusal::new(RefusalCode::UnsafeToStart, "the operation's authorization has already expired")),
+    }
+}
+
+/// Before `begin`, the journal must prove a bridge intent or establish that an unmarked Direct
+/// Control request is fresh. A retry after a lost reply can carry neither context nor admission;
+/// other paths retain their server operation lookup.
+fn check_operation_before_admission(
+    store: Option<&mut (dyn OperationStore + Send + 'static)>,
+    req: &ControlRequest,
+    scope: &AuthenticatedHostScope,
+    account: &dyn AccountService,
+    operation: &OperationId,
+) -> Result<(), Refusal> {
+    if req.entry == EntryCategory::GuiBridgeMcp {
+        #[cfg(test)]
+        if account.bridge_journal().is_none() {
+            return register_bridge_before_admission(store.map(|store| store as &mut dyn OperationStore), req, operation);
+        }
+        return Err(Refusal::new(RefusalCode::AuthUnavailable, "the bridge must take its admission on the account worker"));
+    }
+    let journal_terminal = if req.entry == EntryCategory::DirectControl
+        && let Some(store) = store
+    {
+        match store.load(operation) {
+            Ok(None)
+                if req.trusted.is_none() && req.admission.is_none() && req.admission_scope.is_none() && !req.work_started.load(Ordering::Relaxed) =>
+            {
+                // `begin` supplies the credential required by `operation()`; it still refuses
+                // a duplicate even if there is no local row.
+                return Ok(());
+            }
+            Ok(record) => record.is_some_and(|record| record.status.is_terminal()),
+            Err(_) => return Err(Refusal::new(RefusalCode::AuthUnavailable, "the durable operation journal is unavailable")),
+        }
+    } else {
+        false
+    };
+    match account.operation(scope, operation) {
+        Ok(status) if journal_terminal || status.is_terminal() => {
+            Err(Refusal::new(RefusalCode::OperationFinalized, "this operation is already settled"))
+        }
+        Ok(_) => Ok(()),
+        Err(_) => Err(Refusal::new(RefusalCode::AuthUnavailable, "the durable operation state is unavailable")),
+    }
+}
+
+/// Register the new, bound bridge call in the same journal used by Direct Control. An empty
+/// journal read alone does not admit this forwarded request: it must produce a durable intent
+/// for this exact operation and scope. The row is not a grant; `begin` still refuses duplicates
+/// and supplies the settlement credential for subsequent live operation-state reads.
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn register_bridge_before_admission(store: Option<&mut dyn OperationStore>, req: &ControlRequest, operation: &OperationId) -> Result<(), Refusal> {
+    let trusted =
+        req.trusted.as_ref().ok_or_else(|| Refusal::new(RefusalCode::AuthUnavailable, "the bridge call has no authenticated host context"))?;
+    let unavailable = || Refusal::new(RefusalCode::AuthUnavailable, "the durable operation journal is unavailable");
+    let conflict = || Refusal::new(RefusalCode::OperationConflict, "this bridge operation is already registered or has a conflicting durable intent");
+    let store = store.ok_or_else(unavailable)?;
+    if req.work_started.load(Ordering::Relaxed) {
+        return Err(conflict());
+    }
+    let correlation = TransportCorrelation::new(format!("gui-bridge:{}", operation.as_str()));
+    let intent = FreshIntent::new(operation.clone(), trusted.scope().clone(), correlation.clone());
+    let record = match store.load(operation).map_err(|_| unavailable())? {
+        Some(record) if record.status.is_terminal() => {
+            return Err(Refusal::new(RefusalCode::OperationFinalized, "this operation is already settled"));
+        }
+        Some(record) if record.status == OperationStatus::Held => {
+            let key = solidcraft_engine::entitlement::RetryScopeKey { host_scope: trusted.scope().clone(), transport_correlation: correlation };
+            match store.lookup_original_retry(&key) {
+                solidcraft_engine::entitlement::RetryDecision::Original(original) if original == record => original,
+                _ => return Err(conflict()),
+            }
+        }
+        Some(_) => return Err(conflict()),
+        None => store.persist_fresh_intent(&intent, trusted.capability(), req.entry).map_err(|_| conflict())?,
+    };
+    if record.operation != *operation
+        || record.account != *trusted.scope().account()
+        || record.capability != trusted.capability()
+        || record.entry != req.entry
+        || record.status != OperationStatus::Held
+        || record.grant_id.is_some()
+        || record.review_run_id.is_some()
+    {
+        return Err(conflict());
+    }
+    Ok(())
+}
+
+/// The window queues a locally approved bridge request here. The worker owns the journal and
+/// does not return a dispatchable request until both the durable intent and a covered hold exist.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn queue_bridge_admission(app: &mut SolveApp, mut req: ControlRequest) {
+    let available = || Refusal::new(RefusalCode::AuthUnavailable, "the bridge has no verified account worker or durable journal");
+    let prepare = || -> Result<_, Refusal> {
+        if let Some(refusal) = entry_refusal(&req)
+            .or_else(|| async_native_refusal(&req))
+            .or_else(|| controlled_multi_step_refusal(&req))
+            .or_else(|| controlled_capture_refusal(&req))
+        {
+            return Err(refusal);
+        }
+        let required = bridge_start_bound(app, &req)?;
+        let (scope, account, _) = host_authority(app).ok_or_else(available)?;
+        if !req.trusted.as_ref().is_some_and(|trusted| trusted.scope() == scope && scope.is_provable()) {
+            return Err(Refusal::new(RefusalCode::AuthRequired, "the bridge belongs to a different account, installation or session"));
+        }
+        if app.agent_chat.bridge_admission.is_some() {
+            return Err(Refusal::new(RefusalCode::UnsafeToStart, "a bridge admission is already in progress"));
+        }
+        Ok((scope.clone(), account.bridge_worker_account().ok_or_else(available)?, account.bridge_journal().ok_or_else(available)?, required))
+    };
+    let (scope, mut account, open_store, required) = match prepare() {
+        Ok(parts) => parts,
+        Err(refusal) => {
+            let _ = req.reply.send(admission_refusal_json(&refusal));
+            return;
+        }
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let reply = req.reply.clone();
+    if std::thread::Builder::new()
+        .name("bridge-account".into())
+        .spawn(move || {
+            let mut admit = || -> Result<_, Refusal> {
+                let mut store = open_store().ok_or_else(available)?;
+                check_available(account.as_ref())?;
+                let operation = req.operation.as_ref().ok_or_else(available)?.clone();
+                if chat_turn_cancelled(req.chat_turn.as_deref()) {
+                    return Err(Refusal::new(RefusalCode::UnsafeToStart, "the chat turn ended before admission"));
+                }
+                register_bridge_before_admission(Some(store.as_mut()), &req, &operation)?;
+                if chat_turn_cancelled(req.chat_turn.as_deref()) {
+                    return Err(Refusal::new(RefusalCode::UnsafeToStart, "the chat turn ended before admission"));
+                }
+                let admission = begin_registered_bridge(&req, &scope, account.as_mut(), store.as_mut(), required)?;
+                Ok((store, operation, admission))
+            };
+            let (mut store, operation, admission) = match admit() {
+                Ok(parts) => parts,
+                Err(refusal) => {
+                    drop(tx);
+                    let _ = req.reply.send(admission_refusal_json(&refusal));
+                    return;
+                }
+            };
+            req.admission_scope = Some(scope.clone());
+            req.admission = Some(admission);
+            let effect = BridgeEffect::default();
+            req.bridge_effect = Some(effect.clone());
+            let work_started = req.work_started.clone();
+            let (to_worker, from_window) = std::sync::mpsc::channel();
+            let to_bridge = std::mem::replace(&mut req.reply, to_worker);
+            if tx.send(req).is_err() {
+                let _ = settle_bridge_intent(
+                    store.as_mut(),
+                    account.as_mut(),
+                    &scope,
+                    &operation,
+                    SettlementIntent::Release(RefusalCode::UnsafeToStart),
+                    false,
+                );
+                return;
+            }
+            let result = from_window.recv();
+            let disposition = effect.lock().ok().and_then(|effect| *effect);
+            let disposition = disposition.unwrap_or_else(|| {
+                if work_started.load(Ordering::Acquire) {
+                    BridgeDisposition::Settle {
+                        intent: SettlementIntent::Commit(solidcraft_engine::entitlement::BillingResult::Unknown),
+                        deferred: true,
+                    }
+                } else {
+                    BridgeDisposition::Settle { intent: SettlementIntent::Release(RefusalCode::UnsafeToStart), deferred: false }
+                }
+            });
+            let settled = match disposition {
+                BridgeDisposition::Settle { intent, deferred } => {
+                    settle_bridge_intent(store.as_mut(), account.as_mut(), &scope, &operation, intent, deferred)
+                }
+                BridgeDisposition::AlreadyTerminal => Ok(()),
+            };
+            drop(tx);
+            if let Ok(result) = result {
+                let _ = to_bridge.send(settled.map_or_else(|refusal| admission_refusal_json(&refusal), |()| result));
+            }
+        })
+        .is_err()
+    {
+        let _ = reply.send(admission_refusal_json(&available()));
+        return;
+    }
+    app.agent_chat.bridge_admission = Some(rx);
+}
+
+#[cfg(any(test, not(target_arch = "wasm32")))]
+fn settle_bridge_intent(
+    store: &mut dyn OperationStore,
+    account: &mut dyn AccountService,
+    scope: &AuthenticatedHostScope,
+    operation: &OperationId,
+    intent: SettlementIntent,
+    deferred: bool,
+) -> Result<(), Refusal> {
+    use solidcraft_engine::entitlement::{BillingResult, SaveOutcome};
+    let unavailable = || Refusal::new(RefusalCode::AuthUnavailable, "the bridge settlement could not be recorded; do not rerun the tool");
+    if store.record_settlement_intent(operation, intent).map_err(|_| unavailable())? != SaveOutcome::Saved {
+        return Err(unavailable());
+    }
+    if deferred {
+        return Ok(());
+    }
+    if !account.bridge_generation_matches(scope) {
+        return Err(Refusal::new(RefusalCode::AuthRequired, "the bridge session changed; settlement is kept under the original ID"));
+    }
+    let current = account.operation(scope, operation)?;
+    let status = if current.is_terminal() {
+        current
+    } else {
+        let result = match intent {
+            SettlementIntent::Commit(result) => result,
+            SettlementIntent::Release(_) => BillingResult::FailedNoEffect,
+        };
+        account.finalize(scope, operation, result)?
+    };
+    if status.is_terminal() {
+        store.mark_terminal(operation, status).map_err(|_| unavailable())?;
+        let settled = matches!(
+            (intent, status),
+            (SettlementIntent::Commit(BillingResult::Succeeded | BillingResult::PartialRetained), OperationStatus::Charged)
+                | (SettlementIntent::Release(_), OperationStatus::Released)
+        );
+        if !settled {
+            return Err(Refusal::new(RefusalCode::OperationFinalized, "the bridge operation is already terminal with a different outcome"));
+        }
+    } else if intent != SettlementIntent::Commit(BillingResult::Unknown) {
+        return Err(unavailable());
+    }
+    Ok(())
+}
+
+fn check_available(account: &dyn AccountService) -> Result<(), Refusal> {
+    let available = account.status().map_err(|_| Refusal::new(RefusalCode::AuthUnavailable, "the current account status is unavailable"))?;
+    if let Some(code) = available.reasons.first() {
+        return Err(Refusal::new(*code, "the current account reports a refusal"));
+    }
+    if !available.online {
+        return Err(Refusal::new(RefusalCode::AuthUnavailable, "the current account is not online"));
+    }
+    if !available.version_supported {
+        return Err(Refusal::new(RefusalCode::VersionUnsupported, "the current client version is not supported"));
+    }
+    Ok(())
+}
+
+/// Scheduling check before a grant is taken or work starts.
+///
+/// The current account snapshot is re-read (so a revocation observed before scheduling stops the
+/// request), the forwarded scope must match the host's current account/installation/session, and
+/// a measured request window must still be open. A fresh host-minted Direct Control operation
+/// can prove freshness from an empty journal read. A fresh forwarded bridge operation must
+/// register its exact durable intent instead. The grant's own
+/// expiry is checked by [`authority_refusal`] once the server has admitted the operation.
+fn authority_snapshot_refusal(app: &mut SolveApp, req: &ControlRequest) -> Option<Refusal> {
+    if free_entry(req.entry) || req.helper.is_some() {
+        return None;
+    }
+    if matches!(req.entry, EntryCategory::DirectControl | EntryCategory::ExternalUiAutomation) && auxiliary_method(&req.method) {
+        return None;
+    }
+    let Some(capability) = entry_capability(req.entry) else {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"));
+    };
+    // Keep the budget's fail-closed refusal first: an unmeasured path never reaches a grant.
+    if !app.budget.is_verified(capability, req.entry) {
+        return Some(Refusal::new(RefusalCode::UnsafeToStart, "this controlled entry has no verified safe-stop bound"));
+    }
+    let (Some(scope), Some(account), Some(clock)) = (app.commit_scope.as_ref(), app.commit_account.as_deref(), app.commit_clock.as_deref()) else {
+        return Some(Refusal::new(RefusalCode::AuthUnavailable, "the host has no commit authority for this controlled entry"));
+    };
+    if !scope.is_provable() {
+        return Some(Refusal::new(RefusalCode::AuthRequired, "the host has no provable account, installation and session binding"));
+    }
+    if let Some(refusal) = req.operation.as_ref().and_then(|operation| app.account.renewal_refusal(scope, operation)) {
+        return Some(refusal);
+    }
+    let now = clock.now();
+    if let Some(trusted) = req.trusted.as_ref()
+        && (!trusted.is_provable() || trusted.scope() != scope)
+    {
+        return Some(Refusal::new(RefusalCode::AuthRequired, "the forwarded operation belongs to a different account, installation or session"));
+    }
+    if let Err(refusal) = check_available(account) {
+        return Some(refusal);
+    }
+    let required = match required_bound(app, req) {
+        Ok(required) => required,
+        Err(refusal) => return Some(refusal),
+    };
+    // A forwarded request already carries a measured window; it must cover the whole operation
+    // before any grant is taken. The grant path is checked again in `authority_refusal`.
+    if let Some(deadline) = req.deadline.as_ref() {
+        let bound = AuthorizationBound::Deadline(deadline);
+        if let Err(refusal) = remaining_covers(Some(bound), now, required) {
+            return Some(refusal);
+        }
+    }
+    if let Some(operation) = req.operation.as_ref()
+        && let Err(refusal) = check_operation_before_admission(app.review_store.as_deref_mut(), req, scope, account, operation)
+    {
+        return Some(refusal);
+    }
+    None
+}
+
+/// Pre-dispatch and commit check for an already admitted operation.
+///
+/// It re-reads the same account snapshot and advancing clock at the actual commit point, rejects
+/// an operation that is already terminal, and requires a local bound that has not expired. For a
+/// batch it also requires every planned step's worst case to fit before that bound, so a started
+/// batch can always reach a safe stop. Free entries and free helpers never reach it.
+fn authority_refusal(app: &SolveApp, req: &ControlRequest, admission: &Admission) -> Option<Refusal> {
+    authority_refusal_with(app, req, admission, true)
+}
+
+/// `require_start_budget` distinguishes starting another step (recheck the whole measured bound)
+/// from retaining a finished result (only the live scope/status and non-expired cutoff matter).
+fn authority_refusal_with(app: &SolveApp, req: &ControlRequest, admission: &Admission, require_start_budget: bool) -> Option<Refusal> {
+    if free_entry(req.entry) || req.helper.is_some() {
+        return None;
+    }
+    let Admission::NewlyAdmitted { operation, .. } = admission else { return None };
+    let Some((scope, account, clock)) = host_authority(app) else {
+        return Some(Refusal::new(RefusalCode::AuthUnavailable, "the host has no commit authority for this controlled entry"));
+    };
+    if req.bridge_effect.is_some() && !account.bridge_generation_matches(scope) {
+        return Some(Refusal::new(RefusalCode::AuthRequired, "the verified bridge session is no longer current"));
+    }
+    if let Some(refusal) = app.account.renewal_refusal(scope, operation) {
+        return Some(refusal);
+    }
+    if !scope.is_provable() {
+        return Some(Refusal::new(RefusalCode::AuthRequired, "the host has no provable account, installation and session binding"));
+    }
+    match req.admission_scope.as_ref() {
+        Some(original) if original != scope => {
+            return Some(Refusal::new(RefusalCode::AuthRequired, "the operation was admitted by a different account, installation or session"));
+        }
+        Some(_) => {}
+        // A request that skipped `admit_once` is admitted inside this same dispatch; its scope is
+        // the one the host can prove now. The shared seam stores the scope for stored admissions.
+        None if req.admission.is_none() => {}
+        None if req.trusted.is_none() => {
+            return Some(Refusal::new(RefusalCode::AuthUnavailable, "the operation has no authenticated admission scope"));
+        }
+        None => {}
+    }
+    let availability = match account.status() {
+        Ok(availability) => availability,
+        Err(_) => return Some(Refusal::new(RefusalCode::AuthUnavailable, "the current account status is unavailable")),
+    };
+    if let Some(code) = availability.reasons.first() {
+        return Some(Refusal::new(*code, "the current account reports a refusal"));
+    }
+    if !availability.online {
+        return Some(Refusal::new(RefusalCode::AuthUnavailable, "the current account is not online"));
+    }
+    if !availability.version_supported {
+        return Some(Refusal::new(RefusalCode::VersionUnsupported, "the current client version is not supported"));
+    }
+    let required = match required_bound(app, req) {
+        Ok(required) => required,
+        Err(refusal) => return Some(refusal),
+    };
+    // The durable ledger state is the authority for "this operation may still commit". A host
+    // that cannot report it keeps the controlled path closed rather than guessing.
+    let status = match account.operation(scope, operation) {
+        Ok(status) => status,
+        Err(_) => return Some(Refusal::new(RefusalCode::AuthUnavailable, "the durable operation state is unavailable")),
+    };
+    let Some(capability) = entry_capability(req.entry) else {
+        return Some(Refusal::new(RefusalCode::CapabilityDenied, "the request entry is unclassified"));
+    };
+    if let Some(refusal) = app.account.renewal_refusal(scope, operation) {
+        return Some(refusal);
+    }
+    // Account and ledger reads can take us across a deadline (including while suspended).
+    // Read the current cutoff and clock after those reads, at the actual dispatch/commit gate.
+    let Some(bound) = authorization_bound(app, req, admission) else {
+        return Some(Refusal::new(RefusalCode::UnsafeToStart, "this controlled operation has no measured authorization bound"));
+    };
+    let now = clock.now();
+    if require_start_budget && let Err(refusal) = remaining_covers(Some(bound), now, required) {
+        return Some(refusal);
+    }
+    let mut gate = CommitGate::new(operation, capability, req.entry)
+        .with_current_scope(scope)
+        .with_availability(&availability)
+        .with_status(status)
+        .with_bound(bound)
+        .with_now(now);
+    if let Some(trusted) = req.trusted.as_ref() {
+        gate = gate.with_trusted(trusted);
+    }
+    if let CommitDecision::Drop { code } = gate.check() {
+        return Some(Refusal::new(code, "the operation's authorization is no longer valid at this commit point"));
+    }
+    if req.bridge_effect.is_some() && !account.bridge_generation_matches(scope) {
+        return Some(Refusal::new(RefusalCode::AuthRequired, "the verified bridge session changed during the account checks"));
+    }
+    // A renewal can complete concurrently with the authority reads above.
+    app.account.renewal_refusal(scope, operation)
+}
+
+/// The commit gate runs before every reply is written back. It returns the engine's decision; the
+/// call point is the one place every transport passes through.
+fn commit_decision(app: &SolveApp, req: &ControlRequest, admission: &Admission, _out: &Outcome) -> CommitDecision {
+    #[cfg(test)]
+    COMMIT_GATE_CHECKS.fetch_add(1, Ordering::Relaxed);
+    if free_entry(req.entry) || req.helper.is_some() || matches!(admission, Admission::Allowed) {
+        return CommitDecision::Allow;
+    }
+    match authority_refusal_with(app, req, admission, false) {
+        Some(refusal) => CommitDecision::Drop { code: refusal.code },
+        None => CommitDecision::Allow,
+    }
+}
+
+/// What the host proved about the result it just produced. No-effect is accepted only from the
+/// host's explicit local pre-dispatch marker; a reply payload (including a remote server body)
+/// never proves that nothing happened. A successful reply is a retained effect; anything else is
+/// an unknown outcome that is finalized, never rerun.
+fn result_evidence(out: &Outcome, host_no_effect: bool, host_unknown: bool) -> ResultEvidence {
+    if host_no_effect {
+        return ResultEvidence::NoEffect;
+    }
+    if host_unknown {
+        return ResultEvidence::Unknown;
+    }
+    match out {
+        Outcome::Screenshot { .. } => ResultEvidence::Unknown,
+        Outcome::Done(value) => {
+            if value.get("ok") == Some(&Value::Bool(true)) {
+                ResultEvidence::Effect
+            } else {
+                ResultEvidence::Unknown
+            }
+        }
+    }
+}
+
+/// A settlement that could not be completed in the request, kept under the original operation id
+/// for host recovery. It is never a second engineering operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettlementNoticeKind {
+    /// The billing transport failed. Retry only this settlement under the original id.
+    TransportFailed { action: SettlementAction, code: RefusalCode },
+    /// The result was produced after commit authority was lost. Keep the effect, do not retry or
+    /// charge silently; the host resumes the original operation's disposition.
+    Deferred { evidence: ResultEvidence },
+    /// The outcome was finalized as UNKNOWN under the original id. The host may query or settle
+    /// it, but must never rerun the engineering operation.
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SettlementNotice {
+    pub operation: OperationId,
+    pub kind: SettlementNoticeKind,
+}
+
+/// Settle one admitted operation under its original id. An unknown result is finalized as
+/// `UNKNOWN`; it never authorizes a second engineering operation. With no durable effect proof
+/// the release path is never taken. A result whose commit was dropped keeps its hold: the host no
+/// longer has authority to write or charge it, and it is never rerun. Settlement transport
+/// failures are returned as explicit recovery notices instead of silently succeeding.
+fn settle_result(
+    app: &mut SolveApp,
+    admission: &Admission,
+    decision: CommitDecision,
+    host_no_effect: bool,
+    host_unknown: bool,
+    out: &Outcome,
+) -> Option<SettlementNotice> {
+    let Admission::NewlyAdmitted { operation, .. } = admission else { return None };
+    let evidence = result_evidence(out, host_no_effect, host_unknown);
+    let action = settlement_for(evidence);
+    if !decision.allowed()
+        && let SettlementAction::Commit(_) = action
+    {
+        if let CommitDecision::Drop { code: RefusalCode::OperationFinalized } = decision {
+            // A terminal operation is already settled. Do not turn the terminal drop into a
+            // recovery item, and do not consult any new account state.
+            return None;
+        }
+        // A late retained/apply effect whose commit authority was lost. Record the original
+        // operation's disposition before any lookup under the new account; never retry it as an
+        // engineering operation and never charge it silently.
+        let notice = SettlementNotice { operation: operation.clone(), kind: SettlementNoticeKind::Deferred { evidence } };
+        app.pending_settlements.push(notice.clone());
+        return Some(notice);
+    }
+    // A terminal durable row is already settled. Rechecking it here prevents both a second
+    // charge and a late release from overwriting the server's terminal state.
+    if let (Some(scope), Some(account)) = (app.commit_scope.as_ref(), app.commit_account.as_deref()) {
+        match account.operation(scope, operation) {
+            Ok(OperationStatus::Charged | OperationStatus::Released | OperationStatus::Expired) => return None,
+            Ok(_) => {}
+            Err(_) => {
+                let notice = SettlementNotice {
+                    operation: operation.clone(),
+                    kind: SettlementNoticeKind::TransportFailed { action, code: RefusalCode::AuthUnavailable },
+                };
+                app.pending_settlements.push(notice.clone());
+                return Some(notice);
+            }
+        }
+    }
+    let Some(mut source) = app.billing_source() else {
+        let notice = SettlementNotice {
+            operation: operation.clone(),
+            kind: SettlementNoticeKind::TransportFailed { action, code: RefusalCode::AuthUnavailable },
+        };
+        app.pending_settlements.push(notice.clone());
+        return Some(notice);
+    };
+    let billing = source.port();
+    let failure = |code| SettlementNotice { operation: operation.clone(), kind: SettlementNoticeKind::TransportFailed { action, code } };
+    match action {
+        SettlementAction::Release(reason) => match billing.release(operation, reason) {
+            Ok(()) => None,
+            Err(refusal) => {
+                let notice = failure(refusal.code);
+                app.pending_settlements.push(notice.clone());
+                Some(notice)
+            }
+        },
+        SettlementAction::Commit(result) => match billing.commit(operation, result) {
+            Ok(_) if evidence == ResultEvidence::Unknown => {
+                let notice = SettlementNotice { operation: operation.clone(), kind: SettlementNoticeKind::Unknown };
+                app.pending_settlements.push(notice.clone());
+                Some(notice)
+            }
+            Ok(_) => None,
+            Err(refusal) => {
+                let notice = failure(refusal.code);
+                app.pending_settlements.push(notice.clone());
+                Some(notice)
+            }
+        },
+    }
+}
+
+fn settlement_notice_json(notice: &SettlementNotice) -> Value {
+    let (state, reason) = match notice.kind {
+        SettlementNoticeKind::TransportFailed { action, code } => (
+            "pending_recovery",
+            json!({
+                "action": match action {
+                    SettlementAction::Release(_) => "release",
+                    SettlementAction::Commit(_) => "commit",
+                },
+                "code": format!("{code:?}"),
+            }),
+        ),
+        SettlementNoticeKind::Deferred { evidence } => (
+            "deferred",
+            json!({
+                "evidence": match evidence {
+                    ResultEvidence::NoEffect => "no_effect",
+                    ResultEvidence::Effect => "effect",
+                    ResultEvidence::Unknown => "unknown",
+                },
+            }),
+        ),
+        SettlementNoticeKind::Unknown => ("unknown_recovery", json!({})),
+    };
+    json!({
+        "state": state,
+        "operation": notice.operation.as_str(),
+        "retry": "original-operation-only",
+        "reason": reason,
+    })
+}
+
+fn with_settlement_notice(mut value: Value, notice: Option<&SettlementNotice>) -> Value {
+    if let Some(notice) = notice {
+        value["settlement"] = settlement_notice_json(notice);
+    }
+    value
 }
 
 pub(crate) fn chat_turn_cancelled(turn: Option<&std::sync::atomic::AtomicBool>) -> bool {
@@ -293,6 +1813,9 @@ fn key_from(name: &str) -> Option<egui::Key> {
 /// Run one command as `engine.execute` does: through `app.run`, then the first-body fit and the
 /// camera the command asked for.
 fn execute(app: &mut SolveApp, id: &str, params: Value) -> Result<Value, String> {
+    // One spelling, as the engine resolves it: the id compared below (`engine.commands`,
+    // `view.pick`) and the command that runs are the registered one.
+    let id = solidcraft_engine::resolve_command_id(id).unwrap_or(id);
     if solidcraft_engine::panels::commands::is_command(id) {
         // No first-body meshing, camera-follow or fit tail for application layout.
         return app.run(id, params);
@@ -414,10 +1937,143 @@ pub(crate) fn batch_step_command(step: &Value) -> Option<&str> {
 /// `rollback` (the default), the design goes back to its checkpoint. Step failures are part of
 /// the reply; refusals (`engine.batch unavailable: …`) come before anything runs, so the client
 /// can send the steps one by one instead.
-fn batch(app: &mut SolveApp, p: &Value, guarded: bool) -> Outcome {
+/// A conservative exact allowlist of audited document-local commands for controlled batches.
+/// Unknown commands, aliases resolving to anything else, file/import/link reads, external renders
+/// and network-capable commands are refused before any step.
+const CONTROLLED_BATCH_COMMANDS: &[&str] = &[
+    "parameters.add",
+    "parameters.change",
+    "parameters.comment",
+    "parameters.delete",
+    "parameters.favorite",
+    "parameters.graph",
+    "parameters.list",
+    "parameters.move",
+    "parameters.rename",
+    "parameters.users",
+    "sketch.create",
+    "sketch.line",
+    "sketch.point",
+    "sketch.finish",
+    "solid.box",
+    "solid.sphere",
+    "solid.cylinder",
+    "solid.cone",
+    "solid.torus",
+    "solid.extrude",
+    "solid.revolve",
+    "document.inspect",
+    "engine.commands",
+];
+
+fn controlled_batch_step_allowed(step: &Value) -> bool {
+    let Some(id) = command(step) else { return false };
+    let Some(spec) = solidcraft_engine::find_command(id) else { return false };
+    CONTROLLED_BATCH_COMMANDS.contains(&spec.id)
+}
+
+/// Apply a controlled `engine.batch` with a verified per-step bound and a live gate before every
+/// step. The gate rechecks the same account/session/operation/status and remaining time; a stop
+/// before the next step is reported truthfully as retained or rolled back.
+fn controlled_batch(app: &mut SolveApp, steps: &[Value], p: &Value, req: &ControlRequest, admission: &Admission) -> Outcome {
+    if steps.iter().any(|step| !controlled_batch_step_allowed(step)) {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return admission_refusal(&Refusal::new(
+            RefusalCode::UnsafeToStart,
+            "this batch step can have an external or non-rollbackable effect; run it separately",
+        ));
+    }
+    let panels = steps.iter().filter(|step| command(step).is_some_and(solidcraft_engine::panels::commands::is_command)).count();
+    if panels > 0 {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return admission_refusal(&Refusal::new(RefusalCode::UnsafeToStart, "controlled batches cannot mix panel steps"));
+    }
+    if let Some(why) = batch_refusal(steps) {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return err(why);
+    }
+    if let Some(refusal) = solidcraft_engine::batch_preflight::check(steps, app.session.param_check, &["view.pick"]) {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return ok(refusal.reply(steps.len()));
+    }
+    let step_bound = match required_bound(app, req) {
+        Ok(bound) => bound,
+        Err(refusal) => {
+            req.local_no_effect.store(true, Ordering::Relaxed);
+            return admission_refusal(&refusal);
+        }
+    };
+    let total = step_bound.saturating_mul(u32::try_from(steps.len()).unwrap_or(u32::MAX));
+    let Some(bound) = authorization_bound(app, req, admission) else {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return admission_refusal(&Refusal::new(RefusalCode::UnsafeToStart, "this checked batch has no measured authorization bound"));
+    };
+    let Some(now) = app.commit_clock.as_deref().map(|clock| clock.now()) else {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return admission_refusal(&Refusal::new(RefusalCode::AuthUnavailable, "the host has no clock for this checked batch"));
+    };
+    if bound.remaining(now).is_none_or(|remaining| remaining < total) {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        return admission_refusal(&Refusal::new(
+            RefusalCode::UnsafeToStart,
+            "the remaining authorization is shorter than the batch's safe-stop bound",
+        ));
+    }
+    let rollback = p.get("rollback").and_then(Value::as_bool).unwrap_or(true);
+    let policy = if rollback { CheckpointPolicy::Required } else { CheckpointPolicy::BestEffort };
+    let mut gate = |app: &mut SolveApp, index: usize| -> Result<(), String> {
+        if let Some(refusal) = authority_refusal(app, req, admission) {
+            return Err(refusal.message);
+        }
+        let Some(bound) = authorization_bound(app, req, admission) else { return Err("no measured authorization bound".into()) };
+        let Some(clock) = app.commit_clock.as_deref() else { return Err("the host has no clock".into()) };
+        let now = clock.now();
+        let Some(remaining) = bound.remaining(now) else { return Err("the authorization expired".into()) };
+        let left = steps.len().saturating_sub(index);
+        let needed = step_bound.saturating_mul(u32::try_from(left).unwrap_or(u32::MAX));
+        if remaining < needed {
+            return Err("the remaining authorization is shorter than the steps left to run".into());
+        }
+        Ok(())
+    };
+    let before_stamp = app.session.document_stamp();
+    let reply = run_document_steps_gated(app, steps, p, execute, SolveApp::run, policy, Some(&mut gate));
+    let completed = reply.get("completed").and_then(Value::as_u64).unwrap_or(0);
+    let rolled_back = reply.get("rolled_back").and_then(Value::as_bool).unwrap_or(false);
+    let failed = reply.get("failed").is_some();
+    let stopped = reply.get("stopped").and_then(Value::as_bool).unwrap_or(false);
+    let after_stamp = app.session.document_stamp();
+    if !failed && !stopped {
+        // A successful batch charges once even when every completed step is read-only; the
+        // contract's success fee is not a mutation fee.
+        return ok(reply);
+    }
+    if rolled_back || completed == 0 {
+        req.local_no_effect.store(true, Ordering::Relaxed);
+    } else if before_stamp.document_id != after_stamp.document_id {
+        // An unexpected document switch leaves retention uncertain; finalize Unknown, never
+        // release or charge silently.
+        req.local_unknown_effect.store(true, Ordering::Relaxed);
+    } else if before_stamp.revision == after_stamp.revision {
+        // Completed read-only/no-op steps changed no document state.
+        req.local_no_effect.store(true, Ordering::Relaxed);
+    } else {
+        // A changed revision cannot prove retained content: unchanged parameter edits bump it too.
+        // Fail closed as Unknown under the original operation id instead of charging success.
+        req.local_unknown_effect.store(true, Ordering::Relaxed);
+    }
+    ok(reply)
+}
+
+fn batch(app: &mut SolveApp, p: &Value, guarded: bool, req: &ControlRequest, admission: &Admission) -> Outcome {
     let Some(steps) = p.get("commands").and_then(Value::as_array).filter(|s| s.len() <= MAX_BATCH) else {
+        req.local_no_effect.store(true, Ordering::Relaxed);
         return err(format!("engine.batch: commands must be an array of at most {MAX_BATCH} steps"));
     };
+    let controlled = !free_entry(req.entry) && req.helper.is_none();
+    if controlled {
+        return controlled_batch(app, steps, p, req, admission);
+    }
     let panels = steps.iter().filter(|step| command(step).is_some_and(solidcraft_engine::panels::commands::is_command)).count();
     if panels > 0 {
         if let Some(why) = batch_refusal(steps) {
@@ -530,17 +2186,121 @@ pub fn view_png(app: &SolveApp, w: u32, h: u32) -> Result<Vec<u8>, String> {
     solidcraft_engine::render::png(w as usize, h as usize, rgba).ok_or_else(|| "PNG encoding failed".to_string())
 }
 
-pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest) -> Outcome {
+    req.local_no_effect.store(false, Ordering::Relaxed);
+    req.local_unknown_effect.store(false, Ordering::Relaxed);
+    // The trusted entry is classified before any method, parameter or command dispatch. Free
+    // human and browser entries pass; an unclassified entry is refused without touching the
+    // design, and a controlled entry needs host authority before it can dispatch.
+    if let Some(refusal) = entry_refusal(req) {
+        release_unstarted_with(app, req, refusal.code);
+        return admission_refusal(&refusal);
+    }
+    if let Some(refusal) = async_native_refusal(req) {
+        release_unstarted_with(app, req, refusal.code);
+        return admission_refusal(&refusal);
+    }
+    if let Some(refusal) = controlled_multi_step_refusal(req) {
+        release_unstarted_with(app, req, refusal.code);
+        return admission_refusal(&refusal);
+    }
+    if let Some(refusal) = controlled_capture_refusal(req) {
+        release_unstarted_with(app, req, refusal.code);
+        return admission_refusal(&refusal);
+    }
     if chat_turn_cancelled(req.chat_turn.as_deref()) {
+        release_unstarted_with(app, req, RefusalCode::UnsafeToStart);
         return Outcome::Done(cancelled_request_response(&req.method, &req.params, req.guarded.is_some()));
     }
     // The Text-to-CAD task narrows the existing gate before a request can reach it. A denial is
-    // returned to the agent as an error and executes nothing.
+    // returned to the agent as an error and executes nothing. It runs before billing admission so
+    // a local refusal never holds a server grant.
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(reason) = crate::agent_chat::task_runtime::before_tool(app, &req.method, &req.params, req.chat_turn.as_ref()) {
+        release_unstarted_with(app, req, RefusalCode::UnsafeToStart);
         return Outcome::Done(json!({"ok": false, "error": format!("refused by the host task: {reason}")}));
     }
-    let out = crate::agent_chat::with_tool_request(app, req.chat_turn.as_ref(), |app| handle_request(app, ctx, req));
+    let admission = match req.admission.as_ref() {
+        Some(admission) => admission.clone(),
+        None => {
+            if let Some(refusal) = authority_snapshot_refusal(app, req) {
+                if req.entry == EntryCategory::DirectControl
+                    && let Some(operation) = req.operation.as_ref()
+                {
+                    app.account.control_finished(operation);
+                }
+                return admission_refusal(&refusal);
+            }
+            admit_for_app(app, req)
+        }
+    };
+    if let Admission::Refused(refusal) = &admission {
+        return admission_refusal(refusal);
+    }
+    if !may_dispatch(&admission) {
+        return admission_refusal(&Refusal::new(RefusalCode::OperationConflict, "this operation already exists and will not run again"));
+    }
+    // Scheduling recheck: a revocation, account switch or expiry observed while the request was
+    // held must stop it before any command runs. This is the last point that can still prove no
+    // effect; the commit gate below only guards the result write-back.
+    if let Some(refusal) = authority_refusal(app, req, &admission) {
+        if req.admission.is_some() {
+            release_unstarted_with(app, req, refusal.code);
+        } else {
+            // This fallback admitted the request here but never stored it; nothing ran.
+            release_admission(app, &admission, refusal.code);
+        }
+        return admission_refusal(&refusal);
+    }
+    if req.admission.is_none() {
+        register_control_renewal(app, req, &admission);
+    }
+    // The host marks the actual dispatch boundary. Pre-dispatch refusals before this point can
+    // release an unstarted admission; nothing reads this flag from request parameters.
+    req.work_started.store(true, Ordering::Relaxed);
+    let out = crate::agent_chat::with_tool_request(app, req.chat_turn.as_ref(), |app| handle_request(app, ctx, req, &admission));
+    // The actual commit point: re-read the advancing clock, the current account/session and the
+    // durable state before writing the result back.
+    let decision = commit_decision(app, req, &admission, &out);
+    if let Admission::NewlyAdmitted { operation, .. } = &admission {
+        app.account.control_finished(operation);
+    }
+    let no_effect = req.local_no_effect.load(Ordering::Relaxed);
+    let unknown = req.local_unknown_effect.load(Ordering::Relaxed);
+    let notice = if let Some(effect) = &req.bridge_effect {
+        let evidence = result_evidence(&out, no_effect, unknown);
+        let action = settlement_for(evidence);
+        let disposition = match (decision, action) {
+            (CommitDecision::Drop { code: RefusalCode::OperationFinalized }, _) => BridgeDisposition::AlreadyTerminal,
+            (decision, SettlementAction::Commit(result)) => {
+                BridgeDisposition::Settle { intent: SettlementIntent::Commit(result), deferred: !decision.allowed() }
+            }
+            (_, SettlementAction::Release(reason)) => BridgeDisposition::Settle { intent: SettlementIntent::Release(reason), deferred: false },
+        };
+        if let Ok(mut effect) = effect.lock() {
+            *effect = Some(disposition);
+        }
+        match (&admission, disposition) {
+            (Admission::NewlyAdmitted { operation, .. }, BridgeDisposition::Settle { deferred: true, .. }) => {
+                Some(SettlementNotice { operation: operation.clone(), kind: SettlementNoticeKind::Deferred { evidence } })
+            }
+            _ => None,
+        }
+    } else {
+        settle_result(app, &admission, decision, no_effect, unknown, &out)
+    };
+    if !decision.allowed() {
+        let CommitDecision::Drop { code } = decision else { return out };
+        let reply = with_settlement_notice(
+            admission_refusal_json(&Refusal::new(code, "refused before writing the result: the operation's authorization is no longer valid")),
+            notice.as_ref(),
+        );
+        return Outcome::Done(reply);
+    }
+    let mut out = out;
+    if let (Some(notice), Outcome::Done(value)) = (notice.as_ref(), &mut out) {
+        value["settlement"] = settlement_notice_json(notice);
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if let Outcome::Done(reply) = &out {
         crate::agent_chat::task_runtime::after_tool(app, &req.method, &req.params, reply, req.chat_turn.as_ref());
@@ -548,26 +2308,36 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> 
     out
 }
 
-fn handle_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest) -> Outcome {
+fn handle_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest, admission: &Admission) -> Outcome {
     let guarded = match crate::execution_guard::check_application(app, req) {
         Ok(stamp) => stamp.is_some(),
-        Err(error) => return Outcome::Done(crate::execution_guard::refusal_json(&error)),
+        Err(error) => {
+            // The guard runs before any command applies; its refusal is host-known no-effect.
+            req.local_no_effect.store(true, Ordering::Relaxed);
+            return Outcome::Done(crate::execution_guard::refusal_json(&error));
+        }
     };
-    let out = dispatch_request(app, ctx, req, guarded);
+    let out = dispatch_request(app, ctx, req, guarded, admission);
     if guarded { crate::execution_guard::stamp_outcome(app, out) } else { out }
 }
 
-fn dispatch_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest, guarded: bool) -> Outcome {
+fn dispatch_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlRequest, guarded: bool, admission: &Admission) -> Outcome {
     let level = match request_param_check(&req.method, &req.params) {
         Ok(level) => level,
-        Err(e) => return err(e),
+        Err(e) => {
+            req.local_no_effect.store(true, Ordering::Relaxed);
+            return err(e);
+        }
     };
     let scope = match request_scope(app, &req.params) {
         Ok(scope) => scope,
-        Err(e) => return err(e),
+        Err(e) => {
+            req.local_no_effect.store(true, Ordering::Relaxed);
+            return err(e);
+        }
     };
     if scope.is_none() && level.is_none() && !guarded {
-        return dispatch(app, ctx, &req.method, &req.params, false);
+        return dispatch(app, ctx, &req.method, &req.params, false, req, admission);
     }
     let mut p = req.params.clone();
     if let Some(o) = p.as_object_mut() {
@@ -577,8 +2347,8 @@ fn dispatch_request(app: &mut SolveApp, ctx: &egui::Context, req: &ControlReques
         o.remove("expectedDocument");
     }
     let run = |app: &mut SolveApp| match level {
-        Some(level) => dispatch_checked(app, ctx, &req.method, &p, level, guarded),
-        None => dispatch(app, ctx, &req.method, &p, guarded),
+        Some(level) => dispatch_checked(app, ctx, &req.method, &p, level, guarded, &req.local_no_effect, req, admission),
+        None => dispatch(app, ctx, &req.method, &p, guarded, req, admission),
     };
     match scope {
         Some(scope) => vfs::scoped(Some(scope), || run(app)),
@@ -602,13 +2372,38 @@ pub(crate) fn request_param_check(method: &str, params: &Value) -> Result<Option
 /// `dispatch` of an `engine.execute`, `engine.batch` or `engine.script` with its commands checked
 /// at `level`, echoed in the reply as `param_check`, so a client can tell an app that checked
 /// from an older one that ignored the field. The session goes back to its own level afterwards.
-fn dispatch_checked(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, level: ParamCheck, guarded: bool) -> Outcome {
+fn dispatch_checked(
+    app: &mut SolveApp,
+    ctx: &egui::Context,
+    method: &str,
+    p: &Value,
+    level: ParamCheck,
+    guarded: bool,
+    no_effect: &AtomicBool,
+    req: &ControlRequest,
+    admission: &Admission,
+) -> Outcome {
+    // A strict contract refusal is host-known validation that runs before the command applies.
+    if level == ParamCheck::Strict
+        && matches!(method, "engine.execute" | "command")
+        && let Some(id) = command(p)
+        && let Some(spec) = solidcraft_engine::find_command(id)
+        && !solidcraft_engine::panels::commands::is_command(spec.id)
+        && let Some(first) = solidcraft_engine::schema::issues(spec.id, p.get("params").unwrap_or(&Value::Null)).first()
+    {
+        no_effect.store(true, Ordering::Relaxed);
+        let mut out = err(solidcraft_engine::params::bad(spec.id, first.message.as_str()));
+        if let Outcome::Done(Value::Object(o)) = &mut out {
+            o.insert("param_check".into(), json!(level.name()));
+        }
+        return out;
+    }
     let mut out = if switches_design(p).is_some() {
-        switch_checked(app, ctx, method, p, level, guarded)
+        switch_checked(app, ctx, method, p, level, guarded, no_effect, req, admission)
     } else {
         let own = app.session.param_check;
         app.session.param_check = level;
-        let out = dispatch(app, ctx, method, p, guarded);
+        let out = dispatch(app, ctx, method, p, guarded, req, admission);
         app.session.param_check = own;
         out
     };
@@ -620,15 +2415,26 @@ fn dispatch_checked(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &V
 
 /// A command that switches to another design, checked at `level` before it runs: it runs at the
 /// app's own level, since the session it leaves and the one it brings in each keep theirs.
-fn switch_checked(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, level: ParamCheck, guarded: bool) -> Outcome {
+fn switch_checked(
+    app: &mut SolveApp,
+    ctx: &egui::Context,
+    method: &str,
+    p: &Value,
+    level: ParamCheck,
+    guarded: bool,
+    no_effect: &AtomicBool,
+    req: &ControlRequest,
+    admission: &Admission,
+) -> Outcome {
     let id = command(p).unwrap_or_default();
     let issues: Vec<String> = solidcraft_engine::schema::issues(id, p.get("params").unwrap_or(&Value::Null)).into_iter().map(|i| i.message).collect();
     if level == ParamCheck::Strict
         && let Some(first) = issues.first()
     {
+        no_effect.store(true, Ordering::Relaxed);
         return err(solidcraft_engine::params::bad(id, first.as_str()));
     }
-    let mut out = dispatch(app, ctx, method, p, guarded);
+    let mut out = dispatch(app, ctx, method, p, guarded, req, admission);
     if level == ParamCheck::Warn
         && !issues.is_empty()
         && let Outcome::Done(v) = &mut out
@@ -639,7 +2445,7 @@ fn switch_checked(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Val
     out
 }
 
-fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, guarded: bool) -> Outcome {
+fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, guarded: bool, req: &ControlRequest, admission: &Admission) -> Outcome {
     crate::render_workspace::sync_backend(app);
     let s = |k: &str| p.get(k).and_then(Value::as_str);
     let f = |k: &str| p.get(k).and_then(Value::as_f64).filter(|x| x.is_finite());
@@ -752,7 +2558,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
         }
         #[cfg(not(target_arch = "wasm32"))]
         "agent.task.revalidate" => wrap(crate::agent_chat::task_runtime::revalidate(app)),
-        "engine.batch" => batch(app, p, guarded),
+        "engine.batch" => batch(app, p, guarded, req, admission),
         "ui.agent_cursor" => {
             let s = &mut app.ui.agent_cursor;
             if let Some(v) = p.get("show").and_then(Value::as_bool) {
@@ -831,6 +2637,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
         }
         "ui.messages" => ok(crate::messages::control(app, p)),
         "ui.inspect" => ok(json!({
+            "assistant": crate::agent_chat::inspect(app),
             "render": crate::render_workspace::inspect_state(app),
             "ui": ui_state(app),
             "visibility": app.session.visibility,
@@ -1139,6 +2946,15 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             let list = crate::scenario::handles(s("prefix").unwrap_or(""));
             ok(json!(list.into_iter().map(|(n, p)| json!({"name": n, "x": p.x, "y": p.y})).collect::<Vec<_>>()))
         }
+        "ui.rects" => {
+            // The rects drawn last frame, in the window's egui points, and the points-to-window
+            // pixels scale: a native view placed over one of them is compared in real pixels.
+            let list = crate::scenario::rects(s("prefix").unwrap_or(""));
+            ok(json!({
+                "rects": list.into_iter().map(|(n, r)| json!({"name": n, "x": r.left(), "y": r.top(), "width": r.width(), "height": r.height()})).collect::<Vec<_>>(),
+                "pixelsPerPoint": ctx.pixels_per_point(),
+            }))
+        }
         "ui.pick" => wrap(crate::view_pick::pick_command(app, p)),
         "ui.at" => {
             if let Some(path) = p.get("occurrence").and_then(Value::as_array) {
@@ -1372,6 +3188,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             },
             None => ok(json!({"question": app.tree.capture_prompt, "pending_moves": app.session.pending_moves.len()})),
         },
+        "ui.files" => wrap(crate::file_tree::control(app, p)),
         "ui.prefs" => wrap(crate::prefs::control(app, p)),
         "ui.agent_chat" => wrap(crate::agent_chat::control(app, ctx, p)),
         "ui.help" => match s("item") {
@@ -1586,7 +3403,1884 @@ pub(crate) fn write_screenshot(image: &egui::ColorImage, path: &str) -> Result<(
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    //! Host-side doubles for the commit gate. They never ship and only exist in tests.
+
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+    use std::time::{Duration, SystemTime};
+
+    use solidcraft_engine::entitlement::{
+        AccountId, AccountService, Admission, AuthenticatedHostScope, Availability, BillingPort, BillingResult, Capability, ConservativeDeadline,
+        EntryCategory, Grant, HostSessionBinding, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, Refusal, RefusalCode,
+    };
+
+    use crate::SolveApp;
+
+    pub(crate) struct TestAccount {
+        revoked: Arc<AtomicBool>,
+        status: Arc<AtomicU8>,
+        version_supported: Arc<AtomicBool>,
+        lookups: Arc<AtomicUsize>,
+        /// When set, the count of billing admissions: `operation()` refuses until it is above
+        /// zero, modelling the native client, where the settlement credential arrives with
+        /// `begin` and does not exist before admission.
+        lookup_needs_admission: Option<Arc<AtomicUsize>>,
+        bridge_billing: Option<std::sync::Mutex<Box<dyn BillingPort + Send>>>,
+    }
+
+    fn status_from_code(code: u8) -> OperationStatus {
+        match code {
+            1 => OperationStatus::Pending,
+            2 => OperationStatus::Charged,
+            3 => OperationStatus::Released,
+            4 => OperationStatus::Expired,
+            _ => OperationStatus::Held,
+        }
+    }
+
+    fn status_code(status: OperationStatus) -> u8 {
+        match status {
+            OperationStatus::Held => 0,
+            OperationStatus::Pending => 1,
+            OperationStatus::Charged => 2,
+            OperationStatus::Released => 3,
+            OperationStatus::Expired => 4,
+        }
+    }
+
+    impl AccountService for TestAccount {
+        fn begin_covered_bridge(
+            &mut self,
+            _: &AuthenticatedHostScope,
+            operation: &OperationId,
+            required: Duration,
+            _: Option<&ConservativeDeadline>,
+        ) -> Result<Admission, Refusal> {
+            assert!(required <= Duration::from_secs(30), "this bridge fixture injects a 60 s grant");
+            let billing = self.bridge_billing.as_mut().ok_or_else(|| Refusal::new(RefusalCode::AuthUnavailable, "no fixture hold"))?;
+            let grant = billing.get_mut().unwrap().admit(operation, Capability::Mcp, EntryCategory::GuiBridgeMcp)?;
+            Ok(Admission::NewlyAdmitted { operation: operation.clone(), grant })
+        }
+
+        fn status(&self) -> Result<Availability, Refusal> {
+            let mut availability = Availability {
+                online: true,
+                version_supported: self.version_supported.load(Ordering::Relaxed),
+                model_available: true,
+                balance: 100,
+                held: 0,
+                reasons: Vec::new(),
+            };
+            if self.revoked.load(Ordering::Relaxed) {
+                availability.reasons.push(RefusalCode::AccountDisabled);
+            }
+            Ok(availability)
+        }
+
+        fn authorize(&mut self, _scope: &AuthenticatedHostScope, _capability: Capability) -> Result<Grant, Refusal> {
+            Err(Refusal::new(RefusalCode::AuthUnavailable, "the test account does not mint grants"))
+        }
+
+        fn begin(
+            &mut self,
+            _scope: &AuthenticatedHostScope,
+            _operation: &OperationId,
+            _capability: Capability,
+            _entry: EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Admission, Refusal> {
+            Err(Refusal::new(RefusalCode::AuthUnavailable, "the test account does not admit"))
+        }
+
+        fn finalize(
+            &mut self,
+            _scope: &AuthenticatedHostScope,
+            _operation: &OperationId,
+            _result: BillingResult,
+        ) -> Result<OperationStatus, Refusal> {
+            Err(Refusal::new(RefusalCode::AuthUnavailable, "the test account does not finalize"))
+        }
+
+        fn operation(&self, _scope: &AuthenticatedHostScope, _operation: &OperationId) -> Result<OperationStatus, Refusal> {
+            self.lookups.fetch_add(1, Ordering::Relaxed);
+            if let Some(admissions) = &self.lookup_needs_admission
+                && admissions.load(Ordering::Relaxed) == 0
+            {
+                return Err(Refusal::new(RefusalCode::AuthRequired, "the test account has no settlement credential before admission"));
+            }
+            Ok(status_from_code(self.status.load(Ordering::Relaxed)))
+        }
+    }
+
+    pub(crate) struct TestClock {
+        now_ms: Arc<AtomicU64>,
+        advance_ms: Arc<AtomicU64>,
+        advances_left: Arc<AtomicUsize>,
+    }
+
+    impl MonotonicClock for TestClock {
+        fn now(&self) -> MonotonicInstant {
+            if self.advances_left.load(Ordering::Relaxed) > 0 {
+                let left = self.advances_left.fetch_sub(1, Ordering::Relaxed);
+                if left > 0 {
+                    self.now_ms.fetch_add(self.advance_ms.load(Ordering::Relaxed), Ordering::Relaxed);
+                }
+            }
+            MonotonicInstant::from_millis(self.now_ms.load(Ordering::Relaxed))
+        }
+
+        fn wall_now(&self) -> SystemTime {
+            SystemTime::UNIX_EPOCH + Duration::from_millis(self.now_ms.load(Ordering::Relaxed))
+        }
+    }
+
+    #[derive(Clone)]
+    pub(crate) struct TestAuthority {
+        scope: AuthenticatedHostScope,
+        revoked: Arc<AtomicBool>,
+        status: Arc<AtomicU8>,
+        version_supported: Arc<AtomicBool>,
+        lookups: Arc<AtomicUsize>,
+        lookup_needs_admission: Option<Arc<AtomicUsize>>,
+        now_ms: Arc<AtomicU64>,
+        advance_ms: Arc<AtomicU64>,
+        advances_left: Arc<AtomicUsize>,
+    }
+
+    impl TestAuthority {
+        pub(crate) fn new(account: &str, installation: &str, session: &str) -> Self {
+            Self::from_scope(AuthenticatedHostScope::new(
+                AccountId::new(account),
+                solidcraft_engine::entitlement::InstallationId::new(installation),
+                HostSessionBinding::new(session),
+            ))
+        }
+
+        pub(crate) fn from_scope(scope: AuthenticatedHostScope) -> Self {
+            Self {
+                scope,
+                revoked: Arc::new(AtomicBool::new(false)),
+                status: Arc::new(AtomicU8::new(0)),
+                version_supported: Arc::new(AtomicBool::new(true)),
+                lookups: Arc::new(AtomicUsize::new(0)),
+                lookup_needs_admission: None,
+                now_ms: Arc::new(AtomicU64::new(0)),
+                advance_ms: Arc::new(AtomicU64::new(0)),
+                advances_left: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        pub(crate) fn install(&self, app: &mut SolveApp) {
+            self.install_with_bridge_billing(app, None);
+        }
+
+        pub(crate) fn install_with_bridge_billing(&self, app: &mut SolveApp, billing: Option<Box<dyn BillingPort + Send>>) {
+            app.install_commit_authority(
+                self.scope.clone(),
+                Box::new(TestAccount {
+                    revoked: Arc::clone(&self.revoked),
+                    status: Arc::clone(&self.status),
+                    version_supported: Arc::clone(&self.version_supported),
+                    lookups: Arc::clone(&self.lookups),
+                    lookup_needs_admission: self.lookup_needs_admission.clone(),
+                    bridge_billing: billing.map(std::sync::Mutex::new),
+                }),
+                Box::new(TestClock {
+                    now_ms: Arc::clone(&self.now_ms),
+                    advance_ms: Arc::clone(&self.advance_ms),
+                    advances_left: Arc::clone(&self.advances_left),
+                }),
+            );
+        }
+
+        pub(crate) fn scope(&self) -> &AuthenticatedHostScope {
+            &self.scope
+        }
+
+        /// Model the native client: `operation()` refuses until the billing port has admitted
+        /// `admissions` times, because only `begin` hands over the settlement credential.
+        pub(crate) fn lookup_needs_admission(mut self, admissions: Arc<AtomicUsize>) -> Self {
+            self.lookup_needs_admission = Some(admissions);
+            self
+        }
+
+        pub(crate) fn revoke(&self) {
+            self.revoked.store(true, Ordering::Relaxed);
+        }
+
+        pub(crate) fn set_status(&self, status: OperationStatus) {
+            self.status.store(status_code(status), Ordering::Relaxed);
+        }
+
+        pub(crate) fn set_version_supported(&self, supported: bool) {
+            self.version_supported.store(supported, Ordering::Relaxed);
+        }
+
+        pub(crate) fn operation_lookups(&self) -> usize {
+            self.lookups.load(Ordering::Relaxed)
+        }
+
+        pub(crate) fn set_clock_advance(&self, milliseconds: u64, reads: usize) {
+            self.advance_ms.store(milliseconds, Ordering::Relaxed);
+            self.advances_left.store(reads, Ordering::Relaxed);
+        }
+
+        pub(crate) fn advance(&self, milliseconds: u64) {
+            self.now_ms.fetch_add(milliseconds, Ordering::Relaxed);
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::*;
+    use solidcraft_engine::entitlement::{
+        OperationRecord, OperationStoreError, RetryDecision, RetryScopeKey, ReviewOperation, RunId, SaveOutcome, SettlementIntent, UnsettledOperation,
+    };
+
+    /// Script the existing journal's read for one operation. Classification must not write it.
+    struct ControlJournal(OperationId, Result<Option<OperationRecord>, OperationStoreError>);
+
+    // Classification must only read the journal; every other method is a stub
+    // that a passing test never reaches, so panicking there is the signal that
+    // the path under test wrote or mutated durable state.
+    #[allow(clippy::unreachable)]
+    impl OperationStore for ControlJournal {
+        fn load(&self, operation: &OperationId) -> Result<Option<OperationRecord>, OperationStoreError> {
+            assert_eq!(operation, &self.0);
+            self.1.clone()
+        }
+
+        fn save_new(&mut self, _: &OperationRecord) -> Result<SaveOutcome, OperationStoreError> {
+            unreachable!()
+        }
+
+        fn mark_started(&mut self, _: &OperationId, _: u64) -> Result<(), OperationStoreError> {
+            unreachable!()
+        }
+
+        fn mark_terminal(&mut self, _: &OperationId, _: OperationStatus) -> Result<(), OperationStoreError> {
+            unreachable!()
+        }
+
+        fn persist_intent(
+            &mut self,
+            _: &AuthenticatedHostScope,
+            _: &TransportCorrelation,
+            _: Capability,
+            _: EntryCategory,
+        ) -> Result<OperationRecord, SaveOutcome> {
+            unreachable!()
+        }
+
+        fn persist_fresh_intent(&mut self, _: &FreshIntent, _: Capability, _: EntryCategory) -> Result<OperationRecord, SaveOutcome> {
+            unreachable!()
+        }
+
+        fn lookup_original_retry(&self, _: &RetryScopeKey) -> RetryDecision {
+            // This scripted row has no authenticated mapping. Reading it may not authorize a
+            // second bridge attempt; the stub still rejects every write.
+            RetryDecision::Unprovable
+        }
+
+        fn record_review(&mut self, _: &ReviewOperation) -> Result<(), OperationStoreError> {
+            unreachable!()
+        }
+
+        fn review_operation(&self, _: &RunId) -> Result<Option<OperationId>, OperationStoreError> {
+            unreachable!()
+        }
+
+        fn record_settlement_intent(&mut self, _: &OperationId, _: SettlementIntent) -> Result<SaveOutcome, OperationStoreError> {
+            unreachable!()
+        }
+
+        fn settlement_intent(&self, _: &OperationId) -> Result<Option<SettlementIntent>, OperationStoreError> {
+            unreachable!()
+        }
+
+        fn unsettled_operations(&self, _: Option<&AuthenticatedHostScope>) -> Result<Vec<UnsettledOperation>, OperationStoreError> {
+            unreachable!()
+        }
+    }
+
+    /// A local test double at the billing boundary: it never ships and only grants inside this
+    /// test module. It records exactly how often admission and commit happen.
+    #[derive(Default)]
+    struct CountingBilling {
+        admits: usize,
+        commits: usize,
+        releases: usize,
+    }
+
+    impl BillingPort for CountingBilling {
+        fn admit(
+            &mut self,
+            operation: &OperationId,
+            capability: Capability,
+            _entry: EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Grant, Refusal> {
+            self.admits = self.admits.saturating_add(1);
+            Ok(solidcraft_engine::entitlement::Grant::from_server(
+                solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
+                capability,
+                solidcraft_engine::entitlement::MonotonicInstant::from_millis(60_000),
+            ))
+        }
+
+        fn commit(
+            &mut self,
+            _operation: &OperationId,
+            result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::BillingResult, Refusal> {
+            self.commits = self.commits.saturating_add(1);
+            Ok(result)
+        }
+
+        fn release(&mut self, _operation: &OperationId, _reason: RefusalCode) -> Result<(), Refusal> {
+            self.releases = self.releases.saturating_add(1);
+            Ok(())
+        }
+    }
+
+    /// Test evidence only: these bounds stand in for measured safe-stop values.
+    fn verified_budget() -> BudgetTable {
+        let mut budget = BudgetTable::unverified_default();
+        for entry in EntryCategory::CONTROLLED {
+            if let Some(capability) = entry_capability(entry) {
+                budget.set_verified(capability, entry, Duration::from_secs(30));
+            }
+        }
+        budget
+    }
+
+    /// A request the origin gate can inspect without a window.
+    #[derive(Default)]
+    pub(super) struct DispatchSpy {
+        pub(super) calls: usize,
+    }
+
+    /// Run the same entry gate the app uses, counting the dispatch a free entry would reach.
+    /// Unknown and controlled entries must never reach it.
+    fn handle_with_spy(req: &ControlRequest, spy: &mut DispatchSpy) -> Admission {
+        let admission = admit_control_request(req, &BudgetTable::unverified_default(), &mut NoAuthorityBilling);
+        if may_dispatch(&admission) {
+            spy.calls = spy.calls.saturating_add(1);
+        }
+        admission
+    }
+
+    /// A billing double whose admission/release counts survive being installed in the app.
+    struct SharedCounting {
+        admits: std::sync::Arc<AtomicUsize>,
+        releases: std::sync::Arc<AtomicUsize>,
+    }
+
+    impl BillingPort for SharedCounting {
+        fn admit(
+            &mut self,
+            operation: &OperationId,
+            capability: Capability,
+            _entry: EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Grant, Refusal> {
+            self.admits.fetch_add(1, Ordering::Relaxed);
+            Ok(solidcraft_engine::entitlement::Grant::from_server(
+                solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
+                capability,
+                solidcraft_engine::entitlement::MonotonicInstant::from_millis(60_000),
+            ))
+        }
+
+        fn commit(
+            &mut self,
+            _operation: &OperationId,
+            result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::BillingResult, Refusal> {
+            Ok(result)
+        }
+
+        fn release(&mut self, _operation: &OperationId, _reason: RefusalCode) -> Result<(), Refusal> {
+            self.releases.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    fn app_with_billing() -> (SolveApp, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
+        let (app, _authority, admits, releases) = app_with_billing_and_authority();
+        (app, admits, releases)
+    }
+
+    fn app_with_billing_and_authority() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
+        app_with_billing_budget(verified_budget())
+    }
+
+    fn app_with_billing_budget(
+        budget: BudgetTable,
+    ) -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
+        let admits = std::sync::Arc::new(AtomicUsize::new(0));
+        let releases = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.install_billing(Box::new(SharedCounting { admits: std::sync::Arc::clone(&admits), releases: std::sync::Arc::clone(&releases) }), budget);
+        let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session");
+        authority.install(&mut app);
+        (app, authority, admits, releases)
+    }
+
+    /// [`app_with_billing`] over a native-like authority: the durable lookup has no settlement
+    /// credential until the billing port admits, exactly as `HttpAccountService` behaves before
+    /// `begin` hands the per-operation credential over.
+    fn app_with_lookup_before_admission() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
+        let (mut app, authority, admits, releases) = app_with_billing_and_authority();
+        let authority = authority.lookup_needs_admission(std::sync::Arc::clone(&admits));
+        authority.install(&mut app);
+        (app, authority, admits, releases)
+    }
+
+    /// The forwarded host context a recovered operation carries (the request is not a fresh mint).
+    fn recovered_operation(authority: &test_support::TestAuthority, operation: &str) -> TrustedContext {
+        TrustedContext::mint(authority.scope(), operation, Capability::Control, EntryCategory::DirectControl).expect("host mint")
+    }
+
+    #[test]
+    fn a_fresh_direct_control_operation_is_admitted_once_without_a_durable_row() {
+        let (mut app, _authority, admits, releases) = app_with_lookup_before_admission();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        app.install_review_store(Box::new(ControlJournal(req.operation().unwrap().clone(), Ok(None))));
+        let admission = admit_once(&mut app, &mut req).expect("a fresh Direct Control operation is admitted before it has a durable row");
+        assert!(matches!(admission, Admission::NewlyAdmitted { .. }), "{admission:?}");
+        assert_eq!(admits.load(Ordering::Relaxed), 1, "the fresh operation is admitted exactly once");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "an admitted operation is not released");
+        assert!(req.admission.is_some(), "the admission is stored for dispatch");
+    }
+
+    #[test]
+    fn a_forwarded_bridge_mint_requires_an_available_journal_before_admission() {
+        let (mut app, authority, admits, releases) = app_with_lookup_before_admission();
+        let operation = OperationId::mint_from_entropy(&[7; 16]).unwrap();
+        let trusted = TrustedContext::mint(authority.scope(), operation.as_str(), Capability::Mcp, EntryCategory::GuiBridgeMcp).unwrap();
+        let (mut req, _) = ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"parameters.list"}), trusted, None, None);
+        for store in [None, Some(Box::new(ControlJournal(operation, Err(OperationStoreError::Unavailable))) as Box<dyn OperationStore + Send>)] {
+            app.review_store = store;
+            let refusal = admit_once(&mut app, &mut req).expect_err("host provenance alone must not admit a charged tool");
+            assert_eq!(refusal.code, RefusalCode::AuthUnavailable);
+        }
+        assert_eq!(authority.operation_lookups(), 0, "an unavailable journal cannot be rescued by a server lookup");
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_forwarded_bridge_mint_cannot_reuse_an_existing_journal_row() {
+        let (mut app, authority, admits, releases) = app_with_lookup_before_admission();
+        let operation = OperationId::mint_from_entropy(&[8; 16]).unwrap();
+        let trusted = TrustedContext::mint(authority.scope(), operation.as_str(), Capability::Mcp, EntryCategory::GuiBridgeMcp).unwrap();
+        let (mut req, _) = ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"parameters.list"}), trusted, None, None);
+        let mut record =
+            OperationRecord::held(operation.clone(), authority.scope().account().clone(), Capability::Mcp, EntryCategory::GuiBridgeMcp, 0);
+        for (status, code) in [(OperationStatus::Held, RefusalCode::OperationConflict), (OperationStatus::Charged, RefusalCode::OperationFinalized)] {
+            record.status = status;
+            app.install_review_store(Box::new(ControlJournal(operation.clone(), Ok(Some(record.clone())))));
+            assert_eq!(admit_once(&mut app, &mut req).unwrap_err().code, code);
+        }
+        assert_eq!(authority.operation_lookups(), 0);
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_bridge_from_a_prior_session_cannot_register_an_operation() {
+        let (mut app, _authority, admits, _) = app_with_lookup_before_admission();
+        let prior = test_support::TestAuthority::new("test-account", "test-installation", "prior-session");
+        let operation = OperationId::mint_from_entropy(&[9; 16]).unwrap();
+        let trusted = TrustedContext::mint(prior.scope(), operation.as_str(), Capability::Mcp, EntryCategory::GuiBridgeMcp).unwrap();
+        let (mut req, _) = ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"parameters.list"}), trusted, None, None);
+        app.install_review_store(crate::dfm_review::tests::test_operation_store());
+        assert_eq!(admit_once(&mut app, &mut req).unwrap_err().code, RefusalCode::AuthRequired);
+        assert!(app.review_store.as_ref().unwrap().load(&operation).unwrap().is_none());
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn fresh_control_grant_allows_admission_and_commit_before_its_expiry() {
+        // A fresh lease with and without a transit deduction.
+        for expiry in [300_000, 299_500] {
+            let (mut app, _authority, commits, releases) = app_with_commit_authority_grant(expiry);
+            app.budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(280));
+            let (mut req, _) = ControlRequest::trusted_control("engine.execute", json!({"command":"parameters.list"}));
+            let admission = admit_once(&mut app, &mut req).expect("one operation fits the fresh grant");
+            assert!(matches!(admission, Admission::NewlyAdmitted { .. }));
+            let now = app.commit_clock.as_ref().unwrap().now();
+            assert_eq!(authorization_bound(&app, &req, &admission).unwrap().remaining(now), Some(Duration::from_millis(expiry)));
+            // At dispatch the clock reads 0; at commit it reads just before grant expiry,
+            // after the declared 280 s has elapsed.
+            app.commit_clock = Some(Box::new(DispatchThenCommitClock::new(expiry - 1)));
+            let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &mut req) else { panic!("expected a synchronous reply") };
+            assert_eq!(reply["ok"], true, "{reply}");
+            assert_eq!(commits.load(Ordering::Relaxed), 1);
+            assert_eq!(releases.load(Ordering::Relaxed), 0);
+        }
+    }
+
+    #[test]
+    fn control_grant_below_the_declared_bound_is_refused_before_dispatch() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority_grant(300_000);
+        app.budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(280));
+        authority.advance(20_001);
+        let (mut req, _) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &mut req) else { panic!("expected a synchronous refusal") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(!req.work_started.load(Ordering::Relaxed));
+        assert_eq!(bodies(&app), 0);
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 1);
+    }
+
+    /// First read at dispatch, subsequent reads when the result is ready.
+    struct DispatchThenCommitClock {
+        before_dispatch: std::cell::Cell<bool>,
+        finished_at: u64,
+    }
+
+    impl DispatchThenCommitClock {
+        fn new(finished_at: u64) -> Self {
+            Self { before_dispatch: std::cell::Cell::new(true), finished_at }
+        }
+    }
+
+    impl MonotonicClock for DispatchThenCommitClock {
+        fn now(&self) -> MonotonicInstant {
+            MonotonicInstant::from_millis(if self.before_dispatch.replace(false) { 0 } else { self.finished_at })
+        }
+
+        fn wall_now(&self) -> std::time::SystemTime {
+            std::time::SystemTime::UNIX_EPOCH
+        }
+    }
+
+    #[test]
+    fn control_result_at_or_after_grant_expiry_has_one_deferred_settlement() {
+        for finished_at in [300_000, 300_001] {
+            let (mut app, _authority, commits, releases) = app_with_commit_authority_grant(300_000);
+            app.budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(280));
+            let (mut req, _) =
+                ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+            let operation = req.operation().unwrap().clone();
+            admit_once(&mut app, &mut req).expect("enough authorization at admission");
+            app.commit_clock = Some(Box::new(DispatchThenCommitClock::new(finished_at)));
+            let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &mut req) else { panic!("expected a synchronous refusal") };
+            assert_eq!(reply["ok"], false, "{reply}");
+            assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+            assert_eq!(bodies(&app), 1, "dropping a late result does not undo an already-applied mutation");
+            assert_eq!(commits.load(Ordering::Relaxed), 0);
+            assert_eq!(releases.load(Ordering::Relaxed), 0);
+            let [notice] = app.pending_settlements.as_slice() else { panic!("expected one deferred settlement: {reply}") };
+            assert_eq!(notice.operation, operation);
+            assert_eq!(notice.kind, SettlementNoticeKind::Deferred { evidence: ResultEvidence::Effect });
+        }
+    }
+
+    #[test]
+    fn recovery_of_a_terminal_row_is_refused_without_admitting_or_settling_again() {
+        let (mut app, authority, admits, releases) = app_with_billing_and_authority();
+        authority.set_status(OperationStatus::Charged);
+        let trusted = recovered_operation(&authority, "op_recovery_terminal_0001");
+        let (mut req, _rx) =
+            ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"solid.box","params":{}}), trusted, None, None);
+        let refusal = admit_once(&mut app, &mut req).expect_err("a terminal row is already settled");
+        assert_eq!(refusal.code, RefusalCode::OperationFinalized);
+        assert_eq!(admits.load(Ordering::Relaxed), 0, "a terminal row is never admitted again");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a terminal row is never settled again");
+        assert!(req.admission.is_none(), "a refused recovery stores no admission");
+        assert!(authority.operation_lookups() >= 1, "recovery still reads the durable row");
+    }
+
+    #[test]
+    fn a_lost_reply_retry_with_a_row_but_no_request_markers_still_checks_the_server() {
+        let (mut app, authority, admits, releases) = app_with_lookup_before_admission();
+        let (mut req, _) = ControlRequest::trusted_control("document.inspect", json!({}));
+        let operation = req.operation().unwrap().clone();
+        let record =
+            OperationRecord::held(operation.clone(), authority.scope().account().clone(), Capability::Control, EntryCategory::DirectControl, 0);
+        app.install_review_store(Box::new(ControlJournal(operation, Ok(Some(record)))));
+
+        // The server-side lookup refuses without the original settlement credential. It must
+        // not be bypassed merely because the reconstructed request has no admission or context.
+        let refusal = admit_once(&mut app, &mut req).expect_err("a lost-reply retry is not a fresh admission");
+        assert_eq!(refusal.code, RefusalCode::AuthUnavailable);
+        assert_eq!(authority.operation_lookups(), 1);
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+        assert!(req.admission.is_none());
+    }
+
+    #[test]
+    fn an_unreadable_control_journal_refuses_before_admission_or_server_lookup() {
+        let (mut app, authority, admits, _releases) = app_with_billing_and_authority();
+        let (mut req, _) = ControlRequest::trusted_control("document.inspect", json!({}));
+        app.install_review_store(Box::new(ControlJournal(req.operation().unwrap().clone(), Err(OperationStoreError::Unavailable))));
+
+        let refusal = admit_once(&mut app, &mut req).expect_err("an unreadable journal does not prove freshness");
+        assert_eq!(refusal.code, RefusalCode::AuthUnavailable);
+        assert_eq!(authority.operation_lookups(), 0);
+        assert_eq!(admits.load(Ordering::Relaxed), 0);
+        assert!(req.admission.is_none());
+    }
+
+    #[test]
+    fn recovery_of_a_non_terminal_row_keeps_the_existing_settlement_path() {
+        let (mut app, authority, admits, releases) = app_with_billing_and_authority();
+        authority.set_status(OperationStatus::Pending);
+        let trusted = recovered_operation(&authority, "op_recovery_pending_0001");
+        let (mut req, _rx) =
+            ControlRequest::trusted_bridge_forwarded("engine.execute", json!({"command":"solid.box","params":{}}), trusted, None, None);
+        let admission = admit_once(&mut app, &mut req).expect("a non-terminal row follows the existing admission path");
+        assert!(matches!(admission, Admission::NewlyAdmitted { .. }), "{admission:?}");
+        assert_eq!(admits.load(Ordering::Relaxed), 1, "the recovery is admitted once");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "recovery admission itself settles nothing");
+        assert!(authority.operation_lookups() >= 2, "recovery keeps its pre-admission and post-admission durable reads");
+    }
+
+    #[test]
+    fn a_fresh_operation_without_billing_authority_still_refuses() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        // The production fail-closed port for a host that installed no billing authority.
+        app.install_billing(Box::new(NoAuthorityBilling), verified_budget());
+        let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session")
+            .lookup_needs_admission(std::sync::Arc::new(AtomicUsize::new(0)));
+        authority.install(&mut app);
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        app.install_review_store(Box::new(ControlJournal(req.operation().unwrap().clone(), Ok(None))));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(reply["errorDetails"]["code"], "AuthUnavailable", "{reply}");
+        assert!(
+            reply["error"].as_str().is_some_and(|error| error.contains("no host billing authority")),
+            "the refusal is the missing billing authority, not the absent durable row: {reply}"
+        );
+        assert_eq!(authority.operation_lookups(), 0, "the missing credential never stands in for the billing refusal");
+        assert_eq!(bodies(&app), 0, "nothing ran without billing authority");
+    }
+
+    #[test]
+    fn a_fresh_operation_without_a_verified_bound_still_refuses_before_admission() {
+        let (mut app, authority, admits, _releases) = app_with_billing_budget(BudgetTable::unverified_default());
+        let authority = authority.lookup_needs_admission(std::sync::Arc::clone(&admits));
+        authority.install(&mut app);
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(admits.load(Ordering::Relaxed), 0, "an unmeasured path never reaches admission");
+        assert_eq!(authority.operation_lookups(), 0, "the budget refusal comes before any durable read");
+        assert_eq!(bodies(&app), 0, "nothing ran");
+    }
+
+    #[test]
+    fn controlled_ui_documents_save_actions_are_refused_before_any_save() {
+        let (mut app, admits, _releases) = app_with_billing();
+        for params in [
+            json!({"action":"close","answer":"save"}),
+            json!({"changed_on_disk":"save_copy"}),
+            json!({"changed_on_disk":"overwrite"}),
+            json!({"open_elsewhere":"read_only"}),
+            json!({"open_elsewhere":"anyway"}),
+        ] {
+            let before = admits.load(Ordering::Relaxed);
+            let (mut req, _rx) = ControlRequest::trusted_control("ui.documents", params.clone());
+            let refusal = admit_once(&mut app, &mut req).expect_err("an async native save has no durable commit path yet");
+            assert_eq!(refusal.code, RefusalCode::UnsafeToStart, "{params}");
+            assert_eq!(admits.load(Ordering::Relaxed), before, "no grant was taken for {params}");
+            assert!(req.admission.is_none(), "a refused save takes no grant");
+            assert!(!app.file_load.busy() && app.saving.is_none(), "no save or load started for {params}");
+        }
+    }
+
+    #[test]
+    fn controlled_ui_documents_save_is_refused_before_handle_dispatch() {
+        let (mut app, admits, _releases) = app_with_billing();
+        app.docs.closing = Some(0);
+        let before = admits.load(Ordering::Relaxed);
+        let (mut req, rx) = ControlRequest::trusted_control("ui.documents", json!({"answer":"save"}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a documents request answers synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(admits.load(Ordering::Relaxed), before, "dispatch never reached the billing port");
+        assert!(app.saving.is_none(), "no asynchronous native save started");
+        assert_eq!(app.docs.closing, Some(0), "the save prompt state was not advanced");
+        assert!(rx.try_recv().is_err(), "handle does not reply on the request's channel when called directly");
+    }
+
+    #[test]
+    fn signed_out_control_can_inspect_only_the_bounded_assistant_marker() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let ctx = egui::Context::default();
+        let (mut inspect, _) = ControlRequest::trusted_control("ui.inspect", json!({}));
+        let Outcome::Done(reply) = handle(&mut app, &ctx, &mut inspect) else { panic!("inspection must answer synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["assistant"], json!({"open": false, "surface_ready": false, "host": "unavailable", "centred": false}));
+
+        let (mut open, _) = ControlRequest::trusted_control("ui.agent_chat", json!({"open": true}));
+        let Outcome::Done(reply) = handle(&mut app, &ctx, &mut open) else { panic!("a refused action must answer synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(!app.agent_chat.open);
+    }
+
+    #[test]
+    fn free_gui_ui_documents_save_path_is_not_refused_by_the_entitlement_gate() {
+        let (mut app, admits, _releases) = app_with_billing();
+        let before = admits.load(Ordering::Relaxed);
+        for params in [json!({"action":"close","answer":"save"}), json!({"open_elsewhere":"read_only"})] {
+            let (mut req, _rx) = ControlRequest::trusted_gui("ui.documents", params.clone());
+            assert!(matches!(admit_once(&mut app, &mut req), Ok(Admission::Allowed)), "{params}");
+            assert_eq!(admits.load(Ordering::Relaxed), before, "free GUI never bills");
+            assert!(app.saving.is_none(), "the gate itself started nothing");
+        }
+    }
+
+    #[test]
+    fn released_admission_is_consumed_and_cannot_be_reused() {
+        let (mut app, admits, releases) = app_with_billing();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        assert!(matches!(admit_once(&mut app, &mut req), Ok(Admission::NewlyAdmitted { .. })));
+        assert_eq!(admits.load(Ordering::Relaxed), 1);
+        release_unstarted(&mut app, &mut req);
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the held grant was released once");
+        assert!(req.admission.is_none(), "the released admission cannot be reused");
+        assert!(matches!(admit_once(&mut app, &mut req), Ok(Admission::NewlyAdmitted { .. })), "a reuse must admit again");
+        assert_eq!(admits.load(Ordering::Relaxed), 2, "a released request is not treated as still admitted");
+    }
+
+    #[test]
+    fn controlled_file_load_is_refused_before_a_loader_starts() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let (req, reply) = ControlRequest::trusted_control(
+            "engine.execute",
+            json!({"command":"doc.open","params":{"path":"/tmp/opencode/int1497-never-opened.sc"}}),
+        );
+        assert!(crate::file_load::control(&mut app, req).is_none(), "the loader does not take the request");
+        let reply = reply.try_recv().expect("a refusal before loading");
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(!app.file_load.busy(), "no file load started");
+    }
+
+    #[test]
+    fn controlled_copy_answer_is_refused_before_computation() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.apply_off_thread = Some(Duration::from_secs(1));
+        let (req, reply) = ControlRequest::trusted_control("document.inspect", json!({}));
+        assert!(app.offload_control(&egui::Context::default(), req).is_none(), "no copy job starts");
+        let reply = reply.try_recv().expect("a refusal before copying");
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(app.control_answering.is_empty() && app.control_job.is_none(), "nothing computed");
+    }
+
+    #[test]
+    fn stored_admission_is_reused_by_a_reissued_request() {
+        let (mut app, admits, _releases) = app_with_billing();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        assert!(matches!(admit_once(&mut app, &mut req), Ok(Admission::NewlyAdmitted { .. })));
+        assert_eq!(admits.load(Ordering::Relaxed), 1);
+        let parts = Reissue::from_request(&req);
+        let (mut reissued, _rx) = reissue(parts, "engine.execute", json!({"command":"solid.box","params":{}}));
+        assert!(matches!(admit_once(&mut app, &mut reissued), Ok(Admission::NewlyAdmitted { .. })));
+        assert_eq!(admits.load(Ordering::Relaxed), 1, "a resumption keeps the first admission");
+    }
+
+    #[test]
+    fn a_pre_admitted_request_is_not_billed_again_at_dispatch() {
+        let (mut app, admits, _releases) = app_with_billing();
+        let (mut req, rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        assert!(admit_once(&mut app, &mut req).is_ok());
+        app.run_control(&egui::Context::default(), req);
+        let reply = rx.try_recv().expect("answered");
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(admits.load(Ordering::Relaxed), 1, "dispatch resolved the stored admission");
+        assert_eq!(crate::open_meshing::session_world(&app.session).bodies.len(), 1, "{reply}");
+    }
+
+    #[test]
+    fn controlled_ui_file_request_is_refused_before_async_load() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let (mut req, reply) = ControlRequest::trusted_control("ui.file", json!({"path":"/tmp/opencode/int1497-never-opened.sc"}));
+        let refusal = admit_once(&mut app, &mut req).expect_err("a native async file path has no durable commit yet");
+        assert_eq!(refusal.code, RefusalCode::UnsafeToStart);
+        assert!(reply.try_recv().is_err(), "admission itself sent nothing; the seam answers");
+        assert!(!app.file_load.busy(), "no file load started");
+    }
+
+    #[test]
+    fn controlled_offload_ahead_is_refused_before_a_worker_starts() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.apply_off_thread = Some(Duration::from_secs(1));
+        app.preferences.agent_off_thread = true;
+        let (req, reply) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        assert!(app.offload_control(&egui::Context::default(), req).is_none(), "no worker starts");
+        let reply = reply.try_recv().expect("a refusal before computing ahead");
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(app.control_job.is_none() && app.control_answering.is_empty(), "nothing computed");
+    }
+
+    #[test]
+    fn same_engine_execute_gui_is_free_control_is_billed_exactly_once() {
+        let params = json!({"command":"solid.box","params":{}});
+        let (gui, _gui_rx) = ControlRequest::trusted_gui("engine.execute", params.clone());
+        let (ext, _ext_rx) = ControlRequest::trusted_control("engine.execute", params);
+        let mut billing = CountingBilling::default();
+        let gui_out = admit_control_request(&gui, &verified_budget(), &mut billing);
+        assert!(matches!(gui_out, Admission::Allowed));
+        assert_eq!(billing.admits, 0);
+        let ext_out = admit_control_request(&ext, &verified_budget(), &mut billing);
+        assert!(matches!(ext_out, Admission::NewlyAdmitted { .. }));
+        assert_eq!(billing.admits, 1);
+        assert_eq!(billing.commits, 0, "commit happens only after execution");
+    }
+
+    #[test]
+    fn gui_review_panel_is_controlled_and_billed_once() {
+        let mut billing = CountingBilling::default();
+        let (req, _rx) = ControlRequest::trusted_review_panel("engine.execute", json!({"command":"dfm.run","params":{}}));
+        assert!(matches!(admit_control_request(&req, &verified_budget(), &mut billing), Admission::NewlyAdmitted { .. }));
+        assert_eq!(billing.admits, 1);
+    }
+
+    #[test]
+    fn web_gui_same_method_is_free() {
+        let mut billing = CountingBilling::default();
+        let (req, _rx) = ControlRequest::trusted_web("engine.execute", json!({"command":"solid.box","params":{}}));
+        assert!(matches!(admit_control_request(&req, &verified_budget(), &mut billing), Admission::Allowed));
+        assert_eq!(billing.admits, 0);
+    }
+
+    #[test]
+    fn origin_is_checked_before_method() {
+        let req = ControlRequest::unclassified_for_test("ui.view", json!({}));
+        let mut dispatch = DispatchSpy::default();
+        let out = handle_with_spy(&req, &mut dispatch);
+        assert_eq!(out.refusal_code(), Some(RefusalCode::CapabilityDenied));
+        assert_eq!(dispatch.calls, 0);
+    }
+
+    #[test]
+    fn protocol_and_navigation_are_free() {
+        let mut billing = CountingBilling::default();
+        for (method, params) in [("control.pending", json!({})), ("ui.view", json!({"view":"iso"}))] {
+            let (req, _rx) = ControlRequest::trusted_control(method, params);
+            assert!(matches!(admit_control_request(&req, &verified_budget(), &mut billing), Admission::Allowed));
+        }
+        assert_eq!(billing.admits, 0);
+    }
+
+    #[test]
+    fn ui_automation_real_operation_is_billed() {
+        let mut billing = CountingBilling::default();
+        let (req, _rx) = ControlRequest::trusted_external_ui("engine.execute", json!({"command":"solid.box","params":{}}));
+        assert!(matches!(admit_control_request(&req, &verified_budget(), &mut billing), Admission::NewlyAdmitted { .. }));
+        assert_eq!(billing.admits, 1);
+    }
+
+    #[test]
+    fn unclassified_entry_fails_closed() {
+        let req = ControlRequest::unclassified_for_test("engine.execute", json!({"command":"solid.box","params":{}}));
+        let mut dispatch = DispatchSpy::default();
+        let out = handle_with_spy(&req, &mut dispatch);
+        assert_eq!(out.refusal_code(), Some(RefusalCode::CapabilityDenied));
+        assert_eq!(dispatch.calls, 0);
+    }
+
+    #[test]
+    fn free_gui_still_reaches_dispatch_without_billing() {
+        let (req, _rx) = ControlRequest::trusted_gui("engine.execute", json!({"command":"solid.box","params":{}}));
+        let mut dispatch = DispatchSpy::default();
+        let out = handle_with_spy(&req, &mut dispatch);
+        assert!(matches!(out, Admission::Allowed));
+        assert_eq!(dispatch.calls, 1);
+    }
+
+    #[test]
+    fn mastra_every_logical_tool_call_is_billed_even_a_read_only_one() {
+        let mut billing = CountingBilling::default();
+        let (req, _rx) = ControlRequest::trusted_mastra("ui.view", json!({"view":"iso"}));
+        assert!(matches!(admit_control_request(&req, &verified_budget(), &mut billing), Admission::NewlyAdmitted { .. }));
+        assert_eq!(billing.admits, 1);
+    }
+
+    #[test]
+    fn unverified_bound_refuses_control_before_billing() {
+        let (req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let mut billing = CountingBilling::default();
+        let out = admit_control_request(&req, &BudgetTable::unverified_default(), &mut billing);
+        assert_eq!(out.refusal_code(), Some(RefusalCode::UnsafeToStart));
+        assert_eq!(billing.admits, 0, "an unmeasured path never reaches the billing port");
+    }
+
+    #[test]
+    fn controlled_entries_use_the_rev3_capability_pairs() {
+        assert_eq!(entry_capability(EntryCategory::Mastra), Some(Capability::Harness));
+        assert_eq!(entry_capability(EntryCategory::ExternalAcpMcp), Some(Capability::Mcp));
+        assert_eq!(entry_capability(EntryCategory::HeadlessMcp), Some(Capability::Mcp));
+        assert_eq!(entry_capability(EntryCategory::GuiBridgeMcp), Some(Capability::Mcp));
+        assert_eq!(entry_capability(EntryCategory::DirectControl), Some(Capability::Control));
+        assert_eq!(entry_capability(EntryCategory::CliDfm), Some(Capability::Dfm));
+        assert_eq!(entry_capability(EntryCategory::ReviewPanel), Some(Capability::Review));
+        assert_eq!(entry_capability(EntryCategory::ExternalUiAutomation), Some(Capability::Control));
+        assert_eq!(entry_capability(EntryCategory::Unknown), None);
+    }
+
+    #[test]
+    fn the_commit_gate_is_checked_before_a_reply_is_written() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let before = COMMIT_GATE_CHECKS.load(Ordering::Relaxed);
+        let (mut req, _rx) = ControlRequest::trusted_gui("ui.view", json!({"view":"iso"}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a view is answered synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert!(COMMIT_GATE_CHECKS.load(Ordering::Relaxed) > before, "the result went through the commit gate");
+    }
+
+    #[test]
+    fn a_controlled_batch_longer_than_its_bound_refuses_before_the_first_step() {
+        let (mut app, admits, releases) = app_with_billing();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"solid.box","params":{"length":5,"width":5,"height":5}}
+            ]}),
+        );
+        req.deadline = Some(ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(30)));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(admits.load(Ordering::Relaxed), 1, "the grant was taken then released");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "a proven-unstarted batch releases once");
+        assert_eq!(bodies(&app), 0, "no batch step ran");
+    }
+
+    #[test]
+    fn control_batch_reserves_every_step_even_with_a_fresh_grant() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority_grant(300_000);
+        app.budget.set_verified(Capability::Control, EntryCategory::DirectControl, Duration::from_secs(280));
+        let (mut req, _) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"solid.box","params":{"length":5,"width":5,"height":5}}
+            ]}),
+        );
+        let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &mut req) else { panic!("expected a synchronous refusal") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(bodies(&app), 0, "one step would fit, but two do not");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_short_single_operation_window_refuses_before_the_command_applies() {
+        let (mut app, _authority, commits, _releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        // The measured bound for this controlled entry is 30 s; a 20 s window is not enough.
+        req.deadline = Some(ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(20)));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(bodies(&app), 0, "the command never applies");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "nothing is charged");
+    }
+
+    #[test]
+    fn remaining_time_shrinking_below_the_bound_refuses_before_the_command_applies() {
+        let (mut app, authority, commits, _releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        req.deadline = Some(ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_secs(60)));
+        admit_once(&mut app, &mut req).expect("the 60 s window fits the 30 s bound at t=0");
+        authority.advance(31_000);
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(bodies(&app), 0, "only 29 s remain, less than the measured 30 s bound");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "an operation that never started is never charged");
+    }
+
+    #[test]
+    fn a_terminal_durable_operation_is_refused_before_the_command_applies() {
+        let (mut app, authority, commits, _releases) = app_with_commit_authority();
+        authority.set_status(OperationStatus::Charged);
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "OperationFinalized", "{reply}");
+        assert_eq!(bodies(&app), 0, "an already settled operation never applies again");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "it is never settled twice");
+    }
+
+    #[test]
+    fn an_unsupported_app_version_is_refused_before_the_command_applies() {
+        let (mut app, authority, commits, _releases) = app_with_commit_authority();
+        authority.set_version_supported(false);
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "VersionUnsupported", "{reply}");
+        assert_eq!(bodies(&app), 0);
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn an_unprovable_live_scope_is_refused_before_the_command_applies() {
+        let (mut app, _authority, commits, _releases) = app_with_commit_authority();
+        test_support::TestAuthority::new("", "", "").install(&mut app);
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "AuthRequired", "{reply}");
+        assert_eq!(bodies(&app), 0);
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_controlled_batch_within_its_bound_applies_all_steps() {
+        let (mut app, _authority, commits, _releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"solid.box","params":{"length":5,"width":5,"height":5}}
+            ]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["completed"], 2, "{reply}");
+        assert_eq!(bodies(&app), 2, "both steps applied");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "one retained batch is charged once");
+    }
+
+    #[test]
+    fn a_controlled_batch_rollback_is_not_charged() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"solid.sphere","params":{"radius":"not-a-number"}}
+            ]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["result"]["rolled_back"], true, "{reply}");
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a full rollback is not charged");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "a full rollback releases the hold");
+        assert_eq!(bodies(&app), 0, "the first box was rolled back");
+    }
+
+    #[test]
+    fn a_controlled_batch_stops_mid_batch_when_the_clock_advances() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority_grant(300_000);
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"solid.box","params":{"length":5,"width":5,"height":5}}
+            ]}),
+        );
+        req.deadline = Some(ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_millis(185_000)));
+        admit_once(&mut app, &mut req).expect("the batch fits at t=0");
+        // Reads: pre-dispatch and batch total, then two clock reads per gate. The first gate passes
+        // at 120 ms and the second fails at 180 ms; the retention check then sees 180 ms, still
+        // before the 185 ms cutoff.
+        authority.set_clock_advance(30_000, 6);
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["result"]["stopped"], true, "{reply}");
+        assert_eq!(reply["result"]["rolled_back"], true, "{reply}");
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(bodies(&app), 0, "the one applied step was rolled back");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a rolled-back stop is not charged");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "a rolled-back stop releases once");
+    }
+
+    #[test]
+    fn a_controlled_read_only_failed_batch_is_not_charged() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"rollback":false,"commands":[
+                {"command":"parameters.list"},
+                {"command":"solid.sphere","params":{"radius":"not-a-number"}}
+            ]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(reply["result"]["rolled_back"], false, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a read-only completed step is not a retained mutation");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the untouched document releases the hold");
+        assert_eq!(bodies(&app), 0);
+    }
+
+    #[test]
+    fn a_successful_read_only_controlled_batch_still_charges_once() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.batch", json!({"commands":[{"command":"parameters.list"},{"command":"parameters.list"}]}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["completed"], 2, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "a successful read-only batch charges once");
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn the_controlled_batch_allowlist_is_exact_and_auditable() {
+        for id in CONTROLLED_BATCH_COMMANDS {
+            assert!(solidcraft_engine::find_command(id).is_some(), "allowlisted command must exist: {id}");
+        }
+        assert!(controlled_batch_step_allowed(&json!({"command":"solid.box","params":{}})));
+        assert!(controlled_batch_step_allowed(&json!({"command":"SOLID.BOX","params":{}})), "canonical case resolves to the audited command");
+        assert!(!controlled_batch_step_allowed(&json!({"command":"edit.undo","id":"solid.box"})), "command wins over id");
+        assert!(!controlled_batch_step_allowed(&json!({"command":"edit.redo","params":{}})), "history reversal cannot be in a controlled batch");
+        assert!(controlled_batch_step_allowed(&json!({"command":"solid.box","id":"edit.undo"})), "the audited command still wins over an id alias");
+        for step in [
+            json!({"command":"component.insert_design","params":{"path":"/tmp/opencode/int1497-never-imported.sc"}}),
+            json!({"command":"file.export","params":{"path":"/tmp/opencode/int1497-never-exported.step"}}),
+            json!({"command":"file.import","params":{"path":"/tmp/opencode/int1497-never-imported.sc"}}),
+            json!({"command":"solid.new_primitive","params":{}}),
+        ] {
+            assert!(!controlled_batch_step_allowed(&step), "must refuse {step}");
+        }
+    }
+
+    #[test]
+    fn a_finished_batch_retains_without_another_full_step_budget() {
+        let (mut app, authority, commits, _releases) = app_with_commit_authority_grant(300_000);
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[{"command":"solid.box","params":{"length":10,"width":10,"height":10}}]}),
+        );
+        req.deadline = Some(ConservativeDeadline::new(MonotonicInstant::from_millis(0), Duration::from_millis(75_000)));
+        admit_once(&mut app, &mut req).expect("the step fits at t=0");
+        // Gate reads at 10/20/30/40 ms (35 s left, enough for 30 s); the retention read is 50 ms
+        // (25 s left, too short for another step but still before the cutoff).
+        authority.set_clock_advance(10_000, 5);
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(bodies(&app), 1, "the finished step is retained");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "finished work settles without a new start budget");
+    }
+
+    #[test]
+    fn unchanged_parameter_edit_still_bumps_revision_residual() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.session.execute("parameters.add", &json!({"name":"width","expression":"10 mm"})).unwrap();
+        let before = app.session.revision;
+        app.session.execute("parameters.change", &json!({"name":"width","expression":"10 mm"})).unwrap();
+        assert!(app.session.revision > before, "residual: unchanged parameter edits still bump the revision, so revision is not content equality");
+    }
+
+    #[test]
+    fn a_controlled_batch_with_history_reversal_is_refused_before_the_first_step() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"edit.undo","params":{}}
+            ]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(bodies(&app), 0, "no step ran, including the first box");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn free_gui_undo_and_redo_still_work() {
+        let (mut app, admits, _releases) = app_with_billing();
+        app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
+        assert_eq!(bodies(&app), 1);
+        for command in ["edit.undo", "edit.redo"] {
+            let (mut req, _rx) = ControlRequest::trusted_gui("engine.execute", json!({"command":command,"params":{}}));
+            let out = handle(&mut app, &egui::Context::default(), &mut req);
+            let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+            assert_eq!(reply["ok"], true, "{reply}");
+        }
+        assert_eq!(admits.load(Ordering::Relaxed), 0, "free human CAD is not billed");
+    }
+
+    #[test]
+    fn a_controlled_batch_with_an_external_link_or_import_is_refused_before_work() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let path = "/tmp/opencode/int1497-never-imported.sc";
+        let _ = std::fs::remove_file(path);
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.batch", json!({"commands":[{"command":"component.insert_design","params":{"path":path}}]}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(!std::path::Path::new(path).exists(), "no import or link read happened");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_controlled_batch_with_an_external_step_is_refused_before_work() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let path = "/tmp/opencode/int1497-never-exported.step";
+        let _ = std::fs::remove_file(path);
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.batch", json!({"commands":[{"command":"file.export","params":{"path":path}}]}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert!(!std::path::Path::new(path).exists(), "no external write");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the refused fresh admission is released once");
+    }
+
+    #[test]
+    fn a_locally_malformed_batch_is_marked_no_effect() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.batch", json!({"commands":"not-an-array"}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a malformed batch is not charged");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "a malformed batch releases once");
+        assert_eq!(bodies(&app), 0);
+    }
+
+    #[test]
+    fn a_controlled_batch_without_rollback_has_unknown_retention() {
+        let (mut app, _authority, commits, releases, last_commit) = app_with_commit_authority_result();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"rollback":false,"commands":[
+                {"command":"solid.box","params":{"length":10,"width":10,"height":10}},
+                {"command":"solid.sphere","params":{"radius":"not-a-number"}}
+            ]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["result"]["rolled_back"], false, "{reply}");
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "the uncertain outcome is finalized under its original id");
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            last_commit.lock().unwrap().as_ref(),
+            Some(&solidcraft_engine::entitlement::BillingResult::Unknown),
+            "changed revision alone cannot prove retained mutation"
+        );
+        assert_eq!(bodies(&app), 1, "the first box remains locally, but its charge is unknown");
+    }
+
+    #[test]
+    fn a_same_parameter_expression_then_failure_is_never_a_success_charge() {
+        let (mut app, _authority, commits, releases, last_commit) = app_with_commit_authority_result();
+        app.session.execute("parameters.add", &json!({"name":"width","expression":"10 mm"})).unwrap();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.batch",
+            json!({"rollback":false,"commands":[
+                {"command":"parameters.change","params":{"name":"width","expression":"10 mm"}},
+                {"command":"solid.sphere","params":{"radius":"not-a-number"}}
+            ]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["result"]["completed"], 1, "{reply}");
+        assert_eq!(reply["result"]["rolled_back"], false, "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "the unknown outcome is finalized once");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a changed revision is not a proven no-effect");
+        assert_eq!(
+            last_commit.lock().unwrap().as_ref(),
+            Some(&solidcraft_engine::entitlement::BillingResult::Unknown),
+            "same-parameter revision bump must not become a success charge"
+        );
+        assert!(matches!(app.pending_settlements[0].kind, SettlementNoticeKind::Unknown), "the original operation is surfaced for recovery");
+    }
+
+    #[test]
+    fn a_controlled_script_is_refused_before_any_step_applies() {
+        let (mut app, _authority, commits, _releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.script",
+            json!({"commands":[{"command":"solid.box","params":{"length":10,"width":10,"height":10}}]}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a script is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(bodies(&app), 0, "the script ran nothing");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_nested_controlled_batch_is_refused_before_any_step_applies() {
+        let (mut app, _authority, commits, _releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.execute",
+            json!({"command":"engine.batch","params":{"commands":[{"command":"solid.box","params":{"length":10,"width":10,"height":10}}]}}),
+        );
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(bodies(&app), 0);
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn free_gui_batch_and_script_still_apply() {
+        let (mut app, admits, _releases) = app_with_billing();
+        let (mut batch, _rx) =
+            ControlRequest::trusted_gui("engine.batch", json!({"commands":[{"command":"solid.box","params":{"length":10,"width":10,"height":10}}]}));
+        let out = handle(&mut app, &egui::Context::default(), &mut batch);
+        let Outcome::Done(reply) = out else { panic!("a batch is answered synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(bodies(&app), 1, "free GUI CAD keeps its batch path");
+        let (mut script, _rx) =
+            ControlRequest::trusted_gui("engine.script", json!({"commands":[{"command":"solid.box","params":{"length":5,"width":5,"height":5}}]}));
+        let out = handle(&mut app, &egui::Context::default(), &mut script);
+        let Outcome::Done(reply) = out else { panic!("a script is answered synchronously") };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(bodies(&app), 2, "free GUI CAD keeps its script path");
+        assert_eq!(admits.load(Ordering::Relaxed), 0, "free CAD never bills");
+    }
+
+    #[test]
+    fn a_controlled_screenshot_is_refused_before_delivery() {
+        let (mut app, _authority, commits, _releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_mastra("ui.screenshot", json!({"path":"/tmp/opencode/int1497-never-shot.png"}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a controlled capture is refused synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a capture with no delivery proof is not a success");
+        assert!(app.pending_settlements.is_empty(), "a pre-dispatch refusal is not recovery work");
+    }
+
+    #[test]
+    fn a_free_gui_screenshot_keeps_its_capture_path() {
+        let (mut app, admits, _releases) = app_with_billing();
+        let (mut req, _rx) = ControlRequest::trusted_gui("ui.screenshot", json!({"path":"/tmp/opencode/int1497-free-shot.png"}));
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        assert!(matches!(out, Outcome::Screenshot { .. }), "free GUI capture is not refused by the entitlement gate");
+        assert_eq!(admits.load(Ordering::Relaxed), 0, "free GUI is never billed");
+    }
+
+    #[test]
+    fn a_screenshot_outcome_is_unknown_not_success_before_delivery() {
+        let out = Outcome::Screenshot { path: None };
+        assert_eq!(result_evidence(&out, false, false), ResultEvidence::Unknown);
+        assert_eq!(settlement_for(ResultEvidence::Unknown), SettlementAction::Commit(solidcraft_engine::entitlement::BillingResult::Unknown));
+    }
+
+    #[test]
+    fn revoked_authority_drops_the_result_before_it_is_written() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let admission = admit_once(&mut app, &mut req).expect("the operation is admitted while the account is live");
+        authority.revoke();
+        let out = Outcome::Done(json!({"ok": true, "result": {}}));
+        let decision = commit_decision(&app, &req, &admission, &out);
+        assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::AccountDisabled });
+        settle_result(&mut app, &admission, decision, false, false, &out);
+        assert_eq!(bodies(&app), 0, "a result observed after revocation writes no state");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a dropped result is never charged as an applied effect");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a dropped effect has no positive no-effect proof, so its hold stays");
+        let refusal = authority_refusal(&app, &req, &admission).expect("the same gate stops dispatch");
+        assert_eq!(refusal.code, RefusalCode::AccountDisabled);
+    }
+
+    #[test]
+    fn committed_work_survives_revoke_without_a_second_charge() {
+        let (mut app, authority, commits, _releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let admission = admit_once(&mut app, &mut req).expect("the operation is admitted while the account is live");
+        let applied = Outcome::Done(json!({"ok": true, "result": {}}));
+        assert!(commit_decision(&app, &req, &admission, &applied).allowed());
+        let decision = commit_decision(&app, &req, &admission, &applied);
+        settle_result(&mut app, &admission, decision, false, false, &applied);
+        assert_eq!(commits.load(Ordering::Relaxed), 1);
+        authority.revoke();
+        let decision = commit_decision(&app, &req, &admission, &applied);
+        settle_result(&mut app, &admission, decision, false, false, &applied);
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "a committed operation keeps its one settlement after revocation");
+    }
+
+    #[test]
+    fn an_expired_operation_cannot_start_a_new_step_after_admission() {
+        let (mut app, authority, commits, _releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let _admission = admit_once(&mut app, &mut req).expect("it was admitted while its grant was open");
+        authority.advance(60_001);
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(bodies(&app), 0, "no step starts after the original grant expired");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "an expired operation is never charged");
+    }
+
+    #[test]
+    fn an_account_switch_drops_the_old_accounts_result() {
+        let (mut app, _authority, commits, _releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let admission = admit_once(&mut app, &mut req).expect("the original account admitted it");
+        // The composition root installs the new session's scope; the old operation no longer matches.
+        test_support::TestAuthority::new("other-account", "test-installation", "other-session").install(&mut app);
+        let out = Outcome::Done(json!({"ok": true, "result": {}}));
+        let decision = commit_decision(&app, &req, &admission, &out);
+        assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::AuthRequired });
+        settle_result(&mut app, &admission, decision, false, false, &out);
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "another account's result is never written or charged");
+    }
+
+    #[test]
+    fn local_stale_document_and_pre_send_refusals_are_confirmed_no_effect() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let admission = admit_once(&mut app, &mut req).expect("admitted");
+        // Host-known local proof, as the guard/strict-validation seams set. The reply strings
+        // below are deliberately spoofable payloads and are not what makes this no-effect.
+        req.local_no_effect.store(true, Ordering::Relaxed);
+        for out in [
+            Outcome::Done(json!({"ok": false, "error": "stale document", "errorDetails": {"code": "STALE_DOCUMENT"}})),
+            Outcome::Done(json!({"ok": false, "error": "not run: the local parameter check rejected the request"})),
+        ] {
+            let decision = commit_decision(&app, &req, &admission, &out);
+            assert!(decision.allowed(), "a local refusal that ran no command keeps its authorization");
+            settle_result(&mut app, &admission, decision, true, false, &out);
+        }
+        assert_eq!(releases.load(Ordering::Relaxed), 2, "both proven no-effect results release their holds");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a proven no-effect result is never charged");
+    }
+
+    #[test]
+    fn remote_payload_text_cannot_prove_no_effect() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let admission = admit_once(&mut app, &mut req).expect("admitted");
+        let out = Outcome::Done(json!({"ok": false, "error": "not run: stale document", "errorDetails": {"code": "STALE_DOCUMENT"}}));
+        assert_eq!(result_evidence(&out, false, false), ResultEvidence::Unknown, "a payload string is not host proof");
+        settle_result(&mut app, &admission, CommitDecision::Allow, false, false, &out);
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "an unproven failure finalizes as unknown");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a payload string never releases the hold");
+    }
+
+    #[test]
+    fn a_terminal_drop_with_effect_does_not_enqueue_recovery() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        authority.set_status(OperationStatus::Charged);
+        let operation = OperationId::parse("op_settle_terminal_drop_0001").unwrap();
+        let grant = solidcraft_engine::entitlement::Grant::from_server(
+            solidcraft_engine::entitlement::GrantId::new("grant_settle_terminal_drop"),
+            Capability::Control,
+            MonotonicInstant::from_millis(60_000),
+        );
+        let admission = Admission::NewlyAdmitted { operation, grant };
+        let out = Outcome::Done(json!({"ok": true, "result": {}}));
+        settle_result(&mut app, &admission, CommitDecision::Drop { code: RefusalCode::OperationFinalized }, false, false, &out);
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a terminal operation is not charged");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a terminal operation is not released");
+        assert!(app.pending_settlements.is_empty(), "a terminal Drop is not a recovery deferred to the host");
+    }
+
+    #[test]
+    fn a_terminal_durable_operation_is_not_settled_again() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        authority.set_status(OperationStatus::Charged);
+        let operation = OperationId::parse("op_settle_terminal_0001").unwrap();
+        let grant = solidcraft_engine::entitlement::Grant::from_server(
+            solidcraft_engine::entitlement::GrantId::new("grant_settle_terminal"),
+            Capability::Control,
+            MonotonicInstant::from_millis(60_000),
+        );
+        let admission = Admission::NewlyAdmitted { operation, grant };
+        let out = Outcome::Done(json!({"ok": true, "result": {}}));
+        settle_result(&mut app, &admission, CommitDecision::Allow, false, false, &out);
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a charged operation is never charged again");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a terminal operation is never released again");
+        assert!(app.pending_settlements.is_empty(), "there is nothing to recover");
+    }
+
+    #[test]
+    fn a_settlement_transport_failure_is_preserved_and_surfaced() {
+        let (mut app, _authority, commits) = app_with_failing_commit();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        admit_once(&mut app, &mut req).expect("admitted");
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["ok"], true, "the engineering result still succeeded");
+        assert_eq!(reply["settlement"]["state"], "pending_recovery", "{reply}");
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "the failed commit was attempted once");
+        assert_eq!(app.pending_settlements.len(), 1, "the failure is kept for recovery");
+        assert!(matches!(app.pending_settlements[0].kind, SettlementNoticeKind::TransportFailed { .. }));
+        assert_eq!(app.take_pending_settlements().len(), 1, "the host can drain the recovery work");
+    }
+
+    #[test]
+    fn a_release_transport_failure_is_preserved_for_recovery() {
+        let (mut app, _authority, releases) = app_with_failing_release();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        let admission = admit_once(&mut app, &mut req).expect("admitted");
+        let out = Outcome::Done(json!({"ok": false, "error": "not run: local validation refused"}));
+        settle_result(&mut app, &admission, CommitDecision::Allow, true, false, &out);
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the release was attempted once");
+        assert_eq!(app.pending_settlements.len(), 1);
+        assert!(matches!(app.pending_settlements[0].kind, SettlementNoticeKind::TransportFailed { action: SettlementAction::Release(_), .. }));
+    }
+
+    #[test]
+    fn a_late_effect_after_lost_authority_is_deferred_not_charged_or_rerun() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        let admission = admit_once(&mut app, &mut req).expect("admitted");
+        authority.revoke();
+        let out = Outcome::Done(json!({"ok": true, "result": {}}));
+        let decision = commit_decision(&app, &req, &admission, &out);
+        assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::AccountDisabled });
+        settle_result(&mut app, &admission, decision, false, false, &out);
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a late effect is not charged under lost authority");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a retained effect is not released");
+        assert_eq!(bodies(&app), 0, "settlement never reruns the engineering operation");
+        assert_eq!(app.pending_settlements.len(), 1, "the original operation gets an explicit disposition");
+        assert!(matches!(app.pending_settlements[0].kind, SettlementNoticeKind::Deferred { evidence: ResultEvidence::Effect }));
+    }
+
+    #[test]
+    fn a_stored_unstarted_admission_is_released_once_when_refused_before_dispatch() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        admit_once(&mut app, &mut req).expect("the operation is admitted");
+        authority.revoke();
+        let refusal = admit_once(&mut app, &mut req).expect_err("a revocation stops a not-yet-started operation");
+        assert_eq!(refusal.code, RefusalCode::AccountDisabled);
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "one held admission is released");
+        assert!(req.admission.is_none(), "the released admission is consumed and cannot be reused");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(bodies(&app), 0, "nothing ran");
+    }
+
+    #[test]
+    fn a_started_admission_is_not_released_by_a_wire_unstarted_claim() {
+        let (mut app, authority, _commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"unstarted":true,"command":"solid.box","params":{}}));
+        admit_once(&mut app, &mut req).expect("the operation is admitted");
+        req.work_started.store(true, Ordering::Relaxed);
+        authority.revoke();
+        let refusal = admit_once(&mut app, &mut req).expect_err("a revocation stops the next step");
+        assert_eq!(refusal.code, RefusalCode::AccountDisabled);
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "a started operation keeps its hold");
+        assert!(req.admission.is_some(), "the admission is not consumed after work started");
+    }
+
+    #[test]
+    fn run_control_releases_an_unstarted_stored_admission_before_dispatch() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        let (mut req, rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        admit_once(&mut app, &mut req).expect("the operation is admitted");
+        authority.revoke();
+        app.run_control(&egui::Context::default(), req);
+        let reply = rx.try_recv().expect("the refusal is sent through the real dispatch path");
+        assert_eq!(reply["errorDetails"]["code"], "AccountDisabled", "{reply}");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the stored hold is released exactly once");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(bodies(&app), 0);
+    }
+
+    #[test]
+    fn direct_handle_consumes_and_releases_one_unstarted_stored_admission() {
+        let (mut app, authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        admit_once(&mut app, &mut req).expect("admitted");
+        authority.revoke();
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "AccountDisabled", "{reply}");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "direct handle releases exactly once");
+        assert!(req.admission.is_none(), "direct handle consumes the admission");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(bodies(&app), 0);
+    }
+
+    #[test]
+    fn queue_cancellation_releases_and_consumes_an_unstarted_admission() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        req.chat_turn = Some(std::sync::Arc::new(AtomicBool::new(false)));
+        admit_once(&mut app, &mut req).expect("admitted");
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a cancellation answers synchronously") };
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert!(reply["error"].as_str().is_some_and(|error| error.contains("not run:")), "{reply}");
+        assert_eq!(releases.load(Ordering::Relaxed), 1);
+        assert!(req.admission.is_none(), "the cancelled queued request cannot reuse the grant");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(bodies(&app), 0);
+    }
+
+    #[test]
+    fn local_strict_validation_proves_no_effect_through_real_dispatch() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"lenght":10},"param_check":"strict"}));
+        admit_once(&mut app, &mut req).expect("admitted");
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("an execute is answered synchronously") };
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the host-known strict refusal releases the hold");
+        assert_eq!(commits.load(Ordering::Relaxed), 0, "a proven no-effect result is not charged");
+        assert_eq!(bodies(&app), 0);
+    }
+
+    #[test]
+    fn local_guard_refusal_proves_no_effect_through_real_dispatch() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let stamp = app.session.document_stamp();
+        let stale = json!({"documentId": stamp.document_id, "revision": (stamp.revision + 1).to_string()});
+        let (mut req, _rx) = ControlRequest::trusted_control(
+            "engine.execute",
+            json!({"command":"solid.box","params":{"length":10,"width":10,"height":10},"expectedDocument":stale}),
+        );
+        admit_once(&mut app, &mut req).expect("admitted");
+        let out = handle(&mut app, &egui::Context::default(), &mut req);
+        let Outcome::Done(reply) = out else { panic!("a guard refusal answers synchronously") };
+        assert_eq!(reply["errorDetails"]["code"], "STALE_DOCUMENT", "{reply}");
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the local guard proof releases the hold");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(bodies(&app), 0);
+    }
+
+    #[test]
+    fn a_queued_pointer_reissue_releases_once_only_before_work() {
+        let (mut app, _authority, _commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        admit_once(&mut app, &mut req).expect("admitted");
+        let mut reissue = Reissue::from_request(&req);
+        release_reissue_unstarted(&mut app, &mut reissue, RefusalCode::UnsafeToStart);
+        assert_eq!(releases.load(Ordering::Relaxed), 1);
+        assert!(reissue.admission.is_none(), "the unstarted reissue consumes its admission");
+
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        admit_once(&mut app, &mut req).expect("admitted");
+        req.work_started.store(true, Ordering::Relaxed);
+        let mut reissue = Reissue::from_request(&req);
+        release_reissue_unstarted(&mut app, &mut reissue, RefusalCode::UnsafeToStart);
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "started work keeps its hold");
+        assert!(reissue.admission.is_some());
+    }
+
+    #[test]
+    fn an_early_release_failure_is_preserved_for_recovery() {
+        let (mut app, _authority, releases) = app_with_failing_release();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        admit_once(&mut app, &mut req).expect("admitted");
+        release_unstarted(&mut app, &mut req);
+        assert_eq!(releases.load(Ordering::Relaxed), 1, "the early release was attempted");
+        assert!(req.admission.is_none(), "the unstarted admission is consumed");
+        assert_eq!(app.pending_settlements.len(), 1, "a failed early release is not silently discarded");
+        assert!(matches!(app.pending_settlements[0].kind, SettlementNoticeKind::TransportFailed { action: SettlementAction::Release(_), .. }));
+    }
+
+    #[test]
+    fn a_scope_switch_after_work_defers_before_a_new_account_lookup() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) =
+            ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{"length":10,"width":10,"height":10}}));
+        let admission = admit_once(&mut app, &mut req).expect("the original account admitted it");
+        let other = test_support::TestAuthority::new("other-account", "test-installation", "other-session");
+        other.install(&mut app);
+        let out = Outcome::Done(json!({"ok": true, "result": {}}));
+        let decision = commit_decision(&app, &req, &admission, &out);
+        assert_eq!(decision, CommitDecision::Drop { code: RefusalCode::AuthRequired });
+        let before = other.operation_lookups();
+        settle_result(&mut app, &admission, decision, false, false, &out);
+        assert_eq!(other.operation_lookups(), before, "the deferred disposition is recorded before any new-account lookup");
+        assert_eq!(commits.load(Ordering::Relaxed), 0);
+        assert_eq!(releases.load(Ordering::Relaxed), 0);
+        assert_eq!(app.pending_settlements.len(), 1);
+        assert!(matches!(app.pending_settlements[0].kind, SettlementNoticeKind::Deferred { evidence: ResultEvidence::Effect }));
+    }
+
+    #[test]
+    fn an_unknown_result_is_finalized_once_and_not_rerun() {
+        let (mut app, _authority, commits, releases) = app_with_commit_authority();
+        let (mut req, _rx) = ControlRequest::trusted_control("engine.execute", json!({"command":"solid.box","params":{}}));
+        let admission = admit_once(&mut app, &mut req).expect("admitted");
+        let out = Outcome::Done(json!({"ok": false, "error": "the worker disconnected mid-command"}));
+        assert_eq!(result_evidence(&out, false, false), ResultEvidence::Unknown);
+        let decision = commit_decision(&app, &req, &admission, &out);
+        settle_result(&mut app, &admission, decision, false, false, &out);
+        assert_eq!(commits.load(Ordering::Relaxed), 1, "the unknown outcome is finalized under its original id");
+        assert_eq!(releases.load(Ordering::Relaxed), 0, "an unknown outcome is not a no-charge release");
+        assert_eq!(bodies(&app), 0, "finalizing an unknown result never reruns the engineering operation");
+    }
+
+    /// A billing double whose admission/commit/release counts survive being installed in the app.
+    struct SettlingBilling {
+        commits: std::sync::Arc<AtomicUsize>,
+        releases: std::sync::Arc<AtomicUsize>,
+        fail_commit: std::sync::Arc<AtomicBool>,
+        fail_release: std::sync::Arc<AtomicBool>,
+        grant_expires_ms: u64,
+        last_commit: std::sync::Arc<std::sync::Mutex<Option<solidcraft_engine::entitlement::BillingResult>>>,
+    }
+
+    impl BillingPort for SettlingBilling {
+        fn admit(
+            &mut self,
+            operation: &OperationId,
+            capability: Capability,
+            _entry: EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Grant, Refusal> {
+            Ok(solidcraft_engine::entitlement::Grant::from_server(
+                solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
+                capability,
+                MonotonicInstant::from_millis(self.grant_expires_ms),
+            ))
+        }
+
+        fn commit(
+            &mut self,
+            _operation: &OperationId,
+            result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::BillingResult, Refusal> {
+            self.commits.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut last) = self.last_commit.lock() {
+                *last = Some(result);
+            }
+            if self.fail_commit.load(Ordering::Relaxed) {
+                return Err(Refusal::new(RefusalCode::AuthUnavailable, "the settlement transport failed"));
+            }
+            Ok(result)
+        }
+
+        fn release(&mut self, _operation: &OperationId, _reason: RefusalCode) -> Result<(), Refusal> {
+            self.releases.fetch_add(1, Ordering::Relaxed);
+            if self.fail_release.load(Ordering::Relaxed) {
+                return Err(Refusal::new(RefusalCode::AuthUnavailable, "the release transport failed"));
+            }
+            Ok(())
+        }
+    }
+
+    fn app_with_commit_authority() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
+        let (app, authority, commits, releases, _last) = app_with_commit_authority_parts(60_000);
+        (app, authority, commits, releases)
+    }
+
+    fn app_with_commit_authority_result() -> (
+        SolveApp,
+        test_support::TestAuthority,
+        std::sync::Arc<AtomicUsize>,
+        std::sync::Arc<AtomicUsize>,
+        std::sync::Arc<std::sync::Mutex<Option<solidcraft_engine::entitlement::BillingResult>>>,
+    ) {
+        app_with_commit_authority_parts(60_000)
+    }
+
+    fn app_with_commit_authority_grant(
+        grant_expires_ms: u64,
+    ) -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>, std::sync::Arc<AtomicUsize>) {
+        let (app, authority, commits, releases, _last) = app_with_commit_authority_parts(grant_expires_ms);
+        (app, authority, commits, releases)
+    }
+
+    fn app_with_commit_authority_parts(
+        grant_expires_ms: u64,
+    ) -> (
+        SolveApp,
+        test_support::TestAuthority,
+        std::sync::Arc<AtomicUsize>,
+        std::sync::Arc<AtomicUsize>,
+        std::sync::Arc<std::sync::Mutex<Option<solidcraft_engine::entitlement::BillingResult>>>,
+    ) {
+        let commits = std::sync::Arc::new(AtomicUsize::new(0));
+        let releases = std::sync::Arc::new(AtomicUsize::new(0));
+        let last_commit = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session");
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.install_billing(
+            Box::new(SettlingBilling {
+                commits: std::sync::Arc::clone(&commits),
+                releases: std::sync::Arc::clone(&releases),
+                fail_commit: std::sync::Arc::new(AtomicBool::new(false)),
+                fail_release: std::sync::Arc::new(AtomicBool::new(false)),
+                grant_expires_ms,
+                last_commit: std::sync::Arc::clone(&last_commit),
+            }),
+            verified_budget(),
+        );
+        authority.install(&mut app);
+        (app, authority, commits, releases, last_commit)
+    }
+
+    fn app_with_failing_commit() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>) {
+        let commits = std::sync::Arc::new(AtomicUsize::new(0));
+        let releases = std::sync::Arc::new(AtomicUsize::new(0));
+        let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session");
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.install_billing(
+            Box::new(SettlingBilling {
+                commits: std::sync::Arc::clone(&commits),
+                releases: std::sync::Arc::clone(&releases),
+                fail_commit: std::sync::Arc::new(AtomicBool::new(true)),
+                fail_release: std::sync::Arc::new(AtomicBool::new(false)),
+                grant_expires_ms: 60_000,
+                last_commit: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            }),
+            verified_budget(),
+        );
+        authority.install(&mut app);
+        (app, authority, commits)
+    }
+
+    fn app_with_failing_release() -> (SolveApp, test_support::TestAuthority, std::sync::Arc<AtomicUsize>) {
+        let commits = std::sync::Arc::new(AtomicUsize::new(0));
+        let releases = std::sync::Arc::new(AtomicUsize::new(0));
+        let authority = test_support::TestAuthority::new("test-account", "test-installation", "test-session");
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        app.install_billing(
+            Box::new(SettlingBilling {
+                commits: std::sync::Arc::clone(&commits),
+                releases: std::sync::Arc::clone(&releases),
+                fail_commit: std::sync::Arc::new(AtomicBool::new(false)),
+                fail_release: std::sync::Arc::new(AtomicBool::new(true)),
+                grant_expires_ms: 60_000,
+                last_commit: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            }),
+            verified_budget(),
+        );
+        authority.install(&mut app);
+        (app, authority, releases)
+    }
+
+    fn bodies(app: &SolveApp) -> usize {
+        crate::open_meshing::session_world(&app.session).bodies.len()
+    }
+
     fn guard_stamp(app: &mut SolveApp) -> Value {
         let stamp = app.session.document_stamp();
         json!({"documentId": stamp.document_id, "revision": stamp.revision.to_string()})
@@ -1641,7 +5335,7 @@ mod tests {
         }
         let (tx, rx) = std::sync::mpsc::channel();
         app.control_rx = Some(rx);
-        let (req, reply) = ControlRequest::new(method, params);
+        let (req, reply) = ControlRequest::trusted_gui(method, params);
         tx.send(req).unwrap();
         app.drain_control(&egui::Context::default());
         reply.try_recv().expect("synchronous request must answer without a worker")
@@ -1729,7 +5423,7 @@ mod tests {
             if outer {
                 params["expectedDocument"] = Value::Null;
             }
-            let (mut req, rx) = ControlRequest::new("engine.execute", params);
+            let (mut req, rx) = ControlRequest::trusted_gui("engine.execute", params);
             req.chat_turn = Some(std::sync::Arc::new(AtomicBool::new(false)));
             let reply = if queued {
                 let (tx, queue) = std::sync::mpsc::channel();
@@ -1738,7 +5432,7 @@ mod tests {
                 app.drain_control(&egui::Context::default());
                 rx.try_recv().unwrap()
             } else {
-                let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &req) else { panic!("synchronous refusal") };
+                let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &mut req) else { panic!("synchronous refusal") };
                 reply
             };
             assert_eq!(reply["ok"], false);
@@ -1757,9 +5451,9 @@ mod tests {
     fn assistant_writes_to_project_settings_and_overrides_are_refused() {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         let assistant = |app: &mut SolveApp, method: &str, params: Value| {
-            let (mut req, _rx) = ControlRequest::new(method, params);
+            let (mut req, _rx) = ControlRequest::trusted_gui(method, params);
             req.chat_turn = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)));
-            let Outcome::Done(reply) = handle(app, &egui::Context::default(), &req) else { panic!("synchronous reply") };
+            let Outcome::Done(reply) = handle(app, &egui::Context::default(), &mut req) else { panic!("synchronous reply") };
             reply
         };
         let cases = [
@@ -1777,8 +5471,8 @@ mod tests {
         }
         // The same call from the app (no assistant turn) is not refused by this guard: it reaches
         // the command and reports that the design is not in a project.
-        let (req, _rx) = ControlRequest::new("engine.execute", json!({"command":"project.ci_set","params":{"enabled":false}}));
-        let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &req) else { panic!("synchronous reply") };
+        let (mut req, _rx) = ControlRequest::trusted_gui("engine.execute", json!({"command":"project.ci_set","params":{"enabled":false}}));
+        let Outcome::Done(reply) = handle(&mut app, &egui::Context::default(), &mut req) else { panic!("synchronous reply") };
         assert_ne!(reply["errorDetails"]["code"], "FORBIDDEN", "{reply}");
     }
 
@@ -1951,7 +5645,7 @@ mod tests {
         app = app.with_control(rx);
         app.services.pick_open = Some(Box::new(|_| Box::pin(std::future::pending())));
         app.pick_open(|_, _| {});
-        let (req, reply) = ControlRequest::new("engine.execute", guard_change(&expected, "30 mm"));
+        let (req, reply) = ControlRequest::trusted_gui("engine.execute", guard_change(&expected, "30 mm"));
         tx.send(req).unwrap();
         app.drain_control(&egui::Context::default());
         assert_eq!(app.control_held.len(), 1);
@@ -1964,7 +5658,7 @@ mod tests {
         assert_eq!(reply.try_recv().unwrap()["ok"], true);
 
         let expected = guard_stamp(&mut app);
-        let (req, reply) = ControlRequest::new("engine.execute", guard_change(&expected, "40 mm"));
+        let (req, reply) = ControlRequest::trusted_gui("engine.execute", guard_change(&expected, "40 mm"));
         app.pick_open(|_, _| {});
         tx.send(req).unwrap();
         app.drain_control(&egui::Context::default());
@@ -2038,7 +5732,7 @@ mod tests {
             assert_eq!(response["errorDetails"]["code"], "UNSUPPORTED_CAPABILITY", "{method} {params}: {response}");
             assert!(std::sync::Arc::ptr_eq(&doc, &app.session.doc));
             assert_eq!((app.session.undo.len(), app.session.redo.len()), history);
-            let (req, reply) = ControlRequest::new(method, params);
+            let (req, reply) = ControlRequest::trusted_gui(method, params);
             let _ = crate::file_load::control(&mut app, req);
             assert_eq!(reply.try_recv().unwrap()["errorDetails"]["code"], "UNSUPPORTED_CAPABILITY");
             assert!(!app.file_load.busy());
@@ -2141,8 +5835,8 @@ mod tests {
         app
     }
     fn panel_control(app: &mut crate::SolveApp, method: &str, params: serde_json::Value) -> serde_json::Value {
-        let (request, _) = super::ControlRequest::new(method, params);
-        match super::handle(app, &egui::Context::default(), &request) {
+        let (mut request, _) = super::ControlRequest::trusted_gui(method, params);
+        match super::handle(app, &egui::Context::default(), &mut request) {
             super::Outcome::Done(reply) => reply,
             _ => panic!("unexpected screenshot"),
         }
@@ -2352,7 +6046,6 @@ mod tests {
     use serde_json::json;
     use solidcraft_engine::{Sel, Session};
 
-    use super::*;
     use crate::Services;
 
     #[test]
@@ -2407,8 +6100,8 @@ mod tests {
     fn scroll_sends_a_native_pinch_with_ctrl() {
         let mut app = SolveApp::new(Session::default(), Services::default());
         let ctx = crate::fonts::test_context();
-        let (req, _) = ControlRequest::new("ui.scroll", json!({"x":200,"y":300,"delta":40,"ctrl":true}));
-        assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
+        let (mut req, _) = ControlRequest::trusted_gui("ui.scroll", json!({"x":200,"y":300,"delta":40,"ctrl":true}));
+        assert!(matches!(handle(&mut app, &ctx, &mut req), Outcome::Done(_)));
         // The pointer event is delivered a frame before the wheel (one pointer event per frame).
         let mut events = Vec::new();
         for _ in 0..3 {
@@ -2439,8 +6132,8 @@ mod tests {
         assert_eq!(changes.last().copied(), Some(egui::Modifiers::NONE), "Ctrl is released after it: {changes:?}");
         app.synthetic.clear();
 
-        let (req, _) = ControlRequest::new("ui.scroll", json!({"x":200,"y":300,"delta":40}));
-        assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
+        let (mut req, _) = ControlRequest::trusted_gui("ui.scroll", json!({"x":200,"y":300,"delta":40}));
+        assert!(matches!(handle(&mut app, &ctx, &mut req), Outcome::Done(_)));
         let mut events = Vec::new();
         for _ in 0..2 {
             let mut raw = egui::RawInput::default();
@@ -2467,8 +6160,8 @@ mod tests {
         {
             let mut params = json!({"x":200,"y":300,"delta":40,"ctrl":true});
             params.as_object_mut().unwrap().extend(invalid.as_object().unwrap().clone());
-            let (req, _) = ControlRequest::new("ui.scroll", params.clone());
-            let Outcome::Done(reply) = handle(&mut app, &ctx, &req) else { panic!("not a scroll reply") };
+            let (mut req, _) = ControlRequest::trusted_gui("ui.scroll", params.clone());
+            let Outcome::Done(reply) = handle(&mut app, &ctx, &mut req) else { panic!("not a scroll reply") };
             assert_eq!(reply["ok"], false, "{params}: {reply}");
             assert!(app.synthetic.is_empty(), "a rejected scroll must not queue input: {params}");
         }
@@ -2494,11 +6187,11 @@ mod tests {
     fn touchpad_text_prefix_does_not_collapse_queued_pointer_frames() {
         let mut app = SolveApp::new(Session::default(), Services::default());
         let ctx = crate::fonts::test_context();
-        let (req, _) = ControlRequest::new("ui.text", json!({"text":"prefix"}));
-        assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
+        let (mut req, _) = ControlRequest::trusted_gui("ui.text", json!({"text":"prefix"}));
+        assert!(matches!(handle(&mut app, &ctx, &mut req), Outcome::Done(_)));
         for params in [json!({"x":10,"y":10,"shift":true}), json!({"x":20,"y":20,"alt":true}), json!({"x":30,"y":30})] {
-            let (req, _) = ControlRequest::new("ui.move", params);
-            assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
+            let (mut req, _) = ControlRequest::trusted_gui("ui.move", params);
+            assert!(matches!(handle(&mut app, &ctx, &mut req), Outcome::Done(_)));
         }
         for (p, shift, alt) in [(10.0, true, false), (20.0, false, true), (30.0, false, false)] {
             let mut raw = egui::RawInput::default();
@@ -2519,8 +6212,8 @@ mod tests {
         let mut app = SolveApp::new(Session::default(), Services::default());
         let ctx = crate::fonts::test_context();
         for params in [json!({"x":10,"y":10,"shift":true}), json!({"x":20,"y":20,"alt":true}), json!({"x":30,"y":30})] {
-            let (req, _) = ControlRequest::new("ui.move", params);
-            assert!(matches!(handle(&mut app, &ctx, &req), Outcome::Done(_)));
+            let (mut req, _) = ControlRequest::trusted_gui("ui.move", params);
+            assert!(matches!(handle(&mut app, &ctx, &mut req), Outcome::Done(_)));
         }
         for (p, shift, alt) in [(10.0, true, false), (20.0, false, true), (30.0, false, false)] {
             let mut raw = egui::RawInput::default();
@@ -2633,8 +6326,8 @@ mod tests {
     }
 
     fn render(app: &mut SolveApp, path: &std::path::Path) -> Vec<u8> {
-        let (req, _rx) = ControlRequest::new("ui.render", json!({"path": path.to_string_lossy(), "width": 200, "height": 140}));
-        match handle(app, &crate::fonts::test_context(), &req) {
+        let (mut req, _rx) = ControlRequest::trusted_gui("ui.render", json!({"path": path.to_string_lossy(), "width": 200, "height": 140}));
+        match handle(app, &crate::fonts::test_context(), &mut req) {
             Outcome::Done(v) => assert_eq!(v["ok"], true, "{v}"),
             Outcome::Screenshot { .. } => panic!("ui.render took a screenshot"),
         }
@@ -2734,8 +6427,8 @@ mod tests {
         for (k, v) in extra.as_object().into_iter().flatten() {
             params[k.as_str()] = v.clone();
         }
-        let (req, _rx) = ControlRequest::new("ui.render", params);
-        let renderer = match handle(app, &crate::fonts::test_context(), &req) {
+        let (mut req, _rx) = ControlRequest::trusted_gui("ui.render", params);
+        let renderer = match handle(app, &crate::fonts::test_context(), &mut req) {
             Outcome::Done(v) => {
                 assert_eq!(v["ok"], true, "{v}");
                 v["result"]["renderer"].as_str().or(v["renderer"].as_str()).unwrap_or("unknown").to_string()
@@ -3441,8 +7134,8 @@ mod tests {
             if scoped {
                 params["allow_paths"] = json!([root.to_string_lossy()]);
             }
-            let (req, _rx) = ControlRequest::new(method, params);
-            match handle(&mut app, &crate::fonts::test_context(), &req) {
+            let (mut req, _rx) = ControlRequest::trusted_gui(method, params);
+            match handle(&mut app, &crate::fonts::test_context(), &mut req) {
                 Outcome::Done(v) => v,
                 Outcome::Screenshot { path } => json!({"ok": true, "screenshot": path}),
             }
@@ -3533,8 +7226,8 @@ mod tests {
         let mut call = |path: String, designs: Value| {
             let params =
                 json!({"command": "file.export", "params": {"path": path}, "allow_paths": [root.to_string_lossy()], "design_folders": designs});
-            let (req, _rx) = ControlRequest::new("engine.execute", params);
-            match handle(&mut app, &crate::fonts::test_context(), &req) {
+            let (mut req, _rx) = ControlRequest::trusted_gui("engine.execute", params);
+            match handle(&mut app, &crate::fonts::test_context(), &mut req) {
                 Outcome::Done(v) => v,
                 Outcome::Screenshot { path } => json!({"ok": true, "screenshot": path}),
             }
@@ -3574,8 +7267,8 @@ mod tests {
         let before = h.app.cam;
         // Reading during an animated view change leaves it running (no frames run between).
         fn raw(h: &mut crate::scenario::Harness, method: &str, params: Value) -> Value {
-            let (req, _rx) = ControlRequest::new(method, params);
-            match handle(&mut h.app, &h.ctx, &req) {
+            let (mut req, _rx) = ControlRequest::trusted_gui(method, params);
+            match handle(&mut h.app, &h.ctx, &mut req) {
                 Outcome::Done(v) => v,
                 Outcome::Screenshot { .. } => Value::Null,
             }
@@ -3764,5 +7457,35 @@ mod tests {
         let r = h.call("ui.home", json!({"sample": 0}));
         assert_eq!(r["ok"], true, "{r}");
         assert_eq!(r["result"]["open"], true, "the sample was asked for: {r}");
+    }
+
+    /// The rects a frame published are readable over the control channel, in the window's egui
+    /// points, with the scale to its pixels: a native view over the Assistant's page
+    /// (`agent_chat:web`) is compared with the window's own coordinates (INT-1487).
+    #[test]
+    fn ui_rects_reports_the_published_rects_and_their_pixel_scale() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        crate::scenario::clear_handles();
+        let page = egui::Rect::from_min_size(egui::pos2(633.0, 166.0), egui::vec2(370.0, 479.0));
+        crate::scenario::publish_rect("agent_chat:web", page);
+        crate::scenario::publish_rect("agent_chat:panel", page.expand(9.0));
+        crate::scenario::publish_rect("toolbar", egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1100.0, 34.0)));
+        let ctx = egui::Context::default();
+        let (mut request, _) = super::ControlRequest::trusted_gui("ui.rects", json!({"prefix": "agent_chat:"}));
+        let reply = match super::handle(&mut app, &ctx, &mut request) {
+            super::Outcome::Done(reply) => reply,
+            _ => panic!("unexpected screenshot"),
+        };
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["pixelsPerPoint"], json!(f64::from(ctx.pixels_per_point())), "the window's own scale, for a native view's pixels");
+        let rects = reply["result"]["rects"].as_array().expect("the rects");
+        assert_eq!(rects.len(), 2, "the prefix leaves the toolbar out: {reply}");
+        assert_eq!(rects[0]["name"], "agent_chat:web");
+        assert_eq!(
+            [rects[0]["x"].clone(), rects[0]["y"].clone(), rects[0]["width"].clone(), rects[0]["height"].clone()],
+            [json!(633.0), json!(166.0), json!(370.0), json!(479.0)],
+            "{reply}"
+        );
+        assert_eq!(rects[1]["name"], "agent_chat:panel");
     }
 }

@@ -1,0 +1,132 @@
+# Owner-reviewed, draft-only publisher. Package jobs never receive these credentials.
+name: Stage signed release draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Stable source tag (vX.Y.Z)"
+        required: true
+        type: string
+      source_sha:
+        description: "Full tested checkout SHA from the formal stable gate (not the PR head)"
+        required: true
+        type: string
+      run_id:
+        description: "Formal Release gate workflow run ID"
+        required: true
+        type: string
+      run_attempt:
+        description: "Exact successful attempt containing all stable package pairs"
+        required: true
+        type: string
+      notes_file:
+        description: "Tracked Markdown path at the frozen source SHA"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: stage-release-draft
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.ref_protected
+      && ((github.repository == 'intgral-ai/intcad' && github.repository_id == '1446384930')
+      || (github.repository == 'intgral-ai/intcad-client' && github.event.repository.private))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Refuse missing reviewer and main-only environment protections
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/ci/release_handoff.py environment
+
+  draft:
+    needs: [admit]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: release-signing
+    env:
+      TAG: ${{ inputs.tag }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      RUN_ID: ${{ inputs.run_id }}
+      RUN_ATTEMPT: ${{ inputs.run_attempt }}
+      NOTES_PATH: ${{ inputs.notes_file }}
+      PROTECTED_REF: ${{ github.ref_protected }}
+      SOURCE_MODE: ${{ vars.RELEASE_SOURCE_MODE }}
+      SOURCE_ID: ${{ vars.RELEASE_SOURCE_REPO_ID }}
+    steps:
+      # The verifier and packaging helpers come from protected main at dispatch.
+      # The candidate tag is data, never a source of executable scripts here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source, exact attempt, artifact pairs and frozen notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AGENT_LEGAL_APPROVED: ${{ vars.RELEASE_AGENT_LEGAL_APPROVED }}
+          AGENT_INSTALLED_APPROVED: ${{ vars.RELEASE_AGENT_INSTALLED_APPROVED }}
+        run: python3 -I scripts/ci/release_handoff.py prepare
+      - name: Write the updater aliases and exact checksum lists
+        run: |
+          packaging/aliases.sh release-work/out "${TAG#v}"
+          packaging/checksums.sh release-work/out
+          python3 -I scripts/ci/release_handoff.py checksums
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+      - name: Recheck the exact attempt before signing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/ci/release_handoff.py confirm
+      - name: Sign and verify SHA256SUMS.txt with the production trust key
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$MINISIGN_SECRET_KEY" || { echo "::error::No configured signing key"; exit 1; }
+          key="$(mktemp "$RUNNER_TEMP/minisign.XXXXXX")"
+          trap 'rm -f -- "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" >"$key"
+          unset MINISIGN_SECRET_KEY
+          args=(-S -s "$key" -m release-work/out/SHA256SUMS.txt
+                -x release-work/out/SHA256SUMS.txt.minisig -t "Intcad $TAG")
+          if [[ -n "$MINISIGN_PASSWORD" ]]; then
+            printf '%s\n' "$MINISIGN_PASSWORD" | minisign "${args[@]}"
+          else
+            minisign "${args[@]}" </dev/null
+          fi
+          python3 -I scripts/ci/release_handoff.py signature
+      - name: Recheck the exact attempt before authorizing a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/ci/release_handoff.py confirm
+      - uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3
+        id: app
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: intgral-ai
+          repositories: intcad-releases
+          permission-contents: write
+      - name: Create, upload and verify the draft; do not publish
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          # The App token can only read the distribution repository; the source refs are
+          # re-checked with the job token so a private source also works.
+          SOURCE_TOKEN: ${{ github.token }}
+        run: python3 -I scripts/ci/release_handoff.py draft

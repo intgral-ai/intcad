@@ -243,6 +243,24 @@ try {
   $Cli = Join-Path $Dir 'intcad-cli.exe'
   $Notices = Join-Path $Dir 'ASSISTANT-THIRD-PARTY-NOTICES.txt'
   foreach ($file in $App, $Cli, $Notices) { if (-not (Test-Path $file)) { throw "the MSI did not install $file" } }
+  # A supported package carries the built-in agent, whole: its Node, entry, manifest, dependencies
+  # and skills. x86 and arm64 are not built for the agent and must not pretend to. The smoke check
+  # below starts the agent out of the installed folder when the package has one.
+  if ($Arch -eq 'x64') {
+    $Agent = Join-Path $Dir 'mastra-agent'
+    foreach ($file in 'agent.json', 'node.exe', 'agent\main.mjs', 'licenses\NODE-LICENSE.txt',
+                      'node_modules\@mastra\code-sdk\package.json',
+                      'node_modules\@agentclientprotocol\sdk\package.json') {
+      if (-not (Test-Path (Join-Path $Agent $file))) { throw "the MSI did not install mastra-agent\$file" }
+    }
+    if (-not (Get-ChildItem (Join-Path $Agent 'skills') -Recurse -Filter SKILL.md -ErrorAction SilentlyContinue)) {
+      throw 'the MSI installed no agent skills (mastra-agent\skills\<set>\<skill>\SKILL.md)'
+    }
+    Write-Output 'ok: the MSI installed the built-in agent with its Node, dependencies and skills'
+  } else {
+    if (Test-Path (Join-Path $Dir 'mastra-agent\agent.json')) { throw "the $Arch MSI carries an agent it was not built with" }
+    Write-Output "ok: the $Arch MSI carries no built-in agent, as its target is not built for it"
+  }
   Get-ChildItem $Dir | Format-Table Name, Length
   $installed = (Get-FileHash $App -Algorithm SHA256).Hash
   $expected = (Get-FileHash $Built -Algorithm SHA256).Hash
@@ -290,7 +308,11 @@ try {
     # curl.exe: a firewall that is off, or managed some other way, would let the app out too.
     $probe = Join-Path $Evidence 'network-probe.exe'
     Copy-Item (Join-Path $env:SystemRoot 'System32\curl.exe') $probe
+    # The built-in agent is a child process of its own: the package's Node must be under the same
+    # rule, or the "no network" check would let the agent out while the app stays in.
     $blocked = @($App, $probe)
+    $agentNode = Join-Path $Dir 'mastra-agent\node.exe'
+    if (Test-Path -LiteralPath $agentNode) { $blocked += $agentNode }
     # The web view's processes are the WebView2 runtime's, not the app's. A machine runtime lives
     # under Program Files (x86) or Program Files; a per-user runtime lives under LocalAppData.
     $webViewRoots = @()
@@ -320,6 +342,8 @@ try {
     $env:SOLIDCRAFT_UPDATE_CHECK = '0'
 
     Write-Output '==> the Assistant in the installed app'
+    # A release package carries the built-in agent: the smoke check finds it, starts it out of the
+    # installed folder and starts it again after it stopped.
     & (Join-Path $RepoRoot 'tools\windows-assistant-smoke.ps1') -Exe $App -Evidence (Join-Path $Evidence 'assistant') `
       -WebView2Recovery $WebView2Recovery -WebView2OfflineInstaller $WebView2OfflineInstaller `
       -WebView2InstallerSha256 $WebView2InstallerSha256

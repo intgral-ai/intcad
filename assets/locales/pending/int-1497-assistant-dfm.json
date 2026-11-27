@@ -1,0 +1,26 @@
+{
+  "ar": {
+    "ui.dfm_check.assistant_unavailable": "لا يمكن للمساعد بدء فحص DFM في هذا الإصدار."
+  },
+  "de": {
+    "ui.dfm_check.assistant_unavailable": "Der Assistent kann in dieser Version keine DFM-Prüfung starten."
+  },
+  "en": {
+    "ui.dfm_check.assistant_unavailable": "The Assistant can’t start a DFM check in this release."
+  },
+  "he": {
+    "ui.dfm_check.assistant_unavailable": "העוזר לא יכול להפעיל בדיקת DFM בגרסה זו."
+  },
+  "ja": {
+    "ui.dfm_check.assistant_unavailable": "このリリースでは、アシスタントから DFM チェックを開始できません。"
+  },
+  "ko": {
+    "ui.dfm_check.assistant_unavailable": "이 릴리스에서는 어시스턴트가 DFM 검사를 시작할 수 없습니다."
+  },
+  "vi": {
+    "ui.dfm_check.assistant_unavailable": "Trợ lý không thể bắt đầu kiểm tra DFM trong bản phát hành này."
+  },
+  "zh": {
+    "ui.dfm_check.assistant_unavailable": "此版本的助手无法启动 DFM 检查。"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "en": {
+    "ui.agent_chat_prompt_send_failed": "The message could not be sent to the agent.",
+    "ui.agent_chat_prompt_send_full": "The agent’s send queue is full. Wait a moment and try again.",
+    "ui.agent_chat_prompt_too_large": "This message is too large to send. Remove an attachment or shorten the message and try again."
+  },
+  "ar": {
+    "ui.agent_chat_prompt_send_failed": "تعذّر إرسال الرسالة إلى الوكيل.",
+    "ui.agent_chat_prompt_send_full": "قائمة انتظار الإرسال لدى الوكيل ممتلئة. انتظر قليلًا وحاول مرة أخرى.",
+    "ui.agent_chat_prompt_too_large": "هذه الرسالة أكبر من أن تُرسل. أزل أحد المرفقات أو اختصر الرسالة، ثم حاول مرة أخرى."
+  },
+  "de": {
+    "ui.agent_chat_prompt_send_failed": "Die Nachricht konnte nicht an den Agenten gesendet werden.",
+    "ui.agent_chat_prompt_send_full": "Die Sendewarteschlange des Agenten ist voll. Warte einen Moment und versuche es erneut.",
+    "ui.agent_chat_prompt_too_large": "Diese Nachricht ist zu groß zum Senden. Entferne einen Anhang oder kürze die Nachricht und versuche es erneut."
+  },
+  "he": {
+    "ui.agent_chat_prompt_send_failed": "לא ניתן היה לשלוח את ההודעה לסוכן.",
+    "ui.agent_chat_prompt_send_full": "תור השליחה של הסוכן מלא. יש להמתין מעט ולנסות שוב.",
+    "ui.agent_chat_prompt_too_large": "ההודעה גדולה מדי לשליחה. יש להסיר קובץ מצורף או לקצר את ההודעה ולנסות שוב."
+  },
+  "ja": {
+    "ui.agent_chat_prompt_send_failed": "エージェントにメッセージを送信できませんでした。",
+    "ui.agent_chat_prompt_send_full": "エージェントの送信キューがいっぱいです。少し待ってから再試行してください。",
+    "ui.agent_chat_prompt_too_large": "メッセージが大きすぎて送信できません。添付ファイルを外すか、メッセージを短くしてから再試行してください。"
+  },
+  "ko": {
+    "ui.agent_chat_prompt_send_failed": "에이전트에 메시지를 보내지 못했습니다.",
+    "ui.agent_chat_prompt_send_full": "에이전트의 전송 대기열이 가득 찼습니다. 잠시 기다렸다가 다시 시도하세요.",
+    "ui.agent_chat_prompt_too_large": "메시지가 너무 커서 보낼 수 없습니다. 첨부 파일을 제거하거나 메시지를 줄인 뒤 다시 시도하세요."
+  },
+  "vi": {
+    "ui.agent_chat_prompt_send_failed": "Không gửi được tin nhắn đến tác tử.",
+    "ui.agent_chat_prompt_send_full": "Hàng đợi gửi của tác tử đã đầy. Hãy đợi một lát rồi thử lại.",
+    "ui.agent_chat_prompt_too_large": "Tin nhắn này quá lớn để gửi. Hãy gỡ một tệp đính kèm hoặc rút ngắn tin nhắn rồi thử lại."
+  },
+  "zh": {
+    "ui.agent_chat_prompt_send_failed": "无法将消息发送给智能体。",
+    "ui.agent_chat_prompt_send_full": "智能体的发送队列已满。请稍等片刻再试。",
+    "ui.agent_chat_prompt_too_large": "消息过大，无法发送。请移除一个附件或缩短消息后重试。"
+  }
+}
