@@ -98,6 +98,10 @@ pub struct CiSummary {
     pub data_sha256: String,
     pub data_file: String,
     pub skip: Vec<String>,
+    /// Whether a new part ticket's check starts switched on.
+    pub new_tickets: bool,
+    /// The most rounds of fixing the Assistant takes after a ticket's first automatic check.
+    pub rounds: u32,
     /// The rules whose numbers this project overrides.
     pub overridden_rules: Vec<String>,
     pub overrides: Vec<OverrideSummary>,
@@ -148,6 +152,12 @@ pub struct CiParams {
     pub enabled: Option<bool>,
     #[serde(default)]
     pub skip: Option<Vec<String>>,
+    /// Whether a new part ticket's check starts switched on.
+    #[serde(default, rename = "newTickets")]
+    pub new_tickets: Option<bool>,
+    /// The most rounds of fixing the Assistant takes after a ticket's first automatic check.
+    #[serde(default)]
+    pub rounds: Option<u32>,
 }
 
 /// Import a whole factory or standard file, or choose the built-in generic data.

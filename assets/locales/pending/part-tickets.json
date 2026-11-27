@@ -126,7 +126,9 @@
     "ui.tickets_remove_file": "Remove",
     "ui.tickets_check_ran": "ran",
     "ui.tickets_rounds_findings": "{id}: its check found work to do (round {round} of {of}). Fix it and say finished again:",
-    "ui.tickets_rounds_stopped": "{id}: the rounds of fixing have stopped (round {round} of {of}), and a person takes it from here. Write one comment on it: what is left and what you tried. Do not change the model for it."
+    "ui.tickets_rounds_stopped": "{id}: the rounds of fixing have stopped (round {round} of {of}), and a person takes it from here. Write one comment on it: what is left and what you tried. Do not change the model for it.",
+    "project_settings.new_tickets": "New part tickets are checked",
+    "project_settings.rounds": "Rounds of fixing at most"
   },
   "zh": {
     "ui.tickets_one_at_a_time": "{id} 正在进行。先做完它或等它的检查，再开始另一张。",
@@ -255,7 +257,9 @@
     "ui.tickets_remove_file": "移除",
     "ui.tickets_check_ran": "跑完了",
     "ui.tickets_rounds_findings": "{id}：检查还有要改的（第 {round} 轮，共 {of} 轮）。改好后再说做完了：",
-    "ui.tickets_rounds_stopped": "{id}：修改的轮数停了（第 {round} 轮，共 {of} 轮），接下来由人处理。请在票上写一条评论：还剩什么、试过什么。不要再为它改模型。"
+    "ui.tickets_rounds_stopped": "{id}：修改的轮数停了（第 {round} 轮，共 {of} 轮），接下来由人处理。请在票上写一条评论：还剩什么、试过什么。不要再为它改模型。",
+    "project_settings.new_tickets": "新票默认要检查",
+    "project_settings.rounds": "最多几轮修改"
   },
   "ja": {
     "ui.tickets_one_at_a_time": "{id} が進行中です。終えるかチェックを待ってから次を開始してください。",
@@ -384,7 +388,9 @@
     "ui.tickets_remove_file": "外す",
     "ui.tickets_check_ran": "完了",
     "ui.tickets_rounds_findings": "{id}: チェックで直す点が見つかりました（{of} 回中 {round} 回目）。直したら、もう一度完了と伝えてください:",
-    "ui.tickets_rounds_stopped": "{id}: 修正のラウンドは終わりました（{of} 回中 {round} 回目）。ここからは人が引き継ぎます。チケットにコメントを 1 件書いてください: 残っていることと、試したこと。このチケットのためにモデルを変えないでください。"
+    "ui.tickets_rounds_stopped": "{id}: 修正のラウンドは終わりました（{of} 回中 {round} 回目）。ここからは人が引き継ぎます。チケットにコメントを 1 件書いてください: 残っていることと、試したこと。このチケットのためにモデルを変えないでください。",
+    "project_settings.new_tickets": "新しい部品チケットはチェックする",
+    "project_settings.rounds": "修正ラウンドの上限"
   },
   "de": {
     "ui.tickets_one_at_a_time": "{id} ist in Arbeit. Schließen Sie es ab oder warten Sie auf seine Prüfung, bevor Sie ein weiteres starten.",
@@ -513,7 +519,9 @@
     "ui.tickets_remove_file": "Entfernen",
     "ui.tickets_check_ran": "gelaufen",
     "ui.tickets_rounds_findings": "{id}: Die Prüfung hat noch etwas gefunden (Runde {round} von {of}). Behebe es und melde es wieder als fertig:",
-    "ui.tickets_rounds_stopped": "{id}: Die Korrekturrunden sind beendet (Runde {round} von {of}); ab hier übernimmt ein Mensch. Schreib einen Kommentar dazu: was offen ist und was du versucht hast. Ändere das Modell dafür nicht mehr."
+    "ui.tickets_rounds_stopped": "{id}: Die Korrekturrunden sind beendet (Runde {round} von {of}); ab hier übernimmt ein Mensch. Schreib einen Kommentar dazu: was offen ist und was du versucht hast. Ändere das Modell dafür nicht mehr.",
+    "project_settings.new_tickets": "Neue Bauteil-Tickets werden geprüft",
+    "project_settings.rounds": "Höchstens so viele Korrekturrunden"
   },
   "ko": {
     "ui.tickets_one_at_a_time": "{id}이(가) 진행 중입니다. 끝내거나 검사를 기다린 뒤 다른 티켓을 시작하세요.",
@@ -642,7 +650,9 @@
     "ui.tickets_remove_file": "제거",
     "ui.tickets_check_ran": "완료",
     "ui.tickets_rounds_findings": "{id}: 검사에서 고칠 것이 나왔습니다({of}회 중 {round}회차). 고친 뒤 다시 완료라고 알려 주세요:",
-    "ui.tickets_rounds_stopped": "{id}: 수정 회차가 끝났습니다({of}회 중 {round}회차). 이제 사람이 맡습니다. 티켓에 댓글을 하나 남겨 주세요: 남은 것과 시도한 것. 이 티켓 때문에 모델을 더 바꾸지 마세요."
+    "ui.tickets_rounds_stopped": "{id}: 수정 회차가 끝났습니다({of}회 중 {round}회차). 이제 사람이 맡습니다. 티켓에 댓글을 하나 남겨 주세요: 남은 것과 시도한 것. 이 티켓 때문에 모델을 더 바꾸지 마세요.",
+    "project_settings.new_tickets": "새 부품 티켓은 검사함",
+    "project_settings.rounds": "최대 수정 회차"
   },
   "ar": {
     "ui.tickets_one_at_a_time": "{id} قيد التنفيذ. أنهِها أو انتظر فحصها قبل بدء أخرى.",
@@ -771,7 +781,9 @@
     "ui.tickets_remove_file": "إزالة",
     "ui.tickets_check_ran": "اكتمل",
     "ui.tickets_rounds_findings": "{id}: وجد الفحص ما يجب إصلاحه (الجولة {round} من {of}). أصلحه ثم قل إنك انتهيت مرة أخرى:",
-    "ui.tickets_rounds_stopped": "{id}: توقفت جولات الإصلاح (الجولة {round} من {of})، ومن هنا يتولاها شخص. اكتب تعليقًا واحدًا عليها: ما الذي بقي وما الذي جربته. لا تغيّر النموذج من أجلها."
+    "ui.tickets_rounds_stopped": "{id}: توقفت جولات الإصلاح (الجولة {round} من {of})، ومن هنا يتولاها شخص. اكتب تعليقًا واحدًا عليها: ما الذي بقي وما الذي جربته. لا تغيّر النموذج من أجلها.",
+    "project_settings.new_tickets": "تُفحص تذاكر الأجزاء الجديدة",
+    "project_settings.rounds": "أقصى عدد لجولات الإصلاح"
   },
   "he": {
     "ui.tickets_one_at_a_time": "{id} בעבודה. סיימו אותו או חכו לבדיקה שלו לפני שמתחילים אחר.",
@@ -900,7 +912,9 @@
     "ui.tickets_remove_file": "הסרה",
     "ui.tickets_check_ran": "הסתיימה",
     "ui.tickets_rounds_findings": "{id}: הבדיקה מצאה מה לתקן (סבב {round} מתוך {of}). תקן ואמור שוב שסיימת:",
-    "ui.tickets_rounds_stopped": "{id}: סבבי התיקון נעצרו (סבב {round} מתוך {of}), ומכאן אדם ממשיך. כתוב עליה הערה אחת: מה נשאר ומה ניסית. אל תשנה את המודל בשבילה."
+    "ui.tickets_rounds_stopped": "{id}: סבבי התיקון נעצרו (סבב {round} מתוך {of}), ומכאן אדם ממשיך. כתוב עליה הערה אחת: מה נשאר ומה ניסית. אל תשנה את המודל בשבילה.",
+    "project_settings.new_tickets": "כרטיסי חלקים חדשים נבדקים",
+    "project_settings.rounds": "מספר סבבי תיקון מרבי"
   },
   "vi": {
     "ui.tickets_one_at_a_time": "{id} đang làm. Hãy hoàn thành hoặc chờ kiểm tra của nó trước khi bắt đầu phiếu khác.",
@@ -1029,6 +1043,8 @@
     "ui.tickets_remove_file": "Bỏ",
     "ui.tickets_check_ran": "đã chạy xong",
     "ui.tickets_rounds_findings": "{id}: lần kiểm tra còn điểm cần sửa (vòng {round}/{of}). Sửa xong thì báo hoàn thành lại:",
-    "ui.tickets_rounds_stopped": "{id}: các vòng sửa đã dừng (vòng {round}/{of}), và từ đây một người sẽ tiếp tục. Hãy viết một bình luận trên phiếu: còn lại gì và bạn đã thử gì. Đừng sửa mô hình cho phiếu này nữa."
+    "ui.tickets_rounds_stopped": "{id}: các vòng sửa đã dừng (vòng {round}/{of}), và từ đây một người sẽ tiếp tục. Hãy viết một bình luận trên phiếu: còn lại gì và bạn đã thử gì. Đừng sửa mô hình cho phiếu này nữa.",
+    "project_settings.new_tickets": "Phiếu chi tiết mới được kiểm tra",
+    "project_settings.rounds": "Số vòng sửa tối đa"
   }
 }

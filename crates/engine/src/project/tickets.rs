@@ -326,7 +326,7 @@ pub struct Draft {
     /// Paths of files already in the project ([`take_in`] brings one in from outside).
     pub attachments: Vec<String>,
     pub waits: Vec<String>,
-    /// Whether a check applies; none: it does.
+    /// Whether a check applies; none: as the project sets for new tickets (on unless it says off).
     pub checks: Option<bool>,
     /// Ask the app for a picture of the 3D view as it is now ([`attach_view`]).
     pub view: bool,
@@ -840,7 +840,7 @@ fn new_ticket(root: &Path, draft: Draft, actor: Actor, state: State, action: &'s
         worker: None,
         deleted: false,
         deleted_with: None,
-        checks: draft.checks.unwrap_or(true),
+        checks: draft.checks.unwrap_or_else(|| checked_by_default(root)),
         recheck: None,
         finished: false,
         rounds: None,
@@ -1330,7 +1330,13 @@ pub fn ask_check(root: &Path, id: &str, seen: u64) -> Result<Ticket, TicketError
 /// Assistant; none when they are off or the project cannot be read.
 pub fn automatic_rounds(root: &Path) -> Option<u32> {
     let project = super::Project::open(root).ok()?;
-    project.ci().enabled.then_some(DEFAULT_ROUNDS)
+    project.ci().enabled.then_some(project.ci().checks.rounds)
+}
+
+/// Whether a new ticket's check starts switched on: the project's setting; on when the project
+/// cannot be read.
+fn checked_by_default(root: &Path) -> bool {
+    super::Project::open(root).map_or(true, |project| project.ci().checks.new_tickets)
 }
 
 /// The app asks for the check of the ticket the Assistant works, on its 「做完了」, while the

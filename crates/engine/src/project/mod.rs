@@ -173,12 +173,36 @@ pub struct DataRef {
     pub file: String,
 }
 
-/// Which rules a project does not run.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// Which rules a project does not run, and how its part tickets are checked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Checks {
     #[serde(default)]
     pub skip: Vec<String>,
+    /// Whether a new part ticket's check starts switched on; a person switches it on the ticket.
+    #[serde(default = "checked")]
+    pub new_tickets: bool,
+    /// The most rounds of fixing the Assistant takes after a ticket's first automatic check, at most
+    /// [`MAX_ROUNDS`]; 0: the first check's findings go to a person.
+    #[serde(default = "rounds")]
+    pub rounds: u32,
+}
+
+/// The most rounds of fixing a project may give the Assistant.
+pub const MAX_ROUNDS: u32 = 10;
+
+fn checked() -> bool {
+    true
+}
+
+fn rounds() -> u32 {
+    tickets::DEFAULT_ROUNDS
+}
+
+impl Default for Checks {
+    fn default() -> Self {
+        Self { skip: Vec::new(), new_tickets: checked(), rounds: rounds() }
+    }
 }
 
 /// One project override: a rule's number replaced, with who replaced it and why.
@@ -329,12 +353,31 @@ impl Project {
 
     /// Turn automatic checks on or off and choose the rules the project skips.
     pub fn update_ci(&mut self, enabled: Option<bool>, skip: Option<Vec<String>>) -> Result<(), ProjectError> {
+        self.update_checks(enabled, skip, None, None)
+    }
+
+    /// [`Project::update_ci`], and how part tickets are checked: whether a new ticket's check starts
+    /// switched on, and the most rounds of fixing the Assistant takes after a ticket's first
+    /// automatic check.
+    pub fn update_checks(
+        &mut self,
+        enabled: Option<bool>,
+        skip: Option<Vec<String>>,
+        new_tickets: Option<bool>,
+        rounds: Option<u32>,
+    ) -> Result<(), ProjectError> {
         let mut ci = self.ci.clone();
         if let Some(enabled) = enabled {
             ci.enabled = enabled;
         }
         if let Some(skip) = skip {
             ci.checks.skip = skip;
+        }
+        if let Some(new_tickets) = new_tickets {
+            ci.checks.new_tickets = new_tickets;
+        }
+        if let Some(rounds) = rounds {
+            ci.checks.rounds = rounds;
         }
         validate_ci(&ci, &self.folder().join(CI))?;
         let manifest = self.manifest.clone();
@@ -616,6 +659,10 @@ fn ci_text(ci: &CiConfig) -> String {
     text.push_str("\n[checks]\n");
     let skip: Vec<String> = ci.checks.skip.iter().map(|rule| toml_string(rule)).collect();
     text.push_str(&format!("skip = [{}]\n", skip.join(", ")));
+    text.push_str("# Part tickets: whether a new ticket's check starts switched on, and the most rounds of fixing\n");
+    text.push_str("# the Assistant takes after a ticket's first automatic check.\n");
+    text.push_str(&format!("new_tickets = {}\n", ci.checks.new_tickets));
+    text.push_str(&format!("rounds = {}\n", ci.checks.rounds));
     for rule in &ci.overrides {
         text.push_str("\n[[override]]\n");
         text.push_str(&format!("rule = {}\n", toml_string(&rule.rule)));
@@ -687,6 +734,9 @@ fn validate_ci(ci: &CiConfig, path: &Path) -> Result<(), ProjectError> {
     let invalid = |message: String| ProjectError::Invalid { file: path.display().to_string(), message };
     if ci.schema_version == 0 {
         return Err(invalid("schema_version must be 1 or later".into()));
+    }
+    if ci.checks.rounds > MAX_ROUNDS {
+        return Err(invalid(format!("checks.rounds must be at most {MAX_ROUNDS}")));
     }
     if ci.data.kind != DataKind::Generic {
         if ci.data.name.trim().is_empty() || ci.data.version.trim().is_empty() {

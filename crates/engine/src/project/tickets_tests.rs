@@ -729,6 +729,49 @@ fn the_rounds_stop_when_the_check_cannot_run_a_person_steps_in_or_automatic_chec
 }
 
 #[test]
+fn the_projects_ticket_settings_set_a_new_tickets_check_and_the_rounds_and_old_files_read_the_defaults() {
+    let scratch = Scratch::new("ticket-settings");
+    let (mut s, root) = project(&scratch);
+    // A ci.toml written before the two settings existed reads as checked by default, three rounds.
+    let path = root.join(crate::project::FOLDER).join(crate::project::CI);
+    let old: String = std::fs::read_to_string(&path).unwrap().lines().filter(|line| !["new_tickets", "rounds", "# Part tickets", "# the Assistant"].iter().any(|start| line.starts_with(start))).map(|line| format!("{line}\n")).collect();
+    assert!(!old.contains("rounds"), "{old}");
+    std::fs::write(&path, &old).unwrap();
+    let project = crate::project::Project::open(&root).unwrap();
+    assert_eq!((project.ci().checks.new_tickets, project.ci().checks.rounds), (true, DEFAULT_ROUNDS));
+    assert_eq!(automatic_rounds(&root), Some(DEFAULT_ROUNDS));
+    assert!(draft(&root, bracket(), Actor::Agent).unwrap().checks, "a new ticket is checked by default");
+
+    // Set and written: read back the same, and a new ticket follows the project.
+    let mut project = crate::project::Project::open(&root).unwrap();
+    project.update_checks(None, None, Some(false), Some(0)).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("new_tickets = false") && text.contains("rounds = 0"), "{text}");
+    let reread = crate::project::Project::open(&root).unwrap();
+    assert_eq!((reread.ci().checks.new_tickets, reread.ci().checks.rounds), (false, 0));
+    let unchecked = draft(&root, bracket(), Actor::Agent).unwrap();
+    assert!(!unchecked.checks && !applies(&unchecked), "the project's default: not checked");
+    // A person's switch on the ticket overrides the project's default.
+    let turned = edit(&root, &unchecked.id, unchecked.revision, Edit { checks: Some(true), ..Edit::default() }).unwrap();
+    assert!(applies(&turned));
+    // More rounds than allowed are refused; the file keeps what it had.
+    let refused = crate::project::Project::open(&root).unwrap().update_checks(None, None, None, Some(crate::project::MAX_ROUNDS + 1));
+    assert!(refused.unwrap_err().to_string().contains("at most"), "bounded");
+    assert_eq!(crate::project::Project::open(&root).unwrap().ci().checks.rounds, 0);
+
+    // Through the command (a person's, in the Project Settings window), and as project.inspect says.
+    let reply = s.execute("project.ci_set", &json!({"newTickets": true, "rounds": 0})).unwrap();
+    assert_eq!((reply["ci"]["newTickets"].as_bool(), reply["ci"]["rounds"].as_u64()), (Some(true), Some(0)));
+    let inspected = s.execute("project.inspect", &json!({})).unwrap();
+    assert_eq!((inspected["ci"]["newTickets"].as_bool(), inspected["ci"]["rounds"].as_u64()), (Some(true), Some(0)));
+    assert!(s.execute("project.ci_set", &json!({"rounds": 11})).is_err(), "more than ten rounds are refused");
+    // Zero rounds is zero: the first check's 「建议」 go to a person at once.
+    let id = handed(&root, bracket());
+    let ticket = round(&root, &id, counted("run-z", &[("advisory", 1)]));
+    assert_eq!((ticket.state, ticket.rounds.map(|r| (r.round, r.of, r.stopped))), (State::Waiting, Some((0, 0, Some(Stop::Advisory)))));
+}
+
+#[test]
 fn a_persons_move_back_keeps_its_reason_on_the_line() {
     let scratch = Scratch::new("reason");
     let (_, root) = project(&scratch);
