@@ -141,7 +141,13 @@ jobs:
           tar -xzf dist/release/intcad-*.tar.gz -C "$RUNNER_TEMP/from-tar"
           dpkg-deb -x dist/release/intcad-*.deb "$RUNNER_TEMP/from-deb"
           for folder in "$RUNNER_TEMP"/from-tar/*/lib/intcad/mastra-agent "$RUNNER_TEMP/from-deb/usr/lib/intcad/mastra-agent"; do
-            node packages/mastra-runtime/scripts/agent-package.mjs check --read-only --target "$AGENT_TARGET" "$folder"
+            # The installed package keeps the agent read-only. The tarball carries ordinary modes on
+            # purpose (packaging/linux/package.sh), so its folder is checked without --read-only.
+            case "$folder" in
+              "$RUNNER_TEMP/from-deb/"*) read_only=--read-only ;;
+              *) read_only= ;;
+            esac
+            node packages/mastra-runtime/scripts/agent-package.mjs check $read_only --target "$AGENT_TARGET" "$folder"
             node packages/mastra-runtime/scripts/agent-smoke.mjs "$folder"
           done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

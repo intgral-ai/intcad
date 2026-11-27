@@ -23,6 +23,10 @@
 //   the note. The session works in a new empty folder of its own (`sessionFolder`), not in the
 //   project, so Mastra Code reads none of the project's agent files, MCP servers, hooks or skills:
 //   those it takes only from the session's folder and its home.
+//
+// And a session the app opens to guess the user's next step (`_meta.intcad.nextStep: true`,
+// `isNextStep`) is a lean one: the app's note alone, no project, no MCP at all and no design tools,
+// whatever the request names. A guess only reads, and the app checks and applies it itself.
 
 import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -108,26 +112,87 @@ export const NO_PROJECT =
   "This chat has no project folder, so you cannot write the project's files. When the user asks to change project files (the Spec: requirements, design intent), tell them to create or open the project, then start a New chat.";
 
 /**
+ * Whether the app opened this session to guess the user's next step. Only `true` counts: anything
+ * else is an ordinary chat.
+ */
+export function isNextStep(request) {
+  return request?._meta?.intcad?.nextStep === true;
+}
+
+/**
  * What the app hands a session over its own: the note, and the project folder with its brief, or
- * null. The instructions are the note, then `LANGUAGE`, then the brief, or `NO_PROJECT`.
+ * null. The instructions are the note, then `LANGUAGE`, then the brief, or `NO_PROJECT`. A guess of
+ * the next step gets the note alone and no project: the note says what to answer, and the lines
+ * about the language and New chat are for a chat with a person.
  */
 export function hostOf(request) {
   const note = noteOf(request);
+  if (isNextStep(request)) return { project: null, instructions: note };
   const project = projectRoot(request?._meta?.intcad?.project);
   const brief = project ? projectBrief(project) : NO_PROJECT;
   return { project, instructions: [note, LANGUAGE, brief].filter(Boolean).join("\n\n") };
 }
 
-/**
- * `sdk` is what the entry loaded from Mastra Code: `createMastraCode`, `loadSettings`,
- * `resolveDefaultThinkingLevel`, `resolveSubagentsSetting`, `withCleanupFailure`, and ACP's
- * `RequestError`. Returns the function the ACP agent calls for `session/new`.
- */
+const noPredictionTools = {
+  id: 'intcad-prediction-no-tools',
+  processInputStep: () => ({ tools: {}, activeTools: [], toolChoice: 'none' }),
+};
+
+/** Check the installed Core once in this process, with no provider or credentials. */
+export function predictionToolGuard(CoreAgent) {
+  let verified;
+  return () => (verified ??= (async () => {
+    let requests = 0;
+    const probe = new CoreAgent({
+      id: 'intcad-prediction-tool-check',
+      name: 'Intcad prediction tool check',
+      instructions: 'Reply with text.',
+      tools: { inspect_file: { id: 'inspect_file', description: 'Offline probe tool', execute: () => 'offline' } },
+      inputProcessors: [noPredictionTools],
+      model: {
+        specificationVersion: 'v2', provider: 'intcad-offline', modelId: 'tool-check', supportedUrls: {},
+        async doStream(request) {
+          const empty = Array.isArray(request.tools) ? request.tools.length === 0 : request.tools === undefined;
+          if (!empty || (request.toolChoice && request.toolChoice.type !== 'none')) {
+            // `consumeStream` can report errors as chunks rather than rejecting.
+            requests = Number.NaN;
+          } else {
+            requests += 1;
+          }
+          return {
+            stream: new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: 'stream-start', warnings: [] });
+                controller.enqueue({ type: 'finish', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 0, totalTokens: 1 } });
+                controller.close();
+              },
+            }),
+          };
+        },
+      },
+    });
+    const response = await probe.stream('Check the tool boundary.');
+    await response.consumeStream();
+    if (requests !== 1) throw new Error('the probe did not make exactly one tool-free model request');
+  })());
+}
+
+/** Returns the function the ACP agent calls for `session/new`, using the installed SDK. */
 export function sessionBuilder(sdk) {
   const { RequestError } = sdk;
   return async function createSession(request) {
+    // Intcad's: a guess of the next step has no MCP servers, whatever the request names, so they
+    // are neither checked nor started.
+    const nextStep = isNextStep(request);
+    if (nextStep) {
+      try {
+        await sdk.verifyPredictionTools();
+      } catch (error) {
+        throw new Error('The built-in agent could not verify tool-free predictions.', { cause: error });
+      }
+    }
     const names = new Set();
-    const servers = request.mcpServers.map(server => {
+    const servers = nextStep ? [] : request.mcpServers.map(server => {
       if ('type' in server && server.type === 'sse') throw RequestError.invalidParams(undefined, 'Legacy SSE MCP servers are unsupported; use HTTP or stdio');
       if (names.has(server.name)) throw RequestError.invalidParams(undefined, `Duplicate MCP server name: ${server.name}`);
       names.add(server.name);
@@ -147,14 +212,22 @@ export function sessionBuilder(sdk) {
         initialState: { projectPath: own.folder, yolo: false, permissionRules: permissionRules(host.project) },
         ...(host.instructions ? { hostInstructions: host.instructions } : {}),
         mcpServers: Object.fromEntries(servers),
-        ...(sdk.cad ? { extraTools: sdk.cad.tools(request) } : {}),
+        // Intcad's: no design tools for a guess, even when the request carries their catalog.
+        ...(sdk.cad && !nextStep ? { extraTools: sdk.cad.tools(request) } : {}),
         // ACP clients can answer permission requests, but have no free-text tool response method.
         // Intcad's: no `request_access` either. Its card names no folder, and after three clicks
         // any folder of the computer was open to the file tools (INT-1473: files only in the project).
         disabledTools: ['ask_user', 'request_access'],
         planApprovalStartsGoal: false,
         unixSocketPubSub: false,
-        disableMcp: false,
+        // Intcad's: a guess loads no MCP server at all, also none from the agent's home.
+        disableMcp: nextStep,
+        // Fast mode alone still exposes inspection tools. Replace the effective tool set
+        // on every model step, regardless of the SDK's workspace and controller defaults.
+        ...(nextStep ? {
+          inputProcessors: [noPredictionTools],
+          disablePlugins: true,
+        } : {}),
         // Intcad's: no hooks. Intcad configures none, and a hook is a command run without asking.
         disableHooks: true,
         // Project environment files must not mutate other ACP sessions.

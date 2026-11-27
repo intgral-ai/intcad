@@ -114,6 +114,8 @@ const DETACHED: usize = 2;
 pub struct PreviewState {
     /// Key of the commands whose result (or error) is shown.
     shown_key: Option<u64>,
+    /// Key successfully published to the renderer's preview slot with drawable geometry.
+    visible_key: Option<u64>,
     running: Option<(u64, Receiver<Job>)>,
     /// Asks the running job to stop between features once it is obsolete.
     running_progress: Option<Arc<Progress>>,
@@ -168,6 +170,7 @@ impl PreviewState {
 
     /// Stop drawing the preview scene and give the bodies it stood in for back to the model.
     fn hide_scene(&mut self) {
+        self.visible_key = None;
         if self.active || !self.replaced.is_empty() {
             self.active = false;
             self.bounds = Aabb3::EMPTY;
@@ -203,11 +206,15 @@ impl PreviewState {
         self.set_scene(GpuScene::default());
     }
 
-    fn set_scene(&mut self, sc: GpuScene) {
-        if let Ok(mut slot) = self.slot.lock() {
+    fn set_scene(&mut self, sc: GpuScene) -> bool {
+        let published = if let Ok(mut slot) = self.slot.lock() {
             *slot = Some(sc);
-        }
+            true
+        } else {
+            false
+        };
         self.key = self.key.wrapping_add(1);
+        published
     }
 
     fn apply(&mut self, key: u64, job: Job) {
@@ -215,6 +222,8 @@ impl PreviewState {
         self.ms = crate::now_ms() - self.started;
         match job {
             Ok(b) => {
+                let drawable =
+                    b.error.is_none() && [&b.scene.tris, &b.scene.lines, &b.scene.xray, &b.scene.ghost].iter().any(|vertices| !vertices.is_empty());
                 self.sketches = b.sketches;
                 self.replaced = b.replaced;
                 self.bounds = b.bounds;
@@ -223,7 +232,7 @@ impl PreviewState {
                 self.applied = b.applied;
                 self.stopped = b.stopped;
                 self.tapered = b.tapered;
-                self.set_scene(b.scene);
+                self.visible_key = (self.set_scene(b.scene) && drawable).then_some(key);
             }
             // The current inputs make no feature: the last good geometry would contradict
             // them (a 1 mm extrusion still drawn at 0 mm), so nothing is drawn.
@@ -433,8 +442,7 @@ pub fn update(app: &mut SolveApp, ctx: &egui::Context) {
 /// is drawn: the copy's bodies in place of the design's, material added tinted, removed material
 /// in the cut colour. Built again only when the copy or the design changes, off the window thread:
 /// the last drawing stays until the next is built. `false`: nothing is previewed.
-fn agent_review(app: &mut SolveApp, ctx: &egui::Context) -> bool {
-    let Some((key, before, after)) = crate::agent_chat::review::overlay(app) else { return false };
+fn review_colors() -> Colors {
     let tokens = Tokens::get();
     let mut colors = Colors::from_tokens(&tokens);
     // Added and removed material are what the user judges here, whatever the dialog preferences:
@@ -444,6 +452,18 @@ fn agent_review(app: &mut SolveApp, ctx: &egui::Context) -> bool {
     colors.new_body = tokens.body.lerp_to_gamma(tokens.form_success, 0.45).to_srgba_unmultiplied();
     colors.tint_new = true;
     colors.cut_tint = true;
+    colors
+}
+
+/// Match the current ghost against the scene the preview renderer was actually given, not
+/// the overlay inputs. An older scene can stay visible while a new one is being built.
+pub(crate) fn review_scene_visible(app: &SolveApp, overlay_key: u64) -> bool {
+    app.preview.active && !app.preview.rolled_back && app.preview.visible_key == Some(job_key(&[], overlay_key, review_colors()))
+}
+
+fn agent_review(app: &mut SolveApp, ctx: &egui::Context) -> bool {
+    let Some((key, before, after)) = crate::agent_chat::review::overlay(app) else { return false };
+    let colors = review_colors();
     let key = job_key(&[], key, colors);
     // Headless use and tests (no wait set) build it here, as they run everything at once.
     let threads = app.apply_off_thread.is_some();

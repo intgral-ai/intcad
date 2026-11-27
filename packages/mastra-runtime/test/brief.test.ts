@@ -301,6 +301,20 @@ test("hostOf: a good project gives its real path, and instructions that hold the
   assert.equal(hostOf({ _meta: { intcad: { project: root } } }).instructions, `${LANGUAGE}\n\n${brief}`);
 });
 
+// A session the app opens to guess the user's next step (docs/design/autocomplete-tests.md, G87).
+test("G87 hostOf: a guess of the next step gets the note alone and no project, though a project is sent", () => {
+  const root = folder("guessed project");
+  put(root, "requirements.md", "wall at least 2 mm\n");
+  const guess = (nextStep: unknown) => ({ _meta: { systemPrompt: { append: "The guessing note." }, intcad: { nextStep, project: root } } });
+  // No language line, no brief, no line about a missing project.
+  assert.deepEqual(hostOf(guess(true)), { project: null, instructions: "The guessing note." });
+  assert.deepEqual(hostOf({ _meta: { intcad: { nextStep: true, project: root } } }), { project: null, instructions: "" }, "no note: nothing");
+  // Only `true` marks a guess: anything else is a chat, with its project and brief.
+  for (const nextStep of [false, "true", 1, null, {}]) {
+    assert.deepEqual(hostOf(guess(nextStep)), { project: root, instructions: `The guessing note.\n\n${LANGUAGE}\n\n${projectBrief(root)}` }, JSON.stringify(nextStep));
+  }
+});
+
 // Red-team review of INT-1473: a file name is the project's data and must not become a line, a
 // heading or an instruction of its own in what the agent is told.
 test("a file name with a line break or a format character stays on its list line", () => {
