@@ -314,8 +314,9 @@ try {
     Write-Output 'ok: the MSI installed the built-in agent with its Node, dependencies and skills'
     # The agent's native modules import the Microsoft runtime. It must be in the installed package,
     # match the receipt the release was built with, and be the copy the installed Node loads.
+    # The script throws on any mismatch (hashes, version, machine, signature); a script call does
+    # not set $LASTEXITCODE, so it is not consulted here.
     & (Join-Path $RepoRoot 'packaging\windows\vc-runtime.ps1') -Action Verify -Destination $Agent -Evidence (Join-Path $Evidence 'vc-runtime')
-    if ($LASTEXITCODE -ne 0) { throw 'the installed Microsoft Visual C++ runtime does not match its receipt' }
     Assert-AgentRuntime $Agent
   } else {
     if (Test-Path (Join-Path $Dir 'mastra-agent\agent.json')) { throw "the $Arch MSI carries an agent it was not built with" }
