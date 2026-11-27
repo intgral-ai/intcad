@@ -372,13 +372,14 @@ function checkText({ ticket, state, words }: Page) {
     const outcome = check.outcome === 'done' ? words.checkDone : check.outcome;
     const now = check.run ? state.freshness[check.run] : undefined;
     const nothing = ticket.checks && ticket.unchecked ? words.notChecked : null;
-    return [nothing, `${kindWord(state, words, check.kind)} ${check.run ?? ''}`.trim(), outcome, ...parts, now && now !== 'current' ? words.checkStale : null].filter(Boolean).join(' · ');
+    // The run's id is at the foot of its opened items in 「动态」, not here.
+    return [nothing, kindWord(state, words, check.kind), outcome, ...parts, now && now !== 'current' ? words.checkStale : null].filter(Boolean).join(' · ');
   }
   if (ticket.checksOff && ticket.parts.length > 0) return words.checkOff;
   if (!ticket.checks) return `${words.notChecked} · ${words.noApplicableCheck}`;
   if (!check) return words.noCheck;
   if (check.state === 'asked') return words.checkAsked;
-  if (check.state === 'running') return [words.checkRunning, check.run].filter(Boolean).join(' · ');
+  if (check.state === 'running') return words.checkRunning;
   return [words.checkRefused, check.reason].filter(Boolean).join(' · ');
 }
 
@@ -675,7 +676,8 @@ function Properties(page: Page) {
       </Prop>
       <Prop label={words.check}>
         <span className={ticket.check?.state === 'ran' ? undefined : 'text-muted-foreground'}>{checkText(page)}</span>
-        {ticket.rounds && <span className="text-xs text-muted-foreground">{roundsText(ticket.rounds, checking(ticket), words)}</span>}
+        {/* The rounds while they go on; once they stopped a ticket, its 受阻 row says why. */}
+        {ticket.rounds && !ticket.rounds.stopped && <span className="text-xs text-muted-foreground">{roundsText(ticket.rounds, checking(ticket), words)}</span>}
         {ticket.recheck && (
           <span className="flex min-w-0 items-center gap-1.5">
             <Badge variant="warning" emphasis="subtle" size="sm">
