@@ -1,7 +1,9 @@
 // Mastra Code's ACP agent with what Intcad adds: the connection methods, a model list a person can
 // read (only models one can talk to, newest first), sessions that follow a sign-in or sign-out
 // without being opened again, a reason on a turn that fails, no card for the app's commands that
-// only read, and in a chat on a project no change before a plan (plan.mjs).
+// only read, and in a chat on a project no change before a plan (plan.mjs). Also `session/close`,
+// which Mastra Code's ACP agent does not have, and sessions that guess the user's next step
+// (`nextStep`, session.mjs), which start read-only.
 //
 // `Base` is Mastra Code's `MastraCodeAcpAgent`. It is passed in so this file imports nothing of
 // Mastra's and the tests can stand in for it.
@@ -13,6 +15,10 @@ import { classifyFailure } from './problems.mjs';
 import { isChatModel, newestFirst, orderModelOptions } from './models.mjs';
 import { PlanGate, planEntries } from './plan.mjs';
 import { askingOnlyWhenNeeded } from './reads.mjs';
+import { isNextStep } from './session.mjs';
+
+/** Mastra Code's mode that only reads (Explore): its tools look at files and change nothing. */
+const READ_ONLY_MODE = 'fast';
 
 const INVALID_PARAMS = -32602;
 const METHOD_NOT_FOUND = -32601;
@@ -83,16 +89,52 @@ export function intcadAgent({
     /**
      * The sign-ins are offered on the Connections page, through the methods below, not as ACP
      * sign-in methods. Pictures and documents are taken (`prompt`): the app sends them only to an
-     * agent that says so.
+     * agent that says so. Also advertise `session/close` without changing the SDK's other capabilities.
      */
     async initialize(request) {
       const response = await super.initialize(request);
       const capabilities = response.agentCapabilities ?? {};
       return {
         ...response,
-        agentCapabilities: { ...capabilities, promptCapabilities: { ...capabilities.promptCapabilities, image: true, embeddedContext: true } },
+        agentCapabilities: {
+          ...capabilities,
+          promptCapabilities: { ...capabilities.promptCapabilities, image: true, embeddedContext: true },
+          sessionCapabilities: { ...capabilities.sessionCapabilities, close: {} },
+        },
         authMethods: [],
       };
+    }
+
+    /**
+     * `session/close`. Mastra Code's ACP agent keeps every session, a whole runtime with its storage,
+     * workers and folder, until the connection closes; the app's guesses of the next step open one
+     * each. The session is taken off the list first, so a prompt or a second close on it is refused,
+     * then ended as Mastra Code ends each session when the connection closes.
+     */
+    async closeSession(params) {
+      const sessionId = params?.sessionId;
+      const entry = typeof sessionId === 'string' ? this.sessions.get(sessionId) : undefined;
+      if (!entry) throw new RequestError(INVALID_PARAMS, 'Unknown ACP session', { sessionId });
+      await this.#end(sessionId, entry);
+      return {};
+    }
+
+    /**
+     * What Mastra Code's `dispose` does for each session, for one: a turn under way is cancelled
+     * and aborted, the session stops listening, and its runtime is cleaned up. Only ordinary
+     * chats keep flags in the plan gate; prediction sessions never register there.
+     */
+    async #end(sessionId, entry) {
+      this.sessions.delete(sessionId);
+      this.#abortPendingPrompts(sessionId);
+      for (const turn of entry.turns ?? []) turn.cancelled = true;
+      if (entry.state) {
+        entry.state.cancelled = true;
+        entry.session.abort();
+        entry.state?.resolve('aborted');
+      }
+      entry.unsubscribe?.();
+      await entry.cleanup?.();
     }
 
     configOptions(entry) {
@@ -122,12 +164,25 @@ export function intcadAgent({
 
     /**
      * Mastra Code opens a session on the model it used last, or on its own default, even when nothing
-     * connected can serve it. A new session starts on a model that can answer.
+     * connected can serve it. A new session starts on a model that can answer. A guess of the next
+     * step starts in the mode that only reads.
      */
     async newSession(request) {
       const response = await super.newSession(request);
       const entry = this.sessions.get(response.sessionId);
       if (!entry) return response;
+      const nextStep = isNextStep(request);
+      // Keep the prediction in Explore mode as defense in depth. The session builder separately
+      // removes all model-visible tools. Switch before the reply, or end the session on failure.
+      if (nextStep) {
+        try {
+          if (!entry.modes?.some(mode => mode?.id === READ_ONLY_MODE)) throw new RequestError(INTERNAL, `this agent has no read-only mode (${READ_ONLY_MODE}) for a next-step session`);
+          await entry.session.mode.switch({ modeId: READ_ONLY_MODE });
+        } catch (error) {
+          await this.#end(response.sessionId, entry);
+          throw error;
+        }
+      }
       cad?.bind(request, entry);
       // INT-1473: the project folder the app handed over (session.mjs) is where the file tools may
       // also go. Set here, on the session's own thread: Mastra Code opens a new thread for the
@@ -135,7 +190,8 @@ export function intcadAgent({
       if (entry.project) await entry.session.state.set({ sandboxAllowedPaths: [entry.project] });
       // Plan first (plan.mjs): a change the gate held is declined with its reason, which is what the
       // model reads in place of Mastra's "not approved by the user". Without a way to give the
-      // reason, nothing is held: a bare decline would read as the user's refusal.
+      // reason, nothing is held: a bare decline would read as the user's refusal. A guess of the next
+      // step changes nothing, and has no project anyway.
       const session = entry.session;
       // The files of a turn (`prompt`) go with the first message that turn sends, which is Mastra
       // Code's own `sendMessage` of the user's words, and with no other: a turn cancelled before
@@ -175,7 +231,7 @@ export function intcadAgent({
           if (supported === false) {
             throw new RequestError(INTERNAL, `${model} cannot read the pictures or documents in this chat`, { intcad: { kind: 'attachments', prefix: connections.prefixOf(model) } });
           }
-          this.#gate.prompted(sessionId);
+          if (!nextStep) this.#gate.prompted(sessionId);
           turn.submitted = true;
           turn.files = [];
           let mayBeRetained = true;
@@ -192,7 +248,7 @@ export function intcadAgent({
           }
         };
       }
-      if (entry.project && typeof session?.respondToToolApproval === 'function') {
+      if (entry.project && !nextStep && typeof session?.respondToToolApproval === 'function') {
         const respond = session.respondToToolApproval.bind(session);
         const gate = this.#gate;
         session.respondToToolApproval = answer => {
@@ -201,9 +257,15 @@ export function intcadAgent({
         };
         entry.plansFirst = true;
       }
-      this.#showTasks(entry, response.sessionId);
+      if (!nextStep) this.#showTasks(entry, response.sessionId);
       await this.#settle(entry, true);
-      return { ...response, configOptions: this.configOptions(entry), ...(response.models ? { models: { ...response.models, currentModelId: entry.session.model.get() ?? '' } } : {}) };
+      return {
+        ...response,
+        configOptions: this.configOptions(entry),
+        ...(response.models ? { models: { ...response.models, currentModelId: entry.session.model.get() ?? '' } } : {}),
+        // Mastra Code worked the reply's modes out before the switch above.
+        ...(nextStep && response.modes ? { modes: { ...response.modes, currentModeId: entry.session.mode.get() } } : {}),
+      };
     }
 
     /**
@@ -330,8 +392,12 @@ export function intcadAgent({
     async cancel(notification) {
       // Record Stop even before the SDK's queued callback or this wrapper's refresh completes.
       // The SDK still owns interruption of an already submitted message and its pending tools.
-      for (const controller of this.#prompts.get(notification.sessionId) ?? []) controller.abort();
+      this.#abortPendingPrompts(notification.sessionId);
       await super.cancel(notification);
+    }
+
+    #abortPendingPrompts(sessionId) {
+      for (const controller of this.#prompts.get(sessionId) ?? []) controller.abort();
     }
 
     /**

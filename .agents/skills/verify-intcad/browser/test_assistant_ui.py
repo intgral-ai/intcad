@@ -451,3 +451,93 @@ def test_new_chat_confirmation(assistant, confirm):
     show(assistant, items=[] if confirm else [note])
     expect(assistant.get_by_text("Start a new conversation?", exact=True)).to_have_count(0)
     expect(assistant.get_by_text(note["text"], exact=True)).to_have_count(0 if confirm else 1)
+
+
+# Next-step suggestions (INT-1458, docs/design/autocomplete-tests.md G34 to G36).
+
+SUGGESTION = {"label": "Next step", "text": "Drill four 5 mm holes (guessed: 5, position) \u00b7 It has no fixings.",
+              "guess": True, "ready": True, "id": "42"}
+
+
+@pytest.mark.parametrize(("key", "accept"), [("Tab", True), ("Escape", False)])
+def test_suggestion_takes_tab_and_escape_in_an_empty_box(assistant, key, accept):
+    box = assistant.get_by_role("textbox", name="Message")
+    for draft in ("", "   "):
+        show(assistant, centre=600, suggestion=SUGGESTION)
+        box.fill(draft)
+        box.focus()
+        actions(assistant)
+        box.press(key)
+        assert actions(assistant) == [{"type": "suggestion", "accept": accept, "id": "42"}]
+        expect(box).to_be_focused()
+
+
+def test_suggestion_tab_before_it_is_ready_never_queues_acceptance(assistant):
+    box = assistant.get_by_role("textbox", name="Message")
+    show(assistant, centre=600, suggestion={**SUGGESTION, "ready": False})
+    box.focus()
+    actions(assistant)
+    box.press("Tab")
+    assert actions(assistant) == []
+    expect(box).to_be_focused()
+
+
+@pytest.mark.parametrize("key", ["Tab", "Escape"])
+@pytest.mark.parametrize(("draft", "state"), [
+    ("make it taller", {}),
+    ("/", {"commands": [{"name": "skill/one", "description": ""}]}),
+    ("", {"waiting": 1}),
+    ("", {"state": "busy"}),
+    ("", {"suggestion": {**SUGGESTION, "guess": False}}),
+    ("", {"suggestion": None}),
+])
+def test_suggestion_leaves_the_keys_alone(assistant, key, draft, state):
+    box = assistant.get_by_role("textbox", name="Message")
+    show(assistant, **{"centre": 600, "suggestion": SUGGESTION, **state})
+    box.fill(draft)
+    box.focus()
+    actions(assistant)
+    box.press(key)
+    assert [a for a in actions(assistant) if a["type"] == "suggestion"] == []
+
+
+@pytest.mark.parametrize("key", ["Tab", "Escape"])
+def test_suggestion_leaves_a_composing_key_alone(assistant, key):
+    box = assistant.get_by_role("textbox", name="Message")
+    show(assistant, centre=600, suggestion=SUGGESTION)
+    box.focus()
+    actions(assistant)
+    box.evaluate("""(box, key) => box.dispatchEvent(
+        new KeyboardEvent('keydown', { key, isComposing: true, bubbles: true, cancelable: true }))""", key)
+    assert [a for a in actions(assistant) if a["type"] == "suggestion"] == []
+
+
+@pytest.mark.parametrize("modifier", ["repeat", "shiftKey", "altKey"])
+def test_suggestion_ignores_held_or_modified_tab(assistant, modifier):
+    box = assistant.get_by_role("textbox", name="Message")
+    show(assistant, centre=600, suggestion=SUGGESTION)
+    box.focus()
+    actions(assistant)
+    box.evaluate("""(box, modifier) => box.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Tab', [modifier]: true, bubbles: true, cancelable: true }))""", modifier)
+    assert actions(assistant) == []
+
+
+def test_suggestion_shows_on_the_line_over_the_box(assistant):
+    assistant.set_viewport_size({"width": 520, "height": 700})
+    show(assistant, centre=600)
+    composer = assistant.locator("[data-centre-line]")
+    plain = composer.bounding_box()["height"]
+    longest = {**SUGGESTION, "text": "Drill four holes " * 12}
+    chinese = {"label": "\u4e0b\u4e00\u6b65", "text": "\u62bd\u58f3 Case\uff0c\u58c1\u539a 2 mm\uff08\u731c\u7684\uff1a2\uff09", "guess": True, "ready": True}
+    for suggestion in (SUGGESTION, {**SUGGESTION, "ready": False}, longest, chinese):
+        show(assistant, centre=600, suggestion=suggestion)
+        expect(composer).to_contain_text(suggestion["label"])
+        expect(composer).to_contain_text(suggestion["text"].strip()[:12])
+        assert composer.bounding_box()["height"] == plain, suggestion
+    show(assistant, centre=600, suggestion=None)
+    expect(composer).not_to_contain_text("Next step")
+    assert composer.bounding_box()["height"] == plain
+    # What needs the user comes first.
+    show(assistant, centre=600, suggestion=SUGGESTION, state="busy")
+    expect(composer).not_to_contain_text("Drill four")
