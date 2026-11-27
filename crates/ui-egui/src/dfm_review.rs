@@ -1064,6 +1064,13 @@ fn findings(app: &mut SolveApp, ui: &mut egui::Ui, card: &Card, height: f32) {
     });
 }
 
+/// A rule's name for a designer (`ui.dfm_rule.<rule id>`); a rule with none is shown by its id.
+pub(crate) fn rule_name(rule: &str) -> String {
+    let key = format!("ui.dfm_rule.{rule}");
+    let name = tr(&key);
+    if name == key { rule.to_string() } else { name.to_string() }
+}
+
 fn state_word(state: &str) -> &'static str {
     match state {
         "failed" => tr("ui.dfm_review_failed"),
@@ -1090,7 +1097,8 @@ fn row(ui: &mut egui::Ui, finding: &crate::dfm_chat::Finding, selected: bool) ->
     let width = ui.available_width();
     let lines: Vec<(String, Color32)> = {
         let mut lines = Vec::new();
-        let mut head = format!("{} · {}", finding.rules.join(", "), finding.body);
+        let names: Vec<String> = finding.rules.iter().map(|rule| rule_name(rule)).collect();
+        let mut head = format!("{} · {}", names.join(", "), finding.body);
         if let Some(feature) = &finding.feature
             && !feature.kind.is_empty()
         {

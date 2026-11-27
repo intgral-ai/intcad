@@ -130,10 +130,16 @@ pub(crate) fn navigation_tooltip(response: &Response, along: Rect, edge: Edge, l
         .area(response.id.with("nav_tooltip"))
         .order(egui::Order::Tooltip)
         .interactable(false)
-        .pivot(if edge == Edge::Top { Align2::CENTER_TOP } else { Align2::CENTER_BOTTOM })
+        .pivot(match edge {
+            Edge::Bottom => Align2::CENTER_BOTTOM,
+            Edge::Top => Align2::CENTER_TOP,
+            Edge::Left => Align2::LEFT_CENTER,
+        })
         .fixed_pos(match edge {
             Edge::Bottom => pos2(response.rect.center().x, along.top() - NAV_POPUP_GAP),
             Edge::Top => pos2(response.rect.center().x, along.bottom() + NAV_POPUP_GAP),
+            // Beside an upright bar, level with the slot.
+            Edge::Left => pos2(along.right() + NAV_POPUP_GAP, response.rect.center().y),
         })
         .show(ctx, |ui| {
             Container::new(ctx, Surface::Popup).show_frame(ui, frame, ui.max_rect(), |ui| {

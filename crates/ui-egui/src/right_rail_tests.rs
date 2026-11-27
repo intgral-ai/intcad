@@ -50,8 +50,9 @@ fn the_rail_stands_at_the_windows_right_edge_in_both_layouts() {
         for pair in items.windows(2) {
             assert!(pair[0].bottom() <= pair[1].top(), "{mode:?}: the items stand in order: {items:?}");
         }
-        let (after_files, between_modes) = (items[1].top() - items[0].bottom(), items[2].top() - items[1].bottom());
-        assert!(after_files > between_modes + 4.0, "{mode:?}: a rule sets Files apart: {after_files} against {between_modes}");
+        // Files and Tickets stand together; a rule sets them apart from the ways of working.
+        let (in_project, before_modes) = (items[1].top() - items[0].bottom(), items[2].top() - items[1].bottom());
+        assert!(before_modes > in_project + 4.0, "{mode:?}: a rule sets Files and Tickets apart: {before_modes} against {in_project}");
         assert!(rect_of("rail:panel").is_none() && open(&h.app).is_none(), "{mode:?}: no panel is open at first");
         assert_eq!(h.app.shell.right_rail, Some(rail), "{mode:?}: the shell knows where the rail stands");
         let view = h.app.viewport.rect.unwrap();
@@ -293,15 +294,15 @@ fn a_narrow_window_keeps_the_view_and_leaves_the_panel_out() {
 #[test]
 fn the_items_are_named_in_the_apps_language() {
     let mut h = window(LayoutMode::Floating, 1400);
-    assert_eq!(Item::ALL.map(Item::name), ["Files", "Review", "Simulation", "Autocomplete"]);
+    assert_eq!(Item::ALL.map(Item::name), ["Files", "Tickets", "Review", "Simulation", "Autocomplete"]);
     for item in Item::ALL {
         assert!(h.widget(item.title()).is_some(), "{item:?} is a named widget");
     }
     h.call("ui.prefs", json!({"language": "zh"}));
     h.settle();
     let _language = crate::i18n::scope("zh");
-    assert_eq!(Item::ALL.map(Item::name), ["文件", "审查", "仿真", "补全"]);
-    assert_eq!(Item::ALL.map(Item::title), ["项目文件", "审查", "仿真", "自动补全"]);
+    assert_eq!(Item::ALL.map(Item::name), ["文件", "部件票", "审查", "仿真", "补全"]);
+    assert_eq!(Item::ALL.map(Item::title), ["项目文件", "部件票", "审查", "仿真", "自动补全"]);
     for item in Item::ALL {
         assert!(h.widget(item.title()).is_some(), "{item:?} is named in Chinese");
     }
@@ -362,6 +363,38 @@ fn the_panel_is_dragged_wider_and_keeps_its_width() {
     h.step(&json!({"drag": [[f64::from(rect_of("rail:panel").unwrap().left()), grip[1]], [20.0, grip[1]]]})).unwrap();
     h.settle();
     assert!((rect_of("rail:panel").unwrap().width() - MAX_PANEL).abs() <= 0.5, "never wider than its greatest width");
+}
+
+/// The Tickets panel opens at its own first width while no width was chosen, and opening it
+/// stores nothing, so the other panels keep theirs. A width chosen before wins, and a drag on the
+/// Tickets panel is that width for every panel.
+#[test]
+fn the_tickets_panel_opens_wider_until_a_width_is_chosen() {
+    let mut h = window(LayoutMode::Floating, 1400);
+    click(&mut h, Item::Tickets);
+    let panel = rect_of("rail:panel").unwrap();
+    assert!((panel.width() - TICKETS_PANEL).abs() <= 1.0, "{panel:?}");
+    assert_eq!(h.app.preferences.right_rail_width, DEFAULT_PANEL, "opening it stores nothing");
+    for other in [Item::Files, Item::Review] {
+        click(&mut h, other);
+        assert!((rect_of("rail:panel").unwrap().width() - DEFAULT_PANEL).abs() <= 1.0, "{other:?}");
+    }
+
+    h.call("ui.prefs", json!({"right_rail_open": "tickets", "right_rail_width": 360.0}));
+    h.settle();
+    assert!((rect_of("rail:panel").unwrap().width() - 360.0).abs() <= 1.0, "a width chosen before wins");
+
+    h.call("ui.prefs", json!({"right_rail_width": DEFAULT_PANEL}));
+    h.settle();
+    let panel = rect_of("rail:panel").unwrap();
+    let grip = [f64::from(panel.left()) - 2.0, f64::from(panel.center().y)];
+    h.step(&json!({"drag": [grip, [grip[0] - 60.0, grip[1]]]})).unwrap();
+    h.settle();
+    let wider = rect_of("rail:panel").unwrap();
+    assert!((wider.width() - (TICKETS_PANEL + 60.0)).abs() <= 3.0, "{panel:?} to {wider:?}");
+    assert!((h.app.preferences.right_rail_width - wider.width()).abs() <= 0.5, "the drag is remembered");
+    click(&mut h, Item::Files);
+    assert!((rect_of("rail:panel").unwrap().width() - wider.width()).abs() <= 0.5, "and is every panel's width");
 }
 
 /// The rail and its panel read in Dark, Light and Black: a quiet name and the open item's name
@@ -436,7 +469,7 @@ fn an_empty_panel_shows_one_centred_block() {
     let mut h = window(LayoutMode::Floating, 1400);
     // Review lists the DFM check's findings instead of an empty block: its own empty state is
     // the check's entry, tested with the panel in `dfm_review_tests`.
-    for item in Item::ALL.into_iter().filter(|item| !matches!(item, Item::Review | Item::Files)) {
+    for item in Item::ALL.into_iter().filter(|item| !matches!(item, Item::Review | Item::Files | Item::Tickets)) {
         h.call("ui.prefs", json!({"right_rail_open": item.id()}));
         h.settle();
         let panel = rect_of("rail:panel").unwrap();
@@ -445,7 +478,7 @@ fn an_empty_panel_shows_one_centred_block() {
         let centre = f64::from(panel.center().x);
         assert!((x - centre).abs() <= 1.0 && (note_x - centre).abs() <= 1.0, "{item:?}: centred across the panel: {x} {note_x} {centre}");
         assert!(note_y > y && (y - f64::from(panel.center().y)).abs() < 60.0, "{item:?}: in the panel's middle: {y} {note_y} {panel:?}");
-        for other in Item::ALL.into_iter().filter(|other| *other != item && !matches!(other, Item::Review | Item::Files)) {
+        for other in Item::ALL.into_iter().filter(|other| *other != item && !matches!(other, Item::Review | Item::Files | Item::Tickets)) {
             assert!(h.widget(other.empty()).is_none() && h.widget(other.note()).is_none(), "{item:?}: nothing of {other:?}");
         }
     }
@@ -454,4 +487,23 @@ fn an_empty_panel_shows_one_centred_block() {
     h.settle();
     assert!(rect_of("files:empty").is_some() && rect_of("files_open_folder").is_some(), "Files offers a folder");
     assert!(h.widget(Item::Files.empty()).is_none(), "the old empty block is not drawn over it");
+}
+
+/// The Tickets panel gives its whole place to the tickets view's web view, and draws its empty
+/// block only where the host could make no web view.
+#[test]
+fn the_tickets_panel_gives_its_place_to_the_web_view() {
+    let mut h = window(LayoutMode::Floating, 1400);
+    click(&mut h, Item::Tickets);
+    assert_eq!(open(&h.app), Some(Item::Tickets));
+    let panel = rect_of("rail:panel").unwrap();
+    let (place, _) = h.app.tickets.web_place.expect("the panel gives its place to the web view");
+    assert!(
+        panel.contains_rect(place) && place.width() >= panel.width() - 16.0 && place.top() <= panel.top() + 8.0,
+        "the whole panel, its title row included: {place:?} in {panel:?}"
+    );
+    assert!(h.widget(Item::Tickets.empty()).is_none(), "nothing drawn under the web view");
+    crate::tickets::set_host(&mut h.app, false);
+    h.settle();
+    assert!(h.widget(Item::Tickets.empty()).is_some() && h.widget(Item::Tickets.note()).is_some(), "without a web view the panel says so");
 }

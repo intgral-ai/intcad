@@ -56,7 +56,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params(
             "path?: a design file or folder to start from (default: the open design) → hasProject; root; \
              project: {schemaVersion, id, name, process, material, thicknessMm?, designs}; \
-             ci: {schemaVersion, enabled, onManualEdit, dataKind, dataName, dataVersion, dataSha256, dataFile, skip, \
+             ci: {schemaVersion, enabled, onManualEdit, dataKind, dataName, dataVersion, dataSha256, dataFile, skip, newTickets, rounds, \
              overriddenRules, overrides: [{rule, limit, value, reason, by, date}], dataAvailable, dataUnavailable?}; \
              error (when the folder exists but its files cannot be read)",
         ),
@@ -75,7 +75,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         .noundo()
         .contract(&CI_CONTRACT)
         .output(crate::schema::output_schema_for::<InspectReply>)
-        .params("enabled?: run automatic checks; skip?: the rule ids the project does not run → the project as project.inspect reports it"),
+        .params(
+            "enabled?: run automatic checks; skip?: the rule ids the project does not run; newTickets?: a new part ticket's check \
+             starts switched on; rounds?: the most rounds of fixing the Assistant takes after a ticket's first automatic check, 0 to 10 \
+             → the project as project.inspect reports it",
+        ),
     CommandSpec::new("project.data_set", "Select DFM Data", crate::checked!("project.data_set", data_set))
         .icon("import")
         .noundo()
@@ -193,7 +197,9 @@ fn settings_set(s: &mut Session, p: &Value) -> Result<Value> {
 fn ci_set(s: &mut Session, p: &Value) -> Result<Value> {
     let params: CiParams = serde_json::from_value(p.clone()).map_err(|error| bad("project.ci_set", error.to_string()))?;
     let mut project = open_project(s, "project.ci_set")?;
-    project.update_ci(params.enabled, params.skip).map_err(|error| bad("project.ci_set", error.to_string()))?;
+    project
+        .update_checks(params.enabled, params.skip, params.new_tickets, params.rounds)
+        .map_err(|error| bad("project.ci_set", error.to_string()))?;
     describe(&project)
 }
 
@@ -331,6 +337,8 @@ fn ci_summary(ci: &crate::project::CiConfig, data_available: bool, data_unavaila
         data_sha256: ci.data.sha256.clone(),
         data_file: ci.data.file.clone(),
         skip: ci.checks.skip.clone(),
+        new_tickets: ci.checks.new_tickets,
+        rounds: ci.checks.rounds,
         overridden_rules: ci.overrides.iter().map(|rule| rule.rule.clone()).collect(),
         overrides: ci.overrides.iter().map(override_summary).collect(),
         data_available,

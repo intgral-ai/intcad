@@ -16604,48 +16604,190 @@ fn at_the_bottom_centre_the_web_view_is_centred_on_the_window_and_as_tall_as_the
     );
 }
 
-/// At the bottom centre, while the conversation is open, a primary press that reaches the app (the
-/// page's native view takes its own) is outside the Assistant: the model, the rail. The page is
-/// told the count and collapses its opened conversation when it goes up; switching to another app
-/// is no press. With the box closed, or in the side panel, nothing is counted (INT-1500).
+/// At the bottom centre the person drags the box's top edge and its sides, in the app's own margin
+/// just outside the native view (which takes every press on it): the host's view takes the new
+/// size, which holds against the page's own height (the page is told it as the most it may take),
+/// never goes below the message box's least size or past the room there is (a rail panel opening
+/// beside it takes its room back), comes back after a restart through the preferences, and a
+/// double-click on an edge puts back the size that follows the page. The side panel is unchanged.
 #[test]
-fn at_the_bottom_centre_a_press_in_the_app_outside_the_view_is_told_to_the_page() {
+fn at_the_bottom_centre_the_person_drags_the_boxs_edges_to_resize_it() {
+    let setup = |h: &mut crate::scenario::Harness| {
+        h.app.home.open = false;
+        h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
+        h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+        h.app.ui.show_navigation_bar = false;
+        web::set_host(&mut h.app, true);
+        h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+        web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the page says how tall it is");
+        h.frames(3);
+    };
+    let mut h = crate::scenario::Harness::new();
+    setup(&mut h);
+    let place = || crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let edge = |name: &str| crate::scenario::rect_of(&format!("agent_chat:centre_{name}")).expect("the box's edge");
+    let drag = |h: &mut crate::scenario::Harness, name: &str, dx: f32, dy: f32| {
+        let at = edge(name).center();
+        h.call("ui.drag", json!({"x0": at.x, "y0": at.y, "x1": at.x + dx, "y1": at.y + dy, "steps": 8}));
+        h.frames(2);
+    };
+    let start = place();
+    assert!((start.width() - 520.0).abs() < 0.5 && (start.height() - 181.0).abs() < 0.5, "today's size: {start:?}");
+    assert!(
+        edge("top").bottom() <= start.top() && edge("left").right() <= start.left() && edge("right").left() >= start.right(),
+        "the edges lie outside the view"
+    );
+
+    // The top edge up: taller, on the same foot and width; the page's own height no longer moves it.
+    drag(&mut h, "top", 0.0, -150.0);
+    let tall = place();
+    assert!(
+        (tall.height() - 331.0).abs() < 1.0 && tall.bottom() == start.bottom() && tall.width() == start.width(),
+        "taller: {tall:?} from {start:?}"
+    );
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the page asks to shrink");
+    h.frames(2);
+    assert_eq!(place(), tall, "the height the person set holds");
+    let most = serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["centre"].as_f64().expect("the most");
+    assert!((most as f32 - tall.height()).abs() < 0.5, "the page is told its height: {most}");
+    assert_eq!(web::placement(&mut h.app, &h.ctx), Some(tall), "the host takes that place");
+
+    // A side out: wider, the other side still.
+    drag(&mut h, "right", 100.0, 0.0);
+    let wide = place();
+    assert!((wide.width() - 620.0).abs() < 1.0 && (wide.left() - tall.left()).abs() < 1.0, "wider to the right: {wide:?} from {tall:?}");
+    drag(&mut h, "left", -60.0, 0.0);
+    let wider = place();
+    assert!((wider.width() - 680.0).abs() < 1.0 && (wider.right() - wide.right()).abs() < 1.0, "wider to the left: {wider:?} from {wide:?}");
+
+    // Too small: no less than the message box needs.
+    drag(&mut h, "top", 0.0, 900.0);
+    drag(&mut h, "right", -3000.0, 0.0);
+    let small = place();
+    assert!((small.height() - panel::CENTRE_HEIGHT).abs() < 0.5 && (small.width() - panel::MIN_WIDTH).abs() < 0.5, "the least: {small:?}");
+    // Too large: within the model's room, left of the rail, taller than half the window if dragged so.
+    drag(&mut h, "top", 0.0, -5000.0);
+    drag(&mut h, "right", 5000.0, 0.0);
+    drag(&mut h, "left", -5000.0, 0.0);
+    let large = place();
+    let window = h.ctx.content_rect();
+    let rail = h.app.shell.right_rail.expect("the rail");
+    assert!(large.height() > window.height() / 2.0 && large.top() > window.top(), "as tall as the room: {large:?} in {window:?}");
+    assert!(large.left() > window.left() && large.right() < rail.left() && large.width() > 1000.0, "as wide as the room: {large:?} {rail:?}");
+    assert!(window.contains_rect(edge("top")) && edge("right").right() <= rail.left(), "its edges stay in the room too");
+    // A rail panel opening beside it takes its room back; closed again, the size comes back.
+    h.app.preferences.right_rail_open = crate::right_rail::Item::Tickets.id().to_string();
+    h.frames(3);
+    let rail = h.app.shell.right_rail.expect("the rail with its panel");
+    let given = place();
+    assert!(rail.width() > 200.0 && given.right() < rail.left() && given.width() < large.width(), "the panel wins: {given:?} {rail:?}");
+    h.app.preferences.right_rail_open = String::new();
+    h.frames(3);
+    assert_eq!(place().size(), large.size(), "the size the person set comes back");
+
+    // A restart: the size is in the preferences.
+    drag(&mut h, "top", 0.0, 4000.0);
+    drag(&mut h, "top", 0.0, -100.0);
+    let kept = place();
+    let stored = serde_json::to_value(&h.app.preferences).expect("the preferences as stored");
+    let mut again = crate::scenario::Harness::new();
+    again.app.preferences = serde_json::from_value(stored).expect("read back");
+    setup(&mut again);
+    assert_eq!(place().size(), kept.size(), "the same size after a restart");
+    // Preferences stored before this have no size: the box follows the page as before.
+    let mut old = serde_json::to_value(crate::prefs::Prefs::default()).expect("the preferences");
+    old.as_object_mut().expect("an object").retain(|key, _| !key.starts_with("agent_chat_centre_"));
+    let read: crate::prefs::Prefs = serde_json::from_value(old).expect("older preferences read");
+    assert_eq!((read.agent_chat_centre_width, read.agent_chat_centre_height), (0.0, 0.0));
+
+    // A double-click on an edge: the size that follows the page again.
+    let at = edge("top").center();
+    again.call("ui.click", json!({"x": at.x, "y": at.y, "double": true}));
+    again.frames(3);
+    let back = place();
+    assert!((back.height() - 181.0).abs() < 0.5 && (back.width() - 520.0).abs() < 0.5, "today's size again: {back:?}");
+
+    // The side panel keeps its own width.
+    again.call("ui.prefs", json!({"agent_chat_centre": false}));
+    again.frames(3);
+    let side = crate::scenario::rect_of("agent_chat:panel").expect("the side panel");
+    assert!((side.width() - again.app.preferences.agent_chat_width).abs() < 1.0, "the side panel as before: {side:?}");
+}
+
+/// At the bottom centre the user moves the box sideways (the page's `move`, from a press on an
+/// empty part of it): it follows the pointer's travel since the press, only sideways, stays where
+/// it was dropped, never leaves the window or goes under the rail, and comes back into the room a
+/// narrower window leaves for as long as it is narrow. Until it is moved it is centred on the window.
+#[test]
+fn at_the_bottom_centre_the_user_moves_the_box_sideways_within_the_window() {
     let mut h = crate::scenario::Harness::new();
     h.app.home.open = false;
     h.call("ui.prefs", json!({"right_rail": true, "agent_chat_centre": true}));
     h.call("ui.agent_chat", json!({"open": true, "picker": false}));
+    h.app.ui.show_navigation_bar = false;
     web::set_host(&mut h.app, true);
     h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the page says how tall it is");
     h.frames(3);
-    let presses = |h: &mut crate::scenario::Harness| {
-        serde_json::from_str::<Value>(&web::state(&mut h.app)).expect("the state is JSON")["outsidePresses"].as_u64()
+    let place = || crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
+    let act = |h: &mut crate::scenario::Harness, message: &str| {
+        web::act(&mut h.app, &h.ctx, message).expect("the page moves the box");
+        h.frames(2);
     };
-    assert_eq!(presses(&mut h), Some(0), "nothing pressed yet");
-    // Closed, a press changes nothing on the page and is not told.
-    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":181}"#).expect("the closed box");
-    h.frames(2);
-    let closed = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
-    click_at(&mut h, egui::pos2(closed.center().x, closed.top() - 200.0), egui::PointerButton::Primary);
-    assert_eq!(presses(&mut h), Some(0), "with the box closed a press is not told");
-    // Opened: the page asks for all the room it may take.
-    web::act(&mut h.app, &h.ctx, r#"{"type":"size","height":5000}"#).expect("the conversation opens");
-    h.frames(2);
-    let view = crate::scenario::rect_of("agent_chat:web").expect("the place given up to the web view");
-    let model = egui::pos2(view.center().x, view.top() - 120.0);
-    let content = h.app.viewport.layout.clone().expect("the view's layout").content;
-    assert!(content.contains(model) && !view.contains(model), "a point on the model, above the page: {model:?} {view:?} {content:?}");
-    click_at(&mut h, model, egui::PointerButton::Primary);
-    assert_eq!(presses(&mut h), Some(1), "a press on the model");
-    click_at(&mut h, model, egui::PointerButton::Secondary);
-    assert_eq!(presses(&mut h), Some(1), "a secondary press is not counted");
-    let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
-    click_at(&mut h, egui::pos2(rail.center().x, rail.bottom() - 4.0), egui::PointerButton::Primary);
-    assert_eq!(presses(&mut h), Some(2), "a press on the rail");
+    let start = place();
+    assert!((start.center().x - h.ctx.content_rect().center().x).abs() < 1.0, "never moved, centred on the window: {start:?}");
 
-    h.call("ui.prefs", json!({"agent_chat_centre": false}));
+    act(&mut h, r#"{"type":"move","dx":-80}"#);
+    act(&mut h, r#"{"type":"move","dx":-200}"#);
+    let moved = place();
+    assert!((moved.left() - (start.left() - 200.0)).abs() < 0.5, "with the pointer's travel since the press: {moved:?} from {start:?}");
+    assert_eq!((moved.top(), moved.size()), (start.top(), start.size()), "only sideways");
+    act(&mut h, r#"{"type":"move","dx":-200,"done":true}"#);
+    h.call("ui.resize", json!({"width": 1601.0, "height": 1000.0}));
+    h.frames(2);
+    assert!((place().left() - moved.left()).abs() < 1.0, "it stays where it was dropped: {:?} {moved:?}", place());
+    // A zoomed page's travel is in screen units: two of them a point.
+    web::set_zoom(&mut h.app, 2.0);
+    act(&mut h, r#"{"type":"move","dx":100,"done":true}"#);
+    assert!((place().left() - (moved.left() + 50.0)).abs() < 1.0, "screen units over the zoom: {:?} {moved:?}", place());
+    web::set_zoom(&mut h.app, 1.0);
+
+    // Past the window's left edge it stops there, and a move back starts from the edge.
+    act(&mut h, r#"{"type":"move","dx":-5000}"#);
+    let edge = place();
+    act(&mut h, r#"{"type":"move","dx":-90000,"done":true}"#);
+    assert_eq!(place(), edge, "no further than the window's edge: {edge:?}");
+    assert!(edge.left() >= h.ctx.content_rect().left(), "inside the window: {edge:?}");
+    act(&mut h, r#"{"type":"move","dx":30,"done":true}"#);
+    assert!((place().left() - (edge.left() + 30.0)).abs() < 0.5, "back from the edge with the pointer: {:?} {edge:?}", place());
+
+    // Right, never under the rail, and a narrower window keeps it in the room left.
+    act(&mut h, r#"{"type":"move","dx":90000,"done":true}"#);
+    let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
+    let dropped = place();
+    assert!(dropped.right() < rail.left() && dropped.right() > rail.left() - 40.0, "up to the rail: {dropped:?} {rail:?}");
+    h.call("ui.resize", json!({"width": 1100.0, "height": 700.0}));
     h.frames(3);
-    click_at(&mut h, model, egui::PointerButton::Primary);
-    assert_eq!(presses(&mut h), Some(2), "in the side panel a press is not counted");
+    let narrow = place();
+    let rail = h.app.shell.right_rail.expect("the rail stands at the window's right edge");
+    assert!(narrow.right() < rail.left() && narrow.left() >= h.ctx.content_rect().left(), "in the narrower window: {narrow:?} {rail:?}");
+    assert_eq!(narrow.size(), start.size(), "the same box");
+    // Only for as long as the window is narrow: as wide as it was again, it is where it was dropped.
+    h.call("ui.resize", json!({"width": 1601.0, "height": 1000.0}));
+    h.frames(3);
+    assert!((place().left() - dropped.left()).abs() < 0.5, "back where it was dropped: {:?} {dropped:?}", place());
+    // Dropped past the edge of a narrow window, it keeps where it stopped, not the edge of a wider one.
+    let offset = |h: &crate::scenario::Harness| place().center().x - h.ctx.content_rect().center().x;
+    h.call("ui.resize", json!({"width": 1100.0, "height": 700.0}));
+    h.frames(3);
+    act(&mut h, r#"{"type":"move","dx":90000,"done":true}"#);
+    let stopped = offset(&h);
+    h.call("ui.resize", json!({"width": 1601.0, "height": 1000.0}));
+    h.frames(3);
+    assert!((offset(&h) - stopped).abs() < 0.5 && place().right() < dropped.right() - 100.0, "where it stopped: {:?} {stopped}", place());
+
+    assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"move"}"#).is_err(), "a move without its travel is refused");
+    assert!(web::act(&mut h.app, &h.ctx, r#"{"type":"move","dx":"far"}"#).is_err());
 }
 
 /// Files dropped on the host's web view are attached to the next message as files dropped on the
@@ -19392,7 +19534,7 @@ fn assistant_dfm_automatic_dispatch_has_no_verified_scope() {
         let (mut app, _, _) = app_with_script();
         let dir = a_project_with_checks_on(&mut app);
         app.account = crate::account::State::with_port(crate::account::tests::signed_in_unknown_port());
-        let submitted = submit_dfm(&app, trigger);
+        let submitted = submit_dfm(&mut app, trigger);
         std::fs::remove_dir_all(dir).unwrap();
         assert!(!submitted, "a committed edit does not authorize an automatic DFM run");
     }

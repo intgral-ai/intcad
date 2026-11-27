@@ -383,12 +383,12 @@ fn navigation_bar_tool_radio_group_and_overflow_execute_in_list_order() {
     use crate::viewport::NavMode;
     let mut h = Harness::new();
     moved_block(&mut h);
-    h.call("ui.prefs", json!({"navigation_bar":{"slots":["zoom","fit","pan","separator","orbit"]}}));
+    h.call("ui.prefs", json!({"navigation_bar":{"edge":"bottom","slots":["zoom","fit","pan","separator","orbit"]}}));
     for (slot, mode) in [("pan", Some(NavMode::Pan)), ("zoom", Some(NavMode::Zoom)), ("orbit", Some(NavMode::Orbit)), ("orbit", None)] {
         h.step(&json!({"click":{"handle":format!("nav:slot:{slot}")}})).unwrap();
         assert_eq!(h.app.viewport.nav, mode);
     }
-    h.call("ui.prefs", json!({"navigation_bar":{"slots":["pan","fit","home","visual_style","display","grid","ground_shadow","ambient_occlusion","projection","spin","orbit","zoom"]}}));
+    h.call("ui.prefs", json!({"navigation_bar":{"edge":"bottom","slots":["pan","fit","home","visual_style","display","grid","ground_shadow","ambient_occlusion","projection","spin","orbit","zoom"]}}));
     h.app.ui.show_browser = false;
     h.app.ui.show_timeline = false;
     h.call("ui.resize", json!({"width":300,"height":600}));

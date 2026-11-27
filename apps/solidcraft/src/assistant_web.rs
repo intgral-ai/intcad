@@ -16,6 +16,12 @@
 //! the app's own, so the page has an `http` address there that only this view answers, and it
 //! keeps its files in the user's data folder. A machine without the WebView2 runtime has no view:
 //! the panel names it and offers Retry and Assistant settings.
+//!
+//! A second view of the same page shows the project's part tickets over the right rail's Tickets
+//! panel ([`AssistantWeb::tickets`]): the host tells it `solidcraft_ui_egui::tickets::page_state`,
+//! and only its own channel takes the tickets view's requests (`tickets::receive`); the
+//! Assistant's view refuses them. Experiment (branch `experiment/part-tickets`): made and checked
+//! on macOS only; on Windows and Linux it compiles and is placed the same way, untried.
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -277,8 +283,19 @@ struct Placed {
     reveal: Option<f32>,
 }
 
+/// Which view of the page a web view shows.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+enum Page {
+    /// The Assistant's conversation, over its panel.
+    #[default]
+    Assistant,
+    /// The project's part tickets, over the right rail's Tickets panel.
+    Tickets,
+}
+
 #[derive(Default)]
 pub struct AssistantWeb {
+    page: Page,
     view: Option<wry::WebView>,
     /// The frame that shows only the view's foot (macOS, `assistant_clip`). Without it the view
     /// changes size as the page grows, as it does on the other systems.
@@ -353,6 +370,11 @@ impl AssistantWeb {
         Self::default()
     }
 
+    /// The tickets view: the same page, told the tickets' state, over the right rail's panel.
+    pub fn tickets() -> Self {
+        Self { page: Page::Tickets, ..Self::default() }
+    }
+
     /// The view goes before the window it is a child of does.
     pub fn close(&mut self) {
         self.view = None;
@@ -415,7 +437,9 @@ impl AssistantWeb {
     pub fn logic(&mut self, solve: &mut SolveApp, ctx: &egui::Context) {
         #[cfg(target_os = "linux")]
         self.turn_gtk();
-        web::advance(solve, ctx);
+        if self.page == Page::Assistant {
+            web::advance(solve, ctx);
+        }
         let messages: Vec<String> = self.inbox.borrow_mut().drain(..).collect();
         #[cfg(target_os = "linux")]
         if !messages.is_empty() {
@@ -429,7 +453,7 @@ impl AssistantWeb {
         if !drags.is_empty() {
             self.at_work.set(true);
         }
-        for drag in drags {
+        for drag in drags.into_iter().filter(|_| self.page == Page::Assistant) {
             match drag {
                 Drag::Over(over) => web::dragging(solve, over),
                 Drag::Dropped(paths) => web::dropped(solve, paths),
@@ -441,11 +465,19 @@ impl AssistantWeb {
     /// Tell the shown page the Assistant's state when it changed.
     fn tell(&mut self, solve: &mut SolveApp) {
         let Some(view) = self.view.as_ref().filter(|_| self.shown) else { return };
-        let state = web::state(solve);
+        let state = match self.page {
+            Page::Assistant => web::state(solve),
+            Page::Tickets => solidcraft_ui_egui::tickets::page_state(solve),
+        };
         if state != self.told {
             // Before the page hears of a picture, the host can serve it.
             if let Ok(mut held) = self.pictures.lock() {
-                *held = web::pictures(solve).into_iter().collect();
+                *held = match self.page {
+                    Page::Assistant => web::pictures(solve),
+                    Page::Tickets => solidcraft_ui_egui::tickets::pictures(solve),
+                }
+                .into_iter()
+                .collect();
             }
             match view.evaluate_script(&format!("window.__assistantHost&&window.__assistantHost.state({state})")) {
                 Ok(()) => {
@@ -462,7 +494,7 @@ impl AssistantWeb {
     pub fn tick(&mut self, solve: &mut SolveApp, ctx: &egui::Context, frame: &eframe::Frame) {
         // The panel's Retry: the conversation is the app's state, so a new view picks it up
         // whole; only the view and its place are made again.
-        if web::take_retry(solve) {
+        if self.page == Page::Assistant && web::take_retry(solve) {
             self.view = None;
             self.placed = None;
             self.shown = false;
@@ -515,38 +547,54 @@ impl AssistantWeb {
     }
 
     fn keep_place(&mut self, solve: &mut SolveApp, ctx: &egui::Context, frame: &eframe::Frame) {
+        let assistant = self.page == Page::Assistant;
         #[cfg(target_os = "linux")]
         if !available() {
-            web::set_host(solve, false);
-            web::set_problem(solve, web::Problem::NativeWayland);
+            if assistant {
+                web::set_host(solve, false);
+                web::set_problem(solve, web::Problem::NativeWayland);
+            } else {
+                solidcraft_ui_egui::tickets::set_host(solve, false);
+            }
             self.show(false);
             return;
         }
-        let Some(rect) = web::placement(solve, ctx) else {
+        let placement = if assistant { web::placement(solve, ctx) } else { solidcraft_ui_egui::tickets::placement(solve, ctx) };
+        let Some(rect) = placement else {
             self.show(false);
             return;
         };
-        let at = Placed { rect, zoom: ctx.zoom_factor(), pixels_per_point: ctx.pixels_per_point(), reveal: web::reveal(solve) };
+        let reveal = if assistant { web::reveal(solve) } else { None };
+        let at = Placed { rect, zoom: ctx.zoom_factor(), pixels_per_point: ctx.pixels_per_point(), reveal };
         #[cfg(target_os = "linux")]
         self.latest.set(Some(at));
-        let backing = web::backing(solve, ctx);
+        let backing = if assistant { web::backing(solve, ctx) } else { ctx.global_style().visuals.panel_fill };
         if self.view.is_none() && !self.create(ctx, frame, at, backing) {
             // No web view on this machine: the panel says why and offers Retry; it does not draw
             // a second conversation.
-            web::set_host(solve, false);
-            web::set_problem(solve, web::Problem::Failed);
+            if assistant {
+                web::set_host(solve, false);
+                web::set_problem(solve, web::Problem::Failed);
+            } else {
+                solidcraft_ui_egui::tickets::set_host(solve, false);
+            }
             ctx.request_repaint();
             return;
         }
+        if !assistant {
+            solidcraft_ui_egui::tickets::set_host(solve, true);
+        }
         #[cfg(target_os = "macos")]
-        web::set_clips(solve, self.clip.is_some());
+        if assistant {
+            web::set_clips(solve, self.clip.is_some());
+        }
         #[cfg(target_os = "linux")]
         let scale_changed = {
             use gtk::prelude::WidgetExt;
             let scale = self.gtk_window.as_ref().map(WidgetExt::scale_factor);
             let changed = scale != self.gtk_scale;
             self.gtk_scale = scale;
-            changed && web::centred_view(solve)
+            changed && assistant && web::centred_view(solve)
         };
         #[cfg(not(target_os = "linux"))]
         let scale_changed = false;
@@ -579,6 +627,11 @@ impl AssistantWeb {
             }
             self.placed = Some(at);
         }
+        // The page's pointer travel (`move`) comes in screen units, which WebKit does not scale with
+        // the page's zoom (seen on macOS; WebView2 on Windows was not checked).
+        if assistant && let Some(view) = &self.view {
+            web::set_zoom(solve, page_zoom(view, at) as f32);
+        }
         // Behind a view that is not seen through: the page's own surface, once the page said it.
         if !SEE_THROUGH
             && self.backed != Some(backing)
@@ -591,7 +644,7 @@ impl AssistantWeb {
         }
         self.show(true);
         #[cfg(target_os = "linux")]
-        self.shape_gtk(web::centred_view(solve), at);
+        self.shape_gtk(assistant && web::centred_view(solve), at);
         self.tell(solve);
     }
 
@@ -617,6 +670,18 @@ impl AssistantWeb {
             }
             Some("focus") => self.focused = value.get("on").and_then(serde_json::Value::as_bool).unwrap_or(false),
             Some("log") => note(&value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default().chars().take(600).collect::<String>()),
+            // The tickets view takes its own requests and nothing of the Assistant's: its surface
+            // colour needs no frame (the rail's panel is square), and copying is the page's own.
+            Some("surface") if self.page == Page::Tickets => {}
+            Some("copy") if self.page == Page::Tickets => {
+                let text = value.get("text").and_then(serde_json::Value::as_str).unwrap_or_default();
+                ctx.copy_text(text.chars().take(20_000).collect());
+            }
+            _ if self.page == Page::Tickets => {
+                if let Err(reason) = solidcraft_ui_egui::tickets::receive(solve, ctx, message) {
+                    note(&format!("tickets view refused: {reason}"));
+                }
+            }
             _ => {
                 if let Err(reason) = web::act(solve, ctx, message) {
                     note(&format!("refused: {reason}"));
@@ -783,8 +848,9 @@ impl AssistantWeb {
                     }
                     self.gtk_window = gtk_window;
                 }
+                // The tickets view always shows whole: it needs no frame of its own.
                 #[cfg(target_os = "macos")]
-                {
+                if self.page == Page::Assistant {
                     use wry::WebViewExtMacOS;
                     self.clip = crate::assistant_clip::Clip::new(&view.webview());
                     if self.clip.is_none() {

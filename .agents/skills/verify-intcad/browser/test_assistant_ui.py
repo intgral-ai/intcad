@@ -453,6 +453,89 @@ def test_new_chat_confirmation(assistant, confirm):
     expect(assistant.get_by_text(note["text"], exact=True)).to_have_count(0 if confirm else 1)
 
 
+MOVES = "() => window.assistantFixture.actions.filter(action => action.type === 'move')"
+
+
+def press_and_go(page, x, y, dx):
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + dx / 2, y, steps=3)
+    page.mouse.move(x + dx, y + 9)
+    page.mouse.up()
+
+
+def test_centred_box_moves_sideways_from_its_empty_parts_only(page, site):
+    page.set_viewport_size({"width": 520, "height": 300})
+    page.add_init_script(path=HERE / "host.js")
+    page.goto(site)
+    expect(page.get_by_role("textbox", name="Message")).to_be_visible()
+    show(page, centre=300, items=[{"kind": "notice", "text": "Status", "error": False}])
+    row = page.locator('[data-slot="composer-actions"]').bounding_box()
+    lead = page.locator('[data-slot="composer-actions-start"]').bounding_box()
+    gap = (lead["x"] + lead["width"] + 12, row["y"] + row["height"] / 2)
+    # The grip says the box can be dragged: Mastra's drag handle at the box's top right corner, the
+    # end of the closed line. The gap, which drags as well, shows the same cursor.
+    grip = page.get_by_role("button", name="moveBox")
+    expect(grip).to_be_visible()
+    assert grip.evaluate("e => getComputedStyle(e).cursor") == "grab"
+    assert page.locator('[data-slot="composer-actions"]').evaluate("e => getComputedStyle(e).cursor") == "grab"
+    held = grip.bounding_box()
+    box = page.locator("[data-centre-line]").bounding_box()
+    assert held["x"] + held["width"] > box["x"] + box["width"] - 24 and held["y"] < row["y"], (held, box)
+    on_grip = (held["x"] + held["width"] / 2, held["y"] + held["height"] / 2)
+    # A plain click on the grip moves nothing; a press that goes sideways drags from it.
+    grip.click()
+    assert page.evaluate(MOVES) == []
+    press_and_go(page, *on_grip, -50)
+    assert page.evaluate(MOVES)[-1] == {"type": "move", "dx": -50, "done": True}
+    page.evaluate("window.assistantFixture.actions.length = 0")
+    # A press in the gap of the message box's bottom row that stays put moves nothing.
+    page.mouse.click(*gap)
+    press_and_go(page, *gap, 2)
+    assert page.evaluate(MOVES) == []
+    # Going sideways, the host is told the travel since the press, and that it ended.
+    press_and_go(page, *gap, -60)
+    moves = page.evaluate(MOVES)
+    assert moves[-1] == {"type": "move", "dx": -60, "done": True} and moves[-2] == {"type": "move", "dx": -60}, moves
+    assert all("done" not in move for move in moves[:-1]), moves
+    # From a control nothing moves: the text box and the + menu keep their press.
+    for control in (page.get_by_role("textbox", name="Message"), page.get_by_role("button", name="add")):
+        box = control.bounding_box()
+        press_and_go(page, box["x"] + box["width"] / 2, box["y"] + box["height"] / 2, -60)
+        page.keyboard.press("Escape")
+    assert len(page.evaluate(MOVES)) == len(moves)
+
+    # Open, the bar's empty part: a press that goes sideways moves the box and leaves it open.
+    page.get_by_title("expand").first.click()
+    body = page.locator("[data-centre-body]")
+    expect(body).to_have_attribute("data-open", "true")
+    page.wait_for_timeout(600)  # the conversation rises from the box
+    bar = page.locator("[data-centre-bar-drag]").bounding_box()
+    empty = (bar["x"] + bar["width"] * 0.6, bar["y"] + bar["height"] / 2)
+    press_and_go(page, *empty, 80)
+    assert page.evaluate(MOVES)[-1] == {"type": "move", "dx": 80, "done": True}
+    expect(body).to_have_attribute("data-open", "true")
+    # Open, the grip is the bar's last button, and drags.
+    expect(grip).to_be_visible()
+    held = grip.bounding_box()
+    assert held["y"] + held["height"] <= bar["y"] + bar["height"] and held["x"] > bar["x"] + bar["width"] * 0.8, (held, bar)
+    press_and_go(page, held["x"] + held["width"] / 2, held["y"] + held["height"] / 2, 40)
+    assert page.evaluate(MOVES)[-1] == {"type": "move", "dx": 40, "done": True}
+    expect(body).to_have_attribute("data-open", "true")
+    # Only Collapse collapses it: not a plain click on the bar, not a press outside the page (its
+    # blur), which still closes a menu that is open.
+    page.mouse.click(*empty)
+    page.wait_for_timeout(300)
+    expect(body).to_have_attribute("data-open", "true")
+    page.get_by_role("button", name="title").click()
+    expect(page.get_by_role("menu")).to_be_visible()
+    page.evaluate("window.dispatchEvent(new Event('blur'))")
+    expect(page.get_by_role("menu")).to_be_hidden()
+    expect(body).to_have_attribute("data-open", "true")
+    page.get_by_role("button", name="collapse").click()
+    expect(body).not_to_have_attribute("data-open", "true")
+
+
 # Next-step suggestions (INT-1458, docs/design/autocomplete-tests.md G34 to G36).
 
 SUGGESTION = {"label": "Next step", "text": "Drill four 5 mm holes (guessed: 5, position) \u00b7 It has no fixings.",

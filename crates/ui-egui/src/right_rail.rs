@@ -1,7 +1,10 @@
 //! The right rail (Preferences › Interface › Right rail; on by default): a narrow strip along the
 //! window's right edge. The Assistant's entry stands first, over a rule: it opens and closes the
-//! Assistant, which stays a panel of its own. Then come the four items. Files is for what is in
-//! the design's project; under a rule come Review, Simulation and Autocomplete. An item opens its
+//! Assistant, which stays a panel of its own. Then come the items. Files and Tickets are for what
+//! is in the design's project; under a rule come Review, Simulation and Autocomplete. The Tickets
+//! panel is a web page (the tickets view of the Assistant's page) laid over the whole panel by the
+//! host; the panel itself draws only what shows where no web view can be made (experiment
+//! `experiment/part-tickets`). An item opens its
 //! panel beside the rail, one panel at a time; the same item closes it again. The panel can be
 //! dragged wider, and its width and the open item are remembered.
 //!
@@ -40,6 +43,9 @@ const EMPTY_TEXT: f32 = 320.0;
 pub(crate) const MIN_PANEL: f32 = 280.0;
 pub(crate) const MAX_PANEL: f32 = 560.0;
 pub(crate) const DEFAULT_PANEL: f32 = 320.0;
+/// The Tickets panel's first width, room for a ticket's title as in its designs. It opens at it
+/// while the stored width is still the first one, which a width never dragged cannot be told from.
+pub(crate) const TICKETS_PANEL: f32 = 400.0;
 /// The width the view keeps beside the panel. In a window too narrow for both, the panel is not
 /// drawn and the rail still marks its item, so the view never shrinks to nothing.
 pub(crate) const MIN_VIEW: f32 = 240.0;
@@ -48,18 +54,20 @@ pub(crate) const MIN_VIEW: f32 = 240.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Item {
     Files,
+    Tickets,
     Review,
     Simulation,
     Autocomplete,
 }
 
 impl Item {
-    pub(crate) const ALL: [Item; 4] = [Item::Files, Item::Review, Item::Simulation, Item::Autocomplete];
+    pub(crate) const ALL: [Item; 5] = [Item::Files, Item::Tickets, Item::Review, Item::Simulation, Item::Autocomplete];
 
     /// The name the open item is stored by.
     pub(crate) fn id(self) -> &'static str {
         match self {
             Item::Files => "files",
+            Item::Tickets => "tickets",
             Item::Review => "review",
             Item::Simulation => "simulation",
             Item::Autocomplete => "autocomplete",
@@ -76,6 +84,7 @@ impl Item {
     pub(crate) fn name(self) -> &'static str {
         tr(match self {
             Item::Files => "rail.files",
+            Item::Tickets => "rail.tickets",
             Item::Review => "rail.review",
             Item::Simulation => "rail.simulation",
             Item::Autocomplete => "rail.autocomplete",
@@ -86,6 +95,7 @@ impl Item {
     pub(crate) fn title(self) -> &'static str {
         tr(match self {
             Item::Files => "rail.files_title",
+            Item::Tickets => "rail.tickets_title",
             Item::Review => "rail.review_title",
             Item::Simulation => "rail.simulation_title",
             Item::Autocomplete => "rail.autocomplete_title",
@@ -96,6 +106,7 @@ impl Item {
     pub(crate) fn empty(self) -> &'static str {
         tr(match self {
             Item::Files => "rail.files_empty",
+            Item::Tickets => "rail.tickets_empty",
             Item::Review => "rail.review_empty",
             Item::Simulation => "rail.simulation_empty",
             Item::Autocomplete => "rail.autocomplete_empty",
@@ -106,6 +117,7 @@ impl Item {
     pub(crate) fn note(self) -> &'static str {
         tr(match self {
             Item::Files => "rail.files_note",
+            Item::Tickets => "rail.tickets_note",
             Item::Review => "rail.review_note",
             Item::Simulation => "rail.simulation_note",
             Item::Autocomplete => "rail.autocomplete_note",
@@ -191,7 +203,8 @@ pub(crate) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         return;
     }
     let widest = MAX_PANEL.min(room);
-    let want = panel_width(app).min(widest);
+    let stored = panel_width(app);
+    let want = if item == Item::Tickets && stored == DEFAULT_PANEL { TICKETS_PANEL } else { stored }.min(widest);
     // The preference is the one memory of the width. The panel is laid out from it on every
     // frame, so a width set from outside (the control channel, a restored preferences file)
     // shows at once, and a panel squeezed by a narrow window has its chosen width back in a
@@ -328,6 +341,15 @@ fn drawing(painter: &egui::Painter, item: Item, centre: Pos2, side: f32, ink: Co
     match item {
         // A folder: its tab and its body.
         Item::Files => line(&[(1.5, 3.5), (6.0, 3.5), (7.75, 5.5), (14.5, 5.5), (14.5, 12.5), (1.5, 12.5)], true),
+        // A ticket: a card with a torn-off stub, and two lines of what it asks for.
+        Item::Tickets => {
+            painter.rect_stroke(Rect::from_min_max(at(1.5, 3.5), at(14.5, 12.5)), 1.5 * unit, stroke, egui::StrokeKind::Middle);
+            for y in [5.5, 8.0, 10.5] {
+                painter.circle_filled(at(10.5, y), 0.6 * unit.max(1.0), ink);
+            }
+            line(&[(4.0, 6.5), (8.0, 6.5)], false);
+            line(&[(4.0, 9.5), (7.0, 9.5)], false);
+        }
         // A sheet on a clipboard with a tick: something looked over.
         Item::Review => {
             painter.rect_stroke(Rect::from_min_max(at(3.0, 3.5), at(13.0, 14.0)), 1.5 * unit, stroke, egui::StrokeKind::Middle);
@@ -352,6 +374,16 @@ fn drawing(painter: &egui::Painter, item: Item, centre: Pos2, side: f32, ink: Co
 fn panel(app: &mut SolveApp, ui: &mut egui::Ui, item: Item) {
     let t = Tokens::get();
     let full = ui.max_rect();
+    // The tickets view is a web page over the whole panel, its own title row included; where the
+    // host has no web view, the panel says so in its empty block.
+    if item == Item::Tickets {
+        crate::tickets::place(app, ui, full);
+        if app.tickets.web_host == Some(false) {
+            empty(ui, full, item);
+        }
+        ui.allocate_rect(full, Sense::hover());
+        return;
+    }
     let header = Rect::from_min_size(full.min, vec2(full.width(), HEADER.min(full.height())));
     // Files is named after the folder it browses; the other panels keep their own name.
     let title = if item == Item::Files {

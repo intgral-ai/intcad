@@ -262,6 +262,22 @@ pub struct Gallery {
     at: usize,
 }
 
+/// Show `pictures` (bytes and a name each) in the picture viewer over the app, from the one at
+/// `at`: a ticket's picture attachments.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn show_pictures(app: &mut SolveApp, pictures: Vec<(Arc<Vec<u8>>, String)>, at: usize) {
+    let pictures: Vec<Picture> = pictures.into_iter().map(|(bytes, name)| Picture::shared(bytes, name, false)).collect();
+    if !pictures.is_empty() {
+        app.agent_chat.gallery = Some(Gallery { at: at.min(pictures.len() - 1), pictures });
+    }
+}
+
+/// Whether the picture viewer is open over the app.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn gallery_open(app: &SolveApp) -> bool {
+    app.agent_chat.gallery.is_some()
+}
+
 #[derive(Clone, Debug)]
 pub enum Item {
     User {
@@ -526,10 +542,18 @@ pub struct AgentChat {
     pub(crate) web_clips: bool,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) web_reveal: Option<f32>,
-    /// Primary presses in the app's window, outside the page, while it is shown at the bottom
-    /// centre (`panel::centre`): the page collapses its conversation when the count goes up.
+    /// How far the user moved the box at the bottom centre from the window's centre, in points, for
+    /// this run only ([`web::act`], `move`); while a move is under way, where it started; and the
+    /// least and most it may be in the last frame (`panel::centre`).
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) web_presses: u64,
+    pub(crate) web_shift: f32,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_shift_from: Option<f32>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_shift_room: Option<(f32, f32)>,
+    /// How many of the pointer's screen units the page's point is ([`web::set_zoom`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) web_zoom: Option<f32>,
     /// A pointer press in the transcript owns keys just like a focused text editor.
     keyboard_owned: bool,
     /// Unreserved sheet space, shared by the actual dock and its drag preview.
@@ -712,7 +736,10 @@ impl AgentChat {
             std::mem::swap(&mut self.web_centre, &mut other.web_centre);
             std::mem::swap(&mut self.web_clips, &mut other.web_clips);
             std::mem::swap(&mut self.web_reveal, &mut other.web_reveal);
-            std::mem::swap(&mut self.web_presses, &mut other.web_presses);
+            std::mem::swap(&mut self.web_shift, &mut other.web_shift);
+            std::mem::swap(&mut self.web_shift_from, &mut other.web_shift_from);
+            std::mem::swap(&mut self.web_shift_room, &mut other.web_shift_room);
+            std::mem::swap(&mut self.web_zoom, &mut other.web_zoom);
         }
         // Hit regions must be measured again for the incoming conversation.
         self.panel_rect = None;
@@ -1809,10 +1836,18 @@ fn assistant_dfm_refusal(app: &SolveApp) -> solidcraft_engine::entitlement::Refu
     RefusalCode::UnsafeToStart
 }
 
-/// A decided automatic trigger is not permission to run the ordinary CAD command.
-fn submit_dfm(app: &SolveApp, trigger: dfm_runtime::Trigger) -> bool {
-    log::debug!("Assistant DFM not started after {trigger:?}: {:?}", assistant_dfm_refusal(app));
-    false
+/// A decided automatic trigger is not permission to run the ordinary CAD command. The one that
+/// runs is a part ticket's: the Assistant's finished ticket gets its check asked for, and the
+/// tickets' own step starts it through the Review panel's admission, as a person's 跑检查 does.
+fn submit_dfm(app: &mut SolveApp, trigger: dfm_runtime::Trigger) -> bool {
+    match trigger {
+        #[cfg(not(target_arch = "wasm32"))]
+        dfm_runtime::Trigger::TicketFinished { ticket, .. } => crate::tickets::ask_auto_check(app, &ticket),
+        trigger => {
+            log::debug!("Assistant DFM not started after {trigger:?}: {:?}", assistant_dfm_refusal(app));
+            false
+        }
+    }
 }
 
 /// A manual Assistant trigger, separate from the ordinary CAD command.
@@ -1868,6 +1903,22 @@ pub(crate) fn dfm_state() -> DfmState {
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn dfm_state() -> DfmState {
     DfmState { running: false }
+}
+
+/// Install a scripted agent that is ready to take a message (other areas' tests).
+#[cfg(test)]
+pub(crate) fn install_test_backend(app: &mut SolveApp, backend: Box<dyn ChatBackend>) {
+    app.agent_chat.backend = Some(backend);
+    app.agent_chat.state = Some(State::Ready);
+}
+
+/// The scripted agent's tool port (other areas' tests): requests sent here are judged by the gate
+/// as an agent's are.
+#[cfg(test)]
+pub(crate) fn install_test_tools(app: &mut SolveApp) -> std::sync::mpsc::Sender<ControlRequest> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.agent_chat.tools_rx = Some(rx);
+    tx
 }
 
 /// Put a ready attachment on the next message and open the Assistant, so the person sees the chip
@@ -2432,7 +2483,10 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     let skill_note = skill.prompt_note().map(|note| task_runtime::prompt_note(skill, note));
     #[cfg(target_arch = "wasm32")]
     let skill_note = skill.prompt_note();
-    let notes: Vec<&str> = skill_note.iter().map(String::as_str).chain(reviewed.as_deref()).chain(note).chain(changed.as_deref()).collect();
+    // The project's part tickets: the one in progress in full, the others by id, title and state.
+    let tickets = crate::tickets::note(app);
+    let notes: Vec<&str> =
+        skill_note.iter().map(String::as_str).chain(reviewed.as_deref()).chain(note).chain(tickets.as_deref()).chain(changed.as_deref()).collect();
     let lead = if notes.is_empty() { text.clone() } else { format!("{}\n\n{text}", notes.join("\n")) };
     // The whole message stays within the cap: the files' text gets what the words leave.
     let budget = MAX_PROMPT.saturating_sub(lead.chars().count() + FILE_NAMES_ROOM);
@@ -2936,6 +2990,13 @@ fn pump_tools(app: &mut SolveApp) {
             refuse(req, reason);
             continue;
         }
+        // A ticket's check runs on the model as it is: a change would cancel it.
+        if let Some(id) = crate::tickets::checking(app).map(str::to_string)
+            && gate::may_change_model(&req.method, &req.params)
+        {
+            refuse(req, format!("the check of part ticket {id} is running: wait for its result before you change the model"));
+            continue;
+        }
         let undo_len = app.session.undo.len();
         let previewing = review::running(&app.agent_chat);
         let Some(turn) = app.agent_chat.turn.as_mut() else {
@@ -3145,6 +3206,10 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
                     refresh_dfm_auto(app);
                     let stamp = app.session.document_stamp();
                     app.agent_chat.dfm.on_turn_end(&stamp.document_id, &format!("turn-{turn}"), stamp.revision, changed, pending);
+                    // The part ticket it said finished has its check held the same way.
+                    if let Some(ticket) = crate::tickets::finished_unchecked(app) {
+                        app.agent_chat.dfm.on_ticket_finished(&stamp.document_id, &format!("turn-{turn}"), stamp.revision, pending, &ticket);
+                    }
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 task_runtime::on_turn_end(app);

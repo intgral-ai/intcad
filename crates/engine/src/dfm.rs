@@ -328,6 +328,11 @@ pub fn check_sheet(sheet: &SheetBody, parameters: SheetCheckParameters) -> Resul
 /// `from = App` and `rules = ["app.flat_no_overlap"]`.
 pub const FLAT_NO_OVERLAP_RULE: &str = "app.flat_no_overlap";
 
+/// Every rule a run can report: the rules crate's catalogue, gates included, then the App's own.
+pub fn rule_ids() -> impl Iterator<Item = &'static str> {
+    solidcraft_dfm_rules::RULE_ORDER.iter().copied().chain([FLAT_NO_OVERLAP_RULE])
+}
+
 /// How `app.flat_no_overlap` decided one sheet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

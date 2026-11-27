@@ -1,0 +1,155 @@
+//! `ticket.list`, `ticket.inspect`, `ticket.draft` and `ticket.update`: the agent's way to the
+//! project's part tickets (`crate::project::tickets`).
+//!
+//! These four are all there is. Drafting makes drafts; an update sets a ticket's state (its own
+//! draft's acceptance and finishing included, under the store's conditions), comments on a ticket,
+//! or says the ticket the Assistant works is finished (with what was done), blocked or taken up
+//! again. Its 「做完了」 asks for the ticket's check when the project's automatic checks are on; no
+//! command asks for one. Editing, deleting and restoring are a person's buttons in the Tickets
+//! panel, so no command does them. Every step a command makes is recorded as the agent's.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
+
+use super::CommandSpec;
+use crate::params::bad;
+use crate::project::Project;
+use crate::project::tickets::{self, Draft, TicketError};
+use crate::schema::TypedContract;
+use crate::schema::ticket::{TicketDraftParams, TicketInspectParams, TicketListParams, TicketReply, TicketUpdateParams, TicketsReply};
+use crate::{Result, Session};
+
+const LIST_CONTRACT: TypedContract<TicketListParams> = TypedContract::new();
+const INSPECT_CONTRACT: TypedContract<TicketInspectParams> = TypedContract::new();
+const DRAFT_CONTRACT: TypedContract<TicketDraftParams> = TypedContract::new();
+const UPDATE_CONTRACT: TypedContract<TicketUpdateParams> = TypedContract::new();
+
+pub static COMMANDS: &[CommandSpec] = &[
+    CommandSpec::new("ticket.list", "List Part Tickets", crate::checked!("ticket.list", list))
+        .icon("settings")
+        .noundo()
+        .doc_only()
+        .contract(&LIST_CONTRACT)
+        .output(crate::schema::output_schema_for::<TicketsReply>)
+        .params(
+            "→ tickets: every part ticket of the open project by number, each with id, parent, title, text, requirements, parts, attachments, waits, \
+             worker, checks, state, check and deleted (a person deleted it; it can be restored)",
+        ),
+    CommandSpec::new("ticket.inspect", "Inspect Part Ticket", crate::checked!("ticket.inspect", inspect))
+        .icon("settings")
+        .noundo()
+        .doc_only()
+        .contract(&INSPECT_CONTRACT)
+        .output(crate::schema::output_schema_for::<TicketReply>)
+        .params("id: T-2 → ticket, and events: its record, oldest first (who, when, what changed)"),
+    CommandSpec::new("ticket.draft", "Draft Part Ticket", crate::checked!("ticket.draft", draft))
+        .icon("settings")
+        .noundo()
+        .doc_only()
+        .contract(&DRAFT_CONTRACT)
+        .output(crate::schema::output_schema_for::<TicketReply>)
+        .params(
+            "title; text?; requirements?: [one line each, with numbers and units]; parts?: [{kind: component | body, id}], none, one or several; \
+             attachments?: [paths of files in the project folder]; parent?: a ticket's id, to draft a sub-ticket (one level deep); \
+             waits?: [ids of tickets it waits for]; view?: true to attach a picture of the 3D view \
+             → a draft, one piece of work. There is no top ticket. A person accepts it in the Tickets panel before anyone works on it",
+        ),
+    CommandSpec::new("ticket.update", "Update Part Ticket", crate::checked!("ticket.update", update))
+        .icon("settings")
+        .noundo()
+        .doc_only()
+        .contract(&UPDATE_CONTRACT)
+        .output(crate::schema::output_schema_for::<TicketReply>)
+        .params(
+            "id; action: state (to: draft | confirmed | in_progress | waiting | done | blocked; confirmed accepts a draft; done only when its \
+             sub-tickets are done and, where a check applies, its check ran and left nothing failed; text required for waiting, blocked \
+             and done: what you did and why you move it) | comment (text, on any ticket) | finished (the ticket you work has its \
+             changes; text required: what you changed, on which parts, what you did not do; with the project's automatic checks on its \
+             check then runs and its findings come back to you, else a person starts it) | block (text required: why) | unblock; text?; \
+             attachments?: [paths of files in the project, at most 5, for comment and finished]; view?: true to add a picture of the 3D \
+             view to a comment or finished → the ticket. No command asks for a check, edits, deletes or restores a ticket: a person \
+             does those in the Tickets panel",
+        ),
+];
+
+fn root(s: &Session, id: &str) -> Result<PathBuf> {
+    let path = s.path.as_deref().ok_or_else(|| bad(id, "the open design is not saved in a project; make or open a project first"))?;
+    Project::locate(Path::new(path)).ok_or_else(|| bad(id, "the open design is not in a project; make or open a project first"))
+}
+
+fn refusal(id: &str, error: TicketError) -> crate::EngineError {
+    bad(id, error.to_string())
+}
+
+fn reply(id: &str, root: &Path, ticket: tickets::Ticket) -> Result<Value> {
+    let events = tickets::record(root, &ticket.id).map_err(|error| refusal(id, error))?;
+    serde_json::to_value(TicketReply { ticket, events }).map_err(|error| bad(id, error.to_string()))
+}
+
+fn list(s: &mut Session, _p: &Value) -> Result<Value> {
+    let root = root(s, "ticket.list")?;
+    let tickets = tickets::list(&root).map_err(|error| refusal("ticket.list", error))?;
+    serde_json::to_value(TicketsReply { tickets }).map_err(|error| bad("ticket.list", error.to_string()))
+}
+
+fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
+    let params: TicketInspectParams = serde_json::from_value(p.clone()).map_err(|error| bad("ticket.inspect", error.to_string()))?;
+    let root = root(s, "ticket.inspect")?;
+    let ticket = tickets::load(&root, params.id.trim()).map_err(|error| refusal("ticket.inspect", error))?;
+    reply("ticket.inspect", &root, ticket)
+}
+
+fn draft(s: &mut Session, p: &Value) -> Result<Value> {
+    let params: TicketDraftParams = serde_json::from_value(p.clone()).map_err(|error| bad("ticket.draft", error.to_string()))?;
+    if params.checks.is_some() {
+        return Err(bad("ticket.draft", "leave `checks` out: a person switches a ticket's check off, in the Tickets panel"));
+    }
+    let root = root(s, "ticket.draft")?;
+    let draft = Draft {
+        title: params.title,
+        text: params.text.unwrap_or_default(),
+        requirements: params.requirements,
+        parent: params.parent,
+        parts: params.parts,
+        attachments: params.attachments,
+        waits: params.waits,
+        checks: None,
+        view: params.view,
+    };
+    let ticket = tickets::draft(&root, draft, tickets::Actor::Agent).map_err(|error| refusal("ticket.draft", error))?;
+    reply("ticket.draft", &root, ticket)
+}
+
+fn update(s: &mut Session, p: &Value) -> Result<Value> {
+    let params: TicketUpdateParams = serde_json::from_value(p.clone()).map_err(|error| bad("ticket.update", error.to_string()))?;
+    let root = root(s, "ticket.update")?;
+    let id = params.id.trim();
+    let text = params.text.as_deref().or(params.reason.as_deref());
+    let ticket = match params.action.trim() {
+        "state" => {
+            let to = params.to.as_deref().map(str::trim).unwrap_or_default();
+            let to = serde_json::from_value(Value::from(to))
+                .map_err(|_| bad("ticket.update", format!("`{to}` is not a state; use draft, confirmed, in_progress, waiting, done or blocked")))?;
+            tickets::agent_set_state(&root, id, to, text)
+        }
+        "comment" => tickets::comment(&root, id, tickets::Actor::Agent, text.unwrap_or_default(), &params.attachments, params.view)
+            .and_then(|_| tickets::load(&root, id)),
+        "finished" => tickets::finished(&root, id, text, &params.attachments, params.view),
+        "block" => tickets::block(&root, id, text.unwrap_or_default()),
+        "unblock" => tickets::unblock(&root, id, text.map(str::to_string)),
+        "check" => {
+            return Err(bad(
+                "ticket.update",
+                "no command asks for a check: say `finished`; with the project's automatic checks on the ticket's check then runs, else a \
+                 person starts it in the Tickets panel",
+            ));
+        }
+        "decline" | "delete" | "restore" | "edit" => {
+            return Err(bad("ticket.update", "only a person declines, edits, deletes or restores a ticket, with the buttons in the Tickets panel"));
+        }
+        other => return Err(bad("ticket.update", format!("`{other}` is not an action; use state (with to), comment, finished, block or unblock"))),
+    }
+    .map_err(|error| refusal("ticket.update", error))?;
+    reply("ticket.update", &root, ticket)
+}

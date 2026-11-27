@@ -6,6 +6,10 @@
 //! so a duplicate accept notification runs nothing twice, and nothing is scheduled from the end of
 //! a reply alone or from every tool call.
 //!
+//! A part ticket the Assistant works and has said finished is one more such commit event: its check
+//! is decided at the end of that turn and held, the same way, until the design is quiet, so the
+//! check sees the model the Assistant left and no edit of that turn cancels it.
+//!
 //! This module only decides *when* to submit and returns a [`Trigger`]; the project-backed capture
 //! and validation live in `crate::dfm::service`. A new edit cancels the running check there, and a
 //! late result cannot overwrite a newer one: the run record's own submission identity decides
@@ -23,6 +27,17 @@ pub(crate) enum Trigger {
     Edits { document_id: String, turn: String, revision: String },
     /// A PIL-300 preview the user accepted and whose apply succeeded.
     AcceptedPreview { document_id: String, turn: String, revision: String },
+    /// The Assistant said the part ticket it works is finished, and that turn has ended.
+    TicketFinished { document_id: String, turn: String, revision: String, ticket: String },
+}
+
+impl Trigger {
+    /// The same trigger for the newest model of its round.
+    fn at(&mut self, now: u64) {
+        if let Trigger::Edits { revision, .. } | Trigger::TicketFinished { revision, .. } = self {
+            *revision = now.to_string();
+        }
+    }
 }
 
 /// How many committed round keys are remembered for duplicate suppression.
@@ -98,6 +113,23 @@ impl HostDfm {
         });
     }
 
+    /// The turn in which the Assistant said its part ticket `ticket` is finished has ended: hold its
+    /// check, as a round's edits are held, until the design is quiet. It needs no change in this
+    /// turn (the edits may have come in earlier ones), and it takes the place of the turn's edits.
+    pub(crate) fn on_ticket_finished(&mut self, document_id: &str, turn: &str, revision: u64, pending: bool, ticket: &str) {
+        if !self.auto_enabled {
+            return;
+        }
+        let trigger = Trigger::TicketFinished {
+            document_id: document_id.to_string(),
+            turn: turn.to_string(),
+            revision: revision.to_string(),
+            ticket: ticket.to_string(),
+        };
+        self.settling =
+            Some(Settling { document_id: document_id.to_string(), turn: format!("{turn}|{ticket}"), trigger, revision, deferred: pending });
+    }
+
     /// A PIL-300 preview was accepted and applying it succeeded. The reply has already ended, so
     /// this is a separate commit event for the same turn.
     pub(crate) fn on_preview_accepted(&mut self, document_id: &str, turn: &str, revision: u64) -> Option<Trigger> {
@@ -137,8 +169,7 @@ impl HostDfm {
             // More edits landed after the reply: hold the round for the newest model.
             if let Some(settling) = self.settling.as_mut() {
                 settling.revision = revision;
-                settling.trigger =
-                    Trigger::Edits { document_id: document_id.to_string(), turn: settling.turn.clone(), revision: revision.to_string() };
+                settling.trigger.at(revision);
             }
             return None;
         }
@@ -271,6 +302,27 @@ mod tests {
         dfm.observe("doc-1", 70, true);
         dfm.on_turn_end("doc-1", "turn-8", 70, true, false);
         assert!(dfm.observe("doc-1", 71, true).is_none(), "a person's edit does not start an automatic run");
+    }
+
+    /// A finished ticket's turn holds its check until the design is quiet, needs no change in that
+    /// turn, fires once, and fires nothing with the project's switch off.
+    #[test]
+    fn a_finished_tickets_turn_holds_its_check_until_the_design_is_quiet() {
+        let mut dfm = runtime();
+        dfm.observe("doc-1", 80, true);
+        dfm.on_ticket_finished("doc-1", "turn-9", 80, true, "T-2");
+        assert!(dfm.observe("doc-1", 80, false).is_none(), "no check while work is in flight");
+        assert!(dfm.observe("doc-1", 81, true).is_none(), "a late edit of the turn: wait for a stable revision");
+        let trigger = dfm.observe("doc-1", 81, true).expect("one check for the finished ticket");
+        assert_eq!(
+            trigger,
+            Trigger::TicketFinished { document_id: "doc-1".into(), turn: "turn-9".into(), revision: "81".into(), ticket: "T-2".into() }
+        );
+        assert!(dfm.observe("doc-1", 81, true).is_none(), "once per turn");
+        let mut off = runtime();
+        off.set_auto_enabled(false);
+        off.on_ticket_finished("doc-1", "turn-9", 80, false, "T-2");
+        assert!(off.observe("doc-1", 80, true).is_none(), "the project's switch is off");
     }
 
     /// A change still being applied when the reply ended belongs to the round.

@@ -180,13 +180,16 @@ pub(crate) fn navigation_button_editable(ui: &mut Ui, rect: Rect, button: Naviga
     response
 }
 
+/// A rule across the bar: upright in a row, lying in an upright bar (its slot wider than tall).
 pub(crate) fn navigation_separator(ui: &Ui, rect: Rect) {
     let t = Tokens::get();
-    ui.painter().vline(
-        rect.center().x,
-        rect.center().y - NAV_SEPARATOR_HEIGHT / 2.0..=rect.center().y + NAV_SEPARATOR_HEIGHT / 2.0,
-        egui::Stroke::new(NAV_BORDER, t.control_border),
-    );
+    let stroke = egui::Stroke::new(NAV_BORDER, t.control_border);
+    let half = NAV_SEPARATOR_HEIGHT / 2.0;
+    if rect.width() > rect.height() {
+        ui.painter().hline(rect.center().x - half..=rect.center().x + half, rect.center().y, stroke);
+    } else {
+        ui.painter().vline(rect.center().x, rect.center().y - half..=rect.center().y + half, stroke);
+    }
 }
 
 pub(crate) fn navigation_edit_outline(ui: &Ui, rect: Rect, hidden: bool, selected: bool) {

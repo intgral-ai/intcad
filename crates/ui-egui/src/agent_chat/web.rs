@@ -49,6 +49,12 @@ pub fn reveal(app: &SolveApp) -> Option<f32> {
     app.agent_chat.web_reveal
 }
 
+/// The page's zoom: one of its points is this many of the screen units the page's pointer reports
+/// (`screenX`), which the page's `move` is given in.
+pub fn set_zoom(app: &mut SolveApp, zoom: f32) {
+    app.agent_chat.web_zoom = Some(zoom).filter(|zoom| zoom.is_finite() && *zoom > 0.0);
+}
+
 /// Whether the panel gave the host a bottom-centre placement this frame.
 pub fn centred_view(app: &SolveApp) -> bool {
     app.agent_chat.web_centre.is_some()
@@ -143,12 +149,22 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
     if app.agent_chat.gallery.is_some() {
         return None;
     }
+    // A part ticket open large over the window has it the same way; the view comes back where it
+    // was when the ticket goes back to the rail. Nothing of the conversation stops meanwhile.
+    if crate::tickets::open_large(app) {
+        return None;
+    }
     // What is shown of it: a layer over the rest of it covers nothing the page shows there.
     let shown = app
         .agent_chat
         .web_reveal
         .map_or(rect, |height| egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - height), rect.right_bottom()));
-    let covered = ctx.memory(|memory| {
+    (!covered(ctx, layer, shown)).then_some(rect)
+}
+
+/// Whether a visible layer above `layer` lies over `rect`: a native view there would hide it.
+pub(crate) fn covered(ctx: &egui::Context, layer: egui::LayerId, rect: egui::Rect) -> bool {
+    ctx.memory(|memory| {
         // A panel docked to the window's edge is under every floating layer; a floating panel
         // is under the layers that come after it.
         let mut above = layer.order == egui::Order::Background;
@@ -156,13 +172,12 @@ pub fn placement(app: &mut SolveApp, ctx: &egui::Context) -> Option<egui::Rect> 
         for other in memory.layer_ids() {
             if other == layer {
                 above = true;
-            } else if above && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(shown)) {
+            } else if above && memory.areas().is_visible(&other) && memory.area_rect(other.id).is_some_and(|area| area.intersects(rect)) {
                 covered = true;
             }
         }
         covered
-    });
-    (!covered).then_some(rect)
+    })
 }
 
 fn clipped(text: &str) -> String {
@@ -192,7 +207,7 @@ fn context_json(context: &Context) -> Value {
 
 /// The name the page asks the host for a picture by: the bytes' length and a spread of them, so
 /// one picture is not shown for another. It says nothing of where the bytes are kept.
-fn picture_key(bytes: &[u8]) -> String {
+pub(crate) fn picture_key(bytes: &[u8]) -> String {
     let step = (bytes.len() / 4096).max(1);
     let spread = bytes.iter().step_by(step).fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3));
     format!("{:x}-{spread:016x}", bytes.len())
@@ -359,6 +374,22 @@ pub fn state(app: &mut SolveApp) -> String {
             }),
         })
         .collect();
+    // Under a call that drafted a part ticket, the ticket's card: it opens the ticket (`ticket_show`).
+    let cards: Vec<(usize, Value)> = chat
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(at, item)| match item {
+            Item::Tool { input, output, status: Some(backend::ToolStatus::Completed), .. } => {
+                crate::tickets::drafted_card(app, input.as_ref(), output.as_deref()).map(|card| (at, card))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut items = items;
+    for (at, card) in cards.into_iter().rev() {
+        items.insert(at + 1, card);
+    }
     let turn = chat.turn.as_ref().map(|turn| {
         let n = turn.changes.to_string();
         match app.preferences.agent_chat_turn_limit {
@@ -518,6 +549,7 @@ pub fn state(app: &mut SolveApp) -> String {
         ("withNext", "ui.agent_chat_web_with_next"),
         ("latest", "ui.agent_chat_web_latest"),
         ("turnLabel", "ui.agent_chat_web_turn"),
+        ("moveBox", "ui.agent_chat_web_move"),
         ("reviewTitle", "ui.agent_chat_review_title"),
         ("reviewAccept", "ui.agent_chat_review_accept"),
         ("reviewReject", "ui.agent_chat_review_reject"),
@@ -527,6 +559,7 @@ pub fn state(app: &mut SolveApp) -> String {
         ("reviewAccepted", "ui.agent_chat_review_accepted"),
         ("reviewRejected", "ui.agent_chat_review_rejected"),
         ("reviewMore", "ui.agent_chat_review_more_steps"),
+        ("ticketShow", "ui.tickets_show"),
         ("dfmCheckTitle", "ui.dfm_check.title"),
         ("dfmRunning", "ui.dfm_check.running"),
         ("dfmDone", "ui.dfm_check.done"),
@@ -693,11 +726,8 @@ pub fn state(app: &mut SolveApp) -> String {
         "strings": strings,
         "dfm": dfm,
     });
-    // At the bottom centre: the primary presses in the app's window outside the page so far; the
-    // page collapses its conversation on a new one. Apart: the object above is as long as `json!`
-    // expands.
+    // Apart: the object above is as long as `json!` expands.
     if let Some(fields) = page.as_object_mut() {
-        fields.insert("outsidePresses".into(), Value::from(chat.web_presses));
         // A next-step suggestion, for the line over the message box.
         fields.insert("suggestion".into(), super::predict::page(app));
     }
@@ -1042,6 +1072,20 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
             let height = action.get("height").and_then(Value::as_f64).filter(|height| height.is_finite()).ok_or("size: no height")?;
             app.agent_chat.web_height = Some(height.clamp(0.0, 100_000.0) as f32);
         }
+        // There, the user moves the box sideways: `dx` is the pointer's travel since the press, in
+        // screen units, and `done` ends the move. It starts where the box is shown and stops at the
+        // edges of the room there is, so a move back from an edge starts at once.
+        "move" => {
+            let dx = action.get("dx").and_then(Value::as_f64).filter(|dx| dx.is_finite()).ok_or("move: no dx")?;
+            let chat = &mut app.agent_chat;
+            let (least, most) = chat.web_shift_room.unwrap_or((-100_000.0, 100_000.0));
+            let within = |shift: f32| crate::shell::within(shift, least, most);
+            let from = *chat.web_shift_from.get_or_insert(within(chat.web_shift));
+            chat.web_shift = within(from + dx.clamp(-100_000.0, 100_000.0) as f32 / chat.web_zoom.unwrap_or(1.0));
+            if action.get("done").and_then(Value::as_bool) == Some(true) {
+                chat.web_shift_from = None;
+            }
+        }
         "side" => {
             let left = action.get("left").and_then(Value::as_bool).ok_or("side: no left")?;
             app.preferences.agent_chat_side = if left { "left" } else { "right" }.into();
@@ -1055,6 +1099,14 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
         "copy" => {
             let body = text("text").ok_or("copy: no text")?;
             ctx.copy_text(body.chars().take(MAX_MESSAGE).collect());
+        }
+        "ticket_show" => {
+            // The card of a ticket the agent drafted: the Tickets panel opens on it.
+            let id = text("id")
+                .map(str::trim)
+                .filter(|id| solidcraft_engine::project::tickets::number(id).is_some())
+                .ok_or("ticket_show: no ticket id")?;
+            crate::tickets::show(app, id);
         }
         "open_link" => {
             let url = text("url").ok_or("open_link: no url")?;

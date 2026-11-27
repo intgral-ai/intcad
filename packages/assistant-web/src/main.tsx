@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './assistant.css';
 import { installHostBehaviour, post, useAssistant } from './host';
+import { Tickets } from './tickets/Tickets';
 import { ThemeContext } from '@/ds/components/ThemeProvider/theme-context';
 import { TooltipProvider } from '@/ds/components/Tooltip';
 
@@ -10,8 +11,11 @@ installHostBehaviour();
 
 /** The page follows the app's theme, which arrives with the state. */
 function Themed() {
-  const state = useAssistant();
-  const dark = state?.dark ?? true;
+  const pushed = useAssistant();
+  // The host pushes either the Assistant's state or the tickets view's, marked by `view`.
+  const tickets = pushed && 'view' in pushed ? pushed : null;
+  const state = pushed && !('view' in pushed) ? pushed : null;
+  const dark = pushed?.dark ?? true;
   const theme = dark ? 'dark' : 'light';
   useEffect(() => {
     document.documentElement.classList.remove('light', 'dark');
@@ -29,17 +33,16 @@ function Themed() {
     }
     swatch.remove();
   }, [theme]);
-  // With the built-in agent the page is Mastra's own size; the stylesheet has the two sizes.
-  const builtIn = Boolean(state?.connect);
+  // With the built-in agent the page is Mastra's own size; the stylesheet has the two sizes. The
+  // tickets view is always Mastra's size.
+  const builtIn = Boolean(state?.connect) || Boolean(tickets);
   useEffect(() => {
     if (builtIn) document.documentElement.dataset.sizes = 'mastra';
     else delete document.documentElement.dataset.sizes;
   }, [builtIn]);
   return (
     <ThemeContext.Provider value={{ theme, resolvedTheme: theme, systemTheme: theme, setTheme: () => {} }}>
-      <TooltipProvider>
-        <App state={state} />
-      </TooltipProvider>
+      <TooltipProvider>{tickets ? <Tickets state={tickets} /> : <App state={state} />}</TooltipProvider>
     </ThemeContext.Provider>
   );
 }

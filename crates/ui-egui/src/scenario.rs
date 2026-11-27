@@ -204,6 +204,9 @@ impl Harness {
         // The same for the Assistant: the suite's web view tests measure the side panel, which
         // the `agent_chat_centre` preference keeps; the centred box has its own tests.
         h.app.preferences.agent_chat_centre = false;
+        // And the navigation bar: the suite clicks and measures it in the view, which
+        // `navigation_bar.edge: bottom` keeps; the upright bar has its own tests.
+        h.app.preferences.navigation_bar.edge = crate::navigation_bar::Edge::Bottom;
         h.install();
         h.ctx.enable_accesskit();
         h.frames(3);

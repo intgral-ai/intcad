@@ -1900,6 +1900,13 @@ fn occurrence_rows_inner(
             radio: Some(active),
             badges,
             mark: acts.lit.placement(&app.session.doc, path, placement.component),
+            dot: app
+                .session
+                .doc
+                .components
+                .iter()
+                .find(|c| c.id == placement.component)
+                .and_then(|c| crate::tickets::part_dot(app, "component", &c.name)),
             ..Default::default()
         },
     );
@@ -3154,6 +3161,10 @@ fn entry_row(
             tip: state_tip.as_deref(),
             badges,
             mark,
+            dot: match &e.sel {
+                Some(Sel::Body { name }) => crate::tickets::part_dot(app, "body", name),
+                _ => None,
+            },
             ..Default::default()
         },
     );

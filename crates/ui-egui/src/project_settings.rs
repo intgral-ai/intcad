@@ -1,5 +1,6 @@
-//! Project Settings: process, material, thickness, automatic checks, the selected DFM data and
-//! the project's named overrides.
+//! Project Settings: process, material, thickness, automatic checks, how part tickets are checked
+//! (a new ticket's check, the Assistant's rounds of fixing), the selected DFM data and the
+//! project's named overrides.
 //!
 //! A window, not a command dialog: programmatic `project.inspect` returns its reply without
 //! opening anything, and this window is opened only from the app (`ui.start`).
@@ -16,6 +17,10 @@ pub struct ProjectSettings {
     pub material: String,
     pub thickness: String,
     pub auto_check: bool,
+    /// A new part ticket's check starts switched on.
+    pub new_tickets: bool,
+    /// The most rounds of fixing the Assistant takes after a ticket's first automatic check, as typed.
+    pub rounds: String,
     pub skip: String,
     pub data_kind: String,
     pub data_name: String,
@@ -80,6 +85,8 @@ impl ProjectSettings {
             material: text(&project["material"]),
             thickness,
             auto_check: ci["enabled"].as_bool().unwrap_or(true),
+            new_tickets: ci["newTickets"].as_bool().unwrap_or(true),
+            rounds: ci["rounds"].as_u64().map(|rounds| rounds.to_string()).unwrap_or_default(),
             skip,
             data_kind: text(&ci["dataKind"]),
             data_name: text(&ci["dataName"]),
@@ -186,6 +193,15 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     dialog.auto_check = !wanted;
                 }
             }
+            if ui_kit::checkbox(ui, crate::i18n::tr("project_settings.new_tickets"), &mut dialog.new_tickets).changed() {
+                let wanted = dialog.new_tickets;
+                if !run(app, &mut dialog, "project.ci_set", json!({"newTickets": wanted})) {
+                    dialog.new_tickets = !wanted;
+                }
+            }
+            ui_kit::row(ui, crate::i18n::tr("project_settings.rounds"), |ui| {
+                let _ = ui_kit::text_field(ui, &mut dialog.rounds, "3");
+            });
             ui_kit::row(ui, crate::i18n::tr("project_settings.skip"), |ui| {
                 let _ = ui_kit::text_field(ui, &mut dialog.skip, "sm.hole_spacing, …");
             });
@@ -262,11 +278,22 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         if let Ok(value) = thickness.parse::<f64>() {
             params["thicknessMm"] = json!(value);
         }
-        let saved = run(app, &mut dialog, "project.settings_set", params);
+        // What was typed, read before the first save reloads the window from the files.
+        let skip: Vec<String> = dialog.skip.split(',').map(str::trim).filter(|rule| !rule.is_empty()).map(str::to_string).collect();
+        let rounds = dialog.rounds.trim().to_string();
+        let mut saved = run(app, &mut dialog, "project.settings_set", params);
         if saved {
-            let skip: Vec<String> = dialog.skip.split(',').map(str::trim).filter(|rule| !rule.is_empty()).map(str::to_string).collect();
-            let enabled = dialog.auto_check;
-            run(app, &mut dialog, "project.ci_set", json!({"enabled": enabled, "skip": skip}));
+            let mut params = json!({"enabled": dialog.auto_check, "skip": skip});
+            match rounds.parse::<u32>() {
+                Ok(rounds) => params["rounds"] = json!(rounds),
+                Err(_) if rounds.is_empty() => {}
+                Err(_) => {
+                    dialog.error = Some(crate::i18n::tr("project_settings.rounds").to_string() + ": 0 … 10");
+                    app.project_settings = Some(dialog);
+                    return;
+                }
+            }
+            saved = run(app, &mut dialog, "project.ci_set", params);
         }
         keep = !saved;
     }

@@ -247,6 +247,13 @@ pub fn request(method: &str, params: &Value, undo_left: usize) -> Verdict {
     }
 }
 
+/// Whether a request may change the model: one the gate counts as a change or asks about, apart
+/// from the part-ticket commands, which write only the project's tickets.
+pub fn may_change_model(method: &str, params: &Value) -> bool {
+    let tickets = method == "engine.execute" && command_of(params).and_then(resolve).is_some_and(|id| id.starts_with("ticket."));
+    !tickets && matches!(request(method, params, 0), Verdict::Run { change: true } | Verdict::Ask(_))
+}
+
 /// What "Always allow" remembers for a request: the command it runs (`batch` for a batch).
 pub fn tool_key(method: &str, params: &Value) -> String {
     match method {

@@ -1571,6 +1571,10 @@ preference_settings! {
     /// Where the host shows the Assistant's page: at the bottom of the window, centred, as one
     /// message box with the conversation opened above it. Off: the side panel, as before.
     agent_chat_centre: bool = true, PAGE_ASSISTANT;
+    /// The size the person gave that box by dragging its edges, in points; 0: as before (520 wide,
+    /// as tall as the page says). Bounded each frame by the room there is.
+    agent_chat_centre_width: f32 = 0.0;
+    agent_chat_centre_height: f32 = 0.0;
     /// Whether the chat is in its own window instead of the side panel, and that window's place
     /// and size as the system last reported them (`[x, y, width, height]`, points; `x` can be
     /// negative or past the main screen when the window sits on another one).
@@ -4502,6 +4506,8 @@ mod tests {
         use crate::navigation_bar::NavigationBar;
         use serde_json::json;
         let mut h = crate::scenario::Harness::new();
+        // The default bar, which the harness swaps for the row.
+        h.app.preferences.navigation_bar = NavigationBar::default();
         let initial = h.call("ui.prefs", json!({}));
         assert_eq!(initial["result"]["navigation_bar"], serde_json::to_value(NavigationBar::default()).unwrap());
         let edit = json!({"navigation_bar":{"slots":["zoom", "future", "zoom", "display"], "position":"bottom_right", "size":"regular", "labels":"labels", "idle":"always"}});
@@ -4814,7 +4820,7 @@ mod tests {
                     assert_eq!(bar.top(), stage.top() + inset);
                     assert!(count.top() >= bar.bottom(), "the count sits below a top bar");
                 }
-                Edge::Bottom => {
+                Edge::Bottom | Edge::Left => {
                     assert_eq!(bar.bottom(), stage.bottom() - inset);
                     assert!(count.bottom() <= bar.top(), "the count sits above a bottom bar");
                 }

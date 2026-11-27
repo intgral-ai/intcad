@@ -17,7 +17,7 @@ use solidcraft_engine::entitlement::{
 };
 
 #[derive(Clone, Default)]
-struct CountingBilling {
+pub(crate) struct CountingBilling {
     admits: Arc<Mutex<usize>>,
     commits: Arc<Mutex<usize>>,
     releases: Arc<Mutex<usize>>,
@@ -30,7 +30,7 @@ impl CountingBilling {
         *self.admits.lock().expect("count")
     }
 
-    fn commits(&self) -> usize {
+    pub(crate) fn commits(&self) -> usize {
         *self.commits.lock().expect("count")
     }
 
@@ -68,7 +68,7 @@ impl BillingPort for CountingBilling {
 /// A local durable-journal double: review mappings and operation rows only. It never ships and
 /// never performs file or network IO.
 #[derive(Clone, Default)]
-struct ReviewLedger {
+pub(crate) struct ReviewLedger {
     reviews: Arc<Mutex<BTreeMap<String, OperationId>>>,
     records: Arc<Mutex<BTreeMap<String, OperationRecord>>>,
     /// The durable scope binding each operation was admitted under, when the test gives it one.
@@ -396,7 +396,8 @@ impl MonotonicClock for RecoveryClock {
     }
 }
 
-fn install(app: &mut crate::SolveApp, billing: &CountingBilling, ledger: &ReviewLedger) {
+/// Stand-in billing, journal and account for the Review entry (also used by the Tickets tests).
+pub(crate) fn install(app: &mut crate::SolveApp, billing: &CountingBilling, ledger: &ReviewLedger) {
     let mut budget = BudgetTable::unverified_default();
     budget.set_verified(Capability::Review, EntryCategory::ReviewPanel, Duration::from_secs(30));
     app.install_billing(Box::new(billing.clone()), budget);
@@ -1578,4 +1579,16 @@ fn review_stop_bound_anchors_the_earlier_limit_on_the_wall_clock() {
     let now = 1_700_000_000_000u64;
     // 4 s of grant left, 60 s window: the grant bounds the run.
     assert_eq!(crate::dfm_review::review_stop_at_ms(now, Duration::from_secs(60), Some(remaining)), now + 4_000);
+}
+
+/// Every rule a run can report has a name a designer reads (the catalogues delivered complete are
+/// held to English by their own test); a rule with none, from a newer report, is shown by its id.
+#[test]
+fn every_rule_the_check_can_report_has_a_name() {
+    let rules: Vec<&str> = solidcraft_engine::dfm::rule_ids().collect();
+    assert!(rules.len() > 20 && rules.contains(&"sm.min_flange") && rules.contains(&"app.flat_no_overlap"), "{rules:?}");
+    let _english = crate::i18n::scope("en");
+    let nameless: Vec<&&str> = rules.iter().filter(|rule| crate::dfm_review::rule_name(rule) == **rule).collect();
+    assert!(nameless.is_empty(), "no name for {nameless:?}");
+    assert_eq!(crate::dfm_review::rule_name("sm.not_a_rule"), "sm.not_a_rule");
 }

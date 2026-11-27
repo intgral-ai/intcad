@@ -133,6 +133,8 @@ mod surface;
 mod surface_analysis;
 mod surface_boundary;
 mod surface_match;
+#[cfg(not(target_arch = "wasm32"))]
+mod ticket;
 mod view_dxf;
 mod view_navigation;
 
@@ -363,6 +365,8 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(dfm::COMMANDS.iter());
     #[cfg(not(target_arch = "wasm32"))]
     v.extend(dfm_check::COMMANDS.iter());
+    #[cfg(not(target_arch = "wasm32"))]
+    v.extend(ticket::COMMANDS.iter());
     v.extend(print_face::COMMANDS.iter());
     v.extend(metadata::COMMANDS.iter());
     v.extend(snapshot::COMMANDS.iter());
