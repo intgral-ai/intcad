@@ -20,7 +20,7 @@ import { Connections, KEYS } from './connections.mjs';
 import { deniedFolders, keepFilesFrom } from './fence.mjs';
 import { attachmentReader, releaseDates } from './models.mjs';
 import { keepKeysFromCommands, keyVariables, withoutParams } from './secrets.mjs';
-import { sessionBuilder, sweepSessionFolders } from './session.mjs';
+import { predictionToolGuard, sessionBuilder, sweepSessionFolders } from './session.mjs';
 import { installSkillSets, setsToInstall } from './skills.mjs';
 
 // ACP's SDK prints a request it refuses, parameters and all. See secrets.mjs.
@@ -81,6 +81,11 @@ const sdkRoot = resolve(process.env.SOLIDCRAFT_MASTRA_SDK || join(here, '..', 'n
 // The files are named in full: an absolute path does not go through a package's export map, and a
 // bare name would be looked up from this folder, where the SDK need not be.
 const load = path => import(pathToFileURL(join(sdkRoot, path)).href);
+// This is the same Core installation the packaged code SDK resolves. Load it on
+// demand so a probe failure cannot stop ordinary chat.
+let predictionTools;
+const verifyPredictionTools = () => (predictionTools ??= load('@mastra/core/dist/agent/index.js')
+  .then(({ Agent }) => predictionToolGuard(Agent)()));
 
 if (!existsSync(join(sdkRoot, '@mastra', 'code-sdk', 'package.json'))) {
   process.stderr.write(`[intcad] Mastra Code's SDK is not in ${sdkRoot}. Set SOLIDCRAFT_MASTRA_SDK to the node_modules folder that holds it.\n`);
@@ -193,6 +198,7 @@ const createSession = cad => sessionBuilder({
   resolveDefaultThinkingLevel: settings.resolveDefaultThinkingLevel,
   resolveSubagentsSetting,
   withCleanupFailure,
+  verifyPredictionTools,
   RequestError,
   cad,
 });

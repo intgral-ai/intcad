@@ -751,6 +751,8 @@ pub(crate) struct Conn {
     pub refused: bool,
     /// The keys being read from the keychain for the next `setup`, and whether one could not be read.
     reading: Option<std::sync::mpsc::Receiver<(Setup, bool)>>,
+    /// The agent can update the shared sign-in store before its sign-out reply arrives.
+    pub(super) logout_pending: bool,
     pub kept: Option<Kept>,
     /// The count of changes ([`SolveApp::builtin_changes`]) this conversation's agent was last
     /// set up at. Behind it, the agent holds keys, addresses or sign-ins that are no longer so.
@@ -760,9 +762,29 @@ pub(crate) struct Conn {
     catching_up: bool,
     /// A plan was signed in or out here since [`settle`] last looked.
     plans_changed: bool,
+    /// The last `setup` handed to this conversation's agent: next-step suggestions hand the same
+    /// to their own process of the agent. It holds keys, as the agent's environment does.
+    pub(super) last_setup: Option<Setup>,
+    /// The setups handed to this conversation's agent, counted: next-step suggestions hand each
+    /// one on to their own process of the agent.
+    pub(super) setups: u64,
 }
 
 impl Conn {
+    /// The keys of a setup are being read: the setup follows.
+    pub(super) fn reading_keys(&self) -> bool {
+        self.reading.is_some()
+    }
+
+    pub(super) fn setup_current(&self, changes: u64) -> bool {
+        self.set_up_at == changes && !self.reading_keys() && !self.logout_pending
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_setup_at(&mut self, changes: u64) {
+        self.set_up_at = changes;
+    }
+
     /// Take in what the agent now says of its connections.
     pub(super) fn take_in(&mut self, snapshot: Snapshot) {
         let catching_up = std::mem::take(&mut self.catching_up);
@@ -815,6 +837,10 @@ fn callback_words(app: &SolveApp) -> String {
 }
 
 fn send(app: &mut SolveApp, request: Request) {
+    if let Request::Setup(setup) = &request {
+        app.agent_chat.conn.last_setup = Some(setup.clone());
+        app.agent_chat.conn.setups = app.agent_chat.conn.setups.wrapping_add(1);
+    }
     if let Some(backend) = app.agent_chat.backend.as_mut() {
         backend.connections(request);
     }
@@ -1099,6 +1125,10 @@ pub(super) fn act(app: &mut SolveApp, ctx: &egui::Context, kind: &str, action: &
             if !told(app).ok_or_else(silent)?.plans.iter().any(|plan| plan.id == id && plan.state != PlanState::Out) {
                 return Err("conn_logout: not a plan that is signed in".into());
             }
+            if app.agent_chat.conn.logout_pending {
+                return Err("conn_logout: a sign-out is already under way".into());
+            }
+            app.agent_chat.conn.logout_pending = true;
             send(app, Request::Logout(id.to_string()));
         }
         "conn_key" => {
@@ -1512,5 +1542,16 @@ mod tests {
         assert_eq!(key_secret("openai"), "mastra/key/openai");
         assert_eq!(custom_secret("my-llm"), "mastra/custom/my-llm");
         assert_eq!(KEY_IDS, ["anthropic", "openai", "google", "openrouter", "deepseek"]);
+    }
+
+    /// B10 (next-step suggestions): the setup handed to the chat's agent is kept, so the guessing
+    /// process of the same agent can be handed the same; another request does not replace it.
+    #[test]
+    fn the_setup_handed_to_the_agent_is_kept_for_the_guessing_process() {
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        let setup = Setup { keys: vec![("anthropic".into(), "k-chat".into())], ..Default::default() };
+        send(&mut app, Request::Setup(setup.clone()));
+        send(&mut app, Request::List);
+        assert_eq!(app.agent_chat.conn.last_setup, Some(setup));
     }
 }

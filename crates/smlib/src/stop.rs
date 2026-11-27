@@ -44,6 +44,11 @@ pub fn current() -> Option<Stop> {
     CURRENT.with(|c| c.borrow().clone())
 }
 
+/// Whether the work on this thread was stopped: what it came to since is no result to keep.
+pub fn stopped() -> bool {
+    CURRENT.with(|c| c.borrow().as_ref().is_some_and(Stop::is_stopped))
+}
+
 /// Run `f` under `stop` (`None`: under none), as [`current`] was on the thread that started it.
 pub fn scoped<R>(stop: Option<Stop>, f: impl FnOnce() -> R) -> R {
     let previous = CURRENT.with(|c| c.replace(stop));
