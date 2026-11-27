@@ -298,6 +298,7 @@ pub struct IdentityLifecycle {
     last_login_generation: Arc<AtomicU64>,
     readiness: Arc<Mutex<Readiness>>,
     last_now_unix: Arc<AtomicU64>,
+    refresh_preserves_binding: bool,
 }
 
 impl IdentityLifecycle {
@@ -350,7 +351,15 @@ impl IdentityLifecycle {
             last_login_generation: Arc::new(AtomicU64::new(0)),
             readiness: Arc::new(Mutex::new(Readiness::default())),
             last_now_unix: Arc::new(AtomicU64::new(0)),
+            refresh_preserves_binding: false,
         })
+    }
+
+    /// Opt into the WorkOS refresh guarantee for this domain before using or cloning
+    /// the lifecycle. This preserves only local correlation; product requests must
+    /// still be verified by the server against its own session identity.
+    pub fn set_refresh_preserves_binding(&mut self, enabled: bool) {
+        self.refresh_preserves_binding = enabled;
     }
 
     /// Adopt credentials and a binding already verified by the explicit login flow.
@@ -363,7 +372,46 @@ impl IdentityLifecycle {
         expires_at_unix: u64,
         session_binding: &str,
     ) -> Result<(), IdentityError> {
+        self.adopt_login_inner(provider_account_id, None, access_token, refresh_token, issued_at_unix, expires_at_unix, session_binding)
+    }
+
+    /// Adopt an explicit login with the product account that the server already verified.
+    /// The refresh-preserves-binding policy checks future status responses against this account.
+    #[allow(clippy::too_many_arguments)]
+    pub fn adopt_verified_login(
+        &self,
+        provider_account_id: &str,
+        verified_account_id: &str,
+        access_token: Secret,
+        refresh_token: Secret,
+        issued_at_unix: u64,
+        expires_at_unix: u64,
+        session_binding: &str,
+    ) -> Result<(), IdentityError> {
+        self.adopt_login_inner(
+            provider_account_id,
+            Some(verified_account_id),
+            access_token,
+            refresh_token,
+            issued_at_unix,
+            expires_at_unix,
+            session_binding,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn adopt_login_inner(
+        &self,
+        provider_account_id: &str,
+        verified_account_id: Option<&str>,
+        access_token: Secret,
+        refresh_token: Secret,
+        issued_at_unix: u64,
+        expires_at_unix: u64,
+        session_binding: &str,
+    ) -> Result<(), IdentityError> {
         if !safe_token(provider_account_id, MAX_ACCOUNT_BYTES)
+            || verified_account_id.is_some_and(|account| !safe_token(account, MAX_ACCOUNT_BYTES))
             || !safe_token(session_binding, MAX_BINDING_BYTES)
             || !valid_text(access_token.expose_secret(), MAX_TOKEN_BYTES)
             || !valid_text(refresh_token.expose_secret(), MAX_TOKEN_BYTES)
@@ -400,7 +448,7 @@ impl IdentityLifecycle {
             login_generation,
             token_generation: 1,
             provider_account_id: provider_account_id.to_owned(),
-            verified_account_id: None,
+            verified_account_id: verified_account_id.map(str::to_owned),
             access_token: access_token.expose_secret().to_owned(),
             refresh_token: refresh_token.expose_secret().to_owned(),
             issued_at_unix,
@@ -731,7 +779,7 @@ impl IdentityLifecycle {
         Self::check_unchanged(snapshot, &current)?;
         self.check_readiness_epoch(epoch)?;
         let verified = verified?;
-        Self::check_pending_verification(&current.record, &verified)?;
+        self.check_pending_verification(&current.record, &verified)?;
         // Preserve a short-lived rotated pair without publishing an active record
         // that would immediately send another refresh on the next ensure.
         if !self.fresh(&current.record) {
@@ -746,8 +794,16 @@ impl IdentityLifecycle {
         self.lease(active)
     }
 
-    fn check_pending_verification(record: &StoredIdentity, verified: &VerifiedSession) -> Result<(), IdentityError> {
-        let binding = verified.same_login_binding.as_deref().ok_or(IdentityError::VerificationPending)?;
+    fn check_pending_verification(&self, record: &StoredIdentity, verified: &VerifiedSession) -> Result<(), IdentityError> {
+        let binding = match verified.same_login_binding.as_deref() {
+            Some(binding) => binding,
+            // Generations above 1 were produced only by rotating the stored refresh
+            // token. This remains true of a pending pair recovered after a crash.
+            None if self.refresh_preserves_binding && record.token_generation > 1 && record.verified_account_id.is_some() => {
+                record.session_binding.as_deref().ok_or(IdentityError::VerificationPending)?
+            }
+            None => return Err(IdentityError::VerificationPending),
+        };
         if record.session_binding.as_deref() != Some(binding)
             || record.verified_account_id.as_ref().is_some_and(|account| account != &verified.account_id)
         {
@@ -820,7 +876,7 @@ impl IdentityLifecycle {
         let result = self.verifier.verify(&Secret::new(snapshot.record.access_token.clone()));
         let now = self.clock.now_unix_seconds();
         let failed =
-            result.as_ref().map_or(true, |verified| snapshot.record.pending && Self::check_pending_verification(&snapshot.record, verified).is_err());
+            result.as_ref().map_or(true, |verified| snapshot.record.pending && self.check_pending_verification(&snapshot.record, verified).is_err());
         let retry_after = if let Err(VerifyError::RetryAfter(delay)) = result { delay.as_secs() } else { 0 };
         let retry = retry_delay(attempt.sends).max(retry_after);
         // The refresh locks already serialize all status reservations and completions.

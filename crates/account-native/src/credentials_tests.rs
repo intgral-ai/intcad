@@ -60,6 +60,83 @@ fn product_sign_in(session: &CredentialSession, account: &str, product_secret: &
 }
 
 #[test]
+fn rotating_the_stored_bearer_preserves_scope_and_settlement_handoff() {
+    let store = RecordingStore::default();
+    let mut session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_one", "original_bearer");
+    CredentialHandoff::installation_credential(&mut session, "inst_one", crate::Secret::new("install_credential")).unwrap();
+    let scope = session.authenticated_scope().unwrap();
+    store.take_calls();
+    let rotated = crate::Secret::new("rotated_bearer");
+    session.update_product_session(&scope, &rotated).unwrap();
+    let writes: Vec<_> = store.take_calls().into_iter().filter(|call| !matches!(call, Call::Get(_))).collect();
+    assert_eq!(writes, [Call::Set(PRODUCT_SESSION_KEY.into())]);
+    assert_eq!(session.product_session(), Some(rotated));
+    assert_eq!(session.authenticated_scope(), Some(scope.clone()));
+    assert_eq!(CredentialSession::new(Box::new(store)).authenticated_scope(), Some(scope.clone()));
+    let settlement = crate::Secret::new("settlement_secret");
+    session.persist_bound_settlement(&scope, session.authority_generation(), &operation(), &settlement).unwrap();
+    assert_eq!(session.settlement_credential(&operation()), Some(settlement));
+}
+
+#[test]
+fn bearer_update_refuses_a_different_scope_revocation_tombstone_and_account_switch() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    product_sign_in(&session, "acct_one", "original_bearer");
+    publish_first_installation(&session, "original_bearer").unwrap();
+    let original = session.authenticated_scope().unwrap();
+    let wrong = scope(original.account().as_str(), original.installation().as_str());
+    let rotated = crate::Secret::new("rotated_bearer");
+    assert!(session.update_product_session(&wrong, &rotated).is_err());
+    session.revoke_in_process();
+    assert!(session.update_product_session(&original, &rotated).is_err());
+    session.end_revocation();
+    session.mark_logout_pending().unwrap();
+    assert!(session.update_product_session(&original, &rotated).is_err());
+    assert_eq!(store.entry(PRODUCT_SESSION_KEY).as_deref(), Some("original_bearer"));
+    session.switch_account("acct_two").unwrap();
+    product_sign_in(&session, "acct_two", "switched_bearer");
+    publish_first_installation(&session, "switched_bearer").unwrap();
+    assert!(session.update_product_session(&original, &rotated).is_err());
+    assert_eq!(store.entry(PRODUCT_SESSION_KEY).as_deref(), Some("switched_bearer"));
+}
+
+#[test]
+fn previous_login_without_a_binding_requires_an_explicit_login() {
+    let store = RecordingStore::default();
+    store.force_put("login/commit", "intcad-login/1/3/acct_one");
+    store.force_put("account/id", "acct_one");
+    store.force_put("install/id", "inst_one");
+    store.force_put("auth/product_session", "legacy_bearer");
+    let session = CredentialSession::new(Box::new(store));
+    assert!(session.display_account().is_none());
+    assert!(session.authenticated_scope().is_none());
+    assert!(session.bind_scope(&scope("acct_one", "inst_one")).is_err(), "fixture binding cannot migrate a legacy commit");
+
+    product_sign_in(&session, "acct_one", "new_bearer");
+    publish_first_installation(&session, "new_bearer").unwrap();
+    assert!(session.authenticated_scope().is_some());
+}
+
+#[test]
+fn verified_login_stages_the_binding_before_committing_it() {
+    let store = RecordingStore::default();
+    let session = CredentialSession::new(Box::new(store.clone()));
+    let provider = ProviderSession::from_authorized("user_provider_0001".into(), crate::Secret::new("provider_access_SECRET"));
+    let product = ProductSession::from_trusted_exchange("acct_one", crate::Secret::new("different_product_bearer"), None);
+    session.persist_verified_login(&provider, &product, 7, &|| true).unwrap();
+    let writes: Vec<_> = store.take_calls().into_iter().filter_map(|call| if let Call::Set(key) = call { Some(key) } else { None }).collect();
+    let staged = writes.iter().position(|key| key == "login/stage/binding").unwrap();
+    let authoritative = writes.iter().position(|key| key == "auth/session_binding").unwrap();
+    assert!(staged < authoritative);
+    assert_eq!(writes.last().map(String::as_str), Some("login/commit"));
+    assert_eq!(store.entry("auth/session_binding").as_deref(), Some("67b7bf325e5cbe5ff2c03a397824a1896a6c89d677d67b9e395885b0aaca2d77"));
+    publish_first_installation(&session, "different_product_bearer").unwrap();
+    assert_eq!(session.authenticated_scope().unwrap().session_binding().as_str(), store.entry("auth/session_binding").unwrap());
+}
+
+#[test]
 fn provider_completion_alone_cannot_activate_or_report_a_product_session() {
     let store = RecordingStore::default();
     let session = CredentialSession::new(Box::new(store.clone()));
@@ -172,7 +249,7 @@ impl StoreState {
 }
 
 #[derive(Clone, Default)]
-struct RecordingStore {
+pub(crate) struct RecordingStore {
     inner: Arc<Mutex<StoreState>>,
     commit_waiting: Arc<AtomicUsize>,
 }

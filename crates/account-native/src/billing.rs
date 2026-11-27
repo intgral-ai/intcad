@@ -1,5 +1,5 @@
 //! Native billing for a synchronous, single-operation host. The ledger records identity and
-//! intent, never execution authority. One admission pins the exact credential session.
+//! intent, never execution authority. One admission pins the local login, not its bearer.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ use solidcraft_engine::entitlement::{
     RenewalAttempt, RetryDecision, RetryScopeKey, SaveOutcome, SettlementIntent, TransportCorrelation,
 };
 
-use crate::http::{refusal, unavailable};
+use crate::http::{LiveProductCredentials, refusal, unavailable};
 use crate::{
     CredentialHandoff, CredentialSession, FileOperationStore, FixedCredentials, HttpAccountService, Secret, Transport, WireConnection,
     WireCredentials,
@@ -21,7 +21,6 @@ use crate::{
 struct Binding {
     scope: AuthenticatedHostScope,
     generation: u64,
-    bearer: Secret,
     installation: Secret,
 }
 
@@ -32,23 +31,25 @@ impl Binding {
             return None;
         }
         let scope = session.authenticated_scope().filter(AuthenticatedHostScope::is_provable)?;
-        let bearer = session.product_session()?;
         let installation = session.installation_credential()?;
-        let binding = Self { scope, generation, bearer, installation };
+        let binding = Self { scope, generation, installation };
         binding.unchanged(session).then_some(binding)
     }
 
     fn unchanged(&self, session: &CredentialSession) -> bool {
         session.authority_generation() == self.generation
             && session.authenticated_scope().as_ref() == Some(&self.scope)
-            && session.product_session().as_ref() == Some(&self.bearer)
             && session.installation_credential().as_ref() == Some(&self.installation)
             && !session.is_revoked()
             && session.authority_generation() == self.generation
     }
 
-    fn wire(&self) -> FixedCredentials {
-        FixedCredentials::none().with_product_session(self.bearer.expose_secret()).with_installation_credential(self.installation.expose_secret())
+    fn wire(&self, session: &CredentialSession, proof: Option<&Secret>) -> LiveProductCredentials {
+        let mut fixed = FixedCredentials::none().with_installation_credential(self.installation.expose_secret());
+        if let Some(proof) = proof {
+            fixed = fixed.with_execution_session_proof(proof.expose_secret());
+        }
+        LiveProductCredentials { session: session.clone(), scope: self.scope.clone(), generation: self.generation, fixed, pinned_operation: None }
     }
 }
 
@@ -153,7 +154,7 @@ impl SessionBilling {
         FileOperationStore::open(&self.journal).map_err(|_| unavailable())
     }
 
-    fn service(&self, credentials: FixedCredentials, handoff: AdmissionSecrets) -> HttpAccountService<&dyn Transport> {
+    fn service(&self, credentials: impl WireCredentials + 'static, handoff: AdmissionSecrets) -> HttpAccountService<&dyn Transport> {
         HttpAccountService::with_transport(
             &*self.transport,
             self.connection.clone(),
@@ -173,8 +174,7 @@ impl SessionBilling {
                 return Err(unavailable());
             }
             active.deadline.remaining(self.clock.now()).ok_or_else(unsafe_start)?;
-            let mut service =
-                self.service(active.binding.wire().with_execution_session_proof(active.proof.expose_secret()), AdmissionSecrets::default());
+            let mut service = self.service(active.binding.wire(&self.session, Some(&active.proof)), AdmissionSecrets::default());
             service.controlled_status(&active.binding.scope, active.grant.capability())?;
             let now = self.clock.now();
             active.deadline.remaining(now).ok_or_else(unsafe_start)?;
@@ -379,7 +379,7 @@ impl SessionBilling {
         // No credential survived the first reply. Use the frozen same-id begin to recover
         // only a settlement credential. Even a first successful begin here will never run.
         let handoff = AdmissionSecrets::default();
-        let response = self.service(binding.wire(), handoff.clone()).begin(scope, operation, row.capability, row.entry);
+        let response = self.service(binding.wire(&self.session, None), handoff.clone()).begin(scope, operation, row.capability, row.entry);
         if let Ok(Admission::AlreadyExists { status: status @ (OperationStatus::Released | OperationStatus::Expired) }) = response {
             // The same-installation server response already proves there is no live hold.
             ledger.mark_terminal(operation, status).map_err(|_| unavailable())?;
@@ -415,7 +415,7 @@ impl BillingPort for SessionBilling {
             return Err(unavailable());
         }
         let handoff = AdmissionSecrets::default();
-        let mut service = self.service(binding.wire(), handoff.clone());
+        let mut service = self.service(binding.wire(&self.session, None), handoff.clone());
         // A restart can restore local labels, but only the configured product service can
         // confirm that the bearer is currently eligible. Do this before writing an intent.
         service.controlled_status(&binding.scope, capability)?;

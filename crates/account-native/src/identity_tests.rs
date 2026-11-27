@@ -992,6 +992,44 @@ fn process_death_after_final_status_reservation_preserves_batch_cooldown() {
 }
 
 #[test]
+fn only_opted_in_refresh_preserves_the_local_binding_when_status_only_verifies_the_account() {
+    for enabled in [true, false] {
+        let mut f = Fixture::new();
+        f.lifecycle.set_refresh_preserves_binding(enabled);
+        f.lifecycle.adopt_verified_login("provider", "verified", Secret::new("old-access"), Secret::new("old-refresh"), 100, 200, "binding").unwrap();
+        let original = f.record().session_binding;
+        f.due();
+        f.success();
+        f.verifies(None);
+        if enabled {
+            assert_eq!(f.ensure().unwrap().token_generation(), 2);
+        } else {
+            assert_eq!(f.ensure().unwrap_err(), IdentityError::VerificationPending);
+        }
+        let record = f.record();
+        assert_eq!(record.pending, !enabled);
+        assert_eq!(record.session_binding, original);
+        assert_eq!(record.verified_account_id.as_deref(), Some("verified"));
+    }
+}
+
+#[test]
+fn opted_in_refresh_cannot_activate_for_a_different_product_account() {
+    let mut f = Fixture::new();
+    f.lifecycle.set_refresh_preserves_binding(true);
+    f.lifecycle
+        .adopt_verified_login("provider", "original_account", Secret::new("old-access"), Secret::new("old-refresh"), 100, 200, "binding")
+        .unwrap();
+    f.due();
+    f.success();
+    f.verifies(None);
+    assert_eq!(f.ensure().unwrap_err(), IdentityError::SessionChanged);
+    let pending = f.record();
+    assert!(pending.pending);
+    assert_eq!(pending.verified_account_id.as_deref(), Some("original_account"));
+}
+
+#[test]
 fn a_refresh_without_a_matching_binding_stays_pending() {
     let f = Fixture::new();
     f.login().unwrap();

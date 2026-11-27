@@ -40,10 +40,12 @@ const MAX_KEY_BYTES: usize = 200;
 const MAX_INDEX_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_ACCOUNT_BYTES: usize = 128;
 const MAX_IDENTIFIER_BYTES: usize = 80;
+const MAX_SESSION_BINDING_BYTES: usize = 128;
 
 const INDEX_KEY: &str = "credentials/index";
 const ACCOUNT_KEY: &str = "account/id";
 pub(crate) const PRODUCT_SESSION_KEY: &str = "auth/product_session";
+const SESSION_BINDING_KEY: &str = "auth/session_binding";
 const INSTALLATION_ID_KEY: &str = "install/id";
 const INSTALLATION_CREDENTIAL_KEY: &str = "install/credential";
 // Provider-side identity and token. These are never returned as an Intcad product bearer; they
@@ -63,6 +65,7 @@ const LOGOUT_KEY: &str = "auth/logout_pending";
 /// a crash before it leaves only non-restorable staged/partial values.
 const LOGIN_COMMIT_KEY: &str = "login/commit";
 const LOGIN_STAGE_ACCOUNT_KEY: &str = "login/stage/account";
+const LOGIN_STAGE_BINDING_KEY: &str = "login/stage/binding";
 const LOGIN_STAGE_PRODUCT_KEY: &str = "login/stage/product_session";
 const LOGIN_STAGE_PROVIDER_ACCOUNT_KEY: &str = "login/stage/provider_account";
 const LOGIN_STAGE_PROVIDER_TOKEN_KEY: &str = "login/stage/provider_token";
@@ -562,22 +565,37 @@ impl CredentialSession {
 
     /// The host's provable account, installation and session binding, or `None`.
     ///
-    /// The binding is an opaque digest of the active product session and the persisted account and
-    /// installation. A provider-only login never produces a scope, and a missing persisted label
-    /// fails closed. Logout, a product-session exchange and switching accounts each change (or
-    /// remove) the binding, so a result admitted by an old session cannot commit into a new one.
+    /// The binding is an opaque local identifier minted at explicit login, not a bearer or a
+    /// server-verified claim. Rotating the bearer does not change it.
     pub fn authenticated_scope(&self) -> Option<AuthenticatedHostScope> {
         let (mut state, epoch) = self.lock_if_authorized()?;
-        if state.account.is_none() || state.installation.is_none() {
-            adopt_persisted_labels(&mut state)?;
+        let scope = current_scope(&mut state)?;
+        self.epoch_unchanged(epoch).then_some(scope)
+    }
+
+    /// Publish an already verified replacement bearer without changing the login's identity.
+    pub fn update_product_session(&self, expected_scope: &AuthenticatedHostScope, token: &Secret) -> Result<(), CredentialError> {
+        if token.is_empty() || has_control(token.expose_secret()) {
+            return Err(unavailable());
         }
-        let (account, installation, _) = bound_scope(&state)?;
-        let product = read_secret(&state, PRODUCT_SESSION_KEY)?;
+        let (mut state, epoch) = self.lock_for_handoff().map_err(|_| unavailable())?;
+        if current_scope(&mut state).as_ref() != Some(expected_scope) || !self.epoch_unchanged(epoch) {
+            return Err(unavailable());
+        }
+        state.store.set(PRODUCT_SESSION_KEY, token.expose_secret()).map_err(|error| store_failure(&mut state, error))?;
         if !self.epoch_unchanged(epoch) {
+            return Err(unavailable());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn bound_product_session(&self, scope: &AuthenticatedHostScope, generation: u64) -> Option<Secret> {
+        let (mut state, epoch) = self.lock_if_authorized()?;
+        if epoch != generation || current_scope(&mut state).as_ref() != Some(scope) {
             return None;
         }
-        let binding = session_binding_digest(&account, &installation, product.expose_secret());
-        Some(AuthenticatedHostScope::new(AccountId::new(account), InstallationId::new(installation), HostSessionBinding::new(binding)))
+        let bearer = read_secret(&state, PRODUCT_SESSION_KEY)?;
+        self.epoch_unchanged(epoch).then_some(bearer)
     }
 
     /// Persist a response's settlement credential only into the session that sent admission.
@@ -589,17 +607,11 @@ impl CredentialSession {
         credential: &Secret,
     ) -> Result<(), Refusal> {
         let (mut state, epoch) = self.lock_for_handoff()?;
-        let (account, installation, digest) = bound_scope(&state).ok_or_else(handoff_refusal)?;
-        let product = read_secret(&state, PRODUCT_SESSION_KEY).ok_or_else(handoff_refusal)?;
-        if epoch != generation
-            || expected.account().as_str() != account
-            || expected.installation().as_str() != installation
-            || expected.session_binding().as_str() != session_binding_digest(&account, &installation, product.expose_secret())
-            || !valid_operation(operation)
-            || !self.epoch_unchanged(epoch)
-        {
+        let scope = current_scope(&mut state).ok_or_else(handoff_refusal)?;
+        if epoch != generation || &scope != expected || !valid_operation(operation) || !self.epoch_unchanged(epoch) {
             return Err(handoff_refusal());
         }
+        let digest = scope_digest(scope.account().as_str(), scope.installation().as_str());
         set_secret(&mut state, &operation_key(&digest, operation, "settlement"), credential.expose_secret()).map_err(|_| handoff_refusal())?;
         if !self.epoch_unchanged(epoch) {
             return Err(handoff_refusal());
@@ -613,11 +625,22 @@ impl CredentialSession {
         }
         let account = scope.account().as_str();
         let installation = scope.installation().as_str();
-        if !safe_token(account, MAX_ACCOUNT_BYTES) || !safe_token(installation, MAX_IDENTIFIER_BYTES) {
+        let binding = scope.session_binding().as_str();
+        if !safe_token(account, MAX_ACCOUNT_BYTES)
+            || !safe_token(installation, MAX_IDENTIFIER_BYTES)
+            || !safe_token(binding, MAX_SESSION_BINDING_BYTES)
+        {
             return Err(unavailable());
         }
         let mut state = self.lock()?;
         if state.locked {
+            return Err(unavailable());
+        }
+        let persisted_binding = state.store.get(SESSION_BINDING_KEY).map_err(|_| unavailable())?;
+        if persisted_binding.is_none()
+            && state.store.get(LOGIN_COMMIT_KEY).map_err(|_| unavailable())?.is_some_and(|marker| marker.starts_with("intcad-login/1/"))
+        {
+            // Only explicit login can replace a pre-binding activation.
             return Err(unavailable());
         }
         let persisted_account = state.store.get(ACCOUNT_KEY).map_err(|_| unavailable())?;
@@ -637,6 +660,9 @@ impl CredentialSession {
         if state.installation.as_deref() != Some(installation) {
             set_installation(&mut state, installation)?;
         }
+        if persisted_binding.as_deref() != Some(binding) || read_session_binding(&state).as_deref() != Some(binding) {
+            write_binding(&mut state, SESSION_BINDING_KEY, binding)?;
+        }
         Ok(())
     }
 
@@ -653,6 +679,7 @@ impl CredentialSession {
         if state.account.as_deref() == Some(account) {
             return Ok(());
         }
+        self.epoch.fetch_add(1, Ordering::SeqCst);
         // A switch replaces all old authority. Persist the same sign-out tombstone first so a
         // failed delete cannot leave the old bearer restorable by a later process.
         mark_logout(&mut state)?;
@@ -794,15 +821,23 @@ impl CredentialSession {
             }
         }
 
+        let binding = session_binding_digest(
+            &account,
+            installation.as_ref().map_or("", |installation| installation.installation_id()),
+            provider.access_token.expose_secret(),
+            generation,
+        );
         let mut state = self.lock()?;
         if !current() {
             return Err(attempt_superseded());
         }
+        self.epoch.fetch_add(1, Ordering::SeqCst);
         state.locked = true;
         let result = (|| {
             clear_authority_inner(&mut state)?;
             stage_provider(&mut state, &provider.account_id, provider.access_token.expose_secret())?;
             stage_product(&mut state, &account, product.product_session().expose_secret())?;
+            write_binding(&mut state, LOGIN_STAGE_BINDING_KEY, &binding)?;
             write_provider_login(&mut state, &provider.account_id, provider.access_token.expose_secret())?;
             write_product_login(&mut state, &account, product.product_session().expose_secret())?;
             if let Some(installation) = installation {
@@ -814,6 +849,7 @@ impl CredentialSession {
                 state.store.set(INSTALLATION_ID_KEY, &id).map_err(|error| store_failure(&mut state, error))?;
                 state.installation = Some(id);
             }
+            write_binding(&mut state, SESSION_BINDING_KEY, &binding)?;
             if !current() {
                 return Err(attempt_superseded());
             }
@@ -878,11 +914,15 @@ impl CredentialSession {
             // A provider re-login or logout raced the exchange; fail closed and write nothing.
             return Err(unavailable());
         }
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        let binding = session_binding_digest(&account, "", product.product_session().expose_secret(), 0);
         state.locked = true;
         let result = (|| {
             clear_product_authority_inner(&mut state)?;
             stage_product(&mut state, &account, product.product_session().expose_secret())?;
+            write_binding(&mut state, LOGIN_STAGE_BINDING_KEY, &binding)?;
             write_product_login(&mut state, &account, product.product_session().expose_secret())?;
+            write_binding(&mut state, SESSION_BINDING_KEY, &binding)?;
             // The legacy test/explicit seam has no desktop attempt id; generation 0 is still a
             // valid durable commit and every reader uses the same marker gate.
             commit_marker(&mut state, &account, 0)?;
@@ -1028,6 +1068,7 @@ fn committed_account(state: &SessionState) -> Option<String> {
         return None;
     }
     read_secret(state, PRODUCT_SESSION_KEY)?;
+    read_session_binding(state)?;
     Some(account.to_owned())
 }
 
@@ -1061,8 +1102,11 @@ fn stage_product(state: &mut SessionState, account: &str, product_session: &str)
     Ok(())
 }
 
+const LOGIN_STAGE_KEYS: [&str; 5] =
+    [LOGIN_STAGE_ACCOUNT_KEY, LOGIN_STAGE_BINDING_KEY, LOGIN_STAGE_PRODUCT_KEY, LOGIN_STAGE_PROVIDER_ACCOUNT_KEY, LOGIN_STAGE_PROVIDER_TOKEN_KEY];
+
 fn discard_stage(state: &mut SessionState) {
-    for key in [LOGIN_STAGE_ACCOUNT_KEY, LOGIN_STAGE_PRODUCT_KEY, LOGIN_STAGE_PROVIDER_ACCOUNT_KEY, LOGIN_STAGE_PROVIDER_TOKEN_KEY] {
+    for key in LOGIN_STAGE_KEYS {
         let _ = state.store.delete(key);
     }
 }
@@ -1078,10 +1122,10 @@ fn clear_product_authority_inner(state: &mut SessionState) -> Result<(), Credent
     if let Err(error) = state.store.set(LOGIN_COMMIT_KEY, LOGIN_COMMIT_REVOKED) {
         return Err(store_failure(state, error));
     }
-    for key in [PRODUCT_SESSION_KEY, REFRESH_TOKEN_KEY, INSTALLATION_CREDENTIAL_KEY] {
+    for key in [PRODUCT_SESSION_KEY, SESSION_BINDING_KEY, REFRESH_TOKEN_KEY, INSTALLATION_CREDENTIAL_KEY] {
         state.store.delete(key).map_err(|_| unavailable())?;
     }
-    for key in [LOGIN_STAGE_ACCOUNT_KEY, LOGIN_STAGE_PRODUCT_KEY, LOGIN_STAGE_PROVIDER_ACCOUNT_KEY, LOGIN_STAGE_PROVIDER_TOKEN_KEY] {
+    for key in LOGIN_STAGE_KEYS {
         state.store.delete(key).map_err(|_| unavailable())?;
     }
     let tracked = load_index(state)?;
@@ -1248,15 +1292,7 @@ fn read_secret(state: &SessionState, key: &str) -> Option<Secret> {
 /// Adopt the account label a previous process persisted under the active product session. This
 /// does not require an installation identity, so a restart can complete a missing first install.
 fn adopt_persisted_account(state: &mut SessionState) -> Option<()> {
-    if state.account.is_some() {
-        return Some(());
-    }
-    let account = state.store.get(ACCOUNT_KEY).ok().flatten()?;
-    if !safe_token(&account, MAX_ACCOUNT_BYTES) {
-        return None;
-    }
-    read_secret(state, PRODUCT_SESSION_KEY)?;
-    state.account = Some(account);
+    state.account = Some(committed_account(state)?);
     Some(())
 }
 
@@ -1305,23 +1341,36 @@ fn bound_scope(state: &SessionState) -> Option<(String, String, String)> {
     Some((account, installation, digest))
 }
 
-/// An opaque binding for the exact active product session. The product secret is never logged:
-/// the digest only distinguishes sessions that share an account and installation.
-fn session_binding_digest(account: &str, installation: &str, product_session: &str) -> String {
+fn current_scope(state: &mut SessionState) -> Option<AuthenticatedHostScope> {
+    if state.account.is_none() || state.installation.is_none() {
+        adopt_persisted_labels(state)?;
+    }
+    let (account, installation, _) = bound_scope(state)?;
+    let binding = read_session_binding(state)?;
+    Some(AuthenticatedHostScope::new(AccountId::new(account), InstallationId::new(installation), HostSessionBinding::new(binding)))
+}
+
+fn read_session_binding(state: &SessionState) -> Option<String> {
+    state.store.get(SESSION_BINDING_KEY).ok().flatten().filter(|binding| safe_token(binding, MAX_SESSION_BINDING_BYTES))
+}
+
+fn write_binding(state: &mut SessionState, key: &str, binding: &str) -> Result<(), CredentialError> {
+    if !safe_token(binding, MAX_SESSION_BINDING_BYTES) {
+        return Err(unavailable());
+    }
+    state.store.set(key, binding).map_err(|error| store_failure(state, error))
+}
+
+fn session_binding_digest(account: &str, installation: &str, login_secret: &str, generation: u64) -> String {
     let mut hasher = Sha256::new();
     hasher.update(account.as_bytes());
     hasher.update([0]);
     hasher.update(installation.as_bytes());
     hasher.update([0]);
-    hasher.update(product_session.as_bytes());
-    let digest = hasher.finalize();
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        out.push(HEX[usize::from(byte >> 4)] as char);
-        out.push(HEX[usize::from(byte & 0x0f)] as char);
-    }
-    out
+    hasher.update(login_secret.as_bytes());
+    hasher.update([0]);
+    hasher.update(generation.to_string().as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn scope_digest(account: &str, installation: &str) -> String {

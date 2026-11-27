@@ -587,7 +587,6 @@ pub struct OperationRenewal<T: Transport> {
     scope: AuthenticatedHostScope,
     operation: OperationId,
     authorization: GrantId,
-    bearer: Secret,
     proof: Secret,
     generation: u64,
     deadline: ConservativeDeadline,
@@ -644,12 +643,17 @@ impl<T: Transport> OperationRenewal<T> {
             return Err(refusal(RefusalCode::UnsafeToStart));
         }
         let generation = session.authority_generation();
-        let bearer = WireCredentials::product_session(&session).ok_or_else(|| refusal(RefusalCode::AuthRequired))?;
         let proof = WireCredentials::execution_session_proof(&session, &operation).ok_or_else(|| refusal(RefusalCode::AuthRequired))?;
-        let fixed = FixedCredentials::none().with_product_session(bearer.expose_secret()).with_execution_session_proof(proof.expose_secret());
-        let service = HttpAccountService::with_transport(transport, connection, Box::new(fixed), Box::new(session.clone()), clock);
+        let wire = LiveProductCredentials {
+            session: session.clone(),
+            scope: scope.clone(),
+            generation,
+            fixed: FixedCredentials::none().with_execution_session_proof(proof.expose_secret()),
+            pinned_operation: Some(operation.clone()),
+        };
+        let service = HttpAccountService::with_transport(transport, connection, Box::new(wire), Box::new(session.clone()), clock);
         let next = Some(due);
-        let driver = Self { service, session, scope, operation, authorization: grant.id().clone(), bearer, proof, generation, deadline, next };
+        let driver = Self { service, session, scope, operation, authorization: grant.id().clone(), proof, generation, deadline, next };
         driver.check_binding()?;
         Ok(driver)
     }
@@ -659,7 +663,6 @@ impl<T: Transport> OperationRenewal<T> {
             return Err(refusal(code));
         }
         if self.session.authenticated_scope().as_ref() != Some(&self.scope)
-            || WireCredentials::product_session(&self.session).as_ref() != Some(&self.bearer)
             || WireCredentials::execution_session_proof(&self.session, &self.operation).as_ref() != Some(&self.proof)
             || self.session.authority_generation() != self.generation
         {
@@ -716,6 +719,50 @@ impl<T: Transport> OperationRenewal<T> {
     #[cfg(test)]
     pub(crate) fn transport(&self) -> &T {
         self.service.transport()
+    }
+}
+
+/// Fetch the bearer for the original local authority on every request. In contrast,
+/// installation credentials and execution proofs cannot be replaced mid-operation.
+pub(crate) struct LiveProductCredentials {
+    pub(crate) session: CredentialSession,
+    pub(crate) scope: AuthenticatedHostScope,
+    pub(crate) generation: u64,
+    pub(crate) fixed: FixedCredentials,
+    /// Control renewal also checks that the original proof is still in the session store.
+    /// Synchronous billing holds its proof privately and does not persist execution authority.
+    pub(crate) pinned_operation: Option<OperationId>,
+}
+
+impl WireCredentials for LiveProductCredentials {
+    fn product_session(&self) -> Option<Secret> {
+        if self.fixed.installation_credential.is_some() {
+            self.installation_credential()?;
+        }
+        self.session.bound_product_session(&self.scope, self.generation)
+    }
+
+    fn installation_credential(&self) -> Option<Secret> {
+        let installation = self.fixed.installation_credential()?;
+        (self.session.installation_credential().as_ref() == Some(&installation)).then_some(installation)
+    }
+
+    fn settlement_credential(&self, _: &OperationId) -> Option<Secret> {
+        None
+    }
+
+    fn execution_session_proof(&self, operation: &OperationId) -> Option<Secret> {
+        let proof = self.fixed.execution_session_proof(operation)?;
+        if let Some(pinned) = &self.pinned_operation
+            && (pinned != operation || self.session.execution_session_proof(operation).as_ref() != Some(&proof))
+        {
+            return None;
+        }
+        Some(proof)
+    }
+
+    fn initial_lease_proof(&self, _: &GrantId) -> Option<Secret> {
+        None
     }
 }
 

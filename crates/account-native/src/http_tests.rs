@@ -188,11 +188,9 @@ fn error_body(code: &str) -> Value {
     json!({"error": {"code": code, "message": "stable", "retryable": false, "request_id": "req_example_0001"}})
 }
 
-#[test]
-fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_late_success() {
+fn bound_session(store: Box<dyn solidcraft_engine::entitlement::CredentialStore + Send>) -> CredentialSession {
     use crate::credentials::{ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession};
-    use crate::http::{CredentialHandoff, OperationRenewal};
-    use solidcraft_engine::entitlement::{ConservativeDeadline, Grant};
+    use crate::http::CredentialHandoff;
 
     struct Exchange;
     impl ProductSessionExchange for Exchange {
@@ -200,6 +198,109 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
             Ok(ProductSession::from_trusted_exchange("acct_example_0001", Secret::new("fixture_bearer"), None))
         }
     }
+    let mut session = CredentialSession::new(store);
+    session.complete_provider_login("provider_fixture", "provider_token").unwrap();
+    session.activate_product_session(&Exchange).unwrap();
+    CredentialHandoff::installation_credential(&mut session, "inst_example_0001", Secret::new("fixture_installation")).unwrap();
+    session
+}
+
+#[test]
+fn billing_reads_the_current_bearer_for_admission_dispatch_renewal_and_commit_checks() {
+    use crate::SessionBilling;
+    use crate::credentials_tests::RecordingStore;
+    use solidcraft_engine::entitlement::BillingPort;
+
+    struct RotateAfterStatus {
+        wire: Rc<ScriptedTransport>,
+        session: CredentialSession,
+        scope: AuthenticatedHostScope,
+        status_reads: Cell<u8>,
+    }
+    impl crate::http::Transport for RotateAfterStatus {
+        fn send(&self, request: &crate::http::WireRequest) -> Result<WireResponse, TransportFailure> {
+            if request.method() == "GET" {
+                let status_reads = self.status_reads.get() + 1;
+                self.status_reads.set(status_reads);
+                self.session.update_product_session(&self.scope, &Secret::new(format!("rotation_{status_reads}"))).unwrap();
+            }
+            self.wire.send(request)
+        }
+    }
+    let session = bound_session(Box::new(RecordingStore::default()));
+    let scope = session.authenticated_scope().unwrap();
+    let clock = TestClock::at(T0);
+    let mut admission = admitted_body();
+    admission["execution_grant"]["capability"] = json!("dfm");
+    let renewal = json!({"authorization_id":"grant_example_0001","operation_id":"op_example_0001","capability":"dfm","renewed":true,
+        "remaining_seconds":300,"renew_after_seconds":20,"execution_session_proof":null});
+    let wire = Rc::new(ScriptedTransport::new(vec![
+        ok(200, status_body(1000, 0, 1000)),
+        ok(200, admission),
+        ok(200, status_body(1000, 1, 999)),
+        ok(200, renewal),
+        ok(200, status_body(1000, 1, 999)),
+        ok(200, receipt_body("CHARGED", "SUCCEEDED", true)),
+    ]));
+    let path = std::env::temp_dir().join(format!("intcad-billing-rotation-{}-{:?}", std::process::id(), std::thread::current().id()));
+    let mut billing = SessionBilling::new(
+        session.clone(),
+        WireConnection::new(BASE, "1.0.0").unwrap(),
+        Box::new(RotateAfterStatus { wire: wire.clone(), session: session.clone(), scope: scope.clone(), status_reads: Cell::new(0) }),
+        path.clone(),
+        clock.clone(),
+    );
+    let operation = operation();
+    billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap();
+    clock.millis.set(T0 + 21_000);
+    billing.dispatch(&operation, Duration::from_secs(1)).unwrap();
+    billing.check_commit(&operation).unwrap();
+    assert_eq!(billing.commit(&operation, BillingResult::Succeeded), Ok(BillingResult::Succeeded));
+    billing.check_publish(&operation).unwrap();
+    assert_eq!(billing.scope(), Some(scope));
+    let requests = wire.take_requests();
+    assert_eq!(
+        requests.iter().map(|request| request.header("Authorization")).collect::<Vec<_>>(),
+        [
+            Some("Bearer fixture_bearer"),
+            Some("Bearer rotation_1"),
+            Some("Bearer rotation_1"),
+            Some("Bearer rotation_2"),
+            Some("Bearer rotation_2"),
+            None
+        ]
+    );
+    assert_eq!(requests[3].header("X-Execution-Session-Proof"), Some("execution_session_proof_example_000000000000000"));
+    assert!(requests[5].header("X-Settlement-Credential").is_some());
+    std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn billing_preflight_rejects_a_replaced_installation_credential_even_when_scope_is_unchanged() {
+    use crate::SessionBilling;
+    use crate::credentials_tests::RecordingStore;
+    use solidcraft_engine::entitlement::BillingPort;
+
+    let mut session = bound_session(Box::new(RecordingStore::default()));
+    let scope = session.authenticated_scope().unwrap();
+    let billing = SessionBilling::new(
+        session.clone(),
+        WireConnection::new(BASE, "1.0.0").unwrap(),
+        Box::new(ScriptedTransport::new(vec![])),
+        std::env::temp_dir().join("intcad-unused-billing-journal"),
+        TestClock::at(T0),
+    );
+    assert!(billing.preflight().is_ok());
+    crate::CredentialHandoff::installation_credential(&mut session, scope.installation().as_str(), Secret::new("replacement_installation")).unwrap();
+    assert_eq!(session.authenticated_scope(), Some(scope));
+    assert_eq!(billing.preflight().unwrap_err().code, RefusalCode::AuthUnavailable);
+}
+
+#[test]
+fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_late_success() {
+    use crate::http::{CredentialHandoff, OperationRenewal};
+    use solidcraft_engine::entitlement::{ConservativeDeadline, Grant};
+
     struct TimedReply {
         wire: ScriptedTransport,
         clock: TestClock,
@@ -211,22 +312,38 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
             self.wire.send(request)
         }
     }
-    for (status, receive_at, replace_proof) in [(200, 21_000, false), (401, 21_000, false), (200, 60_000, false), (200, 21_000, true)] {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Change {
+        None,
+        Proof,
+        Scope,
+        Generation,
+        ResponseOperation,
+    }
+    for (status, receive_at, change) in [
+        (200, 21_000, Change::None),
+        (401, 21_000, Change::None),
+        (200, 60_000, Change::None),
+        (200, 21_000, Change::Proof),
+        (200, 21_000, Change::Scope),
+        (200, 21_000, Change::Generation),
+        (200, 21_000, Change::ResponseOperation),
+    ] {
         let clock = TestClock::at(0);
-        let mut session = CredentialSession::new(Box::new(MemorySession::default()));
-        session.complete_provider_login("provider_fixture", "provider_token").unwrap();
-        session.activate_product_session(&Exchange).unwrap();
-        CredentialHandoff::installation_credential(&mut session, "inst_example_0001", Secret::new("fixture_installation")).unwrap();
+        let mut session = bound_session(Box::new(MemorySession::default()));
         let scope = session.authenticated_scope().unwrap();
         let operation = operation();
         CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("original_proof")).unwrap();
         let grant = Grant::from_server(GrantId::new("grant_example_0001"), Capability::Control, MonotonicInstant::from_millis(60_000));
-        let body = if status == 401 {
+        let mut body = if status == 401 {
             error_body("AUTH_REQUIRED")
         } else {
             json!({"authorization_id":"grant_example_0001","operation_id":"op_example_0001","capability":"control","renewed":true,
                 "remaining_seconds":60,"renew_after_seconds":17,"execution_session_proof":null,"expires_at":"2026-01-01T00:01:20.000Z"})
         };
+        if change == Change::ResponseOperation {
+            body["operation_id"] = json!("op_example_0002");
+        }
         let transport = TimedReply { wire: ScriptedTransport::new(vec![ok(status, body)]), clock: clock.clone(), receive_at };
         let deadline = ConservativeDeadline::new(clock.now(), Duration::from_secs(60));
         let mut renewal = OperationRenewal::new(
@@ -243,12 +360,21 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
         .unwrap();
         clock.millis.set(19_999);
         assert_eq!(renewal.tick(), Ok(false));
-        if replace_proof {
-            CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("replacement_proof")).unwrap();
+        session.update_product_session(&scope, &Secret::new("rotated_bearer")).unwrap();
+        match change {
+            Change::Proof => {
+                CredentialHandoff::execution_session_proof(&mut session, Capability::Control, &operation, Secret::new("replacement_proof")).unwrap();
+            }
+            Change::Scope => session.bind_scope(&self::scope()).unwrap(),
+            Change::Generation => {
+                session.revoke_in_process();
+                session.end_revocation();
+            }
+            Change::None | Change::ResponseOperation => {}
         }
         clock.millis.set(20_000);
         let result = renewal.tick();
-        if status == 200 && receive_at < 60_000 && !replace_proof {
+        if status == 200 && receive_at < 60_000 && change == Change::None {
             assert_eq!(result, Ok(true));
             assert_eq!(renewal.deadline().expires_at(), MonotonicInstant::from_millis(80_000));
             clock.millis.set(36_999);
@@ -259,8 +385,9 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
             assert_eq!(renewal.tick(), Ok(false), "a refused or late lease never retries");
         }
         let requests = renewal.transport().wire.take_requests();
-        assert_eq!(requests.len(), usize::from(!replace_proof));
+        assert_eq!(requests.len(), usize::from(matches!(change, Change::None | Change::ResponseOperation)));
         if let Some(request) = requests.first() {
+            assert_eq!(request.header("Authorization"), Some("Bearer rotated_bearer"));
             assert_eq!(request.header("X-Execution-Session-Proof"), Some("original_proof"));
             assert_eq!(request.header("X-Settlement-Credential"), None);
             assert_eq!(
@@ -269,6 +396,10 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
             );
         }
         assert_eq!(session.renewal_refusal(&scope, &operation), (status == 401).then_some(RefusalCode::AuthRequired));
+        assert_eq!(session.renewal_refusal(&scope, &OperationId::parse("op_example_0002").unwrap()), None);
+        if change != Change::Scope {
+            assert_eq!(session.authenticated_scope(), Some(scope));
+        }
     }
 }
 
