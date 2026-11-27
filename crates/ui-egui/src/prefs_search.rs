@@ -519,7 +519,13 @@ fn extra_hit(state: &State, key: &str) -> bool {
 }
 
 fn extra_hit_text(state: &State, text: Option<&str>) -> bool {
-    text.is_some_and(|text| setting_score(&state.query, text) > 0 || english_hit(&state.query, text))
+    // A checkbox row has no label of its own: its control's words are stored here, and the words
+    // people search for instead (`keywords`) count as they do for a labelled row.
+    text.is_some_and(|text| {
+        setting_score(&state.query, text) > 0
+            || english_hit(&state.query, text)
+            || keywords(text).iter().any(|word| setting_score(&state.query, word) > 0)
+    })
 }
 
 /// Whether any of `texts` matches the current query. Does not draw a heading.
@@ -575,7 +581,7 @@ pub(crate) fn matches_text(query: &str, texts: &[&str]) -> bool {
 }
 
 /// Words that find a setting even though they are not written on it.
-fn keywords(text: &str) -> &'static [&'static str] {
+pub(crate) fn keywords(text: &str) -> &'static [&'static str] {
     let sketch: &'static [&'static str] = match fold(text).as_str() {
         "center and midpoint guides" | "centre and midpoint guides" => {
             &["center and midpoint alignment guides", "centre and midpoint alignment guides"]
@@ -606,6 +612,7 @@ fn keywords(text: &str) -> &'static [&'static str] {
     }
     match fold(text).as_str() {
         "design" => &["design defaults"],
+        "suggest the next step after a pause" => &["predict", "prediction", "autocomplete", "suggest", "suggestion", "next step"],
         "step values with arrows and wheel" => &["step values with the arrow keys and the wheel"],
         "show values beside their handles" => &["show values beside their handles in the view"],
         "files from unknown programs" => &["for files from unknown programs"],
@@ -1647,6 +1654,26 @@ mod tests {
                     "navigation never selects an option"
                 );
             }
+        }
+    }
+
+    /// Next-step suggestions (INT-1458) are found by the words people search for.
+    #[test]
+    fn next_step_suggestions_are_found_as_predict_autocomplete_or_suggest() {
+        use serde_json::json;
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.call("ui.resize", json!({"width":1600,"height":1200}));
+        h.call("ui.prefs", json!({"open":"General"}));
+        for query in ["predict", "autocomplete", "suggest"] {
+            h.app.prefs_window.filter = query.into();
+            h.frames(5);
+            let (_, _, hits) = nav(&h.ctx);
+            assert!(
+                hits.iter().any(|hit| hit.page == crate::prefs::PAGE_ASSISTANT && hit.label == "Suggest the next step after a pause"),
+                "{query}: {:?}",
+                hits.iter().map(|hit| (hit.page, hit.label.clone())).collect::<Vec<_>>()
+            );
         }
     }
 }

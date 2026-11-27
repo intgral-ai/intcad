@@ -1,0 +1,6 @@
+schema_version = 1
+
+[[keep]]
+id = "wall-2-4"
+status = "confirmed"
+text = "Walls and floors are 2.4 mm thick: three perimeters of a 0.4 mm nozzle."

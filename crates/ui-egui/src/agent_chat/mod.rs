@@ -31,6 +31,7 @@ pub(crate) mod dfm_runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod discover;
 pub mod gate;
+pub(crate) mod ghost;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod host_ai;
 #[cfg(not(target_arch = "wasm32"))]
@@ -46,8 +47,10 @@ pub mod packaged_runtime;
 mod panel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod paste;
+pub mod predict;
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
+pub mod project_brief;
 pub mod read_file;
 pub mod review;
 #[cfg(not(target_arch = "wasm32"))]
@@ -60,6 +63,7 @@ pub mod summary;
 pub(crate) mod task_runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod web;
+mod words;
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -653,6 +657,12 @@ pub struct AgentChat {
     /// The panel was open on the last frame.
     #[cfg(not(target_arch = "wasm32"))]
     seen_open: bool,
+    /// Next-step suggestions: their own session of the agent, the guess shown and the log of
+    /// guesses. It belongs to the window, not to one tab's conversation.
+    pub predict: predict::Predictor,
+    /// The next turn runs as a preview whatever `agent_chat_preview` says (a next-step guess sent
+    /// with Tab). Taken by the turn's start.
+    pub(crate) force_preview: bool,
 }
 
 impl Drop for AgentChat {
@@ -685,6 +695,7 @@ impl AgentChat {
         std::mem::swap(&mut self.open, &mut other.open);
         std::mem::swap(&mut self.following_document, &mut other.following_document);
         std::mem::swap(&mut self.settings, &mut other.settings);
+        std::mem::swap(&mut self.predict, &mut other.predict);
         std::mem::swap(&mut self.control_starter, &mut other.control_starter);
         std::mem::swap(&mut self.models_cache, &mut other.models_cache);
         std::mem::swap(&mut self.window_placed, &mut other.window_placed);
@@ -1167,7 +1178,15 @@ impl AgentChat {
             }
             Event::AuthStatus(s) => self.auth_status = Some(s),
             Event::Connections(snapshot) => self.conn.take_in(snapshot),
+            Event::ConnectionsLogout(snapshot) => {
+                self.conn.logout_pending = false;
+                self.conn.take_in(snapshot);
+            }
+            Event::PredictionSetup(_) => {}
             Event::ConnectionsFailed { what, code } => {
+                if what == connections::What::Logout {
+                    self.conn.logout_pending = false;
+                }
                 // Without the first snapshot the agent cannot be used: starting has failed. Later
                 // refusals change nothing here (a second sign-in while one is under way, say).
                 if what == connections::What::Setup && self.conn.snapshot.is_none() {
@@ -2207,6 +2226,7 @@ pub(crate) fn send_with(app: &mut SolveApp, ctx: &egui::Context, text: String, o
         }
         let files = if asked { Vec::new() } else { std::mem::take(&mut chat.attachments) };
         chat.pending.push(Pending { text, image, context, files });
+        chat.predict.chat_took_view();
         return Ok(());
     }
     let files = if asked { Vec::new() } else { std::mem::take(&mut app.agent_chat.attachments) };
@@ -2249,6 +2269,7 @@ fn submit(app: &mut SolveApp, ctx: &egui::Context, text: String, image: bool, co
         State::Ready => start_turn_with(app, text, image, at, files, interrupted.then_some(INTERRUPT_NOTE)),
         s => {
             app.agent_chat.queued = Some((text, image, at, files));
+            app.agent_chat.predict.chat_took_view();
             #[cfg(not(target_arch = "wasm32"))]
             if !s.running() {
                 connect(app, ctx);
@@ -2434,6 +2455,7 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     // The undo step is named after the message, or its first file when it has no words.
     let first_line = text.lines().find(|l| !l.trim().is_empty()).or_else(|| files.first().map(|f| f.name.as_str())).unwrap_or("");
     let label: String = first_line.chars().take(48).collect();
+    app.agent_chat.predict.chat_took_view();
     app.agent_chat.turn_warning = None;
     app.agent_chat.next_turn = app.agent_chat.next_turn.wrapping_add(1);
     let turn_id = app.agent_chat.next_turn;
@@ -2505,6 +2527,7 @@ fn start_turn_with(app: &mut SolveApp, text: String, image: bool, at: Option<usi
     if skill == skill::Skill::Plain {
         review::begin(app);
     }
+    app.agent_chat.force_preview = false;
     let active = app.agent_chat.turn.as_ref().map(|turn| Arc::clone(&turn.active));
     #[cfg(not(target_arch = "wasm32"))]
     let bridge_scope_check = desktop_bridge_scope_check(app);
@@ -3729,6 +3752,21 @@ pub fn control(app: &mut SolveApp, ctx: &egui::Context, p: &Value) -> Result<Val
     if let Some(a) = p.get("attach_selection").and_then(Value::as_bool) {
         app.preferences.agent_chat_attach_selection = a;
     }
+    // Next-step suggestions: on or off, and the pause before one (seconds).
+    if let Some(on) = p.get("next_step").and_then(Value::as_bool) {
+        app.preferences.agent_next_step = on;
+    }
+    // Trust the saved design's project for this session, so its notes reach the agent (PRD F-6).
+    if p.get("trust_project").and_then(Value::as_bool) == Some(true) {
+        predict::trust_project(app)?;
+    }
+    if let Some(s) = p.get("next_step_pause_s").and_then(Value::as_f64) {
+        let s = s as f32;
+        if !predict::PAUSE_RANGE.contains(&s) {
+            return Err(format!("next_step_pause_s must be {} to {} seconds", predict::PAUSE_RANGE.start(), predict::PAUSE_RANGE.end()));
+        }
+        app.preferences.agent_next_step_pause_s = s;
+    }
     if p.get("pick").and_then(Value::as_bool) == Some(true) {
         start_pick(app);
     }
@@ -3923,6 +3961,7 @@ pub fn status(app: &SolveApp) -> Value {
             json!(c.preview.as_ref().map(|p| json!({"id": p.id, "phase": format!("{:?}", p.phase), "steps": p.steps, "busy_ms": p.busy_ms,
                 "computing": review::computing(c).map(|(since, what)| json!({"what": what, "ms": (crate::now_ms() - since).max(0.0)}))}))),
         );
+        state.insert("nextStep".into(), predict::status(app));
     }
     state
 }
