@@ -41,7 +41,7 @@ Cut a symmetric part in half and hold the cut face with `symmetry`: the cut must
 ```
 
 ## Your own material
-Give all four numbers and where they come from; the reply repeats the source.
+Give the three numbers (`youngs_modulus`, `poisson_ratio`, `yield_strength`) and where they come from (`source`); the reply repeats the source.
 ```json
 {"material": {"name": "PETG, printed flat", "youngs_modulus": 2000, "poisson_ratio": 0.38,
   "yield_strength": 45, "source": "the filament maker's datasheet, tested flat; printed layers are weaker across"}}
