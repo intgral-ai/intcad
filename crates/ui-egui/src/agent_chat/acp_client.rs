@@ -147,6 +147,28 @@ pub struct AcpBackend {
     cad: Option<PackagedCad>,
 }
 
+fn packaged_launch_path(path: &std::path::Path) -> Result<String, String> {
+    let text = path.to_str().ok_or_else(|| "The packaged Agent's launch path is not valid text".to_string())?;
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Path, Prefix};
+        let refused = || "The packaged Agent's launch path cannot be represented as an ordinary Windows path".to_string();
+        // Node 22 cannot resolve a verbatim entry argument. Remove the prefix only from a
+        // drive path, and only if ordinary Win32 resolution still names the validated file.
+        let Some(Component::Prefix(prefix)) = path.components().next() else { return Err(refused()) };
+        if !matches!(prefix.kind(), Prefix::VerbatimDisk(_)) {
+            return Err(refused());
+        }
+        let ordinary = text.strip_prefix(r"\\?\").ok_or_else(refused)?;
+        if !Path::new(ordinary).is_absolute() || !std::fs::canonicalize(ordinary).is_ok_and(|resolved| resolved == path) {
+            return Err(refused());
+        }
+        Ok(ordinary.to_owned())
+    }
+    #[cfg(not(windows))]
+    Ok(text.to_owned())
+}
+
 impl AcpBackend {
     /// Start the built-in agent and say hello. Nothing follows by itself: the panel hands over
     /// the keys ([`ChatBackend::connections`]) and opens the session ([`ChatBackend::new_session`]).
@@ -169,10 +191,7 @@ impl AcpBackend {
         ctx.wake = Box::new(move || process_wake());
         ctx.bridge = None;
         let env = [(DATA_DIR_ENV, data.as_os_str()), (TELEMETRY_OFF_ENV, std::ffi::OsStr::new("1"))];
-        let argv = [
-            program.to_str().ok_or_else(|| "The packaged Agent's Node path is not valid text".to_string())?.to_string(),
-            entry.to_str().ok_or_else(|| "The packaged Agent's entry path is not valid text".to_string())?.to_string(),
-        ];
+        let argv = [packaged_launch_path(&program)?, packaged_launch_path(&entry)?];
         let mut backend = Self::spawn(&argv, ctx, &env, PACKAGED_ENV_REMOVE)?;
         backend.built_in = true;
         backend.cad = Some(PackagedCad {
@@ -805,6 +824,59 @@ pub fn test_agent(argv: &[String], cwd: &std::path::Path) -> Result<String, Test
     });
     p.shutdown(true);
     result
+}
+
+#[cfg(all(test, windows))]
+mod windows_launch_tests {
+    use super::packaged_launch_path;
+    use std::path::{Component, Path, PathBuf, Prefix};
+
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("Intcad Agent {name} {}", std::process::id()));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn node_receives_ordinary_absolute_paths_to_the_validated_files() {
+        let fixture = Fixture::new("launch");
+        for name in ["node.exe", "main.mjs"] {
+            let file = fixture.0.join(name);
+            std::fs::write(&file, b"").unwrap();
+            let checked = std::fs::canonicalize(&file).unwrap();
+            let launch = packaged_launch_path(&checked).unwrap();
+            let launch = Path::new(&launch);
+            assert!(launch.is_absolute());
+            assert!(
+                matches!(launch.components().next(), Some(Component::Prefix(p)) if matches!(p.kind(), Prefix::Disk(_))),
+                "Node requires an ordinary drive path, not {launch:?}"
+            );
+            assert_eq!(std::fs::canonicalize(launch).unwrap(), checked);
+        }
+    }
+
+    #[test]
+    fn rejects_a_verbatim_path_that_would_launch_a_different_file() {
+        let fixture = Fixture::new("round trip");
+        let setup = fixture.0.join("main.mjs");
+        std::fs::write(&setup, b"ordinary file").unwrap();
+        let ordinary = std::fs::canonicalize(&setup).unwrap();
+        let alias = ordinary.with_file_name("main.mjs.");
+        std::fs::write(&alias, b"different file").unwrap();
+        assert_ne!(std::fs::canonicalize(&alias).unwrap(), ordinary);
+        assert!(packaged_launch_path(&std::fs::canonicalize(&alias).unwrap()).is_err());
+        assert!(packaged_launch_path(Path::new(r"\\?\GLOBALROOT\Device\HarddiskVolume1\node.exe")).is_err());
+    }
 }
 
 #[cfg(all(test, unix))]
