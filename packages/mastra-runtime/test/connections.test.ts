@@ -442,7 +442,7 @@ test("a taken port says who holds it: a sign-in of this app, of another Intcad, 
 
   // A sign-in of this same app (another design's agent: same parent), which never ends.
   const ours = await holdCallbackPorts(http, () => false, { ports: [base + 4, base + 6] });
-  const byUs = await holdCallbackPorts(http, () => false, { ports: [base + 8, base + 6], retryMs: 300 }).then(() => null, (error: Json) => error);
+  const byUs = await holdCallbackPorts(http, () => false, { ports: [base + 8, base + 6] }).then(() => null, (error: Json) => error);
   assert.equal(byUs?.code, "PORT_BUSY");
   assert.deepEqual(byUs?.holder, { kind: "here" });
   ours.close();
@@ -464,13 +464,23 @@ test("a taken port says who holds it: a sign-in of this app, of another Intcad, 
   }
 });
 
-test("a sign-in of another design of this app that is being cancelled is waited for briefly (INT-1522)", async () => {
+test("a sign-in that finds the first port free again by the time it has the second takes both (INT-1522)", async () => {
   const base = 43455;
+  // Another design's sign-in holds both ports and lets go of them just after this one found the
+  // first taken (its cancel was on the way): this one has the second, and must have the first too,
+  // or Mastra Code would listen there itself.
   const leaving = await holdCallbackPorts(http, () => false, { ports: [base, base + 2] });
-  // The app cancels the other design's sign-in before it starts this one; that agent lets go a moment later.
-  setTimeout(() => leaving.close(), 150);
-  const taken = await holdCallbackPorts(http, () => false, { ports: [base + 4, base + 2], retryMs: 2000 });
+  const letGo = {
+    createServer: (handler: http.RequestListener) => {
+      const server = http.createServer(handler);
+      server.once("error", (error: Json) => error?.code === "EADDRINUSE" && leaving.close());
+      return server;
+    },
+  };
+  const taken = await holdCallbackPorts(letGo, () => false, { ports: [base, base + 2] });
+  const firstFree = await foreignListener(base).then((server) => (server.close(), true), () => false);
   taken.close();
+  assert.equal(firstFree, false, "the first port is held too");
 });
 
 test("a port the system will not open is told apart from a taken one; the first port may be refused (INT-1522)", async () => {

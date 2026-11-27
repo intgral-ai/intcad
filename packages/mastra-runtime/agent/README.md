@@ -355,11 +355,12 @@ the code is exchanged after it.
 `cancel`, the end of the sign-in, its time limit, or the end of the process frees the ports. The
 app cancels a sign-in when its design is left and, before a sign-in starts, any still under way in
 another design; the page cancels one when the user goes back from it. If 1457 is taken, the
-sign-in cannot be received and fails with `problem.kind` `port`. Who holds it is asked first at
+sign-in cannot be received and fails at once with `problem.kind` `port`. Who holds it is asked at
 `/intcad-sign-in`, where Intcad's own listener answers `{ app: 'intcad', parent }` (the agent's
-parent process, the app); one of the same app is waited for up to two seconds, since its cancel
-may be on the way. Another program is not named. The first port may be refused by the system as well: what keeps this
-process off it keeps Mastra Code off it too.
+parent process, the app); another program is not named. The first port may be taken or refused
+by the system as well: what keeps this process off it keeps Mastra Code off it too. When the
+first was taken and the second is had, the first is tried once more, since whoever held it may
+have let go of both meanwhile.
 
 ## What was checked, and what was not
 

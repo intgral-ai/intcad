@@ -70,8 +70,6 @@ function listen(http, port, onCallback, sentence) {
   });
 }
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
 /** What a listener on the port says of itself at `WHO`: `{ app, parent }`, or null. */
 function ask(http, port) {
   return new Promise(resolve => {
@@ -116,15 +114,13 @@ export async function holderOf(http, port) {
  * only has to be out of Mastra Code's reach, which it also is when another program holds it or the
  * system will not open it (it would not open it for Mastra Code either: this is one process).
  *
- * A second port that is taken fails with `PORT_BUSY`, its `port` and its `holder` ([`holderOf`]),
- * any other refusal with `LISTEN_FAILED`, the `port` and the system's `errno`. A sign-in of another
- * design of this app lets go of the port a moment after the app cancels it, so that one is waited
- * for, at most `retryMs`.
+ * A second port that is taken fails at once with `PORT_BUSY`, its `port` and its `holder`
+ * ([`holderOf`]), any other refusal with `LISTEN_FAILED`, the `port` and the system's `errno`.
  *
  * @param options.ports     the two ports, for the tests
  * @param options.sentence  () => what the browser shows after the call, in the user's language
  */
-export async function holdCallbackPorts(http, onCallback, { ports = CALLBACK_PORTS, sentence = () => DONE, retryMs = 2000 } = {}) {
+export async function holdCallbackPorts(http, onCallback, { ports = CALLBACK_PORTS, sentence = () => DONE } = {}) {
   const servers = [];
   const close = () => {
     for (const server of servers.splice(0)) {
@@ -133,23 +129,18 @@ export async function holdCallbackPorts(http, onCallback, { ports = CALLBACK_POR
     }
   };
   try {
+    // A first port that cannot be had is out of Mastra Code's reach either way.
+    const first = () => listen(http, ports[0], onCallback, sentence).then(server => servers.push(server), () => false);
+    const hadFirst = await first();
     try {
-      servers.push(await listen(http, ports[0], onCallback, sentence));
-    } catch {
-      // Out of Mastra Code's reach either way.
+      servers.push(await listen(http, ports[1], onCallback, sentence));
+    } catch (error) {
+      if (error?.code !== 'EADDRINUSE') throw listenFailed(ports[1], error);
+      throw portBusy(ports[1], await holderOf(http, ports[1]));
     }
-    const until = Date.now() + retryMs;
-    for (;;) {
-      try {
-        servers.push(await listen(http, ports[1], onCallback, sentence));
-        break;
-      } catch (error) {
-        if (error?.code !== 'EADDRINUSE') throw listenFailed(ports[1], error);
-        const holder = await holderOf(http, ports[1]);
-        if (holder?.kind !== 'here' || Date.now() >= until) throw portBusy(ports[1], holder);
-        await sleep(200);
-      }
-    }
+    // Whoever held the first port may have let go of both meanwhile (another design's sign-in,
+    // being cancelled): it is tried once more, or Mastra Code would listen there itself.
+    if (!hadFirst) await first();
   } catch (error) {
     close();
     throw error;
