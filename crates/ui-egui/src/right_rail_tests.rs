@@ -435,8 +435,9 @@ fn the_names_fit_the_rail_in_every_language_and_right_to_left_lines_fit_the_pane
 fn an_empty_panel_shows_one_centred_block() {
     let mut h = window(LayoutMode::Floating, 1400);
     // Review lists the DFM check's findings instead of an empty block: its own empty state is
-    // the check's entry, tested with the panel in `dfm_review_tests`.
-    for item in Item::ALL.into_iter().filter(|item| !matches!(item, Item::Review | Item::Files)) {
+    // the check's entry, tested with the panel in `dfm_review_tests`. Simulation is the stress
+    // estimate's setup (below).
+    for item in Item::ALL.into_iter().filter(|item| !matches!(item, Item::Review | Item::Files | Item::Simulation)) {
         h.call("ui.prefs", json!({"right_rail_open": item.id()}));
         h.settle();
         let panel = rect_of("rail:panel").unwrap();
@@ -445,7 +446,7 @@ fn an_empty_panel_shows_one_centred_block() {
         let centre = f64::from(panel.center().x);
         assert!((x - centre).abs() <= 1.0 && (note_x - centre).abs() <= 1.0, "{item:?}: centred across the panel: {x} {note_x} {centre}");
         assert!(note_y > y && (y - f64::from(panel.center().y)).abs() < 60.0, "{item:?}: in the panel's middle: {y} {note_y} {panel:?}");
-        for other in Item::ALL.into_iter().filter(|other| *other != item && !matches!(other, Item::Review | Item::Files)) {
+        for other in Item::ALL.into_iter().filter(|other| *other != item && !matches!(other, Item::Review | Item::Files | Item::Simulation)) {
             assert!(h.widget(other.empty()).is_none() && h.widget(other.note()).is_none(), "{item:?}: nothing of {other:?}");
         }
     }
@@ -454,4 +455,9 @@ fn an_empty_panel_shows_one_centred_block() {
     h.settle();
     assert!(rect_of("files:empty").is_some() && rect_of("files_open_folder").is_some(), "Files offers a folder");
     assert!(h.widget(Item::Files.empty()).is_none(), "the old empty block is not drawn over it");
+    // Simulation sets up a stress estimate by hand (`stress_by_hand`).
+    h.call("ui.prefs", json!({"right_rail_open": "simulation"}));
+    h.settle();
+    assert!(rect_of("stress:add_support").is_some() && rect_of("stress:run").is_some(), "Simulation sets up a stress estimate");
+    assert!(h.widget(Item::Simulation.empty()).is_none(), "the old empty block is not drawn over it");
 }

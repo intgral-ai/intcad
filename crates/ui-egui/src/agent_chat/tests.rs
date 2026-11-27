@@ -8497,6 +8497,37 @@ fn file_actions_wait_for_the_user() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// T4 (decision 30): the chat's Allow on an agent's stress estimate releases the agent's own
+/// request. Its entry stays the bridge's (`GuiBridgeMcp`, charged), never the person's free one,
+/// whichever way it goes on from there (refused today: spec section 8, 2026-11-27).
+#[test]
+fn allowing_an_agents_stress_estimate_keeps_it_the_agents_entry() {
+    let (mut app, tx) = app_in_a_turn();
+    app.run("solid.box", json!({"length": 10, "width": 20, "height": 30})).unwrap();
+    let estimate = json!({"command": "inspect.stress_estimate", "params": {
+        "supports": [{"face": [5, 10, 0]}],
+        "loads": [{"face": [5, 10, 30], "force": [0, 0, -500]}],
+        "material": "6061-T6",
+    }});
+    let (req, reply) = ControlRequest::trusted_bridge("engine.execute", estimate);
+    tx.send(req).unwrap();
+    pump_tools(&mut app);
+    assert_eq!(app.agent_chat.held.len(), 1, "the solve waits for Allow");
+    assert_eq!(app.agent_chat.held[0].req.entry(), solidcraft_engine::entitlement::EntryCategory::GuiBridgeMcp);
+    let id = app.agent_chat.held[0].id;
+    approve(&mut app, id, true);
+    assert!(
+        app.control_held.iter().all(|r| r.entry() == solidcraft_engine::entitlement::EntryCategory::GuiBridgeMcp),
+        "Allow does not make it the person's request"
+    );
+    assert!(!app.control_held.iter().any(|r| crate::control::free_entry(r.entry())));
+    if app.control_held.is_empty() {
+        let r = reply.try_recv().expect("refused at once when not queued");
+        assert_ne!(r["ok"], true, "{r}");
+    }
+    solidcraft_engine::fea::clear_preview(&app.session.document_id);
+}
+
 /// Crash reports and app methods never run for the agent, requests outside a message don't
 /// either, and a message stops taking changes at the limit.
 #[test]
