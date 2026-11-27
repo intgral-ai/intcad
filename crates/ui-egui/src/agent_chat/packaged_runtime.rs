@@ -193,26 +193,32 @@ fn current_exe() -> Option<PathBuf> {
 /// `/usr/lib/intcad/mastra`, and `mastra/` next to a Windows executable. A universal macOS
 /// app may also carry one folder per architecture under `mastra/<triple>`.
 pub fn roots(exe: &Path) -> Vec<PathBuf> {
+    roots_named(exe, "mastra")
+}
+
+/// [`roots`] for another application-relative folder: the same places, the folder called `name`.
+/// The built-in agent's folder follows these rules without sharing the runtime's own.
+pub fn roots_named(exe: &Path, name: &str) -> Vec<PathBuf> {
     let Some(dir) = exe.parent() else { return Vec::new() };
     let mut roots = Vec::new();
     if cfg!(target_os = "macos") {
         if let Some(contents) = dir.parent() {
-            roots.push(contents.join("Resources/mastra"));
+            roots.push(contents.join("Resources").join(name));
             if let Some(target) = host_target() {
-                roots.push(contents.join("Resources/mastra").join(target));
+                roots.push(contents.join("Resources").join(name).join(target));
             }
         }
     } else if cfg!(target_os = "linux")
         && let Some(prefix) = dir.parent()
     {
-        roots.push(prefix.join("lib/intcad/mastra"));
+        roots.push(prefix.join("lib/intcad").join(name));
         if let Some(target) = host_target() {
-            roots.push(prefix.join("lib/intcad/mastra").join(target));
+            roots.push(prefix.join("lib/intcad").join(name).join(target));
         }
     }
-    roots.push(dir.join("mastra"));
+    roots.push(dir.join(name));
     if let Some(target) = host_target() {
-        roots.push(dir.join("mastra").join(target));
+        roots.push(dir.join(name).join(target));
     }
     let mut seen = std::collections::HashSet::new();
     roots.retain(|root| seen.insert(root.clone()));

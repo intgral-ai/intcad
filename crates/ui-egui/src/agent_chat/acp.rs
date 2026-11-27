@@ -10,6 +10,8 @@
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use super::{MAX_MESSAGE, MAX_MESSAGE_BYTES};
+
 /// One advertised value, with an optional human-readable group label.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +31,15 @@ pub struct ConfigOption {
     pub category: String,
     pub current_value: String,
     pub options: Vec<ConfigChoice>,
+}
+
+/// One slash command the agent advertises for its open session (`available_commands_update`).
+/// `name` is the agent's own, trimmed; `description` is its own words or empty.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableCommand {
+    pub name: String,
+    pub description: String,
 }
 
 /// Parse ACP select options as a bounded authoritative snapshot.
@@ -169,8 +180,26 @@ pub const BRIDGE_NAME: &str = "intcad-app";
 /// text, and the kind is `other` (the kind an MCP tool has) or not given. Any other title goes
 /// through the user's mode and remembered answers: agents that word their MCP tools differently,
 /// and a user's own MCP server, which the gate doesn't see.
+///
+/// This only avoids asking twice: the session gives that agent the `intcad-app` server, and every
+/// call it makes is checked by Intcad's own gate before anything changes, whatever the title says.
+/// The name is not what protects the document; the gate is.
 pub fn is_bridge_tool(title: &str, kind: Option<&str>) -> bool {
-    let tool = title.strip_prefix("mcp__").and_then(|t| t.strip_prefix(BRIDGE_NAME)).and_then(|t| t.strip_prefix("__"));
+    bridge_tool(title, kind, false)
+}
+
+/// [`is_bridge_tool`], for the conversation's own agent.
+///
+/// The packaged built-in agent is Mastra Code, which names a server's tool
+/// `intcad-app_<tool>`; no other agent gets that spelling read as Intcad's. A title is a string
+/// the agent writes, so an external agent could copy it: only the agent Intcad ships, whose MCP
+/// bridge Intcad starts itself, is trusted with the shorter name. Every other agent keeps the
+/// ACP spelling (`mcp__intcad-app__<tool>`) that the Claude adapter forms.
+pub fn bridge_tool(title: &str, kind: Option<&str>, built_in: bool) -> bool {
+    let tool =
+        title.strip_prefix("mcp__").and_then(|t| t.strip_prefix(BRIDGE_NAME)).and_then(|t| t.strip_prefix("__")).or_else(|| {
+            built_in.then(|| title.strip_prefix(BRIDGE_NAME).and_then(|t| t.strip_prefix('_')).filter(|t| !t.starts_with('_'))).flatten()
+        });
     let named = tool.is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'));
     named && matches!(kind, None | Some("other"))
 }
@@ -190,9 +219,9 @@ pub struct McpBridge {
     pub forecast_wait: bool,
 }
 
-/// The built-in agent's id: Mastra Code, which waits up to 7 days on an MCP call (1.19.1). The
-/// id `connections::AGENT_ID` gives it where it is built in; no agent found or added has it.
-pub const BUILTIN_AGENT_ID: &str = "mastra";
+/// The built-in agent's id: Mastra Code, which waits up to 7 days on an MCP call (1.19.1). No
+/// agent found or added has it.
+pub const BUILTIN_AGENT_ID: &str = super::connections::AGENT_ID;
 
 /// Whether the agent `id`'s bridge waits for the app's forecast of a long run ([`McpBridge`]):
 /// the built-in agent's does. Every other agent's client has a timeout of its own, so its bridge
@@ -267,6 +296,22 @@ only numbers an estimate computed or the user gave. Never call a design safe, un
 or margin. Asked \"is it safe?\", answer with the numbers and what the estimate leaves out, without saying that you won't judge. \
 Keep answers short.";
 
+/// The sentence of [`SYSTEM_NOTE`] that keeps an agent off its own shell and file tools.
+pub const NO_FILE_TOOLS: &str = "Don't use shell or file tools: work through the Intcad tools.";
+
+/// What the built-in agent is told in its place when it is handed a project (INT-1473): its file
+/// tools reach the project folder, so they are for the project's files, and the design is still
+/// built and checked only through Intcad's tools. It says nothing against the shell: the built-in
+/// agent keeps it (asking before each command), decided on 2026-11-22.
+pub const PROJECT_FILE_TOOLS: &str = "Use file tools only for the files of the project folder that the project brief names. \
+Build, change, measure and check the design only through the Intcad tools.";
+
+/// `note` ([`system_note`]) for a session handed a project folder: [`NO_FILE_TOOLS`] becomes
+/// [`PROJECT_FILE_TOOLS`], the custom instructions after it stay as they are.
+pub fn project_note(note: &str) -> String {
+    note.replacen(NO_FILE_TOOLS, PROJECT_FILE_TOOLS, 1)
+}
+
 /// The most of the user's custom instructions (#8220) a session gets, in characters: the
 /// Preferences field takes no more, and a longer text from an edited settings file is cut here.
 pub const INSTRUCTIONS_LIMIT: usize = 4000;
@@ -298,8 +343,10 @@ pub const CLAUDE_DISALLOWED_TOOLS: &[&str] =
 
 /// The `session/new` parameters. `init` is the agent's `initialize` reply: agents read the system
 /// note from different places (#9811), and the standard field may only go to an agent offering it.
-/// `note` is the system note ([`system_note`]).
-pub fn session_new_params(cwd: &std::path::Path, bridge: Option<&McpBridge>, init: &Value, note: &str) -> Value {
+/// `note` is the system note ([`system_note`]). `project`, for the built-in agent only, is the
+/// project folder the session may work in (INT-1473), sent as `_meta.intcad.project`. `cwd` stays
+/// the app's folder; the built-in agent runs its MCP servers there and works in a folder of its own.
+pub fn session_new_params(cwd: &std::path::Path, bridge: Option<&McpBridge>, init: &Value, note: &str, project: Option<&std::path::Path>) -> Value {
     let servers: Vec<Value> = bridge.map(McpBridge::to_json).into_iter().collect();
     let mut meta = json!({
         // The Claude adapter's own key, for its versions without the standard field.
@@ -313,6 +360,11 @@ pub fn session_new_params(cwd: &std::path::Path, bridge: Option<&McpBridge>, ini
         && let Some(meta) = meta.as_object_mut()
     {
         meta.insert("antigravity".into(), json!({"systemPrompt": {"append": note}}));
+    }
+    if let Some(project) = project
+        && let Some(meta) = meta.as_object_mut()
+    {
+        meta.insert("intcad".into(), json!({"project": project.to_string_lossy()}));
     }
     let mut params = json!({
         "cwd": cwd.to_string_lossy(),
@@ -546,6 +598,8 @@ pub enum Incoming {
         status: Option<ToolStatus>,
         input: Option<Value>,
         output: Option<String>,
+        /// A picture the call handed back, as the encoded bytes of the file ([`tool_media`]).
+        picture: Option<Vec<u8>>,
     },
     /// The agent's plan: each entry with its status.
     Plan {
@@ -561,6 +615,16 @@ pub enum Incoming {
         kind: Option<String>,
         options: Vec<PermissionOption>,
     },
+    /// A request of ours was refused, and the error says why in the built-in agent's own terms
+    /// (`data.intcad`): a turn that failed for its connection. Only [`parse_builtin`] reads it.
+    Refused {
+        id: u64,
+        error: (i64, String),
+        problem: super::connections::TurnProblem,
+    },
+    /// The built-in agent's connections changed: its snapshot (`_intcad/connections/changed`).
+    /// Only [`parse_builtin`] reads it.
+    Connections(super::connections::Snapshot),
     /// The agent says whether it is logged in (an extension both adapters send).
     AuthStatus(String),
     /// The agent switched to another of its modes.
@@ -571,17 +635,41 @@ pub enum Incoming {
         session: String,
         options: Vec<ConfigOption>,
     },
+    /// The agent's slash commands for its session, replacing the previous list whole.
+    Commands {
+        session: String,
+        commands: Vec<AvailableCommand>,
+    },
+    /// A reverse request on the built-in Agent's private ACP connection. Recognition does
+    /// not authorize it: the desktop dispatcher must bind it to the outgoing prompt.
+    CadTool {
+        rpc: Value,
+        params: Value,
+    },
     /// A request we don't serve (file system, terminal, …): answer "method not found".
     Unsupported {
         rpc: Value,
         method: String,
     },
-    /// Anything else (mode and command lists, usage): nothing to show.
+    /// Anything else (usage, unknown updates): nothing to show.
     Ignored,
 }
 
 /// The longest text kept from one tool call's output.
 const MAX_OUTPUT: usize = 2000;
+
+/// The longest command name kept: the page's send limit, so a selected name is always sendable.
+const MAX_COMMAND_NAME: usize = MAX_MESSAGE;
+/// The longest serialized command name kept: the page action's byte budget, with room for its
+/// JSON envelope (`{"type":"send","text":"…"}`).
+const MAX_COMMAND_NAME_BYTES: usize = MAX_MESSAGE_BYTES.saturating_sub(64);
+
+/// Whether a command name fits both budgets the page enforces: characters and the serialized
+/// bytes of the action that would send it. A name of four-byte code points passes a character
+/// cap but can still exceed the byte cap.
+fn command_name_fits(name: &str) -> bool {
+    name.chars().count() <= MAX_COMMAND_NAME && serde_json::to_string(name).is_ok_and(|quoted| quoted.len() <= MAX_COMMAND_NAME_BYTES)
+}
 
 fn content_text(c: &Value) -> Option<String> {
     // A content block, or a tool call content item wrapping one (`{type: "content", content}`).
@@ -596,12 +684,39 @@ fn content_text(c: &Value) -> Option<String> {
     }
 }
 
-fn tool_output(u: &Value) -> Option<String> {
-    let parts: Vec<String> = u.get("content")?.as_array()?.iter().take(16).filter_map(content_text).collect();
-    if parts.is_empty() {
-        return None;
+/// The longest `rawInput` given as text that is read as JSON: a tool's arguments, not a document.
+const MAX_RAW_INPUT: usize = 256 * 1024;
+
+/// ACP's `rawInput`: the arguments the tool was called with. They are an object, which some agents
+/// (Mastra Code's) send as its JSON text.
+fn tool_input(u: &Value) -> Option<Value> {
+    match u.get("rawInput")? {
+        given if given.is_object() => Some(given.clone()),
+        Value::String(text) if text.len() <= MAX_RAW_INPUT => serde_json::from_str::<Value>(text).ok().filter(Value::is_object),
+        _ => None,
     }
-    let mut s = parts.join("\n");
+}
+
+/// What a tool call says it returned: its `content`, or where an agent sends none of that (Mastra
+/// Code's) its `rawOutput`, a text as it is and anything else as its JSON.
+fn tool_output(u: &Value) -> Option<String> {
+    let parts: Vec<String> =
+        u.get("content").and_then(Value::as_array).map(|items| items.iter().take(16).filter_map(content_text).collect()).unwrap_or_default();
+    let mut s = if parts.is_empty() {
+        match u.get("rawOutput")? {
+            Value::Null => return None,
+            Value::String(text) if text.is_empty() => return None,
+            Value::String(text) => text.clone(),
+            other => serde_json::to_string(other).ok()?,
+        }
+    } else {
+        parts.join("\n")
+    };
+    clip_output(&mut s);
+    Some(s)
+}
+
+fn clip_output(s: &mut String) {
     if s.len() > MAX_OUTPUT {
         let mut cut = MAX_OUTPUT;
         while !s.is_char_boundary(cut) {
@@ -610,11 +725,77 @@ fn tool_output(u: &Value) -> Option<String> {
         s.truncate(cut);
         s.push('…');
     }
-    Some(s)
+}
+
+/// The longest result read as a file handed back as media: Mastra's own cap for such a file
+/// (10 MiB) in base64, and the little that stands around it.
+const MAX_MEDIA_TEXT: usize = 14 * 1024 * 1024 + 4096;
+
+/// A file a tool handed back as media, where the agent sends it as Mastra Code does: `rawOutput`
+/// is the JSON text of `{"__workspaceMedia": true, "text": "<path> (<n> bytes, <type>)",
+/// "mediaType", "data": <base64>}`. Gives the line that says what it is, and the file's bytes
+/// when it is a picture. Read as any other result it is two thousand characters of base64.
+///
+/// A picture an MCP tool returns comes the same way, as the JSON text of the tool's result:
+/// `{"content": [{"type": "image", "data": <base64>, "mimeType"}, {"type": "text", "text"}]}`
+/// (the app's own `screenshot` and `compare_picture`). Its line names the picture as the other
+/// does, `image.png (<n> bytes, image/png)`, and what the tool said in text follows it.
+fn tool_media(u: &Value) -> Option<(String, Option<Vec<u8>>)> {
+    let text = u.get("rawOutput")?.as_str().filter(|text| text.len() <= MAX_MEDIA_TEXT && text.starts_with('{'))?;
+    if !text.contains("\"__workspaceMedia\"") {
+        return text.contains("\"image\"").then(|| mcp_picture(text)).flatten();
+    }
+    let media: Value = serde_json::from_str(text).ok()?;
+    if media.get("__workspaceMedia") != Some(&Value::Bool(true)) {
+        return None;
+    }
+    let mut line = media.get("text")?.as_str()?.to_string();
+    clip_output(&mut line);
+    let picture = media.get("mediaType").and_then(Value::as_str).is_some_and(|kind| kind.starts_with("image/"));
+    let bytes = if picture { media.get("data").and_then(Value::as_str).and_then(|data| super::backend::base64_decode(data).ok()) } else { None };
+    Some((line, bytes))
+}
+
+/// The first picture in an MCP tool's result given as JSON text, and the result's text. `None`
+/// when it holds no picture that decodes: it is then read as any other result. The block's type
+/// is its `mimeType` (MCP's name) or `mediaType`; where an agent sends neither, the bytes say.
+fn mcp_picture(text: &str) -> Option<(String, Option<Vec<u8>>)> {
+    let result: Value = serde_json::from_str(text).ok()?;
+    let blocks = result.get("content")?.as_array()?;
+    let kind = |block: &Value| block.get("type").and_then(Value::as_str).map(str::to_string);
+    let (bytes, mime) = blocks.iter().filter(|block| kind(block).as_deref() == Some("image")).find_map(|block| {
+        let bytes = super::backend::base64_decode(block.get("data")?.as_str()?).ok()?;
+        let named = block.get("mimeType").or_else(|| block.get("mediaType")).and_then(Value::as_str);
+        let mime = named.or(match bytes.as_slice() {
+            [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
+            [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
+            [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
+            _ => None,
+        })?;
+        mime.starts_with("image/").then(|| (bytes, mime.to_string()))
+    })?;
+    let mut line = format!("image.{} ({} bytes, {mime})", mime.trim_start_matches("image/"), bytes.len());
+    for said in blocks.iter().filter(|block| kind(block).as_deref() == Some("text")).filter_map(|block| block.get("text")?.as_str()) {
+        line.push('\n');
+        line.push_str(said);
+    }
+    clip_output(&mut line);
+    Some((line, Some(bytes)))
 }
 
 /// Read one line from the agent.
 pub fn parse(line: &str) -> Option<Incoming> {
+    read(line, false)
+}
+
+/// Read one line from the built-in agent: as [`parse`], and its own additions to the protocol
+/// too (why a request failed, in [`Incoming::Refused`], and [`Incoming::Connections`]). No other
+/// agent is read this way, so nothing another agent sends is taken for either.
+pub fn parse_builtin(line: &str) -> Option<Incoming> {
+    read(line, true)
+}
+
+fn read(line: &str, builtin: bool) -> Option<Incoming> {
     let msg: Value = serde_json::from_str(line.trim()).ok()?;
     let method = msg.get("method").and_then(Value::as_str);
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -623,7 +804,12 @@ pub fn parse(line: &str) -> Option<Incoming> {
             let id = id.as_u64()?;
             let result = match msg.get("error") {
                 Some(e) => {
-                    Err((e.get("code").and_then(Value::as_i64).unwrap_or(0), e.get("message").and_then(Value::as_str).unwrap_or("error").to_string()))
+                    let error =
+                        (e.get("code").and_then(Value::as_i64).unwrap_or(0), e.get("message").and_then(Value::as_str).unwrap_or("error").to_string());
+                    if builtin && let Some(problem) = super::connections::TurnProblem::parse(e.get("data")) {
+                        return Some(Incoming::Refused { id, error, problem });
+                    }
+                    Err(error)
                 }
                 None => Ok(msg.get("result").cloned().unwrap_or(Value::Null)),
             };
@@ -657,8 +843,12 @@ pub fn parse(line: &str) -> Option<Incoming> {
                 options,
             })
         }
+        (Some("_intcad/cad/tool"), Some(id)) if builtin => Some(Incoming::CadTool { rpc: id.clone(), params }),
         (Some(m), Some(id)) => Some(Incoming::Unsupported { rpc: id.clone(), method: m.to_string() }),
         (Some("session/update"), None) => Some(update(params.get("update")?, params.get("sessionId").and_then(Value::as_str).unwrap_or(""))),
+        (Some(super::connections::CHANGED), None) if builtin => {
+            Some(super::connections::Snapshot::parse(&params).map_or(Incoming::Ignored, Incoming::Connections))
+        }
         (Some("_auth/status_update"), None) => {
             params.get("authStatus").and_then(|s| s.get("label")).and_then(Value::as_str).map(|l| Incoming::AuthStatus(l.to_string()))
         }
@@ -674,16 +864,19 @@ fn update(u: &Value, session: &str) -> Incoming {
             None => Incoming::Ignored,
         },
         Some("tool_call" | "tool_call_update") => match s("toolCallId") {
-            Some(id) => Incoming::Tool {
-                session: session.to_string(),
-                id,
-                title: s("title"),
-                kind: s("kind"),
-                status: u.get("status").and_then(Value::as_str).and_then(ToolStatus::parse),
-                // ACP's `rawInput`: the arguments the tool was called with.
-                input: u.get("rawInput").filter(|v| v.is_object()).cloned(),
-                output: tool_output(u),
-            },
+            Some(id) => {
+                let (line, picture) = tool_media(u).map_or((None, None), |(line, picture)| (Some(line), picture));
+                Incoming::Tool {
+                    session: session.to_string(),
+                    id,
+                    title: s("title"),
+                    kind: s("kind"),
+                    status: u.get("status").and_then(Value::as_str).and_then(ToolStatus::parse),
+                    input: tool_input(u),
+                    output: line.or_else(|| tool_output(u)),
+                    picture,
+                }
+            }
             None => Incoming::Ignored,
         },
         Some("current_mode_update") => match s("currentModeId").or_else(|| s("modeId")) {
@@ -698,6 +891,23 @@ fn update(u: &Value, session: &str) -> Incoming {
             ConfigParse::Snapshot(options) if !session.is_empty() => Incoming::ConfigOptions { session: session.into(), options },
             _ => Incoming::Ignored,
         },
+        Some("available_commands_update") if !session.is_empty() => {
+            let Some(list) = u.get("availableCommands").and_then(Value::as_array) else {
+                return Incoming::Ignored;
+            };
+            let commands = list
+                .iter()
+                .take(256)
+                .filter_map(|c| {
+                    let name = c.get("name")?.as_str()?.trim();
+                    (!name.is_empty() && command_name_fits(name)).then(|| AvailableCommand {
+                        name: name.to_string(),
+                        description: c.get("description").and_then(Value::as_str).unwrap_or("").chars().take(1024).collect(),
+                    })
+                })
+                .collect();
+            Incoming::Commands { session: session.into(), commands }
+        }
         Some("plan") => Incoming::Plan {
             session: session.to_string(),
             steps: u
@@ -808,6 +1018,13 @@ mod tests {
         for tool in ["batch", "inspect_design", "set_parameter"] {
             assert!(is_bridge_tool(&format!("mcp__intcad-app__{tool}"), None), "{tool}");
             assert!(is_bridge_tool(&format!("mcp__intcad-app__{tool}"), Some("other")), "{tool}");
+            // Mastra Code's spelling counts for the agent Intcad ships, and for no other: an
+            // external agent writes its own titles, so it cannot borrow Intcad's name.
+            assert!(bridge_tool(&format!("intcad-app_{tool}"), None, true), "the packaged agent's name for {tool}");
+            assert!(bridge_tool(&format!("intcad-app_{tool}"), Some("other"), true), "the packaged agent's name for {tool}");
+            assert!(!bridge_tool(&format!("intcad-app_{tool}"), None, false), "an external agent's {tool}");
+            assert!(!bridge_tool(&format!("intcad-app_{tool}"), Some("other"), false), "an external agent's {tool}");
+            assert!(!is_bridge_tool(&format!("intcad-app_{tool}"), None), "the default is not the packaged agent");
         }
         for title in [
             "",
@@ -820,6 +1037,10 @@ mod tests {
             "mcp__intcad__batch",
             "mcp__intcad-live__batch",
             "mcp__other__intcad-app",
+            "intcad-app_",
+            "intcad-app_execute; ls",
+            "intcad-app_execute && ls",
+            "other_intcad-app_execute",
             "mcp__intcad-app__",
             "mcp__intcad-app",
             "intcad-app__batch",
@@ -846,7 +1067,7 @@ mod tests {
     #[test]
     fn the_session_gets_the_bridged_mcp_server_without_a_token_or_any_path() {
         let b = McpBridge { cli: "/opt/solidcraft/intcad-cli".into(), port: 41234, forecast_wait: false };
-        let p = session_new_params(std::path::Path::new("/home/u/designs"), Some(&b), &json!({}), SYSTEM_NOTE);
+        let p = session_new_params(std::path::Path::new("/home/u/designs"), Some(&b), &json!({}), SYSTEM_NOTE, None);
         let s = &p["mcpServers"][0];
         assert_eq!(s["name"], BRIDGE_NAME);
         assert_eq!(s["args"], json!(["mcp", "--connect", "127.0.0.1:41234"]));
@@ -860,7 +1081,7 @@ mod tests {
         assert!(folder.is_some(), "the app has a folder for its token files");
         assert_eq!(s["env"], json!([{"name": "SOLIDCRAFT_CONTROL_DIR", "value": folder}]));
         assert!(p["_meta"]["claudeCode"]["options"]["disallowedTools"].as_array().is_some_and(|t| t.iter().any(|x| x == "Bash")));
-        assert_eq!(session_new_params(std::path::Path::new("/tmp"), None, &json!({}), SYSTEM_NOTE)["mcpServers"], json!([]));
+        assert_eq!(session_new_params(std::path::Path::new("/tmp"), None, &json!({}), SYSTEM_NOTE, None)["mcpServers"], json!([]));
     }
 
     /// #197: the built-in agent's bridge waits for the app's forecast of a long stress estimate,
@@ -875,7 +1096,7 @@ mod tests {
             assert!(!waits_for_forecast(found.id), "{}", found.id);
         }
         let b = McpBridge { cli: "/opt/solidcraft/intcad-cli".into(), port: 41234, forecast_wait: true };
-        let p = session_new_params(std::path::Path::new("/home/u/designs"), Some(&b), &json!({}), SYSTEM_NOTE);
+        let p = session_new_params(std::path::Path::new("/home/u/designs"), Some(&b), &json!({}), SYSTEM_NOTE, None);
         assert_eq!(p["mcpServers"][0]["args"], json!(["mcp", "--connect", "127.0.0.1:41234", "--wait-for-forecast"]));
         assert_eq!(b.in_wsl().to_json()["args"], p["mcpServers"][0]["args"], "inside WSL too");
     }
@@ -886,7 +1107,7 @@ mod tests {
     fn the_system_note_takes_every_route_the_agent_offers() {
         // With the user's custom instructions (#8220), which go wherever the note goes.
         let note = system_note("Sketch on XZ with explicit plane vectors.");
-        let params = |init: Value| session_new_params(std::path::Path::new("/tmp"), None, &init, &note);
+        let params = |init: Value| session_new_params(std::path::Path::new("/tmp"), None, &init, &note, None);
         let standard = json!({"mode": "append", "content": [{"type": "text", "text": note}]});
 
         let offers_standard = params(json!({"agentCapabilities": {"sessionCapabilities": {"systemPrompt": {}}}}));
@@ -928,6 +1149,29 @@ mod tests {
         assert_eq!(note.chars().filter(|c| *c == 'ż').count(), INSTRUCTIONS_LIMIT);
     }
 
+    /// INT-1473: a session handed a project names its folder under `_meta.intcad` and keeps its
+    /// own folder as `cwd`; its note lets file tools reach the project and still keeps the shell
+    /// and the design's tools as they were. A session without one gets neither.
+    #[test]
+    fn a_session_handed_a_project_names_it_and_its_note_says_what_file_tools_are_for() {
+        let work = std::path::Path::new("/data/agent-chat/work");
+        let project = std::path::Path::new("/home/u/bracket");
+        let p = session_new_params(work, None, &json!({}), SYSTEM_NOTE, Some(project));
+        assert_eq!(p["_meta"]["intcad"]["project"], "/home/u/bracket");
+        assert_eq!(p["cwd"], "/data/agent-chat/work");
+        assert!(session_new_params(work, None, &json!({}), SYSTEM_NOTE, None)["_meta"].get("intcad").is_none());
+
+        assert!(SYSTEM_NOTE.contains(NO_FILE_TOOLS), "the sentence the project note replaces is in the note");
+        let note = project_note(&system_note("Use M3 screws."));
+        assert!(!note.contains(NO_FILE_TOOLS) && note.contains(PROJECT_FILE_TOOLS), "{note}");
+        assert!(
+            note.contains("only through the Intcad tools") && !note.to_lowercase().contains("shell"),
+            "the shell is neither offered nor forbidden: {note}"
+        );
+        assert!(note.ends_with("preferences:\nUse M3 screws."), "the custom instructions stay last: {note}");
+        assert_eq!(project_note(PROPOSAL_NOTE), PROPOSAL_NOTE, "a note without the sentence is left alone");
+    }
+
     /// #5546: an agent started through `wsl.exe` gets the session's paths as WSL shows them.
     #[test]
     fn an_agent_inside_wsl_gets_wsl_paths() {
@@ -948,7 +1192,7 @@ mod tests {
         assert_eq!(wsl(r"\\server\share\x"), r"\\server\share\x");
 
         let b = McpBridge { cli: r"C:\Program Files\Intcad\intcad-cli.exe".into(), port: 41234, forecast_wait: false };
-        let p = session_new_params(&wsl_path(std::path::Path::new(r"C:\Users\u\work")), Some(&b.in_wsl()), &json!({}), SYSTEM_NOTE);
+        let p = session_new_params(&wsl_path(std::path::Path::new(r"C:\Users\u\work")), Some(&b.in_wsl()), &json!({}), SYSTEM_NOTE, None);
         assert_eq!(p["cwd"], "/mnt/c/Users/u/work");
         assert_eq!(p["mcpServers"][0]["command"], "/mnt/c/Program Files/Intcad/intcad-cli.exe");
         assert_eq!(p["mcpServers"][0]["args"], json!(["mcp", "--connect", "127.0.0.1:41234"]));
@@ -1010,7 +1254,8 @@ mod tests {
                 kind: None,
                 status: Some(ToolStatus::Completed),
                 input: None,
-                output: Some("ok".into())
+                output: Some("ok".into()),
+                picture: None,
             })
         );
         let perm = r#"{"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"t1","title":"batch"},"options":[{"optionId":"allow","name":"Allow","kind":"allow_once"},{"optionId":"reject","name":"Reject","kind":"reject_once"}]}}"#;
@@ -1028,6 +1273,111 @@ mod tests {
         assert_eq!(parse(mode), Some(Incoming::ModeChanged("plan".into())));
         let new = json!({"sessionId": "s", "modes": {"currentModeId": "default", "availableModes": [{"id": "default", "name": "Default"}, {"id": "acceptEdits", "name": "Accept Edits"}]}});
         assert_eq!(modes(&new), Some(("default".into(), vec![("default".into(), "Default".into()), ("acceptEdits".into(), "Accept Edits".into())])));
+    }
+
+    /// Mastra Code's agent sends a tool's arguments as JSON text and its result as `rawOutput`,
+    /// with no `content`: the row's details were empty for every one of its tools.
+    #[test]
+    fn a_tool_call_whose_arguments_are_json_text_and_whose_result_is_raw_output_keeps_both() {
+        let started = json!({"sessionUpdate": "tool_call", "toolCallId": "t", "title": "execute_command", "status": "in_progress", "rawInput": "{\"command\":\"ls\"}"});
+        let Incoming::Tool { input, output, .. } = update(&started, "s") else { panic!() };
+        assert_eq!((input, output), (Some(json!({"command": "ls"})), None));
+        let ended = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "status": "completed", "rawOutput": "a.txt\nb.txt"});
+        let Incoming::Tool { input, output, .. } = update(&ended, "s") else { panic!() };
+        assert_eq!((input, output.as_deref()), (None, Some("a.txt\nb.txt")));
+        // A result that is not text is told as its JSON; what the tool shows as content comes first.
+        let object = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": {"ok": true}});
+        let Incoming::Tool { output, .. } = update(&object, "s") else { panic!() };
+        assert_eq!(output.as_deref(), Some(r#"{"ok":true}"#));
+        let both = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": "raw", "content": [{"type": "content", "content": {"type": "text", "text": "shown"}}]});
+        let Incoming::Tool { output, .. } = update(&both, "s") else { panic!() };
+        assert_eq!(output.as_deref(), Some("shown"));
+        // Arguments that are not an object, text that is not JSON, and an empty result are nothing.
+        for raw in [json!("not json"), json!("[1,2]"), json!(7), json!("x".repeat(MAX_RAW_INPUT + 1))] {
+            let Incoming::Tool { input, .. } = update(&json!({"sessionUpdate": "tool_call", "toolCallId": "t", "rawInput": raw}), "s") else {
+                panic!()
+            };
+            assert_eq!(input, None);
+        }
+        for raw in [json!(""), Value::Null] {
+            let Incoming::Tool { output, .. } = update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": raw}), "s")
+            else {
+                panic!()
+            };
+            assert_eq!(output, None);
+        }
+        let long = json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": "é".repeat(3000)});
+        let Incoming::Tool { output: Some(cut), .. } = update(&long, "s") else { panic!() };
+        assert!(cut.len() <= MAX_OUTPUT + 3 && cut.ends_with('…'));
+    }
+
+    /// Mastra Code hands back a file it read as media: the JSON text of an object with the file's
+    /// bytes in base64. It is a line and a picture, never two thousand characters of base64.
+    /// The app's own screenshot comes back as an MCP result with the picture in it: it is a line
+    /// that names the picture, what the tool said, and the picture, never base64 as the result.
+    #[test]
+    fn a_picture_in_an_mcp_result_is_a_line_and_a_picture() {
+        let png = b"\x89PNG\r\n\x1a\nthe rest";
+        let base64 = super::super::backend::base64(png);
+        let returned = |result: Value| {
+            let Incoming::Tool { output, picture, .. } =
+                update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": result.to_string()}), "s")
+            else {
+                panic!()
+            };
+            (output, picture)
+        };
+        let shot = json!({"content": [{"type": "image", "data": base64, "mimeType": "image/png"}, {"type": "text", "text": "{\"width\":8}"}]});
+        assert_eq!(returned(shot), (Some("image.png (16 bytes, image/png)\n{\"width\":8}".into()), Some(png.to_vec())));
+        // The picture alone, and a text block before it.
+        let alone = json!({"content": [{"type": "image", "data": base64, "mimeType": "image/jpeg"}]});
+        assert_eq!(returned(alone), (Some("image.jpeg (16 bytes, image/jpeg)".into()), Some(png.to_vec())));
+        let after = json!({"content": [{"type": "text", "text": "numbers"}, {"type": "image", "data": base64, "mimeType": "image/png"}]});
+        assert_eq!(returned(after), (Some("image.png (16 bytes, image/png)\nnumbers".into()), Some(png.to_vec())));
+        // The type under the other name, and under no name: the bytes say what the picture is.
+        let other_name = json!({"content": [{"type": "image", "data": base64, "mediaType": "image/webp"}]});
+        assert_eq!(returned(other_name), (Some("image.webp (16 bytes, image/webp)".into()), Some(png.to_vec())));
+        let unnamed = json!({"content": [{"type": "image", "data": base64}]});
+        assert_eq!(returned(unnamed), (Some("image.png (16 bytes, image/png)".into()), Some(png.to_vec())));
+        let unknown = json!({"content": [{"type": "image", "data": super::super::backend::base64(b"neither of them")}]});
+        assert_eq!(returned(unknown.clone()), (Some(unknown.to_string()), None));
+        // No picture that decodes, or only the word: read as any other result.
+        for other in [
+            json!({"content": [{"type": "image", "data": "not base64!", "mimeType": "image/png"}]}),
+            json!({"content": [{"type": "image", "data": base64, "mimeType": "application/pdf"}]}),
+            json!({"content": [{"type": "text", "text": "an \"image\" is named"}]}),
+            json!({"note": "\"image\""}),
+        ] {
+            assert_eq!(returned(other.clone()), (Some(other.to_string()), None));
+        }
+    }
+
+    #[test]
+    fn a_file_handed_back_as_media_is_a_line_and_a_picture() {
+        let png = b"\x89PNG\r\n\x1a\nthe rest";
+        let handed = |kind: &str, data: &str| {
+            let media = json!({"__workspaceMedia": true, "text": format!("shots/a.png (16 bytes, {kind})"), "mediaType": kind, "data": data});
+            let Incoming::Tool { output, picture, .. } =
+                update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": media.to_string()}), "s")
+            else {
+                panic!()
+            };
+            (output, picture)
+        };
+        let base64 = super::super::backend::base64(png);
+        assert_eq!(handed("image/png", &base64), (Some("shots/a.png (16 bytes, image/png)".into()), Some(png.to_vec())));
+        // A PDF comes the same way: its line, and no picture. So does a picture whose bytes do not decode.
+        assert_eq!(handed("application/pdf", &base64), (Some("shots/a.png (16 bytes, application/pdf)".into()), None));
+        assert_eq!(handed("image/png", "not base64!"), (Some("shots/a.png (16 bytes, image/png)".into()), None));
+        // Anything that only looks like it is read as any other result.
+        for raw in [json!({"__workspaceMedia": false, "text": "x"}).to_string(), json!({"note": "\"__workspaceMedia\""}).to_string()] {
+            let Incoming::Tool { output, picture, .. } =
+                update(&json!({"sessionUpdate": "tool_call_update", "toolCallId": "t", "rawOutput": raw.clone()}), "s")
+            else {
+                panic!()
+            };
+            assert_eq!((output, picture), (Some(raw), None));
+        }
     }
 
     #[test]
@@ -1075,6 +1425,88 @@ mod tests {
         assert_eq!(config_options(&json!({"configOptions":[]})), ConfigParse::Snapshot(vec![]));
         let notification = json!({"sessionUpdate":"config_option_update","configOptions":[]});
         assert_eq!(update(&notification, "s"), Incoming::ConfigOptions { session: "s".into(), options: vec![] });
+    }
+
+    /// The built-in agent advertises its slash commands in one update after the session opens
+    /// (`agent-smoke.mjs` reads `skill/<name>` from it). It replaces the list whole; hostile
+    /// entries are dropped, the list is bounded, and an empty list is a real clear.
+    #[test]
+    fn advertised_slash_commands_parse_without_panicking_on_hostile_entries() {
+        let real = json!({"sessionUpdate": "available_commands_update", "availableCommands": [
+            {"name": "skill/solidcraft-modeling", "description": "Build a part"},
+            {"name": "  skill/solidcraft-editing  ", "description": 7},
+            {"name": "\t", "description": "blank name"},
+            {"description": "no name at all"},
+            {"name": "skill/plain"},
+            "not an object",
+            {"name": 3},
+        ]});
+        assert_eq!(
+            update(&real, "s"),
+            Incoming::Commands {
+                session: "s".into(),
+                commands: vec![
+                    AvailableCommand { name: "skill/solidcraft-modeling".into(), description: "Build a part".into() },
+                    AvailableCommand { name: "skill/solidcraft-editing".into(), description: String::new() },
+                    AvailableCommand { name: "skill/plain".into(), description: String::new() },
+                ],
+            }
+        );
+        let many: Vec<Value> = (0..300).map(|n| json!({"name": format!("skill/{n}")})).collect();
+        let Incoming::Commands { commands, .. } = update(&json!({"sessionUpdate": "available_commands_update", "availableCommands": many}), "s")
+        else {
+            panic!()
+        };
+        assert_eq!(commands.len(), 256, "an update is bounded");
+        assert_eq!(
+            update(&json!({"sessionUpdate": "available_commands_update", "availableCommands": []}), "s"),
+            Incoming::Commands { session: "s".into(), commands: vec![] },
+            "an empty list clears the menu"
+        );
+        for hostile in [
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": [{"name": "x"}]}),
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": []}),
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": "skill/x"}),
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": {}}),
+            json!({"sessionUpdate": "available_commands_update"}),
+        ] {
+            assert_eq!(update(&hostile, ""), Incoming::Ignored, "a list without a session belongs to no chat");
+        }
+        // With a session, a malformed or absent list is not an empty clear: the menu stays as it was.
+        for malformed in [
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": "skill/x"}),
+            json!({"sessionUpdate": "available_commands_update", "availableCommands": {}}),
+            json!({"sessionUpdate": "available_commands_update"}),
+        ] {
+            assert_eq!(update(&malformed, "s"), Incoming::Ignored, "only an array is a command list");
+        }
+        // A name longer than a message could be sent is dropped rather than offered as a draft
+        // the send path would refuse.
+        let too_long: String = "x".repeat(MAX_COMMAND_NAME + 1);
+        let Incoming::Commands { commands, .. } =
+            update(&json!({"sessionUpdate": "available_commands_update", "availableCommands": [{"name": too_long}]}), "s")
+        else {
+            panic!()
+        };
+        assert!(commands.is_empty(), "an unsendable command is no command");
+        // Four-byte code points pass a character-only cap but can overflow the page's byte
+        // budget: such a name would make the send action too large, so it is dropped.
+        let emoji = "😀".repeat(MAX_COMMAND_NAME);
+        let Incoming::Commands { commands, .. } =
+            update(&json!({"sessionUpdate": "available_commands_update", "availableCommands": [{"name": emoji}]}), "s")
+        else {
+            panic!()
+        };
+        assert!(commands.is_empty(), "a name over the IPC byte budget is dropped");
+        // A four-byte name that fits both budgets is kept.
+        let emoji_ok = "😀".repeat(MAX_COMMAND_NAME / 4);
+        let Incoming::Commands { commands, .. } =
+            update(&json!({"sessionUpdate": "available_commands_update", "availableCommands": [{"name": emoji_ok.clone()}]}), "s")
+        else {
+            panic!()
+        };
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].name, emoji_ok);
     }
 
     #[test]

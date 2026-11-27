@@ -9,17 +9,23 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod account;
 mod backend;
 mod document_guard;
 mod server;
 mod skill_reference;
 mod tools;
 
+pub use account::{
+    CallOutcome, MeteredReply, ToolCallContext, call_tool_with, expired_state_response, operation_for_review, record_review_operation, tool_is_free,
+};
 pub use backend::{Auto, Backend, Headless, Remote, Waits};
 pub use document_guard::{GuardedCallError, GuardedReply};
 pub use document_guard::{decode_guarded_reply, validate_request as validate_guarded_request};
 pub use server::{PROTOCOL_VERSION, SUPPORTED_VERSIONS, Server};
-pub use tools::{call_tool, tool_definitions};
+#[cfg(test)]
+pub(crate) use tools::call_tool;
+pub use tools::tool_definitions;
 
 use std::path::PathBuf;
 
@@ -84,5 +90,7 @@ pub fn cleanup_scratch_dir() {
     }
 }
 
+#[cfg(test)]
+mod account_tests;
 #[cfg(test)]
 mod tests;

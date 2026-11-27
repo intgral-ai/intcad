@@ -57,10 +57,31 @@ Fix, don't rebuild: a wrong number in a feature is changed with `timeline.edit` 
 (`parameters.list {\"filter\":\"feature\"}` names them); `edit.checkpoint` and `edit.restore_checkpoint` go back exactly.\n\n\
 A call whose error starts `still running:` was not cancelled: don't send it again; `pending` waits for its result.";
 
+struct Accounting {
+    billing: Box<dyn solidcraft_engine::entitlement::BillingPort>,
+    budget: solidcraft_engine::entitlement::BudgetTable,
+}
+
+/// What may authorize a charged tool call at this server boundary.
+enum Authority {
+    /// No host billing authority is installed. Charged tools are refused before dispatch.
+    Closed,
+    /// The host installed both billing and the verified safe-stop budget.
+    Metered(Accounting),
+    /// A GUI/Mastra bridge whose backend forwards the same host-minted operation to the app's
+    /// own control authority. Charged calls require a provable host context from the backend and
+    /// are admitted and settled only once, at that host seam.
+    Forwarded,
+    /// The crate's own tests only. Production never compiles this variant.
+    #[cfg(test)]
+    LocalTest,
+}
+
 pub struct Server {
     backend: Box<dyn Backend>,
     initialized: bool,
     scope: Option<PathScope>,
+    authority: Authority,
 }
 
 /// The design files a call opens or saves (#7181): `open` and `save`, and the commands they run
@@ -94,13 +115,42 @@ fn error(id: Value, code: i64, message: impl Into<String>) -> Value {
 }
 
 impl Server {
+    /// A default external server: charged tools stay fail-closed until the host installs billing
+    /// with [`Server::with_billing`] and supplies a trusted operation context. Free helpers
+    /// (protocol, render, catalog, diagnostics) keep working, as ordinary CAD and local files do.
     pub fn new(backend: Box<dyn Backend>) -> Self {
-        Self { backend, initialized: false, scope: None }
+        Self { backend, initialized: false, scope: None, authority: Authority::Closed }
+    }
+    /// The crate's own tests. Unmetered local calls are not reachable in a production build: this
+    /// constructor does not exist outside `cfg(test)`, so the unmetered path is sealed.
+    #[cfg(test)]
+    pub(crate) fn new_local_for_tests(backend: Box<dyn Backend>) -> Self {
+        Self { backend, initialized: false, scope: None, authority: Authority::LocalTest }
+    }
+    /// A host bridge that forwards charged calls to the host's own control authority.
+    ///
+    /// Only a composition root that serves a host-owned lane (the Mastra bridge in the running
+    /// app) installs this. The backend must mint a `ToolCallContext` from an authenticated
+    /// `TrustedContext`; this server performs no local admission or settlement, so the operation
+    /// cannot be billed twice. Wire arguments still cannot supply the context.
+    pub fn with_forwarded_authority(backend: Box<dyn Backend>) -> Self {
+        Self { backend, initialized: false, scope: None, authority: Authority::Forwarded }
     }
     /// Confine the files tool calls may reach to `scope` (`None`: anywhere). `intcad-cli mcp`
     /// always sets one unless started with `--allow-any-path` (docs/mcp.md).
     pub fn with_path_scope(mut self, scope: Option<PathScope>) -> Self {
         self.scope = scope;
+        self
+    }
+    /// Install the host's billing authority and the verified safe-stop budget. A charged tool
+    /// without a host-minted [`ToolCallContext`] is refused before dispatch, so a source label or
+    /// request id can never stand in for admission.
+    pub fn with_billing(
+        mut self,
+        billing: Box<dyn solidcraft_engine::entitlement::BillingPort>,
+        budget: solidcraft_engine::entitlement::BudgetTable,
+    ) -> Self {
+        self.authority = Authority::Metered(Accounting { billing, budget });
         self
     }
     pub fn backend(&mut self) -> &mut dyn Backend {
@@ -227,14 +277,70 @@ impl Server {
                     None | Some(Value::Null) => json!({}),
                     Some(a) => a.clone(),
                 };
+                // Provenance is host data. A wire argument that names an origin, operation,
+                // grant, account or session is refused before schema handling or any dispatch.
+                if let Some(field) = crate::account::provenance_claim(&args) {
+                    return Ok(crate::account::forged_context_result(field));
+                }
                 check_arguments(name, &args).map_err(|e| (INVALID_PARAMS, e))?;
                 // The open design's folder counts, and goes on counting for the rest of this run
                 // when a save-as or open moves the design elsewhere (#7181).
                 let open = self.backend.design_path();
                 self.scope = self.scope.take().map(|s| s.with_design(open.as_deref()));
                 let scope = self.scope.clone();
+                let forwarded = matches!(self.authority, Authority::Forwarded);
+                let helper = crate::account::tool_is_free(name).then_some(name);
+                // A tool that would make more than one controlled backend call cannot yet carry
+                // the parent's validated admission into its substeps. Refuse it before any work;
+                // Task 9 replaces this with safe parent-admission reuse.
+                if forwarded && helper.is_none() && crate::account::forwarded_substeps_unsupported(name, &args) {
+                    return Ok(crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
+                        solidcraft_engine::entitlement::RefusalCode::UnsafeToStart,
+                        "this multi-substep call needs the durable parent admission that Task 9 adds; nothing was sent",
+                    )));
+                }
+                let context = self.backend.tool_context(name);
+                // The bridge tells its backend which one logical call this is before dispatch.
+                // A free helper or protocol request carries no operation; a charged forwarded
+                // call carries the host-minted context. It is cleared after the result.
+                let begin_context = if forwarded { context.as_ref() } else { None };
+                self.backend.begin_tool_call(begin_context, helper);
+                let authority = &mut self.authority;
                 let backend = self.backend.as_mut();
-                let mut result = vfs::scoped(scope, || call_tool(backend, name, &args));
+                let mut result = vfs::scoped(scope, || match authority {
+                    Authority::Metered(accounting) => match context {
+                        Some(context) => {
+                            let reply =
+                                crate::account::call_tool_with(backend, name, &args, &context, &accounting.budget, accounting.billing.as_mut());
+                            reply.into_value()
+                        }
+                        None if name == "screenshot" && accounting.billing.checks_live_window() && args.get("path").is_some() => {
+                            crate::account::refusal_result(crate::account::screenshot_path_refusal())
+                        }
+                        None if crate::account::tool_is_free(name) => call_tool(backend, name, &args),
+                        None => crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
+                            solidcraft_engine::entitlement::RefusalCode::AuthUnavailable,
+                            "this charged tool has no host-minted logical operation context",
+                        )),
+                    },
+                    Authority::Forwarded => match context {
+                        Some(context) if crate::account::tool_is_free(name) || context.is_host_bound() => {
+                            crate::account::call_tool_forwarded(backend, name, &args, &context).into_value()
+                        }
+                        _ if crate::account::tool_is_free(name) => call_tool(backend, name, &args),
+                        _ => crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
+                            solidcraft_engine::entitlement::RefusalCode::CapabilityDenied,
+                            "this forwarded tool call has no authenticated host context",
+                        )),
+                    },
+                    Authority::Closed if crate::account::tool_is_free(name) => call_tool(backend, name, &args),
+                    Authority::Closed => crate::account::refusal_result(solidcraft_engine::entitlement::Refusal::new(
+                        solidcraft_engine::entitlement::RefusalCode::AuthUnavailable,
+                        "no host billing authority is installed for this charged MCP tool",
+                    )),
+                    #[cfg(test)]
+                    Authority::LocalTest => call_tool(backend, name, &args),
+                });
                 // So does the folder of each design file the call opened or saved: the call reached
                 // it, so it was one of the agent's folders already. Only paths given in full: a
                 // running app resolves a relative one against its own working folder.
@@ -248,6 +354,7 @@ impl Server {
                 {
                     content.push(json!({"type": "text", "text": note}));
                 }
+                self.backend.end_tool_call();
                 Ok(result)
             }
             "resources/list" => Ok(json!({"resources": [
@@ -258,14 +365,24 @@ impl Server {
             "prompts/list" => Ok(json!({"prompts": []})),
             "resources/read" => {
                 let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
+                // Resource reads are protocol helpers: they carry no logical operation and must
+                // not inherit the previous tool call's context.
+                self.backend.begin_tool_call(None, Some("@resource"));
                 let v = match uri {
                     // The solvecraft:// URIs are what earlier releases listed (compatibility shim,
                     // docs/compatibility.md); clients that saved them still read the resource.
                     "solidcraft://design" | "solvecraft://design" => self.backend.call("document.inspect", json!({"measure": true})),
                     "solidcraft://commands" | "solvecraft://commands" => self.backend.call("engine.commands", json!({})),
-                    _ => return Err((RESOURCE_NOT_FOUND, format!("unknown resource `{uri}`"))),
+                    _ => {
+                        self.backend.end_tool_call();
+                        return Err((RESOURCE_NOT_FOUND, format!("unknown resource `{uri}`")));
+                    }
                 }
-                .map_err(|e| (INTERNAL_ERROR, e))?;
+                .map_err(|e| {
+                    self.backend.end_tool_call();
+                    (INTERNAL_ERROR, e)
+                })?;
+                self.backend.end_tool_call();
                 Ok(json!({"contents": [{"uri": uri, "mimeType": "application/json", "text": v.to_string()}]}))
             }
             _ => Err((METHOD_NOT_FOUND, format!("method `{method}` not found"))),

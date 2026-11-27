@@ -5,15 +5,20 @@
 //! parametric-CAD desktop: application bar, a toolbar of workspace tabs and panels, the browser
 //! on the left, the 3D viewport with an axis view and navigation bar, the command dialog on the
 //! right of the viewport, the command palette and a bottom or left-sidebar feature timeline.
+// The web-view state is one large `json!` value; the Assistant's menu fields and #221's
+// centred-composer fields together exceed the default macro recursion limit.
+#![recursion_limit = "256"]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 use crate::ui_kit::{Container, Surface};
 
 pub mod access;
+pub mod account;
 pub mod agent_chat;
 pub mod agent_cursor;
 pub mod ai_connect;
 pub mod bidi;
+pub mod billing_adapter;
 pub mod blur;
 pub mod bom_panel;
 pub mod browser;
@@ -99,6 +104,7 @@ mod i18n_ui_tests;
 pub mod icon_svg;
 pub mod icons;
 pub mod inference;
+mod input_provenance;
 pub mod insert_handles;
 pub mod install;
 pub mod issue_report;
@@ -175,6 +181,7 @@ mod extrude_edit_tests;
 mod extrude_preview;
 mod file_load;
 mod file_picker;
+pub(crate) mod file_tree;
 pub(crate) mod frame_watch;
 #[cfg(test)]
 mod history_off_thread_tests;
@@ -460,6 +467,9 @@ pub struct Services {
     /// Open a dialog asking for a program (a slicer); `None` when the host has no such dialog.
     pub pick_program: Option<Box<dyn Fn() -> FilePickerFuture>>,
     pub show_in_folder: Option<Box<dyn Fn(&str)>>,
+    /// Open a document with the program the system has for it (the Assistant's file cards);
+    /// `None` when the host cannot.
+    pub open_file: Option<Box<dyn Fn(&str)>>,
     /// Where the host reads the anti-aliasing preference at start (a small JSON file).
     pub graphics_path: Option<String>,
     /// Linux: the window system this run uses, `wayland` or `x11` (Preferences shows it, #3083).
@@ -591,6 +601,8 @@ pub struct SolveApp {
     pub gesture: mouse_gesture::State,
     /// Browser tree state (reveal, groups being edited, occurrence moves).
     pub tree: browser::TreeState,
+    /// The Files panel: one local folder as a tree, the designs it opens, and file operations.
+    pub(crate) file_tree: file_tree::FileTree,
     /// A saved design copied for insertion into another open document.
     pub linked_design_clipboard: Option<String>,
     /// The S box (command search at the cursor): recent and pinned commands.
@@ -657,6 +669,7 @@ pub struct SolveApp {
     /// Text a copy left for the system clipboard, written on the next frame (so a paste event
     /// follows: the window system sends one only while the clipboard holds text).
     pub(crate) clipboard_text: Option<String>,
+    pub(crate) clipboard_input: edit_clipboard::InputBatch,
     /// Component placements copied with Copy (by path): Paste places new instances of them in
     /// the active component, Paste New (Ctrl+Shift+V) independent copies.
     pub copied_placements: Vec<Vec<u64>>,
@@ -752,6 +765,10 @@ pub struct SolveApp {
     pub synthetic: Vec<egui::Event>,
     /// The modifiers of the synthetic press in progress (a Ctrl-drag keeps Ctrl while it moves).
     pub synthetic_mods: egui::Modifiers,
+    /// Which input this frame came from the platform, bound to the pointer gesture on the
+    /// control that activated it. App-injected automation can never claim this provenance; a
+    /// browser launch or similar native-only action must fail closed without it.
+    pub(crate) input_trust: input_provenance::Tracker,
     control_rx: Option<Receiver<ControlRequest>>,
     /// Leaving a document invalidates every request admitted in its current tab context.
     guarded_context: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -766,6 +783,15 @@ pub struct SolveApp {
     pub agent: agent_cursor::AgentCursor,
     /// The agent chat panel (docs/design/in-app-agent-chat.md).
     pub agent_chat: agent_chat::AgentChat,
+    /// The chat's built-in agent, looked for once when the app starts
+    /// ([`agent_chat::agents::look_for_builtin`]); `None`: the chat has none. It is the window's,
+    /// not one conversation's, so every tab's chat sees the same.
+    pub builtin_agent: Option<agent_chat::agents::Builtin>,
+    /// How often what the built-in agent is handed has changed in this window: a key or a
+    /// custom address kept or removed, a plan signed in or out. Each design's conversation has
+    /// an agent of its own, and one that is behind this count is set up again when it is shown
+    /// ([`agent_chat::connections`]).
+    pub(crate) builtin_changes: u64,
     /// Making SolidCraft available to the AI apps installed here ([`ai_connect`]).
     pub ai_connect: ai_connect::State,
     pending_shots: Vec<(u64, Option<String>, std::sync::mpsc::Sender<Value>, f64)>,
@@ -783,6 +809,26 @@ pub struct SolveApp {
     pub flat_view: dialogs_sheet::FlatView,
     /// The start page.
     pub home: home::HomeState,
+    /// Intcad product account and available-credit UI; no port is installed by default.
+    pub account: account::State,
+    /// Host-injected billing authority for controlled entries; `None` fails closed.
+    pub(crate) billing: Option<Box<dyn solidcraft_engine::entitlement::BillingPort + Send>>,
+    /// Host-injected durable operation journal shared by Review and Control. The desktop
+    /// composition root installs the real ledger.
+    pub(crate) review_store: Option<Box<dyn solidcraft_engine::entitlement::OperationStore + Send>>,
+    /// Safe-stop bounds per controlled capability and entry; unverified until measured.
+    pub(crate) budget: solidcraft_engine::entitlement::BudgetTable,
+    /// The host-authenticated account/installation/session the commit gate can prove now.
+    /// Only the desktop composition root supplies it; `None` keeps controlled commits closed.
+    pub(crate) commit_scope: Option<solidcraft_engine::entitlement::AuthenticatedHostScope>,
+    /// The host's current account status for revocation checks at scheduling and commit.
+    pub(crate) commit_account: Option<Box<dyn solidcraft_engine::entitlement::AccountService + Send>>,
+    /// The host's monotonic clock, re-read at the actual commit point (never a request's creation
+    /// time). `None` keeps controlled commits closed.
+    pub(crate) commit_clock: Option<Box<dyn solidcraft_engine::entitlement::MonotonicClock + Send>>,
+    /// Settlements that need host recovery under their original operation id. They are never
+    /// rerun as engineering operations.
+    pub(crate) pending_settlements: Vec<crate::control::SettlementNotice>,
     /// The New Project window, when open.
     pub new_project: Option<new_project::NewProject>,
     /// The Project Settings window, when open.
@@ -870,6 +916,7 @@ impl SolveApp {
             menu: context_menu::MenuState::default(),
             gesture: mouse_gesture::State::default(),
             tree,
+            file_tree: file_tree::FileTree::new(),
             linked_design_clipboard: None,
             sbox: shortcut_box::ShortcutBox::default(),
             keymap: keymap::Keymap::default(),
@@ -903,6 +950,7 @@ impl SolveApp {
             last_command: None,
             copied_bodies: Vec::new(),
             clipboard_text: None,
+            clipboard_input: edit_clipboard::InputBatch::default(),
             copied_placements: Vec::new(),
             cut: Default::default(),
             clipboard_stamp: 0,
@@ -947,9 +995,12 @@ impl SolveApp {
             frame_clock: frame_rate::Clock::default(),
             synthetic: Vec::new(),
             synthetic_mods: egui::Modifiers::default(),
+            input_trust: input_provenance::Tracker::default(),
             control_rx: None,
             guarded_context: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             agent_chat: Default::default(),
+            builtin_agent: agent_chat::agents::look_for_builtin(),
+            builtin_changes: 0,
             ai_connect: Default::default(),
             control_held: Default::default(),
             control_job: None,
@@ -967,6 +1018,14 @@ impl SolveApp {
             embedded: false,
             embed_editor: false,
             home: home::HomeState::default(),
+            account: account::State::default(),
+            billing: None,
+            review_store: None,
+            budget: solidcraft_engine::entitlement::BudgetTable::unverified_default(),
+            commit_scope: None,
+            commit_account: None,
+            commit_clock: None,
+            pending_settlements: Vec::new(),
             new_project: None,
             project_settings: None,
             dfm_chat: dfm_chat::State::default(),
@@ -984,6 +1043,130 @@ impl SolveApp {
         };
         easyprint_ui::install(&mut app);
         app
+    }
+
+    /// Install the host's billing authority and measured safe-stop bounds. Only the desktop
+    /// composition root does this; the browser never installs one and stays anonymous.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn install_billing(
+        &mut self,
+        billing: Box<dyn solidcraft_engine::entitlement::BillingPort + Send>,
+        budget: solidcraft_engine::entitlement::BudgetTable,
+    ) {
+        self.billing = Some(billing);
+        self.install_budget(budget);
+    }
+
+    /// Install the desktop host's measured safe-stop bounds without granting billing authority.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn install_budget(&mut self, budget: solidcraft_engine::entitlement::BudgetTable) {
+        self.budget = budget;
+    }
+
+    /// Install the host's durable operation journal for Review and Control. It never grants
+    /// execution authority: paid entries still need installed billing and a verified bound.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn install_review_store(&mut self, store: Box<dyn solidcraft_engine::entitlement::OperationStore + Send>) {
+        self.review_store = Some(store);
+    }
+
+    /// The browser has no durable journal; the Review panel is unavailable there anyway.
+    #[cfg(target_arch = "wasm32")]
+    pub fn install_review_store(&mut self, store: Box<dyn solidcraft_engine::entitlement::OperationStore + Send>) {
+        drop(store);
+    }
+
+    /// Whether a verified commit authority is installed. Controlled entries need
+    /// a billing authority; the commit authority is one, so its presence is what
+    /// lets Review and Control admit instead of refusing for lack of a port.
+    pub(crate) fn has_commit_authority(&self) -> bool {
+        self.commit_scope.is_some() && self.commit_account.is_some() && self.commit_clock.is_some()
+    }
+
+    /// The billing authority controlled entries should use: the explicitly
+    /// installed port when a host supplied one, otherwise the verified commit
+    /// authority. `None` keeps every controlled entry refused.
+    pub(crate) fn billing_source(&mut self) -> Option<crate::billing_adapter::BillingSource<'_>> {
+        if self.billing.is_none() && self.has_commit_authority() {
+            let scope = self.commit_scope.as_ref()?;
+            let clock = self.commit_clock.as_deref()?;
+            let account = self.commit_account.as_deref_mut()?;
+            return Some(crate::billing_adapter::BillingSource::Authority(crate::billing_adapter::CommitAuthorityBilling::new(
+                scope, clock, account,
+            )));
+        }
+        self.billing.as_mut().map(|billing| crate::billing_adapter::BillingSource::Installed(billing.as_mut()))
+    }
+
+    /// Install the host's current authenticated identity, account status and monotonic clock for
+    /// the commit gate. It must match the authority that minted the operations; the desktop
+    /// composition root replaces it on sign-in, sign-out and account switch.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn install_commit_authority(
+        &mut self,
+        scope: solidcraft_engine::entitlement::AuthenticatedHostScope,
+        account: Box<dyn solidcraft_engine::entitlement::AccountService + Send>,
+        clock: Box<dyn solidcraft_engine::entitlement::MonotonicClock + Send>,
+    ) {
+        self.commit_scope = Some(scope);
+        self.commit_account = Some(account);
+        self.commit_clock = Some(clock);
+    }
+
+    /// Remove the commit authority on sign-out, account switch or teardown. Controlled results
+    /// that arrive afterwards are dropped instead of written into the next session.
+    pub fn clear_commit_authority(&mut self) {
+        self.commit_scope = None;
+        self.commit_account = None;
+        self.commit_clock = None;
+    }
+
+    /// Drain settlement work that needs host recovery under its original operation id. The host
+    /// retries only settlement; it never reruns the engineering operation.
+    pub fn take_pending_settlements(&mut self) -> Vec<crate::control::SettlementNotice> {
+        std::mem::take(&mut self.pending_settlements)
+    }
+
+    /// Close the current account session's authority without touching work already committed.
+    ///
+    /// Sign-out, an account switch and app exit call this: new controlled work is refused, queued
+    /// admissions become stale, and results admitted by the old session cannot commit. Settlement
+    /// recovery stays behind under its original operation id; nothing is rerun.
+    pub fn end_controlled_session(&mut self) {
+        self.clear_commit_authority();
+        crate::execution_guard::invalidate_context(self);
+    }
+
+    /// Apply an account lifecycle event raised by the injected port, outside a frame.
+    ///
+    /// The port reports only an explicit sign-out or switch; an ordinary status refresh, chat or
+    /// GUI click never closes authority.
+    pub fn drain_account_lifecycle(&mut self) {
+        if self.account.take_lifecycle_event().is_some() {
+            self.end_controlled_session();
+        }
+    }
+
+    /// The browser has no commit authority: keep ordinary free CAD and refuse controlled commits.
+    #[cfg(target_arch = "wasm32")]
+    pub fn install_commit_authority(
+        &mut self,
+        scope: solidcraft_engine::entitlement::AuthenticatedHostScope,
+        account: Box<dyn solidcraft_engine::entitlement::AccountService + Send>,
+        clock: Box<dyn solidcraft_engine::entitlement::MonotonicClock + Send>,
+    ) {
+        drop((scope, account, clock));
+    }
+
+    /// The browser has no billing authority: keep the anonymous free paths and ignore an attempt
+    /// by a shared host entry point to install one.
+    #[cfg(target_arch = "wasm32")]
+    pub fn install_billing(
+        &mut self,
+        billing: Box<dyn solidcraft_engine::entitlement::BillingPort + Send>,
+        budget: solidcraft_engine::entitlement::BudgetTable,
+    ) {
+        drop((billing, budget));
     }
 
     /// Translate text using the active language preference.
@@ -1234,6 +1417,9 @@ impl SolveApp {
 
     /// Run a command programmatically (JSON parameters, no dialogs).
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        // One spelling for every caller (menus, control channel, tests): the comparisons below
+        // and the engine execute the registered id, whatever case the caller used.
+        let id = solidcraft_engine::resolve_command_id(id).unwrap_or(id);
         if solidcraft_engine::panels::commands::is_command(id) {
             return self.run_panel_command(id, &params).map_err(solidcraft_engine::panels::commands::error_text);
         }
@@ -2977,6 +3163,7 @@ impl SolveApp {
         let _language = crate::i18n::scope(&self.preferences.language);
         self.frame_clock.record(ctx.input(|i| f64::from(i.unstable_dt)));
         panel_runtime::tick_app(self);
+        crate::file_tree::drain_documents(self, ctx);
         // Sleep/wake often skips frames without a device-lost signal; refresh egui GPU textures
         // when the frame clock jumps so the chrome is not stuck blank (#8749).
         let frame_time = ctx.input(|i| i.time);
@@ -3044,6 +3231,7 @@ impl SolveApp {
         issue_report::tick(self, ctx);
         self.collect_screenshots(ctx);
         self.issue_screenshots(ctx);
+        edit_clipboard::begin_input(self, ctx);
         if self.issue_report.draft.is_none() && self.file_picker.is_none() {
             // Completion owns its keys before either CAD shortcuts or text editors see them.
             if !keymap::capturing(self) {
@@ -3077,12 +3265,39 @@ impl SolveApp {
     /// The frame's input before the app reads it: synthetic events, then what is typed while a
     /// capture hides the report waits for it (the control channel's typing too).
     pub fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
-        self.synthetic_input(raw);
-        issue_report::hold_input(self, raw);
+        // eframe may call this hook again with the previous post-hook batch when the window is
+        // minimized or otherwise logic-only. Reuse the origins already attached to that retained
+        // prefix; only genuinely new events are platform input. Synthetic events and replay are
+        // then folded in before the tracker consumes the batch.
+        let (mut from_platform, replayed) = self.input_trust.begin_batch(&raw.events);
+        self.synthetic_input(raw, &mut from_platform);
+        issue_report::hold_input(self, raw, &mut from_platform);
+        self.input_trust.update(&raw.events, &from_platform, replayed);
+        self.input_trust.retain(&raw.events, &from_platform);
     }
 
-    /// Inject synthetic events (one pointer event per frame).
-    fn synthetic_input(&mut self, raw: &mut egui::RawInput) {
+    /// Whether `response`'s click is one trusted platform activation on this control.
+    ///
+    /// A pointer click needs platform input at both ends of the gesture and no synthetic event
+    /// touching it; a keyboard or accessibility click needs one platform activation this frame
+    /// and must target this control, not merely be present somewhere in the frame.
+    pub(crate) fn trusted_click(&self, response: &egui::Response) -> bool {
+        if !response.clicked() {
+            return false;
+        }
+        if response.clicked_by(egui::PointerButton::Primary) {
+            !self.input_trust.any_activation_without_pointer() && self.input_trust.pointer_trusted(egui::PointerButton::Primary, response.rect)
+        } else {
+            let targets_this_control = response.ctx.memory(|memory| memory.has_focus(response.id))
+                || response.ctx.input(|input| input.has_accesskit_action_request(response.id, egui::accesskit::Action::Click));
+            targets_this_control && self.input_trust.keyboard_trusted()
+        }
+    }
+
+    /// Inject synthetic events (one pointer event per frame). Each injected event is marked
+    /// untrusted in `from_platform`, so automation input can never be mistaken for a native
+    /// activation.
+    fn synthetic_input(&mut self, raw: &mut egui::RawInput, from_platform: &mut Vec<bool>) {
         if self.synthetic.is_empty() {
             return;
         }
@@ -3113,20 +3328,32 @@ impl SolveApp {
                 egui::Event::ModifiersChanged(modifiers) => self.synthetic_mods = *modifiers,
                 egui::Event::PointerButton { pos, modifiers, pressed, .. } => {
                     raw.events.push(egui::Event::PointerMoved(*pos));
+                    from_platform.push(false);
                     raw.events.push(egui::Event::ModifiersChanged(*modifiers));
+                    from_platform.push(false);
                     // A drag keeps its press's modifiers until the release.
                     self.synthetic_mods = if *pressed { *modifiers } else { egui::Modifiers::NONE };
                 }
-                egui::Event::Key { modifiers, .. } => raw.events.push(egui::Event::ModifiersChanged(*modifiers)),
-                egui::Event::PointerMoved(_) => raw.events.push(egui::Event::ModifiersChanged(self.synthetic_mods)),
+                egui::Event::Key { modifiers, .. } => {
+                    raw.events.push(egui::Event::ModifiersChanged(*modifiers));
+                    from_platform.push(false);
+                }
+                egui::Event::PointerMoved(_) => {
+                    raw.events.push(egui::Event::ModifiersChanged(self.synthetic_mods));
+                    from_platform.push(false);
+                }
                 _ => {}
             }
             raw.events.push(event);
+            from_platform.push(false);
         }
     }
 
     /// Lay out the whole window.
     pub fn ui(&mut self, ui: &mut egui::Ui) {
+        // A real UI pass consumes the hook's input. eframe's logic-only passes do not call this,
+        // so only here can the retained batch stop being replayable.
+        self.input_trust.input_consumed_by_ui();
         prefs::prepare_blur(self, ui.ctx());
         let blur_source = !self.home.open && !render_workspace::result_active(self);
         let _blur_scope = self.blur.begin(ui.ctx(), blur_source);
@@ -3166,6 +3393,7 @@ impl SolveApp {
         if self.file_picker.is_none() {
             issue_report::show(self, ui.ctx());
         }
+        edit_clipboard::finish_input(self, ui.ctx());
         if !self.home.open {
             agent_cursor::paint(self, ui.ctx());
         }
@@ -3432,11 +3660,11 @@ impl SolveApp {
             }
             req.started.store(true, std::sync::atomic::Ordering::Relaxed);
             // Opening or importing a file: answered when the file is in, without freezing the window.
-            let Some(req) = file_load::control(self, req) else {
+            let Some(mut req) = file_load::control(self, req) else {
                 ctx.request_repaint();
                 continue;
             };
-            if agent_cursor::intercept(self, &req) {
+            if agent_cursor::intercept(self, &mut req) {
                 ctx.request_repaint();
                 continue;
             }
@@ -3451,12 +3679,17 @@ impl SolveApp {
     }
 
     /// Run a control request here, now, and reply (or queue the screenshot it asks for).
-    pub(crate) fn run_control(&mut self, ctx: &egui::Context, req: ControlRequest) {
+    pub(crate) fn run_control(&mut self, ctx: &egui::Context, mut req: ControlRequest) {
         if req.refuse_cancelled_chat() {
+            control::release_unstarted(self, &mut req);
+            return;
+        }
+        if let Err(refusal) = control::admit_once(self, &mut req) {
+            let _ = req.reply.send(control::admission_refusal_json(&refusal));
             return;
         }
         let reply = req.reply.clone();
-        match control::handle(self, ctx, &req) {
+        match control::handle(self, ctx, &mut req) {
             control::Outcome::Done(v) => {
                 let _ = reply.send(v);
             }

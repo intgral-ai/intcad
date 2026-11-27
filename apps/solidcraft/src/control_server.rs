@@ -4,8 +4,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, channel, sync_channel};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -17,6 +17,18 @@ use solidcraft_ui_egui::control::{DESIGN_WATCH, DesignWatch, Subscriber};
 
 /// Connections served at once, so a flood must not be able to spawn threads without end.
 const MAX_CONNECTIONS: usize = 16;
+/// How long a refused connection has for its reply and cleanup, from the moment it is refused.
+/// One absolute deadline covers the write and the drain; nothing extends it.
+const REFUSAL_BUDGET: Duration = Duration::from_millis(500);
+/// The smallest socket timeout a refusal uses. Some platforms round a smaller positive timeout
+/// to zero, which can mean no timeout at all, so a sub-millisecond remainder fails closed.
+const REFUSAL_TIMEOUT_FLOOR: Duration = Duration::from_millis(1);
+/// Bytes of what a refused client already sent that are read and dropped before closing on the
+/// unauthorized path, so a reset cannot overtake the refusal.
+const UNAUTHORIZED_DRAIN_BYTES: u64 = 64 * 1024;
+/// Bytes a connection-limit refusal drains: one request line and its framing LF, the most a
+/// client can have sent before the limit rejects it. The rest is closed, not read.
+const LIMIT_REFUSAL_DRAIN_BYTES: u64 = MAX_LINE as u64 + 1;
 /// Lines that are not JSON before the connection is closed, so garbage cannot loop forever.
 const MAX_BAD_LINES: usize = 8;
 /// How long a subscribed connection waits after a `design.changed` line before the next: what
@@ -28,6 +40,8 @@ const EVENT_GAP: Duration = Duration::from_millis(100);
 const TOKEN_WAIT: Duration = Duration::from_secs(5);
 
 static OPEN: AtomicUsize = AtomicUsize::new(0);
+/// The process's one refusal worker and waiting slot, started before any listener accepts.
+static REFUSALS: Refusals = Refusals::new();
 /// The token files this launch wrote (its control port, the agent chat's endpoint) and the
 /// token in each, removed when the app ends unless another launch has written the file since.
 static TOKEN_FILES: std::sync::Mutex<Vec<(std::path::PathBuf, String)>> = std::sync::Mutex::new(Vec::new());
@@ -66,6 +80,7 @@ pub fn start(listen_on: control_auth::Listen, ctx: egui::Context) -> Receiver<Co
             };
             match listener {
                 Ok(l) => {
+                    REFUSALS.start();
                     if let Some(port) = listen_on_listener(l, token.clone(), tx, ctx, false) {
                         if matches!(listen_on, control_auth::Listen::Default) {
                             solidcraft_engine::note!(
@@ -108,6 +123,7 @@ pub fn listen_agent(tx: Sender<ControlRequest>, ctx: egui::Context) -> Option<u1
             return None;
         }
     };
+    REFUSALS.start();
     listen_on_listener(listener, token, tx, ctx, true)
 }
 
@@ -137,24 +153,294 @@ fn listen_on_listener(listener: TcpListener, token: String, tx: Sender<ControlRe
         }
     }
     let token = std::sync::Arc::new(token);
+    let refusals = REFUSALS.owner();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            if OPEN.fetch_add(1, Ordering::Relaxed) >= MAX_CONNECTIONS {
-                OPEN.fetch_sub(1, Ordering::Relaxed);
-                let mut refused = stream;
-                let _ = send(&mut refused, &json!({"ok": false, "error": "too many connections"}));
-                continue;
-            }
-            let tx = tx.clone();
-            let ctx = ctx.clone();
-            let token = token.clone();
-            std::thread::spawn(move || {
-                serve(stream, &token, tx, ctx, patient);
-                OPEN.fetch_sub(1, Ordering::Relaxed);
-            });
+            route(
+                stream,
+                &OPEN,
+                MAX_CONNECTIONS,
+                |stream| {
+                    let tx = tx.clone();
+                    let ctx = ctx.clone();
+                    let token = token.clone();
+                    std::thread::spawn(move || {
+                        serve(stream, &token, tx, ctx, patient);
+                        OPEN.fetch_sub(1, Ordering::Relaxed);
+                    });
+                },
+                |stream| refusals.hand_off(stream),
+            );
         }
     });
     Some(port)
+}
+
+/// One accepted connection's place: a free served seat, or the limit's refusal.
+enum Admission {
+    Serve,
+    Refuse,
+}
+
+/// Take one of `max` served seats for an accepted connection. A refusal never holds a seat: it
+/// gives its increment back before it returns, so disposal cannot keep a new admission waiting.
+fn take_seat(open: &AtomicUsize, max: usize) -> Admission {
+    if open.fetch_add(1, Ordering::Relaxed) >= max {
+        open.fetch_sub(1, Ordering::Relaxed);
+        Admission::Refuse
+    } else {
+        Admission::Serve
+    }
+}
+
+/// Route one accepted connection: a served seat dispatches it, and a refusal goes to disposal.
+/// A refused connection is never dispatched, and neither route waits.
+fn route<C>(stream: C, open: &AtomicUsize, max: usize, serve: impl FnOnce(C), refuse: impl FnOnce(C)) {
+    match take_seat(open, max) {
+        Admission::Serve => serve(stream),
+        Admission::Refuse => refuse(stream),
+    }
+}
+
+/// The reply a connection past [`MAX_CONNECTIONS`] gets.
+fn too_many_connections() -> Value {
+    json!({"ok": false, "error": "too many connections"})
+}
+
+/// What is left of an absolute deadline at `now`, when it is at least [`REFUSAL_TIMEOUT_FLOOR`]:
+/// `None` once it has passed or is too small for a safe socket timeout.
+fn refusal_time_left(deadline: Instant, now: Instant) -> Option<Duration> {
+    deadline.checked_duration_since(now).filter(|left| *left >= REFUSAL_TIMEOUT_FLOOR)
+}
+
+/// The socket work of one refusal, apart from admission, so a test can script it in process.
+trait RefusalIo: Send {
+    /// Write the refusal line inside `deadline`.
+    fn write_reply(&mut self, reply: &Value, deadline: Instant) -> std::io::Result<()>;
+    /// End what this side sends, before any request still arriving is read.
+    fn close_write(&mut self);
+    /// Read and drop up to `max` bytes of what the client already sent, inside `deadline`.
+    fn drain(&mut self, deadline: Instant, max: u64);
+}
+
+/// Reply to and close one refused connection inside `deadline`. The deadline is absolute and set
+/// before the refusal is handed off, so waiting in the worker's slot does not reset it: the write
+/// and the drain share the same instant. A failed or incomplete write closes the write side and
+/// drains what is left of the budget; an orderly close is expected on the normal path only.
+fn refuse_within(io: &mut impl RefusalIo, reply: &Value, deadline: Instant) {
+    let mut now = Instant::now;
+    refuse_within_with(io, reply, deadline, &mut now);
+}
+
+/// [`refuse_within`] with the clock given as `now`, so a test can show a successful reply spending
+/// the budget before cleanup is considered.
+fn refuse_within_with(io: &mut impl RefusalIo, reply: &Value, deadline: Instant, now: &mut impl FnMut() -> Instant) {
+    if refusal_time_left(deadline, now()).is_none() {
+        return;
+    }
+    let _ = io.write_reply(reply, deadline);
+    io.close_write();
+    if refusal_time_left(deadline, now()).is_some() {
+        io.drain(deadline, LIMIT_REFUSAL_DRAIN_BYTES);
+    }
+}
+
+/// A writer whose next write can be given only what is left of an absolute deadline.
+trait DeadlineWrite {
+    /// Set the timeout for the next write. The write must not be attempted when this fails.
+    fn set_write_timeout(&mut self, left: Option<Duration>) -> std::io::Result<()>;
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize>;
+}
+
+/// Write `line` inside `deadline`, giving every write only what is left of it. A partial write
+/// must not buy the next one another full timeout, so the timeout is recomputed before each
+/// write; `now` is a parameter so a test can advance the clock without sleeping. A failed timeout
+/// setup, or less than [`REFUSAL_TIMEOUT_FLOOR`] left, stops before the write.
+fn write_deadline(w: &mut impl DeadlineWrite, line: &[u8], deadline: Instant, now: &mut impl FnMut() -> Instant) -> std::io::Result<()> {
+    let mut written = 0;
+    while written < line.len() {
+        let Some(left) = refusal_time_left(deadline, now()) else {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        };
+        w.set_write_timeout(Some(left))?;
+        match w.write(line.get(written..).unwrap_or(&[])) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => written += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Read and drop up to `max` bytes of an unauthorized client's request: that path's byte ceiling.
+fn drain_refused(reader: &mut impl std::io::Read, max: u64) -> u64 {
+    let mut bounded = std::io::Read::take(reader, max);
+    std::io::copy(&mut bounded, &mut std::io::sink()).unwrap_or(0)
+}
+
+/// A reader whose next read can be given only what is left of an absolute deadline.
+trait DeadlineRead {
+    /// Set the timeout for the next read. The read must not be attempted when this fails.
+    fn set_read_timeout(&mut self, left: Duration) -> std::io::Result<()>;
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize>;
+}
+
+/// Read and drop up to `max` bytes of a refused client's request inside `deadline`, giving every
+/// read only what is left of it. The loop stops at the byte ceiling, at
+/// [`REFUSAL_TIMEOUT_FLOOR`], when a timeout cannot be configured, at end of stream, or on a read
+/// error; `now` is a parameter so a test can script the clock.
+fn drain_deadline(r: &mut impl DeadlineRead, max: u64, deadline: Instant, now: &mut impl FnMut() -> Instant) -> u64 {
+    const CHUNK: usize = 8 * 1024;
+    let mut buf = [0u8; CHUNK];
+    let mut dropped = 0u64;
+    while dropped < max {
+        let Some(left) = refusal_time_left(deadline, now()) else { break };
+        if r.set_read_timeout(left).is_err() {
+            break;
+        }
+        let room = (max - dropped).min(CHUNK as u64) as usize;
+        let Some(chunk) = buf.get_mut(..room) else { break };
+        match r.read(chunk) {
+            Ok(0) => break,
+            Ok(n) => dropped = dropped.saturating_add(n.min(room) as u64),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    dropped
+}
+
+/// One connection past the limit: its socket, to be replied to and closed inside the deadline the
+/// refusal job carries.
+struct SocketRefusal {
+    stream: TcpStream,
+}
+
+/// The refusal socket as a [`DeadlineWrite`]: each write is bounded by what is left of the one
+/// deadline, including across partial writes.
+struct SocketWrite<'a>(&'a mut TcpStream);
+
+impl DeadlineWrite for SocketWrite<'_> {
+    fn set_write_timeout(&mut self, left: Option<Duration>) -> std::io::Result<()> {
+        self.0.set_write_timeout(left)
+    }
+
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+}
+
+/// The refusal socket as a [`DeadlineRead`]: each read is bounded by what is left of the one
+/// deadline, including across partial reads.
+struct SocketRead {
+    socket: TcpStream,
+}
+
+impl DeadlineRead for SocketRead {
+    fn set_read_timeout(&mut self, left: Duration) -> std::io::Result<()> {
+        self.socket.set_read_timeout(Some(left))
+    }
+
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut self.socket, buf)
+    }
+}
+
+impl RefusalIo for SocketRefusal {
+    fn write_reply(&mut self, reply: &Value, deadline: Instant) -> std::io::Result<()> {
+        let mut line = serde_json::to_vec(reply).map_err(std::io::Error::other)?;
+        line.push(b'\n');
+        let mut socket = SocketWrite(&mut self.stream);
+        let mut now = Instant::now;
+        write_deadline(&mut socket, &line, deadline, &mut now)
+    }
+
+    fn close_write(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Write);
+    }
+
+    fn drain(&mut self, deadline: Instant, max: u64) {
+        let Ok(read) = self.stream.try_clone() else { return };
+        let mut reader = SocketRead { socket: read };
+        let mut now = Instant::now;
+        drain_deadline(&mut reader, max, deadline, &mut now);
+    }
+}
+
+/// What the process's one refusal worker does with one refused connection.
+type RefusalJob = Box<dyn FnOnce() + Send>;
+
+/// The process's refusal disposal: one worker and one waiting slot, started once outside any
+/// accept loop. Every listener and conversation takes a cheap [`RefusalOwner`] handle instead of
+/// starting a worker of its own, so extra listeners add no threads or queues.
+struct Refusals {
+    worker: OnceLock<Option<SyncSender<RefusalJob>>>,
+    #[cfg(test)]
+    starts: AtomicUsize,
+}
+
+impl Refusals {
+    const fn new() -> Self {
+        Self {
+            worker: OnceLock::new(),
+            #[cfg(test)]
+            starts: AtomicUsize::new(0),
+        }
+    }
+
+    /// Start the process's one refusal worker. A second call is a no-op. Without a worker, every
+    /// refusal fails closed rather than retrying on each offer or listener creation.
+    fn start(&self) {
+        self.worker.get_or_init(|| {
+            #[cfg(test)]
+            self.starts.fetch_add(1, Ordering::Relaxed);
+            let (worker, jobs) = sync_channel::<RefusalJob>(1);
+            std::thread::Builder::new()
+                .name("control-refusal".into())
+                .spawn(move || {
+                    while let Ok(job) = jobs.recv() {
+                        job();
+                    }
+                })
+                .ok()
+                .map(|_| worker)
+        });
+    }
+
+    /// A listener's or conversation's disposal handle. Taking or dropping it never starts or
+    /// stops the process worker; the shared waiting slot stays the same for every owner.
+    fn owner(&self) -> RefusalOwner {
+        RefusalOwner { worker: self.worker.get().and_then(|worker| worker.clone()) }
+    }
+}
+
+/// One listener's or conversation's share of the process refusal worker, cheap to take and drop.
+#[derive(Clone)]
+struct RefusalOwner {
+    worker: Option<SyncSender<RefusalJob>>,
+}
+
+impl RefusalOwner {
+    /// Offer `job` without waiting. `false` when the process queue's one waiting slot is taken,
+    /// the worker is absent, or it has ended: the caller fails closed instead of holding the
+    /// listener.
+    fn hand_off_job(&self, job: RefusalJob) -> bool {
+        match self.worker.as_ref() {
+            Some(worker) => worker.try_send(job).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Refuse `stream` on the process worker, with one absolute deadline that starts here, before
+    /// the handoff; waiting in the shared slot does not reset it.
+    fn hand_off(&self, stream: TcpStream) {
+        let deadline = Instant::now() + REFUSAL_BUDGET;
+        self.hand_off_job(Box::new(move || {
+            let mut io = SocketRefusal { stream };
+            refuse_within(&mut io, &too_many_connections(), deadline);
+        }));
+    }
 }
 
 /// One line without its newline, or `None` at the end of the stream. A client that sends
@@ -232,11 +518,10 @@ fn unauthorized() -> Value {
 /// already sent read and dropped (a little, briefly). Closing a socket with unread input resets
 /// the connection, and a reset can reach the client before it has read the refusal.
 fn refuse(out: &mut TcpStream, reader: &mut BufReader<ClientInput>) {
-    use std::io::Read;
     let _ = send(out, &unauthorized());
     let _ = out.shutdown(std::net::Shutdown::Write);
-    reader.get_mut().deadline = Some(Instant::now() + Duration::from_millis(500));
-    let _ = std::io::copy(&mut reader.by_ref().take(64 * 1024), &mut std::io::sink());
+    reader.get_mut().deadline = Some(Instant::now() + REFUSAL_BUDGET);
+    drain_refused(reader, UNAUTHORIZED_DRAIN_BYTES);
 }
 
 /// What a client sends. Until it shows the token, all of its reads share one deadline, so neither
@@ -708,7 +993,7 @@ fn serve_with(
                     // Counted before the window answers, so it publishes every change from its
                     // answer on.
                     joining = (method == "control.subscribe").then(|| design.join());
-                    let (req, rrx) = ControlRequest::new(method.clone(), params);
+                    let (req, rrx) = ControlRequest::trusted_control(method.clone(), params);
                     let ticket = running.add(connection, &id, &req);
                     let asking = req.asking.clone();
                     if tx.send(req).is_err() {
@@ -761,6 +1046,144 @@ fn serve_with(
 mod tests {
     use super::*;
 
+    /// A local test double at the billing boundary for the external control path. It grants only
+    /// inside this test module; no production path installs it.
+    #[derive(Default)]
+    struct ControlTestBilling;
+
+    /// Host-side account/clock authority for this external-control harness. It never ships.
+    struct ControlTestAccount;
+
+    impl solidcraft_engine::entitlement::AccountService for ControlTestAccount {
+        fn status(&self) -> Result<solidcraft_engine::entitlement::Availability, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::Availability {
+                online: true,
+                version_supported: true,
+                model_available: true,
+                balance: 100,
+                held: 0,
+                reasons: Vec::new(),
+            })
+        }
+
+        fn authorize(
+            &mut self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _capability: solidcraft_engine::entitlement::Capability,
+        ) -> Result<solidcraft_engine::entitlement::Grant, solidcraft_engine::entitlement::Refusal> {
+            Err(solidcraft_engine::entitlement::Refusal::new(solidcraft_engine::entitlement::RefusalCode::AuthUnavailable, "test authority"))
+        }
+
+        fn begin(
+            &mut self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _capability: solidcraft_engine::entitlement::Capability,
+            _entry: solidcraft_engine::entitlement::EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Admission, solidcraft_engine::entitlement::Refusal> {
+            Err(solidcraft_engine::entitlement::Refusal::new(solidcraft_engine::entitlement::RefusalCode::AuthUnavailable, "test authority"))
+        }
+
+        fn finalize(
+            &mut self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::OperationStatus, solidcraft_engine::entitlement::Refusal> {
+            Err(solidcraft_engine::entitlement::Refusal::new(solidcraft_engine::entitlement::RefusalCode::AuthUnavailable, "test authority"))
+        }
+
+        fn operation(
+            &self,
+            _scope: &solidcraft_engine::entitlement::AuthenticatedHostScope,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+        ) -> Result<solidcraft_engine::entitlement::OperationStatus, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::OperationStatus::Held)
+        }
+    }
+
+    struct ControlTestClock;
+
+    impl solidcraft_engine::entitlement::MonotonicClock for ControlTestClock {
+        fn now(&self) -> solidcraft_engine::entitlement::MonotonicInstant {
+            solidcraft_engine::entitlement::MonotonicInstant::from_millis(0)
+        }
+
+        fn wall_now(&self) -> std::time::SystemTime {
+            std::time::SystemTime::UNIX_EPOCH
+        }
+    }
+
+    impl solidcraft_engine::entitlement::BillingPort for ControlTestBilling {
+        fn admit(
+            &mut self,
+            operation: &solidcraft_engine::entitlement::OperationId,
+            capability: solidcraft_engine::entitlement::Capability,
+            _entry: solidcraft_engine::entitlement::EntryCategory,
+        ) -> Result<solidcraft_engine::entitlement::Grant, solidcraft_engine::entitlement::Refusal> {
+            Ok(solidcraft_engine::entitlement::Grant::from_server(
+                solidcraft_engine::entitlement::GrantId::new(format!("grant_test_{}", operation.as_str())),
+                capability,
+                solidcraft_engine::entitlement::MonotonicInstant::from_millis(60_000),
+            ))
+        }
+
+        fn commit(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            result: solidcraft_engine::entitlement::BillingResult,
+        ) -> Result<solidcraft_engine::entitlement::BillingResult, solidcraft_engine::entitlement::Refusal> {
+            Ok(result)
+        }
+
+        fn release(
+            &mut self,
+            _operation: &solidcraft_engine::entitlement::OperationId,
+            _reason: solidcraft_engine::entitlement::RefusalCode,
+        ) -> Result<(), solidcraft_engine::entitlement::Refusal> {
+            Ok(())
+        }
+    }
+
+    fn control_test_budget() -> solidcraft_engine::entitlement::BudgetTable {
+        let mut budget = solidcraft_engine::entitlement::BudgetTable::unverified_default();
+        budget.set_verified(
+            solidcraft_engine::entitlement::Capability::Control,
+            solidcraft_engine::entitlement::EntryCategory::DirectControl,
+            Duration::from_secs(30),
+        );
+        budget
+    }
+
+    #[test]
+    fn control_server_sets_external_category() {
+        use solidcraft_ui_egui::control;
+        let (control, _) = ControlRequest::trusted_control("engine.execute", json!({"command": "document.inspect"}));
+        assert_eq!(control.entry_category(), solidcraft_engine::entitlement::EntryCategory::DirectControl);
+        assert!(!control::free_entry(control.entry_category()));
+        let mut billing = ControlTestBilling;
+        assert!(matches!(
+            control::admit_control_request(&control, &solidcraft_engine::entitlement::BudgetTable::unverified_default(), &mut billing),
+            solidcraft_engine::entitlement::Admission::Refused(solidcraft_engine::entitlement::Refusal {
+                code: solidcraft_engine::entitlement::RefusalCode::UnsafeToStart,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn gui_paths_remain_free() {
+        use solidcraft_ui_egui::control;
+        let (gui, _) = ControlRequest::trusted_gui("engine.execute", json!({"command": "document.inspect"}));
+        assert_eq!(gui.entry_category(), solidcraft_engine::entitlement::EntryCategory::HumanGuiFree);
+        assert!(control::free_entry(gui.entry_category()));
+        let mut billing = ControlTestBilling;
+        assert!(matches!(
+            control::admit_control_request(&gui, &solidcraft_engine::entitlement::BudgetTable::unverified_default(), &mut billing),
+            solidcraft_engine::entitlement::Admission::Allowed
+        ));
+    }
+
     // Uses the real server and UI control handler; the owner gate makes the stale result late.
     #[test]
     fn guarded_control_capability_is_additive_and_pending_preserves_metadata() {
@@ -773,17 +1196,27 @@ mod tests {
         let (gate_tx, gate_rx) = channel();
         let owner = std::thread::spawn(move || {
             let mut app = SolveApp::new(solidcraft_engine::Session::default(), Services::default());
+            app.install_billing(Box::<ControlTestBilling>::default(), control_test_budget());
+            app.install_commit_authority(
+                solidcraft_engine::entitlement::AuthenticatedHostScope::new(
+                    solidcraft_engine::entitlement::AccountId::new("control-test-account"),
+                    solidcraft_engine::entitlement::InstallationId::new("control-test-installation"),
+                    solidcraft_engine::entitlement::HostSessionBinding::new("control-test-session"),
+                ),
+                Box::new(ControlTestAccount),
+                Box::new(ControlTestClock),
+            );
             let ctx = egui::Context::default();
             let stamp = app.session.document_stamp();
             base_tx.send(json!({"documentId":stamp.document_id,"revision":stamp.revision.to_string()})).unwrap();
-            for req in rx {
+            for mut req in rx {
                 if req.params["command"] == "parameters.list" {
                     gate_rx.recv().unwrap();
                 }
-                let control::Outcome::Done(reply) = control::handle(&mut app, &ctx, &req) else { panic!("synchronous test command") };
+                let control::Outcome::Done(reply) = control::handle(&mut app, &ctx, &mut req) else { panic!("synchronous test command") };
                 req.reply.send(reply).unwrap();
             }
-            assert_eq!(app.session.doc.param("width").unwrap().expr, "30 mm");
+            assert_eq!(app.session.doc.param("width").unwrap().expr, "30 mm", "the controlled batch applied its retained step");
         });
         let waits = Waits { short: Duration::from_millis(100), long: Duration::from_secs(10), token: TOKEN_WAIT };
         let server = std::thread::spawn(move || {
@@ -812,7 +1245,7 @@ mod tests {
             "engine.batch",
             json!({"expectedDocument":write["documentStamp"],"commands":[{"command":"parameters.change","params":{"name":"width","expression":"30 mm"}}]}),
         );
-        assert_eq!(batch["result"]["completed"], 1);
+        assert_eq!(batch["result"]["completed"], 1, "{batch}");
         assert_ne!(batch["documentStamp"], write["documentStamp"]);
         let late = ask("engine.execute", json!({"command":"parameters.list","expectedDocument":base}));
         assert_eq!(late["running"], true);
@@ -1294,10 +1727,12 @@ mod tests {
                                 seq: 0,
                                 run: 1,
                                 runs: 1,
+                                runs_most: 1,
                                 elements: fea::Elements::Solid,
                                 nodes: 68_863,
                                 bytes: 1e9,
                                 seconds_left,
+                                seconds_most: seconds_left,
                             });
                         }
                         let ran = Instant::now();
@@ -1639,5 +2074,571 @@ mod tests {
         assert_eq!(out.writes, 1);
         assert_eq!(out.bytes.last(), Some(&b'\n'));
         assert_eq!(serde_json::from_slice::<Value>(&out.bytes).unwrap(), reply);
+    }
+
+    /// A refused connection gives its served-seat increment back at once: it holds no seat, and
+    /// the route that refuses it never dispatches it.
+    #[test]
+    fn a_refused_connection_is_disposed_without_a_served_seat_or_dispatch() {
+        let open = AtomicUsize::new(1);
+        let served = Arc::new(AtomicUsize::new(0));
+        let disposed = Arc::new(AtomicUsize::new(0));
+        let (s, d) = (served.clone(), disposed.clone());
+        route(
+            7u8,
+            &open,
+            1,
+            move |_| {
+                s.fetch_add(1, Ordering::Relaxed);
+            },
+            move |n| d.store(usize::from(n), Ordering::Relaxed),
+        );
+        assert_eq!(served.load(Ordering::Relaxed), 0, "a refused connection is never dispatched");
+        assert_eq!(disposed.load(Ordering::Relaxed), 7, "it goes to disposal");
+        assert_eq!(open.load(Ordering::Relaxed), 1, "the refused seat is released at once");
+    }
+
+    /// A scripted refusal: records the reply, the close, the drain and the deadline it received.
+    #[derive(Default)]
+    struct Scripted {
+        order: Vec<&'static str>,
+        reply: Option<Value>,
+        write_deadline: Option<Instant>,
+        drain: Option<(Instant, u64)>,
+        fail_write: bool,
+        /// The clock the reply advances by `consume`, for a test that spends the budget.
+        clock: Option<Arc<Mutex<Instant>>>,
+        consume: Duration,
+    }
+
+    impl RefusalIo for Scripted {
+        fn write_reply(&mut self, reply: &Value, deadline: Instant) -> std::io::Result<()> {
+            self.order.push("reply");
+            self.reply = Some(reply.clone());
+            self.write_deadline = Some(deadline);
+            if let Some(clock) = &self.clock
+                && let Ok(mut at) = clock.lock()
+            {
+                *at += self.consume;
+            }
+            if self.fail_write { Err(std::io::Error::other("scripted write failure")) } else { Ok(()) }
+        }
+        fn close_write(&mut self) {
+            self.order.push("close");
+        }
+        fn drain(&mut self, deadline: Instant, max: u64) {
+            self.order.push("drain");
+            self.drain = Some((deadline, max));
+        }
+    }
+
+    /// A writer that returns a scripted number of bytes per call and records each timeout.
+    struct PartialWriter {
+        steps: Vec<usize>,
+        writes: usize,
+        timeouts: Vec<Duration>,
+        /// 1-based timeout call that fails; 0 means no failure.
+        fail_at: usize,
+    }
+
+    impl DeadlineWrite for PartialWriter {
+        fn set_write_timeout(&mut self, left: Option<Duration>) -> std::io::Result<()> {
+            self.timeouts.push(left.unwrap_or_default());
+            if self.fail_at != 0 && self.timeouts.len() == self.fail_at { Err(std::io::Error::other("scripted timeout failure")) } else { Ok(()) }
+        }
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            let step = if self.steps.is_empty() { 0 } else { self.steps.remove(0) };
+            Ok(step.min(buf.len()))
+        }
+    }
+
+    /// A reader that returns a scripted number of bytes per call and records each timeout; its
+    /// scripted clock advances after each read.
+    struct ScriptedRead {
+        steps: Vec<usize>,
+        reads: usize,
+        timeouts: Vec<Duration>,
+        /// 1-based timeout call that fails; 0 means no failure.
+        fail_at: usize,
+        clock: Arc<Mutex<Instant>>,
+        advance: Duration,
+    }
+
+    impl DeadlineRead for ScriptedRead {
+        fn set_read_timeout(&mut self, left: Duration) -> std::io::Result<()> {
+            self.timeouts.push(left);
+            if self.fail_at != 0 && self.timeouts.len() == self.fail_at {
+                Err(std::io::Error::other("scripted read timeout failure"))
+            } else {
+                Ok(())
+            }
+        }
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.reads += 1;
+            if let Ok(mut at) = self.clock.lock() {
+                *at += self.advance;
+            }
+            let step = if self.steps.is_empty() { 0 } else { self.steps.remove(0) };
+            Ok(step.min(buf.len()))
+        }
+    }
+
+    /// Sets when its captured flag is dropped, so a refused job that must be closed can be seen.
+    struct Mark(Arc<AtomicBool>);
+
+    impl Drop for Mark {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// The reply and cleanup of a refusal share one absolute deadline: the exact existing reply
+    /// first, then the end of what is sent, then the connection-limit drain. A scripted write
+    /// failure still closes and drains, and a deadline that has passed writes nothing.
+    #[test]
+    fn a_refusal_writes_then_closes_before_a_bounded_limit_drain() {
+        let now = Instant::now();
+        let deadline = now + REFUSAL_BUDGET;
+        let mut clock = || now;
+        let mut io = Scripted::default();
+        refuse_within_with(&mut io, &too_many_connections(), deadline, &mut clock);
+        assert_eq!(io.order, ["reply", "close", "drain"]);
+        assert_eq!(io.reply, Some(json!({"ok": false, "error": "too many connections"})), "the existing reply is unchanged");
+        assert_eq!(io.write_deadline, Some(deadline), "the write sees the deadline set before the handoff");
+        assert_eq!(io.drain.map(|(at, _)| at), Some(deadline), "the drain shares the absolute deadline");
+        assert_eq!(io.drain.map(|(_, max)| max), Some(LIMIT_REFUSAL_DRAIN_BYTES));
+        assert_eq!(LIMIT_REFUSAL_DRAIN_BYTES, MAX_LINE as u64 + 1, "a limit refusal drains one request line and its LF");
+        assert_eq!(UNAUTHORIZED_DRAIN_BYTES, 64 * 1024, "the unauthorized path keeps its own 64 KiB ceiling");
+
+        let mut io = Scripted { fail_write: true, ..Default::default() };
+        refuse_within_with(&mut io, &too_many_connections(), deadline, &mut clock);
+        assert_eq!(io.order, ["reply", "close", "drain"], "a failed reply still closes the write side and drains");
+
+        let mut io = Scripted::default();
+        refuse_within_with(&mut io, &too_many_connections(), now, &mut clock);
+        assert!(io.order.is_empty(), "a refusal past its deadline writes nothing");
+    }
+
+    /// The unauthorized drain helper reads at most its own 64 KiB ceiling. The connection-limit
+    /// path uses the separate `drain_deadline` helper, covered below.
+    #[test]
+    fn unauthorized_drain_stops_at_its_64_kib_ceiling() {
+        for len in [0u64, 1, UNAUTHORIZED_DRAIN_BYTES, UNAUTHORIZED_DRAIN_BYTES + 100] {
+            let mut reader = std::io::Cursor::new(vec![b'x'; len as usize]);
+            assert_eq!(drain_refused(&mut reader, UNAUTHORIZED_DRAIN_BYTES), UNAUTHORIZED_DRAIN_BYTES.min(len));
+        }
+    }
+
+    /// The connection-limit drain helper stops exactly at the byte ceiling: when the scripted
+    /// chunk is larger than what remains, it reads only the remainder and makes no extra read.
+    #[test]
+    fn limit_drain_stops_exactly_at_its_byte_ceiling_with_no_extra_read() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(10);
+        let clock = Arc::new(Mutex::new(start));
+        let mut reader = ScriptedRead {
+            steps: vec![8, 8, 8],
+            reads: 0,
+            timeouts: Vec::new(),
+            fail_at: 0,
+            clock: clock.clone(),
+            advance: Duration::from_micros(100),
+        };
+        let mut now = {
+            let clock = clock.clone();
+            move || *clock.lock().unwrap()
+        };
+        let dropped = drain_deadline(&mut reader, 10, deadline, &mut now);
+        assert_eq!(dropped, 10, "the helper drops exactly the ceiling");
+        assert_eq!(reader.reads, 2, "the second read takes only the 2-byte remainder; no third read");
+        assert_eq!(reader.timeouts.len(), 2);
+    }
+
+    /// The production limit-refusal path hands the limit ceiling, not the unauthorized ceiling,
+    /// to its drain through the existing `RefusalIo` seam.
+    #[test]
+    fn the_limit_refusal_drain_uses_the_max_line_ceiling() {
+        let start = Instant::now();
+        let deadline = start + REFUSAL_BUDGET;
+        let mut io = Scripted::default();
+        let mut now = || start;
+        refuse_within_with(&mut io, &too_many_connections(), deadline, &mut now);
+        assert_eq!(io.drain, Some((deadline, LIMIT_REFUSAL_DRAIN_BYTES)), "the limit path passes its own ceiling");
+        assert_eq!(LIMIT_REFUSAL_DRAIN_BYTES, MAX_LINE as u64 + 1);
+        assert_ne!(LIMIT_REFUSAL_DRAIN_BYTES, UNAUTHORIZED_DRAIN_BYTES);
+    }
+
+    /// A partial write is followed by only what is left of the one absolute deadline, not another
+    /// full timeout; the clock is scripted, so no sleep or scheduling threshold decides it.
+    #[test]
+    fn a_partial_refusal_write_recomputes_the_absolute_deadline() {
+        let before = Instant::now();
+        let deadline = before + REFUSAL_BUDGET;
+        let mut clock = before;
+        let mut now = move || {
+            let at = clock;
+            clock += Duration::from_millis(200);
+            at
+        };
+        let mut writer = PartialWriter { steps: vec![2, 2, 2], writes: 0, timeouts: Vec::new(), fail_at: 0 };
+        write_deadline(&mut writer, &[b'x'; 6], deadline, &mut now).unwrap();
+        assert_eq!(writer.writes, 3);
+        assert_eq!(
+            writer.timeouts,
+            [Duration::from_millis(500), Duration::from_millis(300), Duration::from_millis(100)],
+            "each write gets what is left of the same deadline"
+        );
+
+        // Once the deadline is past, an incomplete write stops instead of extending it.
+        let before = Instant::now();
+        let deadline = before + Duration::from_millis(100);
+        let mut clock = before;
+        let mut now = move || {
+            let at = clock;
+            clock += Duration::from_millis(150);
+            at
+        };
+        let mut writer = PartialWriter { steps: vec![1, 1], writes: 0, timeouts: Vec::new(), fail_at: 0 };
+        let error = write_deadline(&mut writer, &[b'x'; 4], deadline, &mut now).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(writer.writes, 1);
+        assert_eq!(writer.timeouts, [Duration::from_millis(100)]);
+    }
+
+    /// A timeout the platform refuses is not ignored: the write is not attempted, whether the
+    /// setup fails on the first write or after a partial one.
+    #[test]
+    fn a_refusal_timeout_setup_failure_stops_before_the_write() {
+        let now = Instant::now();
+        let deadline = now + REFUSAL_BUDGET;
+        let clock = now;
+        let mut clock_now = move || clock;
+
+        let mut writer = PartialWriter { steps: vec![6], writes: 0, timeouts: Vec::new(), fail_at: 1 };
+        let error = write_deadline(&mut writer, &[b'x'; 6], deadline, &mut clock_now).unwrap_err();
+        assert_eq!(writer.writes, 0, "no write after the first timeout setup failed");
+        assert_eq!(writer.timeouts, [REFUSAL_BUDGET]);
+        assert!(error.to_string().contains("scripted timeout failure"), "{error}");
+
+        let clock = now;
+        let mut clock_now = move || clock;
+        let mut writer = PartialWriter { steps: vec![2, 4], writes: 0, timeouts: Vec::new(), fail_at: 2 };
+        let error = write_deadline(&mut writer, &[b'x'; 6], deadline, &mut clock_now).unwrap_err();
+        assert_eq!(writer.writes, 1, "the second write is not attempted after its timeout setup failed");
+        assert_eq!(writer.timeouts, [REFUSAL_BUDGET, Duration::from_millis(500)]);
+        assert!(error.to_string().contains("scripted timeout failure"), "{error}");
+    }
+
+    /// A sub-millisecond remainder fails closed before a socket timeout is configured: a platform
+    /// may round it to zero, which can mean no timeout at all.
+    #[test]
+    fn a_sub_millisecond_refusal_fails_closed() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_micros(500);
+        assert!(refusal_time_left(deadline, now).is_none(), "sub-ms is not a safe socket timeout");
+        assert_eq!(refusal_time_left(now + Duration::from_millis(2), now), Some(Duration::from_millis(2)));
+
+        let mut clock = move || now;
+        let mut io = Scripted::default();
+        refuse_within_with(&mut io, &too_many_connections(), deadline, &mut clock);
+        assert!(io.order.is_empty(), "no reply or drain starts with a sub-ms remainder");
+    }
+
+    /// The write path applies the same sub-millisecond floor: no timeout is configured and no
+    /// bytes are written.
+    #[test]
+    fn a_sub_millisecond_write_fails_closed() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_micros(500);
+        let clock = now;
+        let mut clock_now = move || clock;
+        let mut writer = PartialWriter { steps: vec![6], writes: 0, timeouts: Vec::new(), fail_at: 0 };
+        let error = write_deadline(&mut writer, &[b'x'; 6], deadline, &mut clock_now).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(writer.writes, 0);
+        assert!(writer.timeouts.is_empty(), "no platform timeout is configured with a sub-ms remainder");
+    }
+
+    /// A successful reply that spends the whole budget leaves nothing for cleanup: no drain
+    /// starts and no socket timeout or read is attempted.
+    #[test]
+    fn a_reply_that_consumes_the_budget_leaves_no_drain() {
+        let start = Instant::now();
+        let deadline = start + REFUSAL_BUDGET;
+        let clock = Arc::new(Mutex::new(start));
+        let mut io = Scripted { clock: Some(clock.clone()), consume: REFUSAL_BUDGET, ..Default::default() };
+        let mut now = {
+            let clock = clock.clone();
+            move || *clock.lock().unwrap()
+        };
+        refuse_within_with(&mut io, &too_many_connections(), deadline, &mut now);
+        assert_eq!(io.order, ["reply", "close"], "no drain after the reply spent the budget");
+        assert!(io.drain.is_none(), "cleanup is not started with no budget left");
+    }
+
+    /// In-progress cleanup stops when less than a millisecond is left, before another timeout or
+    /// read is attempted.
+    #[test]
+    fn cleanup_stops_on_a_sub_millisecond_budget_before_another_read() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(2);
+        let clock = Arc::new(Mutex::new(start));
+        let mut reader = ScriptedRead {
+            steps: vec![4, 4],
+            reads: 0,
+            timeouts: Vec::new(),
+            fail_at: 0,
+            clock: clock.clone(),
+            advance: Duration::from_micros(1500),
+        };
+        let mut now = {
+            let clock = clock.clone();
+            move || *clock.lock().unwrap()
+        };
+        let dropped = drain_deadline(&mut reader, 100, deadline, &mut now);
+        assert_eq!(dropped, 4);
+        assert_eq!(reader.reads, 1, "no second read with a sub-ms remainder");
+        assert_eq!(reader.timeouts, [Duration::from_millis(2)], "the second timeout is not configured");
+    }
+
+    /// In-progress cleanup stops when a read timeout cannot be configured, before another read.
+    #[test]
+    fn cleanup_stops_on_a_read_timeout_error_before_another_read() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(10);
+        let clock = Arc::new(Mutex::new(start));
+        let mut reader =
+            ScriptedRead { steps: vec![4, 4], reads: 0, timeouts: Vec::new(), fail_at: 2, clock: clock.clone(), advance: Duration::from_micros(100) };
+        let mut now = {
+            let clock = clock.clone();
+            move || *clock.lock().unwrap()
+        };
+        let dropped = drain_deadline(&mut reader, 100, deadline, &mut now);
+        assert_eq!(dropped, 4);
+        assert_eq!(reader.reads, 1, "no second read after the timeout setup failed");
+        assert_eq!(reader.timeouts.len(), 2, "the failing setup was attempted");
+    }
+
+    /// The handoff returns before the reply is delivered: a job held on a channel cannot delay the
+    /// accepting thread. A watchdog, not an elapsed threshold, decides.
+    #[test]
+    fn a_refusal_handoff_does_not_wait_for_the_reply() {
+        let refusals = Refusals::new();
+        refusals.start();
+        let owner = refusals.owner();
+        let (started_tx, started_rx) = channel::<()>();
+        let (release_tx, release_rx) = channel::<()>();
+        let job: RefusalJob = Box::new(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        let (done_tx, done_rx) = channel::<()>();
+        let handoff = std::thread::spawn(move || {
+            owner.hand_off_job(job);
+            let _ = done_tx.send(());
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).expect("the worker takes the refusal");
+        done_rx.recv_timeout(Duration::from_secs(5)).expect("the handoff returned before the reply");
+        release_tx.send(()).unwrap();
+        handoff.join().unwrap();
+    }
+
+    /// The worker is fixed: while it is busy, one queued refusal waits, the next handoff fails at
+    /// once (its connection closed), and both accepted jobs run on that same worker thread.
+    #[test]
+    fn a_full_refusal_slot_closes_the_next_at_once_without_another_worker() {
+        let queue = Refusals::new();
+        queue.start();
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1);
+        let refusals = queue.owner();
+        let (first_tx, first_rx) = channel::<()>();
+        let (second_tx, second_rx) = channel::<()>();
+        let (first_started_tx, first_started_rx) = channel::<()>();
+        let threads = Arc::new(Mutex::new(Vec::new()));
+        let ran = Arc::new(AtomicUsize::new(0));
+        let first = {
+            let (threads, ran) = (threads.clone(), ran.clone());
+            Box::new(move || {
+                threads.lock().unwrap().push(std::thread::current().id());
+                ran.fetch_add(1, Ordering::Relaxed);
+                let _ = first_started_tx.send(());
+                let _ = first_rx.recv();
+            }) as RefusalJob
+        };
+        assert!(refusals.hand_off_job(first));
+        first_started_rx.recv_timeout(Duration::from_secs(5)).expect("the worker takes the first refusal");
+        let second = {
+            let (threads, ran) = (threads.clone(), ran.clone());
+            Box::new(move || {
+                threads.lock().unwrap().push(std::thread::current().id());
+                ran.fetch_add(1, Ordering::Relaxed);
+                let _ = second_rx.recv();
+            }) as RefusalJob
+        };
+        assert!(refusals.hand_off_job(second), "the one slot holds a second refusal while the worker is busy");
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mark = Mark(dropped.clone());
+        let third: RefusalJob = Box::new(move || {
+            let _mark = mark;
+        });
+        let (done_tx, done_rx) = channel::<bool>();
+        let handoff = {
+            let refusals = refusals.clone();
+            std::thread::spawn(move || {
+                let accepted = refusals.hand_off_job(third);
+                let _ = done_tx.send(accepted);
+            })
+        };
+        assert!(!done_rx.recv_timeout(Duration::from_secs(5)).expect("the full handoff returned"), "the full worker refuses rather than queues");
+        handoff.join().unwrap();
+        assert!(dropped.load(Ordering::Relaxed), "the refused connection is closed at once");
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1, "a full slot starts no worker");
+        let _ = first_tx.send(());
+        let _ = second_tx.send(());
+        let guard = Instant::now() + Duration::from_secs(5);
+        while ran.load(Ordering::Relaxed) < 2 && Instant::now() < guard {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(ran.load(Ordering::Relaxed), 2, "the waiting refusal is delivered after the first");
+        let ids = threads.lock().unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], ids[1], "one fixed worker delivers both refusals");
+    }
+
+    /// A listener with no worker, or one whose worker has ended, drops the refusal at once rather
+    /// than queuing it or waiting.
+    #[test]
+    fn a_refusal_with_no_worker_or_a_closed_worker_fails_closed() {
+        let absent = Refusals::new().owner();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mark = Mark(dropped.clone());
+        let job: RefusalJob = Box::new(move || {
+            let _mark = mark;
+        });
+        assert!(!absent.hand_off_job(job), "no worker means no reply");
+        assert!(dropped.load(Ordering::Relaxed), "the refused connection is closed at once");
+
+        let (worker, jobs) = sync_channel::<RefusalJob>(1);
+        drop(jobs);
+        let closed = RefusalOwner { worker: Some(worker) };
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mark = Mark(dropped.clone());
+        let job: RefusalJob = Box::new(move || {
+            let _mark = mark;
+        });
+        assert!(!closed.hand_off_job(job), "a closed worker refuses rather than queues");
+        assert!(dropped.load(Ordering::Relaxed), "the refused connection is closed at once");
+    }
+
+    /// Independent listener/conversation owners share the process's one refusal worker and one
+    /// waiting slot: taking or dropping a handle starts no worker, a rejection starts no worker,
+    /// and a surviving owner still reaches the same worker after another owner is torn down.
+    #[test]
+    fn refusal_owners_share_one_worker_and_one_bounded_queue() {
+        let queue = Refusals::new();
+        let early = queue.owner();
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 0, "taking an owner does not initialize");
+        assert!(!early.hand_off_job(Box::new(|| {})), "an owner before initialization fails closed");
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 0, "a refusal does not initialize");
+
+        queue.start();
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1);
+        let first_owner = queue.owner();
+        let second_owner = queue.owner();
+        queue.start();
+        let later_owner = queue.owner();
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1, "repeated listener initialization keeps one worker");
+
+        let (first_started_tx, first_started_rx) = channel::<()>();
+        let (release_tx, release_rx) = channel::<()>();
+        let threads = Arc::new(Mutex::new(Vec::new()));
+        let first = {
+            let threads = threads.clone();
+            Box::new(move || {
+                threads.lock().unwrap().push(std::thread::current().id());
+                let _ = first_started_tx.send(());
+                let _ = release_rx.recv();
+            }) as RefusalJob
+        };
+        assert!(first_owner.hand_off_job(first));
+        first_started_rx.recv_timeout(Duration::from_secs(5)).expect("the shared worker takes the first refusal");
+
+        let second = {
+            let threads = threads.clone();
+            Box::new(move || {
+                threads.lock().unwrap().push(std::thread::current().id());
+            }) as RefusalJob
+        };
+        assert!(second_owner.hand_off_job(second), "one shared waiting slot holds the second refusal");
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mark = Mark(dropped.clone());
+        let rejected: RefusalJob = Box::new(move || {
+            let _mark = mark;
+        });
+        assert!(!second_owner.hand_off_job(rejected), "the shared slot rejects the next refusal");
+        assert!(dropped.load(Ordering::Relaxed), "the rejected refusal is closed at once");
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1, "a rejection starts no worker");
+
+        drop(first_owner);
+        drop(later_owner);
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1, "owner teardown starts or stops no worker");
+
+        let _ = release_tx.send(());
+        let guard = Instant::now() + Duration::from_secs(5);
+        while threads.lock().unwrap().len() < 2 && Instant::now() < guard {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let ids = threads.lock().unwrap();
+        assert_eq!(ids.len(), 2, "the queued refusal is delivered after the first");
+        assert_eq!(ids[0], ids[1], "one worker delivers both owners' refusals");
+        let worker_id = ids[0];
+        drop(ids);
+
+        let (later_tx, later_rx) = channel::<std::thread::ThreadId>();
+        let later: RefusalJob = Box::new(move || {
+            let _ = later_tx.send(std::thread::current().id());
+        });
+        assert!(second_owner.hand_off_job(later), "a surviving owner still reaches the shared worker");
+        let later_id = later_rx.recv_timeout(Duration::from_secs(5)).expect("the surviving owner's refusal runs");
+        assert_eq!(later_id, worker_id, "the surviving owner stays on the one worker");
+        assert_eq!(queue.starts.load(Ordering::Relaxed), 1, "owner teardown added no worker");
+    }
+
+    /// A refusal queued while the worker is busy keeps the deadline set before the handoff: once
+    /// it passes it writes nothing, and the worker delivers it without extending the budget.
+    #[test]
+    fn a_queued_refusal_expires_without_extending_its_deadline() {
+        let queue = Refusals::new();
+        queue.start();
+        let refusals = queue.owner();
+        let (first_started_tx, first_started_rx) = channel::<()>();
+        let (release_tx, release_rx) = channel::<()>();
+        let first: RefusalJob = Box::new(move || {
+            let _ = first_started_tx.send(());
+            let _ = release_rx.recv();
+        });
+        assert!(refusals.hand_off_job(first));
+        first_started_rx.recv_timeout(Duration::from_secs(5)).expect("the worker takes the first refusal");
+
+        let deadline = Instant::now() + Duration::from_millis(25);
+        let (done_tx, done_rx) = channel::<Vec<&'static str>>();
+        let second: RefusalJob = Box::new(move || {
+            let mut io = Scripted::default();
+            refuse_within(&mut io, &too_many_connections(), deadline);
+            let _ = done_tx.send(io.order);
+        });
+        assert!(refusals.hand_off_job(second), "the one slot holds the queued refusal");
+        // Watchdog-wait for the queued deadline to pass; the outcome, not scheduling, is asserted.
+        let guard = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            assert!(Instant::now() < guard, "the queued deadline watchdog expired");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        release_tx.send(()).unwrap();
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(5)).expect("the queued refusal is delivered").is_empty(),
+            "a queued refusal past its deadline writes nothing"
+        );
     }
 }

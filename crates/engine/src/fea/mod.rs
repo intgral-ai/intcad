@@ -6,6 +6,7 @@
 //! The numbers are estimates: a mesh, a linear material and idealised loads and supports. They
 //! never pass or fail anything; verdicts come only from exact deterministic checks.
 
+pub mod convergence;
 pub mod formats;
 pub mod materials;
 pub mod model;
@@ -112,6 +113,10 @@ pub struct Setup {
     /// mm ([`peaks`]). The same for every run of an estimate, so the mesh check compares like
     /// with like.
     pub away_distance: f64,
+    /// How many mesh check steps this mesh is finer than the first (0, 1 or 2): curvature sizing
+    /// refines with it ([`curvature_elements`]), so every part of the mesh is refined by the same
+    /// ratio.
+    pub level: u32,
 }
 
 /// The support or load the highest stress sits at, and the highest stress away from them all.
@@ -600,9 +605,11 @@ pub struct Forecast {
     pub document_id: String,
     /// Moves on with every forecast published: a card takes only those after it was allowed.
     pub seq: u64,
-    /// The run that counted its nodes (from 1) of `runs`.
+    /// The run that counted its nodes (from 1) of `runs` likely, or of `runs_most` when the mesh
+    /// check's third mesh follows (known only once the second is solved).
     pub run: usize,
     pub runs: usize,
+    pub runs_most: usize,
     pub elements: Elements,
     /// The nodes it counted (the mid-surface's for shells).
     pub nodes: usize,
@@ -610,6 +617,8 @@ pub struct Forecast {
     pub bytes: f64,
     /// Its solve and every later run, predicted, seconds.
     pub seconds_left: f64,
+    /// The same with the third mesh when it may follow; otherwise `seconds_left`.
+    pub seconds_most: f64,
 }
 
 static PROGRESS: Mutex<Option<Progress>> = Mutex::new(None);
@@ -721,14 +730,28 @@ pub const CURVATURE_ELEMENTS: u32 = 24;
 /// than that fails to mesh and is reported as such ([`Trouble::Overlap`]).
 pub const MIN_SIZE_SHARE: f64 = 50.0;
 
+/// The mesh check refines the element size by this ratio at each step (PIL-294 A6).
+pub const REFINEMENT_RATIO: f64 = 1.5;
+
+/// Elements per turn of a curved face for a mesh `level` mesh check steps finer than the first:
+/// [`CURVATURE_ELEMENTS`] × [`REFINEMENT_RATIO`]^level, so a fillet's elements shrink by the same
+/// ratio as the rest (24, 36, 54). Richardson extrapolation needs every element to shrink by the
+/// same ratio: with 24 at every level, the Peterson fillet's elements (about 0.52 mm, set by its
+/// 2 mm radius) stayed the same from 2.0 to 1.33 mm, and its peak moved by the mesh's chance alone.
+pub fn curvature_elements(level: u32) -> u32 {
+    let k = REFINEMENT_RATIO.powi(i32::try_from(level.min(8)).unwrap_or(8));
+    (f64::from(CURVATURE_ELEMENTS) * k).round() as u32
+}
+
 /// The mesher's arguments for `part.step`, elements of at most `h` mm (`-clmax`), written to
-/// `out`: second order; sized from curvature down to `h / MIN_SIZE_SHARE`; second-order elements
-/// straightened where their curved edges would turn them inside out (`-optimize_ho`: alone it left
-/// 3 of the 6 bars failing; with curvature sizing it adds nothing measurable to the time); on one
-/// thread (`-nt 1`), whatever a gmsh options file on this computer says. On one thread gmsh 4.12.1
-/// gave the same mesh, byte for byte, five times running for each of three parts (a solid bar,
-/// an L bracket and a strip as shells; PIL-294 A7).
-pub fn mesher_args(elements: Elements, h: f64, out: &str) -> Vec<String> {
+/// `out`: second order; sized from curvature ([`curvature_elements`] for the mesh check's
+/// `level`) down to `h / MIN_SIZE_SHARE`; second-order elements straightened where their curved
+/// edges would turn them inside out (`-optimize_ho`: alone it left 3 of the 6 bars failing; with
+/// curvature sizing it adds nothing measurable to the time); on one thread (`-nt 1`), whatever a
+/// gmsh options file on this computer says. On one thread gmsh 4.12.1 gave the same mesh, byte for
+/// byte, five times running for each of three parts (a solid bar, an L bracket and a strip as
+/// shells; PIL-294 A7).
+pub fn mesher_args(elements: Elements, h: f64, level: u32, out: &str) -> Vec<String> {
     [
         "part.step",
         if elements == Elements::Solid { "-3" } else { "-2" },
@@ -741,7 +764,7 @@ pub fn mesher_args(elements: Elements, h: f64, out: &str) -> Vec<String> {
         "-clmin",
         &format!("{}", h / MIN_SIZE_SHARE),
         "-clcurv",
-        &CURVATURE_ELEMENTS.to_string(),
+        &curvature_elements(level).to_string(),
         "-optimize_ho",
         "-format",
         "msh22",
@@ -1036,9 +1059,9 @@ fn mesh_in_mm(msh: &mut formats::Msh, faces: &Faces) -> Result<(), String> {
 /// volume) gives the surface's triangles, and the first one's middle is the place. `None` when
 /// that mesh fails too.
 #[cfg(not(target_arch = "wasm32"))]
-fn surface_point(gmsh: &str, h: f64, tag: i64, faces: &Faces, dir: &Path, generation: u64) -> Option<P> {
+fn surface_point(gmsh: &str, h: f64, level: u32, tag: i64, faces: &Faces, dir: &Path, generation: u64) -> Option<P> {
     let name = "locate.msh";
-    run_program(gmsh, &mesher_args(Elements::Shell, h, name), &[], dir, "locate-mesher", 120, "mesher", generation).ok()?;
+    run_program(gmsh, &mesher_args(Elements::Shell, h, level, name), &[], dir, "locate-mesher", 120, "mesher", generation).ok()?;
     let mut msh = formats::read_msh(&std::fs::read_to_string(dir.join(name)).ok()?).ok()?;
     mesh_in_mm(&mut msh, faces).ok()?;
     let (_, tri) = msh.tri6.iter().find(|(s, _)| *s == tag)?;
@@ -1082,13 +1105,13 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
     std::fs::write(&step_path, step).map_err(|e| format!("{}: {e}", step_path.display()))?;
     let h = setup.mesh_size;
     let msh_name = format!("{tag}.msh");
-    let args = mesher_args(elements, h, &msh_name);
+    let args = mesher_args(elements, h, setup.level, &msh_name);
     let (mesher_log, mesher_isolated) = match run_program(&gmsh, &args, &[], dir, &format!("{tag}-mesher"), 600, "mesher", ctx.generation) {
         Ok(done) => done,
         Err(ended) => {
             let (mut f, t) = failure(ended, "mesher", &gmsh, h);
             if let Trouble::Overlap(Some(surface)) = t {
-                f.at = surface_point(&gmsh, h, surface, faces, dir, ctx.generation);
+                f.at = surface_point(&gmsh, h, setup.level, surface, faces, dir, ctx.generation);
             }
             return Err(f);
         }

@@ -40,6 +40,7 @@ const READ_METHODS: &[&str] = &[
     "ui.at",
     "ui.handles",
     "ui.inspect",
+    "ui.rects",
     "ui.selection",
     "ui.sketchToScreen",
     "ui.triad",
@@ -107,11 +108,14 @@ pub fn forecast_after(method: &str, params: &Value) -> Option<u64> {
     (id == "inspect.stress_estimate").then(crate::fea::forecast_seq)
 }
 
-/// What the app still expects a request to take, in seconds, by the latest forecast made after
-/// `after` ([`forecast_after`]), and that forecast's number. `None` until there is one.
+/// What the app still expects a request to take at the most, in seconds, by the latest forecast
+/// made after `after` ([`forecast_after`]), and that forecast's number. `None` until there is one.
 pub fn expected(after: u64) -> Option<(u64, f64)> {
-    let f = crate::fea::forecast().filter(|f| f.seq > after)?;
-    (f.seconds_left.is_finite() && f.seconds_left >= 0.0).then_some((f.seq, f.seconds_left))
+    crate::fea::forecast().and_then(|f| expected_of(&f, after))
+}
+
+fn expected_of(f: &crate::fea::Forecast, after: u64) -> Option<(u64, f64)> {
+    (f.seq > after && f.seconds_most.is_finite() && f.seconds_most >= 0.0).then_some((f.seq, f.seconds_most))
 }
 
 /// The request in a message: "`engine.execute` (solid.fillet)", or just "`ui.inspect`".
@@ -131,10 +135,34 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// #197 with A6: the built-in agent's wait follows the forecast with the third mesh, which may
+    /// follow; a forecast from before the request, or one that is no time, is none.
+    #[test]
+    fn what_a_request_is_expected_to_take_counts_the_third_mesh() {
+        let f = |seq: u64, seconds_most: f64| crate::fea::Forecast {
+            document_id: "d".into(),
+            seq,
+            run: 1,
+            runs: 2,
+            runs_most: 3,
+            elements: crate::fea::Elements::Solid,
+            nodes: 1,
+            bytes: 1.0,
+            seconds_left: 10.0,
+            seconds_most,
+        };
+        assert_eq!(expected_of(&f(5, 40.0), 4), Some((5, 40.0)));
+        assert_eq!(expected_of(&f(5, 40.0), 5), None);
+        for odd in [f64::NAN, f64::INFINITY, -1.0] {
+            assert_eq!(expected_of(&f(5, odd), 4), None);
+        }
+    }
+
     #[test]
     fn reads_are_told_from_changes() {
         for (m, p) in [
             ("ui.inspect", json!({})),
+            ("ui.rects", json!({"prefix": "agent_chat:"})),
             ("ui.screenshot", json!({})),
             ("document.export", json!({})),
             ("document.inspect", json!({"measure": true})),

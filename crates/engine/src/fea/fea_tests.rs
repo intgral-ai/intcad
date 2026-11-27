@@ -339,10 +339,12 @@ fn an_expanded_shell_nodes_force_counts_for_its_own_shell_node() {
 }
 
 /// A2: the mesher sizes elements from curvature (24 a turn) down to a fiftieth of the largest,
-/// and straightens second-order elements; solids get a volume mesh, shells a surface one.
+/// and straightens second-order elements; solids get a volume mesh, shells a surface one. A6: each
+/// mesh check step refines the curvature sizing by the same 1.5 as the element size (36, then 54 a
+/// turn), so a fillet's elements shrink with the rest.
 #[test]
 fn the_mesher_sizes_from_curvature_down_to_a_fiftieth_and_straightens_curved_elements() {
-    let args = mesher_args(Elements::Solid, 2.5, "solid-1.msh");
+    let args = mesher_args(Elements::Solid, 2.5, 0, "solid-1.msh");
     let after = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     assert_eq!(args.first().map(String::as_str), Some("part.step"));
     assert!(args.iter().any(|a| a == "-3") && !args.iter().any(|a| a == "-2"));
@@ -354,8 +356,14 @@ fn the_mesher_sizes_from_curvature_down_to_a_fiftieth_and_straightens_curved_ele
     assert!(args.iter().any(|a| a == "-optimize_ho"));
     assert_eq!(after("-format").as_deref(), Some("msh22"));
     assert_eq!(after("-o").as_deref(), Some("solid-1.msh"));
-    let shell = mesher_args(Elements::Shell, 3.0, "shell-1.msh");
+    let shell = mesher_args(Elements::Shell, 3.0, 0, "shell-1.msh");
     assert!(shell.iter().any(|a| a == "-2") && !shell.iter().any(|a| a == "-3"));
+    let curv = |level: u32| {
+        let a = mesher_args(Elements::Solid, 2.5 / REFINEMENT_RATIO.powi(level as i32), level, "x.msh");
+        a.iter().position(|x| x == "-clcurv").and_then(|i| a.get(i + 1)).cloned().unwrap_or_default()
+    };
+    assert_eq!([curv(0), curv(1), curv(2)], ["24", "36", "54"]);
+    assert_eq!(curvature_elements(u32::MAX), curvature_elements(8), "a level past 8 is held there");
 }
 
 /// A3: the mesher's and the solver's known failures, as they print them (gmsh 4.12.1, CalculiX
@@ -425,4 +433,105 @@ fn a_program_the_system_kills_reads_as_out_of_memory() {
     assert_eq!(t, Trouble::OutOfMemory);
     let words = f.words(|_| String::new());
     assert!(words.starts_with("the solver ran out of memory on this computer") && !words.contains("gpl.htm"), "{words}");
+}
+
+/// A6: Richardson's extrapolation recovers the order and the limit of an exact series.
+/// Input: f(h) = 100 + c h^p on h = 1, 1/1.5, 1/2.25 for p = 0.6, 1, 2, 3 and 3.9, rising (c < 0) and
+/// falling (c > 0). Action: `convergence::estimate`. Pass: the observed order is p and the value 100
+/// to 1e-9; the band is 1.25 times the finest value's distance from 100, and at least ±0.5 %; the
+/// trend is settled when that band is within 3 % and changing when it is wider.
+#[test]
+fn richardson_recovers_a_known_order_and_its_limit() {
+    use convergence::{Basis, Trend, estimate};
+    let series = |c: f64, p: f64| [1.0, 1.0 / 1.5, 1.0 / 2.25].map(|h: f64| 100.0 + c * h.powf(p));
+    for p in [0.6, 1.0, 2.0, 3.0, 3.9] {
+        for c in [-4.0, 4.0, -20.0] {
+            let v = series(c, p);
+            let e = estimate(&v, 1.5).unwrap_or_else(|| panic!("p {p}"));
+            let order = e.order.unwrap_or(f64::NAN);
+            assert!((order - p).abs() < 1e-9 && (e.value - 100.0).abs() < 1e-9 && e.extrapolated(), "p {p} c {c}: {e:?}");
+            assert_eq!((e.meshes, e.basis, e.finest), (3, Basis::Extrapolated, v[2]));
+            let band = e.band().unwrap_or(f64::NAN);
+            // 1.25 times the finest value's distance from the limit, and never under ±0.5 %.
+            let want_band = (1.25 * (v[2] - 100.0).abs() / 100.0).max(convergence::MIN_BAND);
+            assert!((band - want_band).abs() < 1e-12, "p {p} c {c}: {band}");
+            let want = if band <= 0.03 { Trend::Settled } else { Trend::Changing };
+            assert_eq!(e.trend, want, "p {p} c {c}: band {band}");
+        }
+    }
+    // A quadratic fall from 92 to 100 (the review's Peterson fillet from below): settled within
+    // about 1 %.
+    let e = estimate(&series(-8.0, 2.0), 1.5).unwrap_or_else(|| panic!("quadratic"));
+    assert!(e.trend == Trend::Settled && e.band().is_some_and(|b| (b - 0.0198).abs() < 1e-3), "{e:?}");
+}
+
+/// A6: a peak that keeps growing has no band, and is never settled.
+/// Input: a sharp corner's peak, f = 100 h^-0.45 (the stress singularity of a right-angled inside
+/// corner) on h = 1, 1/1.5, 1/2.25; a slow climb at order 0.3; the review's measured sharp bar,
+/// 95.6, 102.7, 121.4 MPa; and a shrinking value at order 0.2. Action: `convergence::estimate`.
+/// Pass: rising (falling for the last), no error, the finest value quoted, the order reported.
+#[test]
+fn richardson_calls_a_peak_that_keeps_growing_rising_with_no_band() {
+    use convergence::{Basis, Trend, estimate};
+    let h = [1.0, 1.0 / 1.5, 1.0 / 2.25];
+    let corner = h.map(|h: f64| 100.0 * h.powf(-0.45));
+    let slow = h.map(|h: f64| 100.0 - 10.0 * h.powf(0.3));
+    for (v, order) in [(corner, -0.45), (slow, 0.3)] {
+        let e = estimate(&v, 1.5).unwrap_or_else(|| panic!("{v:?}"));
+        assert_eq!((e.trend, e.basis, e.error, e.value), (Trend::Rising, Basis::NoLimit, None, v[2]), "{v:?}");
+        assert!(e.order.is_some_and(|p| (p - order).abs() < 1e-9) && e.band().is_none(), "{e:?}");
+    }
+    let measured = estimate(&[95.6, 102.7, 121.4], 1.5).unwrap_or_else(|| panic!("measured"));
+    assert_eq!(measured.trend, Trend::Rising, "{measured:?}");
+    let falling = h.map(|h: f64| 50.0 + 10.0 * h.powf(0.2));
+    assert_eq!(estimate(&falling, 1.5).map(|e| e.trend), Some(Trend::Falling));
+}
+
+/// A6: with two meshes, the band is the conservative |f2 − f1| / (1.5 − 1) around the finer value.
+/// Input: 100 then 101, 101.5 and 102; a fall from 100 to 99; a move of 0.1 %. Pass: the finer value
+/// quoted, its band 2/101, 3/101.5 and 4/102: settled to 3 % (101.5 is at the edge), changing past
+/// it; no order; the 0.1 % move's band is the ±0.5 % floor.
+#[test]
+fn with_two_meshes_the_band_is_twice_the_change() {
+    use convergence::{Basis, Trend, estimate};
+    let small = estimate(&[100.0, 100.1], 1.5).unwrap_or_else(|| panic!("small"));
+    assert!(small.trend == Trend::Settled && small.band().is_some_and(|b| (b - 0.005).abs() < 1e-12), "{small:?}");
+    for (finer, settled) in [(101.0, true), (101.5, true), (102.0, false), (99.0, true)] {
+        let e = estimate(&[100.0, finer], 1.5).unwrap_or_else(|| panic!("{finer}"));
+        assert_eq!((e.value, e.meshes, e.basis, e.order), (finer, 2, Basis::TwoMeshes, None), "{finer}");
+        let band = e.band().unwrap_or(f64::NAN);
+        assert!((band - 2.0 * (finer - 100.0f64).abs() / finer).abs() < 1e-12, "{finer}: {band}");
+        assert_eq!(e.trend == Trend::Settled, settled, "{finer}: {e:?}");
+    }
+}
+
+/// A6: series Richardson cannot read. Input: a swing (100, 103, 101.5); two steps of mesh noise
+/// (100, 100.2, 100.1: each under 0.25 %); orders over 4: V-6's default study (108.32, 109.91,
+/// 109.97 MPa, order 8.1) and 100, 160, 170 (order 4.4, the finer pair 10 apart); a value that does
+/// not move at all; and inputs that are not a series. Pass: the swing is changing with the larger
+/// step as its error and no order; the noise is settled within ±0.5 %; an order over 4 is judged
+/// on the finer pair alone: V-6 settled at its finest value within ±0.5 % (the floor over twice its
+/// 0.06 step), the other changing at ±11.8 %; the constant is settled at the ±0.5 % floor; fewer
+/// than two or more than three values, a value that is not finite, or a ratio of 1 give none.
+#[test]
+fn richardson_refuses_an_order_it_cannot_read() {
+    use convergence::{Basis, Trend, estimate};
+    let swing = estimate(&[100.0, 103.0, 101.5], 1.5).unwrap_or_else(|| panic!("swing"));
+    assert_eq!((swing.trend, swing.basis, swing.order, swing.value, swing.error), (Trend::Changing, Basis::Oscillating, None, 101.5, Some(3.0)));
+    let noise = estimate(&[100.0, 100.2, 100.1], 1.5).unwrap_or_else(|| panic!("noise"));
+    assert_eq!((noise.trend, noise.basis, noise.order, noise.value), (Trend::Settled, Basis::Noise, None, 100.1));
+    assert!(noise.band().is_some_and(|b| (b - 0.005).abs() < 1e-12), "{noise:?}");
+    let v6 = estimate(&[108.32, 109.91, 109.97], 1.5).unwrap_or_else(|| panic!("v6"));
+    assert_eq!((v6.trend, v6.basis, v6.value), (Trend::Settled, Basis::FastOrder, 109.97));
+    assert!(v6.order.is_some_and(|p| (p - 8.08).abs() < 0.01) && v6.band().is_some_and(|b| (b - 0.005).abs() < 1e-12), "{v6:?}");
+    let fast = estimate(&[100.0, 160.0, 170.0], 1.5).unwrap_or_else(|| panic!("fast"));
+    assert_eq!((fast.trend, fast.basis, fast.value, fast.error), (Trend::Changing, Basis::FastOrder, 170.0, Some(20.0)));
+    let flat = estimate(&[10.0, 10.0, 10.0], 1.5).unwrap_or_else(|| panic!("flat"));
+    assert!(flat.trend == Trend::Settled && flat.band().is_some_and(|b| (b - 0.005).abs() < 1e-12), "{flat:?}");
+    let bad: [&[f64]; 5] = [&[], &[1.0], &[1.0, 2.0, 3.0, 4.0], &[1.0, f64::NAN], &[1.0, f64::INFINITY, 2.0]];
+    for bad in bad {
+        assert_eq!(estimate(bad, 1.5), None, "{bad:?}");
+    }
+    assert_eq!(estimate(&[1.0, 2.0], 1.0), None);
+    assert_eq!(estimate(&[1.0, 2.0], f64::NAN), None);
 }

@@ -47,6 +47,12 @@ export interface ConfigOption {
   options: { value: string; name: string; description: string; group: string | null }[];
 }
 
+/** A slash command the agent advertised for the open session; `name` is its own, unaltered. */
+export interface AvailableCommand {
+  name: string;
+  description: string;
+}
+
 export interface AuthMethod {
   id: string;
   label: string;
@@ -96,7 +102,11 @@ export type Item =
   | { kind: 'user'; index: number; text: string; image: boolean; pictures: PictureRef[]; files: string[]; context: ContextGroups }
   /** `objects`: the names in this answer that the app can select, in the order a click names them by. */
   | { kind: 'text'; index: number; text: string; thought: boolean; objects: string[] }
-  | { kind: 'tool'; id: string; title: string; toolKind: string; status: ToolStatus; words: string | null; input: string | null; output: string | null }
+  /**
+   * `pictures`: what the call handed back as pictures (a file the agent read); `index` opens one, as a message's.
+   * `file`: a file the call read that has a card; a click (`file` with `index`) previews its text here or opens it with the system's program.
+   */
+  | { kind: 'tool'; id: string; index: number; title: string; toolKind: string; status: ToolStatus; words: string | null; input: string | null; output: string | null; pictures: PictureRef[]; file: { name: string; act: 'preview' | 'open' } | null }
   | { kind: 'plan'; steps: { text: string; status: string }[] }
   | { kind: 'skill'; line: string; warnings: string[]; terminal: string | null; revalidate: boolean }
   | { kind: 'permission'; index: number; heading: string; answered: string | null; options: PermissionOption[] }
@@ -105,7 +115,8 @@ export type Item =
   | { kind: 'approval'; id: number; title: string; answer: boolean | null; counted: string | null }
   | { kind: 'changes'; index: number; label: string; undone: boolean; undoable: boolean }
   | { kind: 'review'; index: number; review: number; steps: string[]; more: number; made: { name: string; volume: number }[]; changed: { name: string; before: number; after: number }[]; removed: { name: string; volume: number }[]; outcome: string }
-  | { kind: 'notice'; text: string; error: boolean }
+  /** `problem`: a turn of the built-in agent failed on its connection; `text` already says so in full. */
+  | { kind: 'notice'; text: string; error: boolean; problem?: TurnProblem | null }
   | {
       kind: 'check';
       id: string;
@@ -114,6 +125,38 @@ export type Item =
       display: 'all' | 'selected' | 'off';
       selected: { runId: string; findingId: string } | null;
     };
+
+/**
+ * Why a turn of the built-in agent failed, and on which connection (`name` in the user's words).
+ * `auth` is a plan whose sign-in was refused; `key` is an API key or a custom address that was.
+ */
+export interface TurnProblem {
+  kind: 'auth' | 'key' | 'quota' | 'rate' | 'network' | 'model';
+  prefix: string;
+  name: string;
+}
+
+/**
+ * The built-in agent's connections: what it can talk to, and a sign-in under way. `prefix` is the
+ * part before `/` in the ids of the models a connection gives.
+ */
+export interface Connect {
+  plans: { id: string; name: string; state: 'in' | 'out' | 'expired'; account: string | null; prefix: string }[];
+  /** `shadowed`: a signed-in plan serves the same models, and wins. */
+  keys: { id: string; name: string; saved: boolean; shadowed: boolean; prefix: string; title: string }[];
+  custom: { id: string; name: string; url: string; models: string[]; keyed: boolean; prefix: string }[];
+  login: { id: string; phase: 'starting' | 'browser' | 'device' | 'code'; userCode: string | null; error: 'incomplete' | null } | null;
+  /** The last sign-in that could not finish. */
+  problem: { id: string; kind: 'port' | 'offline' | 'failed' } | null;
+  /** A key or custom address the app could not keep, in the user's language. */
+  error: string | null;
+  /** The key saves the app has answered (kept or refused), counted: a save is answered once it moves on. */
+  keySaves: number;
+  /** Release date (`YYYY-MM-DD`) by model id. */
+  dates: Record<string, string>;
+  /** A plan signed in, a key saved, or a custom address: there is something to talk to. */
+  connected: boolean;
+}
 
 export interface MissingAgent {
   id: string;
@@ -126,6 +169,8 @@ export interface MissingAgent {
 
 export interface AssistantState {
   items: Item[];
+  /** A text file open from a file card: the start of its text; `markdown`: drawn as Markdown. */
+  filePreview: { name: string; text: string; markdown: boolean } | null;
   /** off, starting, ready, busy, auth, failed, exited */
   state: string;
   waiting: number;
@@ -144,6 +189,10 @@ export interface AssistantState {
   selection: ContextGroups;
   /** The corner radius of the page's own surface, in points: the floating panel's, 0 when docked. */
   radius: number;
+  /** At the bottom centre of the window: the most height the page may take, in points; absent in the side panel. */
+  centre?: number | null;
+  /** There: the primary presses in the app's window outside the page so far. Its conversation collapses on a new one. */
+  outsidePresses?: number;
   permissions: 'ask' | 'edits' | 'all';
   skill: string;
   skills: { id: string; title: string }[];
@@ -164,6 +213,8 @@ export interface AssistantState {
   customModels: boolean;
   config: ConfigOption[] | null;
   configPending: boolean;
+  /** The slash commands the agent advertised for this session, in the agent's own words. */
+  commands: AvailableCommand[];
   /** Lines about the agent worth saying: a model warning, the runtime, the sign-in. */
   notes: string[];
   /** The agent asks for a sign-in: how each of its methods is done. */
@@ -177,6 +228,8 @@ export interface AssistantState {
   strings: Strings;
   /** Which findings the viewport marks, and the one selected. */
   dfm: { display: 'all' | 'selected' | 'off'; selected: { runId: string; findingId: string } | null };
+  /** Present exactly when the current agent is the built-in one; without it the page is as it was. */
+  connect?: Connect | null;
 }
 
 /** The names of the page's own words: the list `state` sends in crates/ui-egui/src/agent_chat/web.rs. */
@@ -184,14 +237,14 @@ export interface AssistantState {
 export type StringKey =
   | 'placeholder' | 'placeholderBusy' | 'send' | 'stop' | 'working' | 'ready' | 'off' | 'starting' | 'auth'
   | 'failed' | 'exited' | 'undone' | 'undo' | 'allowOnce' | 'alwaysAllow' | 'deny' | 'allowed' | 'denied'
-  | 'approval' | 'title' | 'add' | 'addFile' | 'pastePicture' | 'attachView'
+  | 'approval' | 'title' | 'add' | 'addFile' | 'attachView'
   | 'attachSelection' | 'pickContext' | 'modeAsk' | 'modeEdits' | 'modeAll' | 'queued' | 'viewAttached' | 'waiting'
   | 'connect' | 'disconnect' | 'retry' | 'newChat' | 'newChatConfirm' | 'cancel' | 'close' | 'minimize'
-  | 'dockLeft' | 'dockRight' | 'addAgent' | 'settings' | 'switchAgent' | 'detecting' | 'noneFound' | 'notInstalled'
+  | 'dockLeft' | 'dockRight' | 'expand' | 'collapse' | 'addAgent' | 'settings' | 'switchAgent' | 'detecting' | 'noneFound' | 'notInstalled'
   | 'notReady' | 'notSetUp'
   | 'refresh' | 'authTitle' | 'authNeeded' | 'authNone' | 'authTerminal' | 'authRetry' | 'setupTitle'
   | 'setupBody' | 'openSettings' | 'model' | 'queuedStopped' | 'sendNow' | 'sendNowTip' | 'edit'
-  | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'revalidate' | 'dropHint' | 'removeChip'
+  | 'remove' | 'save' | 'modelSearch' | 'modelCustom' | 'modelNoMatch' | 'modelRefine' | 'modelFilter' | 'modelEffort' | 'revalidate' | 'dropHint' | 'removeChip'
   | 'openPicture' | 'selectedNow'
   | 'messageBox' | 'composer' | 'withNext' | 'latest' | 'turnLabel'
   | 'reviewTitle' | 'reviewAccept' | 'reviewReject' | 'reviewMade' | 'reviewChanged' | 'reviewRemoved'
@@ -199,7 +252,19 @@ export type StringKey =
   | 'dfmCheckTitle' | 'dfmRunning' | 'dfmDone' | 'dfmCancelled' | 'dfmError' | 'dfmNotChecked'
   | 'dfmRefresh' | 'dfmStale' | 'dfmFindings' | 'dfmAdvisory' | 'dfmFailed' | 'dfmChecked'
   | 'dfmNotCovered' | 'dfmMeasured' | 'dfmRequirement' | 'dfmSource' | 'dfmOverride'
-  | 'dfmAll' | 'dfmSelected' | 'dfmOff' | 'dfmSelect';
+  | 'dfmAll' | 'dfmSelected' | 'dfmOff' | 'dfmSelect'
+  | 'connTitle' | 'connNoneTitle' | 'connBack'
+  | 'connPlans' | 'connKeys' | 'connCustom' | 'connSignedIn' | 'connExpired' | 'connSigningIn'
+  | 'connSignIn' | 'connSignInAgain' | 'connSignOut' | 'connUse' | 'connInUse' | 'connShadowed'
+  | 'connKeySaved' | 'connKeyAdd' | 'connKeyUpdate' | 'connRemove' | 'connKeyTitle'
+  | 'connKeyBody' | 'connKeyPlaceholder' | 'connSave' | 'connCustomAdd' | 'connCustomName'
+  | 'connCustomUrl' | 'connCustomKey' | 'connCustomModels' | 'connCustomNeedBoth' | 'connCustomNeedModel' | 'connCustomTooMany' | 'connCustomPlainUrl' | 'connCustomExists' | 'connAdd'
+  | 'connWaiting' | 'connStarting' | 'connReopen' | 'connCodeHint' | 'connCodePlaceholder' | 'connCodeIncomplete'
+  | 'connCodeDone' | 'connDeviceHint' | 'connProblemPort' | 'connProblemOffline' | 'connProblemFailed'
+  | 'connButton' | 'connButtonNone' | 'connButtonTip'
+  | 'planOpenaiCodex' | 'planAnthropic' | 'planKimiForCoding' | 'planXai' | 'planGithubCopilot'
+  | 'problemAuth' | 'problemKey' | 'problemQuota' | 'problemRate' | 'problemNetwork' | 'problemModel'
+  | 'effort' | 'effortOff' | 'effortLow' | 'effortMedium' | 'effortHigh' | 'effortXhigh' | 'effortMax';
 
 export type Strings = Record<StringKey, string>;
 
@@ -213,6 +278,8 @@ export type Action =
   | { type: 'edit_pending'; index: number; was: string; text: string }
   | { type: 'object'; index: number; ref: number; label: string }
   | { type: 'picture'; index: number; at: number }
+  | { type: 'file'; index: number }
+  | { type: 'file_close' }
   | { type: 'revalidate' }
   | { type: 'stop' }
   | { type: 'approve'; id: number; allow: boolean | 'always' }
@@ -242,11 +309,24 @@ export type Action =
   | { type: 'settings' }
   | { type: 'close' }
   | { type: 'minimize' }
+  /** At the bottom centre: how tall the page wants to be, in points (the host keeps it within `centre`). */
+  | { type: 'size'; height: number }
   | { type: 'side'; left: boolean }
   | { type: 'surface'; color: string }
   | { type: 'copy'; text: string }
   | { type: 'review'; id: number; accept: boolean }
-  | { type: 'open_link'; url: string };
+  | { type: 'open_link'; url: string }
+  // The built-in agent's connections; the app refuses these for any other agent.
+  | { type: 'conn_login'; id: string }
+  | { type: 'conn_code'; id: string; code: string }
+  | { type: 'conn_reopen' }
+  | { type: 'conn_cancel' }
+  | { type: 'conn_logout'; id: string }
+  | { type: 'conn_key'; provider: string; key: string }
+  | { type: 'conn_key_remove'; provider: string }
+  | { type: 'conn_custom'; name: string; url: string; key?: string; models: string[] }
+  | { type: 'conn_custom_remove'; id: string }
+  | { type: 'conn_retry' };
 
 declare global {
   interface Window {

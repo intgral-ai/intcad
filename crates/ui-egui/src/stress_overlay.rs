@@ -212,22 +212,39 @@ pub(crate) fn approval(app: &SolveApp, method: &str, params: &serde_json::Value)
     })
 }
 
+/// `from`, or `from – to` when the third mesh may follow and it says something else.
+fn span(from: String, to: Option<String>) -> String {
+    match to {
+        Some(to) if to != from => crate::i18n::format("ui.stress_estimate_card_range", &[("from", &from), ("to", &to)]),
+        _ => from,
+    }
+}
+
 /// What a run will take, from a dry run's `predicted` (the part's size, before meshing), for the
-/// approval card (A13). `None` when the dry run could not say.
+/// approval card (A13): each figure from the runs likely made to those with the mesh check's third
+/// mesh (`most`), when it may follow. `None` when the dry run could not say.
 pub(crate) fn predicted_line(v: &serde_json::Value) -> Option<String> {
     let p = v.get("predicted")?;
-    let nodes = p.get("nodes")?.as_f64()?;
-    let bytes = p.get("memory_gb")?.as_f64()? * 1.0e9;
-    let seconds = p.get("seconds")?.as_f64()?;
-    let runs = p.get("runs")?.as_u64()?;
-    let runs = if runs == 1 {
+    let figures = |p: &serde_json::Value| {
+        let number = |key: &str| p.get(key).and_then(serde_json::Value::as_f64);
+        Some((number("nodes")?, number("memory_gb")? * 1.0e9, number("seconds")?, p.get("runs")?.as_u64()?))
+    };
+    let (nodes, bytes, seconds, runs) = figures(p)?;
+    let most = p.get("most").and_then(figures);
+    let up_to = |words: &dyn Fn((f64, f64, f64, u64)) -> String| most.map(words);
+    let runs = if runs == 1 && most.is_none() {
         crate::i18n::tr("ui.stress_estimate_card_one_run").to_string()
     } else {
-        crate::i18n::format("ui.stress_estimate_card_runs", &[("n", &runs.to_string())])
+        crate::i18n::format("ui.stress_estimate_card_runs", &[("n", &span(runs.to_string(), up_to(&|m| m.3.to_string())))])
     };
     Some(crate::i18n::format(
         "ui.stress_estimate_card_before",
-        &[("nodes", &about_nodes(nodes)), ("memory", &memory_words(bytes)), ("time", &time_words(seconds)), ("runs", &runs)],
+        &[
+            ("nodes", &span(about_nodes(nodes), up_to(&|m| about_nodes(m.0)))),
+            ("memory", &span(memory_words(bytes), up_to(&|m| memory_words(m.1)))),
+            ("time", &span(time_words(seconds), up_to(&|m| time_words(m.2)))),
+            ("runs", &runs),
+        ],
     ))
 }
 
@@ -242,11 +259,11 @@ pub(crate) fn counted_line(f: &fea::Forecast) -> String {
         "ui.stress_estimate_card_counted",
         &[
             ("run", &f.run.to_string()),
-            ("runs", &f.runs.to_string()),
+            ("runs", &span(f.runs.to_string(), Some(f.runs_most.to_string()))),
             ("model", model),
             ("nodes", &crate::frame_rate::grouped(f.nodes as u64)),
             ("memory", &memory_words(f.bytes)),
-            ("time", &time_words(f.seconds_left)),
+            ("time", &span(time_words(f.seconds_left), Some(time_words(f.seconds_most)))),
         ],
     )
 }
@@ -826,14 +843,71 @@ mod tests {
             seq: 1,
             run: 1,
             runs: 2,
+            runs_most: 2,
             elements: fea::Elements::Solid,
             nodes: 68_745,
             bytes: 0.84e9,
             seconds_left: 95.0,
+            seconds_most: 95.0,
         };
         assert_eq!(counted_line(&f), "Meshed, run 1 of 2 (solid): 68\u{2009}745 nodes. The solver needs about 840 MB; about 1.5 min left.");
-        let shells = fea::Forecast { elements: fea::Elements::Shell, run: 2, nodes: 2_839, bytes: 3.2e9, seconds_left: 0.4, ..f };
+        // A third mesh may follow: the most it takes, beside what it surely takes.
+        let third = fea::Forecast { runs_most: 3, seconds_most: 400.0, ..f.clone() };
+        assert_eq!(
+            counted_line(&third),
+            "Meshed, run 1 of 2 – 3 (solid): 68\u{2009}745 nodes. The solver needs about 840 MB; about 1.5 min – about 6.5 min left."
+        );
+        let most = json!({"predicted": {"nodes": 51_942, "memory_gb": 0.91, "seconds": 17.0, "runs": 2, "line": "",
+                                       "most": {"nodes": 160_000, "memory_gb": 4.2, "seconds": 90.0, "runs": 3}}});
+        let line = predicted_line(&most).unwrap_or_default();
+        assert!(
+            line.contains(
+                "about 52\u{2009}000 – 160\u{2009}000 nodes, about 910 MB – 4.2 GB of memory, about 15 s – about 1.5 min in all (2 – 3 runs)"
+            ),
+            "{line}"
+        );
+        let shells = fea::Forecast { elements: fea::Elements::Shell, run: 2, nodes: 2_839, bytes: 3.2e9, seconds_left: 0.4, seconds_most: 0.4, ..f };
         assert_eq!(counted_line(&shells), "Meshed, run 2 of 2 (shells): 2\u{2009}839 nodes. The solver needs about 3.2 GB; under a second left.");
+    }
+
+    /// A13: the card and the dry run's own sentence, which the agent reads, say the same.
+    /// Input: a 100 x 20 x 20 mm bar, held at one end and pulled at the other, as solids with the
+    /// mesh check on, at 1 to 8 mm in steps of 0.1. Real: the app's modelling and its dry run.
+    /// Action: `predicted_line`. Pass: every memory and time the card names is in the sentence.
+    #[test]
+    fn the_approval_card_says_what_the_dry_runs_sentence_says() {
+        let mut s = solidcraft_engine::Session::default();
+        s.execute("solid.box", &json!({"length": 100, "width": 20, "height": 20, "body_name": "Bar"})).unwrap();
+        let faces = s.execute("model.faces", &json!({"body": "Bar"})).unwrap();
+        let end = |sign: f64| {
+            let faces = faces["faces"].as_array().into_iter().flatten();
+            let mut facing = faces.filter(|f| f["plane_normal"][0].as_f64().is_some_and(|n| n * sign > 0.99));
+            facing.find_map(|f| f["index"].as_u64()).unwrap_or_else(|| panic!("no end face facing {sign} X"))
+        };
+        let (root, tip) = (end(-1.0), end(1.0));
+        let mut wrong = Vec::new();
+        for tenths in 10..=80 {
+            let r = s
+                .execute(
+                    "inspect.stress_estimate",
+                    &json!({"loads": [{"face": tip, "force": [800, 0, 0]}], "supports": [{"face": root}], "material": "6061-T6", "elements": "solid",
+                            "mesh_size": f64::from(tenths) / 10.0, "dry_run": true}),
+                )
+                .unwrap();
+            let sentence = r["predicted"]["line"].as_str().unwrap_or_default().to_string();
+            let p = &r["predicted"];
+            let card = predicted_line(&r).unwrap_or_else(|| panic!("{r}"));
+            for f in [Some(p), p.get("most")].into_iter().flatten() {
+                let (gb, seconds) = (f["memory_gb"].as_f64().unwrap_or(f64::NAN), f["seconds"].as_f64().unwrap_or(f64::NAN));
+                for words in [memory_words(gb * 1.0e9), time_words(seconds)] {
+                    assert!(card.contains(&words), "the card says {words}: {card}");
+                    if !sentence.contains(&words) {
+                        wrong.push(format!("{tenths} tenths: the card says {words}; {sentence}"));
+                    }
+                }
+            }
+        }
+        assert!(wrong.is_empty(), "{} differ: {}", wrong.len(), wrong[0]);
     }
 
     #[test]
