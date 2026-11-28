@@ -472,8 +472,8 @@ pub struct StressEstimateResult {
     /// is a warning).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub probes: Vec<StressProbe>,
-    /// Where the estimate says little (above yield, large deflection, a thick part as shells):
-    /// tell the user before the numbers.
+    /// Where the estimate says little (above yield, large deflection, a thick part as shells, a
+    /// mesher or solver other than the versions tested): tell the user before the numbers.
     pub warnings: Vec<String>,
     /// Every assumption the numbers rest on.
     pub assumptions: Vec<String>,
@@ -481,7 +481,8 @@ pub struct StressEstimateResult {
     pub how_to_report: Vec<String>,
     /// Where it ran.
     pub network: String,
-    /// The mesher's and solver's versions. Absent on a dry run.
+    /// The mesher's and solver's versions. Absent on a dry run, which starts neither. A version
+    /// other than the ones tested, or one that could not be read, also adds a warning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub programs: Option<StressPrograms>,
     /// The folder with the mesh, the solver's job and its results, with `keep_files`.

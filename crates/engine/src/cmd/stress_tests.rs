@@ -2238,3 +2238,119 @@ fn a7_the_same_request_gives_the_same_numbers_and_words() {
         assert_eq!(a, b, "{name}");
     }
 }
+
+/// Spec section 8 ("No check of the programs' versions"), the dry run: it starts no program
+/// (decision 4, A13), so it knows no version and gives no version warning. The versions are read
+/// in the run, from the programs' own first lines.
+/// Input: the strip clamped at one end, 10 N down at the other, `dry_run: true`. Action: the
+/// estimate. Observable: `programs` and `warnings`. Pass: no `programs`; no warning names gmsh,
+/// CalculiX or a version tested. Real: the app's modelling. Faked: nothing; nothing runs.
+#[test]
+fn a_dry_run_starts_no_program_so_it_names_no_version() {
+    let mut s = Session::default();
+    let (_, root, tip) = strip(&mut s, 100.0);
+    let r = run(
+        &mut s,
+        CMD,
+        json!({"loads": [{"face": tip, "force": [0, 0, -10]}], "supports": [{"face": root}], "material": aluminium(), "dry_run": true}),
+    );
+    assert!(r.get("programs").is_none(), "{r}");
+    let w = r["warnings"].to_string();
+    assert!(!w.contains("gmsh") && !w.contains("CalculiX") && !w.contains("tested with"), "{w}");
+}
+
+/// Spec section 8 ("No check of the programs' versions"), real: programs other than the versions
+/// tested add one warning to the reply and change nothing else in it; the run is not refused.
+/// Input: the strip (100 x 20 x 1.5 mm, 5052-H32) clamped at one end with 10 N down at the other,
+/// solids, mesh check off; solved here with the programs as they are (the versions tested, as the
+/// suite pins them), then in a copy of this test program whose gmsh and CalculiX
+/// (`SOLIDCRAFT_GMSH`, `SOLIDCRAFT_CCX`) are wrappers that run the same programs and change only
+/// the version in what they write, to gmsh 4.99.0 and CalculiX 2.99. Real: the app's modelling,
+/// gmsh, CalculiX, the versions read from their output. Faked: the version each program names.
+/// Observable: the two replies but the seconds each solve took.
+/// Pass: the first names gmsh 4.12.1 and CalculiX 2.21 and no warning of it names a version
+/// tested; the second's `programs` names gmsh 4.99.0 and CalculiX 2.99, its warnings are the
+/// first's and one more, last, naming the four versions; every other field is the same.
+#[cfg(unix)]
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn other_versions_add_one_warning_and_change_nothing_else() {
+    use std::os::unix::fs::PermissionsExt;
+    const COPY: &str = "SOLIDCRAFT_TEST_RENAMED_VERSIONS";
+    let once = || {
+        let mut s = Session::default();
+        let (_, root, tip) = strip(&mut s, 100.0);
+        let mut r = run(
+            &mut s,
+            CMD,
+            json!({"loads": [{"face": tip, "force": [0, 0, -10]}], "supports": [{"face": root}], "material": aluminium(), "elements": "solid",
+                   "mesh_check": false}),
+        );
+        for x in r["runs"].as_array_mut().into_iter().flatten() {
+            if let Some(o) = x.as_object_mut() {
+                o.remove("seconds");
+            }
+        }
+        r
+    };
+    if std::env::var_os(COPY).is_some() {
+        // The copy: its reply on one line, read by the test that started it.
+        println!("reply: {}", once());
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("solidcraft-fea-versions-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (gmsh, ccx) = fea::programs();
+    // Runs `program` with its output's `from` changed to `to`, and keeps its exit status.
+    let wrapper = |name: &str, program: &str, from: &str, to: &str| {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/bash\nset -o pipefail\n'{program}' \"$@\" 2>&1 | sed -e 's/{from}/{to}/'\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    let renamed_gmsh = wrapper("gmsh-renamed", &gmsh, r"\[Gmsh [0-9.]*", "[Gmsh 4.99.0");
+    let renamed_ccx = wrapper("ccx-renamed", &ccx, "CalculiX Version [0-9.]*", "CalculiX Version 2.99");
+    let here = once();
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+            "cmd::stress::tests::other_versions_add_one_warning_and_change_nothing_else",
+        ])
+        .env(COPY, "1")
+        .env("SOLIDCRAFT_GMSH", &renamed_gmsh)
+        .env("SOLIDCRAFT_CCX", &renamed_ccx)
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // libtest writes the test's name on the same line, before it.
+    let renamed: Value = stdout
+        .lines()
+        .find_map(|l| l.split_once("reply: ").map(|(_, reply)| reply))
+        .and_then(|l| serde_json::from_str(l).ok())
+        .unwrap_or_else(|| panic!("no reply from the copy ({}): {}", out.status, String::from_utf8_lossy(&out.stderr)));
+    assert_eq!(here["programs"], json!({"mesher": fea::TESTED_MESHER, "solver": fea::TESTED_SOLVER}), "the programs here are the versions tested");
+    assert_eq!(renamed["programs"]["mesher"], "gmsh 4.99.0");
+    assert_eq!(renamed["programs"]["solver"], "CalculiX 2.99");
+    let warnings = |r: &Value| r["warnings"].as_array().cloned().unwrap_or_default();
+    let (before, after) = (warnings(&here), warnings(&renamed));
+    assert!(!here["warnings"].to_string().contains(fea::TESTED_MESHER), "{}", here["warnings"]);
+    assert_eq!(after.len(), before.len() + 1, "{after:?}");
+    assert_eq!(after[..before.len()], before[..], "the other warnings stay, in order");
+    let added = after.last().and_then(Value::as_str).unwrap_or_default();
+    eprintln!("Versions: {} warning(s) here; through the wrappers, one more: {added}", before.len());
+    for named in ["gmsh 4.99.0", "CalculiX 2.99", "gmsh 4.12.1", "CalculiX 2.21"] {
+        assert!(added.contains(named), "`{named}` missing: {added}");
+    }
+    let rest = |mut r: Value| {
+        if let Some(o) = r.as_object_mut() {
+            o.remove("warnings");
+            o.remove("programs");
+        }
+        r
+    };
+    assert_eq!(rest(here), rest(renamed), "only `warnings` and `programs` differ");
+}

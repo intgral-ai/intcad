@@ -223,14 +223,72 @@ fn the_solver_runs_on_one_thread_so_every_computer_gets_the_same_numbers() {
 /// "CalculiX 2.21"; `None` for the rest, without a panic.
 #[test]
 fn the_programs_versions_are_read_from_their_own_first_lines() {
-    let gmsh = "Info    : Running 'gmsh part.step -3 -nt 1 -order 2 -clmax 1.5 -o solid-1.msh' [Gmsh 4.12.1, 1 node, max. 1 thread]\n\
-                Info    : Started on Wed Nov 18 01:54:33 2026\n";
-    assert_eq!(mesher_version(gmsh).as_deref(), Some("gmsh 4.12.1"));
-    let ccx = "\n************************************************************\n\nCalculiX Version 2.21, Copyright(C) 1998-2023 Guido Dhondt\n";
-    assert_eq!(solver_version(ccx).as_deref(), Some("CalculiX 2.21"));
+    assert_eq!(mesher_version(GMSH_LOG).as_deref(), Some("gmsh 4.12.1"));
+    assert_eq!(solver_version(CCX_LOG).as_deref(), Some("CalculiX 2.21"));
     for junk in ["", "[Gmsh ", "CalculiX Version ", "Info : no version here", "[Gmsh é€"] {
         assert_eq!(mesher_version(junk), None, "{junk}");
         assert_eq!(solver_version(junk), None, "{junk}");
+    }
+}
+
+/// gmsh 4.12.1's first log lines and CalculiX 2.21's banner, as they ran.
+const GMSH_LOG: &str = "Info    : Running 'gmsh part.step -3 -nt 1 -order 2 -clmax 1.5 -o solid-1.msh' [Gmsh 4.12.1, 1 node, max. 1 thread]\n\
+                        Info    : Started on Wed Nov 18 01:54:33 2026\n";
+const CCX_LOG: &str =
+    "\n************************************************************\n\nCalculiX Version 2.21, Copyright(C) 1998-2023 Guido Dhondt\n";
+
+/// The versions read from those lines with gmsh's `Gmsh 4.12.1` and CalculiX's `Version 2.21`
+/// replaced by `gmsh` and `ccx` ("Gmsh" or "Version" alone: a banner without its version).
+fn read_versions(gmsh: &str, ccx: &str) -> (Option<String>, Option<String>) {
+    (mesher_version(&GMSH_LOG.replace("Gmsh 4.12.1", gmsh)), solver_version(&CCX_LOG.replace("Version 2.21", ccx)))
+}
+
+/// Spec section 8 ("No check of the programs' versions"): the versions the suite runs with give
+/// no warning.
+/// Input: gmsh 4.12.1's first lines and CalculiX 2.21's banner, as above. Action:
+/// `mesher_version`, `solver_version`, then `version_warning`. Observable: the versions read, the
+/// tested versions, the warning. Pass: the versions read are `TESTED_MESHER` and `TESTED_SOLVER`,
+/// which are the suite's pins (gmsh 4.12.1 and CalculiX 2.21); no warning. Faked: nothing runs.
+#[test]
+fn the_versions_tested_give_no_warning() {
+    assert_eq!((TESTED_MESHER, TESTED_SOLVER), ("gmsh 4.12.1", "CalculiX 2.21"), "the suite's pins");
+    let (mesher, solver) = read_versions("Gmsh 4.12.1", "Version 2.21");
+    assert_eq!((mesher.as_deref(), solver.as_deref()), (Some(TESTED_MESHER), Some(TESTED_SOLVER)));
+    assert_eq!(version_warning(mesher.as_deref(), solver.as_deref()), None);
+}
+
+/// Spec section 8: another version of either program, or one whose version cannot be read, is a
+/// warning that names what ran and what was tested, in words that judge nothing (section 6).
+/// Input: the lines above with gmsh 4.13.0, gmsh 4.12.10 (a near miss) or no version, and
+/// CalculiX 2.22 or no version, one program at a time and both. Action: `mesher_version`,
+/// `solver_version`, then `version_warning`. Observable: the warning's words. Pass: a warning each
+/// time, naming the version found (or that it could not be read) and the version tested; none of
+/// the verdict words. Faked: nothing runs.
+#[test]
+fn another_or_unread_version_is_a_warning_naming_it_and_the_version_tested() {
+    let cases: [(&str, &str, &[&str]); 7] = [
+        ("Gmsh 4.13.0", "Version 2.21", &["gmsh 4.13.0", "gmsh 4.12.1"]),
+        ("Gmsh 4.12.10", "Version 2.21", &["gmsh 4.12.10", "gmsh 4.12.1"]),
+        ("Gmsh 4.12.1", "Version 2.22", &["CalculiX 2.22", "CalculiX 2.21"]),
+        ("Gmsh", "Version 2.21", &["mesher whose version could not be read", "gmsh 4.12.1"]),
+        ("Gmsh 4.12.1", "Version", &["solver whose version could not be read", "CalculiX 2.21"]),
+        ("Gmsh 4.13.0", "Version 2.22", &["gmsh 4.13.0", "gmsh 4.12.1", "CalculiX 2.22", "CalculiX 2.21"]),
+        ("Gmsh", "Version", &["mesher whose version could not be read", "solver whose version could not be read", "gmsh 4.12.1", "CalculiX 2.21"]),
+    ];
+    const VERDICT_WORDS: &[&str] =
+        &["safe", "unsafe", "pass", "passed", "passes", "fail", "failed", "fails", "ok", "okay", "margin", "verdict", "approved", "acceptable"];
+    for (gmsh, ccx, named) in cases {
+        let (mesher, solver) = read_versions(gmsh, ccx);
+        let Some(w) = version_warning(mesher.as_deref(), solver.as_deref()) else { panic!("no warning for {mesher:?} and {solver:?}") };
+        for n in named {
+            assert!(w.contains(n), "`{n}` missing for {gmsh} / {ccx}: {w}");
+        }
+        let lower = w.to_lowercase();
+        let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).collect();
+        for v in VERDICT_WORDS {
+            assert!(!words.contains(v), "`{v}` in: {w}");
+        }
+        assert!(!lower.contains("safety factor") && !lower.contains("factor of safety"), "{w}");
     }
 }
 
