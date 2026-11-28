@@ -1,0 +1,34 @@
+{
+  "ar": {
+    "ui.agent_chat_stress_no_share": "لا تذكر هذه الإجابة الإجهاد كنسبة من مقاومة الخضوع؛ اطلبها من الوكيل.",
+    "ui.agent_chat_stress_verdict": "هذه الإجابة تحكم على القطعة ({words})، لكن تقدير الإجهاد ليس حكمًا. اعتمد على الإجهاد الذي وجده ونسبته من مقاومة الخضوع."
+  },
+  "de": {
+    "ui.agent_chat_stress_no_share": "Diese Antwort nennt die Spannung nicht als Anteil an der Streckgrenze; fragen Sie den Agenten danach.",
+    "ui.agent_chat_stress_verdict": "Diese Antwort beurteilt das Teil ({words}), aber eine Spannungsabschätzung ist kein Urteil. Maßgeblich sind die berechnete Spannung und ihr Anteil an der Streckgrenze."
+  },
+  "en": {
+    "ui.agent_chat_stress_no_share": "This answer doesn't give the stress as a share of the yield strength; ask the agent for it.",
+    "ui.agent_chat_stress_verdict": "This answer judges the part ({words}), but a stress estimate is not a verdict. Go by the stress it found and its share of the yield strength."
+  },
+  "he": {
+    "ui.agent_chat_stress_no_share": "התשובה הזו לא מציגה את המאמץ כחלק מחוזק הכניעה; אפשר לבקש זאת מהסוכן.",
+    "ui.agent_chat_stress_verdict": "התשובה הזו שופטת את החלק ({words}), אבל הערכת מאמץ אינה פסיקה. יש להסתמך על המאמץ שנמצא ועל חלקו מחוזק הכניעה."
+  },
+  "ja": {
+    "ui.agent_chat_stress_no_share": "この回答は、応力が降伏強さに占める割合を示していません。エージェントに尋ねてください。",
+    "ui.agent_chat_stress_verdict": "この回答は部品を判定しています（{words}）が、応力の推定は判定ではありません。求めた応力と、それが降伏強さに占める割合で判断してください。"
+  },
+  "ko": {
+    "ui.agent_chat_stress_no_share": "이 답변은 응력이 항복 강도에서 차지하는 비율을 알려 주지 않습니다. 에이전트에게 물어보십시오.",
+    "ui.agent_chat_stress_verdict": "이 답변은 부품을 판정하고 있습니다({words}). 하지만 응력 추정은 판정이 아닙니다. 계산된 응력과 그것이 항복 강도에서 차지하는 비율을 기준으로 보십시오."
+  },
+  "vi": {
+    "ui.agent_chat_stress_no_share": "Câu trả lời này không nêu ứng suất theo tỉ lệ so với giới hạn chảy; hãy hỏi tác tử.",
+    "ui.agent_chat_stress_verdict": "Câu trả lời này đánh giá chi tiết ({words}), nhưng ước tính ứng suất không phải là kết luận. Hãy dựa vào ứng suất tìm được và tỉ lệ của nó so với giới hạn chảy."
+  },
+  "zh": {
+    "ui.agent_chat_stress_no_share": "这个回答没有给出应力占屈服强度的比例；可以请智能体补上。",
+    "ui.agent_chat_stress_verdict": "这个回答对零件下了判断（{words}），但应力估算不是结论。请以算出的应力及其占屈服强度的比例为准。"
+  }
+}

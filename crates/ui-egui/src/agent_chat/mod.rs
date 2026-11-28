@@ -57,6 +57,7 @@ pub mod review;
 pub mod runtime_client;
 pub mod settings;
 pub mod skill;
+mod stress_answer;
 pub mod summary;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod task_runtime;
@@ -615,6 +616,8 @@ pub struct AgentChat {
     tools_available: Option<bool>,
     /// The latest completed turn's notice; older notices remain in the transcript.
     turn_warning: Option<String>,
+    /// The turn that asked to solve a stress estimate, for the check of its answer (#201).
+    stress_watch: stress_answer::Watch,
     held: Vec<Held>,
     next_approval: u64,
     /// The turn's copy of the design, while its changes are previewed ([`review`]).
@@ -2868,6 +2871,15 @@ fn finish_turn(chat: &mut AgentChat, session: &mut solidcraft_engine::Session) {
         chat.turn_warning = Some(warning.clone());
         chat.notice(warning, false);
     }
+    // A stress estimate solved: its answer is read for a verdict and the share of yield (#201).
+    if chat.stress_watch.solved(turn.id, &session.document_id)
+        && chat.ended.as_deref() == Some("")
+        && !chat.stopped
+        && let Some(warning) = stress_answer::warning(&stress_answer::answer(&chat.items))
+    {
+        chat.turn_warning = Some(warning.clone());
+        chat.notice(warning, false);
+    }
     if steps > 0 {
         let doc = session.doc.clone();
         chat.push(Item::Changes { steps, doc, undone: false });
@@ -2956,6 +2968,7 @@ fn pump_tools(app: &mut SolveApp) {
             req.chat_turn = Some(Arc::clone(&turn.active));
         }
         turn.requests += 1;
+        app.agent_chat.stress_watch.request(turn.id, &req.method, &req.params, &app.session.document_id);
         // Requests without folders of their own stay inside the chat's working folder.
         if let Some(o) = req.params.as_object_mut()
             && !o.contains_key("allow_paths")
