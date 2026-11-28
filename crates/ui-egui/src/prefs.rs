@@ -1339,6 +1339,11 @@ preference_settings! {
     right_rail_open: String = String::new();
     /// That panel's width, which the user drags at its left edge.
     right_rail_width: f32 = crate::right_rail::DEFAULT_PANEL;
+    /// How far the stress estimate is offered (spec decision 32, `stress_switch`): `auto` (the
+    /// default) follows the build, which is `off` in a release; `off`, `by_hand` or `agents`. On
+    /// no page, so restoring defaults keeps it, and no Settings row: a tester sets it in the
+    /// settings file, or starts the app with `INTCAD_STRESS_ESTIMATE`.
+    stress_estimate: String = solidcraft_engine::fea::offer::AUTO.into();
     /// The selection's length, area or distance in the view's bottom right corner (#7000). Off by
     /// default.
     quick_measure: bool = false, PAGE_GRAPHICS;

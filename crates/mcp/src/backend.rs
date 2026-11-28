@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use solidcraft_engine::Session;
 use solidcraft_engine::control_auth::ClientToken;
 use solidcraft_engine::control_pending;
+use solidcraft_engine::fea::offer::Offer;
 use solidcraft_engine::panels::ActionSink;
 use solidcraft_engine::panels::commands::LayoutCatalogue;
 use solidcraft_engine::render::StandardView;
@@ -999,6 +1000,9 @@ pub struct Headless {
     pub view: StandardView,
     /// Application layout persists across calls, outside Session/document undo.
     pub panels: solidcraft_engine::panels::PanelResult<solidcraft_engine::panels::commands::InMemoryPanelBackend>,
+    /// How far this build offers the stress estimate (spec decision 32). Every caller of a
+    /// headless session is an agent or a script, so below `agents` the estimate is refused.
+    pub stress: Offer,
 }
 
 impl Default for Headless {
@@ -1017,7 +1021,22 @@ impl Headless {
             }
             Err(e) => session.log.push(format!("image host unavailable: {e}")),
         }
-        Headless { session, view: StandardView::Iso, panels: solidcraft_engine::panels::commands::InMemoryPanelBackend::empty() }
+        Headless {
+            session,
+            view: StandardView::Iso,
+            panels: solidcraft_engine::panels::commands::InMemoryPanelBackend::empty(),
+            stress: Offer::this_build(),
+        }
+    }
+    /// The same session with the stress estimate offered at `level` instead of the build's.
+    pub fn with_stress_offer(mut self, level: Offer) -> Self {
+        self.stress = level;
+        self
+    }
+    /// Why a call is refused by the stress estimate's release switch, or `None`.
+    fn stress_refusal(&self, method: &str, p: &Value) -> Option<String> {
+        (!self.stress.agents() && solidcraft_engine::fea::offer::asks_for_estimate(method, p))
+            .then(|| solidcraft_engine::fea::offer::agent_refusal(self.stress))
     }
     pub fn with_panels(mut self, panels: solidcraft_engine::panels::commands::InMemoryPanelBackend) -> Self {
         self.panels = Ok(panels);
@@ -1097,7 +1116,16 @@ impl Headless {
                 s.execute(id, &params).map_err(|e| e.to_string())
             }
             "engine.script" => s.run_script(&p).map(Value::from).map_err(|e| e.to_string()),
-            "engine.commands" => s.execute("engine.commands", &json!({})).map_err(|e| e.to_string()),
+            "engine.commands" => s.execute("engine.commands", &json!({})).map_err(|e| e.to_string()).map(|list| match list {
+                // The estimate's commands are not listed while the switch refuses them.
+                Value::Array(items) if !self.stress.agents() => Value::Array(
+                    items
+                        .into_iter()
+                        .filter(|c| !c.get("id").and_then(Value::as_str).is_some_and(solidcraft_engine::fea::offer::is_estimate_command))
+                        .collect(),
+                ),
+                other => other,
+            }),
             "document.inspect" => s.execute("document.inspect", &p).map_err(|e| e.to_string()),
             "ui.view" => {
                 let v = str_p("view").unwrap_or("home");
@@ -1158,6 +1186,9 @@ impl Headless {
 impl Backend for Headless {
     fn call(&mut self, method: &str, p: Value) -> Result<Value, String> {
         refuse_legacy_guard(&p)?;
+        if let Some(why) = self.stress_refusal(method, &p) {
+            return Err(why);
+        }
         let own = self.session.param_check;
         if matches!(method, "engine.execute" | "command" | "engine.batch" | "engine.script")
             && let Some(value) = p.get("param_check")
@@ -1170,6 +1201,9 @@ impl Backend for Headless {
     }
     fn call_guarded(&mut self, method: &str, p: Value) -> Result<GuardedReply, GuardedCallError> {
         let expected = parse_expected_document(&p)?.ok_or_else(|| invalid("expectedDocument", "call_guarded requires expectedDocument"))?;
+        if let Some(why) = self.stress_refusal(method, &p) {
+            return Err(GuardedCallError::CommandFailed(why));
+        }
         check_supported(method, &p)?;
         let own = self.session.param_check;
         let level = match p.get("param_check") {

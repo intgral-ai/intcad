@@ -2196,6 +2196,12 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
         release_unstarted_with(app, req, refusal.code);
         return admission_refusal(&refusal);
     }
+    // The stress estimate's release switch (spec decision 32): refused before any admission, for
+    // a request that reaches here without passing the held queue.
+    if let Some(reason) = crate::stress_switch::request_refusal(app, req.entry, &req.method, &req.params) {
+        release_unstarted_with(app, req, RefusalCode::UnsafeToStart);
+        return Outcome::Done(json!({"ok": false, "error": reason}));
+    }
     if let Some(refusal) = async_native_refusal(req) {
         release_unstarted_with(app, req, refusal.code);
         return admission_refusal(&refusal);
@@ -2621,7 +2627,7 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             app.follow_view_request(false);
             wrap(r)
         }
-        "engine.commands" => wrap(execute(app, "engine.commands", json!({}))),
+        "engine.commands" => wrap(execute(app, "engine.commands", json!({})).map(|list| crate::stress_switch::filter_commands(app, list))),
         "document.inspect" => wrap(app.session.execute("document.inspect", p).map_err(|e| e.to_string())),
         "document.revision" => wrap(app.session.execute("document.revision", p).map_err(|e| e.to_string())),
         // A host that keeps the files itself (an editing embed, #8517).
@@ -3189,7 +3195,10 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value, gu
             None => ok(json!({"question": app.tree.capture_prompt, "pending_moves": app.session.pending_moves.len()})),
         },
         "ui.files" => wrap(crate::file_tree::control(app, p)),
-        "ui.prefs" => wrap(crate::prefs::control(app, p)),
+        "ui.prefs" => match crate::stress_switch::set_by_control_refusal(req.entry, p) {
+            Some(why) => err(why),
+            None => wrap(crate::prefs::control(app, p)),
+        },
         "ui.agent_chat" => wrap(crate::agent_chat::control(app, ctx, p)),
         "ui.help" => match s("item") {
             Some(i @ ("about" | "updates" | "shortcuts" | "report" | "crashes")) => {

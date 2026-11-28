@@ -204,9 +204,11 @@ fn key(tab: &str, panel: &str) -> String {
 
 /// The buttons a panel shows: the user's list, or the first `promoted` commands of the panel.
 pub fn buttons(app: &SolveApp, tab: &str, panel: &str, cmds: &[&'static CommandSpec], promoted: usize) -> Vec<&'static CommandSpec> {
+    // A button the user pinned elsewhere is hidden with the rest while the switch is off.
+    let shown = |c: &&'static CommandSpec| !crate::stress_switch::hides(app, c.id);
     match app.toolbar_custom.panels.get(&key(tab, panel)) {
-        Some(ids) => ids.iter().filter_map(|id| solidcraft_engine::find_command(id)).collect(),
-        None => cmds.iter().take(promoted).copied().collect(),
+        Some(ids) => ids.iter().filter_map(|id| solidcraft_engine::find_command(id)).filter(shown).collect(),
+        None => cmds.iter().take(promoted).copied().filter(shown).collect(),
     }
 }
 
@@ -221,6 +223,20 @@ pub fn panel_lists(tab: &str) -> PanelLists {
     static LISTS: std::sync::Mutex<BTreeMap<String, PanelLists>> = std::sync::Mutex::new(BTreeMap::new());
     let Ok(mut lists) = LISTS.lock() else { return panel_lists_of(tab) };
     lists.entry(tab.to_string()).or_insert_with(|| panel_lists_of(tab)).clone()
+}
+
+/// [`panel_lists`] less the commands the stress estimate's release switch hides now
+/// (`stress_switch`), and any panel that leaves empty: what the ribbon draws.
+pub fn shown_panel_lists(app: &SolveApp, tab: &str) -> PanelLists {
+    let mut lists = panel_lists(tab);
+    if crate::stress_switch::button(app) {
+        return lists;
+    }
+    lists.retain_mut(|(panel, cmds, _)| {
+        cmds.retain(|c| !crate::stress_switch::hides(app, c.id));
+        !cmds.is_empty() || *panel == "SELECT"
+    });
+    lists
 }
 
 /// [`panel_lists`] worked out from the registry.
@@ -494,7 +510,7 @@ pub fn window(app: &mut SolveApp, ctx: &egui::Context) {
                         .min(crate::theme::Tokens::get().control_height * 20.0),
                 )
                 .show(ui, |ui| {
-                    for (panel, cmds, n) in panel_lists(&tab) {
+                    for (panel, cmds, n) in shown_panel_lists(app, &tab) {
                         if cmds.is_empty() {
                             continue;
                         }

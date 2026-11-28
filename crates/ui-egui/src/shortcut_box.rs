@@ -205,6 +205,7 @@ pub fn search(app: &SolveApp, q: &str) -> Vec<Row> {
     let mut v: Vec<(u32, Row)> = command_specs()
         .into_iter()
         .filter(|c| !crate::workspace::AGENT_ONLY.contains(&c.id))
+        .filter(|c| !crate::stress_switch::hides(app, c.id))
         .filter_map(|c| {
             let (home_tab, home_panel) = crate::workspace::destination(c).unwrap_or(("", ""));
             let info = crate::render_workspace::interactive_command_info(app, c);
@@ -353,6 +354,11 @@ pub fn open(app: &mut SolveApp, at: Option<Pos2>) {
 fn run_typed(app: &mut SolveApp, line: &str) {
     if let Some((id, result)) = typed(line) {
         match result {
+            // A typed line runs the command itself, past `start`: the switch is asked here too.
+            Ok(_) if crate::stress_switch::hides(app, id) => {
+                let why = app.tr("ui.stress_estimate_not_offered").to_string();
+                app.set_status(why, true);
+            }
             Ok(params) => {
                 app.sbox.used(id);
                 let _ = app.run(id, params);
