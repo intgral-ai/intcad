@@ -9,6 +9,7 @@
 pub mod formats;
 pub mod materials;
 pub mod model;
+pub mod probe;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -202,6 +203,10 @@ pub struct Run {
     pub seconds: f64,
     /// The solver's nodes with their von Mises stress (MPa) and displacement (mm).
     pub points: Vec<(P, f64, P)>,
+    /// Their stress tensors (MPa: xx, yy, zz, xy, yz, zx), in the same order.
+    pub tensors: Vec<[f64; 6]>,
+    /// The solver's elements over those nodes, for reading the field between them ([`probe`]).
+    pub cells: Vec<probe::Cell>,
     /// The solver ran with networking switched off (a network namespace of its own).
     pub isolated: bool,
     /// The reaction against the loads, when the solver printed its reaction totals.
@@ -1003,10 +1008,22 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
     let frd = std::fs::read_to_string(dir.join(format!("{job}.frd"))).map_err(|e| format!("the solver wrote no results ({e})"))?;
     let frd = formats::read_frd(&frd)?;
     let mut points = Vec::with_capacity(frd.stress.len());
+    let mut tensors = Vec::with_capacity(frd.stress.len());
+    let mut index: std::collections::HashMap<u64, usize> = std::collections::HashMap::with_capacity(frd.stress.len());
     for (id, s) in &frd.stress {
         let (Some(p), Some(u)) = (frd.nodes.get(id), frd.disp.get(id)) else { continue };
+        index.insert(*id, points.len());
         points.push((*p, formats::von_mises(s), *u));
+        tensors.push(*s);
     }
+    let cells: Vec<probe::Cell> = frd
+        .elements
+        .iter()
+        .filter_map(|(kind, ids)| {
+            let nodes: Vec<usize> = ids.iter().map(|id| index.get(id).copied()).collect::<Option<_>>()?;
+            probe::cell(*kind, &nodes, &|i| points.get(i).map(|x| x.0))
+        })
+        .collect();
     let top = points.iter().max_by(|a, b| a.1.total_cmp(&b.1)).ok_or("the results have no stresses")?;
     let far = points.iter().max_by(|a, b| model::len(a.2).total_cmp(&model::len(b.2))).ok_or("the results have no displacements")?;
     let reaction = std::fs::read_to_string(dir.join(format!("{job}.dat"))).ok().and_then(|t| formats::read_dat_total(&t, formats::HELD_SET));
@@ -1026,6 +1043,8 @@ pub fn solve(setup: &Setup, step: &[u8], faces: &Faces, dir: &Path, elements: El
         seconds: started.elapsed().as_secs_f64(),
         isolated: mesher_isolated && solver_isolated,
         points,
+        tensors,
+        cells,
     })
 }
 

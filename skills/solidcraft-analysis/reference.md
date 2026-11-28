@@ -40,6 +40,17 @@ Cut a symmetric part in half and hold the cut face with `symmetry`: the cut must
  "material": "6061-T6"}
 ```
 
+## The stress and strain at a point (a strain gauge)
+Name the points with `probes`. Give `direction` for a gauge's axis: `along` then reads the stress and strain a gauge laid that way would. Here a gauge along the strip on its top face at mid-span, and a point on its side face read without a direction.
+```json
+{"supports": [{"face": [0, 10, 0.75]}],
+ "loads": [{"face": [100, 10, 0.75], "force": [0, 0, -10]}],
+ "material": "6061-T6",
+ "probes": [{"at": [50, 10, 1.5], "direction": [1, 0, 0], "name": "gauge 1"},
+            {"at": [20, 0, 0.75], "name": "edge"}]}
+```
+Each probe gives `principal_stress_mpa` (positive in tension, negative in compression), `strain_microstrain` (µε; the shears as engineering γ), `along`, and its own `mesh_check`. A point up to 1 mm outside the part is read at its nearest point (`outside_part_mm`); farther, the reply refuses it, or names it in `warnings` when no element is in reach.
+
 ## Your own material
 Give the three numbers (`youngs_modulus`, `poisson_ratio`, `yield_strength`) and where they come from (`source`); the reply repeats the source.
 ```json
