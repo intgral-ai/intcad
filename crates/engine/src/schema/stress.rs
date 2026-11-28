@@ -80,7 +80,7 @@ pub enum MaterialParam {
     Given(GivenMaterial),
 }
 
-/// A material by name, or with its own numbers: then all four of them.
+/// A material by name, or with its own numbers: then its three numbers and their source.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct GivenMaterial {
