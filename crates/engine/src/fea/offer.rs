@@ -82,8 +82,8 @@ impl Offer {
         Self::resolve(AUTO, Self::for_build(release_build(), cfg!(target_arch = "wasm32")), env.as_deref())
     }
 
-    /// A person can start the estimate from the Stress button.
-    pub fn button(self) -> bool {
+    /// A person may run the estimate by hand (from the Stress button, with #270's panel).
+    pub fn by_hand(self) -> bool {
         self >= Self::ByHand
     }
 
@@ -156,9 +156,9 @@ mod tests {
             assert_eq!(Offer::resolve("on", build, None), Offer::Off, "unknown values are off");
             assert_eq!(Offer::resolve("Agents!", build, None), Offer::Off);
         }
-        assert!(!Offer::Off.button() && !Offer::Off.agents());
-        assert!(Offer::ByHand.button() && !Offer::ByHand.agents());
-        assert!(Offer::Agents.button() && Offer::Agents.agents());
+        assert!(!Offer::Off.by_hand() && !Offer::Off.agents());
+        assert!(Offer::ByHand.by_hand() && !Offer::ByHand.agents());
+        assert!(Offer::Agents.by_hand() && Offer::Agents.agents());
         for v in Offer::VALUES.iter().skip(1) {
             assert_eq!(Offer::parse(v).map(Offer::name), Some(*v));
         }
