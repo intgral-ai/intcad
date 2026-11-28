@@ -7,8 +7,9 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
 use solidcraft_account_native::{
-    ACCOUNT_KEYRING_SERVICE, AccountPaths, CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePrompt, KeyringStore, MemorySession,
-    NoPersistentStore, SessionBilling, UreqDeviceCodeTransport, UreqTransport, WireConnection, WorkOsPublicClient,
+    ACCOUNT_KEYRING_SERVICE, AccountPaths, CredentialSession, DeviceCodeFlow, DeviceCodeMode, DeviceCodePrompt, IdentityDomain, IdentityLifecycle,
+    KeyringStore, MemorySession, NoPersistentStore, SessionBilling, StatusSessionVerifier, SystemIdentityClock, UreqDeviceCodeTransport,
+    UreqTransport, WireConnection, WorkOsPublicClient,
 };
 #[cfg(test)]
 use solidcraft_engine::entitlement::BillingPort;
@@ -70,14 +71,35 @@ fn configured_billing_with_clock(
         }
     };
     let (journal, lock) = AccountPaths::lock_existing(root)?;
-    let store = KeyringStore::new(format!("{ACCOUNT_KEYRING_SERVICE} [{}]", connection.base_url()));
-    let billing = SessionBilling::new(
-        CredentialSession::new(Box::new(store)),
-        connection,
-        Box::new(UreqTransport::with_limits(Duration::from_secs(5), Duration::from_secs(3))),
-        journal,
-        clock,
-    );
+    let service = format!("{ACCOUNT_KEYRING_SERVICE} [{}]", connection.base_url());
+    let transport = || UreqTransport::with_limits(Duration::from_secs(5), Duration::from_secs(3));
+    let billing =
+        SessionBilling::new(CredentialSession::new(Box::new(KeyringStore::new(&service))), connection.clone(), Box::new(transport()), journal, clock);
+    // Without the build-time public client ID, keep the legacy status-verified
+    // product session path; it cannot refresh. A configured but unusable identity
+    // must not fall back to that path.
+    let billing = if let Some(client_id) = option_env!("INTCAD_WORKOS_PUBLIC_CLIENT_ID") {
+        let identity = IdentityDomain::new("desktop", client_id, connection.base_url()).and_then(|domain| {
+            IdentityLifecycle::new(
+                domain,
+                Box::new(KeyringStore::new(service)),
+                connection.clone(),
+                Box::new(StatusSessionVerifier::new(transport(), connection)),
+                Box::new(SystemIdentityClock::new()),
+                root.to_owned(),
+            )
+            .ok()
+        });
+        match identity {
+            Some(mut identity) => {
+                identity.set_refresh_preserves_binding(true);
+                billing.with_identity(identity)
+            }
+            None => billing.with_unavailable_identity(),
+        }
+    } else {
+        billing
+    };
     Some((billing, lock))
 }
 
@@ -299,7 +321,8 @@ mod tests {
 
     use serde_json::{Value, json};
     use solidcraft_account_native::{
-        ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession, Secret, Transport, TransportFailure, WireRequest, WireResponse,
+        CredentialHandoff, ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession, Secret, Transport, TransportFailure,
+        WireRequest, WireResponse,
     };
     use solidcraft_engine::entitlement::{
         AccountId, BillingResult, CredentialError, CredentialStore, Grant, GrantId, HostSessionBinding, InstallationId, MonotonicInstant,
@@ -473,17 +496,15 @@ mod tests {
 
     fn active_product_session() -> CredentialSession {
         let store = PersistentMemoryStore::default();
-        let session = CredentialSession::new(Box::new(store.clone()));
+        product_session_in(store)
+    }
+
+    fn product_session_in(store: PersistentMemoryStore) -> CredentialSession {
+        let mut session = CredentialSession::new(Box::new(store));
         session.complete_provider_login("acct_cli", "provider_token_test_only").expect("test provider login");
         session.activate_product_session(&TestExchange).expect("test product exchange");
-        session
-            .bind_scope(&AuthenticatedHostScope::new(
-                AccountId::new("acct_cli"),
-                InstallationId::new("install_cli"),
-                HostSessionBinding::new("test-binding"),
-            ))
+        CredentialHandoff::installation_credential(&mut session, "install_cli", Secret::new("installation_test_only"))
             .expect("test installation binding");
-        store.set_raw("install/credential", "installation_test_only");
         session
     }
 
@@ -520,16 +541,7 @@ mod tests {
     #[test]
     fn headless_mcp_pending_logout_has_no_host_scope() {
         let store = PersistentMemoryStore::default();
-        let session = CredentialSession::new(Box::new(store.clone()));
-        session.complete_provider_login("acct_cli", "provider_token_test_only").expect("test provider login");
-        session.activate_product_session(&TestExchange).expect("test product exchange");
-        session
-            .bind_scope(&AuthenticatedHostScope::new(
-                AccountId::new("acct_cli"),
-                InstallationId::new("install_cli"),
-                HostSessionBinding::new("test-binding"),
-            ))
-            .expect("test installation binding");
+        let session = product_session_in(store.clone());
         store.set_raw("auth/logout_pending", "sign_out");
         assert!(local_account(session).live.is_none(), "an unconfirmed sign-out keeps every controlled path closed");
     }

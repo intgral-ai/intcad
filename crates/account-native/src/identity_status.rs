@@ -8,6 +8,8 @@ use crate::session_verification::verified_account;
 /// Verifies the product account for an access token using the configured status endpoint.
 ///
 /// The status snapshot cannot prove that two tokens belong to the same login.
+/// It supplies the product account only, even when the lifecycle's refresh policy
+/// retains a previously established local binding.
 pub struct StatusSessionVerifier<T: Transport> {
     transport: T,
     connection: WireConnection,

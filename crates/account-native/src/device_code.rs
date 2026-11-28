@@ -181,6 +181,10 @@ pub struct WorkOsPublicClient {
 }
 
 impl WorkOsPublicClient {
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
     pub fn new(client_id: impl Into<String>) -> Option<Self> {
         let client_id = client_id.into();
         if client_id.is_empty() || client_id.len() > 256 || has_control(&client_id) || client_id.bytes().any(|byte| byte.is_ascii_whitespace()) {

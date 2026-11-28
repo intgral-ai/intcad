@@ -7,21 +7,21 @@ use solidcraft_engine::entitlement::{CredentialError, CredentialErrorCode, Crede
 
 use crate::identity_store::{CredentialIdentityStore, IdentityStore, IdentityStoreError, StoredIdentity};
 
-const COMMIT_KEY: &str = "identity/session/commit";
-const ACTIVE_KEY: &str = "identity/session/active";
-const OWNED_KEY: &str = "identity/session/owned";
-const LOGOUT_REPAIR_KEY: &str = "identity/session/logout-repair";
+const COMMIT_KEY: &str = "identity/fixture/session/commit";
+const ACTIVE_KEY: &str = "identity/fixture/session/active";
+const OWNED_KEY: &str = "identity/fixture/session/owned";
+const LOGOUT_REPAIR_KEY: &str = "identity/fixture/session/logout-repair";
 
 fn access_key(generation: u64) -> String {
-    format!("identity/session/{generation}/access")
+    format!("identity/fixture/session/{generation}/access")
 }
 
 fn refresh_key(generation: u64) -> String {
-    format!("identity/session/{generation}/refresh")
+    format!("identity/fixture/session/{generation}/refresh")
 }
 
 fn meta_key(generation: u64) -> String {
-    format!("identity/session/{generation}/meta")
+    format!("identity/fixture/session/{generation}/meta")
 }
 
 fn record(login_generation: u64, token_generation: u64) -> StoredIdentity {
@@ -144,7 +144,7 @@ fn unavailable() -> CredentialError {
 }
 
 fn identity_store(fake: &RecordingStore) -> CredentialIdentityStore {
-    CredentialIdentityStore::new(Box::new(fake.clone()))
+    CredentialIdentityStore::new(Box::new(fake.clone()), "fixture")
 }
 
 #[test]
@@ -494,7 +494,7 @@ fn a_legacy_access_only_store_is_absent_and_not_migrated() {
     // Loading reads only identity keys and never writes or migrates anything.
     let calls = fake.take_calls();
     assert!(calls.iter().all(|call| matches!(call, Call::Get(_))));
-    assert!(calls.iter().all(|call| call.key().starts_with("identity/session/")));
+    assert!(calls.iter().all(|call| call.key().starts_with("identity/fixture/session/")));
     assert_eq!(fake.entry("provider/access_token").unwrap(), "provider_access_SECRET");
     assert_eq!(fake.entry("login/commit").unwrap(), "intcad-login/1/0/acct_legacy");
     assert!(fake.keys().iter().all(|key| !key.starts_with("identity/")));
@@ -525,13 +525,13 @@ fn legacy_provider_keys_are_not_touched() {
         assert_eq!(fake.entry(key).as_deref(), Some(value), "legacy key {key} must survive untouched");
     }
     // Every store call targeted an identity key; nothing else was read, written or deleted.
-    assert!(fake.take_calls().iter().all(|call| call.key().starts_with("identity/session/")));
+    assert!(fake.take_calls().iter().all(|call| call.key().starts_with("identity/fixture/session/")));
     assert!(fake.keys().iter().all(|key| !key.starts_with("identity/")));
 }
 #[test]
 fn failed_staging_rollback_remains_owned_until_cleanup_can_delete_it() {
     let fake = RecordingStore::default();
-    let mut store = CredentialIdentityStore::new(Box::new(fake.clone()));
+    let mut store = CredentialIdentityStore::new(Box::new(fake.clone()), "fixture");
     let old = record(7, 3);
     store.store_pending(&old).unwrap();
     let access = access_key(4);
@@ -547,7 +547,7 @@ fn failed_staging_rollback_remains_owned_until_cleanup_can_delete_it() {
 #[test]
 fn failed_logout_cleanup_keeps_owned_index_for_retry() {
     let fake = RecordingStore::default();
-    let mut store = CredentialIdentityStore::new(Box::new(fake.clone()));
+    let mut store = CredentialIdentityStore::new(Box::new(fake.clone()), "fixture");
     store.store_pending(&record(7, 3)).unwrap();
     fake.inner.lock().unwrap().fail_delete = Some(access_key(3));
     assert!(store.delete().is_err());
