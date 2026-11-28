@@ -287,6 +287,19 @@ pub(crate) fn panel(app: &mut SolveApp, ui: &mut egui::Ui, area: Rect) {
     egui::ScrollArea::vertical().id_salt("sc_stress_by_hand").auto_shrink([false, true]).show(ui, |ui| form(app, ui));
 }
 
+/// A row's choice with its Remove button after it, both inside the row: laid out from the right,
+/// so the dropdown takes only the room Remove leaves (it takes all the room it is given, and a
+/// Remove pushed past the panel's edge would also widen everything under it). True when Remove
+/// was pressed.
+fn removed_with_choice(ui: &mut egui::Ui, id: &str, selected: &mut usize, options: &[&str]) -> bool {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        let removed = ui_kit::button(ui, tr("ui.stress_by_hand_remove"), ui_kit::Button::Small).clicked();
+        ui_kit::dropdown(ui, id, selected, options);
+        removed
+    })
+    .inner
+}
+
 fn form(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = crate::theme::Tokens::get();
     ui_kit::text(ui, tr("ui.stress_by_hand_intro"), ui_kit::Text::Note(tr("ui.stress_by_hand_intro")));
@@ -306,8 +319,7 @@ fn form(app: &mut SolveApp, ui: &mut egui::Ui) {
     for (i, s) in app.stress_by_hand.supports.iter_mut().enumerate() {
         let label = trf("ui.stress_by_hand_support_n", &[("n", &(i + 1).to_string()), ("count", &s.faces.len().to_string())]);
         ui_kit::row(ui, &label, |ui| {
-            ui_kit::dropdown(ui, &format!("sc_stress_by_hand_hold_{i}"), &mut s.hold, &holds);
-            if ui_kit::button(ui, tr("ui.stress_by_hand_remove"), ui_kit::Button::Small).clicked() {
+            if removed_with_choice(ui, &format!("sc_stress_by_hand_hold_{i}"), &mut s.hold, &holds) {
                 remove = Some(i);
             }
         });
@@ -332,8 +344,7 @@ fn form(app: &mut SolveApp, ui: &mut egui::Ui) {
         let label = trf("ui.stress_by_hand_load_n", &[("n", &(i + 1).to_string()), ("count", &l.faces.len().to_string())]);
         let mut kind = usize::from(l.pressure);
         ui_kit::row(ui, &label, |ui| {
-            ui_kit::dropdown(ui, &format!("sc_stress_by_hand_kind_{i}"), &mut kind, &kinds);
-            if ui_kit::button(ui, tr("ui.stress_by_hand_remove"), ui_kit::Button::Small).clicked() {
+            if removed_with_choice(ui, &format!("sc_stress_by_hand_kind_{i}"), &mut kind, &kinds) {
                 remove = Some(i);
             }
         });
@@ -377,8 +388,9 @@ fn form(app: &mut SolveApp, ui: &mut egui::Ui) {
     }
     ui.add_space(t.space_8);
 
+    // Disabled, it takes the kit's plain disabled look: a dimmed primary button can't be read.
     let can = ready(app);
-    let run_button = ui.add_enabled_ui(can, |ui| ui_kit::button(ui, tr("ui.stress_by_hand_run"), ui_kit::Button::Primary)).inner;
+    let run_button = ui_kit::button(ui, tr("ui.stress_by_hand_run"), if can { ui_kit::Button::Primary } else { ui_kit::Button::Enabled(false) });
     crate::scenario::publish_target("stress:run", run_button.rect);
     if run_button.clicked() {
         run(app);
