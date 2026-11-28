@@ -1,7 +1,8 @@
 # Admitting an agent's stoppable read on a copy
 
-**Status: proposal, for review by the owners of the paid-authority chain (#240) and the packaged
-Agent's route (#250).**
+**Status: agreed on 2026-11-28, with the decisions listed below. Review by the owners of the
+paid-authority chain (#240) and the packaged Agent's route (#250) is still requested. One fact is
+still to confirm: that the server renews `mcp` authorizations (decision 1).**
 
 An agent's stress estimate is a read: it runs on a copy of the design and changes nothing in it.
 Since #240 the desktop refuses it before it starts. This note proposes the smallest change that
@@ -63,7 +64,7 @@ and a call that clears the estimate's colour map or dry-run preview.
 `develop`'s own copy reads (`inspect.measure`, `document.inspect`, clearance, interference,
 properties), exports and snapshots stay refused on the copy path for controlled entries, as now.
 They cannot be stopped once started, so they cannot meet the safe-stop requirement this design
-relies on (question 4).
+relies on (decision 4).
 
 ### 2. Carrying the grant through the copy
 
@@ -117,7 +118,7 @@ halves, with no change in behaviour. `admit_copy_path` and `answered` call the s
     renew it under that capability. Today it accepts `control` only.
   - The grant must carry a renewal schedule, which it does only when the server sends
     `renew_after_seconds`.
-  - The server must renew `mcp` authorizations (question 1).
+  - The server must renew `mcp` authorizations (decision 1).
 
 Without (b), a read on the bridge gets one lease, at least 250 s of running, before (a) stops it.
 The stack's forecast can then refuse a run predicted to take longer.
@@ -147,7 +148,7 @@ The other outcomes:
 
 - A delivered `ok: true` reply is an effect: one unit.
 - A read that fails on its own (`ok: false`, with no stop from the host) stays unknown, as every
-  started controlled operation does now (question 3).
+  started controlled operation does now (decision 3).
 - Once the gate is closed (cutoff passed, scope switched, status changed), the copy path decides
   nothing. The result takes the existing late path: it is discarded, and its settlement is
   deferred under the original operation. It is never released on the expired path, and never
@@ -177,28 +178,24 @@ What does change:
 - **Shared estimate state.** `fea::cancel` stops every running estimate, and the estimate keeps
   one shown result. Two estimates at once, possible over the control port, stop together.
 
-## Questions for the owners
+## Decisions
 
-1. Does the server renew an `mcp` authorization, and may the window's renewal job renew a lease
-   the bridge worker took? **Recommended: yes.** If not, ship 3a alone; runs then stop after one
-   lease.
-2. Is a withheld stoppable read no-effect while the gate is open, so that it is released?
-   **Recommended: yes.** The alternative is unknown, which leaves every stopped estimate in
-   recovery.
-3. Does a read that fails on its own stay unknown? **Recommended: yes in this PR**, as for every
-   started controlled operation. Releasing it is a separate decision.
-4. Should `develop`'s own copy reads (`inspect.measure`, `document.inspect`, and others) be opened to
-   agents on the copy path? They cannot be stopped. **Recommended: a separate PR**, which would
-   admit them under the 280 s declaration as synchronous commands are admitted.
-5. `STOP_MARGIN` is 30 s until the stop time is measured. **Recommended:** at least ten times the
-   worst measured stop.
-6. Should the one renewal slot stay as it is? **Recommended: keep it for now.**
+Agreed on 2026-11-28, each as it was recommended:
 
-For the product owner:
-
-7. Does an agent's dry run (sizing only, no program started) count? **The default is yes**, as the
-   matrix says for read-only queries. Making it free would mean a published free helper that
-   matches that one exact request, and it needs the owners' review.
+1. The window's renewal job may renew a lease the bridge worker took, and an `mcp` authorization
+   renews under its own capability. **Still to confirm:** that the server renews `mcp`
+   authorizations. Until it does, a read on the bridge runs for one lease and 3a stops it.
+2. A withheld stoppable read is no-effect while the gate is open, so it is released. The
+   alternative, unknown, would leave every stopped estimate in recovery.
+3. A read that fails on its own stays unknown in this PR, as every started controlled operation
+   does. Releasing it is a separate decision.
+4. `develop`'s own copy reads (`inspect.measure`, `document.inspect`, and others) stay refused for
+   controlled entries on the copy path, because they cannot be stopped. Opening them is a separate
+   PR, which would admit them under the 280 s declaration as synchronous commands are admitted.
+5. `STOP_MARGIN` stays at 30 s, which is at least ten times the worst measured stop (0.06 s so far).
+6. The one renewal slot stays as it is.
+7. For the product owner: an agent's dry run (sizing only, no program started) counts, one unit, as
+   the matrix says for read-only queries. No free helper is added for it.
 
 ## Tests
 
