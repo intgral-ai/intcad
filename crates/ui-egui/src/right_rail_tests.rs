@@ -393,6 +393,13 @@ fn the_rail_and_its_panel_read_in_dark_light_and_black() {
 #[test]
 fn the_names_fit_the_rail_in_every_language_and_right_to_left_lines_fit_the_panel() {
     let mut h = window(LayoutMode::Floating, 1400);
+    // The system's fallback faces (Arabic, Hebrew, CJK) are searched for once per process, on a
+    // thread, and `settle` does not wait for them: on a busy run the Arabic names were measured in
+    // a fallback face (72 px for the Assistant's). Each language's settle installs them once found.
+    let began = std::time::Instant::now();
+    while !crate::fonts::system_fonts_ready() && began.elapsed() < std::time::Duration::from_secs(60) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let mut widths = Vec::new();
     for language in ["en", "zh", "ja", "de", "ko", "ar", "he", "vi"] {
         h.call("ui.prefs", json!({"language": language}));
