@@ -275,6 +275,7 @@ Found on 2026-11-27, merging `develop` e401f8a18 into #169 to #192 (checked agai
 - **Runs longer than the paid-call bound lose their result.** A signed-in desktop admits a chat agent's call for 280 s (docs/account/control-safe-stop-bound.md). A result after that never reaches the design and is discarded, while the run goes on. An estimate may take up to an hour (#205). Recommended: refuse a run whose forecast (#196) is over the bound, or measure a bound of its own as the Review panel has.
 - **The packaged built-in Agent does not get #205's wait.** Its CAD calls go over ACP, one at a time, and wait up to an hour in the app, so the agent cannot ask `pending` meanwhile. Decision 29.
 - **The bottom-centre Assistant covers the running estimate's status and Stop** (`develop`'s #221, on by default). The chat's own Stop still stops the run.
+- **Bundled or installed by the user: gmsh and CalculiX (bar 3's packaging item).** Left to Huaiyuan (Tianwei, 2026-11-28). Today the user installs both and the app checks their versions. Bundling them in the installers needs an exception to `AGENTS.md`'s rule against copying GPL code, like its Mastra exception, and the GPL's licence-text and source obligations for the versions shipped (gmsh 4.12.1, CalculiX 2.21).
 
 ## 9. Next steps
 
