@@ -409,6 +409,10 @@ fn form(app: &mut SolveApp, ui: &mut egui::Ui) {
         }
         _ => {}
     }
+    // The chat is the agent route: offered only while the release switch lets agents ask.
+    if !crate::stress_switch::ask_assistant(app) {
+        return;
+    }
     ui.add_space(t.space_8);
     let ask = ui_kit::button(ui, tr("ui.stress_by_hand_ask_assistant"), ui_kit::Button::Ghost);
     crate::scenario::publish_target("stress:ask_assistant", ask.rect);
@@ -592,6 +596,55 @@ mod tests {
         h.app.preferences.right_rail = false;
         h.app.start_at(CMD, None);
         assert!(h.app.agent_chat.open, "no rail: the chat opens");
+    }
+
+    /// The release switch (spec decision 32) with the run by hand: at `by_hand` the Stress button
+    /// opens the Simulation panel, its Run makes the person's own free request and is answered,
+    /// and the panel offers no Assistant; at `agents` it does; at `off` the button opens nothing
+    /// and Simulation is empty. Without the rail, the button needs `agents`, since it opens the chat.
+    #[test]
+    fn the_release_switch_decides_what_the_button_and_the_panel_offer() {
+        for level in ["off", "by_hand", "agents"] {
+            let mut h = crate::scenario::Harness::new();
+            h.app.home.open = false;
+            h.app.preferences.stress_estimate = level.into();
+            h.call("ui.prefs", json!({"right_rail": true}));
+            h.call("ui.resize", json!({"width": 1400, "height": 900}));
+            h.app.run("solid.box", json!({"length": 10, "width": 20, "height": 30})).unwrap();
+            h.frames(2);
+            h.app.start_at(CMD, None);
+            let opened = crate::right_rail::open(&h.app) == Some(crate::right_rail::Item::Simulation);
+            assert_eq!(opened, level != "off", "{level}: the button opens the panel");
+            assert!(!h.app.agent_chat.open, "{level}: the chat stays closed");
+            // Shown by hand at `off` too (as a tester might, with the rail item): it stays empty.
+            h.app.preferences.right_rail_open = crate::right_rail::Item::Simulation.id().to_string();
+            set_up(&mut h.app);
+            h.frames(2);
+            assert_eq!(crate::scenario::handle_at("stress:run").is_some(), level != "off", "{level}: Run is drawn");
+            assert_eq!(crate::scenario::handle_at("stress:ask_assistant").is_some(), level == "agents", "{level}: Ask the Assistant");
+            if level != "off" {
+                assert!(ready(&h.app), "{level}: {:?}", h.app.stress_by_hand.checked);
+                assert!(run(&mut h.app), "{level}");
+                assert_eq!(h.app.control_held.len(), 1);
+                assert_eq!(h.app.control_held[0].entry(), EntryCategory::HumanGuiFree, "{level}: the person's own request");
+                // Its dry run, through the same queue on the copy path, is answered: never refused.
+                h.app.control_held.clear();
+                h.app.stress_by_hand.running = None;
+                h.app.apply_off_thread = Some(std::time::Duration::from_secs(1));
+                let mut params = h.app.stress_by_hand.params().unwrap();
+                params["dry_run"] = json!(true);
+                let (req, reply) = request(params);
+                h.app.control_held.push_back(req);
+                let v = answer(&mut h.app, &reply, 60);
+                assert_eq!(v["ok"], true, "{level}: {v}");
+            }
+            // Without the rail the button would open the chat: only at `agents`.
+            h.app.preferences.right_rail_open.clear();
+            h.app.preferences.right_rail = false;
+            h.frames(1);
+            h.app.start_at(CMD, None);
+            assert_eq!(h.app.agent_chat.open, level == "agents", "{level}: no rail");
+        }
     }
 
     /// Nothing the panel says is a verdict, as the legend's words aren't.

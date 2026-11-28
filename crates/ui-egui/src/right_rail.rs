@@ -374,7 +374,8 @@ fn panel(app: &mut SolveApp, ui: &mut egui::Ui, item: Item) {
         crate::dfm_review::panel(app, ui, body);
     } else if item == Item::Files {
         crate::file_tree::panel(app, ui, body);
-    } else if item == Item::Simulation {
+    } else if item == Item::Simulation && crate::stress_switch::by_hand(app) {
+        // The release switch at `off` leaves Simulation empty, as before the run by hand.
         crate::stress_by_hand::panel(app, ui, body);
     } else if item == Item::Autocomplete {
         let rest = crate::agent_chat::predict::panel::show(app, ui, body);
