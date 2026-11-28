@@ -9,6 +9,12 @@
 //! on a copy of the design off the window thread as a reading is. An agent's estimate, the chat's
 //! Allow included, keeps the entry its bridge gave it and never comes through here (decision 30:
 //! an agent's call counts toward credits; the user's own use by hand is free).
+//!
+//! The person's own means their own click or keys (decision 37). A Run, or a typed estimate line
+//! in command search, entered in a frame that holds any input the control port injected
+//! (`ui.click`, `ui.key`, `ui.text`, …) is the port's request ([`StartedBy::Port`]): refused below
+//! the release switch's `agents`, with nothing queued; at `agents`, queued on the port's own
+//! charged entry (`DirectControl`).
 
 use egui::{Rect, vec2};
 use serde_json::{Value, json};
@@ -189,9 +195,65 @@ fn key(app: &SolveApp, params: &Value) -> u64 {
     h.finish()
 }
 
-/// The request Run puts on the app's queue: the person's own, free entry.
-pub(crate) fn request(params: Value) -> (ControlRequest, Receiver<ControlResponse>) {
-    ControlRequest::trusted_gui("engine.execute", json!({"command": CMD, "params": params}))
+/// The request a person's Run puts on the app's queue: their own, free entry.
+pub(crate) fn request(id: &str, params: Value) -> (ControlRequest, Receiver<ControlResponse>) {
+    ControlRequest::trusted_gui("engine.execute", json!({"command": id, "params": params}))
+}
+
+/// Who started a run (decision 37).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartedBy {
+    /// The person, with their own click or keys.
+    Person,
+    /// The control port, with input it injected into the window.
+    Port,
+}
+
+impl StartedBy {
+    /// Who clicked `response` this frame: the person only when the click is one trusted platform
+    /// activation on it ([`SolveApp::trusted_click`]) and the frame holds no injected input.
+    pub(crate) fn click(app: &SolveApp, response: &egui::Response) -> Self {
+        if app.trusted_click(response) && app.input_all_platform() { Self::Person } else { Self::Port }
+    }
+
+    /// Who entered something this frame by keys or a pointer press: the person only when the
+    /// frame holds no injected input. What was set up before (a typed line, the panel's rows) does
+    /// not decide it; the gesture that starts the run does.
+    pub(crate) fn this_frame(app: &SolveApp) -> Self {
+        if app.input_all_platform() { Self::Person } else { Self::Port }
+    }
+}
+
+/// Queue the estimate `id` with `params` as `by`'s request: the person's own free entry, or the
+/// control port's (`DirectControl`, charged), which the release switch refuses below `agents`.
+/// Refused, nothing is queued, and the switch's reason comes back.
+pub(crate) fn start(app: &mut SolveApp, by: StartedBy, id: &str, params: Value) -> Result<Receiver<ControlResponse>, String> {
+    let (req, reply) = match by {
+        StartedBy::Person => request(id, params),
+        StartedBy::Port => {
+            let body = json!({"command": id, "params": params});
+            if let Some(reason) = crate::stress_switch::agent_refusal(app, "engine.execute", &body) {
+                return Err(reason);
+            }
+            ControlRequest::trusted_control("engine.execute", body)
+        }
+    };
+    app.control_held.push_back(req);
+    Ok(reply)
+}
+
+/// A typed estimate line that the control port's input entered in command search: the port's
+/// request. Refused, the switch's reason is on the status line; queued, its answer shows in the
+/// panel, as a Run's does.
+pub(crate) fn run_typed_by_port(app: &mut SolveApp, id: &str, params: Value) {
+    match start(app, StartedBy::Port, id, params) {
+        Ok(reply) if !app.stress_by_hand.running() => {
+            app.stress_by_hand.running = Some(reply);
+            app.stress_by_hand.outcome = None;
+        }
+        Ok(_) => {}
+        Err(why) => app.set_status(why, true),
+    }
 }
 
 /// The Stress button, Inspect ▸ Estimate and the palette: open the Simulation panel. Without the
@@ -233,17 +295,24 @@ pub(crate) fn ready(app: &SolveApp) -> bool {
     checked && !s.running() && fea::progress().is_none()
 }
 
-/// Run: the setup as checked, as the person's own request, on the app's queue.
-pub(crate) fn run(app: &mut SolveApp) -> bool {
+/// Run: the setup as checked, on the app's queue as `by`'s request (see [`start`]). False when
+/// nothing was queued: not ready, or the port's run refused (its reason is the panel's outcome).
+pub(crate) fn run(app: &mut SolveApp, by: StartedBy) -> bool {
     if !ready(app) {
         return false;
     }
     let Ok(params) = app.stress_by_hand.params() else { return false };
-    let (req, reply) = request(params);
-    app.control_held.push_back(req);
-    app.stress_by_hand.running = Some(reply);
-    app.stress_by_hand.outcome = None;
-    true
+    match start(app, by, CMD, params) {
+        Ok(reply) => {
+            app.stress_by_hand.running = Some(reply);
+            app.stress_by_hand.outcome = None;
+            true
+        }
+        Err(why) => {
+            app.stress_by_hand.outcome = Some(Err(why));
+            false
+        }
+    }
 }
 
 /// Each frame: the run's answer, once it comes, and the setup's drawing, gone when the panel is.
@@ -393,7 +462,8 @@ fn form(app: &mut SolveApp, ui: &mut egui::Ui) {
     let run_button = ui_kit::button(ui, tr("ui.stress_by_hand_run"), if can { ui_kit::Button::Primary } else { ui_kit::Button::Enabled(false) });
     crate::scenario::publish_target("stress:run", run_button.rect);
     if run_button.clicked() {
-        run(app);
+        let by = StartedBy::click(app, &run_button);
+        run(app, by);
     }
     if app.stress_by_hand.running() {
         ui_kit::status_line(ui, tr("ui.stress_by_hand_running"), ui_kit::StatusTone::Dim);
@@ -425,6 +495,7 @@ fn form(app: &mut SolveApp, ui: &mut egui::Ui) {
 mod tests {
     use super::*;
     use solidcraft_engine::entitlement::EntryCategory;
+    use solidcraft_engine::fea::offer::{self, Offer};
 
     fn app_with_a_block() -> SolveApp {
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
@@ -519,7 +590,7 @@ mod tests {
         // The dry run behind the panel checked the setup (and drew it: the preview is one slot for
         // the whole process, which other tests fill too, so it is not looked at here).
         assert!(ready(&app), "{:?}", app.stress_by_hand.checked);
-        assert!(run(&mut app));
+        assert!(run(&mut app, StartedBy::Person));
         assert_eq!(app.control_held.len(), 1);
         let req = &app.control_held[0];
         assert_eq!(req.entry(), EntryCategory::HumanGuiFree);
@@ -530,7 +601,7 @@ mod tests {
         app.stress_by_hand.running = None;
         let mut params = app.stress_by_hand.params().unwrap();
         params["dry_run"] = json!(true);
-        let (req, reply) = request(params);
+        let (req, reply) = request(CMD, params);
         app.control_held.push_back(req);
         let v = answer(&mut app, &reply, 60);
         assert_eq!(v["ok"], true, "{v}");
@@ -546,7 +617,7 @@ mod tests {
         app.apply_off_thread = Some(std::time::Duration::from_secs(1));
         set_up(&mut app);
         check(&mut app);
-        assert!(run(&mut app));
+        assert!(run(&mut app, StartedBy::Person));
         let reply = app.stress_by_hand.running.take().unwrap();
         let v = answer(&mut app, &reply, 900);
         assert_eq!(v["ok"], true, "{v}");
@@ -570,6 +641,134 @@ mod tests {
         app.control_held.push_back(req);
         let v = answer(&mut app, &reply, 60);
         assert_ne!(v["ok"], true, "an agent's estimate is not answered as a free run: {v}");
+    }
+
+    /// The window at release-switch `level`, the rail on Simulation and the block set up as
+    /// [`set_up`] does and checked: Run is drawn and ready.
+    fn panel_at(level: &str) -> crate::scenario::Harness {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.preferences.stress_estimate = level.into();
+        h.call("ui.prefs", json!({"right_rail": true}));
+        h.call("ui.resize", json!({"width": 1400, "height": 900}));
+        h.app.run("solid.box", json!({"length": 10, "width": 20, "height": 30})).unwrap();
+        h.frames(2);
+        h.app.start_at(CMD, None);
+        set_up(&mut h.app);
+        h.frames(2);
+        assert!(ready(&h.app), "{level}: {:?}", h.app.stress_by_hand.checked);
+        assert!(crate::scenario::handle_at("stress:run").is_some(), "{level}: Run is drawn");
+        h
+    }
+
+    /// The requests on the app's queue now: their entries and parameters.
+    fn held(h: &crate::scenario::Harness) -> Vec<(EntryCategory, Value)> {
+        h.app.control_held.iter().map(|r| (r.entry(), r.params.clone())).collect()
+    }
+
+    /// The control port's `ui.click` at `target`, its injected input fed a frame at a time, and
+    /// what each frame queued, looked at before the next frame's queue takes it. The harness
+    /// sends the click as the window's own entry (a signed-out test app refuses the port's own
+    /// entry before it injects anything): what is tested is the input it injects.
+    fn port_click(h: &mut crate::scenario::Harness, target: &str) -> Vec<(EntryCategory, Value)> {
+        let at = crate::scenario::handle_at(target).unwrap_or_else(|| panic!("{target} is not drawn"));
+        let (mut req, _reply) = ControlRequest::trusted_gui("ui.click", json!({"x": at.x, "y": at.y}));
+        let _ = crate::control::handle(&mut h.app, &h.ctx, &mut req);
+        let mut queued = Vec::new();
+        for _ in 0..20 {
+            if h.app.synthetic.is_empty() {
+                break;
+            }
+            h.frame();
+            queued.extend(held(h));
+        }
+        assert!(h.app.synthetic.is_empty(), "the click's input is used up");
+        queued
+    }
+
+    /// A person's click at `target`: platform input, the press and then the release, and what
+    /// each frame queued. A run queued here is left on the queue, unanswered, by the caller.
+    fn person_click(h: &mut crate::scenario::Harness, target: &str) -> Vec<(EntryCategory, Value)> {
+        let pos = crate::scenario::handle_at(target).unwrap_or_else(|| panic!("{target} is not drawn"));
+        let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        h.frame_with(vec![egui::Event::PointerMoved(pos), button(true)]);
+        let mut queued = held(h);
+        h.frame_with(vec![button(false)]);
+        queued.extend(held(h));
+        queued
+    }
+
+    /// T6 (decision 37): the control port clicking Run (`ui.click`: input it injects into the
+    /// window) is the port's request, not the person's. Below `agents` it is refused with the
+    /// release switch's reason and nothing is queued, so nothing reaches the copy path.
+    #[test]
+    fn a_port_click_on_run_is_refused_and_queues_nothing() {
+        let mut h = panel_at("by_hand");
+        let queued = port_click(&mut h, "stress:run");
+        assert!(queued.is_empty(), "the port's click queued {queued:?}");
+        assert!(!h.app.stress_by_hand.running(), "nothing runs");
+        assert_eq!(h.app.stress_by_hand.outcome, Some(Err(offer::agent_refusal(Offer::ByHand))), "the switch's reason is shown");
+        h.frames(2);
+        assert!(h.app.control_held.is_empty() && h.app.control_job.is_none(), "nothing reached the copy path");
+    }
+
+    /// T7 (decision 37): the port running the estimate from command search (a typed line it
+    /// opened with `ui.palette` and entered with `ui.key`) is refused the same way, and the line
+    /// does not run. The person's own Enter on the same line runs it by hand.
+    #[test]
+    fn the_ports_palette_and_enter_are_refused_and_a_persons_enter_runs() {
+        let mut h = panel_at("by_hand");
+        let mut params = h.app.stress_by_hand.params().unwrap();
+        params["dry_run"] = json!(true);
+        let line = format!("{CMD} {params}");
+        h.call("ui.palette", json!({"text": line}));
+        h.call("ui.key", json!({"key": "Enter"}));
+        let refusal = offer::agent_refusal(Offer::ByHand);
+        assert_eq!(h.app.status.as_ref().map(|s| s.0.as_str()), Some(refusal.as_str()), "the switch's reason is shown");
+        assert!(!h.app.sbox.recent.iter().any(|r| r == CMD), "the port's line did not run");
+        assert!(h.app.control_held.is_empty() && !h.app.stress_by_hand.running(), "nothing is queued");
+        // The person's own Enter on the line the port typed is the person's: it runs by hand.
+        h.call("ui.palette", json!({"text": line}));
+        let enter =
+            |pressed| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+        h.frame_with(vec![enter(true), enter(false)]);
+        h.frames(2);
+        assert!(h.app.sbox.recent.iter().any(|r| r == CMD), "the person's line ran");
+    }
+
+    /// T8 (decision 37): a person's own click on Run is the free run, right after the port's
+    /// click has ended too: the port's input taints only the frames that carry it.
+    #[test]
+    fn a_persons_click_on_run_is_the_free_run_right_after_a_port_click() {
+        let mut h = panel_at("by_hand");
+        assert!(port_click(&mut h, "stress:run").is_empty(), "the port's click queues nothing");
+        let queued = person_click(&mut h, "stress:run");
+        // Not answered here: the solve it asks for needs gmsh and CalculiX (T2b runs one).
+        h.app.control_held.clear();
+        assert_eq!(queued.len(), 1, "{queued:?}");
+        assert_eq!(queued[0].0, EntryCategory::HumanGuiFree, "the person's own request");
+        assert_eq!(queued[0].1["command"], CMD);
+    }
+
+    /// T9 (decision 37): at `agents` the port's click on Run takes the control port's own,
+    /// charged route (`DirectControl`), never the free entry. Develop refuses that route today,
+    /// before it starts (bar 3b).
+    #[test]
+    fn at_agents_a_port_click_on_run_is_the_ports_charged_request() {
+        let mut h = panel_at("agents");
+        let queued = port_click(&mut h, "stress:run");
+        assert_eq!(queued.len(), 1, "{queued:?}");
+        assert_eq!(queued[0].0, EntryCategory::DirectControl, "the control port's entry");
+        assert!(!crate::control::free_entry(queued[0].0));
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while h.app.stress_by_hand.running() && std::time::Instant::now() < until {
+            h.frame();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        match &h.app.stress_by_hand.outcome {
+            Some(Err(why)) => assert!(!why.is_empty()),
+            other => panic!("the port's run was not refused: {other:?}"),
+        }
     }
 
     /// T5: in the window, the Stress button opens the Simulation panel, not the chat, and the
@@ -624,7 +823,7 @@ mod tests {
             assert_eq!(crate::scenario::handle_at("stress:ask_assistant").is_some(), level == "agents", "{level}: Ask the Assistant");
             if level != "off" {
                 assert!(ready(&h.app), "{level}: {:?}", h.app.stress_by_hand.checked);
-                assert!(run(&mut h.app), "{level}");
+                assert!(run(&mut h.app, StartedBy::Person), "{level}");
                 assert_eq!(h.app.control_held.len(), 1);
                 assert_eq!(h.app.control_held[0].entry(), EntryCategory::HumanGuiFree, "{level}: the person's own request");
                 // Its dry run, through the same queue on the copy path, is answered: never refused.
@@ -633,7 +832,7 @@ mod tests {
                 h.app.apply_off_thread = Some(std::time::Duration::from_secs(1));
                 let mut params = h.app.stress_by_hand.params().unwrap();
                 params["dry_run"] = json!(true);
-                let (req, reply) = request(params);
+                let (req, reply) = request(CMD, params);
                 h.app.control_held.push_back(req);
                 let v = answer(&mut h.app, &reply, 60);
                 assert_eq!(v["ok"], true, "{level}: {v}");

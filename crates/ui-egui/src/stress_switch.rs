@@ -12,6 +12,10 @@
 //!   `ui.start`), and left out of `engine.commands`, until the level is `agents`.
 //! - **A person's own run** (the free GUI entry) is never refused here; the switch hides what
 //!   starts it.
+//! - **The control port driving the window** (spec decision 37): a Run, or a typed estimate line,
+//!   entered by input the port injected (`ui.click`, `ui.key`, …) is the port's request, not the
+//!   person's ([`crate::stress_by_hand::StartedBy`]). It is refused as an agent's is until
+//!   `agents`, and then takes the port's own charged entry.
 //!
 //! An agent cannot raise the level itself: `ui.prefs` from a controlled entry may not set it
 //! ([`set_by_control_refusal`]). A tester sets it in the settings file, or starts the app with

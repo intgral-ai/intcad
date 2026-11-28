@@ -3307,6 +3307,14 @@ impl SolveApp {
         }
     }
 
+    /// Whether this frame's input was all the platform's: no event the control port injected
+    /// (`ui.click`, `ui.key`, `ui.text`, `ui.drag`, `ui.move`, `ui.scroll`, `ui.menu`), no
+    /// held-over batch that held one, and no pointer gesture automation began or touched. A
+    /// person's own free stress estimate needs it (spec decision 37).
+    pub(crate) fn input_all_platform(&self) -> bool {
+        self.input_trust.all_platform()
+    }
+
     /// Inject synthetic events (one pointer event per frame). Each injected event is marked
     /// untrusted in `from_platform`, so automation input can never be mistaken for a native
     /// activation.
