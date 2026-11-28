@@ -110,7 +110,9 @@ export type Item =
   | { kind: 'plan'; steps: { text: string; status: string }[] }
   | { kind: 'skill'; line: string; warnings: string[]; terminal: string | null; revalidate: boolean }
   | { kind: 'permission'; index: number; heading: string; answered: string | null; options: PermissionOption[] }
-  | { kind: 'approval'; id: number; title: string; answer: boolean | null }
+  /** `title`: what it would run, first line the request, then any lines the app adds (a stress
+   * estimate's prediction and setup); `counted`: an allowed stress estimate's count once meshed. */
+  | { kind: 'approval'; id: number; title: string; answer: boolean | null; counted: string | null }
   | { kind: 'changes'; index: number; label: string; undone: boolean; undoable: boolean }
   | { kind: 'review'; index: number; review: number; steps: string[]; more: number; made: { name: string; volume: number }[]; changed: { name: string; before: number; after: number }[]; removed: { name: string; volume: number }[]; outcome: string }
   /** `problem`: a turn of the built-in agent failed on its connection; `text` already says so in full. */

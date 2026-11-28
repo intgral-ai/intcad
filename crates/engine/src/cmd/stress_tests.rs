@@ -4,6 +4,8 @@ use super::*;
 use crate::Session;
 
 fn run(s: &mut Session, id: &str, p: Value) -> Value {
+    // A dry run draws the app's one setup preview ([`PREVIEW_LOCK`]).
+    let _preview = (id == CMD && p.get("dry_run").and_then(Value::as_bool) == Some(true)).then(hold_preview);
     match s.execute(id, &p) {
         Ok(v) => v,
         Err(e) => panic!("{id} {p}: {e}"),
@@ -134,6 +136,37 @@ fn every_grade_in_the_table_is_sourced_and_found_by_its_names() {
     assert!(fea::materials::grade("").is_none() && fea::materials::grade("steel").is_none());
 }
 
+/// The one setup preview is the whole app's (`fea::show_preview` replaces any other), and tests run
+/// side by side: every dry run through [`run`] holds this while it draws, and a test that reads the
+/// preview back holds it across its dry run and its reads ([`hold_preview`]). A dry run refused
+/// before it draws (the tests that call `execute` themselves) needs none.
+static PREVIEW_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    /// Whether this test's thread holds [`PREVIEW_LOCK`] already.
+    static HOLDING_PREVIEW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// [`PREVIEW_LOCK`] until dropped, or nothing on a thread that holds it already.
+struct PreviewHold(Option<std::sync::MutexGuard<'static, ()>>);
+
+impl Drop for PreviewHold {
+    fn drop(&mut self) {
+        if self.0.is_some() {
+            HOLDING_PREVIEW.with(|h| h.set(false));
+        }
+    }
+}
+
+fn hold_preview() -> PreviewHold {
+    if HOLDING_PREVIEW.with(std::cell::Cell::get) {
+        return PreviewHold(None);
+    }
+    let guard = PREVIEW_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    HOLDING_PREVIEW.with(|h| h.set(true));
+    PreviewHold(Some(guard))
+}
+
 /// U10: the setup preview.
 /// Input: the 100 mm strip held at x = 0, 10 N down at x = 100, as a roller-free setup. Action: a
 /// dry run, then `inspect.stress_estimate.show {show: clear}`. Observable: `fea::preview` for the
@@ -142,6 +175,7 @@ fn every_grade_in_the_table_is_sourced_and_found_by_its_names() {
 /// faked.
 #[test]
 fn a_dry_run_draws_its_supports_and_loads_until_cleared() {
+    let _one = hold_preview();
     let mut s = Session::default();
     let (body, root, tip) = strip(&mut s, 100.0);
     assert!(fea::preview(&s.document_id).is_none());
@@ -2393,5 +2427,422 @@ fn a7_the_same_request_gives_the_same_numbers_and_words() {
             a == b
         );
         assert_eq!(a, b, "{name}");
+    }
+}
+
+/// The runs measured on zhikun for A13's fit (2026-11-20; see `stress_forecast.rs`): part, elements,
+/// element size (mm), nodes counted, the solver's peak memory (GB, `/usr/bin/time`; NaN where not
+/// measured) and the seconds meshing and solving took together. Round 1 at a load of 2 to 16 on
+/// 24 cores, round 2 at 5 to 44.
+const A13_MEASURED: &[(&str, Elements, f64, usize, f64, f64)] = &[
+    ("plate", Elements::Solid, 3.0, 21855, f64::NAN, 2.2),    // round 1
+    ("plate", Elements::Solid, 2.0, 42012, f64::NAN, 4.5),    // round 1
+    ("plate", Elements::Solid, 1.5, 68745, f64::NAN, 7.9),    // round 1
+    ("plate", Elements::Solid, 1.2, 114027, f64::NAN, 17.9),  // round 1
+    ("plate", Elements::Solid, 1.0, 199504, f64::NAN, 49.1),  // round 1
+    ("plate", Elements::Solid, 0.85, 288564, f64::NAN, 83.5), // round 1
+    ("block", Elements::Solid, 5.0, 15802, f64::NAN, 3.6),    // round 1
+    ("block", Elements::Solid, 4.0, 22834, f64::NAN, 6.5),    // round 1
+    ("block", Elements::Solid, 3.0, 35902, f64::NAN, 13.2),   // round 1
+    ("block", Elements::Solid, 2.5, 51410, f64::NAN, 22.3),   // round 1
+    ("block", Elements::Solid, 2.0, 95384, f64::NAN, 81.1),   // round 1
+    ("block", Elements::Solid, 1.7, 156016, f64::NAN, 222.5), // round 1
+    ("sheet", Elements::Shell, 6.0, 2839, f64::NAN, 0.5),     // round 1
+    ("sheet", Elements::Shell, 4.0, 6007, f64::NAN, 0.9),     // round 1
+    ("sheet", Elements::Shell, 3.0, 10779, f64::NAN, 1.9),    // round 1
+    ("sheet", Elements::Shell, 2.0, 23553, f64::NAN, 4.7),    // round 1
+    ("sheet", Elements::Shell, 1.5, 42263, f64::NAN, 10.4),   // round 1
+    ("sheet", Elements::Shell, 1.2, 65579, f64::NAN, 18.7),   // round 1
+    ("sheet", Elements::Shell, 1.0, 93273, f64::NAN, 30.4),   // round 1
+    ("angle", Elements::Shell, 2.0, 16467, f64::NAN, 2.5),    // round 1
+    ("angle", Elements::Shell, 1.2, 39723, f64::NAN, 7.5),    // round 1
+    ("angle", Elements::Shell, 0.8, 56061, f64::NAN, 11.7),   // round 1
+    ("angle", Elements::Shell, 0.6, 80843, f64::NAN, 18.0),   // round 1
+    ("plate", Elements::Solid, 1.5, 68745, 0.842, 10.4),      // round 2
+    ("plate", Elements::Solid, 1.0, 199504, 3.474, 65.1),     // round 2
+    ("plate", Elements::Solid, 0.85, 288564, 5.371, 109.4),   // round 2
+    ("block", Elements::Solid, 4.0, 22834, 0.453, 8.6),       // round 2
+    ("block", Elements::Solid, 3.0, 35902, 0.798, 16.1),      // round 2
+    ("block", Elements::Solid, 2.5, 51410, 1.237, 30.5),      // round 2
+    ("block", Elements::Solid, 2.0, 95384, 2.970, 101.7),     // round 2
+    ("block", Elements::Solid, 1.7, 156016, 5.784, 265.5),    // round 2
+    ("thick", Elements::Solid, 6.0, 16870, 0.283, 4.7),       // round 2
+    ("thick", Elements::Solid, 4.0, 33200, 0.680, 14.6),      // round 2
+    ("thick", Elements::Solid, 3.0, 59617, 1.388, 28.5),      // round 2
+    ("thick", Elements::Solid, 2.5, 90339, 2.404, 55.7),      // round 2
+    ("thick", Elements::Solid, 2.2, 131228, 4.081, 116.2),    // round 2
+    ("bar", Elements::Solid, 4.0, 11346, 0.144, 1.6),         // round 2
+    ("bar", Elements::Solid, 3.0, 24322, 0.384, 5.0),         // round 2
+    ("bar", Elements::Solid, 2.2, 57344, 1.205, 19.5),        // round 2
+    ("bar", Elements::Solid, 1.8, 100384, 2.563, 54.3),       // round 2
+    ("sheet", Elements::Solid, 1.5, 133229, 1.812, 27.0),     // round 2
+    ("sheet", Elements::Solid, 1.2, 199864, 2.839, 47.6),     // round 2
+    ("angle", Elements::Solid, 1.5, 102752, 1.406, 25.3),     // round 2
+    ("angle", Elements::Solid, 1.0, 143441, 2.094, 41.2),     // round 2
+    ("sheet", Elements::Shell, 3.0, 10779, 0.434, 2.7),       // round 2
+    ("sheet", Elements::Shell, 2.0, 23553, 0.991, 7.2),       // round 2
+    ("sheet", Elements::Shell, 1.5, 42263, 1.846, 13.8),      // round 2
+    ("sheet", Elements::Shell, 1.2, 65579, 2.943, 25.0),      // round 2
+    ("sheet", Elements::Shell, 1.0, 93273, 4.277, 35.1),      // round 2
+    ("angle", Elements::Shell, 1.2, 39723, 1.294, 8.2),       // round 2
+    ("angle", Elements::Shell, 0.8, 56061, 1.894, 13.2),      // round 2
+    ("angle", Elements::Shell, 0.6, 80843, 2.722, 19.6),      // round 2
+];
+
+/// The parts of [`A13_MEASURED`]: volume (mm³, None for a sheet), surface area (mm²) and section
+/// ([`section_size`]: twice the volume over the area, or a sheet's 1.5 mm).
+fn a13_part(name: &str) -> (Option<f64>, f64, f64) {
+    let solid = |v: f64, s: f64| (Some(v), s, 2.0 * v / s);
+    match name {
+        "plate" => solid(19858.6, 20919.8),
+        "block" => solid(109393.4, 17512.3),
+        "thick" => solid(193877.8, 28636.3),
+        "bar" => solid(80000.0, 16800.0),
+        "sheet" => (None, 40900.0, 1.5),
+        _ => (None, 9639.7, 1.5),
+    }
+}
+
+/// A13: the forecast's models hold for every run they were fitted on, within the errors their
+/// comments state. Input: [`A13_MEASURED`]. Action: `forecast::memory`, `forecast::seconds`,
+/// `forecast::nodes_before_meshing`. Nothing runs.
+/// Pass: the memory within 15 % of each solid run's measured peak, and from 10 % under to 40 % over
+/// each shell run's (the shells keep `SHELL_MEMORY`, high on the bracket); meshing and solving
+/// together within 45 %
+/// of each measured time (solids and shells); nodes from the part's size within 12 % from 50,000
+/// nodes up on the parts without small curved features (the bracket's bend and holes are
+/// excluded: curvature sizing adds nodes the size does not show). And the reason for the layers:
+/// the old `solver_bytes` is more than 40 % under the 50 mm cube's measured peak.
+#[test]
+fn a13_the_forecast_holds_for_the_runs_it_was_fitted_on() {
+    let (mut worst_bytes, mut worst_time, mut worst_nodes) = (0.0f64, 0.0f64, 0.0f64);
+    for &(part, elements, h, nodes, gb, seconds) in A13_MEASURED {
+        let (volume, area, section) = a13_part(part);
+        let deep = forecast::layers(section, h);
+        let n = nodes as f64;
+        if gb.is_finite() {
+            let off = forecast::memory(n, elements, deep) / (gb * 1.0e9) - 1.0;
+            worst_bytes = worst_bytes.max(off.abs());
+            let (under, over) = if elements == Elements::Solid { (-0.15, 0.15) } else { (-0.10, 0.40) };
+            assert!((under..=over).contains(&off), "{part} {elements:?} {h} mm: memory {:+.0}%", 100.0 * off);
+        }
+        let (mesh, solve) = forecast::seconds(n, elements, deep);
+        let off = (mesh + solve) / seconds - 1.0;
+        worst_time = worst_time.max(off.abs());
+        assert!(off.abs() <= 0.45, "{part} {elements:?} {h} mm: {:.1} s predicted, {seconds} s measured", mesh + solve);
+        let flat = part != "angle";
+        if flat && nodes >= 50_000 && gb.is_finite() {
+            let thickness = 1.5;
+            let before = forecast::nodes_before_meshing(elements, h, volume, area, thickness).unwrap_or(f64::NAN);
+            let off = before / n - 1.0;
+            worst_nodes = worst_nodes.max(off.abs());
+            assert!(off.abs() <= 0.12, "{part} {elements:?} {h} mm: {before:.0} nodes predicted, {nodes} counted");
+        }
+    }
+    eprintln!("A13 worst: memory {:.0}%, time {:.0}%, nodes before meshing {:.0}%", 100.0 * worst_bytes, 100.0 * worst_time, 100.0 * worst_nodes);
+    let cube = solver_bytes(156_016.0, Elements::Solid) / 5.784e9 - 1.0;
+    assert!(cube < -0.4, "the old model on the cube: {:+.0}%", 100.0 * cube);
+}
+
+/// A13 (V-A13): a dry run starts no program and asks no approval (`agent_chat::gate`), and it says
+/// what the run will take, from the part's size, for the approval card.
+/// Input: R2's plate (200 x 50 x 2 mm, a Ø10 hole) at 1.5 mm as solids, with the mesh check off and
+/// on; the 200 x 100 x 1.5 mm sheet as shells at 1.2 mm. Real: the app's modelling. Faked: nothing;
+/// no program runs.
+/// Measured on zhikun: the plate meshed with 68,745 nodes and its solver peaked at 0.84 GB; the
+/// sheet with 65,579 nodes and 2.94 GB.
+/// Pass: no run and no program versions in the reply; `predicted` within 10 % of the nodes and
+/// 25 % of the memory measured (the memory model's value for the nodes predicted), one run with the
+/// mesh check off; with it on, two when this computer has room for the second mesh, one when not;
+/// at 4 mm, where the second and third fit the 6 GB ceiling, two runs and three at the most, with
+/// more nodes, memory and time, in words too; seconds above 0; its line in words.
+#[test]
+fn a13_a_dry_run_says_what_the_run_will_take_from_the_parts_size() {
+    let _one = hold_preview();
+    let mut s = Session::default();
+    let (held, pulled) = plate_with_hole(&mut s);
+    let setup = |check: bool| {
+        json!({"loads": [{"face": pulled, "force": [800, 0, 0]}], "supports": [{"face": held}], "material": aluminium(), "elements": "solid",
+               "mesh_size": 1.5, "mesh_check": check, "dry_run": true})
+    };
+    let r = run(&mut s, CMD, setup(false));
+    assert!(r["runs"].as_array().is_some_and(Vec::is_empty) && r.get("programs").is_none(), "{r}");
+    let p = &r["predicted"];
+    eprintln!("A13 plate, dry run: {p}");
+    assert!((number(&p["nodes"]) / 68_745.0 - 1.0).abs() <= 0.10, "{p}");
+    assert!((number(&p["memory_gb"]) / 0.842 - 1.0).abs() <= 0.25, "{p}");
+    assert_eq!(p["runs"], 1, "{p}");
+    assert!(number(&p["seconds"]) > 0.0, "{p}");
+    let line = p["line"].as_str().unwrap_or("");
+    assert!(line.contains("nodes") && line.contains("of memory") && line.contains("one run") && line.contains("before meshing"), "{line}");
+    let checked = run(&mut s, CMD, setup(true));
+    let fits = forecast::finer_fits(number(&p["nodes"]), Elements::Solid);
+    assert_eq!(checked["predicted"]["runs"], if fits { 2 } else { 1 }, "{}", checked["predicted"]);
+    if fits {
+        assert!(number(&checked["predicted"]["seconds"]) > number(&p["seconds"]), "{}", checked["predicted"]);
+    }
+    let mut coarse = setup(true);
+    coarse["mesh_size"] = json!(4.0);
+    let coarse = run(&mut s, CMD, coarse)["predicted"].clone();
+    if forecast::finer_fits(number(&coarse["nodes"]), Elements::Solid) {
+        let most = &coarse["most"];
+        assert_eq!((&coarse["runs"], &most["runs"]), (&json!(2), &json!(3)), "{coarse}");
+        for key in ["nodes", "memory_gb", "seconds"] {
+            assert!(number(&most[key]) > number(&coarse[key]), "{key}: {coarse}");
+        }
+        let line = coarse["line"].as_str().unwrap_or("");
+        assert!(line.contains("for 2 runs") && line.contains("a third, finer mesh") && line.contains("for 3 runs"), "{line}");
+    }
+    assert!(p["most"].is_null(), "no mesh check, no third mesh: {p}");
+
+    let mut s = Session::default();
+    let (_, root, tip) = strip_of(&mut s, 200.0, 100.0);
+    let r = run(
+        &mut s,
+        CMD,
+        json!({"loads": [{"face": tip, "force": [0, 0, -10]}], "supports": [{"face": root}], "material": aluminium(), "elements": "shell",
+               "mesh_size": 1.2, "mesh_check": false, "dry_run": true}),
+    );
+    let p = &r["predicted"];
+    eprintln!("A13 sheet as shells, dry run: {p}");
+    assert!((number(&p["nodes"]) / 65_579.0 - 1.0).abs() <= 0.10, "{p}");
+    assert!((number(&p["memory_gb"]) / 2.943 - 1.0).abs() <= 0.25, "{p}");
+}
+
+/// A13: once a run has meshed the part, the forecast counts its nodes, the runs made and the time
+/// left, likely and at the most. Input: a solid run planned at 1.5 mm and its mesh check's second
+/// and third meshes at 1.0 and 0.67 mm (60,000, 180,000 and 540,000 nodes from the part's size), and
+/// shells after them; the first counts 90,000 (half as many again), the second 250,000. The mesh
+/// check's gate: one that lets every mesh through, and some that stop at a count of nodes. Action:
+/// `forecast::which`, `after_meshing`, `before_meshing`, `Tracker`. Nothing runs.
+/// Pass: run 1 of 2 (3 at the most) with the nodes counted and their memory, its time left its own
+/// solve and the second's mesh and solve at 270,000 nodes (180,000 scaled by 1.5), and at the most
+/// the third's at 810,000 too; run 2's its solve alone, and at the most the third's. A gate closed
+/// to the second: run 1 of 1; to the third: 2 runs at the most. Counted, the third is run 3 of 3;
+/// the shells after it run 4 of 4, and run 3 of 3 when no third was counted. The published forecast
+/// carries the design and a newer number.
+#[test]
+fn a13_once_meshed_the_forecast_counts_the_nodes_the_runs_and_the_time_left() {
+    let planned = vec![
+        forecast::Planned { elements: Elements::Solid, h: 1.5, section: 3.0, nodes: 60_000.0, level: 0 },
+        forecast::Planned { elements: Elements::Solid, h: 1.0, section: 3.0, nodes: 180_000.0, level: 1 },
+        forecast::Planned { elements: Elements::Solid, h: 1.0 / 1.5, section: 3.0, nodes: 540_000.0, level: 2 },
+    ];
+    let two = forecast::Reach { likely: 1, most: 1 };
+    let three = forecast::Reach { likely: 1, most: 2 };
+    assert_eq!(forecast::which(&planned, Elements::Solid, 1.5), Some(0));
+    assert_eq!(forecast::which(&planned, Elements::Solid, 1.0), Some(1));
+    assert_eq!(forecast::which(&planned, Elements::Shell, 1.0), None);
+    assert_eq!(forecast::which(&planned, Elements::Solid, 1.2), None);
+    let first = forecast::after_meshing(&planned, 0, 90_000, two, "doc-a13").unwrap_or_else(|| panic!("a forecast"));
+    assert_eq!((first.run, first.runs, first.runs_most, first.nodes, first.elements), (1, 2, 2, 90_000, Elements::Solid));
+    assert_eq!(first.seconds_most, first.seconds_left, "no third mesh");
+    assert_eq!(first.bytes, forecast::memory(90_000.0, Elements::Solid, 2.0));
+    let (_, solve) = forecast::seconds(90_000.0, Elements::Solid, 2.0);
+    let (m2, s2) = forecast::seconds(270_000.0, Elements::Solid, 3.0);
+    assert!((first.seconds_left - (solve + m2 + s2)).abs() < 1e-9, "{first:?}");
+    let first = forecast::after_meshing(&planned, 0, 90_000, three, "doc-a13").unwrap_or_else(|| panic!("a forecast"));
+    let (m3, s3) = forecast::seconds(810_000.0, Elements::Solid, 4.5);
+    assert_eq!((first.run, first.runs, first.runs_most), (1, 2, 3));
+    assert!((first.seconds_left - (solve + m2 + s2)).abs() < 1e-9 && (first.seconds_most - (solve + m2 + s2 + m3 + s3)).abs() < 1e-6, "{first:?}");
+    let second = forecast::after_meshing(&planned, 1, 250_000, three, "doc-a13").unwrap_or_else(|| panic!("a forecast"));
+    assert_eq!((second.run, second.runs, second.runs_most), (2, 2, 3));
+    let (m3, s3) = forecast::seconds(750_000.0, Elements::Solid, 4.5);
+    assert!((second.seconds_most - second.seconds_left - (m3 + s3)).abs() < 1e-6, "{second:?}");
+    assert!((second.seconds_left - forecast::seconds(250_000.0, Elements::Solid, 3.0).1).abs() < 1e-9, "{second:?}");
+
+    let up_to_80k = |nodes: f64, _: Elements| nodes <= 80_000.0;
+    let all = |_: f64, _: Elements| true;
+    let runs = |fits: &dyn Fn(f64, Elements) -> bool| forecast::before_meshing(&planned, fits).map(|(sure, most)| (sure.runs, most.map(|m| m.runs)));
+    assert_eq!(runs(&up_to_80k), Some((2, None)), "60,000 predicted: the second mesh is planned, and no third after 180,000");
+    assert_eq!(runs(&all), Some((2, Some(3))));
+    assert_eq!(runs(&|_, _| false), Some((1, None)));
+    // The second's nodes are scaled by the first's count (180,000 x 1.5), and 0.7 of them decide whether
+    // a third may follow; once the second is counted, its own nodes do.
+    let up_to = |most: f64| move |nodes: f64, _: Elements| nodes <= most;
+    let reach = |likely, most| forecast::Reach { likely, most };
+    assert_eq!(forecast::reach_after_first(&planned, 90_000.0, &up_to(150_000.0)), reach(1, 1), "270,000 x 0.7 is over");
+    assert_eq!(forecast::reach_after_first(&planned, 60_000.0, &up_to(150_000.0)), reach(1, 2), "180,000 x 0.7 is not");
+    assert_eq!(forecast::reach_after_first(&planned, 90_000.0, &up_to(200_000.0)), reach(1, 2), "270,000 x 0.7 is not");
+    assert_eq!(forecast::reach_after_first(&planned, 90_000.0, &up_to(80_000.0)), reach(0, 0));
+    assert_eq!(forecast::reach_after_first(&planned[..1], 90_000.0, &all), reach(0, 0), "no mesh check");
+    assert_eq!(forecast::reach_after_second(&planned, 250_000.0, &up_to(200_000.0)), reach(1, 1));
+    assert_eq!(forecast::reach_after_second(&planned, 250_000.0, &up_to(260_000.0)), reach(1, 2));
+    let tracker = forecast::Tracker::new(&planned, "doc-a13-tracker".into(), &up_to_80k);
+    let before = fea::forecast_seq();
+    tracker.counted(Elements::Solid, 1.5, 90_000);
+    let f = fea::forecast().unwrap_or_else(|| panic!("published"));
+    assert!(f.seq > before, "{f:?}");
+    // Only this test of those that run by default publishes forecasts.
+    assert_eq!(f.document_id, "doc-a13-tracker");
+    assert_eq!((f.run, f.runs, f.runs_most, f.nodes), (1, 1, 1, 90_000), "90,000 counted: the second mesh is not made");
+    assert!((f.seconds_left - solve).abs() < 1e-9, "{f:?}");
+    let tracker = forecast::Tracker::new(&planned, "doc-a13-tracker-2".into(), &all);
+    tracker.counted(Elements::Solid, 1.5, 90_000);
+    tracker.counted(Elements::Solid, 1.0, 250_000);
+    let f = fea::forecast().unwrap_or_else(|| panic!("published"));
+    assert_eq!(f.document_id, "doc-a13-tracker-2");
+    assert_eq!((f.run, f.runs, f.runs_most, f.nodes), (2, 2, 3, 250_000));
+    assert!(f.seconds_most > f.seconds_left, "{f:?}");
+    // The third was made or not: it and the shells after it are counted among the runs made.
+    let mut both = planned.clone();
+    both.push(forecast::Planned { elements: Elements::Shell, h: 1.5, section: 3.0, nodes: 20_000.0, level: 0 });
+    for (third, shells) in [(Some(700_000), (4, 4)), (None, (3, 3))] {
+        let doc = format!("doc-a13-tracker-third-{}", third.is_some());
+        let tracker = forecast::Tracker::new(&both, doc.clone(), &all);
+        tracker.counted(Elements::Solid, 1.5, 90_000);
+        tracker.counted(Elements::Solid, 1.0, 250_000);
+        if let Some(n) = third {
+            tracker.counted(Elements::Solid, 1.0 / 1.5, n);
+            let f = fea::forecast().unwrap_or_else(|| panic!("published"));
+            assert_eq!(f.document_id, doc);
+            assert_eq!((f.run, f.runs, f.runs_most, f.nodes), (3, 4, 4, n));
+            assert_eq!(f.seconds_most, f.seconds_left);
+        }
+        tracker.counted(Elements::Shell, 1.5, 20_000);
+        let f = fea::forecast().unwrap_or_else(|| panic!("published"));
+        assert_eq!(f.document_id, doc);
+        assert_eq!(((f.run, f.runs), f.runs_most), (shells, shells.1), "{third:?}");
+    }
+}
+
+/// A time in the dry run's words.
+#[test]
+fn a13_times_read_as_roughly_as_they_are_known() {
+    assert_eq!(about_time(0.4), "under a second");
+    assert_eq!(about_time(7.6), "8 s");
+    assert_eq!(about_time(43.0), "45 s");
+    assert_eq!(about_time(150.0), "2.5 min");
+    assert_eq!(about_time(1500.0), "25 min");
+    assert_eq!(about_time(5000.0), "83 min");
+    assert_eq!(about_time(6000.0), "1.7 h");
+    assert_eq!(about_time(f64::NAN), "?");
+}
+
+/// A13: the dry run's sentence words the figures it gives, which the card words again in the user's
+/// language, so the two say the same.
+/// Input: a solid run of 100 to 2,000,000 nodes, 2 % apart, alone and with the mesh check's second
+/// mesh. Before this the sentence worded the figures before they were rounded: V-6's bar said
+/// 1.5 min for 3 runs (104.6 s) where the card said 2 min (105 s).
+/// Pass: the sentence has the words of `nodes`, `memory_gb` and `seconds`, and of `most`'s.
+#[test]
+fn a13_the_dry_runs_sentence_words_the_figures_it_gives() {
+    let mut nodes = 100.0;
+    while nodes < 2.0e6 {
+        let first = forecast::Planned { elements: Elements::Solid, h: 1.5, section: 6.0, nodes, level: 0 };
+        let second = forecast::Planned { h: 1.0, nodes: nodes * 3.0, level: 1, ..first.clone() };
+        let third = forecast::Planned { h: 1.0 / 1.5, nodes: nodes * 9.0, level: 2, ..first.clone() };
+        for planned in [vec![first.clone()], vec![first, second, third]] {
+            let p = predicted(&planned).unwrap_or_else(|| panic!("{nodes} nodes: no prediction"));
+            let most = p.most.as_ref().map(|m| (m.nodes, m.memory_gb, m.seconds));
+            for (n, gb, s) in [Some((p.nodes, p.memory_gb, p.seconds)), most].into_iter().flatten() {
+                for words in [about_count(n as f64), about_bytes(gb * 1.0e9), about_time(s)] {
+                    assert!(p.line.contains(&format!("about {words} ")), "{words}: {}", p.line);
+                }
+            }
+        }
+        nodes *= 1.02;
+    }
+}
+
+/// A13 (V-A13), real: a run publishes the nodes it counted after meshing, for the card the user
+/// allowed it from, and the count is near the dry run's prediction.
+/// Input: R2's plate at 1.5 mm as solids, mesh check off: a dry run, then the run. Real: the app's
+/// modelling, gmsh, CalculiX. Faked: nothing.
+/// Pass: the last forecast for this design is run 1 of 1 with the reply's node count and the
+/// memory model's value for it; the dry run's nodes are within 10 % of that count.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn a13_a_run_publishes_its_counted_nodes_for_the_card() {
+    let mut s = Session::default();
+    let (held, pulled) = plate_with_hole(&mut s);
+    let setup = |dry: bool| {
+        json!({"loads": [{"face": pulled, "force": [800, 0, 0]}], "supports": [{"face": held}], "material": aluminium(), "elements": "solid",
+               "mesh_size": 1.5, "mesh_check": false, "dry_run": dry})
+    };
+    let dry = run(&mut s, CMD, setup(true));
+    let r = run(&mut s, CMD, setup(false));
+    let nodes = r["runs"][0]["nodes"].as_u64().unwrap_or(0) as usize;
+    let f = fea::forecast().filter(|f| f.document_id == s.document_id).unwrap_or_else(|| panic!("no forecast for this design"));
+    eprintln!(
+        "A13 real: predicted {} nodes, {} GB, {} s; counted {nodes} nodes, forecast {:.2} GB and {:.1} s to solve; took {} s",
+        dry["predicted"]["nodes"],
+        dry["predicted"]["memory_gb"],
+        dry["predicted"]["seconds"],
+        f.bytes / 1e9,
+        f.seconds_left,
+        r["runs"][0]["seconds"]
+    );
+    assert_eq!((f.run, f.runs, f.runs_most, f.nodes, f.elements), (1, 1, 1, nodes, Elements::Solid));
+    let section = 2.0 * 19858.6 / 20919.8;
+    assert!((f.bytes / forecast::memory(nodes as f64, Elements::Solid, forecast::layers(section, 1.5)) - 1.0).abs() < 0.01, "{f:?}");
+    assert!((number(&dry["predicted"]["nodes"]) / nodes as f64 - 1.0).abs() <= 0.10, "{} vs {nodes}", dry["predicted"]);
+}
+
+/// A13 with A6, real: an estimate that solves a third mesh said so, before meshing and at each
+/// count.
+/// Input: V-6's filleted bar and V-7's sharp one at the default settings, which solve three meshes:
+/// a dry run, then the run, with every forecast published for the design noted as it comes. Real:
+/// the app's modelling, gmsh, CalculiX. Faked: nothing.
+/// Before the third mesh was planned, the card said 17 s and 0.91 GB for 2 runs and V-6's bar took
+/// 127 s in 3; its second count said 16 s left with 116 s to go.
+/// Pass: the dry run says 2 runs, 3 at the most, with more nodes, memory and time; the forecasts are
+/// run 1 and 2 of 2 (3 at the most), then run 3 of 3, with the reply's node counts. The time really
+/// left after each is printed beside `seconds_most`, not asserted: tests do not time the wall clock,
+/// and the fit's times are one computer's.
+#[test]
+#[ignore = "runs gmsh and CalculiX"]
+fn a13_the_forecasts_know_the_third_mesh() {
+    for (name, fillet) in [("V-6", 2.0), ("V-7", 0.0)] {
+        let mut s = Session::default();
+        let mut p = stepped_bar(&mut s, fillet);
+        p["dry_run"] = json!(true);
+        let dry = run(&mut s, CMD, p.clone());
+        p["dry_run"] = json!(false);
+        let predicted = &dry["predicted"];
+        let doc = s.document_id.clone();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (ended, started) = (stop.clone(), std::time::Instant::now());
+        let watch = std::thread::spawn(move || {
+            let mut seen: Vec<(f64, fea::Forecast)> = Vec::new();
+            while !ended.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Some(f) = fea::forecast().filter(|f| f.document_id == doc)
+                    && seen.last().is_none_or(|(_, x)| x.seq != f.seq)
+                {
+                    seen.push((started.elapsed().as_secs_f64(), f));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            seen
+        });
+        let r = run(&mut s, CMD, p);
+        let took = started.elapsed().as_secs_f64();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let seen = watch.join().unwrap_or_default();
+        eprintln!("A13 third mesh {name}: predicted {predicted}; took {took:.1} s, runs {:?} s", times(&r));
+        for (at, f) in &seen {
+            eprintln!(
+                "A13 third mesh {name} at {at:.1} s: run {} of {} ({}), {} nodes, {:.2} GB, {:.1} to {:.1} s left, really {:.1}",
+                f.run,
+                f.runs,
+                f.runs_most,
+                f.nodes,
+                f.bytes / 1e9,
+                f.seconds_left,
+                f.seconds_most,
+                took - at
+            );
+        }
+        assert_eq!((&predicted["runs"], &predicted["most"]["runs"]), (&json!(2), &json!(3)), "{predicted}");
+        for key in ["nodes", "memory_gb", "seconds"] {
+            assert!(number(&predicted["most"][key]) > number(&predicted[key]), "{key}: {predicted}");
+        }
+        assert_eq!(r["mesh_check"]["meshes_mm"].as_array().map(Vec::len), Some(3), "{}", r["mesh_check"]);
+        let places: Vec<(usize, usize, usize)> = seen.iter().map(|(_, f)| (f.run, f.runs, f.runs_most)).collect();
+        assert_eq!(places, [(1, 2, 3), (2, 2, 3), (3, 3, 3)], "{name}");
+        // The reply lists the finest first.
+        let mut nodes: Vec<u64> = r["runs"].as_array().into_iter().flatten().filter_map(|x| x["nodes"].as_u64()).collect();
+        nodes.reverse();
+        assert_eq!(seen.iter().map(|(_, f)| f.nodes as u64).collect::<Vec<_>>(), nodes, "{name}");
     }
 }

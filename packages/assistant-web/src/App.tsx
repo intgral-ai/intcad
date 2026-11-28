@@ -166,6 +166,27 @@ function activityStatus(tool: Tool, waiting: boolean) {
   return tool.status === 'running' && !waiting ? ('running' as const) : ('idle' as const);
 }
 
+/** What an approval beside its tool row says beyond the row: while it waits, the lines the app
+ * added under the request (a stress estimate's prediction and setup); once a run of it has
+ * meshed, what it will still take. Nothing for a request of one line. */
+function ApprovalText({ approval, className = 'pl-7', maxHeight }: { approval: Approval; className?: string; maxHeight?: number }) {
+  const lines = approval.answer === null ? approval.title.split('\n').slice(1).filter(line => line.trim()) : [];
+  if (!lines.length && !approval.counted) return null;
+  return (
+    <div className={cn('flex min-w-0 flex-col gap-1', className)} style={{ maxHeight }}>
+      {lines.map((line, at) => (
+        <Txt key={at} variant="caption" tone={at === 0 ? undefined : 'muted'}>
+          {line}
+        </Txt>
+      ))}
+      {approval.counted && <Txt variant="caption">{approval.counted}</Txt>}
+    </div>
+  );
+}
+
+/** The request itself: an approval's first line. The lines the app added under it are ApprovalText's. */
+const requestOf = (approval: Approval) => approval.title.split('\n', 1)[0] ?? '';
+
 /** The app's three answers to its own approval request, as Mastra buttons. */
 function ApprovalChoices({ approval, strings }: { approval: Approval; strings: Strings }) {
   return (
@@ -294,6 +315,7 @@ function ToolRow({ tool, approval, strings, own }: { tool: Tool; approval?: Appr
           )}
         </ActivityContent>
       </Activity>
+      {approval && <ApprovalText approval={approval} />}
       {/* A picture the call handed back, under the row as Mastra's tool card has it, in Mastra's
           attachment card. It opens in the app's viewer, as a sent picture does: the panel is narrow. */}
       {tool.pictures.length > 0 && (
@@ -637,6 +659,7 @@ function Response({
                 ) : (
                   <Notice.Message>{part.item.answer ? strings.allowed : strings.denied}</Notice.Message>
                 )}
+                {part.item.counted && <Notice.Message>{part.item.counted}</Notice.Message>}
               </Notice>
             );
           case 'review':
@@ -2767,7 +2790,7 @@ function previewOf(state: AssistantState): Line {
   // An answer the agent waits for, whatever the state says (the state's badge puts it first too).
   const asked = turn.findLast((item): item is Approval | Of<'permission'> => (item.kind === 'approval' && item.answer === null) || (item.kind === 'permission' && item.answered === null));
   if (asked || state.waiting > 0) {
-    return { kind: 'waiting', icon: ShieldCheck, label: strings.waiting, detail: asked && (asked.kind === 'approval' ? asked.title : asked.heading), live: false, step };
+    return { kind: 'waiting', icon: ShieldCheck, label: strings.waiting, detail: asked && (asked.kind === 'approval' ? requestOf(asked) : asked.heading), live: false, step };
   }
   if (busy) {
     if (now?.kind === 'tool' && (now.status === 'running' || now.status === 'pending')) return toolLine(now, Boolean(state.connect), step);
@@ -2855,7 +2878,7 @@ function PickerConnection({ via, strings, onConnections }: { via: Connection | n
 }
 
 /** A waiting approval or permission with its answers, small enough for the header over the message box. */
-function WaitingRow({ item, strings }: { item: Approval | Of<'permission'>; strings: Strings }) {
+function WaitingRow({ item, strings, most }: { item: Approval | Of<'permission'>; strings: Strings; most: number }) {
   return (
     <ComposerHeaderRow>
       <ComposerHeaderContent className="flex min-w-0 flex-col gap-2 text-foreground">
@@ -2863,8 +2886,14 @@ function WaitingRow({ item, strings }: { item: Approval | Of<'permission'>; stri
           <Badge variant="warning" emphasis="subtle" size="sm" icon={<ShieldCheck aria-hidden />}>
             {strings.approval}
           </Badge>
-          <span className="line-clamp-2 min-w-0">{item.kind === 'approval' ? item.title : item.heading}</span>
+          <span className="line-clamp-2 min-w-0">{item.kind === 'approval' ? requestOf(item) : item.heading}</span>
         </span>
+        {/* A stress estimate's prediction, loads, supports and warnings: all of them are read before
+            the answer, so they are never cut to the request's two lines. They scroll in what the page's
+            most height leaves beside the request, Expand, the answers and the message box (about 232). */}
+        {item.kind === 'approval' && (
+          <ApprovalText approval={item} className="overflow-y-auto" maxHeight={Math.min(160, Math.max(36, most - 232))} />
+        )}
         {item.kind === 'approval' ? (
           <ApprovalChoices approval={item} strings={strings} />
         ) : (
@@ -3347,7 +3376,7 @@ function Centre({
       <ComposerHeaderContent className="text-foreground">{strings.dropHint}</ComposerHeaderContent>
     </ComposerHeaderRow>
   ) : waitingItem ? (
-    <WaitingRow item={waitingItem} strings={strings} />
+    <WaitingRow item={waitingItem} strings={strings} most={state.centre ?? 500} />
   ) : login ? (
     <ComposerHeaderRow>
       <Badge variant="info" emphasis="subtle" size="sm" className="shrink-0 whitespace-nowrap">

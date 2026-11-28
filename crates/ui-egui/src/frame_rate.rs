@@ -142,7 +142,7 @@ impl FrameRate {
 }
 
 /// `1234567` as `1 234 567`: counts read at a glance.
-fn grouped(n: u64) -> String {
+pub(crate) fn grouped(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {

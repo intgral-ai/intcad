@@ -319,6 +319,9 @@ pub enum Item {
         title: String,
         tool: String,
         answer: Option<bool>,
+        /// An allowed stress estimate: what it will still take, once a run has meshed the part and
+        /// counted its nodes (A13).
+        counted: Option<String>,
     },
     /// A message's changes, merged into one undo step; `doc`: the design right after it.
     Changes {
@@ -617,6 +620,10 @@ pub struct AgentChat {
     turn_warning: Option<String>,
     held: Vec<Held>,
     next_approval: u64,
+    /// The stress estimate the user allowed last: its card, the design it runs on, and the last
+    /// forecast sequence number it has seen ([`follow_stress_forecast`]): the one when it was
+    /// allowed, then each it wrote.
+    stress_card: Option<(u64, String, u64)>,
     /// The turn's copy of the design, while its changes are previewed ([`review`]).
     pub(crate) preview: Option<review::Preview>,
     /// The last preview's id.
@@ -2750,6 +2757,10 @@ fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
         }
     }
     if allow {
+        // An allowed stress estimate: its card says what the run will still take, once known.
+        if h.req.params.get("command").and_then(serde_json::Value::as_str) == Some("inspect.stress_estimate") {
+            chat.stress_card = Some((id, app.session.document_id.clone(), solidcraft_engine::fea::forecast_seq()));
+        }
         hand_over(app, h.req);
     } else {
         // A declined stress estimate: its setup preview goes with it.
@@ -2839,8 +2850,28 @@ fn requests_edit(text: &str) -> bool {
     .any(|verb| words.strip_prefix(*verb).is_some_and(|rest| rest.starts_with(char::is_whitespace)))
 }
 
+/// Write the running stress estimate's forecast into the card it was allowed from: the nodes a
+/// run counted after meshing, the solver's memory and the time left (A13). Each run says again.
+pub(crate) fn follow_stress_forecast(chat: &mut AgentChat) {
+    let Some((card, document_id, since)) = chat.stress_card.as_mut() else { return };
+    let Some(f) = solidcraft_engine::fea::forecast().filter(|f| f.seq > *since && f.document_id == *document_id) else { return };
+    *since = f.seq;
+    let line = crate::stress_overlay::counted_line(&f);
+    let card = *card;
+    for item in &mut chat.items {
+        if let Item::Approval { id, counted, .. } = item
+            && *id == card
+        {
+            *counted = Some(line.clone());
+        }
+    }
+}
+
 /// The message is answered: its changes become one undo step, and what still waits is declined.
 fn end_turn(app: &mut SolveApp) {
+    // The estimate's last forecast, then the card is done with.
+    follow_stress_forecast(&mut app.agent_chat);
+    app.agent_chat.stress_card = None;
     decline_all(app, "the message ended");
     finish_turn(&mut app.agent_chat, &mut app.session);
     review::settle(app);
@@ -3008,7 +3039,7 @@ fn pump_tools(app: &mut SolveApp) {
                 let chat = &mut app.agent_chat;
                 chat.next_approval += 1;
                 let id = chat.next_approval;
-                chat.push(Item::Approval { id, title, tool, answer: None });
+                chat.push(Item::Approval { id, title, tool, answer: None, counted: None });
                 chat.held.push(Held { id, req, since: crate::now_ms() });
             }
             gate::Verdict::Refuse(e) => {
@@ -3229,6 +3260,7 @@ pub fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         web::poll_running_checks(app);
     }
     pump_tools(app);
+    follow_stress_forecast(&mut app.agent_chat);
     // One place decides what automatic checks see: the live model and whether the window still
     // has work in flight. A person's edit or undo only makes the old report stale; it starts
     // nothing by itself.
@@ -3851,7 +3883,7 @@ pub fn status(app: &SolveApp) -> Value {
             Item::Permission { title, options, answer, .. } => {
                 json!({"permission": title, "index": index, "options": options.iter().map(|o| json!({"id": o.id, "name": o.name, "kind": o.kind})).collect::<Vec<_>>(), "answer": answer})
             }
-            Item::Approval { id, title, answer, .. } => json!({"approval": title, "id": id, "answer": answer}),
+            Item::Approval { id, title, answer, counted, .. } => json!({"approval": title, "id": id, "answer": answer, "counted": counted}),
             Item::Changes { steps, undone, .. } => json!({"changes": steps, "undone": undone}),
             Item::Notice { text, error } => json!({"notice": text, "error": error}),
             Item::Problem { kind, name, .. } => json!({"notice": kind.words(name), "error": true}),
