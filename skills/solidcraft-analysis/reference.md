@@ -54,7 +54,7 @@ Name the points with `probes`. Give `direction` for a gauge's axis: `along` then
 Each probe gives `principal_stress_mpa` (positive in tension, negative in compression), `strain_microstrain` (µε; the shears as engineering γ), `along`, and its own `mesh_check`. A point up to 1 mm outside the part is read at its nearest point (`outside_part_mm`); farther, the reply refuses it, or names it in `warnings` when no element is in reach.
 
 ## Your own material
-Give all four numbers and where they come from; the reply repeats the source.
+Give the three numbers (`youngs_modulus`, `poisson_ratio`, `yield_strength`) and where they come from (`source`); the reply repeats the source.
 ```json
 {"material": {"name": "PETG, printed flat", "youngs_modulus": 2000, "poisson_ratio": 0.38,
   "yield_strength": 45, "source": "the filament maker's datasheet, tested flat; printed layers are weaker across"}}
