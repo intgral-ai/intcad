@@ -764,11 +764,21 @@ pub(crate) fn admit_once(app: &mut SolveApp, req: &mut ControlRequest) -> Result
     }
 }
 
-fn register_control_renewal(app: &mut SolveApp, req: &ControlRequest, admission: &Admission) {
-    if req.entry == EntryCategory::DirectControl
-        && let Admission::NewlyAdmitted { operation, grant } = admission
+/// Whether the host renews this admitted operation's lease while it runs: a Direct Control
+/// operation, and a bridge read the host can stop ([`crate::control_job::stoppable_request`]),
+/// which may run for longer than one lease.
+fn renews_lease(req: &ControlRequest, grant: &solidcraft_engine::entitlement::Grant) -> bool {
+    match (req.entry, grant.capability()) {
+        (EntryCategory::DirectControl, Capability::Control) => true,
+        (EntryCategory::GuiBridgeMcp, Capability::Mcp) => crate::control_job::stoppable_request(req),
+        _ => false,
+    }
+}
+
+pub(crate) fn register_control_renewal(app: &mut SolveApp, req: &ControlRequest, admission: &Admission) {
+    if let Admission::NewlyAdmitted { operation, grant } = admission
         && req.operation.as_ref() == Some(operation)
-        && grant.capability() == Capability::Control
+        && renews_lease(req, grant)
         && let Some(scope) = app.commit_scope.as_ref()
     {
         app.account.control_admitted(scope, operation, grant);
@@ -949,7 +959,7 @@ fn host_authority(app: &SolveApp) -> Option<(&AuthenticatedHostScope, &dyn Accou
 fn authorization_bound<'a>(app: &SolveApp, req: &'a ControlRequest, admission: &'a Admission) -> Option<AuthorizationBound<'a>> {
     let expires_at = match admission {
         Admission::NewlyAdmitted { operation, grant } => {
-            let renewed = if req.entry == EntryCategory::DirectControl && grant.capability() == Capability::Control {
+            let renewed = if renews_lease(req, grant) {
                 app.commit_scope.as_ref().and_then(|scope| app.account.renewed_control_cutoff(scope, operation, grant))
             } else {
                 None
@@ -1442,6 +1452,23 @@ fn commit_decision(app: &SolveApp, req: &ControlRequest, admission: &Admission, 
         Some(refusal) => CommitDecision::Drop { code: refusal.code },
         None => CommitDecision::Allow,
     }
+}
+
+/// Whether the commit gate would take this admitted request's result now. The copy path asks
+/// before it decides to withhold a reply; [`finish_dispatch`] still runs the gate itself.
+pub(crate) fn commit_open(app: &SolveApp, req: &ControlRequest, admission: &Admission) -> bool {
+    free_entry(req.entry)
+        || req.helper.is_some()
+        || matches!(admission, Admission::Allowed)
+        || authority_refusal_with(app, req, admission, false).is_none()
+}
+
+/// How long the live authorization of an admitted controlled request has left on the host's
+/// clock: the earlier of its forwarded window and its grant's cutoff, renewed where the host
+/// renews it. `None` when it has already ended, or the host has no clock or bound to tell.
+pub(crate) fn authorization_left(app: &SolveApp, req: &ControlRequest, admission: &Admission) -> Option<Duration> {
+    let clock = app.commit_clock.as_deref()?;
+    authorization_bound(app, req, admission)?.remaining(clock.now())
 }
 
 /// What the host proved about the result it just produced. No-effect is accepted only from the
@@ -2187,6 +2214,21 @@ pub fn view_png(app: &SolveApp, w: u32, h: u32) -> Result<Vec<u8>, String> {
 }
 
 pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest) -> Outcome {
+    let admission = match start_dispatch(app, req) {
+        Ok(admission) => admission,
+        Err(refused) => return refused,
+    };
+    // The host marks the actual dispatch boundary. Pre-dispatch refusals before this point can
+    // release an unstarted admission; nothing reads this flag from request parameters.
+    req.work_started.store(true, Ordering::Relaxed);
+    let out = crate::agent_chat::with_tool_request(app, req.chat_turn.as_ref(), |app| handle_request(app, ctx, req, &admission));
+    finish_dispatch(app, req, &admission, out)
+}
+
+/// Everything a request passes before its dispatch starts, for [`handle`] and for a controlled
+/// read answered on a copy ([`crate::control_job`]). `Ok` is the admission it runs under; `Err` is
+/// the reply, with any unstarted admission already released. The caller marks `work_started`.
+pub(crate) fn start_dispatch(app: &mut SolveApp, req: &mut ControlRequest) -> Result<Admission, Outcome> {
     req.local_no_effect.store(false, Ordering::Relaxed);
     req.local_unknown_effect.store(false, Ordering::Relaxed);
     // The trusted entry is classified before any method, parameter or command dispatch. Free
@@ -2194,23 +2236,23 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
     // design, and a controlled entry needs host authority before it can dispatch.
     if let Some(refusal) = entry_refusal(req) {
         release_unstarted_with(app, req, refusal.code);
-        return admission_refusal(&refusal);
+        return Err(admission_refusal(&refusal));
     }
     if let Some(refusal) = async_native_refusal(req) {
         release_unstarted_with(app, req, refusal.code);
-        return admission_refusal(&refusal);
+        return Err(admission_refusal(&refusal));
     }
     if let Some(refusal) = controlled_multi_step_refusal(req) {
         release_unstarted_with(app, req, refusal.code);
-        return admission_refusal(&refusal);
+        return Err(admission_refusal(&refusal));
     }
     if let Some(refusal) = controlled_capture_refusal(req) {
         release_unstarted_with(app, req, refusal.code);
-        return admission_refusal(&refusal);
+        return Err(admission_refusal(&refusal));
     }
     if chat_turn_cancelled(req.chat_turn.as_deref()) {
         release_unstarted_with(app, req, RefusalCode::UnsafeToStart);
-        return Outcome::Done(cancelled_request_response(&req.method, &req.params, req.guarded.is_some()));
+        return Err(Outcome::Done(cancelled_request_response(&req.method, &req.params, req.guarded.is_some())));
     }
     // The Text-to-CAD task narrows the existing gate before a request can reach it. A denial is
     // returned to the agent as an error and executes nothing. It runs before billing admission so
@@ -2218,7 +2260,7 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(reason) = crate::agent_chat::task_runtime::before_tool(app, &req.method, &req.params, req.chat_turn.as_ref()) {
         release_unstarted_with(app, req, RefusalCode::UnsafeToStart);
-        return Outcome::Done(json!({"ok": false, "error": format!("refused by the host task: {reason}")}));
+        return Err(Outcome::Done(json!({"ok": false, "error": format!("refused by the host task: {reason}")})));
     }
     let admission = match req.admission.as_ref() {
         Some(admission) => admission.clone(),
@@ -2229,16 +2271,16 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
                 {
                     app.account.control_finished(operation);
                 }
-                return admission_refusal(&refusal);
+                return Err(admission_refusal(&refusal));
             }
             admit_for_app(app, req)
         }
     };
     if let Admission::Refused(refusal) = &admission {
-        return admission_refusal(refusal);
+        return Err(admission_refusal(refusal));
     }
     if !may_dispatch(&admission) {
-        return admission_refusal(&Refusal::new(RefusalCode::OperationConflict, "this operation already exists and will not run again"));
+        return Err(admission_refusal(&Refusal::new(RefusalCode::OperationConflict, "this operation already exists and will not run again")));
     }
     // Scheduling recheck: a revocation, account switch or expiry observed while the request was
     // held must stop it before any command runs. This is the last point that can still prove no
@@ -2250,19 +2292,22 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
             // This fallback admitted the request here but never stored it; nothing ran.
             release_admission(app, &admission, refusal.code);
         }
-        return admission_refusal(&refusal);
+        return Err(admission_refusal(&refusal));
     }
     if req.admission.is_none() {
         register_control_renewal(app, req, &admission);
     }
-    // The host marks the actual dispatch boundary. Pre-dispatch refusals before this point can
-    // release an unstarted admission; nothing reads this flag from request parameters.
-    req.work_started.store(true, Ordering::Relaxed);
-    let out = crate::agent_chat::with_tool_request(app, req.chat_turn.as_ref(), |app| handle_request(app, ctx, req, &admission));
+    Ok(admission)
+}
+
+/// The commit gate and the one settlement after a dispatch ran, for [`handle`] and for a
+/// controlled read answered on a copy ([`crate::control_job`]). `out` is what the dispatch
+/// produced; the result is the reply to send.
+pub(crate) fn finish_dispatch(app: &mut SolveApp, req: &ControlRequest, admission: &Admission, out: Outcome) -> Outcome {
     // The actual commit point: re-read the advancing clock, the current account/session and the
     // durable state before writing the result back.
-    let decision = commit_decision(app, req, &admission, &out);
-    if let Admission::NewlyAdmitted { operation, .. } = &admission {
+    let decision = commit_decision(app, req, admission, &out);
+    if let Admission::NewlyAdmitted { operation, .. } = admission {
         app.account.control_finished(operation);
     }
     let no_effect = req.local_no_effect.load(Ordering::Relaxed);
@@ -2280,14 +2325,14 @@ pub fn handle(app: &mut SolveApp, ctx: &egui::Context, req: &mut ControlRequest)
         if let Ok(mut effect) = effect.lock() {
             *effect = Some(disposition);
         }
-        match (&admission, disposition) {
+        match (admission, disposition) {
             (Admission::NewlyAdmitted { operation, .. }, BridgeDisposition::Settle { deferred: true, .. }) => {
                 Some(SettlementNotice { operation: operation.clone(), kind: SettlementNoticeKind::Deferred { evidence } })
             }
             _ => None,
         }
     } else {
-        settle_result(app, &admission, decision, no_effect, unknown, &out)
+        settle_result(app, admission, decision, no_effect, unknown, &out)
     };
     if !decision.allowed() {
         let CommitDecision::Drop { code } = decision else { return out };
@@ -4176,6 +4221,264 @@ mod tests {
         let reply = reply.try_recv().expect("a refusal before copying");
         assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
         assert!(app.control_answering.is_empty() && app.control_job.is_none(), "nothing computed");
+    }
+
+    thread_local! {
+        static READ_STOPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static READ_WITHDRAWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    fn count_stop() {
+        READ_STOPS.with(|n| n.set(n.get() + 1));
+    }
+
+    fn count_withdraw(_document: &str, _params: &Value) {
+        READ_WITHDRAWS.with(|n| n.set(n.get() + 1));
+    }
+
+    fn read_stops() -> usize {
+        READ_STOPS.with(std::cell::Cell::get)
+    }
+
+    fn read_withdraws() -> usize {
+        READ_WITHDRAWS.with(std::cell::Cell::get)
+    }
+
+    /// A signed-in app whose `document.inspect` is a stoppable read on this test's thread, with a
+    /// fresh 300 s grant at clock 0 and copy answers that always outlast the app's wait. The read's
+    /// worker is held until the test releases its gate.
+    fn stoppable_read_app() -> (
+        SolveApp,
+        test_support::TestAuthority,
+        std::sync::Arc<AtomicUsize>,
+        std::sync::Arc<AtomicUsize>,
+        std::sync::Arc<std::sync::Mutex<Option<solidcraft_engine::entitlement::BillingResult>>>,
+        crate::history_off_thread_tests::guarded_workers::Gate,
+    ) {
+        crate::control_job::test_support::stoppable_on_this_thread("document.inspect", count_stop, count_withdraw);
+        let (mut app, authority, commits, releases, last) = app_with_commit_authority_parts(300_000);
+        app.apply_off_thread = Some(Duration::ZERO);
+        let gate = crate::history_off_thread_tests::guarded_workers::gate();
+        (app, authority, commits, releases, last, gate)
+    }
+
+    /// Input: an agent's (Direct Control) stoppable read on a copy. Pass: it computes off the
+    /// window thread, answers `ok`, and is admitted and charged exactly once, never released.
+    #[test]
+    fn a_controlled_stoppable_read_on_a_copy_is_charged_once() {
+        let (mut app, _authority, commits, releases, last, gate) = stoppable_read_app();
+        let ctx = egui::Context::default();
+        let (req, reply) = ControlRequest::trusted_control("document.inspect", json!({}));
+        assert!(app.offload_control(&ctx, req).is_none(), "the read leaves the window thread");
+        assert_eq!(app.control_answering.len(), 1, "it computes on a copy");
+        assert!(reply.try_recv().is_err(), "nothing answers before the read is in");
+        gate.computed();
+        gate.release();
+        app.poll_control_jobs(&ctx);
+        let reply = reply.try_recv().expect("answered once the read is in");
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!((commits.load(Ordering::Relaxed), releases.load(Ordering::Relaxed)), (1, 0), "charged once");
+        assert_eq!(*last.lock().unwrap(), Some(solidcraft_engine::entitlement::BillingResult::Succeeded));
+        assert_eq!((read_stops(), read_withdraws()), (0, 0));
+        assert!(app.pending_settlements.is_empty());
+    }
+
+    /// Input: the same read, still computing when less than the stop margin of its 300 s grant is
+    /// left (271 s in). Pass: the host stops it, again each frame until it answers; the reply is
+    /// withheld and what the finished read shows is taken away; it is released, never charged.
+    #[test]
+    fn a_controlled_read_is_stopped_before_its_authorization_ends_and_released() {
+        let (mut app, authority, commits, releases, _last, gate) = stoppable_read_app();
+        let ctx = egui::Context::default();
+        let (req, reply) = ControlRequest::trusted_control("document.inspect", json!({}));
+        assert!(app.offload_control(&ctx, req).is_none());
+        authority.advance(271_000);
+        gate.computed();
+        app.poll_control_jobs(&ctx);
+        assert_eq!(read_stops(), 1, "stopped with 29 s left");
+        app.poll_control_jobs(&ctx);
+        assert_eq!(read_stops(), 2, "and stopped again until it answers");
+        assert!(reply.try_recv().is_err(), "still computing");
+        gate.release();
+        app.poll_control_jobs(&ctx);
+        let reply = reply.try_recv().expect("answered");
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{reply}");
+        assert_eq!(read_withdraws(), 1, "the finished read's display is taken away");
+        assert_eq!((commits.load(Ordering::Relaxed), releases.load(Ordering::Relaxed)), (0, 1), "released, not charged");
+        assert!(app.control_answering.is_empty());
+    }
+
+    /// Input: the read answers only after its grant's cutoff (301 s in). Pass: the host still
+    /// stopped it, but decides nothing: the existing late path discards the result and defers its
+    /// settlement under the original operation. It is neither charged nor released.
+    #[test]
+    fn a_controlled_read_answering_after_its_cutoff_is_deferred_not_released() {
+        let (mut app, authority, commits, releases, _last, gate) = stoppable_read_app();
+        let ctx = egui::Context::default();
+        let (req, reply) = ControlRequest::trusted_control("document.inspect", json!({}));
+        assert!(app.offload_control(&ctx, req).is_none());
+        gate.computed();
+        authority.advance(301_000);
+        gate.release();
+        app.poll_control_jobs(&ctx);
+        assert!(read_stops() >= 1, "stopped once its authorization had ended");
+        let reply = reply.try_recv().expect("answered");
+        assert_eq!(reply["ok"], false, "{reply}");
+        assert_eq!(reply["settlement"]["state"], "deferred", "{reply}");
+        assert_eq!((commits.load(Ordering::Relaxed), releases.load(Ordering::Relaxed)), (0, 0), "no settlement on the expired path");
+        assert_eq!(app.pending_settlements.len(), 1, "kept for recovery under the original id");
+    }
+
+    /// Input: Stop pressed while the read computes. Pass: the read is stopped and answers as
+    /// stopped; it is released once and never charged.
+    #[test]
+    fn stop_ends_a_controlled_read_and_releases_it_once() {
+        let (mut app, _authority, commits, releases, _last, gate) = stoppable_read_app();
+        let ctx = egui::Context::default();
+        let (req, reply) = ControlRequest::trusted_control("document.inspect", json!({}));
+        assert!(app.offload_control(&ctx, req).is_none());
+        gate.computed();
+        app.stop_agent_command();
+        assert_eq!(read_stops(), 1);
+        gate.release();
+        app.poll_control_jobs(&ctx);
+        let reply = reply.try_recv().expect("answered");
+        assert_eq!(reply["stopped"], true, "{reply}");
+        assert_eq!((commits.load(Ordering::Relaxed), releases.load(Ordering::Relaxed)), (0, 1));
+        assert!(reply.get("result").is_none(), "nothing of the read is delivered");
+    }
+
+    /// Input: the agent's chat turn ends while its read computes. Pass: the read is stopped and,
+    /// once it answers, settled once as released; no second reply, no charge.
+    #[test]
+    fn a_controlled_read_whose_turn_ended_is_released_once() {
+        let (mut app, _authority, commits, releases, _last, gate) = stoppable_read_app();
+        let ctx = egui::Context::default();
+        let turn = std::sync::Arc::new(AtomicBool::new(true));
+        let (mut req, reply) = ControlRequest::trusted_control("document.inspect", json!({}));
+        req.chat_turn = Some(turn.clone());
+        assert!(app.offload_control(&ctx, req).is_none());
+        turn.store(false, Ordering::Relaxed);
+        gate.computed();
+        app.poll_control_jobs(&ctx);
+        assert_eq!(read_stops(), 1, "the ended turn stops the read");
+        assert!(reply.try_recv().is_err(), "it settles when the read answers");
+        gate.release();
+        app.poll_control_jobs(&ctx);
+        let first = reply.try_recv().expect("answered once");
+        assert_eq!(first["ok"], false, "{first}");
+        assert!(reply.try_recv().is_err(), "one reply");
+        assert_eq!((commits.load(Ordering::Relaxed), releases.load(Ordering::Relaxed)), (0, 1));
+    }
+
+    /// Input: on a thread where `document.inspect` is a stoppable read, an agent's other copy
+    /// answers: a measure, a snapshot and (with the off-thread preference on) an export. Pass:
+    /// each is refused before any copy or grant, exactly as before.
+    #[test]
+    fn copy_answers_that_cannot_be_stopped_stay_refused_for_a_controlled_entry() {
+        let (mut app, _authority, commits, releases, _last, _gate) = stoppable_read_app();
+        app.preferences.agent_off_thread = true;
+        let ctx = egui::Context::default();
+        for params in [
+            json!({"command":"inspect.measure","params":{}}),
+            json!({"command":"document.snapshot.capture","params":{}}),
+            json!({"command":"file.export_stl","params":{}}),
+        ] {
+            let (req, reply) = ControlRequest::trusted_control("engine.execute", params.clone());
+            assert!(app.offload_control(&ctx, req).is_none(), "{params}");
+            let reply = reply.try_recv().expect("refused at once");
+            assert_eq!(reply["errorDetails"]["code"], "UnsafeToStart", "{params}: {reply}");
+            assert!(app.control_answering.is_empty(), "{params}: nothing computed");
+        }
+        assert_eq!((commits.load(Ordering::Relaxed), releases.load(Ordering::Relaxed)), (0, 0));
+    }
+
+    /// Input: stamped requests, as #250's packaged route sends every call. Pass: a stoppable read
+    /// passes the guard's supported list; another read, or the stoppable one naming a file, is
+    /// still refused as unsupported.
+    #[test]
+    fn the_guard_admits_a_stoppable_read_and_still_refuses_other_reads() {
+        crate::control_job::test_support::stoppable_on_this_thread("inspect.continuity", count_stop, count_withdraw);
+        let check = |params: Value| crate::execution_guard::check_supported("engine.execute", &params).is_ok();
+        assert!(check(json!({"command":"inspect.continuity","params":{}})), "the stoppable read");
+        assert!(!check(json!({"command":"inspect.draft","params":{}})), "an unlisted read");
+        assert!(!check(json!({"command":"inspect.continuity","params":{"path":"out.json"}})), "a read that names a file");
+    }
+
+    /// A host whose renewal job has renewed the read's lease to a later cutoff.
+    struct RenewedLease {
+        cutoff: MonotonicInstant,
+        admitted: std::sync::Arc<AtomicUsize>,
+        finished: std::sync::Arc<AtomicUsize>,
+    }
+
+    impl crate::account::AccountPort for RenewedLease {
+        fn control_admitted(&mut self, _: &AuthenticatedHostScope, _: &OperationId, _: &solidcraft_engine::entitlement::Grant) {
+            self.admitted.fetch_add(1, Ordering::Relaxed);
+        }
+        fn control_finished(&mut self, _: &OperationId) {
+            self.finished.fetch_add(1, Ordering::Relaxed);
+        }
+        fn renewed_control_cutoff(
+            &self,
+            _: &AuthenticatedHostScope,
+            _: &OperationId,
+            _: &solidcraft_engine::entitlement::Grant,
+        ) -> Option<MonotonicInstant> {
+            Some(self.cutoff)
+        }
+        fn view(&self) -> crate::account::AccountView {
+            crate::account::UnavailableAccount.view()
+        }
+        fn refresh_status(&mut self) -> Result<crate::account::AccountView, Refusal> {
+            crate::account::UnavailableAccount.refresh_status()
+        }
+        fn sign_in(&mut self) -> Result<(), Refusal> {
+            crate::account::UnavailableAccount.sign_in()
+        }
+        fn sign_out(&mut self) -> Result<(), Refusal> {
+            crate::account::UnavailableAccount.sign_out()
+        }
+        fn switch_account(&mut self) -> Result<(), Refusal> {
+            crate::account::UnavailableAccount.switch_account()
+        }
+        fn delete_account_guide(&self) -> crate::account::DeleteAccountGuide {
+            crate::account::UnavailableAccount.delete_account_guide()
+        }
+        fn begin_device_code(&self) -> Result<crate::account::DeviceCode, Refusal> {
+            crate::account::UnavailableAccount.begin_device_code()
+        }
+        fn own_model_view(&self) -> Option<crate::account::OwnModelView> {
+            None
+        }
+    }
+
+    /// Input: the read's lease renewed to 600 s while it computes; it answers at 400 s, past its
+    /// first lease. Pass: not stopped, charged exactly once, and its renewal retired afterwards.
+    #[test]
+    fn a_renewed_lease_lets_a_controlled_read_run_past_its_first_lease() {
+        let (mut app, authority, commits, releases, _last, gate) = stoppable_read_app();
+        let (admitted, finished) = (std::sync::Arc::new(AtomicUsize::new(0)), std::sync::Arc::new(AtomicUsize::new(0)));
+        app.account.set_port(Box::new(RenewedLease {
+            cutoff: MonotonicInstant::from_millis(600_000),
+            admitted: admitted.clone(),
+            finished: finished.clone(),
+        }));
+        let ctx = egui::Context::default();
+        let (req, reply) = ControlRequest::trusted_control("document.inspect", json!({}));
+        assert!(app.offload_control(&ctx, req).is_none());
+        assert!(admitted.load(Ordering::Relaxed) >= 1, "its lease is renewed while it runs");
+        gate.computed();
+        authority.advance(400_000);
+        app.poll_control_jobs(&ctx);
+        assert_eq!(read_stops(), 0, "200 s are left on the renewed lease");
+        gate.release();
+        app.poll_control_jobs(&ctx);
+        let reply = reply.try_recv().expect("answered");
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!((commits.load(Ordering::Relaxed), releases.load(Ordering::Relaxed)), (1, 0), "charged once");
+        assert_eq!(finished.load(Ordering::Relaxed), 1, "the renewal ends with the read");
     }
 
     #[test]

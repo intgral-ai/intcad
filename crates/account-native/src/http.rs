@@ -578,15 +578,18 @@ pub struct HttpAccountService<T: Transport> {
     clock: Box<dyn MonotonicClock>,
 }
 
-/// A serial renewal driver for one already admitted desktop control operation.
-/// Drive it only on a worker with bounded transport and a suspend-aware clock shared
-/// with the dispatch/commit gates. Constructing it does not install authority.
+/// A serial renewal driver for one already admitted desktop operation: a control operation, or
+/// an MCP read the desktop can stop before its lease ends. Drive it only on a worker with bounded
+/// transport and a suspend-aware clock shared with the dispatch/commit gates. Constructing it
+/// does not install authority.
 pub struct OperationRenewal<T: Transport> {
     service: HttpAccountService<T>,
     session: CredentialSession,
     scope: AuthenticatedHostScope,
     operation: OperationId,
     authorization: GrantId,
+    /// The admitted grant's capability; every renewal asks for the same one.
+    capability: Capability,
     proof: Secret,
     generation: u64,
     deadline: ConservativeDeadline,
@@ -640,7 +643,11 @@ impl<T: Transport> OperationRenewal<T> {
         deadline: ConservativeDeadline,
         due: MonotonicInstant,
     ) -> Result<Self, Refusal> {
-        if grant.capability() != Capability::Control || deadline.expires_at() > grant.expires_at() || deadline.remaining(clock.now()).is_none() {
+        let capability = grant.capability();
+        if !matches!(capability, Capability::Control | Capability::Mcp)
+            || deadline.expires_at() > grant.expires_at()
+            || deadline.remaining(clock.now()).is_none()
+        {
             return Err(refusal(RefusalCode::UnsafeToStart));
         }
         let generation = session.authority_generation();
@@ -654,7 +661,8 @@ impl<T: Transport> OperationRenewal<T> {
         };
         let service = HttpAccountService::with_transport(transport, connection, Box::new(wire), Box::new(session.clone()), clock);
         let next = Some(due);
-        let driver = Self { service, session, scope, operation, authorization: grant.id().clone(), proof, generation, deadline, next, gate: None };
+        let driver =
+            Self { service, session, scope, operation, authorization: grant.id().clone(), capability, proof, generation, deadline, next, gate: None };
         driver.check_binding()?;
         Ok(driver)
     }
@@ -719,7 +727,7 @@ impl<T: Transport> OperationRenewal<T> {
             &self.scope,
             &self.operation,
             &self.authorization,
-            Capability::Control,
+            self.capability,
             Some((&self.deadline, Duration::ZERO)),
             still_verified,
         );

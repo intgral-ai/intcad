@@ -564,6 +564,57 @@ fn automatic_control_renewal_pins_the_proof_and_keeps_the_old_cutoff_on_401_or_l
     }
 }
 
+/// A desktop MCP read the host can stop may outlast one lease (docs/account/copy-read-admission.md):
+/// its driver renews under its own `mcp` capability. A chat grant still gets no driver.
+#[test]
+fn an_mcp_read_renews_under_its_own_capability_and_a_chat_grant_gets_no_driver() {
+    use crate::credentials::{ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession};
+    use crate::http::{CredentialHandoff, OperationRenewal};
+    use solidcraft_engine::entitlement::{ConservativeDeadline, Grant};
+
+    struct Exchange;
+    impl ProductSessionExchange for Exchange {
+        fn exchange(&self, _: &ProviderSession) -> Result<ProductSession, ProductExchangeError> {
+            Ok(ProductSession::from_trusted_exchange("acct_example_0001", Secret::new("fixture_bearer"), None))
+        }
+    }
+    let clock = TestClock::at(0);
+    let mut session = CredentialSession::new(Box::new(MemorySession::default()));
+    session.complete_provider_login("provider_fixture", "provider_token").unwrap();
+    session.activate_product_session(&Exchange).unwrap();
+    CredentialHandoff::installation_credential(&mut session, "inst_example_0001", Secret::new("fixture_installation")).unwrap();
+    let scope = session.authenticated_scope().unwrap();
+    let operation = operation();
+    CredentialHandoff::execution_session_proof(&mut session, Capability::Mcp, &operation, Secret::new("original_proof")).unwrap();
+    let body = json!({"authorization_id":"grant_example_0001","operation_id":"op_example_0001","capability":"mcp","renewed":true,
+        "remaining_seconds":60,"renew_after_seconds":17,"execution_session_proof":null,"expires_at":"2026-01-01T00:01:20.000Z"});
+    let driver = |capability| {
+        OperationRenewal::new(
+            ScriptedTransport::new(vec![ok(200, body.clone())]),
+            WireConnection::new(BASE, "1.0.0").unwrap(),
+            session.clone(),
+            Box::new(clock.clone()),
+            scope.clone(),
+            operation.clone(),
+            Grant::from_server(GrantId::new("grant_example_0001"), capability, MonotonicInstant::from_millis(60_000)),
+            ConservativeDeadline::new(clock.now(), Duration::from_secs(60)),
+            Duration::from_secs(20),
+        )
+    };
+    assert_eq!(driver(Capability::Chat).err().map(|refusal| refusal.code), Some(RefusalCode::UnsafeToStart));
+    let mut renewal = driver(Capability::Mcp).unwrap();
+    clock.millis.set(20_000);
+    assert_eq!(renewal.tick(), Ok(true));
+    assert_eq!(renewal.deadline().expires_at(), MonotonicInstant::from_millis(80_000));
+    let requests = renewal.transport().take_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].header("X-Execution-Session-Proof"), Some("original_proof"));
+    assert_eq!(
+        serde_json::from_slice::<Value>(requests[0].body().unwrap()).unwrap(),
+        json!({"capability":"mcp","operation_id":"op_example_0001","renewal":{"authorization_id":"grant_example_0001"}})
+    );
+}
+
 #[test]
 fn failed_renewal_cannot_extend_the_original_operation_at_the_dispatch_and_commit_gates() {
     for (response, expected, auth_rejected) in [

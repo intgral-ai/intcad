@@ -376,6 +376,64 @@ fn a_refused_bridge_begin_can_retry_only_the_original_id() {
     assert_eq!(account.finalized.as_slice(), &[(operation.clone(), BillingResult::Succeeded)]);
 }
 
+fn ignore_stop() {}
+
+fn ignore_withdraw(_: &str, _: &Value) {}
+
+/// An agent's stoppable read forwarded over the bridge (the packaged Agent's and Mastra's entry),
+/// admitted on the bridge worker and answered on a copy, with the clock at `result_ms` from the
+/// moment it starts. The operation and what the account finalized.
+fn bridge_read_at(result_ms: u64) -> (Value, OperationId, Vec<(OperationId, BillingResult)>) {
+    crate::control_job::test_support::stoppable_on_this_thread("document.inspect", ignore_stop, ignore_withdraw);
+    let call = provenance().begin_logical_call(EntryCategory::GuiBridgeMcp, "inspect_design").unwrap();
+    let operation = call.operation_id().clone();
+    let (req, reply) = ControlRequest::trusted_bridge_forwarded("document.inspect", json!({}), call.trusted().clone(), None, None);
+    let accounts = Arc::new(Mutex::new(BridgeAccounts::default()));
+    let journal = crate::dfm_review::tests::test_bridge_journal();
+    let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+    app.install_commit_authority(
+        host_scope(),
+        Box::new(BridgeAccount(Arc::clone(&accounts), journal.clone())),
+        Box::new(BridgeResultClock { dispatched: Arc::clone(&req.work_started), result_ms }),
+    );
+    let mut budget = BudgetTable::unverified_default();
+    budget.set_verified(Capability::Mcp, EntryCategory::GuiBridgeMcp, Duration::from_secs(280));
+    app.install_budget(budget);
+    app.apply_off_thread = Some(Duration::ZERO);
+    crate::control::queue_bridge_admission(&mut app, req);
+    let admitted = app.agent_chat.bridge_admission.take().unwrap().recv_timeout(Duration::from_secs(5)).expect("the worker admits the read");
+    let ctx = egui::Context::default();
+    let gate = crate::history_off_thread_tests::guarded_workers::gate();
+    assert!(app.offload_control(&ctx, admitted).is_none(), "the read leaves the window thread");
+    gate.computed();
+    app.poll_control_jobs(&ctx);
+    gate.release();
+    app.poll_control_jobs(&ctx);
+    let value = reply.recv_timeout(Duration::from_secs(5)).expect("the worker forwards the reply after settling");
+    let finalized = accounts.lock().unwrap().finalized.clone();
+    assert_eq!(accounts.lock().unwrap().begun, std::slice::from_ref(&operation), "admitted once, on the bridge worker");
+    (value, operation, finalized)
+}
+
+/// Input: an agent's stoppable read over the bridge, answered well inside its lease. Pass: the
+/// reply is delivered and the bridge worker charges its one operation exactly once.
+#[test]
+fn a_bridge_read_on_a_copy_is_admitted_and_charged_once() {
+    let (value, operation, finalized) = bridge_read_at(0);
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(finalized, [(operation, BillingResult::Succeeded)]);
+}
+
+/// Input: the same read, still computing with 29 s of its 300 s lease left. Pass: the host stops
+/// it, withholds its reply and the bridge worker settles the operation once as having no effect.
+#[test]
+fn a_bridge_read_near_the_end_of_its_lease_is_stopped_and_settled_as_no_effect() {
+    let (value, operation, finalized) = bridge_read_at(271_000);
+    assert_ne!(value["ok"], true, "{value}");
+    assert!(value.get("result").is_none(), "nothing of the read is delivered: {value}");
+    assert_eq!(finalized, [(operation, BillingResult::FailedNoEffect)]);
+}
+
 #[test]
 fn bridge_registers_and_settles_the_minted_id_only_before_the_deadline() {
     use crate::control::{Outcome, queue_bridge_admission};

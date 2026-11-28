@@ -206,7 +206,7 @@ fn check_step(step: &Value, raw: Option<&str>) -> Result<(), GuardRefusal> {
             | "browser.visibility"
             | "edit.undo"
             | "edit.redo"
-    );
+    ) || crate::control_job::stoppable_read(id).is_some();
     let names_file = step
         .get("params")
         .and_then(Value::as_object)
