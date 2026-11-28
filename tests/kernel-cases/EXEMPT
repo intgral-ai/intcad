@@ -98,6 +98,8 @@ inspect.curvature_map             display analysis: shading
 inspect.dfm                       the manual DFM run's saved report, not geometry: dfm::service_tests::a_manual_check_without_ai_writes_a_report_that_inspect_reopens
 inspect.environment_map           display analysis: shading
 inspect.silhouette                display analysis: outline
+inspect.stress_estimate           a stress estimate, not geometry: cmd::stress::tests (the real solves r1_ to r6_ there)
+inspect.stress_estimate.show      display: the estimate's colours or setup preview: cmd::stress::tests::a_dry_run_draws_its_supports_and_loads_until_cleared
 inspect.zebra                     display analysis: shading
 layout.apply                      application panel layout; no geometry (engine/UI/MCP tests)
 layout.get                        application panel layout; no geometry (engine/UI/MCP tests)
