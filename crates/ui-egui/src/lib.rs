@@ -305,6 +305,7 @@ pub mod space_mouse_model;
 pub mod space_mouse_offer;
 pub mod stand_up;
 mod status_bar;
+mod stress_by_hand;
 mod stress_overlay;
 mod stress_switch;
 #[cfg(test)]
@@ -838,6 +839,8 @@ pub struct SolveApp {
     pub dfm_chat: dfm_chat::State,
     /// The Review panel's own check: its report, its running state and the card being dragged.
     pub dfm_review: dfm_review::State,
+    /// The Simulation panel's stress estimate set up by hand, and the run it started.
+    pub stress_by_hand: stress_by_hand::State,
     /// The folder the last project was made in, offered as the next one's location.
     pub(crate) last_project_folder: Option<String>,
     /// The 3D mouse: which device, its reading, and the calibration window.
@@ -1031,6 +1034,7 @@ impl SolveApp {
             project_settings: None,
             dfm_chat: dfm_chat::State::default(),
             dfm_review: dfm_review::State::default(),
+            stress_by_hand: stress_by_hand::State::default(),
             last_project_folder: None,
             space_mouse: Default::default(),
             file_load: file_load::FileLoad::default(),
@@ -1858,9 +1862,10 @@ impl SolveApp {
             self.set_status(why, true);
             return;
         }
-        // Its loads, supports and material come in words: the chat asks for them (PIL-294).
+        // Its loads, supports and material are set up by hand in the Simulation panel, which can
+        // ask the Assistant instead (PIL-294, decision 30).
         if id == "inspect.stress_estimate" {
-            crate::stress_overlay::ask_in_chat(self);
+            crate::stress_by_hand::open(self);
             return;
         }
         if solidcraft_engine::panels::commands::is_command(id) {
@@ -3302,6 +3307,14 @@ impl SolveApp {
         }
     }
 
+    /// Whether this frame's input was all the platform's: no event the control port injected
+    /// (`ui.click`, `ui.key`, `ui.text`, `ui.drag`, `ui.move`, `ui.scroll`, `ui.menu`), no
+    /// held-over batch that held one, and no pointer gesture automation began or touched. A
+    /// person's own free stress estimate needs it (spec decision 37).
+    pub(crate) fn input_all_platform(&self) -> bool {
+        self.input_trust.all_platform()
+    }
+
     /// Inject synthetic events (one pointer event per frame). Each injected event is marked
     /// untrusted in `from_platform`, so automation input can never be mistaken for a native
     /// activation.
@@ -3470,6 +3483,8 @@ impl SolveApp {
         dfm_review::poll(self, ui.ctx());
         dfm_review::drag_hint(self, ui.ctx());
         dfm_review::release(self, ui.ctx());
+        // A stress estimate run by hand: its answer, and its setup's drawing once the panel closes.
+        stress_by_hand::poll(self, ui.ctx());
         let floating = render_workspace::active(self) || ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Panel).floating();
         timeline::follow_view_pick(self);
         render_ui::focus_shortcut(self, ui);

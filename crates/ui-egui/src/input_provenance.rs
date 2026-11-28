@@ -39,6 +39,8 @@ pub(crate) struct Tracker {
     synthetic_keys: bool,
     platform_accesskit: u8,
     synthetic_accesskit: bool,
+    /// Some event in this frame's batch came from automation, or has no known origin.
+    injected: bool,
     /// `None` nothing is pending; `Some(false)` an unconsumed all-platform batch; `Some(true)` an
     /// unconsumed batch that contained synthetic input and cannot be mapped through pre-hooks.
     retained: Option<bool>,
@@ -93,6 +95,7 @@ impl Tracker {
         self.synthetic_keys = false;
         self.platform_accesskit = 0;
         self.synthetic_accesskit = false;
+        self.injected = (0..events.len()).any(|index| !from_platform.get(index).copied().unwrap_or(false));
 
         for (index, event) in events.iter().enumerate() {
             let from_platform = from_platform.get(index).copied().unwrap_or(false);
@@ -172,6 +175,13 @@ impl Tracker {
     /// click would have two possible sources and is ambiguous.
     pub(crate) fn any_activation_without_pointer(&self) -> bool {
         self.platform_keys > 0 || self.platform_accesskit > 0 || self.synthetic_keys || self.synthetic_accesskit
+    }
+
+    /// Every event this frame came from the platform, and no pointer gesture held or released
+    /// this frame was begun or touched by automation: nothing this frame starts is automation's.
+    /// Conservative: a frame with any injected event fails it, whatever that event touched.
+    pub(crate) fn all_platform(&self) -> bool {
+        !self.injected && !self.gesture.iter().any(|g| (g.down || g.release_from_platform.is_some()) && (!g.press_from_platform || g.mixed))
     }
 
     fn mark_down_mixed(&mut self) {
@@ -353,6 +363,34 @@ mod tests {
         let (origins, replayed) = tracker.begin_batch(&[key(Key::Space)]);
         assert_eq!(origins, vec![false], "a retained length mismatch fails closed on the next hook");
         assert!(replayed);
+    }
+
+    #[test]
+    fn a_frame_with_any_injected_event_is_not_all_platform() {
+        let mut tracker = Tracker::default();
+        tracker.update(&[key(Key::Enter)], &[true], false);
+        assert!(tracker.all_platform(), "one platform key");
+        // An injected move beside a platform key: the frame is automation's too.
+        tracker.update(&[key(Key::Enter), Event::PointerMoved(pos2(5.0, 5.0))], &[true, false], false);
+        assert!(!tracker.all_platform());
+        // A missing origin is not the platform's.
+        tracker.update(&[key(Key::Enter)], &[], false);
+        assert!(!tracker.all_platform());
+        // The next frame with platform input only is the platform's again.
+        tracker.update(&[key(Key::Enter)], &[true], false);
+        assert!(tracker.all_platform());
+    }
+
+    #[test]
+    fn a_held_injected_press_keeps_later_frames_from_being_all_platform() {
+        let mut tracker = Tracker::default();
+        tracker.update(&[pointer(pos2(120.0, 110.0), true)], &[false], false);
+        tracker.update(&[key(Key::Enter)], &[true], false);
+        assert!(!tracker.all_platform(), "automation still holds a button down");
+        tracker.update(&[pointer(pos2(120.0, 110.0), false)], &[true], false);
+        assert!(!tracker.all_platform(), "a platform release ends automation's press");
+        tracker.update(&[pointer(pos2(120.0, 110.0), true), pointer(pos2(120.0, 110.0), false)], &[true, true], false);
+        assert!(tracker.all_platform(), "a fresh platform click after it");
     }
 
     #[test]

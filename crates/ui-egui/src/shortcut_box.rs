@@ -362,6 +362,14 @@ fn run_typed(app: &mut SolveApp, line: &str) {
                 let why = app.tr("ui.stress_estimate_not_offered").to_string();
                 app.set_status(why, true);
             }
+            // Entered by input the control port injected: the port's request, not a run by hand
+            // (spec decision 37).
+            Ok(params)
+                if solidcraft_engine::fea::offer::is_estimate_command(id)
+                    && crate::stress_by_hand::StartedBy::this_frame(app) == crate::stress_by_hand::StartedBy::Port =>
+            {
+                crate::stress_by_hand::run_typed_by_port(app, id, params);
+            }
             Ok(params) => {
                 app.sbox.used(id);
                 let _ = app.run(id, params);

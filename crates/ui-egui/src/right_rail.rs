@@ -15,7 +15,9 @@
 //! the selection colour. A panel is a title over a rule and, while it has nothing to list, one
 //! centred block: the item's drawing, what is missing, and a sentence on what will be listed.
 //!
-//! Nothing fills the panels yet. They hold no sample data.
+//! Files browses the project, Review lists a DFM check's findings, Simulation sets up a stress
+//! estimate by hand ([`crate::stress_by_hand`]) and Autocomplete holds its switch. None holds
+//! sample data.
 
 use egui::{Color32, FontId, Pos2, Rect, Sense, Stroke, pos2, vec2};
 
@@ -348,7 +350,8 @@ fn drawing(painter: &egui::Painter, item: Item, centre: Pos2, side: f32, ink: Co
 }
 
 /// One panel: its title over a rule and, while there is nothing to list, the empty block. The
-/// Review panel lists the DFM check's findings once the person has run one.
+/// Review panel lists the DFM check's findings once the person has run one; the Simulation panel
+/// is the stress estimate's setup.
 fn panel(app: &mut SolveApp, ui: &mut egui::Ui, item: Item) {
     let t = Tokens::get();
     let full = ui.max_rect();
@@ -371,6 +374,9 @@ fn panel(app: &mut SolveApp, ui: &mut egui::Ui, item: Item) {
         crate::dfm_review::panel(app, ui, body);
     } else if item == Item::Files {
         crate::file_tree::panel(app, ui, body);
+    } else if item == Item::Simulation && crate::stress_switch::by_hand(app) {
+        // The release switch at `off` leaves Simulation empty, as before the run by hand.
+        crate::stress_by_hand::panel(app, ui, body);
     } else if item == Item::Autocomplete {
         let rest = crate::agent_chat::predict::panel::show(app, ui, body);
         if let Some(rest) = rest {

@@ -2,13 +2,20 @@
 //! preference read as a level ([`Offer`]), what it hides from people, and what it refuses agents.
 //!
 //! - **Stress button** (the ribbon's Inspect ▸ Estimate, its drop-down, command search, a typed
-//!   command line, `ui.start`, shortcuts): offered only at `agents` until #270 gives the button a
-//!   run by hand to open; #270 lowers [`button`] to `by_hand`.
+//!   command line, `ui.start`, shortcuts): offered from `by_hand`, where it opens the right
+//!   rail's Simulation panel for a run by hand. Without the rail it opens the chat, the agent
+//!   route, so there it needs `agents`.
+//! - **The Simulation panel's setup** shows from `by_hand`; at `off` the panel is empty, as before
+//!   the run by hand. Its "Ask the Assistant instead" needs `agents`.
 //! - **An agent's estimate**: refused before it starts, by any route (the chat's gate, the held
 //!   queue the packaged Agent and the bridge use, the control port, `batch`, `engine.script`,
 //!   `ui.start`), and left out of `engine.commands`, until the level is `agents`.
 //! - **A person's own run** (the free GUI entry) is never refused here; the switch hides what
 //!   starts it.
+//! - **The control port driving the window** (spec decision 37): a Run, or a typed estimate line,
+//!   entered by input the port injected (`ui.click`, `ui.key`, …) is the port's request, not the
+//!   person's ([`crate::stress_by_hand::StartedBy`]). It is refused as an agent's is until
+//!   `agents`, and then takes the port's own charged entry.
 //!
 //! An agent cannot raise the level itself: `ui.prefs` from a controlled entry may not set it
 //! ([`set_by_control_refusal`]). A tester sets it in the settings file, or starts the app with
@@ -36,9 +43,16 @@ pub(crate) fn offer(app: &SolveApp) -> Offer {
     Offer::resolve(&app.preferences.stress_estimate, auto(), None)
 }
 
-/// The Stress button is offered. Until #270 makes it open the Simulation panel's run by hand, the
-/// button opens the chat, which is the agent route, so it needs `agents`.
+/// The Stress button is offered: from `by_hand`, where it opens the Simulation panel's run by
+/// hand. Without the right rail it opens the chat instead, which is the agent route, so there it
+/// needs `agents`.
 pub(crate) fn button(app: &SolveApp) -> bool {
+    let level = offer(app);
+    if crate::right_rail::shown(app) { level.by_hand() } else { level.agents() }
+}
+
+/// The panel offers to ask the Assistant instead: the agent route.
+pub(crate) fn ask_assistant(app: &SolveApp) -> bool {
     offer(app).agents()
 }
 
