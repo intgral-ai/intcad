@@ -1,8 +1,8 @@
 # Stress estimate (PIL-294): ship review
 
 Reviewed: `fea/5-agent-skill` at b805339c8 (the tip of PRs 169–173). Date: 2026-11-17. Reviewer: an agent session with no part in building it.
-Method: a fresh copy built on zhikun (Linux, 24 cores, gmsh 4.12.1, CalculiX 2.21). Every case was driven through `intcad-cli mcp`, as an agent drives it. Results were checked against closed-form or published values, and against the solver's own `.frd` files read independently (`keep_files`).
-Raw replies and scripts: the shared notes folder, `fea-ship-review-2026-11-17/fea-review-results.tgz`.
+Method: a fresh copy built on a Linux workstation (24 cores, gmsh 4.12.1, CalculiX 2.21). Every case was driven through `intcad-cli mcp`, as an agent drives it. Results were checked against closed-form or published values, and against the solver's own `.frd` files read independently (`keep_files`).
+Raw replies and scripts are kept outside the repository.
 
 ## 1. Verdict
 
@@ -137,9 +137,9 @@ What the mesh verdict did:
 12. Modal and buckling analysis (out of scope here, listed for completeness).
 
 ## 5. What I could not check
-- **The UI flow** (Stress button, approval card, legend, preview): the desktop app does not build on zhikun without the glib/GTK development packages, and installing system packages is outside this review's limits. It was judged from the code only (`stress_overlay.rs`, `agent_chat/gate.rs`, `acp.rs`) and the earlier session's screenshots. I did not see D3's false warning or D7's "hole" label on screen.
+- **The UI flow** (Stress button, approval card, legend, preview): the desktop app does not build on that workstation without the glib/GTK development packages, and installing system packages is outside this review's limits. It was judged from the code only (`stress_overlay.rs`, `agent_chat/gate.rs`, `acp.rs`) and the earlier session's screenshots. I did not see D3's false warning or D7's "hole" label on screen.
 - **A real chat agent's wording:** only the command's own replies and the system note were audited.
-- **Windows and macOS.** Network isolation was also not exercised: `unshare` is blocked on zhikun, so the runs fell back to running without isolation, as before.
+- **Windows and macOS.** Network isolation was also not exercised: `unshare` is blocked on that workstation, so the runs fell back to running without isolation, as before.
 - **A real 16 GB laptop.** It was emulated with a cgroup memory cap. Timings ran on 24 cores, partly under contention from parallel runs: the Lamé 1.0 mm mesh check took 313 s.
 - **NAFEMS LE10,** and bent sheet metal under pressure or a symmetry plane.
 - **The Peterson curve fit** (Pilkey and Pilkey, 3rd ed., Chart 3.1) was used from its published coefficients, not checked against the printed chart. Richardson extrapolation of my own two fine meshes, 108.2 MPa, agrees with its 107.3 MPa to under 1 %.
