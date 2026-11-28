@@ -19733,3 +19733,30 @@ fn below_agents_a_chat_agents_stress_estimate_gets_no_card() {
     let answered = reply.try_recv().ok();
     assert!(app.agent_chat.items.iter().any(|i| matches!(i, Item::Approval { .. })), "agents: the solve asks first: {answered:?}");
 }
+
+/// The release switch (spec decision 32): the chat's Stress estimate mode is offered, in the
+/// picker's list and on the Assistant's web page, only at `agents`; below it the page cannot
+/// choose it. The other modes stay.
+#[test]
+fn the_stress_estimate_mode_is_offered_only_while_agents_may_ask() {
+    let ctx = crate::fonts::test_context();
+    for level in ["off", "by_hand", "agents"] {
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.stress_estimate = level.into();
+        let offered = skill::offered(&h.app);
+        assert_eq!(offered.contains(&skill::Skill::StressEstimate), level == "agents", "{level}: {offered:?}");
+        assert!(offered.contains(&skill::Skill::Plain) && offered.contains(&skill::Skill::TextToCad), "{level}: {offered:?}");
+        let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+        let ids: Vec<&str> = state["skills"].as_array().unwrap().iter().filter_map(|s| s["id"].as_str()).collect();
+        assert_eq!(ids.contains(&skill::STRESS_ESTIMATE_ID), level == "agents", "{level}: the page's list {ids:?}");
+        assert!(ids.contains(&"plain"), "{level}: {ids:?}");
+        let chosen = web::act(&mut h.app, &ctx, &json!({"type": "skill", "id": skill::STRESS_ESTIMATE_ID}).to_string());
+        assert_eq!(chosen.is_ok(), level == "agents", "{level}: {chosen:?}");
+        assert_eq!(h.app.agent_chat.skill == skill::Skill::StressEstimate, level == "agents", "{level}");
+        // Chosen at `agents`, then the switch lowered: the page's next state is the plain chat.
+        h.app.agent_chat.skill = skill::Skill::StressEstimate;
+        let state: Value = serde_json::from_str(&web::state(&mut h.app)).expect("the state is JSON");
+        let kept = if level == "agents" { skill::STRESS_ESTIMATE_ID } else { "plain" };
+        assert_eq!(state["skill"], kept, "{level}");
+    }
+}

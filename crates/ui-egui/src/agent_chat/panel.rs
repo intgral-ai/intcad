@@ -1087,13 +1087,16 @@ fn desktop_body(app: &mut SolveApp, ui: &mut egui::Ui) {
                         crate::scenario::publish_rect("agent_chat:permissions", permissions.rect);
                         crate::scenario::publish_handle("agent_chat:permissions", permissions.rect.center());
                         // The built-in skill for the next turn. The running turn keeps its frozen
-                        // binding even while the picker is disabled.
+                        // binding even while the picker is disabled. A mode the release switch
+                        // no longer offers goes back to the plain chat.
+                        skill::settle(app);
+                        let skills = skill::offered(app);
                         let current_skill = app.agent_chat.skill;
                         let skill = ui
                             .add_enabled_ui(!busy, |ui| {
                                 ui.allocate_ui(vec2(Tokens::get().space_24 * 5.0, Tokens::get().control_height), |ui| {
                                     ui_kit::dropdown_menu(ui, "sc_agent_skill", current_skill.title(), |ui| {
-                                        for choice in skill::Skill::ALL {
+                                        for choice in skills.iter().copied() {
                                             let row = ui_kit::list_picker(ui, choice.id(), choice.title(), choice == current_skill)
                                                 .backing_on_hover_text(choice.description());
                                             crate::scenario::publish_handle(&format!("agent_chat:skill:{}", choice.id()), row.rect.center());

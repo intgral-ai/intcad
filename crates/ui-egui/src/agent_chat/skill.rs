@@ -215,6 +215,21 @@ impl Skill {
 /// Select `skill` for the chat's next message, as the Stress button does, unless the connected
 /// backend refuses built-in skills: then the chat keeps its mode, and the message still goes.
 /// With no backend yet the skill is selected; the send refuses it if the backend can't run it.
+/// The skills the chat offers now, in [`Skill::ALL`]'s order: Stress estimate only while the
+/// release switch lets agents ask for the estimate (spec decision 32, `stress_switch`).
+pub fn offered(app: &crate::SolveApp) -> Vec<Skill> {
+    let agents = crate::stress_switch::offer(app).agents();
+    Skill::ALL.into_iter().filter(|skill| *skill != Skill::StressEstimate || agents).collect()
+}
+
+/// Put the chat back on the plain mode when its mode is no longer offered (the release switch was
+/// lowered since it was chosen). A running turn keeps its frozen binding.
+pub fn settle(app: &mut crate::SolveApp) {
+    if app.agent_chat.state() != super::State::Busy && !offered(app).contains(&app.agent_chat.skill) {
+        app.agent_chat.skill = Skill::Plain;
+    }
+}
+
 pub fn select(chat: &mut super::AgentChat, skill: Skill) {
     if chat.backend.as_ref().is_none_or(|backend| backend.skill_support(skill) != SkillSupport::Unsupported) {
         chat.skill = skill;
