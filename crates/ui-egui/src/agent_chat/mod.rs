@@ -89,8 +89,9 @@ pub(crate) const MAX_MESSAGE_BYTES: usize = MAX_MESSAGE * 4;
 const MAX_PROMPT: usize = MAX_MESSAGE;
 /// Room kept in a message for the files' names and the words around their text.
 const FILE_NAMES_ROOM: usize = 2_000;
-/// How long a request waits for Allow or Deny before it is declined (the agent's MCP server gives
-/// up on a request after five minutes).
+/// How long a request waits for Allow or Deny before it is declined. The app's wait for the
+/// request starts again at Allow (#197); the agent's MCP server waits up to six minutes for its
+/// first answer (`READ_TIMEOUT` in `crates/mcp/src/backend.rs`), this and a minute after Allow.
 const APPROVAL_TIMEOUT_MS: f64 = 240_000.0;
 /// Size of the picture of the view sent with a message.
 const VIEW_IMAGE: (u32, u32) = (960, 600);
@@ -1563,7 +1564,10 @@ pub fn connect(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(hint) = entry.problem_hint() {
         chat.notice(hint, true);
     }
-    let bridge = if packaged_route { None } else { cli.zip(chat.tools_port).map(|(cli, port)| acp::McpBridge { cli, port }) };
+    // On a bridge, the built-in agent waits for a long stress estimate's forecast time; others keep
+    // `pending` (#197). The packaged route has no bridge: its calls wait up to an hour.
+    let forecast_wait = acp::waits_for_forecast(&entry.id);
+    let bridge = if packaged_route { None } else { cli.zip(chat.tools_port).map(|(cli, port)| acp::McpBridge { cli, port, forecast_wait }) };
     chat.tools_available = Some(packaged_route || bridge.is_some());
     let wake = ctx.clone();
     let start = backend::StartContext { cwd: working_dir(), bridge, tools: chat.tools_tx.clone(), wake: Box::new(move || wake.request_repaint()) };
@@ -2749,6 +2753,7 @@ fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
     let chat = &mut app.agent_chat;
     let Some(i) = chat.held.iter().position(|h| h.id == id) else { return };
     let h = chat.held.remove(i);
+    h.req.asking.store(false, std::sync::atomic::Ordering::Relaxed);
     for item in &mut chat.items {
         if let Item::Approval { id: x, answer, .. } = item
             && *x == id
@@ -3040,6 +3045,8 @@ fn pump_tools(app: &mut SolveApp) {
                 chat.next_approval += 1;
                 let id = chat.next_approval;
                 chat.push(Item::Approval { id, title, tool, answer: None, counted: None });
+                // The request's wait starts again at Allow (#197).
+                req.asking.store(true, std::sync::atomic::Ordering::Relaxed);
                 chat.held.push(Held { id, req, since: crate::now_ms() });
             }
             gate::Verdict::Refuse(e) => {

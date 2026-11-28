@@ -72,12 +72,14 @@ pub trait Backend {
 /// Longest reply line accepted from the app.
 const MAX_REPLY: u64 = 64 << 20;
 
-/// How long a reply may take: kernel operations (booleans, fillets) on big parts can take a while.
-const READ_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a request's first reply may take. The app answers within 60 s, saying the request is
+/// still running if it is (docs/control-protocol.md). The agent chat's endpoint does not count the
+/// time a request waits for the user's Allow, at most 240 s (#197): a minute is left to spare.
+const READ_TIMEOUT: Duration = Duration::from_secs(360);
 
 /// How long the app may take to run an `engine.batch`: a little longer than its control server
-/// waits (3600 s), so its "still running" reply arrives first.
-const BATCH_TIMEOUT: Duration = Duration::from_secs(3720);
+/// waits (3600 s) and the chat's 240 s for an answer, so its "still running" reply arrives first.
+const BATCH_TIMEOUT: Duration = Duration::from_secs(3960);
 
 /// How long a call goes on waiting, asking `control.pending`, after the app said its request is
 /// still running (the app says so after 60 s; #1618), before it says so itself.
@@ -92,6 +94,18 @@ const POLL_EVERY: Duration = Duration::from_millis(500);
 
 /// How often a long wait is reported on stderr.
 const PROGRESS_EVERY: Duration = Duration::from_secs(30);
+
+/// A bridge that follows the app's forecasts (`--wait-for-forecast`, the agent chat's built-in
+/// agent, #197) waits for a request still running as long as the latest forecast says, times
+/// this, and [`FORECAST_SLACK`] more. A stress estimate's forecast came within −42 % and +44 % of
+/// 33 measured runs, and a loaded computer took up to 35 % longer
+/// (crates/engine/src/cmd/stress_forecast.rs).
+const FORECAST_FACTOR: f64 = 2.0;
+const FORECAST_SLACK: Duration = Duration::from_secs(60);
+
+/// The longest such a wait goes on after the app said "still running": an hour, as long as the
+/// app waits for a batch. Its mesher may take 10 minutes and its solver 30 for each run.
+const FORECAST_CAP: Duration = Duration::from_secs(3600);
 
 /// How a tool error starts when a request is still running in the app after the wait: the
 /// request was not cancelled and its reply waits on the connection; the `pending` tool gets it.
@@ -173,15 +187,49 @@ fn refuse_legacy_guard(params: &Value) -> Result<(), String> {
     }
 }
 
-/// How long to wait for a request still running (tests shorten them).
-#[derive(Clone, Copy)]
-pub(crate) struct Waits {
+/// How long a bridge waits for the app: for a request's first reply, and for a request still
+/// running. Tests shorten them ([`Remote::with_waits`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Waits {
+    /// For the first reply to a request (`READ_TIMEOUT`).
+    pub read: Duration,
+    /// After the app said a request is still running (`PENDING_WAIT`).
     pub pending: Duration,
+    /// For a request still running from an earlier call (`SETTLE_WAIT`).
     pub settle: Duration,
+    /// Between two `control.pending` questions (`POLL_EVERY`).
     pub poll: Duration,
+    /// Beyond twice a forecast's seconds, for a bridge that follows forecasts (`FORECAST_SLACK`).
+    pub forecast_slack: Duration,
+    /// The longest a bridge that follows forecasts waits after "still running" (`FORECAST_CAP`).
+    pub forecast_cap: Duration,
 }
 
-const WAITS: Waits = Waits { pending: PENDING_WAIT, settle: SETTLE_WAIT, poll: POLL_EVERY };
+impl Waits {
+    /// The waits a bridge has when nothing shortens them.
+    pub const DEFAULT: Waits = Waits {
+        read: READ_TIMEOUT,
+        pending: PENDING_WAIT,
+        settle: SETTLE_WAIT,
+        poll: POLL_EVERY,
+        forecast_slack: FORECAST_SLACK,
+        forecast_cap: FORECAST_CAP,
+    };
+}
+
+/// How long to wait for a request still running, by a not-done `control.pending` answer `status`:
+/// `limit` until the app forecasts the request's time; after a forecast it has not seen (`seen`),
+/// that forecast's seconds times [`FORECAST_FACTOR`] and the slack from `now` (`waited`), never
+/// less than `floor` and never more than the cap (#197).
+fn forecast_limit(status: &Value, seen: &mut Option<u64>, limit: Duration, waited: Duration, floor: Duration, waits: &Waits) -> Duration {
+    let Some(forecast) = status.get("forecast").and_then(Value::as_u64).filter(|f| *seen != Some(*f)) else { return limit };
+    let Some(seconds) = status.get("expected_s").and_then(Value::as_f64).filter(|s| s.is_finite() && *s >= 0.0) else { return limit };
+    *seen = Some(forecast);
+    let more = Duration::try_from_secs_f64(seconds * FORECAST_FACTOR).unwrap_or(waits.forecast_cap).saturating_add(waits.forecast_slack);
+    waited.saturating_add(more).max(floor).min(waits.forecast_cap)
+}
+
+const WAITS: Waits = Waits::DEFAULT;
 
 /// The level a control reply says its request was checked at (#9184), if it says one.
 fn echoed(v: &Value) -> Option<ParamCheck> {
@@ -229,6 +277,9 @@ pub struct Remote {
     /// An outstanding request's end, once a later call waited for it (for `pending`).
     settled: Option<Settled>,
     waits: Waits,
+    /// Wait for a request still running as long as the app's forecast for it says, instead of
+    /// saying after `PENDING_WAIT` that it still runs (`--wait-for-forecast`, #197).
+    follow_forecast: bool,
     /// How calls are checked (`--param-check`): by the app, when it checks a request's own
     /// level, else here before they are sent.
     param_check: ParamCheck,
@@ -242,6 +293,11 @@ pub struct Remote {
     /// Uncertain writes survive connection loss, reconnect and consuming pending status.
     /// Only explicitly reconstructing this Remote after reconciliation starts afresh.
     guarded_unknown: Option<String>,
+}
+
+/// A read that ran out of time (`WouldBlock` where the system says so for a socket's timeout).
+fn timed_out(e: &std::io::Error) -> bool {
+    matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock)
 }
 
 /// How a tool error starts when no app listens at the bridged address. The agent reads it, and
@@ -277,6 +333,7 @@ impl Remote {
             outstanding: None,
             settled: None,
             waits: WAITS,
+            follow_forecast: false,
             param_check: ParamCheck::Off,
             app_checks: None,
             echoed: None,
@@ -296,6 +353,25 @@ impl Remote {
     #[cfg(test)]
     pub(crate) fn set_waits(&mut self, waits: Waits) {
         self.waits = waits;
+        self.set_read_timeout(waits.read);
+    }
+
+    /// Other waits than [`Waits::DEFAULT`]: tests of the app's control server and this bridge
+    /// together shorten them, so minutes take seconds.
+    pub fn with_waits(mut self, waits: Waits) -> Self {
+        self.waits = waits;
+        self.set_read_timeout(waits.read);
+        self
+    }
+
+    /// Wait for a request still running as long as the app forecasts it takes (twice that and a
+    /// minute, up to an hour), instead of saying after 240 s that it still runs
+    /// (`--wait-for-forecast`). For a client that waits on a tool call that long: the agent chat
+    /// starts its built-in agent's bridge so (#197). Requests the app forecasts nothing for, and
+    /// a forecast that has not come yet, wait as before.
+    pub fn with_forecast_wait(mut self, on: bool) -> Self {
+        self.follow_forecast = on;
+        self
     }
 
     #[cfg(test)]
@@ -361,7 +437,7 @@ impl Remote {
             match TcpStream::connect_timeout(&sa, Duration::from_millis(800)) {
                 Ok(s) => {
                     s.set_nodelay(true).ok();
-                    s.set_read_timeout(Some(READ_TIMEOUT)).ok();
+                    s.set_read_timeout(Some(self.waits.read)).ok();
                     let read = s.try_clone()?;
                     self.conn = Some((BufReader::new(read), s));
                     return Ok(());
@@ -372,10 +448,16 @@ impl Remote {
         Err(not_connected(last))
     }
 
-    /// The tool error for a failed call: whether the app is not running (and how to start it) or
-    /// went away during the call.
+    /// The tool error for a failed call: whether the app is not running (and how to start it),
+    /// went away during the call, or did not answer in time.
     fn explain(&self, e: &std::io::Error) -> String {
         let (addr, port) = (&self.addr, self.port);
+        if timed_out(e) {
+            return format!(
+                "the Intcad app at {addr} did not answer in time ({e}): the request was not sent again, and it may still be running \
+                 there. Ask the `running` tool what the app is running, and inspect the design before sending a change again"
+            );
+        }
         if e.kind() == std::io::ErrorKind::NotConnected {
             format!(
                 "{NOT_RUNNING} {addr} ({e}): it is not running, or it quit. Start it with `intcad --control {port}` \
@@ -433,7 +515,7 @@ impl Remote {
         self.reconnect().or_else(|_| self.reconnect())?;
         self.set_read_timeout(BATCH_TIMEOUT);
         let r = self.roundtrip(line);
-        self.set_read_timeout(READ_TIMEOUT);
+        self.set_read_timeout(self.waits.read);
         r
     }
 }
@@ -474,8 +556,14 @@ impl Remote {
     }
 
     /// Wait up to `limit` for the outstanding request, asking `control.pending` now and then and
-    /// saying on stderr how long it takes. An error: the connection, and so the reply, was lost.
-    fn wait_outstanding(&mut self, limit: Duration) -> Result<Waited, String> {
+    /// saying on stderr how long it takes. `follow`: longer, as the app's forecasts for it say,
+    /// when this bridge follows them ([`Remote::with_forecast_wait`]). An error: the connection,
+    /// and so the reply, was lost.
+    fn wait_outstanding(&mut self, limit: Duration, follow: bool) -> Result<Waited, String> {
+        let follow = follow && self.follow_forecast;
+        let floor = limit;
+        let mut limit = limit;
+        let mut seen = None;
         let start = Instant::now();
         let mut told = start;
         loop {
@@ -520,6 +608,17 @@ impl Remote {
                 return Err("the guarded pending status was invalid".into());
             }
             let waited = start.elapsed();
+            if follow {
+                let before = limit;
+                limit = forecast_limit(&r, &mut seen, limit, waited, floor, &self.waits);
+                if limit != before {
+                    solidcraft_engine::note!(
+                        "solidcraft-mcp: the app expects {what} to take {} s more; waiting up to {} s in all for it",
+                        r.get("expected_s").and_then(Value::as_f64).unwrap_or(0.0).round(),
+                        limit.as_secs()
+                    );
+                }
+            }
             if waited >= limit {
                 return Ok(Waited::Running);
             }
@@ -558,7 +657,7 @@ impl Remote {
     /// `pending`. Still running after the wait: the new request is not sent.
     fn settle_earlier(&mut self) -> Result<(), String> {
         let Some(request) = self.outstanding.clone() else { return Ok(()) };
-        match self.wait_outstanding(self.waits.settle) {
+        match self.wait_outstanding(self.waits.settle, false) {
             Ok(Waited::Done(reply)) => self.settled = Some(Settled::Finished { request, reply }),
             Ok(Waited::Nothing) => {}
             Ok(Waited::Running) => return Err(self.still_running(true)),
@@ -578,7 +677,7 @@ impl Remote {
         }
         let Some(request) = self.outstanding.clone() else { return Ok(json!({"pending": null})) };
         let what = &request.what;
-        let status: Result<Value, String> = match self.wait_outstanding(self.waits.settle) {
+        let status: Result<Value, String> = match self.wait_outstanding(self.waits.settle, false) {
             Ok(Waited::Done(reply)) => Ok(json!({"pending": what, "done": true, "reply": reply})),
             Ok(Waited::Nothing) => Ok(json!({"pending": null})),
             Ok(Waited::Running) => Ok(json!({"pending": what, "done": false, "running_s": self.outstanding.as_ref().map_or(0, Outstanding::secs)})),
@@ -604,8 +703,12 @@ impl Remote {
         } else {
             // One retry on a fresh connection (the app may have restarted). When nothing listens
             // any more, the app went away, maybe while running this request: say that, not
-            // just "not running".
+            // just "not running". A reply that did not come in time is no restart: the app may
+            // be running the request, so it is not sent again (#197).
             self.roundtrip(&line).or_else(|lost| {
+                if timed_out(&lost) {
+                    return Err(lost);
+                }
                 self.roundtrip(&line).map_err(|e| if e.kind() == std::io::ErrorKind::NotConnected && lost.kind() != e.kind() { lost } else { e })
             })
         }
@@ -630,7 +733,7 @@ impl Remote {
                 sent.elapsed().as_secs(),
                 self.waits.pending.as_secs()
             );
-            return match self.wait_outstanding(self.waits.pending)? {
+            return match self.wait_outstanding(self.waits.pending, true)? {
                 Waited::Done(reply) => {
                     self.echoed = echoed(&reply);
                     outcome(&reply)
@@ -759,7 +862,7 @@ impl Remote {
     fn settle_before_guarded(&mut self) -> Result<(), GuardedCallError> {
         self.check_unknown()?;
         let Some(request) = self.outstanding.clone() else { return Ok(()) };
-        match self.wait_outstanding(self.waits.settle) {
+        match self.wait_outstanding(self.waits.settle, false) {
             Ok(Waited::Done(reply)) => self.settled = Some(Settled::Finished { request, reply }),
             Ok(Waited::Nothing) => {}
             Ok(Waited::Running) => {
@@ -823,7 +926,7 @@ impl Remote {
             self.set_read_timeout(BATCH_TIMEOUT);
         }
         let exchange = self.roundtrip_connected(&line);
-        self.set_read_timeout(READ_TIMEOUT);
+        self.set_read_timeout(self.waits.read);
         // Once write_all has been attempted, even a write error cannot prove zero bytes sent.
         let reply = exchange
             .map_err(|_| self.unknown("A guarded write or its reply was lost; do not resend it. Reconcile before further guarded writes."))?;
@@ -833,7 +936,7 @@ impl Remote {
         })?;
         if reply.get("ok") == Some(&Value::Bool(false)) && reply.get("running") == Some(&Value::Bool(true)) {
             self.outstanding = Some(request);
-            return match self.wait_outstanding(self.waits.pending) {
+            return match self.wait_outstanding(self.waits.pending, true) {
                 Ok(Waited::Done(reply)) => self.finish_guarded_reply(method, &reply, level),
                 Ok(Waited::Running) => Err(GuardedCallError::Pending(self.still_running(false))),
                 _ => Err(self.unknown("The original guarded pending reply was lost; reconcile before further guarded writes.")),

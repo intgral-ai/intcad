@@ -84,6 +84,9 @@ pub struct ControlRequest {
     bridge_effect: Option<BridgeEffect>,
     /// Set once the window starts on it; until then it waits its turn (`control.running`, #3654).
     pub started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Set while the agent chat holds it for the user's Allow or Deny: the control server does not
+    /// count that time against the request's wait, which starts again at Allow (#197).
+    pub asking: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Chat requests already admitted by the gate may outlive a tab switch. This turn's
     /// validity follows them through queues, computation and cursor animation.
     pub(crate) chat_turn: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -286,6 +289,7 @@ impl ControlRequest {
             reply: tx,
             bridge_effect: None,
             started: Default::default(),
+            asking: Default::default(),
             chat_turn: None,
             guarded: None,
             entry,
@@ -342,6 +346,7 @@ impl ControlRequest {
             reply: tx,
             bridge_effect: None,
             started: Default::default(),
+            asking: Default::default(),
             chat_turn: None,
             guarded: None,
             entry,
@@ -374,6 +379,7 @@ impl ControlRequest {
             reply: tx,
             bridge_effect: None,
             started: Default::default(),
+            asking: Default::default(),
             chat_turn: None,
             guarded: None,
             entry: EntryCategory::GuiBridgeMcp,
@@ -431,6 +437,7 @@ impl ControlRequest {
             reply: tx,
             bridge_effect: None,
             started: Default::default(),
+            asking: Default::default(),
             chat_turn: None,
             guarded: None,
             entry: EntryCategory::Unknown,
@@ -536,6 +543,7 @@ pub(crate) fn reissue(parts: Reissue, method: impl Into<String>, params: Value) 
         reply: tx,
         bridge_effect,
         started: Default::default(),
+        asking: Default::default(),
         chat_turn: None,
         guarded: None,
         entry,

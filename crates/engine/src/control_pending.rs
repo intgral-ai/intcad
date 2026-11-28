@@ -99,6 +99,26 @@ pub fn reads_only(method: &str, params: &Value) -> bool {
     effect(method, params) == Effect::ReadsOnly
 }
 
+/// For a request whose time the app forecasts, the number forecasts made for it will come after
+/// (the latest one's now): a stress estimate's, once a run has meshed and counted its nodes
+/// (PIL-294 A13, [`crate::fea::Forecast`]). `None` for any other request (#197).
+pub fn forecast_after(method: &str, params: &Value) -> Option<u64> {
+    let command = matches!(method, "engine.execute" | "command").then(|| params.get("command").or_else(|| params.get("id")).and_then(Value::as_str));
+    let id = command.flatten().map(|c| crate::find_command(c).map_or(c, |spec| spec.id))?;
+    (id == "inspect.stress_estimate").then(crate::fea::forecast_seq)
+}
+
+/// What the app still expects a request to take, in seconds, by the latest forecast made after
+/// `after` ([`forecast_after`]), counting a third mesh that may follow, and that forecast's number.
+/// `None` until there is one.
+pub fn expected(after: u64) -> Option<(u64, f64)> {
+    crate::fea::forecast().and_then(|f| expected_of(&f, after))
+}
+
+fn expected_of(f: &crate::fea::Forecast, after: u64) -> Option<(u64, f64)> {
+    (f.seq > after && f.seconds_most.is_finite() && f.seconds_most >= 0.0).then_some((f.seq, f.seconds_most))
+}
+
 /// The request in a message: "`engine.execute` (solid.fillet)", or just "`ui.inspect`".
 pub fn describe(method: &str, params: &Value) -> String {
     let command = matches!(method, "engine.execute" | "command")
@@ -115,6 +135,29 @@ pub fn describe(method: &str, params: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// #197 with A6: the built-in agent's wait follows the forecast with the third mesh, which may
+    /// follow; a forecast from before the request, or one that is no time, is none.
+    #[test]
+    fn what_a_request_is_expected_to_take_counts_the_third_mesh() {
+        let f = |seq: u64, seconds_most: f64| crate::fea::Forecast {
+            document_id: "d".into(),
+            seq,
+            run: 1,
+            runs: 2,
+            runs_most: 3,
+            elements: crate::fea::Elements::Solid,
+            nodes: 1,
+            bytes: 1.0,
+            seconds_left: 10.0,
+            seconds_most,
+        };
+        assert_eq!(expected_of(&f(5, 40.0), 4), Some((5, 40.0)));
+        assert_eq!(expected_of(&f(5, 40.0), 5), None);
+        for odd in [f64::NAN, f64::INFINITY, -1.0] {
+            assert_eq!(expected_of(&f(5, odd), 4), None);
+        }
+    }
 
     #[test]
     fn reads_are_told_from_changes() {

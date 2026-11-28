@@ -533,6 +533,24 @@ before it returns `still running:`, and a call made while an earlier request sti
 a client that gives up sooner only sees its own timeout, though the request goes on running in the
 app: then call `pending` (or `inspect_design`) before sending anything again.
 
+In the agent chat, those 300 seconds start when the user presses **Allow**: the app does not count
+the time a request waits on its approval card (up to 240 s), so a call may block that long more:
+up to 540 seconds before it returns `still running:`, and a client there needs a per-call timeout
+above that (say 570 s) to see the error. A first reply that does not come within 360 seconds is
+not waited for any longer, and the request is
+not sent again: it may still be running in the app (ask `running`).
+
+`--wait-for-forecast` (with `--connect`) is for a client that waits on a tool call for as long as
+it takes. The agent chat starts its built-in agent's server with it when that agent is started from
+`SOLIDCRAFT_MASTRA_AGENT`; the built-in agent an Intcad package carries has no server of this kind,
+and its calls wait up to an hour for the app. Other agents' clients have
+timeouts of their own and keep `still running:` and `pending`. A request the app forecasts the time
+of (a stress estimate, once a run has meshed and counted its nodes) is then waited for as long as
+the latest forecast says, twice that and a minute, up to an hour after the app said it still runs,
+and the call returns its result instead of `still running:`. A request without a forecast waits
+240 s, as above. Stop in the chat still stops the estimate, and the call returns at once with the
+estimate's "stopped" error.
+
 A `batch` step that is still running stops the batch like a failure. Its rollback first waits for
 the step (as above), so a restored checkpoint takes the step back too; if it still runs, the
 reply says `rolled_back: false`, marks the step `still_running` and lists it in `applied`, as it

@@ -213,6 +213,23 @@ pub fn bridge_tool(title: &str, kind: Option<&str>, built_in: bool) -> bool {
 pub struct McpBridge {
     pub cli: std::path::PathBuf,
     pub port: u16,
+    /// A request still running waits as long as the app forecasts it takes (`--wait-for-forecast`)
+    /// instead of ending in "still running" after five minutes: only for an agent that waits on a
+    /// tool call that long ([`waits_for_forecast`], #197).
+    pub forecast_wait: bool,
+}
+
+/// The built-in agent's id: Mastra Code, which waits up to 7 days on an MCP call (1.19.1). No
+/// agent found or added has it. It has a bridge only when it is started from
+/// `SOLIDCRAFT_MASTRA_AGENT`: the one a package carries reaches the window over its own stdio
+/// (`packaged_chat_route`), where a call waits up to an hour from the send (`host_bridge.rs`).
+pub const BUILTIN_AGENT_ID: &str = super::connections::AGENT_ID;
+
+/// Whether the agent `id`'s bridge waits for the app's forecast of a long run ([`McpBridge`]):
+/// the built-in agent's does. Every other agent's client has a timeout of its own, so its bridge
+/// keeps answering "still running" and `pending` (#197).
+pub fn waits_for_forecast(id: &str) -> bool {
+    id == BUILTIN_AGENT_ID
 }
 
 impl McpBridge {
@@ -223,10 +240,14 @@ impl McpBridge {
         // every tool call as unauthorized. The folder is no secret; the token stays in its file.
         let folder = solidcraft_engine::control_auth::token_path(self.port)
             .and_then(|file| file.parent().map(|folder| json!({"name": "SOLIDCRAFT_CONTROL_DIR", "value": folder.to_string_lossy()})));
+        let mut args = vec![json!("mcp"), json!("--connect"), json!(format!("127.0.0.1:{}", self.port))];
+        if self.forecast_wait {
+            args.push(json!("--wait-for-forecast"));
+        }
         json!({
             "name": BRIDGE_NAME,
             "command": self.cli.to_string_lossy(),
-            "args": ["mcp", "--connect", format!("127.0.0.1:{}", self.port)],
+            "args": args,
             "env": folder.into_iter().collect::<Vec<_>>(),
         })
     }
@@ -234,7 +255,7 @@ impl McpBridge {
     /// The same bridge for an agent inside WSL: the CLI as WSL sees it. It still runs on the
     /// Windows side (WSL starts Windows programs itself), so the port is the same.
     pub fn in_wsl(&self) -> McpBridge {
-        McpBridge { cli: wsl_path(&self.cli), port: self.port }
+        McpBridge { cli: wsl_path(&self.cli), ..self.clone() }
     }
 }
 
@@ -1174,7 +1195,7 @@ mod tests {
 
     #[test]
     fn the_session_gets_the_bridged_mcp_server_without_a_token_or_any_path() {
-        let b = McpBridge { cli: "/opt/solidcraft/intcad-cli".into(), port: 41234 };
+        let b = McpBridge { cli: "/opt/solidcraft/intcad-cli".into(), port: 41234, forecast_wait: false };
         let p = session_new_params(std::path::Path::new("/home/u/designs"), Some(&b), &json!({}), SYSTEM_NOTE, None);
         let s = &p["mcpServers"][0];
         assert_eq!(s["name"], BRIDGE_NAME);
@@ -1190,6 +1211,23 @@ mod tests {
         assert_eq!(s["env"], json!([{"name": "SOLIDCRAFT_CONTROL_DIR", "value": folder}]));
         assert!(p["_meta"]["claudeCode"]["options"]["disallowedTools"].as_array().is_some_and(|t| t.iter().any(|x| x == "Bash")));
         assert_eq!(session_new_params(std::path::Path::new("/tmp"), None, &json!({}), SYSTEM_NOTE, None)["mcpServers"], json!([]));
+    }
+
+    /// #197: the built-in agent's bridge waits for the app's forecast of a long stress estimate,
+    /// and every other agent's keeps "still running" and `pending`: their clients time out first.
+    #[test]
+    fn only_the_built_in_agents_bridge_waits_for_the_forecast() {
+        assert!(waits_for_forecast(BUILTIN_AGENT_ID));
+        for other in ["claude", "codex", "gemini", "opencode", "custom-1", "Mastra", ""] {
+            assert!(!waits_for_forecast(other), "{other}");
+        }
+        for found in super::super::discover::KNOWN {
+            assert!(!waits_for_forecast(found.id), "{}", found.id);
+        }
+        let b = McpBridge { cli: "/opt/solidcraft/intcad-cli".into(), port: 41234, forecast_wait: true };
+        let p = session_new_params(std::path::Path::new("/home/u/designs"), Some(&b), &json!({}), SYSTEM_NOTE, None);
+        assert_eq!(p["mcpServers"][0]["args"], json!(["mcp", "--connect", "127.0.0.1:41234", "--wait-for-forecast"]));
+        assert_eq!(b.in_wsl().to_json()["args"], p["mcpServers"][0]["args"], "inside WSL too");
     }
 
     /// #9811: the note goes by the routes an agent's `initialize` reply offers, and the standard
@@ -1282,7 +1320,7 @@ mod tests {
         assert_eq!(wsl("/home/u/designs"), "/home/u/designs");
         assert_eq!(wsl(r"\\server\share\x"), r"\\server\share\x");
 
-        let b = McpBridge { cli: r"C:\Program Files\Intcad\intcad-cli.exe".into(), port: 41234 };
+        let b = McpBridge { cli: r"C:\Program Files\Intcad\intcad-cli.exe".into(), port: 41234, forecast_wait: false };
         let p = session_new_params(&wsl_path(std::path::Path::new(r"C:\Users\u\work")), Some(&b.in_wsl()), &json!({}), SYSTEM_NOTE, None);
         assert_eq!(p["cwd"], "/mnt/c/Users/u/work");
         assert_eq!(p["mcpServers"][0]["command"], "/mnt/c/Program Files/Intcad/intcad-cli.exe");

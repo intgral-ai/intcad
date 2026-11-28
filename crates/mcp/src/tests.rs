@@ -5235,7 +5235,12 @@ fn scripted_app(answer: impl Fn(&Value) -> Value + Send + Sync + 'static) -> (St
 
 fn quick_waits(pending_ms: u64, settle_ms: u64) -> crate::backend::Waits {
     use std::time::Duration;
-    crate::backend::Waits { pending: Duration::from_millis(pending_ms), settle: Duration::from_millis(settle_ms), poll: Duration::from_millis(5) }
+    crate::backend::Waits {
+        pending: Duration::from_millis(pending_ms),
+        settle: Duration::from_millis(settle_ms),
+        poll: Duration::from_millis(5),
+        ..crate::backend::Waits::DEFAULT
+    }
 }
 
 fn running() -> Value {
@@ -5351,6 +5356,87 @@ fn a_request_still_running_is_left_to_the_pending_tool() {
     assert!(e.starts_with(STILL_RUNNING) && e.contains("will still write the file") && !e.contains("apply"), "{e}");
     let e = other.call("document.inspect", json!({})).unwrap_err();
     assert!(e.contains("earlier request") && e.contains("will still write the file"), "{e}");
+}
+
+/// A fake app whose `engine.execute` is still running, with forecast number 7 saying `expected_s`
+/// left, done `done_after` ms after it was asked (never: `None`).
+fn forecasting_app(expected_s: f64, done_after: Option<u64>) -> String {
+    use std::time::{Duration, Instant};
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(None::<Instant>));
+    let (addr, _) = scripted_app(move |req| {
+        let mut at = asked.lock().unwrap();
+        match req["method"].as_str() {
+            Some("engine.execute") => {
+                *at = Some(Instant::now());
+                running()
+            }
+            Some("control.pending") if done_after.is_some_and(|ms| at.is_some_and(|t| t.elapsed() >= Duration::from_millis(ms))) => {
+                json!({"ok": true, "result": {"pending": 1, "method": "engine.execute", "done": true, "reply": {"ok": true, "result": {"estimated": true}}}})
+            }
+            Some("control.pending") => {
+                json!({"ok": true, "result": {"pending": 1, "method": "engine.execute", "done": false, "expected_s": expected_s, "forecast": 7}})
+            }
+            _ => json!({"ok": true, "result": null}),
+        }
+    });
+    addr
+}
+
+/// Waits for [`forecasting_app`]: 100 ms after "still running", 100 ms of slack, the cap.
+fn forecast_waits(cap_ms: u64) -> crate::backend::Waits {
+    use std::time::Duration;
+    crate::backend::Waits { forecast_slack: Duration::from_millis(100), forecast_cap: Duration::from_millis(cap_ms), ..quick_waits(100, 100) }
+}
+
+/// #197: a bridge that follows the app's forecasts (`--wait-for-forecast`, the agent chat's
+/// built-in agent) waits for a request still running as long as the latest forecast says (twice
+/// it and the slack) and returns its result; one that doesn't says it still runs after its wait,
+/// as before. A forecast already seen doesn't push the wait on, and the cap bounds it.
+#[test]
+fn a_bridge_that_follows_forecasts_waits_for_the_forecast_time() {
+    use crate::backend::{Backend, STILL_RUNNING};
+    use std::time::{Duration, Instant};
+    let estimate = |follow: bool, addr: &str, cap_ms: u64| {
+        let mut remote = crate::Remote::connect(addr).unwrap().with_forecast_wait(follow);
+        remote.set_waits(forecast_waits(cap_ms));
+        let asked = Instant::now();
+        let r = remote.call("engine.execute", json!({"command": "inspect.stress_estimate"}));
+        (r, asked.elapsed())
+    };
+    // 0.3 s forecast, done after 0.4 s: waited up to 0.7 s, so it gets the result.
+    let (r, took) = estimate(true, &forecasting_app(0.3, Some(400)), 5000);
+    assert_eq!(r, Ok(json!({"estimated": true})), "after {took:?}");
+    // Another agent's bridge: still running after its 100 ms, as before.
+    let (r, took) = estimate(false, &forecasting_app(0.3, Some(400)), 5000);
+    assert!(r.as_ref().is_err_and(|e| e.starts_with(STILL_RUNNING)) && took < Duration::from_millis(400), "after {took:?}: {r:?}");
+    // The same forecast, asked again, says nothing new: 50 ms twice and the slack, then still running.
+    let (r, took) = estimate(true, &forecasting_app(0.05, None), 5000);
+    assert!(r.as_ref().is_err_and(|e| e.starts_with(STILL_RUNNING)) && took < Duration::from_millis(1500), "after {took:?}: {r:?}");
+    // A forecast of a thousand seconds waits no longer than the cap.
+    let (r, took) = estimate(true, &forecasting_app(1000.0, None), 300);
+    assert!(r.as_ref().is_err_and(|e| e.starts_with(STILL_RUNNING)) && took >= Duration::from_millis(300), "after {took:?}: {r:?}");
+    assert!(took < Duration::from_millis(1500), "the cap holds: {took:?}");
+}
+
+/// #197: a reply that doesn't come within the read wait is no restarted app. The request is not
+/// sent again (in the agent chat that was a second approval card and a second run), and the error
+/// says it may still be running.
+#[test]
+fn a_reply_that_comes_too_late_is_not_sent_again() {
+    use crate::backend::Backend;
+    use std::time::Duration;
+    let (addr, seen) = scripted_app(|req| {
+        if req["method"] == "engine.execute" {
+            std::thread::sleep(Duration::from_millis(600));
+        }
+        json!({"ok": true, "result": "late"})
+    });
+    let mut remote = crate::Remote::connect(&addr).unwrap();
+    remote.set_waits(crate::backend::Waits { read: Duration::from_millis(150), ..quick_waits(0, 0) });
+    let e = remote.call("engine.execute", json!({"command": "inspect.stress_estimate"})).unwrap_err();
+    assert!(e.contains("did not answer in time") && e.contains("not sent again") && e.contains("`running`"), "{e}");
+    let (connections, methods) = seen.lock().unwrap().clone();
+    assert_eq!((connections, methods.as_slice()), (1, ["engine.execute inspect.stress_estimate".to_string()].as_slice()), "sent once");
 }
 
 /// The headless session never leaves a request running.

@@ -142,5 +142,10 @@ gtk = "0.18"
 # never starts). Already in the tree through wry's x11 support.
 gdkx11 = "0.18"
 
+[dev-dependencies]
+# The MCP server the agent chat starts (`intcad-cli mcp --connect`), tested against this control
+# server (src/control_server.rs, #197); already in the tree through solidcraft-ui-egui.
+solidcraft-mcp = { workspace = true }
+
 [build-dependencies]
 embed-resource = "3.0.11"

@@ -5074,6 +5074,7 @@ dependencies = [
  "solidcraft-account-native",
  "solidcraft-engine",
  "solidcraft-gpu",
+ "solidcraft-mcp",
  "solidcraft-space-mouse",
  "solidcraft-suspend-clock",
  "solidcraft-ui-egui",

@@ -9176,6 +9176,21 @@ fn ask_held_change(app: &mut SolveApp, tx: &Sender<ControlRequest>, guarded: boo
     (held.id, reply)
 }
 
+/// #197: a request held for the user's answer is marked as asking, so the control server does not
+/// count that time against its wait; Allow and Deny clear the mark.
+#[test]
+fn a_held_request_is_marked_asking_until_it_is_answered() {
+    use std::sync::atomic::Ordering::Relaxed;
+    for allow in [true, false] {
+        let (mut app, tx) = app_in_a_turn();
+        let (id, _reply) = ask_held_change(&mut app, &tx, false, true);
+        let asking = app.agent_chat.held[0].req.asking.clone();
+        assert!(asking.load(Relaxed), "its card waits");
+        approve(&mut app, id, allow);
+        assert!(!asking.load(Relaxed), "answered, allowed: {allow}");
+    }
+}
+
 #[test]
 fn guarded_stop_ask_held_request_gets_cancelled_without_admission() {
     // Ask -> held -> actual Stop must not lose CANCELLED, even if the expected stamp is stale.
@@ -14065,7 +14080,7 @@ mod mastra_backend_tests {
         let (host, _) = test_host();
         let mut config = config(Arc::new(Mutex::new(None)));
         config.workflow_id = "w".into();
-        config.bridge = Some(crate::agent_chat::acp::McpBridge { cli: "/bin/true".into(), port: 1 });
+        config.bridge = Some(crate::agent_chat::acp::McpBridge { cli: "/bin/true".into(), port: 1, forecast_wait: false });
         config.tools = Some(tools.clone());
         let scope = app.commit_scope.clone().unwrap();
         config.bridge_scope_check = Some(Box::new(move || Some(scope.clone())));
@@ -14237,7 +14252,7 @@ mod mastra_backend_tests {
         let (host, _) = test_host();
         let mut config = config(Arc::new(Mutex::new(None)));
         config.workflow_id = "w".into();
-        config.bridge = Some(crate::agent_chat::acp::McpBridge { cli: "/bin/true".into(), port: 1 });
+        config.bridge = Some(crate::agent_chat::acp::McpBridge { cli: "/bin/true".into(), port: 1, forecast_wait: false });
         config.tools = None;
         let launch = runtime_client::RuntimeLaunch {
             executable: program.executable.clone(),
