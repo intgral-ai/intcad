@@ -1305,12 +1305,16 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
     // Half the memory free when the estimate starts (D1).
     let run_cap = first_run_limit(memory_available_here());
     let tracker = forecast::Tracker::new(&planned, s.document_id.clone(), &forecast::finer_fits);
+    // The part's section for each kind of elements: the gates count the layers through it, as the
+    // card does (decision 22).
+    let section_of = |elements: Elements| section_size(elements, plan.sheet, plan.thickness, volume, area);
     let fits = |nodes: usize, elements: Elements, h: f64| {
         tracker.counted(elements, h, nodes);
-        memory_refusal(nodes as f64, elements, h, run_cap, true)
+        memory_refusal(nodes as f64, elements, h, section_of(elements), run_cap, true)
     };
     for (i, elements) in plan.runs.iter().enumerate() {
         let h = run_size(plan.mesh_size, *elements, plan.sheet, plan.thickness, diag, smallest, volume);
+        let section = section_of(*elements);
         // The finer run looks at the same region away from supports and loads as this one.
         let setup = |size: f64, level: u32| Setup {
             thickness: plan.thickness,
@@ -1318,14 +1322,14 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             material: plan.material.clone(),
             loads: plan.loads.clone(),
             supports: plan.supports.clone(),
-            away_distance: away_distance(h, section_size(*elements, plan.sheet, plan.thickness, volume, area)),
+            away_distance: away_distance(h, section),
             level,
         };
         // A solid's mesh is predicted from its volume before meshing, which takes time and memory
         // of its own at a size far too fine; every mesh is counted again before the solver runs.
         if *elements == Elements::Solid
             && let Some(v) = volume.filter(|v| v.is_finite() && *v > 0.0)
-            && let Some(refusal) = memory_refusal(SOLID_NODES_PER_MM3 * v / h.powi(3), Elements::Solid, h, run_cap, false)
+            && let Some(refusal) = memory_refusal(SOLID_NODES_PER_MM3 * v / h.powi(3), Elements::Solid, h, section, run_cap, false)
         {
             return Err(failed(refusal));
         }
@@ -1340,11 +1344,11 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
             // `model::shell_model`'s face matching took about 300 s before it used a grid, P1).
             // Stop ends either at once.
             let limit = finer_limit_here();
-            if let Some(skip) = mesh_check_gate(run.nodes, *elements, limit) {
+            let fine_h = h / MESH_CHECK_RATIO;
+            if let Some(skip) = mesh_check_gate(run.nodes, *elements, forecast::layers(section, fine_h), limit) {
                 check = skip;
             } else {
                 k += 1;
-                let fine_h = h / MESH_CHECK_RATIO;
                 let ctx = RunCtx { document_id: &s.document_id, run: k, runs: total, generation, started: 0.0, fits: Some(&fits) };
                 let fine =
                     fea::solve(&setup(fine_h, 1), &step, &faces.display, &dir, *elements, &ctx).map_err(|f| failed(f.words(|p| faces.near(p))))?;
@@ -1352,7 +1356,7 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
                 // the second's nodes and counted again once meshed: over the limit, the bands
                 // rest on two meshes.
                 let mut third = match third_wanted(&settling(&[&run, &fine])) {
-                    Ok(()) => match mesh_check_gate(fine.nodes, *elements, limit) {
+                    Ok(()) => match mesh_check_gate(fine.nodes, *elements, forecast::layers(section, fine_h / MESH_CHECK_RATIO), limit) {
                         Some(Check::Skipped { nodes, bytes, limit }) => Third::Skipped { nodes, bytes, limit },
                         _ => Third::Ran,
                     },
@@ -1362,14 +1366,10 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
                     k += 1;
                     let counted = std::cell::Cell::new(None);
                     let third_fits = |nodes: usize, elements: Elements, h: f64| {
-                        let n = nodes as f64;
-                        let bytes = solver_bytes(n, elements);
-                        let over = match limit {
-                            Limit::Memory(cap) => bytes > cap,
-                            Limit::Nodes(cap) => n > cap,
-                        };
-                        if over {
-                            counted.set(Some((n, bytes)));
+                        if let Some(Check::Skipped { nodes, bytes, .. }) =
+                            finer_gate(nodes as f64, elements, forecast::layers(section_of(elements), h), limit)
+                        {
+                            counted.set(Some((nodes, bytes)));
                             return Some("the third mesh is over the mesh check's limit".to_string());
                         }
                         fits(nodes, elements, h)
@@ -1943,9 +1943,23 @@ pub(crate) fn cgroup_room(cgroup: &str, read: impl Fn(&str, &str) -> Option<Stri
     room
 }
 
-/// The memory this process may use now, bytes: Linux's MemAvailable, no more than its control
-/// group leaves it ([`cgroup_room`]). `None` where it cannot be read (Windows, macOS).
+/// The memory this process may use now, bytes ([`memory_available`]): Linux's, else the host's
+/// reading ([`fea::set_memory_reader`]: the desktop app's on Windows and macOS).
 pub(crate) fn memory_available_here() -> Option<f64> {
+    memory_available(linux_memory_available, fea::memory_reader())
+}
+
+/// The memory available: what `linux` reads, else what the host's `reader` gives, bytes. `None`
+/// when neither gives a number above 0, and the gates then assume [`FIRST_RUN_FALLBACK`] (decision
+/// 22).
+pub(crate) fn memory_available(linux: impl FnOnce() -> Option<f64>, reader: Option<fn() -> Option<f64>>) -> Option<f64> {
+    let usable = |b: &f64| b.is_finite() && *b > 0.0;
+    linux().filter(usable).or_else(|| reader.and_then(|read| read()).filter(usable))
+}
+
+/// Linux's MemAvailable, no more than this process's control group leaves it ([`cgroup_room`]),
+/// bytes. `None` elsewhere.
+fn linux_memory_available() -> Option<f64> {
     if !cfg!(target_os = "linux") {
         return None;
     }
@@ -1959,8 +1973,8 @@ pub(crate) fn memory_available_here() -> Option<f64> {
     }
 }
 
-/// The memory a run may use where this computer's free memory cannot be read: half a 16 GB
-/// laptop's.
+/// The memory a run may use where this computer's free memory is not known (no host reading on
+/// Windows or macOS, as in the CLI, another system, or a failed reading): half a 16 GB laptop's.
 pub(crate) const FIRST_RUN_FALLBACK: f64 = 8.0e9;
 
 /// The most memory a run may need, bytes: half the memory available (`available`), or
@@ -1970,27 +1984,38 @@ pub(crate) fn first_run_limit(available: Option<f64>) -> f64 {
     available.filter(|a| a.is_finite() && *a > 0.0).map_or(FIRST_RUN_FALLBACK, |a| a / 2.0)
 }
 
-/// The most nodes whose solve fits in `bytes` ([`solver_bytes`] turned round).
-pub(crate) fn nodes_for_bytes(bytes: f64, elements: Elements) -> f64 {
-    let (per_node, at, extra) = match elements {
-        Elements::Solid => SOLID_MEMORY,
-        Elements::Shell => SHELL_MEMORY,
+/// The most nodes whose solve, `layers` elements deep, fits in `bytes` ([`forecast::memory`]
+/// turned round).
+pub(crate) fn nodes_for_bytes(bytes: f64, elements: Elements, layers: f64) -> f64 {
+    let (per_node, at, extra, deep) = match elements {
+        Elements::Solid => {
+            let (per_node, extra, deep) = forecast::SOLID_BYTES;
+            (per_node, 100_000.0_f64, extra, deep)
+        }
+        Elements::Shell => {
+            let (per_node, at, extra) = SHELL_MEMORY;
+            (per_node, at, extra, 0.0)
+        }
     };
-    (bytes.max(0.0) * at.powf(extra) / per_node).powf(1.0 / (1.0 + extra))
+    (bytes.max(0.0) * at.powf(extra) / (per_node * layers.max(1.0).powf(deep))).powf(1.0 / (1.0 + extra))
 }
 
-/// Whether a run of `nodes` nodes (the mid-surface's for shells) at `h` mm fits `cap` bytes: `None`
-/// when it does, else the words that refuse it, with the predicted memory and a `mesh_size` that
-/// fits. `meshed`: the count is the mesh's own; otherwise it is predicted from the part's volume
-/// ([`SOLID_NODES_PER_MM3`], which can be 20 % high at fine sizes), and refused only when twice
-/// over (PIL-294 D1: R2's plate at 0.7 mm was killed by the system after 115 s).
-pub(crate) fn memory_refusal(nodes: f64, elements: Elements, h: f64, cap: f64, meshed: bool) -> Option<String> {
-    let bytes = solver_bytes(nodes, elements);
+/// Whether a run of `nodes` nodes (the mid-surface's for shells) at `h` mm, on a part whose
+/// section is `section` mm ([`section_size`]), fits `cap` bytes: `None` when it does, else the
+/// words that refuse it, with the predicted memory and a `mesh_size` that fits. The memory is A13's
+/// model ([`forecast::memory`], the approval card's), which counts the element layers through the
+/// part (decision 22). `meshed`: the count is the mesh's own; otherwise it is predicted from the
+/// part's volume ([`SOLID_NODES_PER_MM3`], which can be 20 % high at fine sizes), and refused only
+/// when twice over (PIL-294 D1: R2's plate at 0.7 mm was killed by the system after 115 s).
+pub(crate) fn memory_refusal(nodes: f64, elements: Elements, h: f64, section: f64, cap: f64, meshed: bool) -> Option<String> {
+    let layers = forecast::layers(section, h);
+    let bytes = forecast::memory(nodes, elements, layers);
     let over = if meshed { bytes > cap } else { bytes > 2.0 * cap };
     if !over || !(nodes.is_finite() && nodes > 0.0 && h.is_finite() && h > 0.0) {
         return None;
     }
-    let fit = nodes_for_bytes(cap, elements);
+    // At this size's layers: a coarser mesh has fewer, so the size found fits with room to spare.
+    let fit = nodes_for_bytes(cap, elements, layers);
     let dims = match elements {
         Elements::Solid => 3.0,
         Elements::Shell => 2.0,
@@ -2013,17 +2038,21 @@ pub(crate) fn memory_refusal(nodes: f64, elements: Elements, h: f64, cap: f64, m
     ))
 }
 
-/// The mesh check's finer run from the first's node count: its predicted nodes and memory, bytes.
-pub(crate) fn predict_finer(first_nodes: usize, elements: Elements) -> (f64, f64) {
+/// The mesh check's finer run from the previous mesh's node count: its predicted nodes, and their
+/// memory `layers` elements deep (the finer mesh's [`forecast::layers`]), bytes.
+pub(crate) fn predict_finer(first_nodes: usize, elements: Elements, layers: f64) -> (f64, f64) {
     let growth = match elements {
         Elements::Solid => SOLID_GROWTH,
         Elements::Shell => SHELL_GROWTH,
     };
     let nodes = first_nodes as f64 * growth;
-    (nodes, solver_bytes(nodes, elements))
+    (nodes, forecast::memory(nodes, elements, layers))
 }
 
-/// The solver's predicted peak memory for a run of `nodes` nodes, bytes ([`SOLID_MEMORY`]).
+/// The solver's peak memory by the first model, for a run of `nodes` nodes, bytes
+/// ([`SOLID_MEMORY`]). Shells still use it, through [`forecast::memory`]; for solids that model
+/// counts the element layers too, and the gates moved to it (decision 22), because this one was up
+/// to 48 % low on deep solids.
 pub(crate) fn solver_bytes(nodes: f64, elements: Elements) -> f64 {
     let (per_node, at, extra) = match elements {
         Elements::Solid => SOLID_MEMORY,
@@ -2032,9 +2061,17 @@ pub(crate) fn solver_bytes(nodes: f64, elements: Elements) -> f64 {
     per_node * nodes * (nodes.max(0.0) / at).powf(extra)
 }
 
-/// Whether the mesh check's finer run fits `limit`: `None` when it does, else the skip.
-pub(crate) fn mesh_check_gate(first_nodes: usize, elements: Elements, limit: Limit) -> Option<Check> {
-    let (nodes, bytes) = predict_finer(first_nodes, elements);
+/// Whether the mesh check's next finer mesh, after one of `first_nodes`, fits `limit`, `layers`
+/// being the finer mesh's: `None` when it does, else the skip.
+pub(crate) fn mesh_check_gate(first_nodes: usize, elements: Elements, layers: f64, limit: Limit) -> Option<Check> {
+    let (nodes, _) = predict_finer(first_nodes, elements, layers);
+    finer_gate(nodes, elements, layers, limit)
+}
+
+/// Whether a mesh check's mesh of `nodes` nodes, predicted or counted, `layers` elements deep,
+/// fits `limit`: `None` when it does, else the skip with its memory ([`forecast::memory`]).
+pub(crate) fn finer_gate(nodes: f64, elements: Elements, layers: f64, limit: Limit) -> Option<Check> {
+    let bytes = forecast::memory(nodes, elements, layers);
     let over = match limit {
         Limit::Memory(cap) => bytes > cap,
         Limit::Nodes(cap) => nodes > cap,

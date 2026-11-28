@@ -41,6 +41,8 @@ mod native_crash;
 mod native_crash_macos;
 #[cfg(target_os = "windows")]
 mod native_frame;
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+mod native_memory;
 #[cfg(target_os = "macos")]
 mod native_menu;
 mod nav_bridge;
@@ -1222,6 +1224,9 @@ fn main() -> eframe::Result {
     native_crash::install();
     #[cfg(target_os = "macos")]
     native_crash_macos::install();
+    // The memory available, for the stress estimate's memory gates; the engine reads Linux's itself.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    solidcraft_engine::fea::set_memory_reader(native_memory::available);
     // Windows with only OpenGL to start: the system title bar instead of ours (#2063).
     let started = match &wgpu_options.wgpu_setup {
         eframe::egui_wgpu::WgpuSetup::CreateNew(setup) => setup.instance_descriptor.backends,
