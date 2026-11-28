@@ -1886,30 +1886,211 @@ fn d9_a_thin_disc_gets_its_mesh_check_at_the_default_settings() {
     assert!((number(&r["fraction_of_yield_overall"]) - overall / yield_mpa).abs() < 2e-3, "{r}");
 }
 
-/// D10: a grade's yield is warned about past the thickness its standard specifies it for.
-/// Input: 6061-T6 (to 6.3 mm), S235 (to 16 mm), 304 (no limit) and a material given with the
-/// request, at thicknesses inside and outside; then a 100 x 50 x 10 mm 6061-T6 block as a dry run.
-/// Action: `grade_thickness_warning`, the command. Pass: a warning naming the limit only for a
-/// table grade past its limit; the block's dry run carries it.
+/// A11: every grade's bands are in order and meet, and every band edge takes the right band.
+/// Input: each grade of the table; at each band, its lower edge, a point inside, its upper edge,
+/// and 0.2 % past each edge (where 0.1 % still counts as on it). Action: `Grade::band_at`,
+/// `grade_at`. Pass: the bands run thinnest first, each from where the one before ends, with the
+/// grade's own yield among them; on an edge or inside, the band; past the first or last edge,
+/// `Thinner` or `Thicker` with a warning; `grade_at` gives the band's yield and names the band,
+/// and warns only outside every band; a thickness that is not one changes nothing.
 #[test]
-fn d10_a_grade_past_the_thickness_its_yield_holds_for_is_warned() {
-    let g = |n: &str| fea::materials::grade(n).map(|g| g.material()).unwrap_or_else(|| panic!("{n}"));
-    let w = grade_thickness_warning(&g("6061-T6"), 10.0, false).unwrap_or_default();
-    assert!(w.contains("10.0 mm across its thinnest side") && w.contains("specified only up to 6.3 mm") && w.contains("certificate"), "{w}");
-    assert_eq!(grade_thickness_warning(&g("6061-T6"), 6.3, true), None);
-    assert!(grade_thickness_warning(&g("S235"), 20.0, true).is_some_and(|w| w.contains("20.0 mm thick") && w.contains("up to 16 mm")));
-    assert_eq!(grade_thickness_warning(&g("S355"), 12.0, false), None);
-    assert_eq!(grade_thickness_warning(&g("304"), 80.0, false), None);
-    let given = Material { name: "x".into(), e_mpa: 70_000.0, nu: 0.33, yield_mpa: 240.0, source: "s".into() };
-    assert_eq!(grade_thickness_warning(&given, 80.0, false), None);
+fn a11_every_band_edge_of_every_grade_takes_its_own_band() {
+    use fea::materials::Fit;
+    for g in fea::materials::GRADES {
+        let bands = g.bands;
+        assert!(!bands.is_empty() && bands.iter().any(|b| b.yield_mpa == g.yield_mpa), "{}", g.name);
+        assert!(g.source.contains(g.standard), "{}: {}", g.name, g.source);
+        for (i, b) in bands.iter().enumerate() {
+            assert!(b.over_mm >= 0.0 && b.up_to_mm > b.over_mm && b.yield_mpa > 50.0, "{} band {i}", g.name);
+            if let Some(next) = bands.get(i + 1) {
+                assert_eq!(next.over_mm, b.up_to_mm, "{} band {i}", g.name);
+            }
+            let inside = if b.up_to_mm.is_finite() { (b.over_mm + b.up_to_mm) / 2.0 } else { b.over_mm + 100.0 };
+            let mut on = vec![inside];
+            if b.up_to_mm.is_finite() {
+                on.push(b.up_to_mm);
+                on.push(b.up_to_mm * 1.0009);
+            }
+            if b.over_mm > 0.0 {
+                on.push(b.over_mm * 1.002);
+            }
+            for t in on {
+                assert_eq!(g.band_at(t), Some(Fit::In(b)), "{} at {t} mm", g.name);
+                for solid in [false, true] {
+                    let (m, w) = grade_at(g.material(), t, solid);
+                    assert!(m.yield_mpa == b.yield_mpa && w.is_none() && fea::materials::of(&m).is_some(), "{} at {t} mm: {}", g.name, m.source);
+                    let one = b.over_mm == 0.0 && b.up_to_mm.is_infinite();
+                    assert!(one || m.source.contains(&format!("{}'s minimum for {}", g.standard, g.words(b))), "{} at {t} mm: {}", g.name, m.source);
+                }
+            }
+        }
+        let (first, last) = (&bands[0], &bands[bands.len() - 1]);
+        if last.up_to_mm.is_finite() {
+            let t = last.up_to_mm * 1.002;
+            assert_eq!(g.band_at(t), Some(Fit::Thicker(last)), "{}", g.name);
+            let (m, w) = grade_at(g.material(), t, false);
+            let w = w.unwrap_or_default();
+            assert!(m.yield_mpa == last.yield_mpa && w.contains("thicker material may be lower") && w.contains(&g.range_words()), "{w}");
+        }
+        if first.over_mm > 0.0 {
+            let t = first.over_mm * 0.998;
+            assert_eq!(g.band_at(t), Some(Fit::Thinner(first)), "{}", g.name);
+            let (m, w) = grade_at(g.material(), t, true);
+            let w = w.unwrap_or_default();
+            assert!(m.yield_mpa == first.yield_mpa && w.contains("thinner material may differ") && w.contains("across its thinnest side"), "{w}");
+        }
+        for t in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(g.band_at(t), None, "{} at {t}", g.name);
+            let (m, w) = grade_at(g.material(), t, false);
+            assert!(m.yield_mpa == g.yield_mpa && m.source == g.source && w.is_none(), "{} at {t}", g.name);
+        }
+    }
+}
+
+/// A11: each grade's yield at named thicknesses is its standard's minimum there, as the sources in
+/// `fea/materials.rs` quote it; numbers given with the request stay the user's.
+/// Input: each grade on both sides of each band edge where the minimum changes, and past the
+/// standard's ends; a material given with the request. Action: `grade_at`. Pass: the yields and
+/// warnings below; a solid also hears that thicker stock is specified lower, and a sheet does not.
+#[test]
+fn a11_each_grade_takes_its_standards_minimum_for_the_parts_thickness() {
+    let at = |name: &str, t: f64, solid: bool| {
+        let g = fea::materials::grade(name).unwrap_or_else(|| panic!("{name}"));
+        let (m, w) = grade_at(g.material(), t, solid);
+        (m.yield_mpa, m.source, w.unwrap_or_default())
+    };
+    let cases: &[(&str, f64, f64)] = &[
+        ("S235", 16.0, 235.0),
+        ("S235", 16.5, 225.0),
+        ("S235", 40.0, 225.0),
+        ("S235", 41.0, 215.0),
+        ("S235", 100.0, 215.0),
+        ("S235", 101.0, 195.0),
+        ("S235", 200.0, 185.0),
+        ("S235", 250.0, 175.0),
+        ("S355", 1.5, 355.0),
+        ("S355", 16.0, 355.0),
+        ("S355", 16.5, 345.0),
+        ("S355", 63.0, 335.0),
+        ("S355", 80.0, 325.0),
+        ("S355", 100.0, 315.0),
+        ("S355", 150.0, 295.0),
+        ("S355", 200.0, 285.0),
+        ("S355", 250.0, 275.0),
+        ("6061-T6", 0.15, 240.0),
+        ("6061-T6", 6.3, 240.0),
+        ("6061-T6", 150.0, 240.0),
+        ("6082-T6", 0.4, 260.0),
+        ("6082-T6", 6.0, 260.0),
+        ("6082-T6", 6.1, 255.0),
+        ("6082-T6", 12.5, 255.0),
+        ("6082-T6", 12.6, 240.0),
+        ("6082-T6", 150.0, 240.0),
+        ("5052-H32", 0.5, 160.0),
+        ("5052-H32", 50.0, 160.0),
+        ("304", 0.1, 205.0),
+        ("304", 500.0, 205.0),
+        ("304L", 0.1, 170.0),
+        ("304L", 500.0, 170.0),
+    ];
+    for &(name, t, expect) in cases {
+        let (y, source, w) = at(name, t, false);
+        assert!(y == expect && w.is_empty(), "{name} at {t} mm: {y} MPa, {w}");
+        assert!(!source.contains("cut from stock"), "{name} at {t} mm: {source}");
+    }
+    let (_, source, _) = at("S355", 20.0, false);
+    assert!(source.ends_with("For this part, 20.0 mm thick: 345 MPa, EN 10025-2's minimum for stock over 16 to 40 mm"), "{source}");
+    let (_, source, _) = at("6082-T6", 2.0, false);
+    assert!(source.ends_with("For this part, 2.00 mm thick: 260 MPa, EN 485-2's minimum for sheet 0.4 to 6 mm"), "{source}");
+    let (_, source, _) = at("S355", 10.0, true);
+    assert!(
+        source.ends_with(
+            "For this part, 10.0 mm across its thinnest side: 355 MPa, EN 10025-2's minimum for stock up to 16 mm; if it was cut from stock over 16 \
+             mm thick, the minimum is lower (345 MPa for stock over 16 to 40 mm)"
+        ),
+        "{source}"
+    );
+    let (_, source, _) = at("6082-T6", 3.0, true);
+    assert!(source.ends_with("the minimum is lower (255 MPa for plate over 6 to 12.5 mm)"), "{source}");
+    // 6061-T6 is 240 MPa from sheet to the thickest plate: nothing lower to name.
+    let (_, source, _) = at("6061-T6", 10.0, true);
+    assert!(
+        source.ends_with("For this part, 10.0 mm across its thinnest side: 240 MPa, ASTM B209M's minimum for plate over 6.3 to 150 mm"),
+        "{source}"
+    );
+    for (name, t, edge) in [
+        ("S235", 260.0, "up to 250 mm"),
+        ("S355", 251.0, "up to 250 mm"),
+        ("6061-T6", 160.0, "from 0.15 to 150 mm"),
+        ("5052-H32", 51.0, "up to 50 mm"),
+    ] {
+        let (_, _, w) = at(name, t, false);
+        assert!(
+            w.contains(&format!("only {edge}")) && w.contains("thicker material may be lower") && w.contains("certificate"),
+            "{name} at {t} mm: {w}"
+        );
+    }
+    let (y, _, w) = at("6082-T6", 0.3, false);
+    assert!(
+        y == 260.0
+            && w.starts_with(
+                "The part is 0.300 mm thick, but EN 485-2 specifies 6082-T6 aluminium only from 0.4 to 150 mm: the yield used is 260 MPa, EN \
+                 485-2's minimum for sheet 0.4 to 6 mm, and thinner material may differ."
+            ),
+        "{w}"
+    );
+    let given = Material { name: "S355 structural steel".into(), e_mpa: 210_000.0, nu: 0.3, yield_mpa: 360.0, source: "mill certificate 123".into() };
+    let (m, w) = grade_at(given, 300.0, false);
+    assert!(m.yield_mpa == 360.0 && m.source == "mill certificate 123" && w.is_none(), "{}", m.source);
+}
+
+/// V-A11: 304L runs at 170 MPa, and a grade's thickness band reaches the dry run's reply.
+/// Input: a 100 x 50 x 10 mm block in 304L; the same in S355 at 20 mm and at 260 mm thick; the
+/// angle bracket (a 1.5 mm sheet) in 6082-T6. Action: the command with `dry_run: true`.
+/// Observable: the setup's material line and the warnings. Pass: 304L reads yield 170 MPa with
+/// no band (ASTM A240 gives one minimum at every thickness); S355 at 20 mm reads 345 MPa, over 16
+/// to 40 mm, and that thicker stock is lower; at 260 mm, a warning that EN 10025-2 specifies it
+/// only up to 250 mm; the sheet reads 260 MPa for sheet 0.4 to 6 mm.
+#[test]
+fn v_a11_304l_at_170_mpa_and_a_thickness_band_in_the_reply() {
+    let dry = |height: f64, material: &str| {
+        let mut s = Session::default();
+        let size = height.max(50.0);
+        run(&mut s, "solid.box", json!({"length": 2.0 * size, "width": size, "height": height, "body_name": "Block"}));
+        let r = run(
+            &mut s,
+            CMD,
+            json!({"supports": [{"face": [0, size / 2.0, height / 2.0]}], "loads": [{"face": [2.0 * size, size / 2.0, height / 2.0], "force": [0, 0, -10]}],
+                   "material": material, "dry_run": true}),
+        );
+        let line = r["setup"].as_array().and_then(|a| a.iter().find(|x| x.as_str().is_some_and(|x| x.starts_with("Material:")))).cloned();
+        eprintln!("V-A11 {material}, {height} mm block: {}\nwarnings: {}", line.unwrap_or_default(), r["warnings"]);
+        r
+    };
+    let r = dry(10.0, "304L");
+    let setup = r["setup"].to_string();
+    assert!(setup.contains("304L stainless steel — E 193 GPa, Poisson 0.3, yield 170 MPa") && !setup.contains("For this part"), "{setup}");
+    assert!(!r["warnings"].to_string().contains("specifies"), "{}", r["warnings"]);
+    let r = dry(20.0, "S355");
+    let setup = r["setup"].to_string();
+    assert!(setup.contains("yield 345 MPa") && setup.contains("345 MPa, EN 10025-2's minimum for stock over 16 to 40 mm"), "{setup}");
+    assert!(setup.contains("if it was cut from stock over 40 mm thick, the minimum is lower (335 MPa"), "{setup}");
+    let r = dry(260.0, "S355");
+    let w = r["warnings"].to_string();
+    assert!(w.contains("The part is 260 mm across its thinnest side, but EN 10025-2 specifies S355 structural steel only up to 250 mm"), "{w}");
+    assert!(r["setup"].to_string().contains("yield 275 MPa"), "{}", r["setup"]);
     let mut s = Session::default();
-    run(&mut s, "solid.box", json!({"length": 100, "width": 50, "height": 10, "body_name": "Block"}));
+    let hole = angle(&mut s);
     let r = run(
         &mut s,
         CMD,
-        json!({"supports": [{"face": [0, 25, 5]}], "loads": [{"face": [100, 25, 5], "force": [0, 0, -10]}], "material": "6061-T6", "dry_run": true}),
+        json!({"loads": [{"face": [5.0, 5.0, 1.5], "force": [0, 0, -5]}], "supports": [{"face": hole[0]}], "material": "6082-T6", "dry_run": true}),
     );
-    assert!(r["warnings"].to_string().contains("specified only up to 6.3 mm"), "{}", r["warnings"]);
+    let setup = r["setup"].to_string();
+    assert!(
+        setup.contains("yield 260 MPa") && setup.contains("For this part, 1.50 mm thick: 260 MPa, EN 485-2's minimum for sheet 0.4 to 6 mm"),
+        "{setup}"
+    );
 }
 
 /// D11: a `thickness` that is not the sheet's own is warned about.
@@ -1938,6 +2119,44 @@ fn d11_a_thickness_that_is_not_the_sheets_own_is_warned() {
         assert!(!w.contains("not this sheet's own"), "{t}: {w}");
     }
     assert_eq!(thickness_mismatch(1.0, 0.0, false), None);
+}
+
+/// A12 (decision 15): on a solid, the reply says the shells' thickness was not checked.
+/// Input: a 100 x 20 x 2 mm box (a solid, not sheet metal) as dry runs with shells at 2 mm, with
+/// shells and solids at 2 mm, and with solids alone; the angle bracket (a 1.5 mm sheet) with
+/// shells at its own 1.5 mm. Action: the command with `dry_run: true`. Pass: both runs with shells
+/// on the box say "The thickness given (2.00 mm) was not checked" and that the body is a solid;
+/// the box's solid run (which takes no thickness) and the sheet do not.
+#[test]
+fn a12_on_a_solid_the_shells_thickness_is_said_to_be_unchecked() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 100, "width": 20, "height": 2, "body_name": "Strip"}));
+    let mut warnings = |elements: Value| {
+        let mut p = json!({"loads": [{"face": [100, 10, 1], "force": [0, 0, -5]}], "supports": [{"face": [0, 10, 1]}], "material": "6061-T6",
+                           "dry_run": true});
+        if let Some(e) = elements.as_str() {
+            p["elements"] = json!(e);
+            p["thickness"] = json!(2);
+        }
+        let w = run(&mut s, CMD, p)["warnings"].to_string();
+        eprintln!("V-A12 elements {elements}: {w}");
+        w
+    };
+    for elements in ["shell", "both"] {
+        let w = warnings(json!(elements));
+        assert!(w.contains("The thickness given (2.00 mm) was not checked") && w.contains("this body is a solid"), "{elements}: {w}");
+    }
+    assert!(!warnings(Value::Null).contains("was not checked"));
+    let mut s = Session::default();
+    let hole = angle(&mut s);
+    let r = run(
+        &mut s,
+        CMD,
+        json!({"loads": [{"face": [5.0, 5.0, 1.5], "force": [0, 0, -5]}], "supports": [{"face": hole[0]}], "material": "6061-T6",
+               "thickness": 1.5, "elements": "shell", "dry_run": true}),
+    );
+    assert!(!r["warnings"].to_string().contains("was not checked"), "{}", r["warnings"]);
+    assert!(thickness_not_checked(0.8).contains("a 0.800 mm sheet"));
 }
 
 /// C1: the probes' settings are checked before anything runs.
