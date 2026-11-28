@@ -1405,6 +1405,10 @@ fn estimate(s: &mut Session, p: &Value) -> Result<Value> {
         line: equilibrium_line(&e),
     });
     let programs = Some(StressPrograms { mesher: shown.mesher_version.clone(), solver: shown.solver_version.clone() });
+    // Programs other than the versions tested: a warning, last, in the reply and on the colour
+    // map's legend; the run stands (spec section 8). The dry run starts no program, so only a run
+    // knows the versions.
+    warnings.extend(fea::version_warning(shown.mesher_version.as_deref(), shown.solver_version.as_deref()));
     let peak_away = shown.peaks.away.map(|(v, at)| {
         // The peak is a node of the run: its own tensor.
         let tensor = shown.points.iter().position(|x| x.0 == at).and_then(|i| shown.tensors.get(i));

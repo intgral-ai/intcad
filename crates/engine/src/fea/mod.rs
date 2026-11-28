@@ -389,6 +389,35 @@ pub fn solver_version(log: &str) -> Option<String> {
     (!v.is_empty()).then(|| format!("CalculiX {v}"))
 }
 
+/// The mesher the real-solve suite runs with (spec section 2 and A14), as [`mesher_version`]
+/// names it. The suite pins the same string as its `mesher` (`PINS` in
+/// `scripts/ci/fea_suite.py`), so a check can hold the two to each other.
+pub const TESTED_MESHER: &str = "gmsh 4.12.1";
+
+/// The solver the real-solve suite runs with, as [`solver_version`] names it: the suite's
+/// `solver`.
+pub const TESTED_SOLVER: &str = "CalculiX 2.21";
+
+/// A warning when the mesher or the solver that ran ([`mesher_version`], [`solver_version`]) is
+/// not the version tested, or did not name its version: the versions tested, and what ran in their
+/// place. `None` when both are the versions tested. Another version can mesh or solve the same
+/// part differently, and its numbers have not been held against the suite's known answers; the run
+/// still stands (spec section 8).
+pub fn version_warning(mesher: Option<&str>, solver: Option<&str>) -> Option<String> {
+    let ran: Vec<String> = [(mesher, TESTED_MESHER, "mesher"), (solver, TESTED_SOLVER, "solver")]
+        .into_iter()
+        .filter(|(found, tested, _)| *found != Some(*tested))
+        .map(|(found, _, what)| found.map_or_else(|| format!("a {what} whose version could not be read"), str::to_string))
+        .collect();
+    (!ran.is_empty()).then(|| {
+        format!(
+            "The stress estimate has been tested with {TESTED_MESHER} and {TESTED_SOLVER} only, and this estimate ran with {}: programs \
+             other than these versions can mesh or solve the part differently, so these numbers may not match what the tested versions give",
+            ran.join(" and ")
+        )
+    })
+}
+
 /// What the result shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Quantity {
