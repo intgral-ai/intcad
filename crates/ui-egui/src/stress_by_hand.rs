@@ -644,20 +644,28 @@ mod tests {
     }
 
     /// The window at release-switch `level`, the rail on Simulation and the block set up as
-    /// [`set_up`] does and checked: Run is drawn and ready.
+    /// [`set_up`] does and checked: Run is drawn, ready and wholly on screen, so a click at its
+    /// centre lands on it. The window is tall: the setup's lines (the dry run's, and once #196 is
+    /// in, the approval card's prediction before them) push Run down, and below the panel's
+    /// scrolled area it is drawn clipped where no click reaches it.
     fn panel_at(level: &str) -> crate::scenario::Harness {
+        let (width, height) = (1400.0, 1600.0);
         let mut h = crate::scenario::Harness::new();
         h.app.home.open = false;
         h.app.preferences.stress_estimate = level.into();
         h.call("ui.prefs", json!({"right_rail": true}));
-        h.call("ui.resize", json!({"width": 1400, "height": 900}));
+        h.call("ui.resize", json!({"width": width, "height": height}));
         h.app.run("solid.box", json!({"length": 10, "width": 20, "height": 30})).unwrap();
         h.frames(2);
         h.app.start_at(CMD, None);
         set_up(&mut h.app);
         h.frames(2);
         assert!(ready(&h.app), "{level}: {:?}", h.app.stress_by_hand.checked);
-        assert!(crate::scenario::handle_at("stress:run").is_some(), "{level}: Run is drawn");
+        let run = crate::scenario::rect_of("stress:run").unwrap_or_else(|| panic!("{level}: Run is not drawn"));
+        let panel = crate::scenario::rect_of("rail:panel").unwrap_or_else(|| panic!("{level}: the rail's panel is not drawn"));
+        // The panel's content scrolls inside a margin of the panel (`panel`'s own shrink).
+        let shown = panel.shrink2(vec2(0.0, crate::theme::Tokens::get().space_8));
+        assert!(shown.contains_rect(run), "{level}: Run at {run:?} is not wholly in the panel's shown area {shown:?} ({width} x {height} window)");
         h
     }
 
