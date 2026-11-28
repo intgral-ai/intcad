@@ -22,6 +22,8 @@ Fix the wall of each hole by name (either half of a hole takes the whole hole). 
 ```
 A fixed hole wall is a rigid bolt: stress at the holes depends on the mesh. Report `peak_away`, and say the hole values are idealised.
 
+What each hole holds is in `equilibrium.supports`, one entry per support in the order given: `force_n` (N, on the part; the bolt takes the opposite), and `moment_nmm` (N·mm) about `about_mm`, the middle of the hole's held nodes. Quote its `line`. A rigid wall shares the load as a stiff bracket would, so read the split between the holes as an estimate too. `equilibrium` also says whether the moments about the part's middle balance (`moment_mismatch_percent`); over 1 % is a warning that the result is suspect.
+
 ## A lid under pressure
 A plate on a tank at 2 bar, its rim held. The pressure pushes into the part from the tank side.
 ```json

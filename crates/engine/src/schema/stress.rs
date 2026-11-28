@@ -347,8 +347,51 @@ pub struct StressEquilibrium {
     pub loads_applied_n: f64,
     /// How far they are from cancelling, % of the loads (over 1 % makes the result suspect).
     pub mismatch_percent: f64,
-    /// "Supports carry 10.0 N; loads applied 10.0 N".
+    /// How far the supports' moment and the loads' moment, both about `moments_about_mm`, are from
+    /// cancelling, % of the moments that make them up (over 1 % makes the result suspect). Absent
+    /// when the solver gave no node's force.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moment_mismatch_percent: Option<f64>,
+    /// The point the moment balance is taken about, mm: the middle of the part's bounding box.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moments_about_mm: Option<[f64; 3]>,
+    /// What each support carries, in the order the supports were given.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supports: Vec<StressSupportReaction>,
+    /// "Supports carry 10.0 N; loads applied 10.0 N; their moments balance too".
     pub line: String,
+}
+
+/// What one support carries: the solver's reaction on the nodes it holds (a node two supports
+/// hold counts for the first). On a clamp or a bolted face, what it must hold.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StressSupportReaction {
+    /// The support, as the setup names it.
+    pub support: String,
+    /// The force on the part, N (x, y, z): the opposite pushes on whatever holds it.
+    pub force_n: [f64; 3],
+    /// Its size, N.
+    pub force_size_n: f64,
+    /// Its moment about `about_mm`, N·mm (x, y, z): what the support resists turning by.
+    pub moment_nmm: [f64; 3],
+    /// Its size, N·mm.
+    pub moment_size_nmm: f64,
+    /// The middle of the nodes it holds, mm.
+    pub about_mm: [f64; 3],
+    /// The support in one line, for the user.
+    pub line: String,
+}
+
+/// The programs that meshed and solved, as they named themselves; each ran on one thread, so the
+/// same request gives the same numbers with the same versions.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StressPrograms {
+    /// "gmsh 4.12.1".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesher: Option<String>,
+    /// "CalculiX 2.21".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solver: Option<String>,
 }
 
 /// One number on the first mesh and the finer one.
@@ -438,6 +481,9 @@ pub struct StressEstimateResult {
     pub how_to_report: Vec<String>,
     /// Where it ran.
     pub network: String,
+    /// The mesher's and solver's versions. Absent on a dry run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub programs: Option<StressPrograms>,
     /// The folder with the mesh, the solver's job and its results, with `keep_files`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
