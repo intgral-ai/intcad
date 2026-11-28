@@ -436,6 +436,17 @@ fn setup_marks(painter: &egui::Painter, proj: &Proj, loads: &[fea::Marker], supp
 }
 
 /// A running estimate: what it does, for how long, and Stop.
+/// Where the running estimate's status (with its Stop) sits: centred near the bottom of the free
+/// viewport, and above the Assistant when it sits at the bottom centre over the same place
+/// (`develop`'s #221), which would otherwise cover it.
+fn status_anchor(free: Rect, chat: Option<Rect>) -> egui::Pos2 {
+    let mut at = free.center_bottom() + vec2(0.0, -64.0);
+    if let Some(chat) = chat.filter(|r| r.is_finite() && r.is_positive() && r.left() < free.right() && r.right() > free.left()) {
+        at.y = at.y.min(chat.top() - crate::shell::SHELL_GAP);
+    }
+    at
+}
+
 fn status(app: &mut SolveApp, ui: &mut egui::Ui, running: Option<&fea::Progress>, free: Rect) {
     let now = app.now;
     let since = CACHE.with(|c| {
@@ -482,7 +493,7 @@ fn status(app: &mut SolveApp, ui: &mut egui::Ui, running: Option<&fea::Progress>
         .order(egui::Order::Background)
         .movable(false)
         .pivot(egui::Align2::CENTER_BOTTOM)
-        .fixed_pos(free.center_bottom() + vec2(0.0, -64.0))
+        .fixed_pos(status_anchor(free, crate::agent_chat::centred(app).then_some(app.agent_chat.panel_rect).flatten()))
         .show(ui.ctx(), |ui| {
             let frame = container.frame(ui.ctx(), t.overlay, crate::frame::Side::Left).inner_margin(t.space_8);
             container.show_frame(ui, frame, free, |ui| {
@@ -652,6 +663,22 @@ fn legend(app: &mut SolveApp, ui: &mut egui::Ui, f: &Field, top: f32, stale: boo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The running estimate's status sits 64 px above the viewport's bottom, and above the
+    /// bottom-centre Assistant when that covers the same place; an Assistant beside the
+    /// viewport, or none, leaves it where it was.
+    #[test]
+    fn the_running_status_sits_above_the_bottom_centre_assistant() {
+        let free = Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1000.0, 800.0));
+        assert_eq!(status_anchor(free, None), egui::pos2(500.0, 736.0));
+        let centre = Rect::from_min_max(egui::pos2(240.0, 640.0), egui::pos2(760.0, 780.0));
+        assert_eq!(status_anchor(free, Some(centre)), egui::pos2(500.0, 640.0 - crate::shell::SHELL_GAP));
+        let beside = Rect::from_min_max(egui::pos2(1010.0, 100.0), egui::pos2(1400.0, 780.0));
+        assert_eq!(status_anchor(free, Some(beside)), egui::pos2(500.0, 736.0));
+        let low = Rect::from_min_max(egui::pos2(240.0, 760.0), egui::pos2(760.0, 790.0));
+        assert_eq!(status_anchor(free, Some(low)), egui::pos2(500.0, 736.0), "an Assistant below the status leaves it");
+        assert_eq!(status_anchor(free, Some(Rect::NOTHING)), egui::pos2(500.0, 736.0));
+    }
 
     #[test]
     fn the_ramp_rises_in_lightness_has_no_red_and_clamps() {
