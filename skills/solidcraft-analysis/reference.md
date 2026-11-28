@@ -51,7 +51,24 @@ Name the points with `probes`. Give `direction` for a gauge's axis: `along` then
  "probes": [{"at": [50, 10, 1.5], "direction": [1, 0, 0], "name": "gauge 1"},
             {"at": [20, 0, 0.75], "name": "edge"}]}
 ```
-Each probe gives `principal_stress_mpa` (positive in tension, negative in compression), `strain_microstrain` (µε; the shears as engineering γ), `along`, and its own `mesh_check`. A point up to 1 mm outside the part is read at its nearest point (`outside_part_mm`); farther, the reply refuses it, or names it in `warnings` when no element is in reach.
+Each probe gives `principal_stress_mpa` (positive in tension, negative in compression), `strain_microstrain` (µε; the shears as engineering γ), `along`, and its own `mesh_check` with the band of its von Mises stress. A point up to 1 mm outside the part is read at its nearest point (`outside_part_mm`); farther, the reply refuses it, or names it in `warnings` when no element is in reach.
+
+## Reading the mesh check: each number's band
+The estimate solves the model again on a mesh 1.5 times finer, and when the peak away from supports and loads moved more than 1 %, on one 2.25 times finer. Each number in `mesh_check.quantities` then has:
+- `values`: one per mesh, first to finest;
+- `estimate` and `band_percent`: the number to quote and how far it may be from the converged value. With three meshes the estimate is extrapolated (`extrapolated: true`, Richardson at the `observed_order` the meshes show); with two it is the finer mesh's value, the band twice its change. No band is under ±0.5 %;
+- `status`: `settled` (band within 3 %), `still changing`, or `keeps rising: likely a sharp inside corner or an idealised support`;
+- `quote`: the number with its band, ready for a sentence.
+
+Peterson's filleted bar (D/d 1.4, r/d 0.1, 4000 N on a 20 × 4 mm section: 50 MPa nominal) reads:
+```
+highest stress away from supports and loads 108 → 109 → 110 MPa: about 110 MPa, within ±0.5 % (settled)
+```
+Say: "about 110 MPa at the fillet (within ±0.5 %), 31 % of the yield strength given". `fraction_of_yield` is that share; `band_percent` at the top is its band.
+
+The same bar with a sharp inside corner reads `96 → 103 → 122 MPa (keeps rising: …)`: the stress there has no finite value. Say so, quote the finest value only as what this mesh gives, and suggest a fillet. A peak at a fixed support or a force's face (`peak_at_support`) has no band either: it depends on the mesh.
+
+When `third_mesh` says the third mesh was not solved (it would need more memory than this computer can spare), say the bands rest on two meshes.
 
 ## Your own material
 Give the three numbers (`youngs_modulus`, `poisson_ratio`, `yield_strength`) and where they come from (`source`); the reply repeats the source.
@@ -64,5 +81,5 @@ Give the three numbers (`youngs_modulus`, `poisson_ratio`, `yield_strength`) and
 - "free to slide / turn …, add …": the supports leave a rigid motion; add the support it names.
 - "is also held by a support": a load on a held face does nothing; move it.
 - "this body is Aluminum, so say which grade": the body's material is generic; pick a grade or give numbers.
-- "the finer mesh would need about … GB": the mesh check was skipped; say the numbers' settling is unknown.
+- "the finer mesh would need about … GB": the mesh check was skipped; say how far the numbers are from settling is unknown, and give no bands.
 - "`…` is not a setting of the estimate": the estimate does not take it (a remote force, a moment, load cases, gravity, bolts, contact); tell the user what it cannot model rather than dropping it, and run what it can.
