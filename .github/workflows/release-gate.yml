@@ -81,6 +81,13 @@ jobs:
     with:
       full_validation: true
 
+  # The stress estimate's real-solve suite at this candidate's commit (PIL-294 A14). The gate below
+  # requires its success and grades its raw output again; Beta and stable alike.
+  fea:
+    needs: [candidate]
+    if: needs.candidate.outputs.verify == 'true' && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
+    uses: ./.github/workflows/fea-suite.yml
+
   packages:
     name: packages
     needs: [candidate]
@@ -173,7 +180,7 @@ jobs:
 
   release-gate:
     name: ${{ needs.candidate.outputs.context }}
-    needs: [candidate, ci, kernel-rig, packages, beta-gate]
+    needs: [candidate, ci, kernel-rig, fea, packages, beta-gate]
     if: always()
     runs-on: ubuntu-24.04
     steps:
@@ -208,6 +215,12 @@ jobs:
           name: kernel-rig-handoff-${{ github.sha }}
           path: rig-handoff
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: needs.candidate.outputs.verify == 'true' && always() && (github.event_name != 'merge_group' || github.event.merge_group.base_ref == 'refs/heads/main')
+        with:
+          # One folder per platform's run of this commit (fea_suite.PLATFORMS).
+          pattern: fea-suite-*-${{ github.sha }}
+          path: fea-handoff
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: >-
           needs.candidate.outputs.verify == 'true' && always() && github.event_name == 'pull_request' && github.base_ref == 'main'
           && startsWith(github.head_ref, 'release/v') && contains(github.head_ref, '-beta.')
@@ -236,6 +249,7 @@ jobs:
           import hashlib, json, os, re, subprocess, sys
           from pathlib import Path
           sys.path.insert(0, 'scripts/ci')
+          import fea_suite
           import gate
           import kernel_rig_plan as rig
           import release_content as content
@@ -252,7 +266,7 @@ jobs:
                and head.startswith('release/v') and '-beta.' in head)
               or (os.environ.get('EVENT_NAME') == 'merge_group' and os.environ.get('GROUP_BASE') == 'refs/heads/main'
                   and merge_head.startswith('refs/heads/release/v') and '-beta.' in merge_head))
-          required = ('kernel-rig', 'beta-gate') if beta else ('ci', 'kernel-rig', 'packages')
+          required = ('kernel-rig', 'fea', 'beta-gate') if beta else ('ci', 'kernel-rig', 'fea', 'packages')
           for job in required:
               if needs.get(job, {}).get('result') != 'success':
                   problems.append(job + ': real job result is not success: ' + str(needs.get(job, {}).get('result', 'missing')))
@@ -265,6 +279,9 @@ jobs:
               rig.verify_handoff(Path.cwd(), Path('rig-handoff'), sha)
           except (OSError, ValueError, TypeError, KeyError) as error:
               problems.append('kernel-rig handoff: ' + str(error))
+          # The real-solve FEA suite's raw output for this commit, graded again here: a green job
+          # alone cannot pass it (PIL-294 A14).
+          problems.extend(fea_suite.handoff_problems(Path('fea-handoff'), sha))
           try:
               plan = gate.BoundPlan(Path('selection/plan.json').read_bytes())
               gate.require(plan['sourceRevision'] == sha, 'plan sourceRevision mismatch')

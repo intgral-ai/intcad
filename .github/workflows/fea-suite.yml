@@ -1,0 +1,121 @@
+# The stress estimate's real-solve suite (PIL-294 A14, docs/design/fea-engineering-ready.md): the
+# engine's ignored tests that mesh with gmsh and solve with CalculiX, at the versions pinned in
+# scripts/ci/fea_suite.py, one test at a time.
+# - Nightly against develop, where the stress work lands; by hand on any ref.
+# - From release-gate.yml on the release candidate's own commit. The gate grades this run's raw
+#   output again (fea_suite.handoff_problems): a failing case, an empty run or another program
+#   version blocks the release.
+# Linux first (spec decision 14). Windows joins before "ready" (decision 13): add a `windows` job
+# beside `linux` that installs the pinned Windows builds, runs the same command and uploads
+# `fea-suite-windows-<sha>` in the same layout, then add "windows" to fea_suite.PLATFORMS.
+name: FEA real-solve suite
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A reusable call takes the caller's workflow name, so the release gate's run never shares a
+  # group with a nightly or a manual run. Never cancel a candidate's run.
+  group: fea-suite-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: target
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  linux:
+    name: Real-solve FEA suite (Linux)
+    # A standard public-repository runner: 4 vCPUs, 16 GB. The suite runs one test and one solver
+    # thread at a time; the mesh check's finer runs stop at 6 GB (MEMORY_CEILING), and R2's needs
+    # about 8 GB available, so 16 GB holds the largest solve (about 100,000 nodes).
+    # Measured 2026-11-20 (run 44754532657, cold cache): 35 min in all, 17 min building and
+    # 14 min for 18 tests, 14.8 GB available. The rest leaves room for A6's third mesh.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      SOLIDCRAFT_GMSH: /usr/bin/gmsh
+      SOLIDCRAFT_CCX: /usr/bin/ccx
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The nightly tests develop; a manual run, a push and the release gate's call test
+          # their own commit.
+          ref: ${{ github.event_name == 'schedule' && 'develop' || github.sha }}
+          persist-credentials: false
+      - id: head
+        name: Record the commit under test
+        run: |
+          mkdir -p fea-suite
+          git rev-parse HEAD | tee fea-suite/revision.txt
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Free unused runner SDKs
+        run: bash scripts/ci/free-disk.sh
+      - name: Install the pinned gmsh and CalculiX
+        run: |
+          packages=$(python3 -I scripts/ci/fea_suite.py apt-packages --platform linux)
+          echo "Installing: $packages"
+          # Bounded as in ci.yml (#231): a stalled mirror fails fast instead of using the job's time.
+          for attempt in 1 2 3; do
+            timeout 180 sudo apt-get update \
+              -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::ForceIPv4=true && break
+            echo "apt-get update attempt $attempt failed or timed out" >&2
+            sleep 10
+          done
+          # Word splitting is wanted: one argument per package.
+          # shellcheck disable=SC2086
+          sudo apt-get install -y --no-install-recommends $packages
+      - name: Refuse other versions of gmsh and CalculiX
+        run: >-
+          python3 -I scripts/ci/fea_suite.py programs --platform linux
+          --gmsh "$SOLIDCRAFT_GMSH" --ccx "$SOLIDCRAFT_CCX" --out fea-suite/programs.json
+      - run: scripts/ci/build-jobs.sh
+      # The same Rust as rust-toolchain.toml and every other workflow; change them together.
+      - uses: dtolnay/rust-toolchain@1.99.1
+      # Only the nightly saves the cache (in the default branch's scope, which the release gate's
+      # pull requests and manual runs can read); other runs read it and never write it back.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: fea-suite
+          save-if: ${{ github.event_name == 'schedule' }}
+      - name: Resource sample
+        run: |
+          { echo "ImageOS=${ImageOS:-} ImageVersion=${ImageVersion:-}"; uname -a; nproc; free -h; df -h .; } | tee fea-suite/resources.txt
+      - name: Build the engine's tests (release)
+        run: cargo test --release --locked -p solidcraft-engine --lib --no-run
+      - name: List the suite
+        run: |
+          cargo test --release --locked -p solidcraft-engine --lib -- --ignored --list cmd::stress fea:: > fea-suite/listing.txt
+          cat fea-suite/listing.txt
+      - name: Run the suite, one test at a time
+        # libtest's own lines go to suite.stdout (shown live); what the tests print, their replies
+        # among it, goes to suite.stderr and is shown after the run.
+        run: |
+          set +e
+          set -o pipefail
+          cargo test --release --locked -p solidcraft-engine --lib -- --ignored --test-threads=1 --nocapture cmd::stress fea:: \
+            2> fea-suite/suite.stderr | tee fea-suite/suite.stdout
+          status=$?
+          echo "::group::What the tests printed"
+          cat fea-suite/suite.stderr
+          echo "::endgroup::"
+          exit "$status"
+      - name: Grade the suite from its raw output
+        if: always()
+        run: python3 -I scripts/ci/fea_suite.py grade --platform linux --dir fea-suite --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          # The release gate downloads this by the commit it tests.
+          name: fea-suite-linux-${{ steps.head.outputs.sha || github.sha }}
+          path: fea-suite/
+          if-no-files-found: error
+          retention-days: 14

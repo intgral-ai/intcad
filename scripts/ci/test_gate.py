@@ -658,7 +658,7 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
         self.assertIsNotNone(match, "release-gate needs a source-bound execution/evidence aggregate")
         return "\n".join(line[10:] for line in match[1].splitlines()) + "\n"
 
-    def run_gate(self, *, stale=False, host_only=False, statuses=None, beta=False, beta_evidence=True):
+    def run_gate(self, *, stale=False, host_only=False, statuses=None, beta=False, beta_evidence=True, fea=None):
         with tempfile.TemporaryDirectory(prefix=".release-gate-test-", dir=ROOT) as directory:
             root = Path(directory)
             subprocess.run(["git", "init", "-q", str(root)], check=True)
@@ -684,7 +684,13 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                 target="x86_64-unknown-linux-gnu", contractDigest=None, artifacts=[])))
             if host_only:
                 (package / "runtime-artifact.json").write_text(json.dumps(dict(mode="host_only", status="not_applicable")))
-            default = dict(ci="failure" if beta else "success", packages="success",
+            if fea is not None:
+                # The FEA suite's run as its artifact lands: one folder per platform and commit.
+                run = root / "fea-handoff" / f"fea-suite-linux-{sha}"
+                run.mkdir(parents=True)
+                for name, text in fea(sha).items():
+                    (run / name).write_text(text)
+            default = dict(ci="failure" if beta else "success", packages="success", fea="success",
                            **{"kernel-rig": "success", "beta-gate": "success" if beta else "skipped"})
             # The workflow exports the declared distribution to this step; the fixture models
             # that environment so the gate reads the same inputs as a real run.
@@ -747,6 +753,35 @@ class ReleaseWorkflowEvidence(unittest.TestCase):
                                                         **{"kernel-rig": "success", "beta-gate": "failure"}))
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("beta-gate: real job result is not success", result.stdout + result.stderr)
+
+    def test_the_fea_suite_blocks_stable_and_beta_alike(self):
+        # PIL-294 A14: a failing real-solve case blocks the next release, a Beta included.
+        for beta in (False, True):
+            for status in ("failure", "skipped", "cancelled", "missing"):
+                with self.subTest(beta=beta, status=status):
+                    statuses = dict(ci="failure" if beta else "success", packages="success",
+                                    **{"kernel-rig": "success", "beta-gate": "success" if beta else "skipped"})
+                    if status != "missing":
+                        statuses["fea"] = status
+                    result = self.run_gate(beta=beta, statuses=statuses)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("fea: real job result is not success: " + status, result.stdout + result.stderr)
+
+    def test_the_fea_suite_is_graded_again_from_this_commits_raw_output(self):
+        import test_fea_suite
+        fails = [line for line in self.run_gate().stdout.splitlines() if "fea-suite" in line]
+        self.assertTrue(any("no run of this commit" in line for line in fails), fails)
+        good = self.run_gate(fea=lambda sha: test_fea_suite.good_run(revision=sha))
+        self.assertEqual([line for line in good.stdout.splitlines() if "fea-suite" in line or "fea:" in line], [],
+                         "a good run adds no problem")
+
+        def failed(sha):
+            files = test_fea_suite.good_run(revision=sha)
+            name = test_fea_suite.TESTS[0]
+            files["suite.stdout"] = files["suite.stdout"].replace(f"test {name} ... ok", f"test {name} ... FAILED")
+            return files
+        # A green job whose raw output shows a failed case still blocks.
+        self.assertIn("fea-suite linux: " + test_fea_suite.TESTS[0] + ": FAILED", self.run_gate(fea=failed).stdout)
 
     def test_skipped_cancelled_failed_or_missing_required_workflow_cannot_pass(self):
         for status in ("skipped", "cancelled", "failure", "missing"):
