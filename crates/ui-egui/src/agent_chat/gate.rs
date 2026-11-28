@@ -343,6 +343,37 @@ mod tests {
         assert_eq!(batch, Verdict::Run { change: false });
     }
 
+    /// The engine runs `Inspect.Stress_Estimate` as the stress estimate, so the gate asks about it
+    /// whatever its spelling, and the request that runs names the registered id (the chat clears a
+    /// declined estimate's preview by that id).
+    /// Input: the solve and the dry run in other cases, with spaces, by `id` and in a batch.
+    /// Action: the gate, then `canonicalize`. Pass: every solve asks naming gmsh and the
+    /// registered id; the dry run alone runs; the rewritten request says `inspect.stress_estimate`.
+    #[test]
+    fn a_stress_estimate_asks_whatever_its_spelling() {
+        let setup = json!({"loads": [{"face": 1, "force": [0, 0, -5]}], "supports": [{"face": 0}]});
+        let asks = |v: &Verdict| matches!(v, Verdict::Ask(a) if a.contains("gmsh") && a.starts_with("inspect.stress_estimate:"));
+        for id in ["Inspect.Stress_Estimate", "INSPECT.STRESS_ESTIMATE", " inspect.stress_estimate\t"] {
+            let v = exec(id, setup.clone());
+            assert!(asks(&v), "{id:?}: {v:?}");
+            let mut dry = setup.clone();
+            dry["dry_run"] = json!(true);
+            assert_eq!(exec(id, dry), Verdict::Run { change: false }, "{id:?}");
+        }
+        let by_id = request("engine.execute", &json!({"id": "Inspect.Stress_Estimate", "params": setup}), 5);
+        assert!(asks(&by_id), "{by_id:?}");
+        let batch = json!({"commands": [{"command": "solid.box"}, {"id": "INSPECT.Stress_Estimate", "params": setup}]});
+        let v = request("engine.batch", &batch, 0);
+        assert!(matches!(&v, Verdict::Ask(a) if a.contains("gmsh")), "{v:?}");
+        // Showing another result of an estimate already solved is not a solve.
+        assert_eq!(exec("Inspect.Stress_Estimate.Show", json!({"show": "deflection"})), Verdict::Run { change: false });
+
+        let mut req = json!({"id": "Inspect.Stress_Estimate", "params": setup});
+        canonicalize("engine.execute", &mut req);
+        assert_eq!(req["command"], "inspect.stress_estimate");
+        assert!(req.get("id").is_none());
+    }
+
     #[test]
     fn modelling_runs_and_counts_reads_dont() {
         assert_eq!(exec("solid.box", json!({"x": 10})), Verdict::Run { change: true });
