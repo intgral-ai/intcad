@@ -71,7 +71,7 @@ The same bar with a sharp inside corner reads `96 → 103 → 122 MPa (keeps ris
 When `third_mesh` says the third mesh was not solved (it would need more memory than this computer can spare), say the bands rest on two meshes.
 
 ## Your own material
-Give all four numbers and where they come from; the reply repeats the source.
+Give the three numbers (`youngs_modulus`, `poisson_ratio`, `yield_strength`) and where they come from (`source`); the reply repeats the source.
 ```json
 {"material": {"name": "PETG, printed flat", "youngs_modulus": 2000, "poisson_ratio": 0.38,
   "yield_strength": 45, "source": "the filament maker's datasheet, tested flat; printed layers are weaker across"}}
