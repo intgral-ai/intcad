@@ -132,7 +132,7 @@ fn stop_kills_only_the_estimates_own_program() {
     let started = std::time::Instant::now();
     let r = run_program("sleep", &["30".to_string()], &[], &dir, "stop-test", 60, "test program", generation);
     let _ = stopper.join();
-    assert_eq!(r.err().as_deref(), Some(STOPPED));
+    assert!(matches!(r.err(), Some(Ended::Said(t)) if t == STOPPED));
     assert!(started.elapsed().as_secs() < 10, "stopped at once, not when the program ended");
     assert!(matches!(sibling.try_wait(), Ok(None)), "a process beside the estimate's lives on");
     let _ = sibling.kill();
@@ -214,4 +214,92 @@ fn the_solver_gets_every_core_unless_the_threads_are_set_already() {
         assert!(std::env::var(k).map_or(true, |x| x.trim().is_empty()), "{k} is set already and must be left alone");
     }
     assert!(used >= 1);
+}
+
+/// A2: the mesher sizes elements from curvature (24 a turn) down to a fiftieth of the largest,
+/// and straightens second-order elements; solids get a volume mesh, shells a surface one.
+#[test]
+fn the_mesher_sizes_from_curvature_down_to_a_fiftieth_and_straightens_curved_elements() {
+    let args = mesher_args(Elements::Solid, 2.5, "solid-1.msh");
+    let after = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    assert_eq!(args.first().map(String::as_str), Some("part.step"));
+    assert!(args.iter().any(|a| a == "-3") && !args.iter().any(|a| a == "-2"));
+    assert_eq!(after("-order").as_deref(), Some("2"));
+    assert_eq!(after("-clmax").as_deref(), Some("2.5"));
+    assert_eq!(after("-clmin").as_deref(), Some("0.05"));
+    assert_eq!(after("-clcurv").as_deref(), Some("24"));
+    assert!(args.iter().any(|a| a == "-optimize_ho"));
+    assert_eq!(after("-format").as_deref(), Some("msh22"));
+    assert_eq!(after("-o").as_deref(), Some("solid-1.msh"));
+    let shell = mesher_args(Elements::Shell, 3.0, "shell-1.msh");
+    assert!(shell.iter().any(|a| a == "-2") && !shell.iter().any(|a| a == "-3"));
+}
+
+/// A3: the mesher's and the solver's known failures, as they print them (gmsh 4.12.1, CalculiX
+/// 2.21), are read for what went wrong; the words say what to change and carry none of the
+/// programs' own text.
+#[test]
+fn known_mesher_and_solver_failures_become_plain_advice_without_the_programs_text() {
+    let failed = |code: Option<i32>, signal: Option<i32>, log: &str| Ended::Failed { code, signal, log: log.into() };
+    let gmsh_overlap = "Info    : Meshing 3D...\nError   : Invalid boundary mesh (overlapping facets) on surface 7 surface 7\nError   : No elements in volume 1 \nWarning : Surface mesh: worst distortion = -1.57377\nError   : ------------------------------\n";
+    assert_eq!(trouble(&failed(Some(1), None, gmsh_overlap)), Trouble::Overlap(Some(7)));
+    assert_eq!(trouble(&failed(Some(1), None, "Error   : No elements in volume 1\n")), Trouble::Overlap(None));
+    let ccx_jacobian = " *ERROR in e_c3d: nonpositive jacobian\n         determinant in element      1234\n";
+    assert_eq!(trouble(&failed(Some(201), None, ccx_jacobian)), Trouble::InsideOut(Some(1234)));
+    let banner = "************************************************************\n\nCalculiX Version 2.21\nCalculiX comes with ABSOLUTELY NO WARRANTY. This is free\nsoftware, and you are welcome to redistribute it under\ncertain conditions, see gpl.htm\n";
+    assert_eq!(trouble(&failed(None, Some(9), banner)), Trouble::OutOfMemory, "killed: the system's out-of-memory killer");
+    assert_eq!(trouble(&failed(Some(0xC000_0017_u32 as i32), None, "")), Trouble::OutOfMemory, "Windows: not enough memory");
+    assert_eq!(trouble(&failed(Some(1), None, "*ERROR in u_calloc: error allocating memory\n")), Trouble::OutOfMemory);
+    assert_eq!(trouble(&Ended::Timeout(1800)), Trouble::Timeout(1800));
+    assert_eq!(trouble(&failed(Some(1), None, "Info : x\nError   : Unknown entity 3\n")), Trouble::Other(Some("Error   : Unknown entity 3".into())));
+    assert_eq!(trouble(&failed(Some(1), None, banner)), Trouble::Other(None), "the banner is no reason");
+
+    let near = |_: P| "a hole Ø1 mm".to_string();
+    let words = |t: &Trouble, what: &str, at: Option<P>| {
+        let mut f = Failure::of(t, what, "/usr/bin/prog", 2.5);
+        f.at = at;
+        f.words(near)
+    };
+    let overlap = words(&Trouble::Overlap(Some(7)), "mesher", Some([50.0, 10.0, 2.0]));
+    assert!(overlap.starts_with("the mesher could not fill the part with elements near a hole Ø1 mm: "), "{overlap}");
+    assert!(overlap.contains("about 2.5 mm here") && overlap.contains("smaller `mesh_size`, such as 1.3 mm"), "{overlap}");
+    let inside = words(&Trouble::InsideOut(Some(1234)), "solver", Some([0.0; 3]));
+    assert!(inside.starts_with("the mesh has an element turned inside out near a hole Ø1 mm, "), "{inside}");
+    let unplaced = words(&Trouble::InsideOut(None), "solver", None);
+    assert!(unplaced.starts_with("the mesh has an element turned inside out, at a tightly curved"), "{unplaced}");
+    let memory = words(&Trouble::OutOfMemory, "solver", None);
+    assert!(
+        memory.starts_with("the solver ran out of memory on this computer with elements of about 2.5 mm") && memory.contains("such as 3.8 mm"),
+        "{memory}"
+    );
+    let slow = words(&Trouble::Timeout(1800), "solver", None);
+    assert!(slow.starts_with("the solver took longer than 30 minutes and was stopped"), "{slow}");
+    let other = words(&Trouble::Other(None), "mesher", None);
+    assert!(other.contains("gave no reason") && other.contains("keep_files: true"), "{other}");
+    for w in [&overlap, &inside, &unplaced, &memory, &slow, &other] {
+        for raw in ["gpl.htm", "WARRANTY", "*ERROR", "Error   :", "jacobian", "signal", "exit status", "facets"] {
+            assert!(!w.contains(raw), "`{raw}` in: {w}");
+        }
+    }
+    // Stop keeps its words.
+    let (stop, _) = failure(Ended::Said(STOPPED.into()), "solver", "ccx", 1.0);
+    assert_eq!(stop.words(near), STOPPED);
+}
+
+/// A3 and V-A3: a program the system kills (as Linux's out-of-memory killer does, signal 9) is
+/// read as out of memory, and its banner stays out of the words. A shell that kills itself
+/// stands in for the solver.
+#[cfg(unix)]
+#[test]
+fn a_program_the_system_kills_reads_as_out_of_memory() {
+    let dir = work_folder().unwrap_or_else(|e| panic!("{e}"));
+    let args: Vec<String> = ["-c", "echo 'certain conditions, see gpl.htm'; kill -9 $$"].iter().map(|s| s.to_string()).collect();
+    let ended = run_program("sh", &args, &[], &dir, "killed", 60, "solver", cancel_generation()).err();
+    let _ = std::fs::remove_dir_all(&dir);
+    let ended = ended.unwrap_or_else(|| panic!("the killed shell gave a result"));
+    assert!(matches!(&ended, Ended::Failed { signal: Some(9), log, .. } if log.contains("gpl.htm")), "{ended:?}");
+    let (f, t) = failure(ended, "solver", "sh", 1.0);
+    assert_eq!(t, Trouble::OutOfMemory);
+    let words = f.words(|_| String::new());
+    assert!(words.starts_with("the solver ran out of memory on this computer") && !words.contains("gpl.htm"), "{words}");
 }

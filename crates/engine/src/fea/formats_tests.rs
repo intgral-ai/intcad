@@ -83,7 +83,7 @@ fn von_mises_of_simple_states() {
 fn a_shell_job_holds_rotations_and_a_solid_job_translations() {
     let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.5, 0.0, 0.0], [0.5, 0.5, 0.0], [0.0, 0.5, 0.0]];
     let m = InpMaterial { e_mpa: 70000.0, nu: 0.33 };
-    let holds = InpHolds { fixed: &[0, 2, 5], rollers: &[], untilted: &[] };
+    let holds = InpHolds { fixed: &[0, 2, 5], pinned: &[], rollers: &[], untilted: &[] };
     let shell = write_inp(&nodes, &InpElements::Shell { tris: &[[0, 1, 2, 3, 4, 5]], thickness: 1.5 }, &m, &holds, &[(1, [0.0, 0.0, -10.0])]);
     assert!(shell.contains("TYPE=S6") && shell.contains("FIXED, 1, 6") && shell.contains("2, 3, -1.0"), "{shell}");
     assert!(shell.contains("*SHELL SECTION") && shell.contains("1.5"));
@@ -91,10 +91,48 @@ fn a_shell_job_holds_rotations_and_a_solid_job_translations() {
         &nodes,
         &InpElements::Solid { tets: &[[0, 1, 2, 3, 4, 5, 0, 1, 2, 3]] },
         &m,
-        &InpHolds { fixed: &[0], rollers: &[], untilted: &[] },
+        &InpHolds { fixed: &[0], pinned: &[], rollers: &[], untilted: &[] },
         &[],
     );
     assert!(solid.contains("TYPE=C3D10") && solid.contains("FIXED, 1, 3") && solid.contains("*SOLID SECTION"), "{solid}");
+}
+
+/// D3: a shell support over an area holds translations only (PINNED, 1, 3); a node that is also
+/// clamped stays clamped; pinned nodes count in HELD's reaction total.
+#[test]
+fn a_shell_held_over_an_area_keeps_its_rotations() {
+    let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.5, 0.0, 0.0], [0.5, 0.5, 0.0], [0.0, 0.5, 0.0]];
+    let m = InpMaterial { e_mpa: 70000.0, nu: 0.33 };
+    let holds = InpHolds { fixed: &[0], pinned: &[0, 1, 3], rollers: &[], untilted: &[] };
+    let shell = write_inp(&nodes, &InpElements::Shell { tris: &[[0, 1, 2, 3, 4, 5]], thickness: 1.5 }, &m, &holds, &[(2, [0.0, 0.0, -10.0])]);
+    assert!(
+        shell.contains(
+            "*NSET, NSET=PINNED
+2, 4,
+"
+        ) && shell.contains(
+            "PINNED, 1, 3
+"
+        ),
+        "{shell}"
+    );
+    assert!(
+        shell.contains("FIXED, 1, 6")
+            && shell.contains(
+                "*NSET, NSET=HELD
+1, 2, 4,
+"
+            ),
+        "{shell}"
+    );
+    let none = write_inp(
+        &nodes,
+        &InpElements::Shell { tris: &[[0, 1, 2, 3, 4, 5]], thickness: 1.5 },
+        &m,
+        &InpHolds { fixed: &[0], ..InpHolds::default() },
+        &[],
+    );
+    assert!(!none.contains("PINNED"), "{none}");
 }
 
 /// Rollers hold one translation each, in a set per axis; every held node is in HELD, whose
@@ -108,7 +146,7 @@ fn rollers_hold_one_axis_and_the_job_prints_the_held_nodes_reaction_totals() {
         &nodes,
         &InpElements::Solid { tets: &tets },
         &m,
-        &InpHolds { fixed: &[], rollers: &[(0, 0), (2, 1), (5, 1), (2, 1)], untilted: &[] },
+        &InpHolds { fixed: &[], pinned: &[], rollers: &[(0, 0), (2, 1), (5, 1), (2, 1)], untilted: &[] },
         &[],
     );
     assert!(!job.contains("NSET=FIXED") && !job.contains("FIXED, 1"), "no empty fixed set: {job}");
@@ -124,7 +162,7 @@ fn rollers_hold_one_axis_and_the_job_prints_the_held_nodes_reaction_totals() {
 fn a_symmetry_plane_on_shells_also_keeps_the_edge_from_tilting() {
     let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.5, 0.0, 0.0], [0.5, 0.5, 0.0], [0.0, 0.5, 0.0]];
     let m = InpMaterial { e_mpa: 70000.0, nu: 0.33 };
-    let holds = InpHolds { fixed: &[0], rollers: &[(2, 1), (5, 1)], untilted: &[(2, 1), (5, 1)] };
+    let holds = InpHolds { fixed: &[0], pinned: &[], rollers: &[(2, 1), (5, 1)], untilted: &[(2, 1), (5, 1)] };
     let shell = write_inp(&nodes, &InpElements::Shell { tris: &[[0, 1, 2, 3, 4, 5]], thickness: 1.5 }, &m, &holds, &[]);
     assert!(shell.contains("*NSET, NSET=SYMY\n3, 6,") && shell.contains("ROLLY, 2, 2"), "{shell}");
     assert!(

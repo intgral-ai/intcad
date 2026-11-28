@@ -96,13 +96,16 @@ pub enum InpElements<'a> {
     Solid { tets: &'a [[usize; 10]] },
 }
 
-/// The held nodes: `fixed` lose every translation (and a shell's rotations, a clamp); a
-/// `rollers` node loses only the translation along its axis (0 x, 1 y, 2 z); an `untilted`
-/// shell node on a symmetry plane across that axis also loses its turns about the other two
-/// (a solid's nodes have none, so there it is ignored).
+/// The held nodes: `fixed` lose every translation (and a shell's rotations, a clamp); `pinned`
+/// lose every translation and keep a shell's rotations (a support over an area of a sheet: its
+/// rows of held nodes stop it turning, and a clamp there gave the solver's reaction total a
+/// force that is not there, PIL-294 D3); a `rollers` node loses only the translation along its
+/// axis (0 x, 1 y, 2 z); an `untilted` shell node on a symmetry plane across that axis also loses
+/// its turns about the other two (a solid's nodes have none, so there it is ignored).
 #[derive(Default)]
 pub struct InpHolds<'a> {
     pub fixed: &'a [usize],
+    pub pinned: &'a [usize],
     pub rollers: &'a [(usize, usize)],
     pub untilted: &'a [(usize, usize)],
 }
@@ -155,6 +158,11 @@ pub fn write_inp(nodes: &[P], elements: &InpElements, material: &InpMaterial, ho
         }
     };
     nset(&mut s, "FIXED", holds.fixed);
+    // A node both clamped and pinned is clamped.
+    let mut pinned: Vec<usize> = holds.pinned.iter().copied().filter(|n| !holds.fixed.contains(n)).collect();
+    pinned.sort_unstable();
+    pinned.dedup();
+    nset(&mut s, "PINNED", &pinned);
     let mut by_axis: [Vec<usize>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     for (n, axis) in holds.rollers {
         if let Some(v) = by_axis.get_mut(*axis) {
@@ -180,7 +188,7 @@ pub fn write_inp(nodes: &[P], elements: &InpElements, material: &InpMaterial, ho
         v.dedup();
         nset(&mut s, name, v);
     }
-    let mut held: Vec<usize> = holds.fixed.iter().copied().chain(by_axis.iter().flatten().copied()).collect();
+    let mut held: Vec<usize> = holds.fixed.iter().copied().chain(pinned.iter().copied()).chain(by_axis.iter().flatten().copied()).collect();
     held.sort_unstable();
     held.dedup();
     nset(&mut s, HELD_SET, &held);
@@ -198,6 +206,9 @@ pub fn write_inp(nodes: &[P], elements: &InpElements, material: &InpMaterial, ho
     let _ = writeln!(s, "*BOUNDARY");
     if !holds.fixed.is_empty() {
         let _ = writeln!(s, "FIXED, 1, {last}");
+    }
+    if !pinned.is_empty() {
+        let _ = writeln!(s, "PINNED, 1, 3");
     }
     for (axis, (v, name)) in by_axis.iter().zip(ROLLER_SETS).enumerate() {
         if !v.is_empty() {
