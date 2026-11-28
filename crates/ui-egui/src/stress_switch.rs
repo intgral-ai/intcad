@@ -42,6 +42,12 @@ pub(crate) fn button(app: &SolveApp) -> bool {
     offer(app).agents()
 }
 
+/// A person may run the estimate by hand: from `by_hand`. A typed `inspect.stress_estimate {…}`
+/// line is such a run (it opens no chat), so it waits only for this, not for [`button`].
+pub(crate) fn by_hand(app: &SolveApp) -> bool {
+    offer(app).button()
+}
+
 /// Command `id` is one of the estimate's and the switch hides it from people now.
 pub(crate) fn hides(app: &SolveApp, id: &str) -> bool {
     offer::is_estimate_command(id) && !button(app)

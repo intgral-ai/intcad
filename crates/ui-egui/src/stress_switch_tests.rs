@@ -114,8 +114,13 @@ fn the_stress_button_is_hidden_until_the_switch_offers_it() {
         assert_eq!(status.contains(&not_offered), !shown, "{level}: {status:?}");
         // `ui.start`, as a shortcut or the harness starts a command, reaches the same place.
         h.app.agent_chat.open = false;
+        h.app.status = None;
         h.call("ui.start", json!({"command": CMD}));
         assert_eq!(h.app.agent_chat.open, shown, "{level}: ui.start");
+        let status = h.app.status.as_ref().map(|s| s.0.clone()).unwrap_or_default();
+        assert_eq!(status.contains(&not_offered), !shown, "{level}: ui.start says why: {status:?}");
+        // "Did you mean" never names it while it is hidden.
+        assert_eq!(crate::shortcut_box::closest("stress estimat", crate::stress_switch::button(&h.app)) == Some("Stress Estimate"), shown, "{level}");
     }
 }
 
