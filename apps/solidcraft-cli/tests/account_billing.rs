@@ -515,6 +515,7 @@ impl MonotonicClock for WireClock {
 enum Step {
     Status,
     StatusThen(Box<dyn FnOnce()>),
+    WrongAccount(Box<dyn FnOnce()>),
     Denied,
     DeniedThen(Box<dyn FnOnce()>),
     Withdraw(CredentialSession),
@@ -523,6 +524,7 @@ enum Step {
     LoseAdmit,
     RecoverAdmit,
     Renew,
+    RenewThen(u16, Box<dyn FnOnce()>),
     Finalize(BillingResult),
     InspectFinalize(Box<dyn FnOnce()>),
     LoseFinalize,
@@ -571,11 +573,12 @@ impl Transport for Script {
         let url = request.url().strip_prefix("https://test.invalid").unwrap();
         let body = || serde_json::from_slice::<Value>(request.body().unwrap()).unwrap();
         let (status, response) = match step {
-            Step::Status | Step::StatusThen(_) | Step::Denied | Step::DeniedThen(_) | Step::Withdraw(_) => {
+            Step::Status | Step::StatusThen(_) | Step::Denied | Step::DeniedThen(_) | Step::Withdraw(_) | Step::WrongAccount(_) => {
                 assert_eq!((request.method(), url), ("GET", "/v1/status"));
                 assert_eq!(request.header("Authorization"), Some(self.authorization));
                 assert_eq!(request.header("X-Installation-Credential"), None);
-                if let Step::StatusThen(after) = step {
+                let account = if matches!(step, Step::WrongAccount(_)) { "acct_other_fixture" } else { "acct_cli_fixture" };
+                if let Step::StatusThen(after) | Step::WrongAccount(after) = step {
                     after();
                 } else if let Step::Withdraw(session) = step {
                     session.revoke_in_process();
@@ -588,7 +591,7 @@ impl Transport for Script {
                 (
                     200,
                     json!({
-                        "account":{"id":"acct_cli_fixture","status":"active","email_verified":true},"eligible":true,"reasons":[],
+                        "account":{"id":account,"status":"active","email_verified":true},"eligible":true,"reasons":[],
                         "balance":10,"held":0,"available":10,"client":{"supported":true},
                         "protocol":{"supported":true,"version":"intcad-auth/1.0"},"capabilities":{"chat":true,"mcp":true,"dfm":true}
                     }),
@@ -634,7 +637,7 @@ impl Transport for Script {
                     }),
                 )
             }
-            Step::Renew => {
+            Step::Renew | Step::RenewThen(_, _) => {
                 assert_eq!((request.method(), url), ("POST", "/v1/authorizations"));
                 assert_eq!(request.header("Authorization"), Some(self.authorization));
                 assert_eq!(request.header("X-Execution-Session-Proof"), Some("proof-fixture"));
@@ -646,6 +649,12 @@ impl Transport for Script {
                         "operation_id":id.as_str(),"capability":self.capability.wire(),"renewal":{"authorization_id":"grant_cli_fixture"}
                     })
                 );
+                if let Step::RenewThen(status, after) = step {
+                    after();
+                    if status != 200 {
+                        return Ok(WireResponse::new(status, br#"{"error":{"code":"AUTH_REQUIRED"}}"#.to_vec()));
+                    }
+                }
                 (
                     200,
                     json!({
@@ -942,6 +951,79 @@ fn active_identity_recovery_never_sends_with_less_than_one_request_left() {
     assert_eq!(probe.requests.load(Ordering::Relaxed), 1, "only the pre-admission refresh was sent");
     clock.0.set(60_000);
     assert_eq!(billing.dispatch(&operation, Duration::from_secs(1)).unwrap_err().code, RefusalCode::UnsafeToStart);
+    script.done();
+}
+
+#[test]
+fn renewal_uses_the_candidate_window_but_never_masks_unauthorized() {
+    for (status, close_readiness) in [(200, false), (401, true), (200, true)] {
+        let scratch = Scratch::new("renewal-final-gate");
+        let session = fixture_session();
+        let probe = IdentityProbe::default();
+        let identity = scripted_identity(&session, scratch.dir(), probe.clone());
+        let clock = WireClock::default();
+        let after = {
+            let clock = clock.clone();
+            let probe = probe.clone();
+            move || {
+                clock.0.set(56_000);
+                if close_readiness {
+                    probe.seconds.store(620, Ordering::Relaxed);
+                }
+            }
+        };
+        let mut steps = vec![Step::Status, Step::Admit, Step::Status, Step::RenewThen(status, Box::new(after))];
+        if !close_readiness {
+            steps.push(Step::Status);
+        }
+        let script = Script::new(Capability::Dfm, EntryCategory::CliDfm, steps).expecting_rotated_bearer();
+        let mut billing = live_billing(session, script.clone(), scratch.dir().join("journal"), clock.clone()).with_identity(identity);
+        let operation = OperationId::parse("op_cli_renewal_final_gate").unwrap();
+        billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap();
+        clock.0.set(54_000);
+        let result = billing.dispatch(&operation, Duration::from_secs(10));
+        if status == 401 {
+            assert_eq!(result.unwrap_err().code, RefusalCode::AuthRequired);
+            assert_eq!(billing.dispatch(&operation, Duration::ZERO).unwrap_err().code, RefusalCode::AuthRequired);
+        } else if close_readiness {
+            assert_eq!(result.unwrap_err().code, RefusalCode::AuthUnavailable);
+            clock.0.set(60_000);
+            assert_eq!(billing.dispatch(&operation, Duration::ZERO).unwrap_err().code, RefusalCode::UnsafeToStart);
+        } else {
+            result.unwrap();
+            clock.0.set(61_000);
+            billing.check_commit(&operation).unwrap();
+        }
+        script.done();
+    }
+}
+
+#[test]
+fn wrong_account_status_releases_without_revalidating_identity() {
+    let fixture = fixture("wrong-status-account", Probe::Passed);
+    let root = fixture._scratch.dir();
+    let session = fixture_session();
+    let probe = IdentityProbe::default();
+    let identity = scripted_identity(&session, root, probe.clone());
+    let expire = {
+        let probe = probe.clone();
+        move || {
+            probe.seconds.store(620, Ordering::Relaxed);
+            probe.offline.store(true, Ordering::Relaxed);
+        }
+    };
+    let script = Script::new(
+        Capability::Dfm,
+        EntryCategory::CliDfm,
+        [Step::Status, Step::Admit, Step::WrongAccount(Box::new(expire)), Step::Finalize(BillingResult::FailedNoEffect)],
+    )
+    .expecting_rotated_bearer();
+    let journal = root.join("journal");
+    let mut billing = live_billing(session, script.clone(), journal.clone(), WireClock::default()).with_identity(identity);
+    assert!(run_check(&fixture, &mut billing).unwrap_err().starts_with("AUTH_REQUIRED:"));
+    assert_eq!(probe.requests.load(Ordering::Relaxed), 1, "only the initial refresh");
+    assert_eq!(fixture.runs.load(Ordering::Relaxed), 0);
+    assert_eq!(FileOperationStore::open(journal).unwrap().load(&script.operation()).unwrap().unwrap().status, OperationStatus::Released);
     script.done();
 }
 

@@ -720,10 +720,13 @@ impl<T: Transport> OperationRenewal<T> {
             &self.operation,
             &self.authorization,
             Capability::Control,
-            Some(&self.deadline),
+            Some((&self.deadline, Duration::ZERO)),
             still_verified,
         );
         let received_at = self.service.clock.now();
+        if response.as_ref().is_err_and(|error| error.code == RefusalCode::AuthRequired) {
+            return response.map(|_| false);
+        }
         if paused.get() || self.verified_generation() != Some(verified) {
             self.pause();
             return Ok(false);
@@ -1011,7 +1014,7 @@ impl<T: Transport> HttpAccountService<T> {
         operation: &OperationId,
         authorization_id: &GrantId,
         capability: Capability,
-        prior: Option<&ConservativeDeadline>,
+        prior: Option<(&ConservativeDeadline, Duration)>,
         still_verified: impl Fn() -> bool,
     ) -> Result<(Grant, MonotonicInstant, Option<Duration>), Refusal> {
         require_provable(scope)?;
@@ -1034,16 +1037,19 @@ impl<T: Transport> HttpAccountService<T> {
             return Err(refusal(RefusalCode::AuthUnavailable));
         }
         let sent_at = self.clock.now();
-        if prior.is_some_and(|deadline| deadline.remaining(sent_at).is_none()) {
-            return Err(refusal(RefusalCode::UnsafeToStart));
+        if let Some((deadline, reserve)) = prior {
+            let remaining = deadline.remaining(sent_at).ok_or_else(|| refusal(RefusalCode::UnsafeToStart))?;
+            if remaining < reserve {
+                return Err(unavailable());
+            }
         }
         let response = self.transport.send(&request).map_err(|_| unavailable())?;
-        if !still_verified() {
-            return Err(refusal(RefusalCode::AuthUnavailable));
-        }
         if response.status() == 401 {
             self.handoff.renewal_unauthorized(scope, operation);
             return Err(refusal(RefusalCode::AuthRequired));
+        }
+        if !still_verified() {
+            return Err(refusal(RefusalCode::AuthUnavailable));
         }
         let (status, value) = Self::decode_response(response)?;
         if status != 200 {
@@ -1203,15 +1209,36 @@ impl<T: Transport> HttpAccountService<T> {
     }
 }
 
+pub(crate) enum ControlledStatusError {
+    Unauthorized,
+    AccountMismatch,
+    Refused(Refusal),
+}
+
+impl From<Refusal> for ControlledStatusError {
+    fn from(error: Refusal) -> Self {
+        Self::Refused(error)
+    }
+}
+
+impl From<ControlledStatusError> for Refusal {
+    fn from(error: ControlledStatusError) -> Self {
+        match error {
+            ControlledStatusError::Unauthorized | ControlledStatusError::AccountMismatch => refusal(RefusalCode::AuthRequired),
+            ControlledStatusError::Refused(error) => error,
+        }
+    }
+}
+
 impl<T: Transport> HttpAccountService<T> {
     /// Read one authenticated `/v1/status` value. The bearer is read from the host credential
     /// session and sent as the only credential; a missing or unusable bearer is refused before any
     /// request.
     fn status_value(&self) -> Result<Value, Refusal> {
-        self.status_value_gated(|| Ok(()))
+        Self::decode_status_value(self.status_response(|| Ok(()))?)
     }
 
-    fn status_value_gated(&self, before_send: impl FnOnce() -> Result<(), Refusal>) -> Result<Value, Refusal> {
+    fn status_response(&self, before_send: impl FnOnce() -> Result<(), Refusal>) -> Result<WireResponse, Refusal> {
         let mut request = self.request("GET", "/v1/status", None);
         self.push_auth(
             &mut request,
@@ -1219,7 +1246,11 @@ impl<T: Transport> HttpAccountService<T> {
             self.credentials.product_session().map(|secret| Secret::new(format!("Bearer {}", secret.expose_secret()))),
         )?;
         before_send()?;
-        let (status, value) = self.exchange(request)?;
+        self.transport.send(&request).map_err(|_| unavailable())
+    }
+
+    fn decode_status_value(response: WireResponse) -> Result<Value, Refusal> {
+        let (status, value) = Self::decode_response(response)?;
         if status != 200 {
             return Err(error_refusal(status, &value));
         }
@@ -1294,22 +1325,26 @@ impl<T: Transport> HttpAccountService<T> {
         scope: &AuthenticatedHostScope,
         capability: Capability,
         before_send: impl FnOnce() -> Result<(), Refusal>,
-    ) -> Result<(), Refusal> {
-        let value = self.status_value_gated(before_send)?;
+    ) -> Result<(), ControlledStatusError> {
+        let response = self.status_response(before_send)?;
+        if response.status() == 401 {
+            return Err(ControlledStatusError::Unauthorized);
+        }
+        let value = Self::decode_status_value(response)?;
         let (account, snapshot) = self.parse_status_snapshot(&value)?;
         if account != scope.account().as_str() {
-            return Err(refusal(RefusalCode::AuthRequired));
+            return Err(ControlledStatusError::AccountMismatch);
         }
         if let Some(code) = snapshot.reasons.first() {
-            return Err(refusal(*code));
+            return Err(refusal(*code).into());
         }
         if verified_account(&value).map_err(activation_refusal)? != scope.account().as_str() {
-            return Err(refusal(RefusalCode::AuthRequired));
+            return Err(ControlledStatusError::AccountMismatch);
         }
         match value.get("capabilities").and_then(|caps| caps.get(capability.wire())).and_then(Value::as_bool) {
             Some(true) => Ok(()),
-            Some(false) => Err(refusal(RefusalCode::CapabilityDenied)),
-            None => Err(unavailable()),
+            Some(false) => Err(refusal(RefusalCode::CapabilityDenied).into()),
+            None => Err(unavailable().into()),
         }
     }
 

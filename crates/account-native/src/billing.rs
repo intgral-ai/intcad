@@ -12,7 +12,7 @@ use solidcraft_engine::entitlement::{
     RenewalAttempt, RetryDecision, RetryScopeKey, SaveOutcome, SettlementIntent, TransportCorrelation,
 };
 
-use crate::http::{LiveProductCredentials, refusal, unavailable};
+use crate::http::{ControlledStatusError, LiveProductCredentials, refusal, unavailable};
 use crate::identity::REQUEST_TIMEOUT;
 use crate::{
     CredentialHandoff, CredentialSession, FileOperationStore, FixedCredentials, HttpAccountService, IdentityError, IdentityLifecycle,
@@ -241,7 +241,7 @@ impl SessionBilling {
         service: &HttpAccountService<&dyn Transport>,
         deadline: Option<&ConservativeDeadline>,
     ) -> Result<Option<(u64, u64)>, Refusal> {
-        let budget = || {
+        let budget = || -> Result<Duration, Refusal> {
             self.reserve_product_request(deadline)?;
             Ok(deadline.map_or(IDENTITY_WAIT, |deadline| {
                 deadline.remaining(self.clock.now()).unwrap_or_default().saturating_sub(REQUEST_TIMEOUT).min(IDENTITY_WAIT)
@@ -257,13 +257,13 @@ impl SessionBilling {
         self.check_live_binding(binding)?;
         let mut generations = self.ensure_identity_with(budget()?, false)?;
         let mut status = read(generations);
-        if status.as_ref().is_err_and(|error| error.code == RefusalCode::AuthRequired) && generations.is_some() {
+        if matches!(status, Err(ControlledStatusError::Unauthorized)) && generations.is_some() {
             self.check_live_binding(binding)?;
             // A 401 may have raced bearer expiry. Revalidate once within the
             // old window, obeying the lifecycle's background cooldown.
             generations = self.ensure_identity_with(budget()?, true)?;
             status = read(generations);
-            if status.as_ref().is_err_and(|error| error.code == RefusalCode::AuthRequired) {
+            if matches!(status, Err(ControlledStatusError::Unauthorized)) {
                 self.check_live_binding(binding)?;
                 self.check_identity_freshness(binding, generations)?;
             }
@@ -316,8 +316,8 @@ impl SessionBilling {
                     &active.operation,
                     active.grant.id(),
                     active.grant.capability(),
-                    Some(&active.deadline),
-                    || freshness().and_then(|()| self.reserve_product_request(Some(&active.deadline))).is_ok(),
+                    Some((&active.deadline, REQUEST_TIMEOUT)),
+                    || freshness().is_ok(),
                 )?;
                 let received_at = self.clock.now();
                 let attempt = RenewalAttempt { sent_at, received_at, old_deadline: active.deadline.clone(), still_valid: true };
@@ -330,11 +330,10 @@ impl SessionBilling {
                 None
             };
             let final_gate = || {
-                remaining()?;
                 self.check_live_binding(&active.binding)?;
                 freshness()?;
-                self.reserve_product_request(Some(&active.deadline))?;
                 let deadline = renewal.as_ref().map_or(&active.deadline, |(deadline, _)| deadline);
+                self.reserve_product_request(Some(deadline))?;
                 if deadline.remaining(self.clock.now()).is_none_or(|remaining| remaining < bound) {
                     return Err(unsafe_start());
                 }
