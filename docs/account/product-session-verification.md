@@ -43,9 +43,12 @@ document does not copy, restate or reinterpret the server contract.
    - `eligible` is `true` and `reasons` is empty;
    - `balance`, `held` and `available` are present `u64` values with `held <= balance` and
      `available == balance - held`.
-4. The stored product bearer is the exact provider token, because the server's documented scheme
-   verifies that token on every product request. The client does not parse, refresh or mint a
-   second token.
+4. The stored product bearer is the current transport token, not the local session identity.
+   The server verifies that token on every product request. A separate stable
+   `auth/session_binding` is minted at the verified login and retained across access-token
+   rotation and process restart; operation keys, settlement and commit checks use that binding,
+   never the bearer bytes. The identity lifecycle renews the bearer from the stored WorkOS
+   refresh token and publishes it without changing the binding or operation identity.
 
 This is not a general status decoder. It deliberately ignores `/capabilities`, `/policy`,
 `/snapshot_at` and every other member of the status response. In particular, `eligible` and
@@ -80,9 +83,36 @@ The exchange is explicit:
   values through `WorkOsPublicClient::new` and `WireConnection::new`; with any missing or
   malformed value, `sign_in` refuses before any request. No runtime setting, environment
   heuristic, token field, response value or arbitrary URL is accepted.
-- The CLI still configures no product service origin and no shipped provider sign-in; `sign_in`
-  still refuses and no production billing, commit or MCP authority is installed.
+- The CLI has no shipped provider sign-in. With `INTCAD_PRODUCT_HTTPS_ORIGIN` configured at
+  build time, controlled headless MCP and DFM can use the existing desktop credentials and
+  shared lock. If `INTCAD_WORKOS_PUBLIC_CLIENT_ID` is also set, the CLI uses the desktop
+  identity journal for that client ID and origin. It verifies the lease before admission or
+  controlled execution; rotation replaces the bearer, not the stable scope or operation proof.
+  If the client ID is omitted, the CLI can use the existing product bearer if the server still
+  accepts it, but cannot refresh it. If the configured identity cannot be opened or verified,
+  controlled work refuses rather than falling back to a stale bearer.
 - No token is sent to any origin other than the caller-configured `WireConnection`.
+
+## Identity refresh and stable binding
+
+The desktop and CLI share one identity record for the configured WorkOS public client and product
+origin. At a verified login the client mints a 64-hex local `auth/session_binding` and stores the
+WorkOS refresh token plus the access-token expiry in the `identity/<domain>/` journal/keyring
+namespace. The binding is a local correlation key: the server remains the authority and binds
+operations and grants to the verified WorkOS session id. It is never derived from the current
+bearer and is not an unverified `sid` claim.
+
+An access-token rotation uses the stored refresh token at the fixed WorkOS endpoint, persists the
+rotated pair as pending, and publishes only the current bearer to `auth/product_session`. The
+stable binding, operation ID, execution proof and lease deadline are unchanged. A rotated pair
+that cannot yet be verified grants no authority. The P2 host opts into the policy that a refresh
+using the stored refresh token preserves the same verified login after the product status check;
+P1's strict default still leaves a refreshed record pending.
+
+The CLI/MCP path recovers a paused operation only in the same process. A fresh CLI process never
+resumes or reruns an old operation; it keeps the durable hold for the existing expiry, lookup and
+settlement rules and performs new work only after the identity recovers. This boundary avoids
+duplicate local effects and duplicate charges.
 
 ## Durable activation boundary
 
@@ -154,8 +184,9 @@ email-verified account, exact supported protocol, supported client, `eligible` t
 account. After the request, the worker re-reads the scope, bearer, installation credential and
 revocation generation; any change discards the result. An explicit sign-in, sign-out, account
 switch or GUI shutdown retires the check immediately, marks its shared result done and drops a
-late reply. There is no installation bootstrap or replacement, no browser opening, no operation
-re-execution and no automatic token refresh on this path.
+late reply. There is no installation bootstrap or replacement, no browser opening and no operation
+re-execution. Startup may renew the access token through the identity lifecycle and publish the
+new bearer before this check; it never extends the operation lease or invents authority.
 
 The generic `AccountService::status` decoder remains the broader quota/status snapshot. Restart
 narrows only its own presentation decision; it does not narrow the generic status contract. A

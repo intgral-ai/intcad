@@ -10,20 +10,21 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
 use solidcraft_account_native::{
-    CredentialSession, FileOperationStore, ProductExchangeError, ProductSession, ProductSessionExchange, ProviderSession, Secret, SessionBilling,
-    Transport, TransportFailure, WireConnection, WireRequest, WireResponse,
+    CredentialSession, FileOperationStore, IdentityClock, IdentityDomain, IdentityLifecycle, IdentityTransport, ProductExchangeError, ProductSession,
+    ProductSessionExchange, ProviderSession, RefreshResponse, RefreshTransportError, Secret, SessionBilling, SessionVerifier, Transport,
+    TransportFailure, VerifiedSession, VerifyError, WireConnection, WireRequest, WireResponse,
 };
 use solidcraft_cli::account::{McpAccount, McpRoute, compose_mcp_server};
 use solidcraft_cli::validation::{ControlledCheck, NoAuthorityBilling, ProfileScope, profile_scope, run_controlled_check, run_with_billing};
 use solidcraft_engine::entitlement::{
-    AccountId, AuthenticatedHostScope, BillingPort, BillingResult, BudgetTable, Capability, CredentialError, CredentialStore, EntryCategory, Grant,
-    GrantId, HostSessionBinding, InstallationId, MonotonicClock, MonotonicInstant, OperationId, OperationStatus, OperationStore, Refusal,
-    RefusalCode, UpperBound,
+    BillingPort, BillingResult, BudgetTable, Capability, CredentialError, CredentialStore, EntryCategory, Grant, GrantId, MonotonicClock,
+    MonotonicInstant, OperationId, OperationStatus, OperationStore, Refusal, RefusalCode, UpperBound,
 };
 use solidcraft_engine::io::candidate::{self, CandidateFile};
 use solidcraft_engine::schema::snapshot::{CandidateArtifact, CandidateRef, SnapshotSource};
@@ -99,6 +100,7 @@ enum Probe {
 struct FixedRunner {
     identity: RunnerIdentity,
     probe: Probe,
+    runs: Arc<AtomicU64>,
 }
 
 impl Runner for FixedRunner {
@@ -107,6 +109,7 @@ impl Runner for FixedRunner {
     }
 
     fn run(&self, job: &RunJob, _control: &RunControl) -> RunnerOutcome {
+        self.runs.fetch_add(1, Ordering::Relaxed);
         if matches!(self.probe, Probe::Infrastructure) {
             return RunnerOutcome::Infrastructure {
                 started_at_ms: Some(job.started_at_ms),
@@ -208,6 +211,7 @@ struct Fixture {
     _scratch: Scratch,
     port: ValidationPort,
     candidate: CandidateRef,
+    runs: Arc<AtomicU64>,
 }
 
 fn fixture(name: &str, probe: Probe) -> Fixture {
@@ -215,15 +219,16 @@ fn fixture(name: &str, probe: Probe) -> Fixture {
     let candidates = scratch.dir().join("candidates");
     let store = scratch.dir().join("validation");
     let candidate = write_candidate(&candidates, "cand-cli-dfm");
+    let runs = Arc::new(AtomicU64::new(0));
     let port = ValidationPort::open_with(
         store,
         candidates,
-        Arc::new(FixedRunner { identity: LocalRunner::identity(), probe }),
+        Arc::new(FixedRunner { identity: LocalRunner::identity(), probe, runs: runs.clone() }),
         Limits::default(),
         Arc::new(SystemClock),
     )
     .unwrap();
-    Fixture { _scratch: scratch, port, candidate }
+    Fixture { _scratch: scratch, port, candidate, runs }
 }
 
 fn run_check(fixture: &Fixture, billing: &mut dyn BillingPort) -> Result<ControlledCheck, String> {
@@ -436,18 +441,36 @@ fn no_authority_billing_never_grants() {
 }
 
 #[derive(Default)]
-struct FakeKeyring(BTreeMap<String, String>);
+struct FakeKeyring {
+    entries: BTreeMap<String, String>,
+    read_delay: Option<Arc<ReadDelay>>,
+}
+
+#[derive(Default)]
+struct ReadDelay {
+    binding_reads: AtomicU64,
+    time: AtomicU64,
+}
 
 impl CredentialStore for FakeKeyring {
     fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
-        Ok(self.0.get(key).cloned())
+        if key == "auth/session_binding"
+            && let Some(delay) = &self.read_delay
+        {
+            let reads = delay.binding_reads.load(Ordering::Relaxed);
+            delay.binding_reads.store(reads.saturating_sub(1), Ordering::Relaxed);
+            if reads == 1 {
+                delay.time.store(56_000, Ordering::Relaxed);
+            }
+        }
+        Ok(self.entries.get(key).cloned())
     }
     fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
-        self.0.insert(key.into(), secret.into());
+        self.entries.insert(key.into(), secret.into());
         Ok(())
     }
     fn delete(&mut self, key: &str) -> Result<(), CredentialError> {
-        self.0.remove(key);
+        self.entries.remove(key);
         Ok(())
     }
     fn persistent(&self) -> bool {
@@ -464,16 +487,13 @@ impl ProductSessionExchange for FixtureExchange {
 }
 
 fn fixture_session() -> CredentialSession {
-    let mut session = CredentialSession::new(Box::new(FakeKeyring::default()));
+    fixture_session_with_store(FakeKeyring::default())
+}
+
+fn fixture_session_with_store(store: FakeKeyring) -> CredentialSession {
+    let mut session = CredentialSession::new(Box::new(store));
     session.complete_provider_login("provider_fixture", "provider-fixture").unwrap();
     session.activate_product_session(&FixtureExchange).unwrap();
-    session
-        .bind_scope(&AuthenticatedHostScope::new(
-            AccountId::new("acct_cli_fixture"),
-            InstallationId::new("ins_cli_fixture"),
-            HostSessionBinding::new("fixture-binding"),
-        ))
-        .unwrap();
     solidcraft_account_native::CredentialHandoff::installation_credential(&mut session, "ins_cli_fixture", Secret::new("installation-fixture"))
         .unwrap();
     session
@@ -494,13 +514,17 @@ impl MonotonicClock for WireClock {
 
 enum Step {
     Status,
+    StatusThen(Box<dyn FnOnce()>),
+    WrongAccount(Box<dyn FnOnce()>),
     Denied,
+    DeniedThen(Box<dyn FnOnce()>),
     Withdraw(CredentialSession),
     Admit,
     BadGrant,
     LoseAdmit,
     RecoverAdmit,
     Renew,
+    RenewThen(u16, Box<dyn FnOnce()>),
     Finalize(BillingResult),
     InspectFinalize(Box<dyn FnOnce()>),
     LoseFinalize,
@@ -514,11 +538,23 @@ struct Script {
     operation: Rc<RefCell<Option<OperationId>>>,
     capability: Capability,
     entry: EntryCategory,
+    authorization: &'static str,
 }
 
 impl Script {
     fn new(capability: Capability, entry: EntryCategory, steps: impl IntoIterator<Item = Step>) -> Self {
-        Self { steps: Rc::new(RefCell::new(steps.into_iter().collect())), operation: Rc::default(), capability, entry }
+        Self {
+            steps: Rc::new(RefCell::new(steps.into_iter().collect())),
+            operation: Rc::default(),
+            capability,
+            entry,
+            authorization: "Bearer product-fixture",
+        }
+    }
+
+    fn expecting_rotated_bearer(mut self) -> Self {
+        self.authorization = "Bearer rotated-product-fixture";
+        self
     }
 
     fn operation(&self) -> OperationId {
@@ -537,19 +573,25 @@ impl Transport for Script {
         let url = request.url().strip_prefix("https://test.invalid").unwrap();
         let body = || serde_json::from_slice::<Value>(request.body().unwrap()).unwrap();
         let (status, response) = match step {
-            Step::Status | Step::Denied | Step::Withdraw(_) => {
+            Step::Status | Step::StatusThen(_) | Step::Denied | Step::DeniedThen(_) | Step::Withdraw(_) | Step::WrongAccount(_) => {
                 assert_eq!((request.method(), url), ("GET", "/v1/status"));
-                assert_eq!(request.header("Authorization"), Some("Bearer product-fixture"));
+                assert_eq!(request.header("Authorization"), Some(self.authorization));
                 assert_eq!(request.header("X-Installation-Credential"), None);
-                if let Step::Withdraw(session) = step {
+                let account = if matches!(step, Step::WrongAccount(_)) { "acct_other_fixture" } else { "acct_cli_fixture" };
+                if let Step::StatusThen(after) | Step::WrongAccount(after) = step {
+                    after();
+                } else if let Step::Withdraw(session) = step {
                     session.revoke_in_process();
+                } else if let Step::DeniedThen(after) = step {
+                    after();
+                    return Ok(WireResponse::new(401, br#"{"error":{"code":"AUTH_REQUIRED"}}"#.to_vec()));
                 } else if matches!(step, Step::Denied) {
                     return Ok(WireResponse::new(401, br#"{"error":{"code":"AUTH_REQUIRED"}}"#.to_vec()));
                 }
                 (
                     200,
                     json!({
-                        "account":{"id":"acct_cli_fixture","status":"active","email_verified":true},"eligible":true,"reasons":[],
+                        "account":{"id":account,"status":"active","email_verified":true},"eligible":true,"reasons":[],
                         "balance":10,"held":0,"available":10,"client":{"supported":true},
                         "protocol":{"supported":true,"version":"intcad-auth/1.0"},"capabilities":{"chat":true,"mcp":true,"dfm":true}
                     }),
@@ -557,7 +599,7 @@ impl Transport for Script {
             }
             Step::Admit | Step::BadGrant | Step::LoseAdmit | Step::RecoverAdmit => {
                 assert_eq!((request.method(), url), ("POST", "/v1/operations"));
-                assert_eq!(request.header("Authorization"), Some("Bearer product-fixture"));
+                assert_eq!(request.header("Authorization"), Some(self.authorization));
                 assert_eq!(request.header("X-Installation-Credential"), Some("installation-fixture"));
                 let data = body();
                 let id = OperationId::parse(data["operation_id"].as_str().unwrap()).unwrap();
@@ -595,9 +637,9 @@ impl Transport for Script {
                     }),
                 )
             }
-            Step::Renew => {
+            Step::Renew | Step::RenewThen(_, _) => {
                 assert_eq!((request.method(), url), ("POST", "/v1/authorizations"));
-                assert_eq!(request.header("Authorization"), Some("Bearer product-fixture"));
+                assert_eq!(request.header("Authorization"), Some(self.authorization));
                 assert_eq!(request.header("X-Execution-Session-Proof"), Some("proof-fixture"));
                 assert_eq!(request.header("X-Settlement-Credential"), None);
                 let id = self.operation();
@@ -607,6 +649,12 @@ impl Transport for Script {
                         "operation_id":id.as_str(),"capability":self.capability.wire(),"renewal":{"authorization_id":"grant_cli_fixture"}
                     })
                 );
+                if let Step::RenewThen(status, after) = step {
+                    after();
+                    if status != 200 {
+                        return Ok(WireResponse::new(status, br#"{"error":{"code":"AUTH_REQUIRED"}}"#.to_vec()));
+                    }
+                }
                 (
                     200,
                     json!({
@@ -670,8 +718,408 @@ impl Transport for Script {
     }
 }
 
-fn live_billing(session: CredentialSession, script: Script, journal: PathBuf, clock: WireClock) -> SessionBilling {
+fn live_billing(session: CredentialSession, script: Script, journal: PathBuf, clock: impl MonotonicClock + 'static) -> SessionBilling {
     SessionBilling::new(session, WireConnection::new("https://test.invalid", "test").unwrap(), Box::new(script), journal, clock)
+}
+
+#[derive(Clone, Default)]
+struct IdentityProbe {
+    seconds: Arc<AtomicU64>,
+    offline: Arc<AtomicBool>,
+    signed_out: Arc<AtomicBool>,
+    requests: Arc<AtomicU64>,
+}
+
+impl IdentityClock for IdentityProbe {
+    fn now_unix_seconds(&self) -> u64 {
+        1_800_000_000 + self.seconds.load(Ordering::Relaxed)
+    }
+
+    fn monotonic_now(&self) -> Duration {
+        Duration::from_secs(self.seconds.load(Ordering::Relaxed))
+    }
+}
+
+impl IdentityProbe {
+    fn expire_during_status(&self) -> Step {
+        let seconds = self.seconds.clone();
+        Step::StatusThen(Box::new(move || seconds.store(620, Ordering::Relaxed)))
+    }
+
+    fn recover(&self) {
+        self.offline.store(false, Ordering::Relaxed);
+        self.seconds.store(660, Ordering::Relaxed);
+    }
+}
+
+fn fixture_identity(session: &CredentialSession, root: &Path, offline: bool) -> IdentityLifecycle {
+    let probe = IdentityProbe::default();
+    probe.offline.store(offline, Ordering::Relaxed);
+    scripted_identity(session, root, probe)
+}
+
+fn scripted_identity(session: &CredentialSession, root: &Path, probe: IdentityProbe) -> IdentityLifecycle {
+    struct Refresh(IdentityProbe);
+    impl IdentityTransport for Refresh {
+        fn refresh(&self, _: &str, _: &Secret) -> Result<RefreshResponse, RefreshTransportError> {
+            self.0.requests.fetch_add(1, Ordering::Relaxed);
+            if self.0.signed_out.load(Ordering::Relaxed) {
+                return Err(RefreshTransportError::Terminal);
+            }
+            if self.0.offline.load(Ordering::Relaxed) {
+                return Err(RefreshTransportError::Transient { retry_after: None });
+            }
+            Ok(RefreshResponse {
+                access_token: Secret::new("rotated-product-fixture"),
+                refresh_token: Secret::new("rotated-refresh-fixture"),
+                provider_account_id: "provider_fixture".into(),
+                expires_in: Some(Duration::from_secs(600)),
+            })
+        }
+    }
+
+    struct Verifier;
+    impl SessionVerifier for Verifier {
+        fn verify(&self, access: &Secret) -> Result<VerifiedSession, VerifyError> {
+            assert!(access == &Secret::new("rotated-product-fixture"));
+            Ok(VerifiedSession { account_id: "acct_cli_fixture".into(), same_login_binding: None })
+        }
+    }
+
+    let connection = WireConnection::new("https://test.invalid", "test").unwrap();
+    let mut identity = IdentityLifecycle::new_with_transport(
+        IdentityDomain::new("desktop", "client_fixture", connection.base_url()).unwrap(),
+        Box::new(FakeKeyring::default()),
+        connection,
+        Box::new(Refresh(probe.clone())),
+        Box::new(Verifier),
+        Box::new(probe.clone()),
+        root.to_owned(),
+    )
+    .unwrap();
+    identity.set_refresh_preserves_binding(true);
+    let now = probe.now_unix_seconds();
+    let scope = session.authenticated_scope().unwrap();
+    identity
+        .adopt_verified_login(
+            "provider_fixture",
+            scope.account().as_str(),
+            Secret::new("product-fixture"),
+            Secret::new("refresh-fixture"),
+            now - 60,
+            now - 1,
+            scope.session_binding().as_str(),
+        )
+        .unwrap();
+    identity
+}
+
+#[test]
+fn dfm_charge_uses_the_refreshed_bearer() {
+    let fixture = fixture("identity-dfm", Probe::Passed);
+    let root = fixture._scratch.dir();
+    let journal = root.join("journal");
+    let session = fixture_session();
+    let identity = fixture_identity(&session, root, false);
+    let script = Script::new(
+        Capability::Dfm,
+        EntryCategory::CliDfm,
+        [Step::Status, Step::Admit, Step::Status, Step::Status, Step::Finalize(BillingResult::Succeeded)],
+    )
+    .expecting_rotated_bearer();
+    let mut billing = live_billing(session, script.clone(), journal.clone(), WireClock::default()).with_identity(identity);
+    run_check(&fixture, &mut billing).unwrap();
+    assert_eq!(FileOperationStore::open(journal).unwrap().load(&script.operation()).unwrap().unwrap().status, OperationStatus::Charged);
+    script.done();
+}
+
+#[test]
+fn failed_identity_refresh_stops_dfm_before_product_or_ledger_work() {
+    let fixture = fixture("identity-offline", Probe::Passed);
+    let root = fixture._scratch.dir();
+    let journal = root.join("journal");
+    let session = fixture_session();
+    let identity = fixture_identity(&session, root, true);
+    let script = Script::new(Capability::Dfm, EntryCategory::CliDfm, []);
+    let mut billing = live_billing(session, script.clone(), journal.clone(), WireClock::default()).with_identity(identity);
+    assert!(run_check(&fixture, &mut billing).unwrap_err().starts_with("AUTH_UNAVAILABLE:"));
+    assert!(!journal.exists());
+    assert_eq!(std::fs::read_dir(root.join("validation/runs")).unwrap().count(), 0);
+    script.done();
+}
+
+#[test]
+fn dfm_commit_identity_pause_keeps_the_hold_for_same_operation_settlement() {
+    let fixture = fixture("paused-dfm", Probe::Passed);
+    let root = fixture._scratch.dir();
+    let journal = root.join("journal");
+    let session = fixture_session();
+    let probe = IdentityProbe::default();
+    let identity = scripted_identity(&session, root, probe.clone());
+    let script = Script::new(
+        Capability::Dfm,
+        EntryCategory::CliDfm,
+        [Step::Status, Step::Admit, Step::Status, probe.expire_during_status(), Step::Status, Step::Finalize(BillingResult::Succeeded)],
+    )
+    .expecting_rotated_bearer();
+    let mut billing = live_billing(session, script.clone(), journal.clone(), WireClock::default()).with_identity(identity);
+    let error = run_check(&fixture, &mut billing).unwrap_err();
+    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    let operation = script.operation();
+    assert!(error.contains(operation.as_str()));
+    let ledger = FileOperationStore::open(&journal).unwrap();
+    assert!(!ledger.load(&operation).unwrap().unwrap().status.is_terminal());
+    assert_eq!(ledger.settlement_intent(&operation).unwrap(), None);
+
+    // Recovery uses the retained admission and never calls run_controlled_check again.
+    probe.recover();
+    billing.check_commit(&operation).unwrap();
+    billing.commit(&operation, BillingResult::Succeeded).unwrap();
+    assert_eq!(ledger.load(&operation).unwrap().unwrap().status, OperationStatus::Charged);
+    assert_eq!(fixture.runs.load(Ordering::Relaxed), 1);
+    script.done();
+}
+
+#[test]
+fn mcp_pending_resumes_the_original_gate_without_replaying_the_tool() {
+    for pause_at_dispatch in [true, false] {
+        let scratch = Scratch::new("paused-mcp");
+        let journal = scratch.dir().join("journal");
+        let session = fixture_session();
+        let probe = IdentityProbe::default();
+        let identity = scripted_identity(&session, scratch.dir(), probe.clone());
+        let script = Script::new(
+            Capability::Mcp,
+            EntryCategory::HeadlessMcp,
+            if pause_at_dispatch {
+                vec![Step::Status, Step::Admit, probe.expire_during_status(), Step::Status, Step::Status, Step::Finalize(BillingResult::Succeeded)]
+            } else {
+                vec![Step::Status, Step::Admit, Step::Status, probe.expire_during_status(), Step::Status, Step::Finalize(BillingResult::Succeeded)]
+            },
+        )
+        .expecting_rotated_bearer();
+        let billing = live_billing(session, script.clone(), journal.clone(), WireClock::default()).with_identity(identity);
+        let mut budget = BudgetTable::unverified_default();
+        budget.set_verified(Capability::Mcp, EntryCategory::HeadlessMcp, Duration::from_secs(1));
+        let mut server =
+            compose_mcp_server(Box::new(solidcraft_mcp::Headless::default()), None, McpAccount::from_session(billing), McpRoute::Headless, budget);
+        let send = |server: &mut solidcraft_mcp::Server, name, arguments| {
+            let line = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}).to_string();
+            serde_json::from_str::<Value>(&server.handle_line(&line).unwrap()).unwrap()["result"].clone()
+        };
+        let destination = scratch.dir().join("paused.sc");
+        let result = send(&mut server, "save", json!({"path":destination}));
+        let operation = script.operation();
+        assert_eq!(result["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE", "{result}");
+        assert_eq!(result["structuredContent"]["operationId"], operation.as_str());
+        assert_eq!(destination.exists(), !pause_at_dispatch);
+        let ledger = FileOperationStore::open(&journal).unwrap();
+        assert_eq!(ledger.settlement_intent(&operation).unwrap(), None);
+        let blocked = send(&mut server, "measure", json!({}));
+        assert_eq!(blocked["structuredContent"]["operationId"], operation.as_str(), "new calls cannot replace a pending operation");
+        if !pause_at_dispatch {
+            std::fs::remove_file(&destination).unwrap();
+        }
+        probe.offline.store(true, Ordering::Relaxed);
+        let still_paused = send(&mut server, "pending", json!({}));
+        assert_eq!(still_paused["structuredContent"]["operationId"], operation.as_str());
+        assert_eq!(still_paused["structuredContent"]["errorDetails"]["reason"], "AUTH_UNAVAILABLE");
+        assert_eq!(ledger.settlement_intent(&operation).unwrap(), None);
+        probe.recover();
+        let result = send(&mut server, "pending", json!({}));
+        assert_ne!(result["isError"], true, "{result}");
+        assert_eq!(destination.exists(), pause_at_dispatch, "a completed save must never be replayed");
+        assert_eq!(ledger.load(&operation).unwrap().unwrap().status, OperationStatus::Charged);
+        script.done();
+    }
+}
+
+#[test]
+fn active_identity_recovery_never_sends_with_less_than_one_request_left() {
+    let scratch = Scratch::new("short-identity");
+    let session = fixture_session();
+    let probe = IdentityProbe::default();
+    let identity = scripted_identity(&session, scratch.dir(), probe.clone());
+    let script = Script::new(Capability::Dfm, EntryCategory::CliDfm, [Step::Status, Step::Admit]).expecting_rotated_bearer();
+    let clock = WireClock::default();
+    let mut billing = live_billing(session, script.clone(), scratch.dir().join("journal"), clock.clone()).with_identity(identity);
+    let operation = OperationId::parse("op_cli_short_window").unwrap();
+    billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap();
+    probe.recover(); // The original identity is no longer fresh; a refresh would be sent.
+    clock.0.set(56_000);
+    assert_eq!(billing.dispatch(&operation, Duration::from_secs(1)).unwrap_err().code, RefusalCode::AuthUnavailable);
+    assert_eq!(probe.requests.load(Ordering::Relaxed), 1, "only the pre-admission refresh was sent");
+    clock.0.set(60_000);
+    assert_eq!(billing.dispatch(&operation, Duration::from_secs(1)).unwrap_err().code, RefusalCode::UnsafeToStart);
+    script.done();
+}
+
+#[test]
+fn renewal_uses_the_candidate_window_but_never_masks_unauthorized() {
+    for (status, close_readiness) in [(200, false), (401, true), (200, true)] {
+        let scratch = Scratch::new("renewal-final-gate");
+        let session = fixture_session();
+        let probe = IdentityProbe::default();
+        let identity = scripted_identity(&session, scratch.dir(), probe.clone());
+        let clock = WireClock::default();
+        let after = {
+            let clock = clock.clone();
+            let probe = probe.clone();
+            move || {
+                clock.0.set(56_000);
+                if close_readiness {
+                    probe.seconds.store(620, Ordering::Relaxed);
+                }
+            }
+        };
+        let mut steps = vec![Step::Status, Step::Admit, Step::Status, Step::RenewThen(status, Box::new(after))];
+        if !close_readiness {
+            steps.push(Step::Status);
+        }
+        let script = Script::new(Capability::Dfm, EntryCategory::CliDfm, steps).expecting_rotated_bearer();
+        let mut billing = live_billing(session, script.clone(), scratch.dir().join("journal"), clock.clone()).with_identity(identity);
+        let operation = OperationId::parse("op_cli_renewal_final_gate").unwrap();
+        billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap();
+        clock.0.set(54_000);
+        let result = billing.dispatch(&operation, Duration::from_secs(10));
+        if status == 401 {
+            assert_eq!(result.unwrap_err().code, RefusalCode::AuthRequired);
+            assert_eq!(billing.dispatch(&operation, Duration::ZERO).unwrap_err().code, RefusalCode::AuthRequired);
+        } else if close_readiness {
+            assert_eq!(result.unwrap_err().code, RefusalCode::AuthUnavailable);
+            clock.0.set(60_000);
+            assert_eq!(billing.dispatch(&operation, Duration::ZERO).unwrap_err().code, RefusalCode::UnsafeToStart);
+        } else {
+            result.unwrap();
+            clock.0.set(61_000);
+            billing.check_commit(&operation).unwrap();
+        }
+        script.done();
+    }
+}
+
+#[test]
+fn wrong_account_status_releases_without_revalidating_identity() {
+    let fixture = fixture("wrong-status-account", Probe::Passed);
+    let root = fixture._scratch.dir();
+    let session = fixture_session();
+    let probe = IdentityProbe::default();
+    let identity = scripted_identity(&session, root, probe.clone());
+    let expire = {
+        let probe = probe.clone();
+        move || {
+            probe.seconds.store(620, Ordering::Relaxed);
+            probe.offline.store(true, Ordering::Relaxed);
+        }
+    };
+    let script = Script::new(
+        Capability::Dfm,
+        EntryCategory::CliDfm,
+        [Step::Status, Step::Admit, Step::WrongAccount(Box::new(expire)), Step::Finalize(BillingResult::FailedNoEffect)],
+    )
+    .expecting_rotated_bearer();
+    let journal = root.join("journal");
+    let mut billing = live_billing(session, script.clone(), journal.clone(), WireClock::default()).with_identity(identity);
+    assert!(run_check(&fixture, &mut billing).unwrap_err().starts_with("AUTH_REQUIRED:"));
+    assert_eq!(probe.requests.load(Ordering::Relaxed), 1, "only the initial refresh");
+    assert_eq!(fixture.runs.load(Ordering::Relaxed), 0);
+    assert_eq!(FileOperationStore::open(journal).unwrap().load(&script.operation()).unwrap().unwrap().status, OperationStatus::Released);
+    script.done();
+}
+
+#[test]
+fn dfm_status_401_during_expiry_retries_once_or_preserves_the_correct_disposition() {
+    for (terminal, offline) in [(false, false), (true, false), (false, true)] {
+        let fixture = fixture("status-401", Probe::Passed);
+        let root = fixture._scratch.dir();
+        let journal = root.join("journal");
+        let session = fixture_session();
+        let probe = IdentityProbe::default();
+        let identity = scripted_identity(&session, root, probe.clone());
+        let mut steps = vec![
+            Step::Status,
+            Step::Admit,
+            Step::DeniedThen(Box::new({
+                let probe = probe.clone();
+                move || {
+                    probe.seconds.store(620, Ordering::Relaxed);
+                    probe.signed_out.store(terminal, Ordering::Relaxed);
+                    probe.offline.store(offline, Ordering::Relaxed);
+                }
+            })),
+        ];
+        if terminal {
+            steps.push(Step::Finalize(BillingResult::FailedNoEffect));
+        } else if offline {
+            steps.push(Step::Status);
+        } else {
+            steps.extend([Step::Status, Step::Status, Step::Finalize(BillingResult::Succeeded)]);
+        }
+        let script = Script::new(Capability::Dfm, EntryCategory::CliDfm, steps).expecting_rotated_bearer();
+        let mut billing = live_billing(session, script.clone(), journal.clone(), WireClock::default()).with_identity(identity);
+        let result = run_check(&fixture, &mut billing);
+        let ledger = FileOperationStore::open(journal).unwrap();
+        let operation = script.operation();
+        let status = ledger.load(&operation).unwrap().unwrap().status;
+        if terminal {
+            assert!(result.unwrap_err().starts_with("AUTH_REQUIRED:"));
+            assert_eq!(status, OperationStatus::Released);
+        } else if offline {
+            assert!(result.unwrap_err().starts_with("AUTH_UNAVAILABLE:"));
+            assert_eq!(ledger.settlement_intent(&operation).unwrap(), None);
+            assert!(!status.is_terminal());
+            assert_eq!(billing.dispatch(&operation, Duration::from_secs(1)).unwrap_err().code, RefusalCode::AuthUnavailable);
+            assert_eq!(probe.requests.load(Ordering::Relaxed), 2, "an immediate retry honors cooldown");
+            probe.recover();
+            billing.dispatch(&operation, Duration::from_secs(1)).unwrap();
+        } else {
+            assert!(result.unwrap().report_produced);
+            assert_eq!(status, OperationStatus::Charged);
+        }
+        assert_eq!(probe.requests.load(Ordering::Relaxed), if offline { 3 } else { 2 });
+        assert_eq!(fixture.runs.load(Ordering::Relaxed), u64::from(!terminal && !offline));
+        script.done();
+    }
+}
+
+#[test]
+fn a_slow_credential_read_can_exhaust_the_status_or_renewal_send_window() {
+    struct DelayedClock(Arc<ReadDelay>);
+    impl MonotonicClock for DelayedClock {
+        fn now(&self) -> MonotonicInstant {
+            MonotonicInstant::from_millis(self.0.time.load(Ordering::Relaxed))
+        }
+        fn wall_now(&self) -> SystemTime {
+            WireClock::default().wall_now()
+        }
+    }
+    for during_renewal in [false, true] {
+        let scratch = Scratch::new("slow-credential");
+        let delay = Arc::new(ReadDelay::default());
+        let session = fixture_session_with_store(FakeKeyring { read_delay: Some(delay.clone()), ..FakeKeyring::default() });
+        let mut steps = vec![Step::Status, Step::Admit];
+        if during_renewal {
+            let delay = delay.clone();
+            // Post-status binding validation reads three times. The next read
+            // is in the renewal's credential lookup, after the early reserve check.
+            steps.push(Step::StatusThen(Box::new(move || delay.binding_reads.store(4, Ordering::Relaxed))));
+        }
+        let script = Script::new(Capability::Dfm, EntryCategory::CliDfm, steps);
+        let mut billing = live_billing(session, script.clone(), scratch.dir().join("journal"), DelayedClock(delay.clone()));
+        let operation = OperationId::parse("op_cli_read_consumes_reserve").unwrap();
+        billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap();
+        if during_renewal {
+            delay.time.store(21_000, Ordering::Relaxed);
+        } else {
+            // Same three binding reads before the status credential lookup.
+            delay.binding_reads.store(4, Ordering::Relaxed);
+        }
+        assert_eq!(billing.dispatch(&operation, Duration::from_secs(1)).unwrap_err().code, RefusalCode::AuthUnavailable);
+        assert_eq!(delay.time.load(Ordering::Relaxed), 56_000);
+        delay.time.store(60_000, Ordering::Relaxed);
+        assert_eq!(billing.dispatch(&operation, Duration::from_secs(1)).unwrap_err().code, RefusalCode::UnsafeToStart);
+        script.done();
+    }
 }
 
 #[test]
@@ -698,11 +1146,11 @@ fn withdrawal_at_report_commit_releases_and_persists_only_the_refusal() {
     );
     let mut billing = live_billing(session, script.clone(), journal.clone(), WireClock::default());
     let error = run_check(&fixture, &mut billing).unwrap_err();
-    assert!(error.starts_with("AUTH_UNAVAILABLE:"), "{error}");
+    assert!(error.starts_with("AUTH_REQUIRED:"), "{error}");
     let run_id = error.rsplit_once('(').unwrap().1.trim_end_matches(')');
     let report = serde_json::to_value(fixture.port.report(run_id).unwrap()).unwrap();
     assert_eq!(report["report"]["state"], "infrastructure_error", "{report}");
-    assert_eq!(report["report"]["error"]["details"]["reason"], "AUTH_UNAVAILABLE", "{report}");
+    assert_eq!(report["report"]["error"]["details"]["reason"], "AUTH_REQUIRED", "{report}");
     assert!(!report.to_string().contains("\"fixture\":true"));
     assert_eq!(FileOperationStore::open(journal).unwrap().load(&script.operation()).unwrap().unwrap().status, OperationStatus::Released);
     script.done();
@@ -888,8 +1336,11 @@ fn only_headless_mcp_dispatches_and_settles_via_the_credential_session() {
         Capability::Mcp,
         EntryCategory::HeadlessMcp,
         (0..3).flat_map(|_| [Step::Status, Step::Admit, Step::Status, Step::Status, Step::Finalize(BillingResult::Succeeded)]),
-    );
-    let account = McpAccount::from_session(live_billing(fixture_session(), script.clone(), journal, WireClock::default()));
+    )
+    .expecting_rotated_bearer();
+    let session = fixture_session();
+    let identity = fixture_identity(&session, scratch.dir(), false);
+    let account = McpAccount::from_session(live_billing(session, script.clone(), journal, WireClock::default()).with_identity(identity));
     let mut headless = compose_mcp_server(Box::new(solidcraft_mcp::Headless::default()), None, account, McpRoute::Headless, budget);
     let reply: Value = serde_json::from_str(&headless.handle_line(&request).unwrap()).unwrap();
     assert_ne!(reply["result"]["isError"], true, "{reply}");

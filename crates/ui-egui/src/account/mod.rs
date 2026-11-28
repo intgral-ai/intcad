@@ -45,12 +45,20 @@ pub enum SignInState {
     Waiting,
     Expired,
     Failed,
+    Recovering,
+    PendingVerification,
+    IdentityExpired,
 }
 
 impl SignInState {
     /// A worker is starting or polling: one gesture is still in progress.
     pub fn pending(self) -> bool {
         matches!(self, Self::Starting | Self::Waiting)
+    }
+
+    /// A persisted identity is being checked, not an explicit device-code attempt.
+    pub fn recovering(self) -> bool {
+        matches!(self, Self::Recovering | Self::PendingVerification)
     }
 }
 

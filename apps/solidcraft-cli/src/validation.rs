@@ -287,6 +287,10 @@ fn run_controlled_check_using<P: Borrow<ValidationPort>>(
         };
         if let Err(refusal) = billing.dispatch(operation, bound) {
             settlement_attempted = true;
+            if refusal.code == RefusalCode::AuthUnavailable {
+                port.refuse_claimed(&job, &refusal).map_err(|error| error.to_string())?;
+                return Ok(Claimed::Refused(submitted.run_id, refusal));
+            }
             let released = billing.release(operation, refusal.code);
             port.refuse_claimed(&job, &refusal).map_err(|error| error.to_string())?;
             released.map_err(|error| coded_refusal(error.code, error.message))?;
@@ -296,7 +300,11 @@ fn run_controlled_check_using<P: Borrow<ValidationPort>>(
             .run_claimed_settled(&job, Some(stop_at_ms), |chargeable| {
                 settlement_attempted = true;
                 if let Err(refusal) = billing.check_commit(operation) {
-                    let _ = billing.release(operation, refusal.code);
+                    // `validate submit` may exit on this refusal. Keep the hold for
+                    // recovery/expiry; a fresh process must not rerun this job.
+                    if refusal.code != RefusalCode::AuthUnavailable {
+                        let _ = billing.release(operation, refusal.code);
+                    }
                     return Err(refusal);
                 }
                 if chargeable {

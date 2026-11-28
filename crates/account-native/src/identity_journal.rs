@@ -63,6 +63,8 @@ pub(crate) struct RevocationRecord {
     pub domain: String,
     pub login_generation: u64,
     pub revoked_at_unix: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fence_id: Option<[u8; 16]>,
 }
 
 /// Published only after an explicit login has committed active credentials.
@@ -72,6 +74,8 @@ pub(crate) struct CurrentLoginRecord {
     pub version: u32,
     pub domain: String,
     pub login_generation: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_binding: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -110,15 +114,15 @@ pub(crate) struct IdentityJournal {
 }
 
 impl IdentityJournal {
-    /// Create `<root>/identity` (mode `0700` on Unix) and open the journal.
+    /// Create `<root>/identity/<domain>` (mode `0700` on Unix) and open the journal.
     ///
     /// The root must be absolute; the caller owns making it private to the current user.
     /// Any I/O failure is [`JournalError::Unavailable`].
-    pub(crate) fn new(root: PathBuf) -> Result<Self, JournalError> {
+    pub(crate) fn new(root: PathBuf, domain: &str) -> Result<Self, JournalError> {
         if !root.is_absolute() {
             return Err(JournalError::Unavailable);
         }
-        let dir = root.join(IDENTITY_DIR);
+        let dir = root.join(IDENTITY_DIR).join(domain);
         fs::create_dir_all(&dir).map_err(|_| JournalError::Unavailable)?;
         #[cfg(unix)]
         {

@@ -590,11 +590,11 @@ pub struct OperationRenewal<T: Transport> {
     authorization: GrantId,
     /// The admitted grant's capability; every renewal asks for the same one.
     capability: Capability,
-    bearer: Secret,
     proof: Secret,
     generation: u64,
     deadline: ConservativeDeadline,
     next: Option<MonotonicInstant>,
+    gate: Option<Box<dyn Fn() -> Option<(u64, u64)> + Send>>,
 }
 
 impl<T: Transport> OperationRenewal<T> {
@@ -651,15 +651,35 @@ impl<T: Transport> OperationRenewal<T> {
             return Err(refusal(RefusalCode::UnsafeToStart));
         }
         let generation = session.authority_generation();
-        let bearer = WireCredentials::product_session(&session).ok_or_else(|| refusal(RefusalCode::AuthRequired))?;
         let proof = WireCredentials::execution_session_proof(&session, &operation).ok_or_else(|| refusal(RefusalCode::AuthRequired))?;
-        let fixed = FixedCredentials::none().with_product_session(bearer.expose_secret()).with_execution_session_proof(proof.expose_secret());
-        let service = HttpAccountService::with_transport(transport, connection, Box::new(fixed), Box::new(session.clone()), clock);
+        let wire = LiveProductCredentials {
+            session: session.clone(),
+            scope: scope.clone(),
+            generation,
+            fixed: FixedCredentials::none().with_execution_session_proof(proof.expose_secret()),
+            pinned_operation: Some(operation.clone()),
+        };
+        let service = HttpAccountService::with_transport(transport, connection, Box::new(wire), Box::new(session.clone()), clock);
         let next = Some(due);
         let driver =
-            Self { service, session, scope, operation, authorization: grant.id().clone(), capability, bearer, proof, generation, deadline, next };
+            Self { service, session, scope, operation, authorization: grant.id().clone(), capability, proof, generation, deadline, next, gate: None };
         driver.check_binding()?;
         Ok(driver)
+    }
+
+    /// Require a verified (login, token) generation at send and application.
+    /// No generation pauses renewal without changing the current deadline.
+    pub fn with_gate(mut self, gate: impl Fn() -> Option<(u64, u64)> + Send + 'static) -> Self {
+        self.gate = Some(Box::new(gate));
+        self
+    }
+
+    fn verified_generation(&self) -> Option<(u64, u64)> {
+        self.gate.as_ref().map_or(Some((0, 0)), |gate| gate())
+    }
+
+    fn pause(&mut self) {
+        self.next = Some(self.service.clock.now().saturating_add(Duration::from_secs(1)));
     }
 
     fn check_binding(&self) -> Result<(), Refusal> {
@@ -667,7 +687,6 @@ impl<T: Transport> OperationRenewal<T> {
             return Err(refusal(code));
         }
         if self.session.authenticated_scope().as_ref() != Some(&self.scope)
-            || WireCredentials::product_session(&self.session).as_ref() != Some(&self.bearer)
             || WireCredentials::execution_session_proof(&self.session, &self.operation).as_ref() != Some(&self.proof)
             || self.session.authority_generation() != self.generation
         {
@@ -688,12 +707,44 @@ impl<T: Transport> OperationRenewal<T> {
         if now < next {
             return Ok(false);
         }
+        if let Err(error) = self.check_binding() {
+            self.next = None;
+            return Err(error);
+        }
+        let Some(verified) = self.verified_generation() else {
+            self.pause();
+            return Ok(false);
+        };
         self.next = None;
-        self.check_binding()?;
-        let (grant, sent_at, interval) =
-            self.service.exchange_renewal(&self.scope, &self.operation, &self.authorization, self.capability, Some(&self.deadline))?;
+        let gate = &self.gate;
+        let paused = std::cell::Cell::new(false);
+        let still_verified = || {
+            let ready = gate.as_ref().is_none_or(|gate| gate() == Some(verified));
+            paused.set(paused.get() || !ready);
+            ready
+        };
+        let response = self.service.exchange_renewal_gated(
+            &self.scope,
+            &self.operation,
+            &self.authorization,
+            self.capability,
+            Some((&self.deadline, Duration::ZERO)),
+            still_verified,
+        );
         let received_at = self.service.clock.now();
+        if response.as_ref().is_err_and(|error| error.code == RefusalCode::AuthRequired) {
+            return response.map(|_| false);
+        }
+        if paused.get() || self.verified_generation() != Some(verified) {
+            self.pause();
+            return Ok(false);
+        }
         self.check_binding()?;
+        if self.verified_generation() != Some(verified) {
+            self.pause();
+            return Ok(false);
+        }
+        let (grant, sent_at, interval) = response?;
         let interval = interval.ok_or_else(unavailable)?;
         let attempt = RenewalAttempt { sent_at, received_at, old_deadline: self.deadline.clone(), still_valid: true };
         let remaining = grant.expires_at().as_duration().saturating_sub(sent_at.as_duration());
@@ -704,6 +755,10 @@ impl<T: Transport> OperationRenewal<T> {
             || candidate.expires_at() < self.deadline.expires_at()
         {
             return Err(refusal(RefusalCode::UnsafeToStart));
+        }
+        if self.verified_generation() != Some(verified) {
+            self.pause();
+            return Ok(false);
         }
         self.deadline = candidate;
         self.next = Some(sent_at.saturating_add(interval));
@@ -724,6 +779,50 @@ impl<T: Transport> OperationRenewal<T> {
     #[cfg(test)]
     pub(crate) fn transport(&self) -> &T {
         self.service.transport()
+    }
+}
+
+/// Fetch the bearer for the original local authority on every request. In contrast,
+/// installation credentials and execution proofs cannot be replaced mid-operation.
+pub(crate) struct LiveProductCredentials {
+    pub(crate) session: CredentialSession,
+    pub(crate) scope: AuthenticatedHostScope,
+    pub(crate) generation: u64,
+    pub(crate) fixed: FixedCredentials,
+    /// Control renewal also checks that the original proof is still in the session store.
+    /// Synchronous billing holds its proof privately and does not persist execution authority.
+    pub(crate) pinned_operation: Option<OperationId>,
+}
+
+impl WireCredentials for LiveProductCredentials {
+    fn product_session(&self) -> Option<Secret> {
+        if self.fixed.installation_credential.is_some() {
+            self.installation_credential()?;
+        }
+        self.session.bound_product_session(&self.scope, self.generation)
+    }
+
+    fn installation_credential(&self) -> Option<Secret> {
+        let installation = self.fixed.installation_credential()?;
+        (self.session.installation_credential().as_ref() == Some(&installation)).then_some(installation)
+    }
+
+    fn settlement_credential(&self, _: &OperationId) -> Option<Secret> {
+        None
+    }
+
+    fn execution_session_proof(&self, operation: &OperationId) -> Option<Secret> {
+        let proof = self.fixed.execution_session_proof(operation)?;
+        if let Some(pinned) = &self.pinned_operation
+            && (pinned != operation || self.session.execution_session_proof(operation).as_ref() != Some(&proof))
+        {
+            return None;
+        }
+        Some(proof)
+    }
+
+    fn initial_lease_proof(&self, _: &GrantId) -> Option<Secret> {
+        None
     }
 }
 
@@ -914,16 +1013,17 @@ impl<T: Transport> HttpAccountService<T> {
         authorization_id: &GrantId,
         capability: Capability,
     ) -> Result<Grant, Refusal> {
-        self.exchange_renewal(scope, operation, authorization_id, capability, None).map(|(grant, _, _)| grant)
+        self.exchange_renewal_gated(scope, operation, authorization_id, capability, None, || true).map(|(grant, _, _)| grant)
     }
 
-    pub(crate) fn exchange_renewal(
+    pub(crate) fn exchange_renewal_gated(
         &mut self,
         scope: &AuthenticatedHostScope,
         operation: &OperationId,
         authorization_id: &GrantId,
         capability: Capability,
-        prior: Option<&ConservativeDeadline>,
+        prior: Option<(&ConservativeDeadline, Duration)>,
+        still_verified: impl Fn() -> bool,
     ) -> Result<(Grant, MonotonicInstant, Option<Duration>), Refusal> {
         require_provable(scope)?;
         let mut request = self.request(
@@ -941,14 +1041,23 @@ impl<T: Transport> HttpAccountService<T> {
             self.credentials.product_session().map(|secret| Secret::new(format!("Bearer {}", secret.expose_secret()))),
         )?;
         self.push_auth(&mut request, "X-Execution-Session-Proof", self.credentials.execution_session_proof(operation))?;
+        if !still_verified() {
+            return Err(refusal(RefusalCode::AuthUnavailable));
+        }
         let sent_at = self.clock.now();
-        if prior.is_some_and(|deadline| deadline.remaining(sent_at).is_none()) {
-            return Err(refusal(RefusalCode::UnsafeToStart));
+        if let Some((deadline, reserve)) = prior {
+            let remaining = deadline.remaining(sent_at).ok_or_else(|| refusal(RefusalCode::UnsafeToStart))?;
+            if remaining < reserve {
+                return Err(unavailable());
+            }
         }
         let response = self.transport.send(&request).map_err(|_| unavailable())?;
         if response.status() == 401 {
             self.handoff.renewal_unauthorized(scope, operation);
             return Err(refusal(RefusalCode::AuthRequired));
+        }
+        if !still_verified() {
+            return Err(refusal(RefusalCode::AuthUnavailable));
         }
         let (status, value) = Self::decode_response(response)?;
         if status != 200 {
@@ -1108,18 +1217,48 @@ impl<T: Transport> HttpAccountService<T> {
     }
 }
 
+pub(crate) enum ControlledStatusError {
+    Unauthorized,
+    AccountMismatch,
+    Refused(Refusal),
+}
+
+impl From<Refusal> for ControlledStatusError {
+    fn from(error: Refusal) -> Self {
+        Self::Refused(error)
+    }
+}
+
+impl From<ControlledStatusError> for Refusal {
+    fn from(error: ControlledStatusError) -> Self {
+        match error {
+            ControlledStatusError::Unauthorized | ControlledStatusError::AccountMismatch => refusal(RefusalCode::AuthRequired),
+            ControlledStatusError::Refused(error) => error,
+        }
+    }
+}
+
 impl<T: Transport> HttpAccountService<T> {
     /// Read one authenticated `/v1/status` value. The bearer is read from the host credential
     /// session and sent as the only credential; a missing or unusable bearer is refused before any
     /// request.
     fn status_value(&self) -> Result<Value, Refusal> {
+        Self::decode_status_value(self.status_response(|| Ok(()))?)
+    }
+
+    fn status_response(&self, before_send: impl FnOnce() -> Result<(), Refusal>) -> Result<WireResponse, Refusal> {
         let mut request = self.request("GET", "/v1/status", None);
         self.push_auth(
             &mut request,
             "Authorization",
             self.credentials.product_session().map(|secret| Secret::new(format!("Bearer {}", secret.expose_secret()))),
         )?;
-        let (status, value) = self.exchange(request)?;
+        before_send()?;
+        self.transport.send(&request).map_err(|_| unavailable())
+    }
+
+    fn decode_status_value(response: WireResponse) -> Result<Value, Refusal> {
+        let (status, value) = Self::decode_response(response)?;
         if status != 200 {
             return Err(error_refusal(status, &value));
         }
@@ -1189,22 +1328,31 @@ impl<T: Transport> HttpAccountService<T> {
         Ok(availability)
     }
 
-    pub(crate) fn controlled_status(&self, scope: &AuthenticatedHostScope, capability: Capability) -> Result<(), Refusal> {
-        let value = self.status_value()?;
+    pub(crate) fn controlled_status(
+        &self,
+        scope: &AuthenticatedHostScope,
+        capability: Capability,
+        before_send: impl FnOnce() -> Result<(), Refusal>,
+    ) -> Result<(), ControlledStatusError> {
+        let response = self.status_response(before_send)?;
+        if response.status() == 401 {
+            return Err(ControlledStatusError::Unauthorized);
+        }
+        let value = Self::decode_status_value(response)?;
         let (account, snapshot) = self.parse_status_snapshot(&value)?;
         if account != scope.account().as_str() {
-            return Err(refusal(RefusalCode::AuthRequired));
+            return Err(ControlledStatusError::AccountMismatch);
         }
         if let Some(code) = snapshot.reasons.first() {
-            return Err(refusal(*code));
+            return Err(refusal(*code).into());
         }
         if verified_account(&value).map_err(activation_refusal)? != scope.account().as_str() {
-            return Err(refusal(RefusalCode::AuthRequired));
+            return Err(ControlledStatusError::AccountMismatch);
         }
         match value.get("capabilities").and_then(|caps| caps.get(capability.wire())).and_then(Value::as_bool) {
             Some(true) => Ok(()),
-            Some(false) => Err(refusal(RefusalCode::CapabilityDenied)),
-            None => Err(unavailable()),
+            Some(false) => Err(refusal(RefusalCode::CapabilityDenied).into()),
+            None => Err(unavailable().into()),
         }
     }
 

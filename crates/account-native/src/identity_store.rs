@@ -2,13 +2,13 @@
 //!
 //! One [`StoredIdentity`] is a versioned record: domain, login/token generations, account ids,
 //! the paired access/refresh tokens, expiry, session binding and a pending flag. Each token
-//! lives in its own generation key (`identity/session/<token_generation>/access` and `…/refresh`)
+//! lives in its own generation key (`identity/<domain>/session/<token_generation>/access` and `…/refresh`)
 //! so a large token still fits one Windows Credential Manager value (2560-byte cap); the `…/meta`
 //! key holds only the non-token fields. No keyring value ever contains both tokens.
 //!
 //! [`CredentialIdentityStore::store_pending`] writes the new generation's keys and the
-//! `identity/session/commit` marker last: until the commit lands, readers keep seeing the previous
-//! committed generation, and a torn write is rolled back best-effort. `identity/session/owned`
+//! `session/commit` marker last: until the commit lands, readers keep seeing the previous
+//! committed generation, and a torn write is rolled back best-effort. `session/owned`
 //! lists every generation that may hold keys; it gains the new generation before any key is
 //! written and is rewritten after a successful commit retires the other generations. `delete`
 //! removes the commit first — a corrupt `owned` list cannot block revocation — then the active
@@ -18,7 +18,7 @@
 //!
 //! `load` returns `None` without a commit (legacy access-only stores are never migrated), and
 //! `Corrupt` when a commit lacks valid generation keys or meta. A record is active only when the
-//! `identity/session/active` marker matches the commit and the meta says `pending=false`;
+//! `session/active` marker matches the commit and the meta says `pending=false`;
 //! anything else loads as pending. Tokens are redacted from `Debug` and every error message.
 
 use std::fmt;
@@ -29,11 +29,11 @@ use solidcraft_engine::entitlement::CredentialStore;
 use crate::credentials::{MAX_ACCOUNT_BYTES, has_control, safe_token};
 
 const RECORD_VERSION: u32 = 1;
-const COMMIT_KEY: &str = "identity/session/commit";
-const ACTIVE_KEY: &str = "identity/session/active";
-const OWNED_KEY: &str = "identity/session/owned";
+const COMMIT_KEY: &str = "session/commit";
+const ACTIVE_KEY: &str = "session/active";
+const OWNED_KEY: &str = "session/owned";
 // A single generation that did not fit in the owned index during logout.
-const LOGOUT_REPAIR_KEY: &str = "identity/session/logout-repair";
+const LOGOUT_REPAIR_KEY: &str = "session/logout-repair";
 const COMMIT_MAGIC: &str = "intcad-identity/1";
 const ACTIVE_MAGIC: &str = "intcad-identity-active/1";
 /// Windows Credential Manager caps one value at 2560 bytes. Each token stays well below the cap
@@ -232,12 +232,12 @@ impl fmt::Debug for CredentialIdentityStore {
 }
 
 impl CredentialIdentityStore {
-    pub(crate) fn new(store: Box<dyn CredentialStore + Send>) -> Self {
-        Self { store }
+    pub(crate) fn new(store: Box<dyn CredentialStore + Send>, domain: &str) -> Self {
+        Self { store: Box::new(DomainCredentials { store, prefix: format!("identity/{domain}/") }) }
     }
 
     fn generation_key(generation: u64, suffix: &str) -> String {
-        format!("identity/session/{generation}/{suffix}")
+        format!("session/{generation}/{suffix}")
     }
 
     fn read_owned(&self) -> Result<Vec<u64>, IdentityStoreError> {
@@ -265,6 +265,35 @@ impl CredentialIdentityStore {
             self.store.delete(&Self::generation_key(generation, suffix)).map_err(|_| IdentityStoreError::Unavailable)?;
         }
         Ok(())
+    }
+}
+
+struct DomainCredentials {
+    store: Box<dyn CredentialStore + Send>,
+    prefix: String,
+}
+
+impl DomainCredentials {
+    fn key(&self, key: &str) -> String {
+        format!("{}{key}", self.prefix)
+    }
+}
+
+impl CredentialStore for DomainCredentials {
+    fn get(&self, key: &str) -> Result<Option<String>, solidcraft_engine::entitlement::CredentialError> {
+        self.store.get(&self.key(key))
+    }
+
+    fn set(&mut self, key: &str, secret: &str) -> Result<(), solidcraft_engine::entitlement::CredentialError> {
+        self.store.set(&self.key(key), secret)
+    }
+
+    fn delete(&mut self, key: &str) -> Result<(), solidcraft_engine::entitlement::CredentialError> {
+        self.store.delete(&self.key(key))
+    }
+
+    fn persistent(&self) -> bool {
+        self.store.persistent()
     }
 }
 
