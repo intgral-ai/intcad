@@ -9,7 +9,8 @@ Four bars, each on top of the one before (decisions 31 to 34, 2026-11-28). Tianw
 
 1. **Ready for review**, for each PR: it builds and its tests pass against the `develop` merged into it; its own review is done; its description is checked and true, and its blockers are stated. Met by #169 to #208 on 2026-11-27.
 2. **Merged:** Tianwei approves and merges, and `ci` passes on `develop`. A switch keeps the Stress button off in releases until bar 3 holds (decision 32), so a merge does not ship it.
-3. **Shipped:** a release shows the Stress button, and the estimate works for a user in the installed app. This is "done" for the stress estimate. It needs all of Phase A merged; an agent's run admitted and charged (decision 30); a free run by hand; runs longer than the paid-call bound handled; decision 22's memory model; one manual run on Windows; one run with a real model in the chat with the whole set; a warning for gmsh and CalculiX versions the suite has not passed; and their packaging and dependency audit for the release (`docs/release-readiness-0.1.3.md`, section 13.1).
+3. **Shipped:** a release shows the Stress button, and the estimate works for a user in the installed app, run by hand (decision 35). This is "done" for the stress estimate. It needs all of Phase A merged; the free run by hand (#270); decision 22's memory model; one manual run on Windows; runs by hand on R2's plate and the L bracket; a warning for gmsh and CalculiX versions the suite has not passed; and their packaging and dependency audit for the release (`docs/release-readiness-0.1.3.md`, section 13.1).
+   - **3b. Agents:** an agent's run admitted and charged (decision 30); runs longer than the paid-call bound handled; one run with a real model in the chat with the whole set. Until then an agent's estimate is refused, as it is today.
 4. **Ready for engineers:** the rest of this section.
 
 A working mechanical engineer brings the parts they size every week:
@@ -245,6 +246,7 @@ Agreed by Tianwei on 2026-11-28, on what done means:
 32. **A switch keeps the Stress button off in releases** until bar 3 holds, so the reviewed set can merge before the estimate works end to end. Not built yet.
 33. **Bar 3 needs one manual run on Windows; the suite in Windows CI belongs to bar 4.** Decision 13 (Linux and Windows for ready) is bar 4's.
 34. **Tianwei accepts each bar**, with its evidence linked; no agent marks one met.
+35. **Bar 3 ships by hand first.** The first release that shows the Stress button needs the run by hand (#270), not the agent route. The agent route is bar 3b (section 1): an agent's run admitted and charged, runs longer than the paid-call bound handled, and one run with a real model in the chat with the whole set.
 
 ## 8. Risks
 - **CalculiX keyword support in 2.21** (couplings, pre-tension, transforms) is taken from its manual and not yet run. The Phase B spike settles it first.
@@ -284,7 +286,7 @@ Phase A's first three steps (A1 to A4, A8 to A10, and parts of A6 and A11 to A13
 5. Decision 22: A1's gate and the mesh check's gate on A13's memory model, after #195 merges. Recommended before a release shows the Stress button (section 8).
 6. B1 to B3: bolts, bearing loads and pins, after the one-day CalculiX keyword spike (section 4.2).
 7. Decisions 23 to 27, the chat's use of Mastra: 23's four modelling skills landed in #204 (2026-11-23), and its analysis guide is #199, after this stack; 26 is in draft #205, 24 in #206 and 25 in #207.
-8. Bar 3 (section 1, decision 31), besides Phase A's merged PRs and step 5: an agent route that the typed admission of `develop`'s #240 accepts, charged as decision 30 says, and a bound or a refusal for runs longer than the paid-call bound (section 8, 2026-11-27); one manual run on Windows, one run with a real model in the chat with the whole set, and a warning for gmsh and CalculiX versions the suite has not passed; a free run by hand (#270); and the gmsh and CalculiX packaging and dependency audit for the release.
+8. Bar 3 (section 1, decisions 31 and 35), besides Phase A's merged PRs and step 5: the free run by hand (#270); one manual run on Windows; runs by hand on R2's plate and the L bracket; a warning for gmsh and CalculiX versions the suite has not passed; and the gmsh and CalculiX packaging and dependency audit for the release. Bar 3b, after it: an agent route that the typed admission of `develop`'s #240 accepts, charged as decision 30 says (#269), a bound or a refusal for runs longer than the paid-call bound (section 8, 2026-11-27), and one run with a real model in the chat with the whole set.
 9. **Bring the set up to `develop`:** done on 2026-11-27 with e401f8a18 and 83d02730b, for #169 to #196 and #205 to #208. Left out, as Tianwei's decisions: `solidcraft-analysis` in the built-in agent's skill set (#199), the "meets" wording in `develop`'s `intcad-context` skill, and refusing a solve in a batch. `ci` runs on a draft only once its base is `develop`.
 
 10. The switch that keeps the Stress button off in releases until bar 3 holds (decision 32).
