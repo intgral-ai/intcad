@@ -207,6 +207,7 @@ pub const SECTIONS: &[Section] = &[
             "inspect.continuity",
         ],
     },
+    Section { tab: "INSPECT", panel: "ESTIMATE", promoted: 1, ids: &["inspect.stress_estimate"] },
     Section { tab: "INSPECT", panel: "HISTORY", promoted: 3, ids: &["timeline.play", "timeline.dependents", "document.inspect"] },
     Section {
         tab: "MANAGE",
@@ -424,6 +425,7 @@ pub const RIBBON_LABELS: &[(&str, &str)] = &[
     ("inspect.interference", "Interference"),
     ("inspect.isocurve", "Isocurve"),
     ("inspect.section", "Section"),
+    ("inspect.stress_estimate", "Stress"),
     ("inspect.zebra", "Zebra"),
     ("joint.as_built", "As-Built"),
     ("material.assign", "Material"),

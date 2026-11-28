@@ -305,6 +305,7 @@ pub mod space_mouse_model;
 pub mod space_mouse_offer;
 pub mod stand_up;
 mod status_bar;
+mod stress_overlay;
 #[cfg(test)]
 mod sweep_dialog_tests;
 pub(crate) mod test_boat;
@@ -1849,6 +1850,11 @@ impl SolveApp {
         // A tool can be started outside the frame's scope (a direct `start`, a shortcut in
         // `logic`): build its hint in the user's language, not the thread default.
         let _language = crate::i18n::scope(&self.preferences.language);
+        // Its loads, supports and material come in words: the chat asks for them (PIL-294).
+        if id == "inspect.stress_estimate" {
+            crate::stress_overlay::ask_in_chat(self);
+            return;
+        }
         if solidcraft_engine::panels::commands::is_command(id) {
             if let Err(why) = self.run(id, json!({})) {
                 self.set_status(why, true);

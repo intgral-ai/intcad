@@ -177,6 +177,7 @@ fn keywords(id: &str) -> &'static str {
         "file.export_stl" | "file.export_3mf" => "mesh 3d print printing",
         "file.export_obj" => "mesh",
         "file.export_urdf" => "robot ros simulation",
+        "inspect.stress_estimate" => "fea finite element analysis simulation stress strain deflection load calculix gmsh",
         _ => "",
     }
 }

@@ -877,7 +877,7 @@ impl AgentChat {
         let text = trf("ui.agent_chat_model_rejected", &[("model", model), ("error", error)]);
         self.notice(text.chars().take(MODELS_NOTE_CAP).collect::<String>(), true);
     }
-    fn notice(&mut self, text: impl Into<String>, error: bool) {
+    pub(crate) fn notice(&mut self, text: impl Into<String>, error: bool) {
         self.push(Item::Notice { text: text.into(), error });
     }
     /// Requests waiting for Allow or Deny.
@@ -2647,6 +2647,10 @@ pub fn cancel(app: &mut SolveApp) {
     app.agent_chat.steering = false;
     app.agent_chat.stopped = true;
     crate::edit_in_place::forget_after_turn(app);
+    // A stress estimate the agent started runs other programs: they stop now, not minutes later.
+    if solidcraft_engine::fea::progress().is_some() {
+        solidcraft_engine::fea::cancel();
+    }
     interrupt(app);
 }
 
@@ -2748,6 +2752,10 @@ fn approve_with(app: &mut SolveApp, id: u64, allow: bool, why: &str) {
     if allow {
         hand_over(app, h.req);
     } else {
+        // A declined stress estimate: its setup preview goes with it.
+        if h.req.params.get("command").and_then(serde_json::Value::as_str) == Some("inspect.stress_estimate") {
+            solidcraft_engine::fea::clear_preview(&app.session.document_id);
+        }
         let mut reply = json!({"ok": false, "error": format!("not run: {why}")});
         // The held request owns its trusted revocation flag. Metadata only selects the carrier;
         // declining must neither admit the request nor infer authority from why/the current turn.
@@ -2989,6 +2997,14 @@ fn pump_tools(app: &mut SolveApp) {
                 hand_over(app, req);
             }
             gate::Verdict::Ask(title) => {
+                let title = match crate::stress_overlay::approval(app, &req.method, &req.params) {
+                    Some(Ok(setup)) => format!("{title}\n{setup}"),
+                    Some(Err(why)) => {
+                        refuse(req, why);
+                        continue;
+                    }
+                    None => title,
+                };
                 let chat = &mut app.agent_chat;
                 chat.next_approval += 1;
                 let id = chat.next_approval;
