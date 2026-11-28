@@ -158,6 +158,21 @@ fn a_dry_run_draws_its_supports_and_loads_until_cleared() {
     assert!(fea::preview(&s.document_id).is_none());
 }
 
+/// The skill's first worked setup (`skills/solidcraft-analysis/reference.md`) is what agents copy:
+/// its JSON parses and its faces, picked by point, resolve on the strip it describes.
+#[test]
+fn the_analysis_skills_worked_strip_setup_resolves() {
+    let doc = include_str!("../../../../skills/solidcraft-analysis/reference.md");
+    let block = doc.split("```json").nth(1).and_then(|b| b.split("```").next()).unwrap_or_else(|| panic!("no json block"));
+    let call: Value = serde_json::from_str(block).unwrap_or_else(|e| panic!("{e}: {block}"));
+    assert_eq!(call["command"], CMD);
+    let mut s = Session::default();
+    strip(&mut s, 100.0);
+    let r = run(&mut s, CMD, call["params"].clone());
+    let setup = r["setup"].to_string();
+    assert!(setup.contains("6061-T6") && setup.contains("10.0 N"), "{setup}");
+}
+
 #[test]
 fn showing_with_no_estimate_says_so() {
     let mut s = Session::default();

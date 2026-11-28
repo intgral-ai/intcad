@@ -481,7 +481,7 @@ pub fn tool_definitions() -> Vec<Value> {
             "skill_reference",
             "Skill reference",
             "Read a document of Intcad's bundled agent skills (solidcraft-modeling, solidcraft-mechanisms, \
-             solidcraft-editing, solidcraft-checking) from the copy built into Intcad. `file` defaults to reference.md; \
+             solidcraft-editing, solidcraft-checking, solidcraft-analysis) from the copy built into Intcad. `file` defaults to reference.md; \
              each skill also has SKILL.md. Unknown skills or files are refused with the available ones.",
             obj(
                 json!({

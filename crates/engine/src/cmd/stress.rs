@@ -50,7 +50,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              it first so the user can see the faces) → estimate: true, setup, summary, runs, fraction_of_yield, peak_at_support, peak_away (the highest stress \
              away from fixed supports and loads), equilibrium (supports carry vs loads applied), mesh_check, warnings, assumptions, \
              how_to_report. Meshes with gmsh and solves with CalculiX on this computer and paints the estimate on the body. Report it as \
-             how_to_report says.",
+             how_to_report says. skill_reference solidcraft-analysis has the workflow and worked setups",
         ),
     CommandSpec::new(SHOW, "Show Stress Estimate", crate::checked!("inspect.stress_estimate.show", show))
         .noundo()

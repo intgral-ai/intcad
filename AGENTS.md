@@ -12,7 +12,7 @@ Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelle
 - **Cleanup.** Before removing your own worktree, confirm its work is saved, no other agent uses it, and untracked or ignored files are not needed. Prefer `git worktree remove`, never recursive deletion. Reclaim only regenerable, unused build output; when unsure, keep it and say why.
 - **Resources.** Avoid concurrent heavy builds and idle caches or workspaces. Do not change system-wide settings, quotas or do system cleanup. These are behaviour rules, not enforced isolation.
 
-See [docs/agent-development.md](docs/agent-development.md) for standard commands and platform notes.
+Commands and platform notes: [docs/agent-development.md](docs/agent-development.md).
 
 ## Hard rules (what enforces each)
 - Independent: no other-product code/icons/text/templates or commercial CAD automation/data; scoped intgral-ai code only per `skills/solidcraft-ground-rules/SKILL.md`.
@@ -57,8 +57,9 @@ See [docs/agent-development.md](docs/agent-development.md) for standard commands
 | A bug report, a crash, a wrong result | `skills/solidcraft-reporting/SKILL.md` |
 | Checking, porting, designs in git | `skills/solidcraft-checking/SKILL.md` |
 | Assemblies, joints, motion | `skills/solidcraft-mechanisms/SKILL.md` |
+| FEA | `skills/solidcraft-analysis/SKILL.md` |
 
 ## Agent skills
-- Issues: GitHub Issues in `intgral-ai/intcad`; see `docs/agents/issue-tracker.md`.
-- Triage labels: `docs/agents/triage-labels.md`.
-- Domain: read `docs/agents/domain.md` first.
+- Issues (`intgral-ai/intcad`): `docs/agents/issue-tracker.md`.
+- Triage: `docs/agents/triage-labels.md`.
+- Domain, first: `docs/agents/domain.md`.
