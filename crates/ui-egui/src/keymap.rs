@@ -685,6 +685,8 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
         let q = if filtering { app.prefs_window.filter.trim().to_lowercase() } else { app.keymap.filter.to_lowercase() };
         let commands: Vec<_> = command_specs()
             .into_iter()
+            // The stress estimate's release switch hides it here too.
+            .filter(|c| !crate::stress_switch::hides(app, c.id))
             .filter_map(|c| {
                 let keys = keys_for_spec(app, c);
                 let displayed: Vec<_> = keys.iter().map(|key| display(key)).collect();

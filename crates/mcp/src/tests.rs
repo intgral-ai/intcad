@@ -5712,3 +5712,24 @@ fn plain_headless_adds_no_notice() {
     let r = raw_tool(&mut s, "list_commands", json!({}));
     assert_eq!(r["result"]["content"].as_array().unwrap().len(), 1);
 }
+
+/// S5 (spec decision 32): below `agents` the headless `intcad-cli mcp` refuses the stress
+/// estimate in `execute` and `batch`, with the reason, and `list_commands` leaves it out; at
+/// `agents` the switch lets it by.
+#[test]
+fn the_headless_server_refuses_the_stress_estimate_below_agents() {
+    use solidcraft_engine::fea::offer::Offer;
+    for level in [Offer::Off, Offer::ByHand, Offer::Agents] {
+        let mut s = crate::Server::new_local_for_tests(Box::new(Headless::default().with_stress_offer(level)));
+        tool(&mut s, "execute", json!({"command": "solid.box", "params": {"length": 10, "width": 20, "height": 30}}));
+        let dry = json!({"command": "inspect.stress_estimate", "params": {
+            "supports": [{"face": [0]}], "loads": [{"face": [1], "force": [0, 0, -500]}], "material": "6061-T6", "dry_run": true
+        }});
+        for (name, args) in [("execute", dry.clone()), ("batch", json!({"commands": [dry.clone()]}))] {
+            let r = raw_tool(&mut s, name, args);
+            assert_eq!(r.to_string().contains("not available to agents"), !level.agents(), "{level:?} {name}: {r}");
+        }
+        let listed = raw_tool(&mut s, "list_commands", json!({"filter": "stress"}));
+        assert_eq!(listed.to_string().contains("inspect.stress_estimate"), level.agents(), "{level:?}: {listed}");
+    }
+}

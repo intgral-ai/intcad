@@ -691,6 +691,18 @@ sends it a line whenever the active design changes (#6985):
   ask `document.revision` for the design now. A `control.subscribe` that timed out or failed did
   not subscribe the connection: send it again.
 
+### The stress estimate's release switch
+
+The preference `stress_estimate` (`auto`, the default; `off`, `by_hand` or `agents`) decides how
+far the stress estimate is offered, so a release does not show it before it works end to end
+(docs/design/fea-engineering-ready.md, decision 32). `auto` is `off` in a release build and in the
+browser, and `agents` in a development build or a test; `INTCAD_STRESS_ESTIMATE` sets `auto`'s
+level for one run of the app or of `intcad-cli mcp`. Below `agents`, a request from any entry but
+the person's own that runs `inspect.stress_estimate` or `inspect.stress_estimate.show`
+(`engine.execute`, `engine.batch`, `engine.script`, `ui.start`) is refused before it starts, with
+"not available to agents in this build", and `engine.commands` leaves both out. `ui.prefs` from a
+controlled entry may not set `stress_estimate`: a person sets it in the settings file.
+
 ### Slow commands and the window (#1989)
 
 With the preference **Preferences > AI > Keep the window responsive while agents run commands**
