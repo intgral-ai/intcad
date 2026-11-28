@@ -666,7 +666,8 @@ fn editor(app: &mut SolveApp, ctx: &egui::Context) {
             });
             ui.separator();
             let mut list = config.tools(studio);
-            let catalog = catalog();
+            // The stress estimate's release switch hides it from the tools offered.
+            let catalog: Vec<_> = catalog().into_iter().filter(|(id, _)| !crate::stress_switch::hides(app, id)).collect();
             let mut op: Option<Op> = None;
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {

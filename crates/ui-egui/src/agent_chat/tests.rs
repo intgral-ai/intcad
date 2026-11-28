@@ -19684,3 +19684,52 @@ fn assistant_inspection_carries_the_marker_the_windows_smoke_reads() {
     web::set_problem(&mut h.app, web::Problem::NativeWayland);
     assert_eq!(inspect(&mut h), json!({"open": false, "surface_ready": false, "host": "native_wayland", "centred": false}));
 }
+
+/// S3 at the chat's gate (spec decision 32): below `agents` the chat's agent gets no Allow card
+/// for a stress estimate, a solve or a dry run, alone or in a batch: it is refused before the
+/// gate, told not to ask again. At `agents` the solve waits for Allow, as before the switch.
+#[test]
+fn below_agents_a_chat_agents_stress_estimate_gets_no_card() {
+    let estimate = |dry_run: bool| json!({"command": "inspect.stress_estimate", "params": {"loads": [], "supports": [], "dry_run": dry_run}});
+    for level in ["off", "by_hand"] {
+        let (mut app, script, ctx) = app_with_script();
+        app.preferences.stress_estimate = level.into();
+        let (tx, rx) = channel();
+        app.agent_chat.tools_rx = Some(rx);
+        app.run("solid.box", boxed(0.0)["params"].clone()).unwrap();
+        send(&mut app, &ctx, "estimate the stress".into());
+        for (method, params) in
+            [("engine.execute", estimate(false)), ("engine.execute", estimate(true)), ("engine.batch", json!({"commands": [estimate(false)]}))]
+        {
+            let v = chat_tool(&mut app, &tx, &ctx, method, params.clone());
+            assert_eq!(v["ok"], false, "{level}: {params}: {v}");
+            let error = v["error"].as_str().unwrap_or_default();
+            assert!(error.contains("not available to agents") && error.contains("do not ask for it again"), "{level}: {v}");
+        }
+        assert!(!app.agent_chat.items.iter().any(|i| matches!(i, Item::Approval { .. })), "{level}: no card");
+        ended(&script, "");
+        poll(&mut app, &ctx);
+    }
+    let (mut app, _script, ctx) = app_with_script();
+    app.preferences.stress_estimate = "agents".into();
+    let (tx, rx) = channel();
+    app.agent_chat.tools_rx = Some(rx);
+    app.run("solid.box", boxed(0.0)["params"].clone()).unwrap();
+    send(&mut app, &ctx, "estimate the stress".into());
+    // A whole setup, so the card's own dry run has something to show: the box's bottom held,
+    // 100 N down on its top.
+    let face = |z: f64| {
+        let st = crate::open_meshing::session_world(&app.session);
+        let m = st.body("Body1").unwrap().mesh();
+        let (_, f) = m.triangles.iter().zip(&m.tri_face).find(|(t, _)| m.tri(t).is_some_and(|ps| ps.iter().all(|p| (p.z - z).abs() < 1e-9))).unwrap();
+        *f as usize
+    };
+    let whole = json!({"command": "inspect.stress_estimate", "params": {
+        "body": "Body1", "supports": [{"face": [face(0.0)]}], "loads": [{"face": [face(10.0)], "force": [0.0, 0.0, -100.0]}],
+        "material": "6061-T6"
+    }});
+    let reply = ask(&tx, "engine.execute", whole);
+    pump_tools(&mut app);
+    let answered = reply.try_recv().ok();
+    assert!(app.agent_chat.items.iter().any(|i| matches!(i, Item::Approval { .. })), "agents: the solve asks first: {answered:?}");
+}
