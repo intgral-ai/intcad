@@ -180,10 +180,10 @@ impl SessionBilling {
     }
 
     fn ensure_identity(&self) -> Result<(), Refusal> {
-        self.ensure_identity_with(IDENTITY_WAIT).map(|_| ())
+        self.ensure_identity_with(IDENTITY_WAIT, false).map(|_| ())
     }
 
-    fn ensure_identity_with(&self, budget: Duration) -> Result<Option<(u64, u64)>, Refusal> {
+    fn ensure_identity_with(&self, budget: Duration, rejected: bool) -> Result<Option<(u64, u64)>, Refusal> {
         let map_error = |error| {
             refusal(match error {
                 IdentityError::SignedOut | IdentityError::SessionChanged | IdentityError::Rejected | IdentityError::Protocol => {
@@ -198,7 +198,8 @@ impl SessionBilling {
         };
         let Some(identity) = self.identity.as_ref().map_err(|&error| map_error(error))? else { return Ok(None) };
         let started = Instant::now();
-        let lease = identity.ensure(IdentityTrigger::Background, budget).map_err(map_error)?;
+        let lease =
+            if rejected { identity.recheck_background(budget) } else { identity.ensure(IdentityTrigger::Background, budget) }.map_err(map_error)?;
         identity
             .with_current_lease(&lease, budget.saturating_sub(started.elapsed()), || {
                 let binding = self.original.as_ref().ok_or(IdentityError::SessionChanged)?;
@@ -233,6 +234,70 @@ impl SessionBilling {
         )
     }
 
+    fn controlled_status(
+        &self,
+        binding: &Binding,
+        capability: Capability,
+        service: &HttpAccountService<&dyn Transport>,
+        deadline: Option<&ConservativeDeadline>,
+    ) -> Result<Option<(u64, u64)>, Refusal> {
+        let budget = || {
+            self.reserve_product_request(deadline)?;
+            Ok(deadline.map_or(IDENTITY_WAIT, |deadline| {
+                deadline.remaining(self.clock.now()).unwrap_or_default().saturating_sub(REQUEST_TIMEOUT).min(IDENTITY_WAIT)
+            }))
+        };
+        let read = |generations| {
+            service.controlled_status(&binding.scope, capability, || {
+                self.check_live_binding(binding)?;
+                self.check_identity_freshness(binding, generations)?;
+                self.reserve_product_request(deadline)
+            })
+        };
+        self.check_live_binding(binding)?;
+        let mut generations = self.ensure_identity_with(budget()?, false)?;
+        let mut status = read(generations);
+        if status.as_ref().is_err_and(|error| error.code == RefusalCode::AuthRequired) && generations.is_some() {
+            self.check_live_binding(binding)?;
+            // A 401 may have raced bearer expiry. Revalidate once within the
+            // old window, obeying the lifecycle's background cooldown.
+            generations = self.ensure_identity_with(budget()?, true)?;
+            status = read(generations);
+            if status.as_ref().is_err_and(|error| error.code == RefusalCode::AuthRequired) {
+                self.check_live_binding(binding)?;
+                self.check_identity_freshness(binding, generations)?;
+            }
+        }
+        status?;
+        self.check_live_binding(binding)?;
+        self.check_identity_freshness(binding, generations)?;
+        Ok(generations)
+    }
+
+    fn reserve_product_request(&self, deadline: Option<&ConservativeDeadline>) -> Result<(), Refusal> {
+        if let Some(deadline) = deadline {
+            let remaining = deadline.remaining(self.clock.now()).ok_or_else(|| refusal(RefusalCode::UnsafeToStart))?;
+            if remaining < REQUEST_TIMEOUT {
+                return Err(unavailable());
+            }
+        }
+        Ok(())
+    }
+
+    fn check_live_binding(&self, binding: &Binding) -> Result<(), Refusal> {
+        if binding.unchanged(&self.session) { Ok(()) } else { Err(refusal(RefusalCode::AuthRequired)) }
+    }
+
+    fn check_identity_freshness(&self, binding: &Binding, generations: Option<(u64, u64)>) -> Result<(), Refusal> {
+        let Ok(Some(identity)) = &self.identity else { return Ok(()) };
+        let scope = &binding.scope;
+        if identity.verified_generation_for(scope.account().as_str(), scope.session_binding().as_str()) == generations {
+            Ok(())
+        } else {
+            Err(unavailable())
+        }
+    }
+
     fn check(&self, active: &mut Active, bound: Duration, starting: bool) -> Result<(), Refusal> {
         if let Some(error) = &active.withdrawn {
             return Err(error.clone());
@@ -240,40 +305,19 @@ impl SessionBilling {
         let check: Result<(), Refusal> = (|| {
             let unsafe_start = || refusal(RefusalCode::UnsafeToStart);
             let remaining = || active.deadline.remaining(self.clock.now()).ok_or_else(unsafe_start);
-            let binding = || {
-                if active.binding.unchanged(&self.session) { Ok(()) } else { Err(refusal(RefusalCode::AuthRequired)) }
-            };
-            let reserve_request = || {
-                if self.identity.as_ref().is_ok_and(Option::is_some) && remaining()? <= REQUEST_TIMEOUT {
-                    return Err(unavailable());
-                }
-                Ok(())
-            };
-            binding()?;
-            let generations = self.ensure_identity_with(remaining()?.saturating_sub(REQUEST_TIMEOUT).min(IDENTITY_WAIT))?;
-            let still_verified = || {
-                let Ok(Some(identity)) = &self.identity else { return true };
-                let scope = &active.binding.scope;
-                identity.verified_generation_for(scope.account().as_str(), scope.session_binding().as_str()) == generations
-            };
-            let freshness = || if still_verified() { Ok(()) } else { Err(unavailable()) };
-            reserve_request()?;
             let mut service = self.service(active.binding.wire(&self.session, Some(&active.proof)), AdmissionSecrets::default());
-            service.controlled_status(&active.binding.scope, active.grant.capability())?;
+            let generations = self.controlled_status(&active.binding, active.grant.capability(), &service, Some(&active.deadline))?;
             remaining()?;
-            binding()?;
-            // A status read can span expiry. Do not refresh now and use a status
-            // response for the preceding bearer: retry from the start of the gate.
-            freshness()?;
+            let freshness = || self.check_identity_freshness(&active.binding, generations);
             let renewal = if active.renewal.is_some_and(|due| self.clock.now() >= due) {
-                reserve_request()?;
+                self.reserve_product_request(Some(&active.deadline))?;
                 let (grant, sent_at, interval) = service.exchange_renewal_gated(
                     &active.binding.scope,
                     &active.operation,
                     active.grant.id(),
                     active.grant.capability(),
                     Some(&active.deadline),
-                    still_verified,
+                    || freshness().and_then(|()| self.reserve_product_request(Some(&active.deadline))).is_ok(),
                 )?;
                 let received_at = self.clock.now();
                 let attempt = RenewalAttempt { sent_at, received_at, old_deadline: active.deadline.clone(), still_valid: true };
@@ -287,8 +331,9 @@ impl SessionBilling {
             };
             let final_gate = || {
                 remaining()?;
-                binding()?;
+                self.check_live_binding(&active.binding)?;
                 freshness()?;
+                self.reserve_product_request(Some(&active.deadline))?;
                 let deadline = renewal.as_ref().map_or(&active.deadline, |(deadline, _)| deadline);
                 if deadline.remaining(self.clock.now()).is_none_or(|remaining| remaining < bound) {
                     return Err(unsafe_start());
@@ -524,7 +569,7 @@ impl BillingPort for SessionBilling {
         let mut service = self.service(binding.wire(&self.session, None), handoff.clone());
         // A restart can restore local labels, but only the configured product service can
         // confirm that the bearer is currently eligible. Do this before writing an intent.
-        service.controlled_status(&binding.scope, capability)?;
+        self.controlled_status(&binding, capability, &service, None)?;
         if !binding.unchanged(&self.session) {
             return Err(unavailable());
         }

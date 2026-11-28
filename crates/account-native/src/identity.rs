@@ -593,6 +593,12 @@ impl IdentityLifecycle {
         self.ensure(IdentityTrigger::UserRetry, wait)
     }
 
+    /// Revalidate a bearer refused by the product without escalating to a user retry.
+    pub(crate) fn recheck_background(&self, wait: Duration) -> Result<IdentityLease, IdentityError> {
+        self.invalidate_readiness()?;
+        self.ensure(IdentityTrigger::Background, wait)
+    }
+
     /// A non-network readiness check for renewal of an already admitted operation.
     pub fn verified_generation_for(&self, account: &str, binding: &str) -> Option<(u64, u64)> {
         let _barrier = self.barrier_lock(&LockWait::new(Duration::ZERO)).ok()?;

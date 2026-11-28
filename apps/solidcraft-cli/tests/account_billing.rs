@@ -441,18 +441,36 @@ fn no_authority_billing_never_grants() {
 }
 
 #[derive(Default)]
-struct FakeKeyring(BTreeMap<String, String>);
+struct FakeKeyring {
+    entries: BTreeMap<String, String>,
+    read_delay: Option<Arc<ReadDelay>>,
+}
+
+#[derive(Default)]
+struct ReadDelay {
+    binding_reads: AtomicU64,
+    time: AtomicU64,
+}
 
 impl CredentialStore for FakeKeyring {
     fn get(&self, key: &str) -> Result<Option<String>, CredentialError> {
-        Ok(self.0.get(key).cloned())
+        if key == "auth/session_binding"
+            && let Some(delay) = &self.read_delay
+        {
+            let reads = delay.binding_reads.load(Ordering::Relaxed);
+            delay.binding_reads.store(reads.saturating_sub(1), Ordering::Relaxed);
+            if reads == 1 {
+                delay.time.store(56_000, Ordering::Relaxed);
+            }
+        }
+        Ok(self.entries.get(key).cloned())
     }
     fn set(&mut self, key: &str, secret: &str) -> Result<(), CredentialError> {
-        self.0.insert(key.into(), secret.into());
+        self.entries.insert(key.into(), secret.into());
         Ok(())
     }
     fn delete(&mut self, key: &str) -> Result<(), CredentialError> {
-        self.0.remove(key);
+        self.entries.remove(key);
         Ok(())
     }
     fn persistent(&self) -> bool {
@@ -469,7 +487,11 @@ impl ProductSessionExchange for FixtureExchange {
 }
 
 fn fixture_session() -> CredentialSession {
-    let mut session = CredentialSession::new(Box::new(FakeKeyring::default()));
+    fixture_session_with_store(FakeKeyring::default())
+}
+
+fn fixture_session_with_store(store: FakeKeyring) -> CredentialSession {
+    let mut session = CredentialSession::new(Box::new(store));
     session.complete_provider_login("provider_fixture", "provider-fixture").unwrap();
     session.activate_product_session(&FixtureExchange).unwrap();
     solidcraft_account_native::CredentialHandoff::installation_credential(&mut session, "ins_cli_fixture", Secret::new("installation-fixture"))
@@ -494,6 +516,7 @@ enum Step {
     Status,
     StatusThen(Box<dyn FnOnce()>),
     Denied,
+    DeniedThen(Box<dyn FnOnce()>),
     Withdraw(CredentialSession),
     Admit,
     BadGrant,
@@ -548,7 +571,7 @@ impl Transport for Script {
         let url = request.url().strip_prefix("https://test.invalid").unwrap();
         let body = || serde_json::from_slice::<Value>(request.body().unwrap()).unwrap();
         let (status, response) = match step {
-            Step::Status | Step::StatusThen(_) | Step::Denied | Step::Withdraw(_) => {
+            Step::Status | Step::StatusThen(_) | Step::Denied | Step::DeniedThen(_) | Step::Withdraw(_) => {
                 assert_eq!((request.method(), url), ("GET", "/v1/status"));
                 assert_eq!(request.header("Authorization"), Some(self.authorization));
                 assert_eq!(request.header("X-Installation-Credential"), None);
@@ -556,6 +579,9 @@ impl Transport for Script {
                     after();
                 } else if let Step::Withdraw(session) = step {
                     session.revoke_in_process();
+                } else if let Step::DeniedThen(after) = step {
+                    after();
+                    return Ok(WireResponse::new(401, br#"{"error":{"code":"AUTH_REQUIRED"}}"#.to_vec()));
                 } else if matches!(step, Step::Denied) {
                     return Ok(WireResponse::new(401, br#"{"error":{"code":"AUTH_REQUIRED"}}"#.to_vec()));
                 }
@@ -683,7 +709,7 @@ impl Transport for Script {
     }
 }
 
-fn live_billing(session: CredentialSession, script: Script, journal: PathBuf, clock: WireClock) -> SessionBilling {
+fn live_billing(session: CredentialSession, script: Script, journal: PathBuf, clock: impl MonotonicClock + 'static) -> SessionBilling {
     SessionBilling::new(session, WireConnection::new("https://test.invalid", "test").unwrap(), Box::new(script), journal, clock)
 }
 
@@ -691,6 +717,7 @@ fn live_billing(session: CredentialSession, script: Script, journal: PathBuf, cl
 struct IdentityProbe {
     seconds: Arc<AtomicU64>,
     offline: Arc<AtomicBool>,
+    signed_out: Arc<AtomicBool>,
     requests: Arc<AtomicU64>,
 }
 
@@ -727,6 +754,9 @@ fn scripted_identity(session: &CredentialSession, root: &Path, probe: IdentityPr
     impl IdentityTransport for Refresh {
         fn refresh(&self, _: &str, _: &Secret) -> Result<RefreshResponse, RefreshTransportError> {
             self.0.requests.fetch_add(1, Ordering::Relaxed);
+            if self.0.signed_out.load(Ordering::Relaxed) {
+                return Err(RefreshTransportError::Terminal);
+            }
             if self.0.offline.load(Ordering::Relaxed) {
                 return Err(RefreshTransportError::Transient { retry_after: None });
             }
@@ -913,6 +943,101 @@ fn active_identity_recovery_never_sends_with_less_than_one_request_left() {
     clock.0.set(60_000);
     assert_eq!(billing.dispatch(&operation, Duration::from_secs(1)).unwrap_err().code, RefusalCode::UnsafeToStart);
     script.done();
+}
+
+#[test]
+fn dfm_status_401_during_expiry_retries_once_or_preserves_the_correct_disposition() {
+    for (terminal, offline) in [(false, false), (true, false), (false, true)] {
+        let fixture = fixture("status-401", Probe::Passed);
+        let root = fixture._scratch.dir();
+        let journal = root.join("journal");
+        let session = fixture_session();
+        let probe = IdentityProbe::default();
+        let identity = scripted_identity(&session, root, probe.clone());
+        let mut steps = vec![
+            Step::Status,
+            Step::Admit,
+            Step::DeniedThen(Box::new({
+                let probe = probe.clone();
+                move || {
+                    probe.seconds.store(620, Ordering::Relaxed);
+                    probe.signed_out.store(terminal, Ordering::Relaxed);
+                    probe.offline.store(offline, Ordering::Relaxed);
+                }
+            })),
+        ];
+        if terminal {
+            steps.push(Step::Finalize(BillingResult::FailedNoEffect));
+        } else if offline {
+            steps.push(Step::Status);
+        } else {
+            steps.extend([Step::Status, Step::Status, Step::Finalize(BillingResult::Succeeded)]);
+        }
+        let script = Script::new(Capability::Dfm, EntryCategory::CliDfm, steps).expecting_rotated_bearer();
+        let mut billing = live_billing(session, script.clone(), journal.clone(), WireClock::default()).with_identity(identity);
+        let result = run_check(&fixture, &mut billing);
+        let ledger = FileOperationStore::open(journal).unwrap();
+        let operation = script.operation();
+        let status = ledger.load(&operation).unwrap().unwrap().status;
+        if terminal {
+            assert!(result.unwrap_err().starts_with("AUTH_REQUIRED:"));
+            assert_eq!(status, OperationStatus::Released);
+        } else if offline {
+            assert!(result.unwrap_err().starts_with("AUTH_UNAVAILABLE:"));
+            assert_eq!(ledger.settlement_intent(&operation).unwrap(), None);
+            assert!(!status.is_terminal());
+            assert_eq!(billing.dispatch(&operation, Duration::from_secs(1)).unwrap_err().code, RefusalCode::AuthUnavailable);
+            assert_eq!(probe.requests.load(Ordering::Relaxed), 2, "an immediate retry honors cooldown");
+            probe.recover();
+            billing.dispatch(&operation, Duration::from_secs(1)).unwrap();
+        } else {
+            assert!(result.unwrap().report_produced);
+            assert_eq!(status, OperationStatus::Charged);
+        }
+        assert_eq!(probe.requests.load(Ordering::Relaxed), if offline { 3 } else { 2 });
+        assert_eq!(fixture.runs.load(Ordering::Relaxed), u64::from(!terminal && !offline));
+        script.done();
+    }
+}
+
+#[test]
+fn a_slow_credential_read_can_exhaust_the_status_or_renewal_send_window() {
+    struct DelayedClock(Arc<ReadDelay>);
+    impl MonotonicClock for DelayedClock {
+        fn now(&self) -> MonotonicInstant {
+            MonotonicInstant::from_millis(self.0.time.load(Ordering::Relaxed))
+        }
+        fn wall_now(&self) -> SystemTime {
+            WireClock::default().wall_now()
+        }
+    }
+    for during_renewal in [false, true] {
+        let scratch = Scratch::new("slow-credential");
+        let delay = Arc::new(ReadDelay::default());
+        let session = fixture_session_with_store(FakeKeyring { read_delay: Some(delay.clone()), ..FakeKeyring::default() });
+        let mut steps = vec![Step::Status, Step::Admit];
+        if during_renewal {
+            let delay = delay.clone();
+            // Post-status binding validation reads three times. The next read
+            // is in the renewal's credential lookup, after the early reserve check.
+            steps.push(Step::StatusThen(Box::new(move || delay.binding_reads.store(4, Ordering::Relaxed))));
+        }
+        let script = Script::new(Capability::Dfm, EntryCategory::CliDfm, steps);
+        let mut billing = live_billing(session, script.clone(), scratch.dir().join("journal"), DelayedClock(delay.clone()));
+        let operation = OperationId::parse("op_cli_read_consumes_reserve").unwrap();
+        billing.admit(&operation, Capability::Dfm, EntryCategory::CliDfm).unwrap();
+        if during_renewal {
+            delay.time.store(21_000, Ordering::Relaxed);
+        } else {
+            // Same three binding reads before the status credential lookup.
+            delay.binding_reads.store(4, Ordering::Relaxed);
+        }
+        assert_eq!(billing.dispatch(&operation, Duration::from_secs(1)).unwrap_err().code, RefusalCode::AuthUnavailable);
+        assert_eq!(delay.time.load(Ordering::Relaxed), 56_000);
+        delay.time.store(60_000, Ordering::Relaxed);
+        assert_eq!(billing.dispatch(&operation, Duration::from_secs(1)).unwrap_err().code, RefusalCode::UnsafeToStart);
+        script.done();
+    }
 }
 
 #[test]

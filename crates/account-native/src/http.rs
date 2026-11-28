@@ -1030,12 +1030,12 @@ impl<T: Transport> HttpAccountService<T> {
             self.credentials.product_session().map(|secret| Secret::new(format!("Bearer {}", secret.expose_secret()))),
         )?;
         self.push_auth(&mut request, "X-Execution-Session-Proof", self.credentials.execution_session_proof(operation))?;
+        if !still_verified() {
+            return Err(refusal(RefusalCode::AuthUnavailable));
+        }
         let sent_at = self.clock.now();
         if prior.is_some_and(|deadline| deadline.remaining(sent_at).is_none()) {
             return Err(refusal(RefusalCode::UnsafeToStart));
-        }
-        if !still_verified() {
-            return Err(refusal(RefusalCode::AuthUnavailable));
         }
         let response = self.transport.send(&request).map_err(|_| unavailable())?;
         if !still_verified() {
@@ -1208,12 +1208,17 @@ impl<T: Transport> HttpAccountService<T> {
     /// session and sent as the only credential; a missing or unusable bearer is refused before any
     /// request.
     fn status_value(&self) -> Result<Value, Refusal> {
+        self.status_value_gated(|| Ok(()))
+    }
+
+    fn status_value_gated(&self, before_send: impl FnOnce() -> Result<(), Refusal>) -> Result<Value, Refusal> {
         let mut request = self.request("GET", "/v1/status", None);
         self.push_auth(
             &mut request,
             "Authorization",
             self.credentials.product_session().map(|secret| Secret::new(format!("Bearer {}", secret.expose_secret()))),
         )?;
+        before_send()?;
         let (status, value) = self.exchange(request)?;
         if status != 200 {
             return Err(error_refusal(status, &value));
@@ -1284,8 +1289,13 @@ impl<T: Transport> HttpAccountService<T> {
         Ok(availability)
     }
 
-    pub(crate) fn controlled_status(&self, scope: &AuthenticatedHostScope, capability: Capability) -> Result<(), Refusal> {
-        let value = self.status_value()?;
+    pub(crate) fn controlled_status(
+        &self,
+        scope: &AuthenticatedHostScope,
+        capability: Capability,
+        before_send: impl FnOnce() -> Result<(), Refusal>,
+    ) -> Result<(), Refusal> {
+        let value = self.status_value_gated(before_send)?;
         let (account, snapshot) = self.parse_status_snapshot(&value)?;
         if account != scope.account().as_str() {
             return Err(refusal(RefusalCode::AuthRequired));
