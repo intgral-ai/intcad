@@ -2270,7 +2270,9 @@ fn a_dry_run_starts_no_program_so_it_names_no_version() {
 /// Observable: the two replies but the seconds each solve took.
 /// Pass: the first names gmsh 4.12.1 and CalculiX 2.21 and no warning of it names a version
 /// tested; the second's `programs` names gmsh 4.99.0 and CalculiX 2.99, its warnings are the
-/// first's and one more, last, naming the four versions; every other field is the same.
+/// first's and one more, last, naming the four versions; with the versions found named back as
+/// the versions tested (in `programs` and the assumptions' Programs line, which name what ran),
+/// every other field is the same.
 #[cfg(unix)]
 #[test]
 #[ignore = "runs gmsh and CalculiX"]
@@ -2345,12 +2347,17 @@ fn other_versions_add_one_warning_and_change_nothing_else() {
     for named in ["gmsh 4.99.0", "CalculiX 2.99", "gmsh 4.12.1", "CalculiX 2.21"] {
         assert!(added.contains(named), "`{named}` missing: {added}");
     }
-    let rest = |mut r: Value| {
+    // The versions found are named where the reply always names them: `programs` and the
+    // assumptions' Programs line.
+    let assumed = renamed["assumptions"].to_string();
+    assert!(assumed.contains("gmsh 4.99.0") && assumed.contains("CalculiX 2.99"), "{assumed}");
+    let without_warnings = |mut r: Value| {
         if let Some(o) = r.as_object_mut() {
             o.remove("warnings");
-            o.remove("programs");
         }
         r
     };
-    assert_eq!(rest(here), rest(renamed), "only `warnings` and `programs` differ");
+    let named_back = without_warnings(renamed).to_string().replace("gmsh 4.99.0", fea::TESTED_MESHER).replace("CalculiX 2.99", fea::TESTED_SOLVER);
+    let named_back: Value = serde_json::from_str(&named_back).unwrap();
+    assert_eq!(without_warnings(here), named_back, "besides the warning, only the versions named differ");
 }
