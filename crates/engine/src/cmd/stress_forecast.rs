@@ -67,7 +67,8 @@ pub(crate) fn nodes_before_meshing(elements: Elements, h: f64, volume: Option<f6
 pub(crate) const SOLID_BYTES: (f64, f64, f64) = (12_190.0, 0.116, 0.481);
 
 /// The solver's peak memory for a run of `nodes` nodes `layers` elements deep, bytes. Shells keep
-/// [`super::SHELL_MEMORY`]: within −7 % and +36 % of the 8 shell runs measured.
+/// [`super::SHELL_MEMORY`]: within −7 % and +36 % of the 8 shell runs measured. The card shows it,
+/// and A1's memory gate and the mesh check's gate refuse by it (decision 22).
 pub(crate) fn memory(nodes: f64, elements: Elements, layers: f64) -> f64 {
     let n = nodes.max(0.0);
     match elements {
@@ -166,10 +167,11 @@ pub(crate) fn planned(runs: &[(Elements, f64, f64)], mesh_check: bool, volume: O
     out
 }
 
-/// Whether the mesh check's next finer mesh, after one of `nodes`, fits this computer's limit now: the
-/// gate the estimate itself uses for its second and its third ([`mesh_check_gate`]).
-pub(crate) fn finer_fits(nodes: f64, elements: Elements) -> bool {
-    mesh_check_gate(nodes.max(0.0).round() as usize, elements, super::finer_limit_here()).is_none()
+/// Whether the mesh check's next finer mesh, after one of `nodes`, fits this computer's limit now,
+/// `layers` being the finer mesh's: the gate the estimate itself uses for its second and its third
+/// ([`mesh_check_gate`]), on the memory the card shows ([`memory`], decision 22).
+pub(crate) fn finer_fits(nodes: f64, elements: Elements, layers: f64) -> bool {
+    mesh_check_gate(nodes.max(0.0).round() as usize, elements, layers, super::finer_limit_here()).is_none()
 }
 
 /// The runs made when the mesh check goes up to mesh `level`.
@@ -177,11 +179,12 @@ fn made(runs: &[Planned], level: u32) -> impl Iterator<Item = (usize, &Planned)>
     runs.iter().enumerate().filter(move |(_, r)| r.level <= level)
 }
 
-/// How far the mesh check goes after a first mesh of `nodes` nodes, by `fits` ([`finer_fits`]).
-pub(crate) fn reach_after_first(runs: &[Planned], nodes: f64, fits: &dyn Fn(f64, Elements) -> bool) -> Reach {
+/// How far the mesh check goes after a first mesh of `nodes` nodes, by `fits` ([`finer_fits`]: a
+/// mesh's nodes, its elements and the next finer mesh's layers).
+pub(crate) fn reach_after_first(runs: &[Planned], nodes: f64, fits: &dyn Fn(f64, Elements, f64) -> bool) -> Reach {
     let none = Reach { likely: 0, most: 0 };
     let (Some(first), Some(second)) = (runs.first(), runs.iter().find(|r| r.level == 1)) else { return none };
-    if !fits(nodes, first.elements) {
+    if !fits(nodes, first.elements, second.layers()) {
         return none;
     }
     let scale = if first.nodes > 0.0 { nodes / first.nodes } else { 1.0 };
@@ -189,8 +192,8 @@ pub(crate) fn reach_after_first(runs: &[Planned], nodes: f64, fits: &dyn Fn(f64,
 }
 
 /// The same once the second mesh is made, of `nodes` nodes.
-pub(crate) fn reach_after_second(runs: &[Planned], nodes: f64, fits: &dyn Fn(f64, Elements) -> bool) -> Reach {
-    let third = runs.iter().find(|r| r.level == 2).is_some_and(|r| fits(nodes, r.elements));
+pub(crate) fn reach_after_second(runs: &[Planned], nodes: f64, fits: &dyn Fn(f64, Elements, f64) -> bool) -> Reach {
+    let third = runs.iter().find(|r| r.level == 2).is_some_and(|r| fits(nodes, r.elements, r.layers()));
     Reach { likely: 1, most: if third { 2 } else { 1 } }
 }
 
@@ -221,7 +224,7 @@ fn totals(runs: &[Planned], level: u32) -> Totals {
 /// The estimate before meshing: what the runs likely made take, and what they take with the third
 /// mesh when it may follow. The mesh check's gates read the part's predicted nodes (`fits`).
 /// `None` without runs.
-pub(crate) fn before_meshing(runs: &[Planned], fits: &dyn Fn(f64, Elements) -> bool) -> Option<(Totals, Option<Totals>)> {
+pub(crate) fn before_meshing(runs: &[Planned], fits: &dyn Fn(f64, Elements, f64) -> bool) -> Option<(Totals, Option<Totals>)> {
     let first = runs.first()?;
     let reach = reach_after_first(runs, first.nodes, fits);
     Some((totals(runs, reach.likely), (reach.most > reach.likely).then(|| totals(runs, reach.most))))
@@ -278,13 +281,13 @@ pub(crate) fn which(runs: &[Planned], elements: Elements, h: f64) -> Option<usiz
 pub(crate) struct Tracker<'a> {
     pub runs: &'a [Planned],
     pub document_id: String,
-    pub fits: &'a dyn Fn(f64, Elements) -> bool,
+    pub fits: &'a dyn Fn(f64, Elements, f64) -> bool,
     /// The finest of the mesh check's meshes counted so far.
     finest: std::cell::Cell<u32>,
 }
 
 impl<'a> Tracker<'a> {
-    pub fn new(runs: &'a [Planned], document_id: String, fits: &'a dyn Fn(f64, Elements) -> bool) -> Self {
+    pub fn new(runs: &'a [Planned], document_id: String, fits: &'a dyn Fn(f64, Elements, f64) -> bool) -> Self {
         Tracker { runs, document_id, fits, finest: std::cell::Cell::new(0) }
     }
 

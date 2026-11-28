@@ -23,7 +23,8 @@ profile = ["solidcraft-engine/profile"]
 # The workspace lints, except unsafe_code: denied, not forbidden, so that src/open_documents.rs
 # (macOS file-open events), src/native_crash.rs (Windows exception filter), src/native_crash_macos.rs
 # (macOS crash signal handler), src/native_frame.rs (Windows resize border, taskbar icon) and
-# src/assistant_clip.rs (the macOS Assistant view's superview) can allow it: none has a safe API. Keep the rest in sync with [workspace.lints].
+# src/assistant_clip.rs (the macOS Assistant view's superview) and src/native_memory.rs (the memory
+# available on Windows and macOS) can allow it: none has a safe API. Keep the rest in sync with [workspace.lints].
 [lints.rust]
 unsafe_code = "deny"
 
@@ -76,6 +77,7 @@ raw-window-handle = "0.6"
 # The window's resize border, DPI size and class icon (src/native_frame.rs): the window procedure, hit
 # test, DPI, the exe's icon.
 # Finding 3D mice through Plug and Play without asking other devices anything (src/space_mouse/windows_hid.rs).
+# The memory available, for the stress estimate's memory gates (src/native_memory.rs).
 windows-sys = { version = "0.61", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Devices_HumanInterfaceDevice",
@@ -89,6 +91,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Kernel",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_HiDpi",
     "Win32_UI_WindowsAndMessaging",
@@ -113,7 +116,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSArray", "NSGeometry", "NSNotification", "NSOperation", "NSProcessInfo", "NSString", "NSURL", "objc2-core-foundation"] }
 block2 = "0.6"
 # Native crash capture (src/native_crash_macos.rs): the signal handler, the faulting module
-# (already in the tree through many crates).
+# (already in the tree through many crates); the memory available (src/native_memory.rs).
 libc = "0.2"
 wry = { version = "0.57", default-features = false, features = ["os-webview"] }
 

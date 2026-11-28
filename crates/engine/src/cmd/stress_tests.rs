@@ -1197,7 +1197,7 @@ fn p2_short_of_memory_the_mesh_check_is_skipped_at_half_the_memory_available() {
     );
     let line = r["mesh_check"]["line"].as_str().unwrap_or("").to_string();
     let first = number(&r["runs"].as_array().and_then(|a| a.last()).map_or(Value::Null, |x| x["nodes"].clone()));
-    let (_, predicted) = predict_finer(first as usize, Elements::Solid);
+    let (_, predicted) = predict_finer(first as usize, Elements::Solid, forecast::layers(2.0 * 19858.6 / 20919.8, 1.0));
     eprintln!(
         "P2 available {:.2} GB (half {:.2} GB); first run {first} nodes, finer predicted {:.2} GB; mesh check {}: {line}; {}",
         available / 1e9,
@@ -1252,8 +1252,9 @@ fn p1_a_large_shell_model_is_prepared_quickly() {
 
 /// G1: the mesh check runs only when its finer run's predicted size fits the limit.
 /// Input: fake first runs (node counts only, nothing runs): 20 000, 50 000 and R2's 199 504 solid
-/// nodes, 50 000 and 100 000 shell nodes; a 100 000-node cap given as SOLIDCRAFT_FEA_MAX_NODES's
-/// text, and a 6 GB memory limit; junk cap texts.
+/// nodes, as deep as R2's plate at its finer size (1.9 mm at 0.67 mm: 2.8 layers), 50 000 and
+/// 100 000 shell nodes; a 100 000-node cap given as SOLIDCRAFT_FEA_MAX_NODES's text, and a 6 GB
+/// memory limit; junk cap texts.
 /// Action: `finer_limit`, `mesh_check_gate`, `check_line`, `mesh_check_json`.
 /// Observable: whether the check runs; the skipped line and the JSON reason.
 /// Pass: under the node cap 20 000 solid nodes (about 60 000 predicted) runs and 50 000 (about
@@ -1265,8 +1266,9 @@ fn p1_a_large_shell_model_is_prepared_quickly() {
 fn g1_the_mesh_check_is_skipped_with_its_reason_when_the_finer_run_would_be_over_the_limit() {
     let cap = finer_limit(Some("100000"), None, MEMORY_CEILING);
     assert_eq!(cap, Limit::Nodes(100_000.0));
-    assert_eq!(mesh_check_gate(20_000, Elements::Solid, cap), None, "about 60 000 nodes: under the cap, it runs");
-    let skip = mesh_check_gate(50_000, Elements::Solid, cap).unwrap_or_else(|| panic!("about 150 000 nodes: skipped"));
+    let deep = forecast::layers(2.0 * 19858.6 / 20919.8, 1.0 / 1.5);
+    assert_eq!(mesh_check_gate(20_000, Elements::Solid, deep, cap), None, "about 60 000 nodes: under the cap, it runs");
+    let skip = mesh_check_gate(50_000, Elements::Solid, deep, cap).unwrap_or_else(|| panic!("about 150 000 nodes: skipped"));
     let line = check_line(&skip);
     for needed in [
         "skipped: the finer mesh would have about 150,000 nodes (about ",
@@ -1281,13 +1283,13 @@ fn g1_the_mesh_check_is_skipped_with_its_reason_when_the_finer_run_would_be_over
     assert_eq!(json.line, line);
 
     let memory = Limit::Memory(6.0e9);
-    let skip = mesh_check_gate(199_504, Elements::Solid, memory).unwrap_or_else(|| panic!("R2's finer run is over 6 GB"));
+    let skip = mesh_check_gate(199_504, Elements::Solid, deep, memory).unwrap_or_else(|| panic!("R2's finer run is over 6 GB"));
     let line = check_line(&skip);
     eprintln!("G1 R2 under 6 GB: {line}");
     assert!(line.starts_with("skipped: the finer mesh would have about ") && line.contains("over this computer's limit of about 6 GB"), "{line}");
-    assert_eq!(mesh_check_gate(50_000, Elements::Solid, memory), None);
-    assert_eq!(mesh_check_gate(50_000, Elements::Shell, memory), None);
-    assert!(mesh_check_gate(100_000, Elements::Shell, memory).is_some());
+    assert_eq!(mesh_check_gate(50_000, Elements::Solid, deep, memory), None);
+    assert_eq!(mesh_check_gate(50_000, Elements::Shell, 1.0, memory), None);
+    assert!(mesh_check_gate(100_000, Elements::Shell, 1.0, memory).is_some());
     for junk in ["", "  ", "abc", "0", "-5", "1e5", "12.5"] {
         assert_eq!(finer_limit(Some(junk), None, 6.0e9), Limit::Memory(6.0e9), "`{junk}` is ignored");
     }
@@ -1544,11 +1546,11 @@ fn g3_the_memory_and_node_predictions_cover_what_was_measured() {
         ("R3", Elements::Solid, 44_748, 132_915.0),
         ("shells", Elements::Shell, 26_607, 58_673.0),
     ] {
-        let (nodes, _) = predict_finer(first, elements);
+        let (nodes, _) = predict_finer(first, elements, 1.0);
         eprintln!("G3 {name}: finer nodes predicted {nodes:.0}, measured {finer} ({:+.1}%)", 100.0 * (nodes / finer - 1.0));
         assert!((nodes / finer - 1.0).abs() <= 0.03, "{name}: {nodes} vs {finer}");
     }
-    let (r1, _) = predict_finer(14_555, Elements::Solid);
+    let (r1, _) = predict_finer(14_555, Elements::Solid, 1.0);
     eprintln!("G3 R1: finer nodes predicted {r1:.0}, measured 30447 ({:+.1}%)", 100.0 * (r1 / 30_447.0 - 1.0));
     assert!((30_447.0..=1.5 * 30_447.0).contains(&r1), "R1: {r1}");
 }
@@ -1570,10 +1572,16 @@ fn a_solid_parts_default_mesh_is_no_finer_than_about_eighty_thousand_nodes() {
     const SOLID_NODES_PER_MM3_MOST: f64 = 11.3;
     let disc_volume = std::f64::consts::PI * 50.0 * 50.0 * 2.0;
     let disc_diag = (100.0f64 * 100.0 + 100.0 * 100.0 + 4.0).sqrt();
-    for (what, v, diag) in [("plate", plate_volume, plate_diag), ("disc", disc_volume, disc_diag)] {
+    // Their surfaces, for the layers through them (decision 22).
+    let pi = std::f64::consts::PI;
+    let plate_area = 2.0 * (200.0 * 50.0 - pi * 25.0) + 2.0 * (200.0 + 50.0) * 2.0 + pi * 10.0 * 2.0;
+    let disc_area = 2.0 * pi * 50.0 * 50.0 + pi * 100.0 * 2.0;
+    for (what, v, area, diag) in [("plate", plate_volume, plate_area, plate_diag), ("disc", disc_volume, disc_area, disc_diag)] {
         let h = default_solid_size(diag, 2.0, Some(v));
         let nodes = SOLID_NODES_PER_MM3_MOST * v / h.powi(3);
-        let (finer_nodes, finer_bytes) = predict_finer(nodes as usize, Elements::Solid);
+        let deep = forecast::layers(section_size(Elements::Solid, false, 0.0, Some(v), area), h / MESH_CHECK_RATIO);
+        let (finer_nodes, finer_bytes) = predict_finer(nodes as usize, Elements::Solid, deep);
+        eprintln!("A2 {what}: finer run {finer_nodes:.0} nodes, {deep:.2} layers, {:.2} GB", finer_bytes / 1e9);
         assert!(finer_bytes <= MEMORY_CEILING, "{what}: the finer run fits: {finer_nodes} nodes, {finer_bytes} bytes");
     }
     let bar = default_solid_size((140.0f64 * 140.0 + 28.0 * 28.0 + 16.0).sqrt(), 4.0, Some(13_120.0));
@@ -1691,8 +1699,10 @@ fn d1_a_runs_memory_limit_is_half_the_memory_free_within_its_control_group() {
     }
     for e in [Elements::Solid, Elements::Shell] {
         for b in [1.0e9, 4.0e9, 12.0e9] {
-            let back = solver_bytes(nodes_for_bytes(b, e), e);
-            assert!((back / b - 1.0).abs() < 1e-9, "{e:?} {b}: {back}");
+            for deep in [1.0, 3.7] {
+                let back = forecast::memory(nodes_for_bytes(b, e, deep), e, deep);
+                assert!((back / b - 1.0).abs() < 1e-9, "{e:?} {b} {deep}: {back}");
+            }
         }
     }
 }
@@ -1703,10 +1713,13 @@ fn d1_a_runs_memory_limit_is_half_the_memory_free_within_its_control_group() {
 /// (493 468 nodes with curvature sizing) is refused too; at the suggested size it fits.
 #[test]
 fn d1_a_run_too_big_for_the_memory_is_refused_with_a_mesh_size_that_fits() {
-    let v = 200.0 * 50.0 * 2.0 - std::f64::consts::PI * 25.0 * 2.0;
+    let pi = std::f64::consts::PI;
+    let v = 200.0 * 50.0 * 2.0 - pi * 25.0 * 2.0;
+    // Twice the volume over the surface: 1.9 mm, 2.7 layers at 0.7 mm.
+    let section = 2.0 * v / (2.0 * (200.0 * 50.0 - pi * 25.0) + 2.0 * (200.0 + 50.0) * 2.0 + pi * 10.0 * 2.0);
     let cap = 4.0e9;
     let predicted = SOLID_NODES_PER_MM3 * v / 0.7f64.powi(3);
-    let words = memory_refusal(predicted, Elements::Solid, 0.7, cap, false).unwrap_or_else(|| panic!("0.7 mm under 4 GB is refused"));
+    let words = memory_refusal(predicted, Elements::Solid, 0.7, section, cap, false).unwrap_or_else(|| panic!("0.7 mm under 4 GB is refused"));
     eprintln!("D1 R2 at 0.7 mm: {words}");
     assert!(words.starts_with("not solved: the solid mesh at about 0.7 mm would have about "), "{words}");
     assert!(words.contains("GB of memory; this computer has about 4 GB to spare") && words.contains("`mesh_size`, such as "), "{words}");
@@ -1716,20 +1729,136 @@ fn d1_a_run_too_big_for_the_memory_is_refused_with_a_mesh_size_that_fits() {
         .and_then(|t| t.split(" mm").next())
         .and_then(|t| t.parse().ok())
         .unwrap_or_else(|| panic!("no size in: {words}"));
-    assert!(solver_bytes(SOLID_NODES_PER_MM3 * v / size.powi(3), Elements::Solid) <= cap, "{size} mm fits");
+    let fits = forecast::memory(SOLID_NODES_PER_MM3 * v / size.powi(3), Elements::Solid, forecast::layers(section, size));
+    assert!(fits <= cap, "{size} mm fits: {fits}");
     assert!(size < 1.3, "not far coarser than needed: {size}");
-    let meshed = memory_refusal(493_468.0, Elements::Solid, 0.7, cap, true).unwrap_or_else(|| panic!("the mesh is refused"));
+    let meshed = memory_refusal(493_468.0, Elements::Solid, 0.7, section, cap, true).unwrap_or_else(|| panic!("the mesh is refused"));
     assert!(meshed.contains(" has about 490,000 nodes"), "{meshed}");
-    assert_eq!(memory_refusal(493_468.0, Elements::Solid, 0.7, 13.0e9, true), None, "half of 26 GB free: it fits");
-    assert_eq!(memory_refusal(predicted, Elements::Solid, 0.7, 13.0e9, false), None, "a prediction is refused only when twice over");
-    let shell = memory_refusal(150_000.0, Elements::Shell, 1.0, 2.0e9, true).unwrap_or_else(|| panic!("150 000 shell nodes under 2 GB"));
+    assert_eq!(memory_refusal(493_468.0, Elements::Solid, 0.7, section, 13.0e9, true), None, "half of 26 GB free: it fits");
+    assert_eq!(memory_refusal(predicted, Elements::Solid, 0.7, section, 13.0e9, false), None, "a prediction is refused only when twice over");
+    let shell = memory_refusal(150_000.0, Elements::Shell, 1.0, 1.5, 2.0e9, true).unwrap_or_else(|| panic!("150 000 shell nodes under 2 GB"));
     assert!(shell.starts_with("not solved: the shell mesh"), "{shell}");
     for raw in ["gpl.htm", "signal", "*ERROR"] {
         assert!(!words.contains(raw) && !shell.contains(raw));
     }
     for junk in [f64::NAN, 0.0, -5.0] {
-        assert_eq!(memory_refusal(junk, Elements::Solid, 1.0, cap, true), None);
-        assert_eq!(memory_refusal(1.0e7, Elements::Solid, junk, cap, true), None);
+        assert_eq!(memory_refusal(junk, Elements::Solid, 1.0, section, cap, true), None);
+        assert_eq!(memory_refusal(1.0e7, Elements::Solid, junk, section, cap, true), None);
+        // An unknown section counts one layer: ten million nodes are still refused.
+        assert!(memory_refusal(1.0e7, Elements::Solid, 1.0, junk, cap, true).is_some(), "{junk}");
+    }
+}
+
+/// Decision 22: A1's memory gate and the mesh check's gate predict memory with A13's model, the
+/// card's, which counts the element layers through the part, not `solver_bytes`, which was up to
+/// 48 % low on deep solids.
+/// Input, measured: V-6's filleted bar (`stepped_bar`, its section 2V/S 3.3 mm) at its third mesh,
+/// 2/2.25 mm, counted 196,605 nodes (3.7 layers); the 50 mm cube with a Ø20 hole at 1.7 mm, 156,016
+/// nodes (7.3 layers), whose solver peaked at 5.78 GB ([`A13_MEASURED`]). Limits between the two
+/// models' figures: 4.4 GB a run for V-6, 3.5 GB for the cube (7 GB free). Nothing runs.
+/// Action: `memory_refusal` (A1's gate, on the count and on the prediction from the volume),
+/// `finer_gate` (the mesh check's gate on a counted mesh), `mesh_check_gate` (on one predicted from
+/// the mesh before, a third as many), `forecast::after_meshing` (the card), `reach_after_first`.
+/// Observable: refused or let through, the memory each gate names, the layers each gate is asked at.
+/// Pass: `solver_bytes` under each limit (the old gates let both through) and A13's model over it;
+/// every gate refuses both, naming the card's memory to the byte; the cube's measured peak is over
+/// its limit; the size A1's refusal suggests fits; the forecast asks the gate at the layers of the
+/// mesh it would let through.
+#[test]
+fn d22_the_gates_refuse_a_deep_solid_that_solver_bytes_let_through() {
+    // V-6's bar: 60 x 28 then 80 x 20 mm, 4 mm thick; its 2 mm fillets change the section by under 0.1 %.
+    let (top, rim) = (60.0 * 28.0 + 80.0 * 20.0, 28.0 + 2.0 * 60.0 + 8.0 + 2.0 * 80.0 + 20.0);
+    let v6_section = section_size(Elements::Solid, false, 0.0, Some(top * 4.0), 2.0 * top + rim * 4.0);
+    let v6_h = 2.0 / (MESH_CHECK_RATIO * MESH_CHECK_RATIO);
+    let (cube_volume, _, cube_section) = a13_part("block");
+    for (name, nodes, h, section, cap, measured) in
+        [("V-6's third mesh", 196_605.0, v6_h, v6_section, 4.4e9, None), ("the cube at 1.7 mm", 156_016.0, 1.7, cube_section, 3.5e9, Some(5.784e9))]
+    {
+        let deep = forecast::layers(section, h);
+        let (old, card) = (solver_bytes(nodes, Elements::Solid), forecast::memory(nodes, Elements::Solid, deep));
+        eprintln!(
+            "D22 {name}: {nodes} nodes, {deep:.2} layers; solver_bytes {:.2} GB, A13 {:.2} GB, limit {:.1} GB",
+            old / 1e9,
+            card / 1e9,
+            cap / 1e9
+        );
+        assert!(old < cap && card > cap, "{name}: the old model lets it through and A13's does not");
+        assert!(measured.is_none_or(|m| m > cap), "{name}: it needed more than the limit");
+        let words = memory_refusal(nodes, Elements::Solid, h, section, cap, true).unwrap_or_else(|| panic!("{name}: A1's gate refuses the count"));
+        assert!(words.contains(&format!("would need about {} of memory", about_bytes(card))), "{words}");
+        let size: f64 = words
+            .split("such as ")
+            .nth(1)
+            .and_then(|t| t.split(" mm").next())
+            .and_then(|t| t.parse().ok())
+            .unwrap_or_else(|| panic!("no size in: {words}"));
+        let at_size = forecast::memory(nodes * (h / size).powi(3), Elements::Solid, forecast::layers(section, size));
+        eprintln!("D22 {name}: refused, {size} mm suggested ({:.2} GB there)", at_size / 1e9);
+        assert!(at_size <= cap, "{name}: {size} mm fits");
+        let limit = Limit::Memory(cap);
+        assert_eq!(finer_gate(nodes, Elements::Solid, deep, limit), Some(Check::Skipped { nodes, bytes: card, limit }), "{name}");
+        let before = (nodes / SOLID_GROWTH).floor() as usize;
+        let (predicted, bytes) = predict_finer(before, Elements::Solid, deep);
+        assert!(bytes > cap && solver_bytes(predicted, Elements::Solid) < cap, "{name}: {predicted} predicted");
+        assert_eq!(mesh_check_gate(before, Elements::Solid, deep, limit), Some(Check::Skipped { nodes: predicted, bytes, limit }), "{name}");
+    }
+    // Before meshing, from the cube's volume: refused when twice over, which the old model was not.
+    let predicted = SOLID_NODES_PER_MM3 * cube_volume.unwrap_or(f64::NAN) / 1.7f64.powi(3);
+    assert!(solver_bytes(predicted, Elements::Solid) < 2.0 * 3.5e9, "the old model let it mesh");
+    assert!(memory_refusal(predicted, Elements::Solid, 1.7, cube_section, 3.5e9, false).is_some(), "refused before meshing");
+
+    // The card shows what the gates refuse by, and the forecast asks the gate at the next mesh's layers.
+    let planned: Vec<forecast::Planned> = (0..3u32)
+        .map(|level| forecast::Planned {
+            elements: Elements::Solid,
+            h: 2.0 / MESH_CHECK_RATIO.powi(level as i32),
+            section: v6_section,
+            nodes: 20_000.0 * 3f64.powi(level as i32),
+            level,
+        })
+        .collect();
+    let card = forecast::after_meshing(&planned, 2, 196_605, forecast::Reach { likely: 2, most: 2 }, "doc-d22").map(|f| f.bytes);
+    let deep = forecast::layers(v6_section, v6_h);
+    let gate = finer_gate(196_605.0, Elements::Solid, deep, Limit::Memory(4.4e9));
+    assert_eq!(gate.and_then(|g| if let Check::Skipped { bytes, .. } = g { Some(bytes) } else { None }), card, "one model");
+    let asked = std::cell::RefCell::new(Vec::new());
+    let ask = |_: f64, _: Elements, deep: f64| {
+        asked.borrow_mut().push(deep);
+        true
+    };
+    assert_eq!(forecast::reach_after_first(&planned, 20_000.0, &ask), forecast::Reach { likely: 1, most: 2 });
+    assert_eq!(*asked.borrow(), [planned[1].layers(), planned[2].layers()]);
+}
+
+/// Decision 22: where Linux's memory cannot be read, the gates take the host's reading (the desktop
+/// app's on Windows and macOS, `fea::set_memory_reader`), and assume 8 GB a run only without one.
+/// Input: a Linux reading of 8 GB or none; a host reader giving 9.6 GB, none, NaN, 0, or no reader
+/// at all (the CLI on Windows and macOS). Nothing is registered: `memory_available` takes both.
+/// Action: `memory_available`, `first_run_limit`, `finer_limit`; then `memory_available_here` on
+/// the computer the test runs on.
+/// Observable: the bytes available and the limits from them.
+/// Pass: Linux's reading first; without it the host's 9.6 GB, so a run and the mesh check may use
+/// 4.8 GB; with no usable reading, the 8 GB fallback and the mesh check's 6 GB ceiling; on Linux
+/// this computer's memory is read.
+#[test]
+fn d22_the_hosts_memory_reading_stands_in_where_linux_cannot_be_read() {
+    let host: fn() -> Option<f64> = || Some(9.6e9);
+    let (nothing, nan, zero): (fn() -> Option<f64>, fn() -> Option<f64>, fn() -> Option<f64>) = (|| None, || Some(f64::NAN), || Some(0.0));
+    assert_eq!(memory_available(|| Some(8.0e9), Some(host)), Some(8.0e9), "Linux's own reading first");
+    let read = memory_available(|| None, Some(host));
+    assert_eq!(read, Some(9.6e9));
+    assert_eq!(first_run_limit(read), 4.8e9);
+    assert_eq!(finer_limit(None, read, MEMORY_CEILING), Limit::Memory(4.8e9));
+    for reader in [Some(nothing), Some(nan), Some(zero), None] {
+        let read = memory_available(|| None, reader);
+        assert_eq!(read, None);
+        assert_eq!(first_run_limit(read), FIRST_RUN_FALLBACK);
+        assert_eq!(finer_limit(None, read, MEMORY_CEILING), Limit::Memory(MEMORY_CEILING));
+    }
+    let here = memory_available_here();
+    eprintln!("D22 available here: {:?} GB", here.map(|b| (b / 1e8).round() / 10.0));
+    if cfg!(target_os = "linux") {
+        assert!(here.is_some_and(|b| b > 0.0), "{here:?}");
     }
 }
 
@@ -1761,7 +1890,8 @@ fn va1_a_mesh_too_big_for_the_memory_is_refused_before_solving() {
             // Refused from the volume alone when the prediction is over twice the limit; between
             // one and two times it, the mesh is made and counted first, which takes longer.
             let volume = 200.0 * 50.0 * 2.0 - std::f64::consts::PI * 25.0 * 2.0;
-            let before = memory_refusal(SOLID_NODES_PER_MM3 * volume / 0.7f64.powi(3), Elements::Solid, 0.7, cap, false).is_some();
+            let section = 2.0 * 19858.6 / 20919.8;
+            let before = memory_refusal(SOLID_NODES_PER_MM3 * volume / 0.7f64.powi(3), Elements::Solid, 0.7, section, cap, false).is_some();
             assert!(took < if before { 15.0 } else { 180.0 }, "{took} s (refused before meshing: {before})");
         }
         Ok(r) => {
@@ -2576,7 +2706,9 @@ fn a13_a_dry_run_says_what_the_run_will_take_from_the_parts_size() {
     let line = p["line"].as_str().unwrap_or("");
     assert!(line.contains("nodes") && line.contains("of memory") && line.contains("one run") && line.contains("before meshing"), "{line}");
     let checked = run(&mut s, CMD, setup(true));
-    let fits = forecast::finer_fits(number(&p["nodes"]), Elements::Solid);
+    // The second mesh at 1.0 mm, through the plate's 1.9 mm section.
+    let section = 2.0 * 19858.6 / 20919.8;
+    let fits = forecast::finer_fits(number(&p["nodes"]), Elements::Solid, forecast::layers(section, 1.0));
     assert_eq!(checked["predicted"]["runs"], if fits { 2 } else { 1 }, "{}", checked["predicted"]);
     if fits {
         assert!(number(&checked["predicted"]["seconds"]) > number(&p["seconds"]), "{}", checked["predicted"]);
@@ -2584,7 +2716,7 @@ fn a13_a_dry_run_says_what_the_run_will_take_from_the_parts_size() {
     let mut coarse = setup(true);
     coarse["mesh_size"] = json!(4.0);
     let coarse = run(&mut s, CMD, coarse)["predicted"].clone();
-    if forecast::finer_fits(number(&coarse["nodes"]), Elements::Solid) {
+    if forecast::finer_fits(number(&coarse["nodes"]), Elements::Solid, forecast::layers(section, 4.0 / 1.5)) {
         let most = &coarse["most"];
         assert_eq!((&coarse["runs"], &most["runs"]), (&json!(2), &json!(3)), "{coarse}");
         for key in ["nodes", "memory_gb", "seconds"] {
@@ -2651,15 +2783,16 @@ fn a13_once_meshed_the_forecast_counts_the_nodes_the_runs_and_the_time_left() {
     assert!((second.seconds_most - second.seconds_left - (m3 + s3)).abs() < 1e-6, "{second:?}");
     assert!((second.seconds_left - forecast::seconds(250_000.0, Elements::Solid, 3.0).1).abs() < 1e-9, "{second:?}");
 
-    let up_to_80k = |nodes: f64, _: Elements| nodes <= 80_000.0;
-    let all = |_: f64, _: Elements| true;
-    let runs = |fits: &dyn Fn(f64, Elements) -> bool| forecast::before_meshing(&planned, fits).map(|(sure, most)| (sure.runs, most.map(|m| m.runs)));
+    let up_to_80k = |nodes: f64, _: Elements, _: f64| nodes <= 80_000.0;
+    let all = |_: f64, _: Elements, _: f64| true;
+    let runs =
+        |fits: &dyn Fn(f64, Elements, f64) -> bool| forecast::before_meshing(&planned, fits).map(|(sure, most)| (sure.runs, most.map(|m| m.runs)));
     assert_eq!(runs(&up_to_80k), Some((2, None)), "60,000 predicted: the second mesh is planned, and no third after 180,000");
     assert_eq!(runs(&all), Some((2, Some(3))));
-    assert_eq!(runs(&|_, _| false), Some((1, None)));
+    assert_eq!(runs(&|_, _, _| false), Some((1, None)));
     // The second's nodes are scaled by the first's count (180,000 x 1.5), and 0.7 of them decide whether
     // a third may follow; once the second is counted, its own nodes do.
-    let up_to = |most: f64| move |nodes: f64, _: Elements| nodes <= most;
+    let up_to = |most: f64| move |nodes: f64, _: Elements, _: f64| nodes <= most;
     let reach = |likely, most| forecast::Reach { likely, most };
     assert_eq!(forecast::reach_after_first(&planned, 90_000.0, &up_to(150_000.0)), reach(1, 1), "270,000 x 0.7 is over");
     assert_eq!(forecast::reach_after_first(&planned, 60_000.0, &up_to(150_000.0)), reach(1, 2), "180,000 x 0.7 is not");

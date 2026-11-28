@@ -669,6 +669,22 @@ pub fn cancel_generation() -> u64 {
 /// The error a stopped estimate ends with.
 pub const STOPPED: &str = "stopped: the stress estimate was stopped; nothing was shown";
 
+/// The host's reading of the memory available now, bytes, where the engine reads none itself.
+static MEMORY_READER: std::sync::OnceLock<fn() -> Option<f64>> = std::sync::OnceLock::new();
+
+/// Gives the engine the host's reading of the memory available, for the stress estimate's memory
+/// gates (decision 22). The desktop app sets it at start on Windows and macOS, where the call has no
+/// safe API; Linux's `/proc/meminfo` is read without it, and with neither the gates assume 8 GB a
+/// run. A second call is ignored.
+pub fn set_memory_reader(read: fn() -> Option<f64>) {
+    let _ = MEMORY_READER.set(read);
+}
+
+/// The reader [`set_memory_reader`] gave, if any.
+pub(crate) fn memory_reader() -> Option<fn() -> Option<f64>> {
+    MEMORY_READER.get().copied()
+}
+
 /// The programs: `SOLIDCRAFT_GMSH` and `SOLIDCRAFT_CCX`, or `gmsh` and `ccx` on the PATH.
 pub fn programs() -> (String, String) {
     let var = |k: &str, d: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| d.to_string());
