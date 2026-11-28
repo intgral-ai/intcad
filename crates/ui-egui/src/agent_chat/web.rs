@@ -240,6 +240,8 @@ fn mode(app: &SolveApp) -> agents::Mode {
 pub fn state(app: &mut SolveApp) -> String {
     // The host calls outside the app's own passes: the page's words are in the app's language.
     let _language = crate::i18n::scope(&app.preferences.language);
+    // A mode the release switch no longer offers goes back to the plain chat, as in the panel.
+    skill::settle(app);
     let selected = selected_count(app);
     let stamp = app.session.document_stamp();
     let custom_models = custom_models_accepted(app);
@@ -662,7 +664,7 @@ pub fn state(app: &mut SolveApp) -> String {
         "centre": chat.web_centre,
         "permissions": mode(app).id(),
         "skill": chat.skill.id(),
-        "skills": skill::Skill::ALL.iter().map(|skill| json!({"id": skill.id(), "title": skill.title()})).collect::<Vec<_>>(),
+        "skills": skill::offered(app).iter().map(|skill| json!({"id": skill.id(), "title": skill.title()})).collect::<Vec<_>>(),
         "turn": turn,
         // `hint`: what is known of an installed agent without starting it, in a word beside its name.
         "agents": entries
@@ -954,7 +956,8 @@ pub fn act(app: &mut SolveApp, ctx: &egui::Context, message: &str) -> std::resul
                 return Err("skill: the running turn keeps its skill".into());
             }
             let id = text("id").ok_or("skill: no id")?;
-            app.agent_chat.skill = skill::Skill::ALL.into_iter().find(|skill| skill.id() == id).ok_or("skill: unknown")?;
+            // Only a mode the chat offers now (the release switch keeps Stress estimate back).
+            app.agent_chat.skill = skill::offered(app).into_iter().find(|skill| skill.id() == id).ok_or("skill: unknown")?;
         }
         "new_chat" => panel::request_new_chat(app),
         "confirm_new" => {

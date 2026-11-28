@@ -850,6 +850,9 @@ impl AcpBackend {
 }
 
 impl ChatBackend for AcpBackend {
+    fn skill_support(&self, skill: super::skill::Skill) -> super::backend::SkillSupport {
+        skill.support_as_text()
+    }
     fn poll(&mut self) -> Vec<Event> {
         self.poll_at(Instant::now())
     }

@@ -605,7 +605,7 @@ Whatever you typed before signing in is sent once the agent is ready.
 
 ## Built-in skills
 
-The composer has a skill picker. **Plain Chat** is the default and is unchanged. Two built-in
+The composer has a skill picker. **Plain Chat** is the default and is unchanged. Three built-in
 skills are offered:
 
 - **Text-to-CAD** asks the same agent to create or change a parametric design. The host note
@@ -615,6 +615,12 @@ skills are offered:
 - **Anatomy** asks the agent to explain the current design or selection using host facts. The
   host refuses a write request from an Anatomy turn, so geometry, parameters, feature history and
   undo do not change. Only names the host supplies can become clickable references.
+- **Stress estimate** is what the Stress button selects (#200). Its note carries
+  `solidcraft-analysis`'s SKILL.md in full, so every agent has the stress-estimate workflow in the
+  message itself; the worked setups (`reference.md`) are still read with `skill_reference`. It is
+  not read-only: the workflow changes the design for another thickness or shape, and the solve
+  needs the approval card's Allow. A connection that refuses built-in skills keeps Plain Chat
+  when Stress is pressed.
 
 Selecting a skill freezes the skill version, the current document identity and revision, the
 selection and the connection/model on that turn. The conversation shows the binding and its
@@ -622,8 +628,9 @@ terminal. Switching to another skill or document cannot rewrite a running turn's
 
 Direct/BYOK runs the Beta skill path. Until a real credential-backed turn is recorded, the panel
 labels skill execution unverified. Ordinary ACP Chat remains available, but ACP skill execution is
-also labeled unverified until it is tested on the same host policy. A backend that cannot run a
-skill refuses before the model call.
+also labeled unverified until it is tested on the same host policy. Stress estimate is not
+labeled: it only adds its note, and the tests check that the note reaches an ACP agent and a
+direct connection in full. A backend that cannot run a skill refuses before the model call.
 
 The existing approval gate, Stop, stale-write rejection and per-turn undo still control every CAD
 write. A skill adds no second agent loop, provider, session store or tool registry.
@@ -715,8 +722,9 @@ judge a message's changes before they reach your design.
 - **What doesn't run on the copy.** Files (save, open, export, import), a new design and commands
   that need the window (picking a point in the view, panel layout) are refused while the agent works
   on a copy, and the agent is told why. A picture of the view the agent takes shows the copy drawn
-  over the design; a rendered picture (`ui.render`) shows the design without it. Built-in skills
-  (Text-to-CAD, Anatomy) run as before, without a preview.
+  over the design; a rendered picture (`ui.render`) shows the design without it. A stress
+  estimate's solve is refused on a copy too, since it asks first. Built-in skills (Text-to-CAD,
+  Anatomy, Stress estimate) run as before, without a preview.
 
 Accept replays the agent's steps on your design rather than putting the copy in its place. This is
 provisional (see [the design note](design/in-app-agent-chat.md#preview-then-accept)): replaying
