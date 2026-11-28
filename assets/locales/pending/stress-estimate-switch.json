@@ -1,0 +1,26 @@
+{
+  "ar": {
+    "ui.stress_estimate_not_offered": "تقدير الإجهاد غير متاح في هذا الإصدار بعد."
+  },
+  "de": {
+    "ui.stress_estimate_not_offered": "Die Spannungsabschätzung ist in dieser Version noch nicht verfügbar."
+  },
+  "en": {
+    "ui.stress_estimate_not_offered": "The stress estimate is not available in this version yet."
+  },
+  "he": {
+    "ui.stress_estimate_not_offered": "הערכת המאמצים עדיין לא זמינה בגרסה הזו."
+  },
+  "ja": {
+    "ui.stress_estimate_not_offered": "応力推定はこのバージョンではまだ使えません。"
+  },
+  "ko": {
+    "ui.stress_estimate_not_offered": "응력 추정은 이 버전에서 아직 사용할 수 없습니다."
+  },
+  "vi": {
+    "ui.stress_estimate_not_offered": "Ước tính ứng suất chưa có trong phiên bản này."
+  },
+  "zh": {
+    "ui.stress_estimate_not_offered": "此版本暂不提供应力估算。"
+  }
+}

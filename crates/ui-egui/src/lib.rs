@@ -307,6 +307,7 @@ pub mod stand_up;
 mod status_bar;
 mod stress_by_hand;
 mod stress_overlay;
+mod stress_switch;
 #[cfg(test)]
 mod sweep_dialog_tests;
 pub(crate) mod test_boat;
@@ -1854,6 +1855,13 @@ impl SolveApp {
         // A tool can be started outside the frame's scope (a direct `start`, a shortcut in
         // `logic`): build its hint in the user's language, not the thread default.
         let _language = crate::i18n::scope(&self.preferences.language);
+        // The release switch keeps the estimate out of sight (spec decision 32): a shortcut,
+        // `ui.start` or a typed line reaches nothing while it is off.
+        if crate::stress_switch::hides(self, id) {
+            let why = self.tr("ui.stress_estimate_not_offered").to_string();
+            self.set_status(why, true);
+            return;
+        }
         // Its loads, supports and material are set up by hand in the Simulation panel, which can
         // ask the Assistant instead (PIL-294, decision 30).
         if id == "inspect.stress_estimate" {
@@ -3643,6 +3651,13 @@ impl SolveApp {
             let held = if waits || shot_waits { None } else { self.control_held.pop_front() };
             let Some(mut req) = held.or_else(|| rx.as_ref().and_then(|rx| rx.try_recv().ok())) else { break };
             if req.refuse_cancelled_chat() {
+                continue;
+            }
+            // Before the guard, the copy path or any admission (spec decision 32): an agent's
+            // estimate never starts while the release switch keeps it from agents.
+            if let Some(reason) = crate::stress_switch::request_refusal(self, req.entry, &req.method, &req.params) {
+                crate::control::release_unstarted(self, &mut req);
+                let _ = req.reply.send(json!({"ok": false, "error": reason}));
                 continue;
             }
             if let Err(error) = execution_guard::admit(self, &mut req) {

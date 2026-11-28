@@ -205,6 +205,7 @@ pub fn search(app: &SolveApp, q: &str) -> Vec<Row> {
     let mut v: Vec<(u32, Row)> = command_specs()
         .into_iter()
         .filter(|c| !crate::workspace::AGENT_ONLY.contains(&c.id))
+        .filter(|c| !crate::stress_switch::hides(app, c.id))
         .filter_map(|c| {
             let (home_tab, home_panel) = crate::workspace::destination(c).unwrap_or(("", ""));
             let info = crate::render_workspace::interactive_command_info(app, c);
@@ -313,10 +314,12 @@ fn typed(line: &str) -> Option<(&str, Result<Value, String>)> {
 }
 
 /// Bounded Levenshtein distance also handles transposed/missing letters in a no-match query.
-fn closest(query: &str) -> Option<&'static str> {
+/// `estimate`: the stress estimate's release switch offers its button (else it is never named).
+pub(crate) fn closest(query: &str, estimate: bool) -> Option<&'static str> {
     let q: Vec<_> = query.trim().to_lowercase().chars().take(128).collect();
     command_specs()
         .into_iter()
+        .filter(|c| estimate || !solidcraft_engine::fea::offer::is_estimate_command(c.id))
         .map(|c| {
             let label = crate::i18n::tr_label(c.label);
             let mut prev: Vec<_> = (0..=q.len()).collect();
@@ -353,6 +356,12 @@ pub fn open(app: &mut SolveApp, at: Option<Pos2>) {
 fn run_typed(app: &mut SolveApp, line: &str) {
     if let Some((id, result)) = typed(line) {
         match result {
+            // A typed line runs the command itself, past `start`: a run by hand, which the
+            // release switch allows from `by_hand`.
+            Ok(_) if solidcraft_engine::fea::offer::is_estimate_command(id) && !crate::stress_switch::by_hand(app) => {
+                let why = app.tr("ui.stress_estimate_not_offered").to_string();
+                app.set_status(why, true);
+            }
             Ok(params) => {
                 app.sbox.used(id);
                 let _ = app.run(id, params);
@@ -609,7 +618,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                                                 &crate::i18n::format("search.no_match", &[("query", &query)]),
                                                 ui_kit::Text::Heading("search_no_match"),
                                             );
-                                            if let Some(label) = closest(&query) {
+                                            if let Some(label) = closest(&query, crate::stress_switch::button(app)) {
                                                 ui_kit::text(
                                                     ui,
                                                     &crate::i18n::format("search.suggest", &[("label", label)]),
@@ -1053,7 +1062,7 @@ mod tests {
         assert_eq!(h.app.sbox.text.chars().count(), MAX_QUERY);
         assert!(crate::scenario::rect_of("ribbon:search_popup").unwrap().is_finite());
         assert!(crate::scenario::handles("menu:").len() <= MAX_RESULTS);
-        assert_eq!(closest("fliet"), Some("Fillet"));
+        assert_eq!(closest("fliet", true), Some("Fillet"));
         h.call("ui.palette", json!({"open":false}));
         assert!(!h.app.ui.palette_open);
     }

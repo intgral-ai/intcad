@@ -452,6 +452,13 @@ impl SolveApp {
         if req.refuse_cancelled_chat() {
             return None;
         }
+        // Normally refused by the queue; a direct caller's agent estimate stops here too, before
+        // the copy path (spec decision 32).
+        if let Some(reason) = crate::stress_switch::request_refusal(self, req.entry, &req.method, &req.params) {
+            crate::control::release_unstarted(self, &mut req);
+            let _ = req.reply.send(serde_json::json!({"ok": false, "error": reason}));
+            return None;
+        }
         // Normally admitted by the queue; direct callers must pin the same live source too.
         if let Err(error) = crate::execution_guard::admit(self, &mut req) {
             let _ = req.reply.send(crate::execution_guard::refusal_json(&error));

@@ -9,6 +9,7 @@
 pub mod formats;
 pub mod materials;
 pub mod model;
+pub mod offer;
 pub mod probe;
 
 use std::path::{Path, PathBuf};

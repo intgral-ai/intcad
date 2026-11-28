@@ -1339,6 +1339,11 @@ preference_settings! {
     right_rail_open: String = String::new();
     /// That panel's width, which the user drags at its left edge.
     right_rail_width: f32 = crate::right_rail::DEFAULT_PANEL;
+    /// How far the stress estimate is offered (spec decision 32, `stress_switch`): `auto` (the
+    /// default) follows the build, which is `off` in a release; `off`, `by_hand` or `agents`. On
+    /// no page, so restoring defaults keeps it, and no Settings row: a tester sets it in the
+    /// settings file, or starts the app with `INTCAD_STRESS_ESTIMATE`.
+    stress_estimate: String = solidcraft_engine::fea::offer::AUTO.into();
     /// The selection's length, area or distance in the view's bottom right corner (#7000). Off by
     /// default.
     quick_measure: bool = false, PAGE_GRAPHICS;
@@ -3234,7 +3239,10 @@ fn button_job_picker(
     use crate::space_mouse::{ButtonJob, ButtonKey};
     let views = ["home", "fit", "top", "front", "right", "left", "back", "bottom"].map(|view| ButtonJob::View(view.into()));
     let keys = [ButtonKey::Esc, ButtonKey::Shift, ButtonKey::Ctrl, ButtonKey::Alt].map(ButtonJob::Key);
-    let commands = solidcraft_engine::command_specs().into_iter().map(|spec| ButtonJob::Command(spec.id.into()));
+    let commands = solidcraft_engine::command_specs()
+        .into_iter()
+        .filter(|spec| !crate::stress_switch::hides(app, spec.id))
+        .map(|spec| ButtonJob::Command(spec.id.into()));
     let jobs: Vec<Option<ButtonJob>> =
         [None, Some(ButtonJob::Settings)].into_iter().chain(views.into_iter().chain(keys).chain(commands).map(Some)).collect();
     let entries: Vec<(String, String)> = jobs.iter().map(|job| (button_job_value(job.as_ref()), button_job_label(app, job.as_ref()))).collect();
